@@ -1410,6 +1410,73 @@ describe("PiAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
+  it.effect.each([
+    { when: "while that run's turn runs", next: "running" },
+    { when: "after that run's turn left a wake", next: "wake" },
+  ] as const)("a run Stop of an ended turn keeps the process another run uses $when", ({ next }) =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      const { runtime, takeEvent } = yield* openRuntime(
+        fake,
+        "default",
+        THREAD_ID,
+        SESSION_ID,
+        undefined,
+        { offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid) },
+      );
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      const runTurn = Effect.fnUntraced(function* (runOrdinal: number, settle: boolean) {
+        yield* startTurn(runtime, providerThread, "default", [], "Hello pi", undefined, runOrdinal);
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "agent_start" });
+        if (!settle) return;
+        yield* fake.emit({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Done." }],
+            stopReason: "stop",
+          },
+        });
+        yield* fake.emit({ type: "agent_settled" });
+        const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
+        if (terminal.type !== "turn.terminal") return yield* Effect.die("Missing terminal");
+        return terminal;
+      });
+      const ended = yield* runTurn(1, true);
+      if (ended === undefined) return yield* Effect.die("Missing first turn");
+      yield* runTurn(2, next === "wake");
+      if (next === "wake") {
+        yield* fake.emit({ type: "agent_start" });
+        yield* Queue.take(offers);
+      }
+
+      yield* runtime.interruptTurn({
+        providerThread,
+        providerTurnId: ended.providerTurnId,
+        requestRuntimeRestart: true,
+        ownedProviderTurnIds: [ended.providerTurnId],
+      });
+      assert.notInclude(
+        fake.allRequests().map((request) => request["type"]),
+        "abort",
+      );
+      // The process and its work belong to the later run, so they keep running.
+      if (next === "wake") assert.isTrue(yield* runtime.hasPendingBackgroundWork!);
+      else {
+        yield* fake.emit({ type: "agent_settled" });
+        const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
+        assert.isTrue(terminal.type === "turn.terminal" && terminal.status === "completed");
+      }
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect.each(["archive", "stop", "transport death"] as const)(
     "retiring a wake by %s cancels visible dialogs and invalidates its offer",
     (retirement) =>

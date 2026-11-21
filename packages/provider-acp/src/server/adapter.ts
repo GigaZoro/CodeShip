@@ -8342,6 +8342,21 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   const transitionFiber = yield* Effect.gen(function* () {
                     const transition = yield* Effect.gen(function* () {
                       const interruptContext = yield* Ref.get(activeTurn);
+                      // One runtime runs every turn of the session; a Stop of an ended turn must not
+                      // close or tear down the work another run's turn holds.
+                      if (
+                        turnInput.requestRuntimeRestart === true &&
+                        interruptContext?.providerTurnId !== turnInput.providerTurnId &&
+                        !(yield* ProviderAdapter.stopOwnsSharedRuntime(
+                          turnInput,
+                          driver,
+                          interruptContext?.providerTurnId ??
+                            [...(yield* Ref.get(providerTurns)).values()].at(-1)?.id ??
+                            null,
+                        ))
+                      ) {
+                        return undefined;
+                      }
                       if (
                         followsAgentWorkState &&
                         turnInput.requestRuntimeRestart === true &&

@@ -10105,6 +10105,90 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect.each([
+    { when: "while that run's turn runs", next: "running" },
+    { when: "after that run's turn settled", next: "settled" },
+  ] as const)("a run Stop of an ended turn keeps the process another run uses $when", ({ next }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let closes = 0;
+        let interrupts = 0;
+        const harness = yield* makeWakeHarnessWithOptions({
+          close: (sdkMessages) =>
+            Effect.sync(() => {
+              closes++;
+            }).pipe(Effect.andThen(Queue.shutdown(sdkMessages))),
+          interrupt: Effect.sync(() => {
+            interrupts++;
+          }),
+        });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-claude-scoped-stop-first"),
+            text: "Run the tests in the background.",
+            attachments: [],
+          }),
+        );
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "background_tasks_changed",
+            tasks: [{ task_id: WAKE_TASK_ID, task_type: "local_bash", description: "tests" }],
+            uuid: "00000000-0000-4000-8000-000000027401",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.offerAndWait(turnOneResult);
+        const ended = yield* Queue.take(harness.terminalReceipts);
+        const sharedThread = harness.events.findLast(
+          (event) => event.type === "provider_thread.updated",
+        )?.providerThread;
+        if (sharedThread === undefined) return yield* Effect.die("Missing provider thread");
+        const otherInput = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: sharedThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-claude-scoped-stop-other-run"),
+          text: "Summarize the README.",
+          attachments: [],
+          providerTurnOrdinal: 2,
+          nativeThreadHasTurns: true,
+        });
+        yield* harness.runtime.startTurn(otherInput);
+        const otherResult = makeResultFrame({
+          uuid: "00000000-0000-4000-8000-000000027402",
+          result: "The README describes the app.",
+        });
+        if (next === "settled") {
+          yield* harness.offerAndWait(otherResult);
+          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+        }
+
+        yield* harness.runtime.interruptTurn({
+          providerThread: sharedThread,
+          providerTurnId: ended.providerTurnId,
+          requestRuntimeRestart: true,
+          ownedProviderTurnIds: [ended.providerTurnId],
+        });
+        assert.equal(interrupts, 0);
+        assert.equal(closes, 0);
+        // The work in the shared process belongs to the later run, so it keeps running.
+        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        if (next === "running") {
+          yield* harness.offerAndWait(otherResult);
+          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+        }
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
   it.effect("keeps a running Claude monitor typed after many newer monitors end", () =>
     Effect.scoped(
       Effect.gen(function* () {

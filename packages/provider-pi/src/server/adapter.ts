@@ -21,6 +21,7 @@ import {
   type ProviderApprovalDecision,
   type ProviderInstanceId,
   type OrchestrationV2ProviderTurnTokenUsage,
+  type ProviderTurnId,
 } from "@t3tools/contracts";
 import { PiSettings } from "../settings.ts";
 import * as Cause from "effect/Cause";
@@ -402,6 +403,8 @@ function piApprovalRequestKind(title: string): "command" | "file-change" {
 interface PiThreadState {
   providerThread: OrchestrationV2ProviderThread;
   activeTurn: ActivePiTurn | null;
+  /** The last turn this process ran; a wake it starts later belongs to that turn. */
+  lastProviderTurnId: ProviderTurnId | null;
   /** Continuations this session dispatched that have not started; a user turn can take their wake first. */
   dispatchedWakes: number;
 }
@@ -2297,7 +2300,12 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                 createdAt,
                 updatedAt: createdAt,
               };
-        threadState = { providerThread, activeTurn: null, dispatchedWakes: 0 };
+        threadState = {
+          providerThread,
+          activeTurn: null,
+          lastProviderTurnId: null,
+          dispatchedWakes: 0,
+        };
         const baselineEntries = yield* request({ type: "get_entries" }).pipe(
           Effect.orElseSucceed(() => undefined),
         );
@@ -2563,6 +2571,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               if (continuation && state.dispatchedWakes > 0) state.dispatchedWakes--;
               state.providerThread = turnInput.providerThread;
               state.activeTurn = activeTurn;
+              state.lastProviderTurnId = providerTurn.id;
               activeTurn.adoptedWake = wake !== null && !continuation;
               if (compactCommand !== null) {
                 yield* connection.send(compactRpcRecord(compactCommand));
@@ -2697,11 +2706,29 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           function* (interruptInput) {
             const turn = threadState?.activeTurn ?? null;
             if (turn === null && interruptInput.requestRuntimeRestart === true) {
-              if (pendingWake !== null)
-                yield* sessionEventPermit.withPermits(1)(stopPendingWake(pendingWake));
+              const wake = pendingWake;
+              if (
+                wake !== null &&
+                (yield* ProviderAdapter.stopOwnsSharedRuntime(
+                  interruptInput,
+                  PI_PROVIDER,
+                  wake.state.lastProviderTurnId,
+                ))
+              )
+                yield* sessionEventPermit.withPermits(1)(stopPendingWake(wake));
               return;
             }
             if (turn === null || turn.providerTurn.id !== interruptInput.providerTurnId) {
+              // The requested turn ended, and another run's turn runs now.
+              if (
+                turn !== null &&
+                !(yield* ProviderAdapter.stopOwnsSharedRuntime(
+                  interruptInput,
+                  PI_PROVIDER,
+                  turn.providerTurn.id,
+                ))
+              )
+                return;
               return yield* protocolError(`Pi turn ${interruptInput.providerTurnId} is not active`);
             }
             turn.interrupted = true;

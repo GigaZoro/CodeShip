@@ -2674,6 +2674,16 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               const context = yield* Ref.get(activeTurn);
               if (context === null && turnInput.requestRuntimeRestart === true) return;
               if (context?.providerTurnId !== turnInput.providerTurnId) {
+                // The requested turn ended, and another run's turn runs now.
+                if (
+                  context !== null &&
+                  !(yield* ProviderAdapter.stopOwnsSharedRuntime(
+                    turnInput,
+                    CursorAgentSdk.CURSOR_PROVIDER,
+                    context.providerTurnId,
+                  ))
+                )
+                  return;
                 return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                   driver: CursorAgentSdk.CURSOR_PROVIDER,
                   detail: `Cursor provider turn ${turnInput.providerTurnId} is not active.`,

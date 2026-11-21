@@ -1474,6 +1474,45 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
+  it.effect.each([
+    { when: "while that run's turn runs", next: "running" },
+    { when: "after that run's turn settled", next: "settled" },
+  ] as const)(
+    "a run Stop of an ended turn keeps the background work another run started $when",
+    ({ next }) =>
+      Effect.gen(function* () {
+        const { runtime, thread } = yield* resumed([
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          event("session.execution.started", { sessionID: SESSION }),
+          event("session.execution.succeeded", { sessionID: SESSION }),
+          ...backgroundLaunch(CHILD),
+          ...(next === "settled"
+            ? [event("session.execution.succeeded", { sessionID: SESSION })]
+            : []),
+        ]);
+        const first = yield* terminals(runtime, 1);
+        yield* runtime.startTurn(withLineage(thread));
+        assert.equal((yield* Fiber.join(first))[0]?.status, "completed");
+        const watch = yield* watchBackgroundTurn(runtime);
+        yield* runtime.startTurn({
+          ...secondTurn(thread),
+          appThread: withLineage(thread).appThread,
+        });
+        yield* watch.attached;
+        if (next === "settled") assert.equal((yield* watch.terminal)?.status, "completed");
+
+        const ended = yield* providerTurnId;
+        yield* runtime.interruptTurn({
+          providerThread: thread,
+          providerTurnId: ended,
+          requestRuntimeRestart: true,
+          ownedProviderTurnIds: [ended],
+        });
+        assert.isTrue(yield* runtime.hasPendingBackgroundWorkForThread!(thread));
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("checks the server before prompting again after a prompt request failed", () =>
     Effect.gen(function* () {
       const { runtime, thread } = yield* resumed([

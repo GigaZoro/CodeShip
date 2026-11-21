@@ -199,8 +199,10 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
     text = "hello",
     startProviderThread: OrchestrationV2ProviderThread = providerThread,
     turnPolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy = policy,
-  ) =>
-    runtime.startTurn({
+    runOrdinal = 1,
+  ) => {
+    const run = runOrdinal === 1 ? suffix : `${suffix}-${runOrdinal}`;
+    return runtime.startTurn({
       appThread: {
         id: threadId,
         projectId: ProjectId.make(`project-opencode-${suffix}`),
@@ -225,22 +227,23 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
         deletedAt: null,
       },
       threadId,
-      runId: RunId.make(`run-opencode-${suffix}`),
-      runOrdinal: 1,
-      providerTurnOrdinal: 1,
-      attemptId: RunAttemptId.make(`attempt-opencode-${suffix}`),
-      rootNodeId: NodeId.make(`node-opencode-${suffix}`),
+      runId: RunId.make(`run-opencode-${run}`),
+      runOrdinal,
+      providerTurnOrdinal: runOrdinal,
+      attemptId: RunAttemptId.make(`attempt-opencode-${run}`),
+      rootNodeId: NodeId.make(`node-opencode-${run}`),
       providerThread: startProviderThread,
       message: {
         createdBy: "user",
         creationSource: "web",
-        messageId: MessageId.make(`message-opencode-${suffix}`),
+        messageId: MessageId.make(`message-opencode-${run}`),
         text,
         attachments: [],
       },
       modelSelection,
       runtimePolicy: turnPolicy,
     });
+  };
   return {
     nativeSessionId,
     now,
@@ -997,6 +1000,134 @@ describe("OpenCodeAdapterV2", () => {
       yield* push(status(child, "idle"));
       yield* push({ type: "session.idle", properties: { sessionID: child } });
       assert.isFalse(yield* hasPendingBackgroundWork, "an idle child must not pin idle release");
+    }).pipe(
+      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.scoped,
+    ),
+  );
+
+  it.effect.each([
+    { when: "while that run's turn runs", next: "running" },
+    { when: "after that run's turn left a background child", next: "background" },
+  ] as const)("a run Stop of an ended turn keeps the session another run uses $when", ({ next }) =>
+    Effect.gen(function* () {
+      const nativeEvents = asyncEventStream();
+      const push = (event: unknown) => Effect.promise(() => nativeEvents.push(event));
+      const root = "ses_root";
+      const child = "ses_child";
+      const promptIds: Array<string> = [];
+      let aborts = 0;
+      const harness = yield* makeOpenCodeRuntimeHarness(`scoped-stop-${next}`, root, {
+        event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+        session: {
+          create: async () => ({ data: { id: root, time: { created: 1, updated: 1 } } }),
+          get: async () => ({
+            data: { id: child, parentID: root, permission: [], time: { created: 2, updated: 2 } },
+          }),
+          update: async () => ({ data: { id: child, parentID: root } }),
+          promptAsync: async (input: { messageID: string }) => {
+            promptIds.push(input.messageID);
+            return { data: true };
+          },
+          abort: async () => {
+            aborts += 1;
+            return { data: true };
+          },
+          children: async (input: { sessionID: string }) => ({
+            data: input.sessionID === root ? [{ id: child, parentID: root }] : [],
+          }),
+        },
+      });
+      const hasPendingBackgroundWork = harness.runtime.hasPendingBackgroundWork;
+      if (hasPendingBackgroundWork === undefined) {
+        return yield* Effect.die("OpenCode runtime must expose hasPendingBackgroundWork.");
+      }
+      const status = (sessionID: string, type: "busy" | "idle") => ({
+        type: "session.status",
+        properties: { sessionID, status: { type } },
+      });
+      const nextTerminal = () =>
+        harness.runtime.events.pipe(
+          Stream.filter((event) => event.type === "turn.terminal"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+          Effect.forkScoped,
+        );
+      const admit = (ordinal: number) =>
+        push({
+          type: "message.updated",
+          properties: {
+            sessionID: root,
+            info: {
+              id: promptIds[ordinal - 1],
+              sessionID: root,
+              role: "user",
+              time: { created: 1 },
+            },
+          },
+        });
+      const taskPart = (taskStatus: "running" | "completed") => ({
+        type: "message.part.updated",
+        properties: {
+          sessionID: root,
+          part: {
+            id: "prt_task",
+            sessionID: root,
+            messageID: "msg_root_assistant",
+            type: "tool",
+            tool: "task",
+            callID: "call_task",
+            state: {
+              status: taskStatus,
+              input: { description: "Background task", prompt: "sleep", subagent_type: "general" },
+              title: "Background task",
+              metadata: { parentSessionId: root, sessionId: child, background: true },
+              time: { start: 3, ...(taskStatus === "completed" ? { end: 3 } : {}) },
+              ...(taskStatus === "completed" ? { output: "Background task started" } : {}),
+            },
+          },
+        },
+      });
+
+      const first = yield* nextTerminal();
+      yield* harness.startTurn();
+      yield* admit(1);
+      yield* push(status(root, "busy"));
+      yield* push(status(root, "idle"));
+      const ended = yield* Fiber.join(first);
+
+      const second = yield* nextTerminal();
+      yield* harness.startTurn("again", harness.providerThread, harness.policy, 2);
+      yield* admit(2);
+      yield* push(status(root, "busy"));
+      if (next === "background") {
+        yield* push(taskPart("running"));
+        yield* push({
+          type: "session.created",
+          properties: {
+            sessionID: child,
+            info: { id: child, parentID: root, time: { created: 2, updated: 2 } },
+          },
+        });
+        yield* push(status(child, "busy"));
+        yield* push(taskPart("completed"));
+        yield* push(status(root, "idle"));
+        assert.equal((yield* Fiber.join(second)).status, "completed");
+      }
+
+      yield* harness.runtime.interruptTurn({
+        providerThread: harness.providerThread,
+        providerTurnId: ended.providerTurnId,
+        requestRuntimeRestart: true,
+        ownedProviderTurnIds: [ended.providerTurnId],
+      });
+      assert.equal(aborts, 0, "the Stop must leave the other run's work running");
+      if (next === "background") {
+        assert.isTrue(yield* hasPendingBackgroundWork, "the other run's child keeps running");
+      } else {
+        yield* push(status(root, "idle"));
+        assert.equal((yield* Fiber.join(second)).status, "completed");
+      }
     }).pipe(
       Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
       Effect.scoped,

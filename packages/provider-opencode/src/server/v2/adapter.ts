@@ -3811,7 +3811,16 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           if (state === undefined) return;
           const turn = state.active;
           // User Stop must end background children and their report execution; steering leaves them running.
-          if (interruptInput.requestRuntimeRestart === true) yield* stopBackground(state);
+          // Background work belongs to the active turn, or else the last turn the session ran.
+          if (
+            interruptInput.requestRuntimeRestart === true &&
+            (yield* ProviderAdapter.stopOwnsSharedRuntime(
+              interruptInput,
+              driver,
+              turn?.providerTurn.id ?? [...state.providerTurns.values()].at(-1)?.id ?? null,
+            ))
+          )
+            yield* stopBackground(state);
           if (turn === undefined || turn.providerTurn.id !== interruptInput.providerTurnId) {
             return;
           }

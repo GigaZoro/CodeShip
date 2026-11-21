@@ -37,7 +37,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
-import type * as Effect from "effect/Effect";
+import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
@@ -484,10 +484,37 @@ export interface ProviderAdapterV2InterruptInput {
   readonly requestRuntimeRestart?: boolean;
   /**
    * Set when Stop covers only some runs of the provider thread. A runtime-restart Stop then reaches
-   * the settled turns listed here and their descendants; other settled turns keep their work.
+   * the settled turns listed here and their descendants; other settled turns keep their work. Where
+   * the turns share one runtime, see `stopOwnsSharedRuntime`.
    */
   readonly ownedProviderTurnIds?: ReadonlyArray<ProviderTurnId>;
 }
+
+/**
+ * Whether a Stop reaches a runtime that every turn of the provider thread shares. Its work belongs to
+ * the turn holding it: the active turn, or else the last turn it ran. A Stop that does not own that
+ * turn must leave the runtime running, and this records that it did.
+ */
+export const stopOwnsSharedRuntime = Effect.fn("ProviderAdapter.stopOwnsSharedRuntime")(function* (
+  input: ProviderAdapterV2InterruptInput,
+  driver: ProviderDriverKind,
+  holderProviderTurnId: ProviderTurnId | null,
+) {
+  if (
+    holderProviderTurnId === null ||
+    input.ownedProviderTurnIds === undefined ||
+    input.ownedProviderTurnIds.includes(holderProviderTurnId)
+  ) {
+    return true;
+  }
+  yield* Effect.logInfo("orchestration-v2.scoped-stop-left-shared-runtime", {
+    driver,
+    providerThreadId: input.providerThread.id,
+    providerTurnId: input.providerTurnId,
+    holderProviderTurnId,
+  });
+  return false;
+});
 
 export interface ProviderAdapterV2RuntimeRequestResponseInput {
   readonly requestId: RuntimeRequestId;

@@ -273,7 +273,12 @@ stopped too. Children and completions from independent runs keep working, includ
 later run in the same child thread. An independent run that is active, or that starts after
 the interrupt, neither blocks it nor loses its own work: each provider interrupt names
 the chain's turns, and an adapter that restarts its runtime to end background commands
-ends only theirs. Each provider interrupt also names the background tasks the chain owned
+ends only theirs. Where one runtime runs every turn of the provider thread (Claude, ACP,
+OpenCode, Pi, Cursor), it belongs to the turn that holds it, the active turn or else the
+last one it ran: a Stop that does not own that turn leaves the runtime and its work
+running and logs `orchestration-v2.scoped-stop-left-shared-runtime`
+([`stopOwnsSharedRuntime`](../../packages/provider-core/src/server/ProviderAdapter.ts)).
+Each provider interrupt also names the background tasks the chain owned
 on that provider thread when Stop was requested, so when the next message takes the
 provider thread first, settling removes exactly those tasks and keeps the new run's.
 When a session lookup fails, the interrupt is still sent and the work

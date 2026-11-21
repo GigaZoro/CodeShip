@@ -11429,6 +11429,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const existing = yield* Ref.get(queryContext);
             const currentTurn = yield* Ref.get(activeTurn);
             const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId ?? null;
+            // One process runs every turn of the native thread.
+            const leaveProcessToOtherRun = (holder: ActiveClaudeTurnContext | null) =>
+              ProviderAdapter.stopOwnsSharedRuntime(
+                turnInput,
+                CLAUDE_PROVIDER,
+                holder?.providerTurnId ?? null,
+              ).pipe(Effect.map((owns) => !owns));
             if (currentTurn === null && turnInput.requestRuntimeRestart === true) {
               if (nativeThreadId === null) return;
               if (existing === null || existing.nativeThreadId !== nativeThreadId) {
@@ -11439,6 +11446,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 });
                 return;
               }
+              if (yield* leaveProcessToOtherRun(existing.lastTurn)) return;
               existing.stopRequested = true;
               yield* closeLiveQueryForNativeThread(nativeThreadId);
               const current = yield* Ref.get(queryContext);
@@ -11458,6 +11466,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               });
             }
             if (currentTurn?.providerTurnId !== turnInput.providerTurnId) {
+              // The requested turn already ended, and another run's turn runs now.
+              if (yield* leaveProcessToOtherRun(currentTurn)) return;
               return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                 driver: CLAUDE_PROVIDER,
                 detail: `Claude provider turn ${turnInput.providerTurnId} is not the active turn.`,

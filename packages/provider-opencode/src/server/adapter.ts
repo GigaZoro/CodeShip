@@ -3448,6 +3448,19 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 (turn === undefined || turn === null) &&
                 interruptInput.requestRuntimeRestart === true
               ) {
+                // The session's commands and child sessions belong to the last turn it ran.
+                const lastTurnId =
+                  state === undefined
+                    ? null
+                    : ([...state.providerTurns.values()].at(-1)?.id ?? null);
+                if (
+                  !(yield* ProviderAdapter.stopOwnsSharedRuntime(
+                    interruptInput,
+                    OPENCODE_PROVIDER,
+                    lastTurnId,
+                  ))
+                )
+                  return;
                 for (const controller of commandControllers.get(sessionId) ?? [])
                   controller.abort();
                 yield* abortDescendants(sessionId);
@@ -3458,6 +3471,17 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 turn === null ||
                 turn.providerTurnId !== interruptInput.providerTurnId
               ) {
+                // The requested turn ended, and another run's turn runs now.
+                if (
+                  turn !== undefined &&
+                  turn !== null &&
+                  !(yield* ProviderAdapter.stopOwnsSharedRuntime(
+                    interruptInput,
+                    OPENCODE_PROVIDER,
+                    turn.providerTurnId,
+                  ))
+                )
+                  return;
                 return yield* protocolError(
                   `OpenCode turn ${interruptInput.providerTurnId} is not active`,
                 );

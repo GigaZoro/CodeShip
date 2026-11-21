@@ -2208,6 +2208,52 @@ describe("AcpRegistryAdapterV2", () => {
   );
 
   it.effect.each([
+    { when: "while that run's turn runs", next: "running" },
+    { when: "after that run's turn left a background child", next: "background" },
+  ] as const)(
+    "a run Stop of an ended Claude turn keeps the session another run uses $when",
+    ({ next }) =>
+      Effect.gen(function* () {
+        const gate = makeProviderReplayGate(["second-idle"]);
+        const session = yield* openClaudeReplaySession(
+          [
+            ...claudeFrames.open,
+            ...claudeFrames.prompt(1),
+            claudeFrames.idle("end_turn"),
+            ...claudeFrames.prompt(2),
+            ...(next === "background" ? [...claudeChild, claudeFrames.idle("end_turn")] : []),
+            claudeMarker("second turn"),
+            ...(next === "running"
+              ? [{ ...claudeFrames.idle("end_turn"), label: "second-idle" }]
+              : []),
+          ],
+          gate,
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => gate.releaseAll()));
+        yield* session.runtime.startTurn(session.turnInput(1));
+        const ended = yield* session.terminal;
+        assert.equal(ended.status, "completed");
+        yield* session.runtime.startTurn(session.turnInput(2));
+        const seen = yield* session.throughMarker("second turn");
+
+        yield* session.runtime.interruptTurn({
+          providerThread: session.providerThread,
+          providerTurnId: ended.providerTurnId,
+          requestRuntimeRestart: true,
+          ownedProviderTurnIds: [ended.providerTurnId],
+        });
+        if (next === "background") {
+          const second = seen.findLast((event) => event.type === "turn.terminal");
+          assert.equal(second?.type === "turn.terminal" ? second.status : null, "completed");
+          assert.isTrue(yield* session.runtime.hasPendingBackgroundWork!);
+        } else {
+          gate.release("second-idle");
+          assert.equal((yield* session.terminal).status, "completed");
+        }
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.effect.each([
     {
       failure: "a lost session",
       error: {

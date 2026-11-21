@@ -13,6 +13,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -660,6 +661,144 @@ describe("CursorAdapterV2", () => {
         Stream.runHead,
       );
       assert.equal(sentMessages[1], "/compress");
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+      ),
+    ),
+  );
+
+  it.effect("a run Stop of an ended turn leaves the turn another run runs", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const workspace = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "cursor-v2-scoped-stop-",
+      });
+      const release = yield* Deferred.make<void>();
+      let sendCalls = 0;
+      let cancels = 0;
+      const instanceId = ProviderInstanceId.make("cursor");
+      const threadId = ThreadId.make("cursor-scoped-stop-thread");
+      const modelSelection = { instanceId, model: "composer-2.5" };
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: workspace,
+      });
+      const adapter = yield* makeCursorAdapterV2({
+        instanceId,
+        environment: { HOME: workspace },
+      }).pipe(
+        Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
+          assertComplete: Effect.void,
+          open: () =>
+            Effect.succeed({
+              agentId: "native-cursor-scoped-stop",
+              listMessages: Effect.succeed([]),
+              close: Effect.void,
+              send: () =>
+                Effect.sync(() => {
+                  const call = ++sendCalls;
+                  const runId = `native-cursor-run-${call}`;
+                  return {
+                    agentId: "native-cursor-scoped-stop",
+                    runId,
+                    wait: (call === 1 ? Effect.void : Deferred.await(release)).pipe(
+                      Effect.as({
+                        id: runId,
+                        requestId: `native-request-${call}`,
+                        status: "finished" as const,
+                        model: { id: "composer-2.5" },
+                        durationMs: 1,
+                      }),
+                    ),
+                    cancel: Effect.sync(() => {
+                      cancels += 1;
+                    }),
+                  };
+                }),
+            }),
+        }),
+        Effect.provide(TestProviderHost.layer({ cwd: workspace })),
+      );
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("cursor-scoped-stop-session"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const now = yield* DateTime.now;
+      const appThread = {
+        id: threadId,
+        projectId: ProjectId.make("cursor-scoped-stop-project"),
+        createdBy: "user" as const,
+        creationSource: "web" as const,
+        title: "Cursor scoped Stop",
+        providerInstanceId: instanceId,
+        modelSelection,
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        branch: null,
+        worktreePath: null,
+        activeProviderThreadId: providerThread.id,
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
+        lastVisitedAt: null,
+        deletedAt: null,
+      };
+      const startRun = (ordinal: number) =>
+        runtime.startTurn({
+          threadId,
+          providerThread,
+          modelSelection,
+          runtimePolicy,
+          runId: RunId.make(`cursor-scoped-stop-run-${ordinal}`),
+          runOrdinal: ordinal,
+          providerTurnOrdinal: ordinal,
+          attemptId: RunAttemptId.make(`cursor-scoped-stop-attempt-${ordinal}`),
+          rootNodeId: NodeId.make(`cursor-scoped-stop-root-${ordinal}`),
+          appThread,
+          message: {
+            messageId: MessageId.make(`cursor-scoped-stop-message-${ordinal}`),
+            createdBy: "user",
+            creationSource: "web",
+            text: `Request ${ordinal}`,
+            attachments: [],
+          },
+        });
+      const nextTerminal = runtime.events.pipe(
+        Stream.filter((event) => event.type === "turn.terminal"),
+        Stream.runHead,
+        Effect.flatMap((event) =>
+          Option.isSome(event) && event.value.type === "turn.terminal"
+            ? Effect.succeed(event.value)
+            : Effect.die("Missing terminal"),
+        ),
+      );
+      yield* startRun(1);
+      const ended = yield* nextTerminal;
+      yield* startRun(2);
+
+      yield* runtime.interruptTurn({
+        providerThread,
+        providerTurnId: ended.providerTurnId,
+        requestRuntimeRestart: true,
+        ownedProviderTurnIds: [ended.providerTurnId],
+      });
+      assert.equal(cancels, 0);
+      yield* Deferred.succeed(release, undefined);
+      assert.equal((yield* nextTerminal).status, "completed");
     }).pipe(
       Effect.scoped,
       Effect.provide(
