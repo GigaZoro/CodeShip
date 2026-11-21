@@ -24,7 +24,7 @@ import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventStore from "./EventStore.ts";
-import { SHORTAGE_RECHECK_MS, make as makeMemoryAdmissionQueue } from "./MemoryAdmissionQueue.ts";
+import { make as makeMemoryAdmissionQueue } from "./MemoryAdmissionQueue.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -226,7 +226,7 @@ it.effect(
       yield* Ref.set(memory, null);
       yield* queue.sweep;
       timeline.push(yield* started(inCutOrder));
-      yield* TestClock.adjust(SHORTAGE_RECHECK_MS);
+      yield* TestClock.adjust(MemoryAdmission.SHORTAGE_RECHECK_MS);
       yield* queue.sweep;
       timeline.push(yield* started(inCutOrder));
       // The next waits while the one before it is still on its way to its provider.
@@ -323,7 +323,7 @@ it.effect("Stop ends a waiting run and the next takes its place; a snooze only h
       snoozedUntil: DateTime.formatIso(DateTime.add(yield* DateTime.now, { hours: 1 })),
     });
     yield* Ref.set(memory, null);
-    yield* TestClock.adjust(SHORTAGE_RECHECK_MS);
+    yield* TestClock.adjust(MemoryAdmission.SHORTAGE_RECHECK_MS);
     yield* queue.sweep;
 
     assert.deepEqual(yield* started(runs), ["snoozed"]);
@@ -367,7 +367,7 @@ it.effect("an automatic retry of a failed workspace setup waits for memory, set 
     yield* orchestrator.dispatch({ type: "prepared-run.release", ...on("release") });
     const whileShort = yield* started([{ name: "setup", runId }]);
     yield* Ref.set(memory, null);
-    yield* TestClock.adjust(SHORTAGE_RECHECK_MS);
+    yield* TestClock.adjust(MemoryAdmission.SHORTAGE_RECHECK_MS);
     yield* queue.sweep;
 
     assert.deepEqual(whileShort, []);

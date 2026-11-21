@@ -362,9 +362,13 @@ const layerTest = Layer.mergeAll(
   MemoryAdmission.layerTest(),
 ).pipe(Layer.provideMerge(layerOrchestration), Layer.provideMerge(NodeServices.layer));
 
-/** One server's life: a fresh runner that picks up what an earlier one left, until `use` ends. */
+/**
+ * One server's life: a fresh runner that picks up what an earlier one left, until `use` ends.
+ * Memory is read on every pass unless `shortageRecheck` holds a shortage.
+ */
 const withServer = <A, E, R>(
   use: (runner: CommandRunner.CommandRunner["Service"]) => Effect.Effect<A, E, R>,
+  shortageRecheck = Duration.zero,
 ) =>
   Effect.gen(function* () {
     const runner = yield* CommandRunner.CommandRunner;
@@ -374,6 +378,7 @@ const withServer = <A, E, R>(
     Effect.scoped,
     Effect.provide(Layer.fresh(CommandRunner.layer)),
     Effect.provideService(CommandRunner.WatchInterval, Duration.millis(50)),
+    Effect.provideService(CommandRunner.ShortageRecheck, shortageRecheck),
   );
 
 const callerOf = (threadId: ThreadId): McpThreadInvocationScope => ({
@@ -582,15 +587,17 @@ const endTurn = (threadId: ThreadId) =>
 
 /**
  * The chat service with its first `lost` hand-overs of a command's end lost, as a dispatch that
- * fails is. `told` resolves once one is taken.
+ * fails is. `told` resolves once one is taken; each hand-over is offered to `tries`.
  */
 const losingEnds = (lost: number) =>
   Effect.gen(function* () {
     const threads = yield* ThreadManagement.ThreadManagementService;
     const told = yield* Deferred.make<void>();
+    const tries = yield* Queue.unbounded<void>();
     let attempts = 0;
     return {
       told,
+      tries,
       attempts: () => attempts,
       on: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         effect.pipe(
@@ -601,16 +608,20 @@ const losingEnds = (lost: number) =>
                 return threads.dispatch(command);
               }
               attempts += 1;
-              return attempts <= lost
-                ? Effect.fail(
-                    new Orchestrator.OrchestratorDispatchError({
-                      commandId: command.commandId,
-                      commandType: command.type,
-                    }),
-                  )
-                : threads
-                    .dispatch(command)
-                    .pipe(Effect.ensuring(Deferred.succeed(told, undefined)));
+              return Queue.offer(tries, undefined).pipe(
+                Effect.andThen(
+                  attempts <= lost
+                    ? Effect.fail(
+                        new Orchestrator.OrchestratorDispatchError({
+                          commandId: command.commandId,
+                          commandType: command.type,
+                        }),
+                      )
+                    : threads
+                        .dispatch(command)
+                        .pipe(Effect.ensuring(Deferred.succeed(told, undefined))),
+                ),
+              );
             },
           }),
         ),
@@ -2565,29 +2576,51 @@ const MEMORY_WAIT =
 
 const HOUR_MS = 60 * 60_000;
 
+/** Runs an effect on the real clock, its wall time and monotonic time each moved by `shift`. */
+const shiftedClock = (shift: {
+  readonly wallBehindMs: () => number;
+  readonly monotonicAheadMs: () => number;
+}) =>
+  Effect.gen(function* () {
+    const real = yield* Clock.Clock;
+    const millis = () => real.currentTimeMillisUnsafe() - shift.wallBehindMs();
+    const monotonic = () =>
+      real.monotonicTimeNanosUnsafe() + BigInt(shift.monotonicAheadMs()) * 1_000_000n;
+    const clock: Clock.Clock = {
+      currentTimeMillisUnsafe: millis,
+      currentTimeMillis: Effect.sync(millis),
+      currentTimeNanosUnsafe: () => BigInt(millis()) * 1_000_000n,
+      currentTimeNanos: Effect.sync(() => BigInt(millis()) * 1_000_000n),
+      monotonicTimeNanosUnsafe: monotonic,
+      monotonicTimeNanos: Effect.sync(monotonic),
+      sleep: (duration) => real.sleep(duration),
+    };
+    return <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(Effect.provideService(Clock.Clock, clock));
+  });
+
 /**
  * The real clock an hour behind until `catchUp`, so a start dated after a queueing shows apart
  * from it. Never ahead: a wrapper dates the end it records by the real clock.
  */
 const clockBehind = Effect.gen(function* () {
-  const real = yield* Clock.Clock;
   let behindMs = HOUR_MS;
-  const millis = () => real.currentTimeMillisUnsafe() - behindMs;
-  const clock: Clock.Clock = {
-    currentTimeMillisUnsafe: millis,
-    currentTimeMillis: Effect.sync(millis),
-    currentTimeNanosUnsafe: () => BigInt(millis()) * 1_000_000n,
-    currentTimeNanos: Effect.sync(() => BigInt(millis()) * 1_000_000n),
-    monotonicTimeNanosUnsafe: () => real.monotonicTimeNanosUnsafe(),
-    monotonicTimeNanos: real.monotonicTimeNanos,
-    sleep: (duration) => real.sleep(duration),
-  };
   return {
     catchUp: Effect.sync(() => {
       behindMs = 0;
     }),
-    on: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      effect.pipe(Effect.provideService(Clock.Clock, clock)),
+    on: yield* shiftedClock({ wallBehindMs: () => behindMs, monotonicAheadMs: () => 0 }),
+  };
+});
+
+/** The real clock, its monotonic time an hour ahead after `leap`. */
+const monotonicLeap = Effect.gen(function* () {
+  let aheadMs = 0;
+  return {
+    leap: Effect.sync(() => {
+      aheadMs = HOUR_MS;
+    }),
+    on: yield* shiftedClock({ wallBehindMs: () => 0, monotonicAheadMs: () => aheadMs }),
   };
 });
 
@@ -2953,6 +2986,40 @@ it.layer(layerTest, { excludeTestServices: true })("a command waiting for memory
             "Stopped: the chat was archived.",
           );
         }
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "reads memory for a waiting command again only once the shortage it found is a recheck old",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-memory-recheck");
+        const closing = yield* liveChat("command-memory-recheck-closing");
+        const memory = yield* shortMemory;
+        const clock = yield* monotonicLeap;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        // The closed chat's task is told again on each pass, which marks the passes.
+        const ends = yield* losingEnds(2);
+        const ran = yield* withServer(
+          (runner) =>
+            Effect.gen(function* () {
+              const ran = yield* runner.run(callerOf(chat.threadId), { command: "echo ran" });
+              yield* runner.run(callerOf(closing.threadId), { command: "echo closing" });
+              // Each request read memory, and the first pass after them found the shortage.
+              for (let read = 0; read < 3; read++) yield* Queue.take(memory.reads);
+              yield* endTurn(closing.threadId);
+              yield* threads.dispatch(archiveOf(closing.threadId));
+              // The archive told it first; two passes followed, the first of them whole.
+              for (let told = 0; told < 3; told++) yield* Queue.take(ends.tries);
+              assert.equal(yield* Queue.size(memory.reads), 0);
+              yield* memory.clear;
+              yield* clock.leap;
+              yield* nextWake(chat.threadId);
+              return ran;
+            }),
+          Duration.hours(1),
+        ).pipe(memory.on, clock.on, ends.on);
+        assert.match((yield* taskOf(chat.threadId, ran.taskId))?.result ?? "", /ran/);
       }),
   );
 

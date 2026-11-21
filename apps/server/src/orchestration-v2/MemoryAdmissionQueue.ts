@@ -18,10 +18,6 @@ import { forkParked } from "../serverActivation.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
-// Reading memory starts processes on macOS, so a shortage stands for this long before it is read
-// again, however often the queue changes meanwhile.
-export const SHORTAGE_RECHECK_MS = 15_000;
-
 type QueueCommand = Extract<
   OrchestrationV2ServerCommand,
   { readonly type: "run.memory-admit" | "run.memory-wait" }
@@ -46,18 +42,7 @@ export const make = Effect.gen(function* () {
   const permit = yield* Semaphore.make(1);
   // Runs this server already told they wait for memory; a run that stops waiting is told again.
   const told = new Set<RunId>();
-  let lastShortage: { readonly readAtMs: number; readonly reading: string } | null = null;
-  const currentShortage = Effect.fnUntraced(function* (nowMs: number) {
-    if (lastShortage !== null && nowMs - lastShortage.readAtMs < SHORTAGE_RECHECK_MS) {
-      return lastShortage;
-    }
-    const shortage = yield* memory.shortage;
-    lastShortage =
-      shortage === null
-        ? null
-        : { readAtMs: nowMs, reading: MemoryAdmission.describeMemoryShortage(shortage) };
-    return lastShortage;
-  });
+  const currentShortage = MemoryAdmission.holdShortage(memory.shortage);
   /** Whether the command committed; a failure is logged and the next sweep tries again. */
   const dispatch = (command: QueueCommand) =>
     orchestrator.dispatch(command).pipe(
@@ -104,11 +89,11 @@ export const make = Effect.gen(function* () {
         commandId: CommandId.make(`command:memory-wait:${run.id}:${nowMs}`),
         threadId: run.threadId,
         runId: run.id,
-        shortage: shortage.reading,
+        shortage: MemoryAdmission.describeMemoryShortage(shortage.shortage),
       });
       if (committed) told.add(run.id);
     }
-    yield* due.record(readVersion, shortage.readAtMs + SHORTAGE_RECHECK_MS, nowMs);
+    yield* due.record(readVersion, shortage.readAtMs + MemoryAdmission.SHORTAGE_RECHECK_MS, nowMs);
   });
   // The scheduler's tick and the queue's own changes share one sweep at a time.
   const sweep = sweepDue().pipe(permit.withPermitsIfAvailable(1), Effect.asVoid);

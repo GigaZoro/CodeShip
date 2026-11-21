@@ -75,6 +75,12 @@ export const WatchInterval = Context.Reference<Duration.Duration>(
   { defaultValue: () => Duration.seconds(1) },
 );
 
+/** How long a shortage holds the queue before memory is read again; tests set their own. */
+export const ShortageRecheck = Context.Reference<Duration.Duration>(
+  "t3/commandRunner/ShortageRecheck",
+  { defaultValue: () => Duration.millis(MemoryAdmission.SHORTAGE_RECHECK_MS) },
+);
+
 const LOG_FILE = "output.log";
 const STATUS_FILE = "exit-status";
 const PID_FILE = "pid";
@@ -497,6 +503,13 @@ const make = Effect.gen(function* () {
   const hostEnv = yield* HostProcess.Environment;
   const watchInterval = yield* WatchInterval;
   const memoryAdmission = yield* MemoryAdmission.MemoryAdmission;
+  const heldShortage = MemoryAdmission.holdShortage(
+    memoryAdmission.shortage,
+    Duration.toMillis(yield* ShortageRecheck),
+  );
+  const queuedShortage = Clock.clockWith((clock) =>
+    heldShortage(Number(clock.monotonicTimeNanosUnsafe() / 1_000_000n)),
+  );
 
   const commandsDir = path.join(logsDir, "commands");
   const hostCommandEnv = Object.fromEntries(
@@ -1529,7 +1542,7 @@ const make = Effect.gen(function* () {
   const startQueued = Effect.fn("CommandRunner.startQueued")(function* () {
     yield* lock.withPermits(1)(Effect.forEach([...unstartedEnds.values()], endUnstarted));
     const next = queue[0];
-    if (next === undefined || (yield* memoryAdmission.shortage) !== null) return;
+    if (next === undefined || (yield* queuedShortage) !== null) return;
     // Outside the lock, which a slow read of the agent's environment would hold.
     const environment = yield* queuedEnvironment(next).pipe(Effect.result);
     yield* lock.withPermits(1)(
@@ -1537,7 +1550,7 @@ const make = Effect.gen(function* () {
         // A cancel, Stop or close took it off meanwhile; the next pass looks again.
         if (queue[0] !== next) return;
         // The read took a while, and may have started a process of its own.
-        if ((yield* memoryAdmission.shortage) !== null) return;
+        if ((yield* queuedShortage) !== null) return;
         const instead = yield* notToStart(next);
         if (instead !== undefined) return yield* dropQueued(next, instead.end);
         if (environment._tag === "Failure") {
