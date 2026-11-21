@@ -69,6 +69,10 @@
 - Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
 - A landing that joins the queue comes after every landing it finds waiting there, even when that landing's machine clock runs ahead; landings that join at the same moment, before either can see the other, go in the order of their machines' clocks. A queue of any length keeps moving, and a waiter reads a bounded part of it per poll. Entries origin will not delete block no one and are reported once: a crashed lander's, or a waiter's own old names, which no longer keep it from a free lease, and the waiter keeps renewing its entry, so it keeps its place. A landing whose entry origin refused joins again behind the landings that came meanwhile. A lander whose take reached origin while its answer was lost keeps the turn instead of waiting behind itself, unless the lease expired before the take was confirmed, and its checks get the time that lease has left.
 
+## 2026-11-21 — A relay client install on Windows waits for an older installer's lock
+
+- On Windows, a relay client install no longer takes over the lock file of an installer from before 2026-10-31. Windows renames a directory over a file instead of refusing it, so the new install took the lock while the older one was still installing. It now waits for that lock, as on macOS and Linux, and removes it only once it is 30 minutes old.
+
 ## 2026-11-21 — A machine that comes back reconnects without a click
 
 - A linked machine that was away for a while (shut down, asleep, without power, or restarting for an update) could stay **Reconnecting** in the sidebar for up to 5 minutes after it was back, because the wait between tries grew to 5 minutes. While the app is open, it now waits at most 30 seconds after a failed try before trying again, so such a machine reconnects without a click on **Reconnect**.

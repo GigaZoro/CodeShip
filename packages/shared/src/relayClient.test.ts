@@ -160,6 +160,19 @@ const renameError = (code: string, path: string) =>
     cause: Object.assign(new Error(code), { code }),
   });
 
+/** Windows renames a directory over an existing file, where POSIX refuses it with ENOTDIR. */
+const renamingOverFiles = (fileSystem: FileSystem.FileSystem): FileSystem.FileSystem => ({
+  ...fileSystem,
+  rename: (from, to) =>
+    fileSystem.stat(to).pipe(
+      Effect.option,
+      Effect.flatMap((target) =>
+        Option.isSome(target) && target.value.type === "File" ? fileSystem.remove(to) : Effect.void,
+      ),
+      Effect.andThen(fileSystem.rename(from, to)),
+    ),
+});
+
 type InstallRename = "staging" | "activation";
 
 const makeLockedRenames = (
@@ -209,9 +222,9 @@ describe("RelayClient", () => {
       const paths = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
       const lockPath = lockPathFor(paths, baseDir);
-      const directory = paths.dirname(lockPath);
-      yield* fileSystem.makeDirectory(directory, { recursive: true });
-      yield* fileSystem.writeFileString(lockPath, "other-installer");
+      const other = `${process.pid}-other-installer`;
+      yield* fileSystem.makeDirectory(lockPath, { recursive: true });
+      yield* fileSystem.writeFileString(paths.join(lockPath, other), "");
       const contended = yield* Deferred.make<void>();
       const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir }).pipe(
         Effect.provideService(FileSystem.FileSystem, {
@@ -229,7 +242,7 @@ describe("RelayClient", () => {
       const installing = yield* manager.install.pipe(Effect.forkChild);
       yield* Deferred.await(contended);
       yield* Fiber.interrupt(installing);
-      expect(yield* fileSystem.readFileString(lockPath)).toBe("other-installer");
+      expect(yield* fileSystem.readDirectory(lockPath)).toEqual([other]);
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -268,7 +281,10 @@ describe("RelayClient", () => {
       const manager = yield* RelayClient.makeCloudflaredRelayClient({
         baseDir,
         releaseAsset: testReleaseAsset,
-      });
+      }).pipe(
+        // Every host renames over a file here as Windows does, so a legacy lock never relies on rename refusing it.
+        Effect.provideService(FileSystem.FileSystem, renamingOverFiles(fileSystem)),
+      );
       const installing = yield* manager.install.pipe(
         Effect.provideService(Clock.Clock, {
           ...clock,
