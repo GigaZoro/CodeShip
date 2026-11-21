@@ -10,6 +10,7 @@ import {
   usageNotices,
   type EnvironmentUsageStatus,
 } from "@t3tools/client-runtime/state/usage-progress";
+import { cursorKeychainAccessEnvironments } from "@t3tools/client-runtime/state/usage";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
@@ -19,6 +20,7 @@ import { makeWindow } from "@t3tools/shared/usageFormat";
 import { AtomRegistry } from "effect/reactivity";
 
 const state = vi.hoisted(() => ({
+  cursorKeychain: false,
   environments: [] as readonly EnvironmentUsageStatus[],
   query: null as ((atom: object) => readonly EnvironmentUsageStatus[]) | null,
 }));
@@ -49,6 +51,11 @@ vi.mock("./server", async () => {
   const { AsyncResult, Atom } = await import("effect/reactivity");
   return {
     serverEnvironment: {
+      cursorUsageAccessAtom: () =>
+        Atom.make({
+          keychain: state.cursorKeychain ? "available" : "unavailable",
+          readsCursorAccount: false,
+        }),
       usageSummary: vi.fn(() => Atom.make(AsyncResult.initial())),
       usageModelFilterAtom: () => Atom.make(undefined),
     },
@@ -91,6 +98,7 @@ function mountUsageProbe() {
   const container = document.createElement("div");
   const root = createRoot(container);
   state.query = null;
+  state.cursorKeychain = false;
   return {
     container,
     root,
@@ -296,10 +304,11 @@ it("reports only the new period's failures on mobile while retaining the previou
   expect(screen.container.querySelector("button")?.textContent).toBe("Retry");
 });
 
-it("keeps mobile Limits connected without starting a cold transcript scan", async () => {
+it("offers Keychain access on a cold mobile Limits visit without a transcript scan", async () => {
   const registry = AtomRegistry.make();
   using _cleanup = { [Symbol.dispose]: () => registry.dispose() };
   await using screen = mountUsageProbe();
+  state.cursorKeychain = true;
   state.query = (atom) =>
     registry.get(atom as Parameters<typeof registry.get>[0]) as readonly EnvironmentUsageStatus[];
   const summary = vi.mocked(serverEnvironment.usageSummary);
@@ -307,15 +316,21 @@ it("keeps mobile Limits connected without starting a cold transcript scan", asyn
   function View({ limits }: { readonly limits: boolean }) {
     const usage = useUsage(window, null, { enabled: !limits });
     return (
-      <p>
-        {usage.environments.map(
-          ({ label, canReadDiagnostics }) => `${label}: ${canReadDiagnostics}`,
+      <div>
+        {cursorKeychainAccessEnvironments(usage.selectedEnvironments).map(
+          ({ label, environmentId }) => (
+            <button key={environmentId} type="button">
+              Enable Cursor usage from {label}
+            </button>
+          ),
         )}
-      </p>
+      </div>
     );
   }
   await act(() => screen.root.render(<View limits />));
-  expect(screen.container.textContent).toBe("Desk: true");
+  expect(screen.container.querySelector("button")?.textContent).toBe(
+    "Enable Cursor usage from Desk",
+  );
   expect(summary).not.toHaveBeenCalled();
   await act(() => screen.root.render(<View limits={false} />));
   expect(summary).toHaveBeenCalledOnce();

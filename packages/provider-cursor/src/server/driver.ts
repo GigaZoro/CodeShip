@@ -13,6 +13,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import { readCursorUsageLimits } from "./usageLimits.ts";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { makeCursorTextGeneration } from "./textGeneration.ts";
 import { makeCursorAdapterV2, type CursorAdapterV2DriverEnv } from "./adapter.ts";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
@@ -103,6 +104,10 @@ export const CursorDriver: ProviderDriver<
     const keychain = yield* CursorKeychain.CursorKeychain;
     const sdkRunner = yield* CursorAgentSdk.CursorAgentSdkRunner;
     const processEnv = yield* mergeProviderInstanceEnvironment(environment);
+    const platform = yield* HostProcess.Platform;
+    const hostEnvironment = yield* HostProcess.Environment;
+    const cursorKeychainUsageAvailable =
+      CursorUsageAccounts.cursorHistoryCredentials(platform, hostEnvironment) === "keychain";
     const continuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,
       instanceId,
@@ -166,6 +171,7 @@ export const CursorDriver: ProviderDriver<
     const stampSnapshot: typeof stampIdentity = (draft) =>
       stampIdentity({
         ...draft,
+        cursorKeychainUsageAvailable,
         setup: { canAuthenticate: !auth.usesApiKey, canInstall: false },
         auth: {
           ...draft.auth,

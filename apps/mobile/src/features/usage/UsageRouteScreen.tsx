@@ -213,7 +213,7 @@ function UsageScreen(props: {
       providers={shown?.providers ?? []}
       refreshingProviders={showingKept ? new Set() : refreshingUsageProviders(selectedEnvironments)}
       metric={metric}
-      cursorAccessEnvironments={cursorKeychainAccessEnvironments(shownEnvironments)}
+      cursorAccessEnvironments={showingKept ? [] : cursorAccessEnvironments}
       showCursorEnvironment={selectedEnvironments.length > 1}
       onCursorEnabled={refreshAfterCursorEnable}
       readOnly={showingKept}

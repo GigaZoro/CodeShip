@@ -103,6 +103,7 @@ export interface EnvironmentUsageStatus extends UsageProgressEnvironment {
   readonly environmentId: EnvironmentId;
   readonly canReadDiagnostics: boolean;
   readonly needsCursorKeychainAccess: boolean;
+  readonly readsCursorAccount?: boolean;
   readonly modelFilter?: UsageModelFilter | undefined;
 }
 
@@ -123,6 +124,7 @@ export function equalUsageStatuses(
         env.error === other.error &&
         env.canReadDiagnostics === other.canReadDiagnostics &&
         env.needsCursorKeychainAccess === other.needsCursorKeychainAccess &&
+        env.readsCursorAccount === other.readsCursorAccount &&
         JSON.stringify(env.modelFilter) === JSON.stringify(other.modelFilter)
       );
     })
@@ -569,7 +571,10 @@ export const usageLimitClockAtom = Atom.family((presentations: Atom.Atom<LimitPr
   Atom.make((get) =>
     JSON.stringify([...new Set(limitResetTimes(get(presentations)))].sort((a, b) => a - b)),
   ).pipe(
-    Atom.map((resetTimes) => usageClock(JSON.parse(resetTimes) as number[])),
+    Atom.map((resetTimes) => {
+      const times = JSON.parse(resetTimes) as number[];
+      return { countdown: usageClock(times), resets: usageClock(times, false) };
+    }),
     Atom.withLabel("usage-limit-clock"),
   ),
 );

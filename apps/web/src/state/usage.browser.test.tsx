@@ -12,6 +12,7 @@ import {
   usageEnvironmentError,
   usageNotices,
 } from "@t3tools/client-runtime/state/usage-progress";
+import { cursorKeychainAccessEnvironments } from "@t3tools/client-runtime/state/usage";
 import { UsageShareBar } from "../components/usage/UsageShareBar";
 import { UsageGapsNotice } from "../components/usage/UsageGapsNotice";
 import { makeWindow } from "@t3tools/shared/usageFormat";
@@ -23,6 +24,7 @@ import { useUsage, type EnvironmentUsageStatus } from "./usage";
 import { serverEnvironment } from "./server";
 
 const state = vi.hoisted(() => ({
+  cursorKeychain: false,
   environments: [] as readonly EnvironmentUsageStatus[],
   query: null as null | ((atom: object) => readonly EnvironmentUsageStatus[]),
 }));
@@ -30,10 +32,9 @@ const state = vi.hoisted(() => ({
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: (atom: object) => state.query?.(atom) ?? state.environments,
 }));
-vi.mock("@t3tools/client-runtime/state/usage", () => ({
-  needsCursorKeychainAccess: () => false,
+vi.mock("@t3tools/client-runtime/state/usage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@t3tools/client-runtime/state/usage")>()),
   refreshUsage: vi.fn(),
-  usageSummaryInput: (input: unknown) => input,
 }));
 vi.mock("../rpc/atomRegistry", () => ({ appAtomRegistry: {} }));
 vi.mock("./presentation", async () => {
@@ -59,6 +60,11 @@ vi.mock("./server", async () => {
   const { AsyncResult, Atom } = await import("effect/reactivity");
   return {
     serverEnvironment: {
+      cursorUsageAccessAtom: () =>
+        Atom.make({
+          keychain: state.cursorKeychain ? "available" : "unavailable",
+          readsCursorAccount: false,
+        }),
       usageSummary: vi.fn(() => Atom.make(AsyncResult.initial())),
       usageModelFilterAtom: () => Atom.make(undefined),
     },
@@ -81,6 +87,7 @@ vi.mock("./session", async () => {
 });
 
 function setup() {
+  state.cursorKeychain = false;
   state.query = null;
   const window: UsageSummaryInput = {
     sinceDay: UsageDay.make("2026-10-16"),
@@ -337,8 +344,9 @@ it("reports only the new period's failures on web while retaining the previous f
   await expect.element(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
 });
 
-it("reads environment grants on a cold Limits visit without requesting a usage summary", async () => {
+it("offers Keychain access on a cold web Limits visit without requesting a usage summary", async () => {
   const { window } = setup();
+  state.cursorKeychain = true;
   const registry = AtomRegistry.make();
   using _cleanup = { [Symbol.dispose]: () => registry.dispose() };
   state.query = (atom) =>
@@ -348,15 +356,21 @@ it("reads environment grants on a cold Limits visit without requesting a usage s
   function View({ limits }: { readonly limits: boolean }) {
     const usage = useUsage(window, null, [], { enabled: !limits });
     return (
-      <p>
-        {usage.environments.map(
-          ({ label, canReadDiagnostics }) => `${label}: ${canReadDiagnostics}`,
+      <div>
+        {cursorKeychainAccessEnvironments(usage.selectedEnvironments).map(
+          ({ label, environmentId }) => (
+            <button key={environmentId} type="button">
+              Enable Cursor usage from {label}
+            </button>
+          ),
         )}
-      </p>
+      </div>
     );
   }
   await using screen = await render(<View limits />);
-  await expect.element(screen.getByText("Desk: true")).toBeVisible();
+  await expect
+    .element(screen.getByRole("button", { name: "Enable Cursor usage from Desk" }))
+    .toBeVisible();
   expect(summary).not.toHaveBeenCalled();
   await screen.rerender(<View limits={false} />);
   expect(summary).toHaveBeenCalledOnce();

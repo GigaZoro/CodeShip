@@ -6,6 +6,7 @@ import {
   cursorUsageWindowDetails,
   displayLimitWindows,
   formatDuration,
+  type LimitAccount,
   type LimitPool,
   type LimitPoolWindow,
 } from "@t3tools/shared/usageLimits";
@@ -18,12 +19,10 @@ import { providerClients } from "../settings/providerDriverMeta";
 import type { ProgressRingTone } from "../ui/progress-ring";
 import { t, tn } from "~/i18n";
 
-export function useLimitPools() {
+export function useLimitAccounts() {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
   const workspaces = useUsageLimitWorkspaces();
-  const accounts = collectLimitAccounts(presentations, workspaces);
-  const now = useUsageLimitNow();
-  return { pools: collectLimitPools(accounts, now), now };
+  return collectLimitAccounts(presentations, workspaces);
 }
 
 export function limitTone(remainingPercent: number): ProgressRingTone {
@@ -51,14 +50,14 @@ export function limitWindowLabel(pool: LimitPool, window: LimitPoolWindow): stri
 
 /** Remaining quota per provider window, pooled across accounts, for a hover summary. */
 export function UsageLimitsGlance({
-  pools,
-  now,
+  accounts,
   shortcut = null,
 }: {
-  readonly pools: readonly LimitPool[];
-  readonly now: number;
+  readonly accounts: readonly LimitAccount[];
   readonly shortcut?: string | null;
 }) {
+  const now = useUsageLimitNow();
+  const pools = collectLimitPools(accounts, now);
   return (
     <div className="flex w-64 max-w-full flex-col gap-2.5 py-1">
       {pools.map((pool) => {

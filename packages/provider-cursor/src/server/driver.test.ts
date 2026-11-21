@@ -30,6 +30,7 @@ import {
 } from "@t3tools/provider-core/server/handoffBudget";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { CursorDriver } from "./driver.ts";
 import * as CursorAgentSdk from "./CursorAgentSdk.ts";
 import * as CursorSdk from "./CursorSdk.ts";
@@ -71,6 +72,34 @@ const layerTest = TestProviderHost.layer({ runBackgroundWork: false }).pipe(
 );
 
 it.layer(layerTest)("CursorDriver", (it) => {
+  it.effect(
+    "publishes host Keychain eligibility in the provider snapshot without a usage scan",
+    () =>
+      Effect.gen(function* () {
+        const input = {
+          instanceId: ProviderInstanceId.make("cursor-keychain"),
+          displayName: "Cursor",
+          environment: [],
+          enabled: false,
+          config: CursorDriver.defaultConfig(),
+        };
+        for (const [platform, environment, available] of [
+          ["darwin", {}, true],
+          ["linux", {}, false],
+          ["darwin", { AGENT_CLI_CREDENTIAL_STORE: "file" }, false],
+          ["darwin", { AGENT_CLI_CREDENTIAL_STORE: "memory" }, false],
+          ["darwin", { CURSOR_AUTH_TOKEN: "test-token" }, false],
+        ] as const) {
+          const instance = yield* CursorDriver.create(input).pipe(
+            Effect.provideService(HostProcess.Platform, platform),
+            Effect.provideService(HostProcess.Environment, environment),
+          );
+          expect((yield* instance.snapshot.getSnapshot).cursorKeychainUsageAvailable).toBe(
+            available,
+          );
+        }
+      }),
+  );
   it.effect(
     "persists browser credentials, uses them for chat, and closes the SDK session on logout",
     () =>

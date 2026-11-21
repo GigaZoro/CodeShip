@@ -12,11 +12,12 @@ import {
   SettingsIcon,
   ShapesIcon,
 } from "lucide-react";
-import { tightestLimitWindow } from "@t3tools/shared/usageLimits";
+import { collectLimitPools, tightestLimitWindow } from "@t3tools/shared/usageLimits";
 import { memo, type ReactNode } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
 import { isElectron } from "../../env";
+import { useUsageLimitNow } from "../../hooks/useUsageNow";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { MachinesGlance } from "../machines/MachineResources";
 import { primaryServerKeybindingsAtom } from "../../state/server";
@@ -32,7 +33,7 @@ import {
   limitTone,
   limitWindowLabel,
   UsageLimitsGlance,
-  useLimitPools,
+  useLimitAccounts,
 } from "../usage/UsageLimitsGlance";
 import { isSettingsPage, isSidebarSectionPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
@@ -136,7 +137,7 @@ function SidebarNavRailMonitoringItem({
 }
 
 /** Rings the limit closest to running out; hover summarizes every provider, click opens Usage. */
-function SidebarNavRailUsageItem({
+export function SidebarNavRailUsageItem({
   isActive,
   onClick,
 }: {
@@ -145,8 +146,9 @@ function SidebarNavRailUsageItem({
 }) {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const shortcut = shortcutLabelForCommand(keybindings, "usage.open");
-  const { pools, now } = useLimitPools();
-  const tightest = tightestLimitWindow(pools);
+  const accounts = useLimitAccounts();
+  const now = useUsageLimitNow(undefined, false);
+  const tightest = tightestLimitWindow(collectLimitPools(accounts, now));
   if (!tightest) {
     return (
       <SidebarNavRailItem
@@ -173,7 +175,7 @@ function SidebarNavRailUsageItem({
         window: limitWindowLabel(pool, window),
         percent: window.remainingPercent,
       })}
-      tooltip={<UsageLimitsGlance pools={pools} now={now} shortcut={shortcut} />}
+      tooltip={<UsageLimitsGlance accounts={accounts} shortcut={shortcut} />}
       isActive={isActive}
       onClick={onClick}
     />

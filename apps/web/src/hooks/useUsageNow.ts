@@ -36,7 +36,10 @@ export function useUsageNow(active: boolean): number {
 
 export function useUsageLimitNow(
   presentations: Atom.Atom<LimitPresentations> = environmentPresentations.presentationsWithProvidersAtom,
+  includeMinutes = true,
 ): number {
-  const clock = useAtomValue(usageLimitClockAtom(presentations));
+  const clocks = useAtomValue(usageLimitClockAtom(presentations));
+  const visible = useUsageDocumentVisible();
+  const clock = includeMinutes && visible ? clocks.countdown : clocks.resets;
   return useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getSnapshot);
 }

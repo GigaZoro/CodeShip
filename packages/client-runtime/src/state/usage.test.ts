@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
   ProviderInstanceId,
   UsageDay,
@@ -16,6 +17,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentPresentation } from "../connection/presentation.ts";
 import {
   cursorKeychainAccessEnvironments,
+  cursorUsageAccess,
   needsCursorKeychainAccess,
   refreshUsage,
   refreshUsageLimits,
@@ -213,7 +215,7 @@ describe("limits refresh cooldown", () => {
   });
 });
 
-describe("needsCursorKeychainAccess", () => {
+describe("Cursor account usage access", () => {
   const cursorPrompt: UsageSummary = {
     ...summary,
     sources: [
@@ -248,13 +250,42 @@ describe("needsCursorKeychainAccess", () => {
     skills: [],
   });
 
-  it("offers access only when Cursor is ready on that environment", () => {
-    expect(needsCursorKeychainAccess(cursorPrompt, [cursor("ready")])).toBe(true);
-    expect(needsCursorKeychainAccess(cursorPrompt, [cursor("error")])).toBe(false);
-    expect(needsCursorKeychainAccess(cursorPrompt, [cursor("disabled")])).toBe(false);
-    expect(needsCursorKeychainAccess(cursorPrompt, [])).toBe(false);
-    expect(needsCursorKeychainAccess(cursorPrompt, null)).toBe(false);
-    expect(needsCursorKeychainAccess(summary, [cursor("ready")])).toBe(false);
+  it("uses the server's capability and current setting without a summary and supports older Usage responses", () => {
+    const config = { settings: DEFAULT_SERVER_SETTINGS, providers: [cursor("ready")] };
+    const legacy = cursorUsageAccess(config);
+    expect(needsCursorKeychainAccess(legacy, cursorPrompt)).toBe(true);
+    expect(needsCursorKeychainAccess(legacy, null)).toBe(false);
+    expect(needsCursorKeychainAccess(cursorUsageAccess(null), cursorPrompt)).toBe(false);
+    const provider = { ...cursor("ready"), cursorKeychainUsageAvailable: true };
+    const available = { ...config, providers: [provider] };
+    expect(needsCursorKeychainAccess(cursorUsageAccess(available), null)).toBe(true);
+    expect(
+      needsCursorKeychainAccess(
+        cursorUsageAccess({
+          ...available,
+          settings: { ...config.settings, cursorKeychainUsageEnabled: true },
+        }),
+        cursorPrompt,
+      ),
+    ).toBe(false);
+    expect(
+      needsCursorKeychainAccess(
+        cursorUsageAccess({
+          ...config,
+          providers: [{ ...cursor("error"), cursorKeychainUsageAvailable: true }],
+        }),
+        cursorPrompt,
+      ),
+    ).toBe(false);
+    expect(
+      needsCursorKeychainAccess(
+        cursorUsageAccess({
+          ...config,
+          providers: [{ ...provider, cursorKeychainUsageAvailable: false }],
+        }),
+        cursorPrompt,
+      ),
+    ).toBe(false);
   });
 
   it("stops offering access once any environment reads the Cursor account", () => {
@@ -283,6 +314,24 @@ describe("needsCursorKeychainAccess", () => {
       cursorKeychainAccessEnvironments([
         off,
         { summary: account, needsCursorKeychainAccess: false },
+      ]),
+    ).toEqual([]);
+    const { readsCursorAccount } = cursorUsageAccess({
+      settings: DEFAULT_SERVER_SETTINGS,
+      providers: [
+        {
+          ...cursor("ready"),
+          usageLimits: {
+            checkedAt: "2026-09-05T12:00:00.000Z",
+            windows: [{ id: "totalPercentUsed", kind: "monthly", label: "Total", usedPercent: 25 }],
+          },
+        },
+      ],
+    });
+    expect(
+      cursorKeychainAccessEnvironments([
+        { ...off, summary: null, readsCursorAccount: false },
+        { summary: null, needsCursorKeychainAccess: false, readsCursorAccount },
       ]),
     ).toEqual([]);
   });

@@ -275,6 +275,8 @@ export const ServerProvider = Schema.Struct({
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   workspaceSnapshots: Schema.optionalKey(Schema.Array(ServerProviderWorkspaceSnapshot)),
   usageLimits: Schema.optional(ServerProviderUsageLimits),
+  /** The server can read Cursor account usage from its macOS Keychain login. */
+  cursorKeychainUsageAvailable: Schema.optionalKey(Schema.Boolean),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   compatibilityAdvisory: Schema.optionalKey(ServerProviderCompatibilityAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),

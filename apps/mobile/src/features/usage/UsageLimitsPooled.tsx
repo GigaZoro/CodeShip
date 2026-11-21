@@ -3,7 +3,7 @@ import {
   usageLimitClockAtom,
 } from "@t3tools/client-runtime/state/usage-progress";
 import { useAtomValue } from "@effect/atom-react";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { EnvironmentId } from "@t3tools/contracts";
 import {
   normalizeProviderAccentColor,
@@ -42,6 +42,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { environmentPresentations } from "../../state/presentation";
+import { useAppForeground } from "../../lib/appState";
 import { relativeTime } from "../../lib/time";
 import { CodexLimitsSignIn } from "./CodexLimitsSignIn";
 import { ProviderHolds } from "./ProviderHolds";
@@ -618,7 +619,10 @@ const accountWorkspacesAtom = usageLimitAccountWorkspacesAtom(
 );
 
 function useUsageLimitNow() {
-  const clock = useAtomValue(limitClockAtom);
+  const clocks = useAtomValue(limitClockAtom);
+  const focused = useIsFocused();
+  const foreground = useAppForeground();
+  const clock = focused && foreground ? clocks.countdown : clocks.resets;
   return useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getSnapshot);
 }
 

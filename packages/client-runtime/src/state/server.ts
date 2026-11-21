@@ -63,6 +63,7 @@ import {
 import type { RpcSession } from "../rpc/session.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 import { recordProviderMcpProblems } from "./providerMcpProblems.ts";
+import { cursorUsageAccess } from "./usage.ts";
 import {
   applyServerConfigProjection,
   reuseUnchanged,
@@ -1373,6 +1374,14 @@ export function createServerEnvironmentAtoms<R, E>(
       Atom.withLabel(`environment-data:server:providers:${environmentId}`),
     ),
   );
+  const cursorUsageAccessAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) => cursorUsageAccess(get(configValueAtom(environmentId)))).pipe(
+      Atom.withEquality<ReturnType<typeof cursorUsageAccess>>(
+        (a, b) => a.keychain === b.keychain && a.readsCursorAccount === b.readsCursorAccount,
+      ),
+      Atom.withLabel(`environment-data:server:cursor-usage-access:${environmentId}`),
+    ),
+  );
   const welcomeStateFamily = Atom.family((environmentId: EnvironmentId) =>
     runtime
       .atom(serverWelcomeStateChanges(environmentId), { initialValue: null })
@@ -1497,6 +1506,7 @@ export function createServerEnvironmentAtoms<R, E>(
     hiddenThreadTagsAtom,
     usageModelFilterAtom,
     providersValueAtom,
+    cursorUsageAccessAtom,
     providerAuthState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:provider:auth-state",
       tag: WS_METHODS.providerAuthSubscribe,

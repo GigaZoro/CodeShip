@@ -45,6 +45,20 @@ export class CursorUsageAccounts extends Context.Service<
   }
 >()("@t3tools/provider-cursor/server/CursorUsageAccounts") {}
 
+export function cursorHistoryCredentials(
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+) {
+  const store = environment["AGENT_CLI_CREDENTIAL_STORE"];
+  if (
+    environment["CURSOR_AUTH_TOKEN"]?.trim() ||
+    environment["CURSOR_API_KEY"]?.trim() ||
+    store === "memory"
+  )
+    return "unavailable";
+  return platform === "darwin" && store !== "file" ? "keychain" : "file";
+}
+
 const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -255,13 +269,8 @@ const make = Effect.gen(function* () {
         platform === "darwin"
           ? path.join(userHome, ".cursor", "auth.json")
           : path.join(cursorHome, platform === "win32" ? "Cursor" : "cursor", "auth.json");
-      const credentialStore = hostEnvironment["AGENT_CLI_CREDENTIAL_STORE"];
-      const loginUnavailable =
-        Boolean(hostEnvironment["CURSOR_AUTH_TOKEN"]?.trim()) ||
-        Boolean(hostEnvironment["CURSOR_API_KEY"]?.trim()) ||
-        credentialStore === "memory";
-      const useKeychain = platform === "darwin" && credentialStore !== "file";
-      if (useKeychain && !loginUnavailable && !keychainUsageEnabled) {
+      const credentials = cursorHistoryCredentials(platform, hostEnvironment);
+      if (credentials === "keychain" && !keychainUsageEnabled) {
         return [
           {
             dir: authPath,
@@ -272,7 +281,7 @@ const make = Effect.gen(function* () {
           },
         ];
       }
-      if (loginUnavailable) {
+      if (credentials === "unavailable") {
         return [
           {
             dir: authPath,
@@ -282,7 +291,7 @@ const make = Effect.gen(function* () {
         ];
       }
       const source = yield* accountSource(
-        useKeychain ? { kind: "keychain" } : authPath,
+        credentials === "keychain" ? { kind: "keychain" } : authPath,
         authPath,
         windowStartMs,
         retentionCutoffMs,

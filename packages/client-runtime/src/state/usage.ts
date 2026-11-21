@@ -1,6 +1,6 @@
 import type {
   EnvironmentId,
-  ServerProvider,
+  ServerConfig,
   UsageModelFilter,
   UsageSummary,
   UsageSummaryInput,
@@ -15,14 +15,47 @@ import type { createServerEnvironmentAtoms } from "./server.ts";
 
 const isEnvironmentRpcUnavailable = Schema.is(EnvironmentRpcUnavailableError);
 
+export function cursorUsageAccess(
+  config: Pick<ServerConfig, "providers" | "settings" | "usageLimitSources"> | null,
+) {
+  const cursor =
+    config?.providers.filter((provider) => provider.driver === "cursor" && provider.enabled) ?? [];
+  const ready = cursor.filter((provider) => provider.status === "ready");
+  const canEnable = config?.settings.cursorKeychainUsageEnabled === false;
+  const reports = [
+    ...cursor,
+    ...(config?.usageLimitSources ?? []).flatMap(({ accounts }) =>
+      accounts.filter(({ driver }) => driver === "cursor"),
+    ),
+  ];
+  return {
+    keychain:
+      canEnable &&
+      ready.some(({ cursorKeychainUsageAvailable }) => cursorKeychainUsageAvailable === true)
+        ? ("available" as const)
+        : canEnable &&
+            ready.some(
+              ({ cursorKeychainUsageAvailable }) => cursorKeychainUsageAvailable === undefined,
+            )
+          ? ("legacy" as const)
+          : ("unavailable" as const),
+    readsCursorAccount: reports.some(
+      ({ usageLimits }) =>
+        usageLimits !== undefined &&
+        usageLimits.unavailable === undefined &&
+        usageLimits.windows.length > 0,
+    ),
+  };
+}
+
 export function needsCursorKeychainAccess(
+  access: ReturnType<typeof cursorUsageAccess>,
   summary: UsageSummary | null,
-  providers: readonly ServerProvider[] | null,
 ): boolean {
   return (
-    summary?.sources.some((source) => source.action === "enableCursorKeychain") === true &&
-    providers?.some((provider) => provider.driver === "cursor" && provider.status === "ready") ===
-      true
+    access.keychain === "available" ||
+    (access.keychain === "legacy" &&
+      summary?.sources.some(({ action }) => action === "enableCursorKeychain") === true)
   );
 }
 
@@ -31,13 +64,19 @@ export function needsCursorKeychainAccess(
  * history from every machine, so the prompt only adds duplicates there.
  */
 export function cursorKeychainAccessEnvironments<
-  E extends { readonly summary: UsageSummary | null; readonly needsCursorKeychainAccess: boolean },
+  E extends {
+    readonly summary: UsageSummary | null;
+    readonly needsCursorKeychainAccess: boolean;
+    readonly readsCursorAccount?: boolean;
+  },
 >(environments: readonly E[]): readonly E[] {
-  const hasCursorAccount = environments.some((environment) =>
-    environment.summary?.sources.some(
-      (source) =>
-        source.fingerprint.provider === "cursor" && source.fingerprint.hostId === "cursor.com",
-    ),
+  const hasCursorAccount = environments.some(
+    (environment) =>
+      environment.readsCursorAccount ||
+      environment.summary?.sources.some(
+        (source) =>
+          source.fingerprint.provider === "cursor" && source.fingerprint.hostId === "cursor.com",
+      ),
   );
   return hasCursorAccount
     ? []

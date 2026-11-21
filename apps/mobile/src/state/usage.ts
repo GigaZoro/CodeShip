@@ -48,6 +48,7 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
       });
       const modelFilter =
         input === null ? undefined : get(serverEnvironment.usageModelFilterAtom(environmentId));
+      const cursor = get(serverEnvironment.cursorUsageAccessAtom(environmentId));
       if (input === null || !access.canReadDiagnostics) {
         statuses.push({
           environmentId,
@@ -56,7 +57,10 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
           ...access,
           modelFilter,
           summary: null,
-          needsCursorKeychainAccess: false,
+          readsCursorAccount: cursor.readsCursorAccount,
+          needsCursorKeychainAccess:
+            presentation.connection.phase === "connected" &&
+            needsCursorKeychainAccess(cursor, null),
         });
         continue;
       }
@@ -76,12 +80,10 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
         canReadDiagnostics: true,
         error: result._tag === "Failure" ? t("This environment could not report usage.") : null,
         summary,
+        readsCursorAccount: cursor.readsCursorAccount,
         needsCursorKeychainAccess:
-          summary?.sources.some((source) => source.action === "enableCursorKeychain") === true &&
-          needsCursorKeychainAccess(
-            summary,
-            get(serverEnvironment.providersValueAtom(environmentId)),
-          ),
+          presentation.connection.phase === "connected" &&
+          needsCursorKeychainAccess(cursor, summary),
       });
     }
     return statuses;

@@ -155,8 +155,11 @@ export function deadlineStore(deadlineMs: number | null): DeadlineStore {
   return store;
 }
 
-/** Usage reads one wall clock, with an extra notification when an account resets mid-minute. */
-export function usageClock(resetTimes: readonly number[] = []): ClockStore<number> {
+/** Usage reads at reset boundaries and, for visible countdowns, each minute. */
+export function usageClock(
+  resetTimes: readonly number[] = [],
+  includeMinutes = true,
+): ClockStore<number> {
   const resets = [...new Set(resetTimes.filter(Number.isFinite))].sort((a, b) => a - b);
   const read = () => {
     const minute = Date.parse(`${minuteTick.getSnapshot()}:00Z`);
@@ -190,7 +193,7 @@ export function usageClock(resetTimes: readonly number[] = []): ClockStore<numbe
     getSnapshot: () => (listeners.size === 0 ? read() : value),
     subscribe: (listener) => {
       if (listeners.size === 0) {
-        releaseMinute = minuteTick.subscribe(publish);
+        if (includeMinutes) releaseMinute = minuteTick.subscribe(publish);
         subscribeToNextReset();
         value = read();
       }

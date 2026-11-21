@@ -299,9 +299,6 @@ export function UsagePage() {
     hiddenProviders,
   );
   const shownHiddenProviders = shown?.hiddenProviders ?? hiddenProviders;
-  const shownCursorAccess = shownHiddenProviders.has("cursor")
-    ? []
-    : cursorKeychainAccessEnvironments(shownEnvironments);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retain the last settled provider footprint across Usage visits
   useEffect(() => {
     if (!settledAnswer) return;
@@ -765,7 +762,7 @@ export function UsagePage() {
                     selectedEnvironments,
                     shownHiddenProviders,
                   )}
-                  cursorAccessEnvironments={shownCursorAccess}
+                  cursorAccessEnvironments={showingKept ? [] : cursorAccessEnvironments}
                   showChatGptSharing={showChatGptSharing}
                   onCursorEnabled={() => {
                     void refresh();
