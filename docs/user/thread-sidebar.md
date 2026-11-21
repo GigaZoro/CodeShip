@@ -89,7 +89,9 @@ set to resume on its own is not listed.
 Press `Mod+Shift+U`, or choose **Next thread that needs you** in the command palette, to open each
 waiting thread in turn. On mobile, the **N more need you** button above the composer does the same.
 The count also shows on the **Threads** icon in the side rail, the desktop dock or taskbar icon,
-and the mobile app icon.
+and the mobile app icon. On web and desktop the window or tab title starts with it, like
+`(3) Fix login - T3.CodeShip`, and drops it at zero. It follows the app icon count, so it is
+absent when **Desktop notifications** are off.
 
 On web and desktop, other rail icons carry a count too: **Pull requests** (open pull requests with
 failing checks, conflicts or requested changes), **Scheduled tasks** (latest run failed),
@@ -170,6 +172,11 @@ starts a new thread for each run marks only the thread from its latest run.
 
 Pin a thread from its menu to keep it above your active work. The command palette offers the same
 actions for the open thread: Pin or Unpin, Settle or Un-settle, Snooze, Rename, and Archive.
+
+On web and desktop, the chat header has a pin button for the open thread; hover a pinned thread's
+button to see it turn into unpin. Hover or focus an unpinned sidebar row to pin it from the row
+itself, and select several threads to **Pin (N)** them together in the order you selected them. On
+mobile, the thread screen's header has Pin and Unpin too.
 
 On web and desktop, pinned threads list one line each under a **Pinned** header with their count,
 like scheduled tasks. Click the header to collapse or expand the section; the sidebar remembers
@@ -729,6 +736,9 @@ answer its questions.
 ## Snooze until later
 
 To change the choices in the snooze menu, open **Settings → Threads → Snooze → Edit**.
+
+To bring back the thread you archived last, press `mod+alt+shift+e` or choose **Reopen last archived thread** in the command palette on web and desktop. It
+unarchives the most recently archived thread on any connected machine and opens it.
 
 Archived threads are not a Settings page. Open them from **Archived threads** in the thread list's filter menu, **Open archived threads** in the command palette, or **View archived** in **Settings → Threads → Behavior**.
 Each option is a duration, such as 3 hours, or a time on a day, such as 9:00 PM
