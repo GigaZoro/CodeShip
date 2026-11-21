@@ -1,3 +1,7 @@
+## 2026-11-24 — check:changed on Windows no longer waits two seconds after each git call
+
+- Maintainers: on Windows, `vp run check:changed` started PowerShell after each of its git calls to end anything the call left running, about two seconds a call and half a minute a run. git's calls leave nothing the run should end, so they now skip that step; the checks it runs still end what they start. No change to the app.
+
 ## 2026-11-24 — A landing's check no longer fails when another check looks at its place in line
 
 - Maintainers: on Windows, `vp run check:changed` in a landing on main could fail with EPERM as it took a free check slot, when another check:changed run was looking at the file that marks the landing's wait. That file now stays in place, like the slot files. No change to the app.
