@@ -31,6 +31,8 @@ function git(cwd, args, { env, config = [], allowFailure = false, timeoutMs } = 
     encoding: "utf8",
     env: { ...process.env, ...REAL_HISTORY_ENV, ...env },
     timeout: timeoutMs,
+    // Default 1 MiB: another worktree's branch can change tens of thousands of files, and an overflow aborts the landing.
+    maxBuffer: 1024 * 1024 * 1024,
     windowsHide: true,
   });
   // A call that ran out of time is a failed one; like any failed push, it may still have changed origin.

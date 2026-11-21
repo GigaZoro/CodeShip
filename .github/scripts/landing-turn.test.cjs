@@ -472,6 +472,14 @@ test("a landing lists other worktrees with unmerged work on the same files, and 
     };
     add("overlapping", "shared.txt");
     add("unrelated", "other.txt");
+    // A branch with more changed file names than spawnSync's default 1 MiB buffer holds.
+    const bulk = path.join(root, "bulk");
+    git(mine, "worktree", "add", "-q", "-b", "bulk", bulk, base);
+    fs.mkdirSync(path.join(bulk, "d"));
+    for (let i = 0; i < 6000; i++)
+      fs.writeFileSync(path.join(bulk, "d", `${"x".repeat(200)}${i}`), "");
+    git(bulk, "add", ".");
+    git(bulk, "commit", "-qm", "bulk");
     const found = overlappingWorktrees({ cwd: mine, base });
     assert.deepEqual(
       found.map(({ branch, files }) => ({ branch, files })),
