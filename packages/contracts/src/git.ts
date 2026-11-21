@@ -371,7 +371,8 @@ export const VcsPullResult = Schema.Struct({
 export type VcsPullResult = typeof VcsPullResult.Type;
 
 // Git stderr can echo credentials from argv and remote URLs, so the reason is a
-// fixed value and Git lines in `diagnostics` have URL credentials stripped.
+// fixed value, remote Git lines in `diagnostics` have URL credentials stripped, and
+// an unclassified local failure keeps only the shape of its lines (values replaced).
 // Newer, unknown reasons decode as absent through GitCommandError.
 export const GitCommandFailureReason = Schema.Literals([
   "authentication_failed",
@@ -400,7 +401,8 @@ export class GitCommandError extends Schema.TaggedError<GitCommandError>()("GitC
   outputLength: Schema.optional(Schema.Number),
   reason: ForwardCompatibleOptional(GitCommandFailureReason),
   detail: Schema.String,
-  // Phase timings and Git's own error lines, with credentials stripped from URLs.
+  // Phase timings and Git's own error lines: URL credentials stripped for remote
+  // commands; quoted values, URLs and paths replaced for unclassified local ones.
   diagnostics: Schema.optional(Schema.String),
   cause: Schema.optional(Schema.Defect()),
 }) {

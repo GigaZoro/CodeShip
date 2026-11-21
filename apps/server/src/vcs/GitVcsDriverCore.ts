@@ -464,7 +464,7 @@ const GIT_FAILURE_REASON_PATTERNS: ReadonlyArray<readonly [RegExp, GitCommandFai
   // Ambiguous revision/path and pathspec failures can name files, so omit them.
   // Anchor to a diagnostic line to avoid matching quoted paths in other errors.
   [
-    /^fatal: (?:invalid reference: |not a valid object name|needed a single revision|bad revision |'.+' is not a commit and a branch '.+' cannot be created from it)/im,
+    /^fatal: (?:invalid reference: |not a valid object name|not a valid branch point: |needed a single revision|bad revision |'.+' is not a commit and a branch '.+' cannot be created from it)/im,
     "ref_not_found",
   ],
   // `[remote rejected]` is only printed for a push. The remote's explanation
@@ -615,22 +615,56 @@ export function remoteFailureText(error: GitCommandError): string {
 
 // Git's own diagnostics; credential helpers and the remote (`remote:`) can print anything.
 const GIT_OWN_DIAGNOSTIC_LINE = /^(?:fatal|error|warning): /;
-const MAX_FETCH_DIAGNOSTIC_LINES = 3;
-const MAX_FETCH_DIAGNOSTIC_LINE_LENGTH = 300;
+const GIT_OWN_ERROR_LINE = /^(?:fatal|error): /;
+const MAX_DIAGNOSTIC_LINES = 3;
+const MAX_DIAGNOSTIC_LINE_LENGTH = 300;
 
 // Git strips passwords from the URLs it prints, but not tokens in user names or query strings.
 function withoutUrlCredentials(line: string): string {
   return line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@'"]*@)?([^\s?#'"]*)[^\s'"]*/gi, "$1$2");
 }
 
-/** The last lines Git itself printed, with URL credentials stripped, for a failure message. */
-export function gitErrorLines(stderr: string): string {
+// Git quotes as 'x', "x", `x' or `x`, echoing argv too. A quote opens a value only after a
+// non-word character, so "can't" opens none.
+const GIT_QUOTED_VALUE = /(?<!\w)(?:(['"])[^\n]*?\1|`[^\n]*?[`'])(?!\w)/g;
+const GIT_URL = /\b[a-z][a-z0-9+.-]*:\/\/[^\s'"]*/gi;
+const GIT_ABSOLUTE_PATH = /(?<![\w.~-])(?:[a-z]:[\\/]|\\\\|\/)[^\s'"]*/gi;
+
+// Quoted values, URLs and absolute paths name refs, files and credentials, so only the shape stays.
+function withoutValues(line: string): string {
+  return line
+    .replace(GIT_QUOTED_VALUE, (value, quote?: string) =>
+      quote === undefined ? `\`…${value.at(-1)}` : `${quote}…${quote}`,
+    )
+    .replace(GIT_URL, "…")
+    .replace(GIT_ABSOLUTE_PATH, "…");
+}
+
+function lastGitLines(stderr: string, ownLine: RegExp, redact: (line: string) => string): string {
   return stderr
     .split(/\r?\n/)
-    .filter((line) => GIT_OWN_DIAGNOSTIC_LINE.test(line))
-    .slice(-MAX_FETCH_DIAGNOSTIC_LINES)
-    .map((line) => withoutUrlCredentials(line).slice(0, MAX_FETCH_DIAGNOSTIC_LINE_LENGTH))
+    .filter((line) => ownLine.test(line))
+    .slice(-MAX_DIAGNOSTIC_LINES)
+    .map((line) => redact(line).slice(0, MAX_DIAGNOSTIC_LINE_LENGTH))
     .join(" | ");
+}
+
+/** The last lines Git itself printed, with URL credentials stripped, for a failure message. */
+export function gitErrorLines(stderr: string): string {
+  return lastGitLines(stderr, GIT_OWN_DIAGNOSTIC_LINE, withoutUrlCredentials);
+}
+
+/**
+ * A local failure's reason, which says all it safely can, or when no reason covers it the shape
+ * of Git's own error lines, so it can still be traced.
+ */
+function reasonOrDiagnostics(
+  reason: GitCommandFailureReason | null,
+  stderr: string,
+): { readonly reason?: GitCommandFailureReason; readonly diagnostics?: string } {
+  if (reason !== null) return { reason };
+  const lines = lastGitLines(stderr, GIT_OWN_ERROR_LINE, withoutValues);
+  return lines === "" ? {} : { diagnostics: lines };
 }
 
 const formatSeconds = (ms: number) => `${(Math.max(0, ms) / 1000).toFixed(1)} s`;
@@ -650,8 +684,8 @@ function makeRemoteTimeline() {
     onStderrLine: (line) =>
       Effect.sync(() => {
         if (!GIT_OWN_DIAGNOSTIC_LINE.test(line)) return;
-        gitLines.push(withoutUrlCredentials(line).slice(0, MAX_FETCH_DIAGNOSTIC_LINE_LENGTH));
-        if (gitLines.length > MAX_FETCH_DIAGNOSTIC_LINES) gitLines.shift();
+        gitLines.push(withoutUrlCredentials(line).slice(0, MAX_DIAGNOSTIC_LINE_LENGTH));
+        if (gitLines.length > MAX_DIAGNOSTIC_LINES) gitLines.shift();
       }),
     onCredentialHelperStarted: (helper) =>
       Clock.currentTimeMillis.pipe(
@@ -1230,7 +1264,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           const reason = classifyGitFailure(stderr.text);
           return yield* new GitCommandError({
             ...gitCommandContext(commandInput),
-            ...(reason === null ? {} : { reason }),
+            ...reasonOrDiagnostics(reason, stderr.text),
             detail: gitFailureDetail(reason),
             exitCode,
             stdoutLength: stdout.text.length,
@@ -1324,7 +1358,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         return Effect.fail(
           new GitCommandError({
             ...gitCommandContext({ operation, cwd, args }),
-            ...(reason === null ? {} : { reason }),
+            ...reasonOrDiagnostics(reason, result.stderr),
             detail: options.fallbackErrorDetail ?? gitFailureDetail(reason),
             ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
             stdoutLength: result.stdout.length,
@@ -1343,7 +1377,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const reason = classifyGitFailure(result.stderr);
     return new GitCommandError({
       ...gitCommandContext({ operation, cwd, args }),
-      ...(reason === null ? {} : { reason }),
+      ...reasonOrDiagnostics(reason, result.stderr),
       detail: gitFailureDetail(reason),
       ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
       stdoutLength: result.stdout.length,

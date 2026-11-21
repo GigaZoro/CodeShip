@@ -1520,17 +1520,26 @@ it.layer(layerTest)("Git command errors", (it) => {
   );
 
   it.effect.each([
-    { action: "worktree add", detail: "git worktree add failed" },
-    { action: "worktree add -b", detail: "git worktree add failed" },
-    { action: "switch", detail: "git checkout failed" },
+    { action: "worktree add", refName: "private/deleted-base", detail: "git worktree add failed" },
+    {
+      action: "worktree add -b",
+      refName: "private/deleted-base",
+      detail: "git worktree add failed",
+    },
+    // A commit another repository has, as a delegate's parent commit can be.
+    {
+      action: "worktree add -b",
+      refName: "0123456789abcdef0123456789abcdef01234567",
+      detail: "git worktree add failed",
+    },
+    { action: "switch", refName: "private/deleted-base", detail: "git checkout failed" },
   ])(
-    "reports a missing ref during $action with stable, redacted diagnostics",
-    ({ action, detail }) =>
+    "reports a missing ref $refName during $action with stable, redacted diagnostics",
+    ({ action, refName, detail }) =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
         yield* initRepoWithCommit(cwd);
         const path = yield* Path.Path;
-        const refName = "private/deleted-base";
         const locales: Array<string | undefined> = [];
         const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
         const spawner = ChildProcessSpawner.make((command) => {
@@ -1601,6 +1610,41 @@ it.layer(layerTest)("Git command errors", (it) => {
         .pipe(Effect.flip);
 
       assert.notProperty(error, "reason");
+    }),
+  );
+
+  it.effect.each([
+    {
+      label: "a branch under an existing branch",
+      args: ["branch", "private-base/child"],
+      shape: "fatal: cannot lock ref '…': '…' exists; cannot create '…'",
+    },
+    {
+      label: "a missing patch file",
+      args: ["apply", "<cwd>/private-base.patch"],
+      shape: "error: can't open patch '…': No such file or directory",
+    },
+  ])("keeps only the shape of Git's error lines for $label", ({ args, shape }) =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      yield* initRepoWithCommit(cwd);
+      yield* git(cwd, ["branch", "private-base"]);
+
+      const error = yield* driver
+        .execute({
+          operation: "GitVcsDriver.test.unclassifiedFailure",
+          cwd,
+          args: args.map((arg) => arg.replace("<cwd>/", `${cwd}${path.sep}`)),
+          env: { LC_ALL: "C" },
+        })
+        .pipe(Effect.flip);
+
+      assert.notProperty(error, "reason");
+      assert.include(error.message, shape);
+      assert.notInclude(error.message, "private-base");
+      assert.notInclude(yield* encodeGitCommandError(error), "private-base");
     }),
   );
 
