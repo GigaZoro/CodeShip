@@ -1,3 +1,7 @@
+## 2026-11-21 — Landing flags overlapping local work
+
+- Before a landing rebases and checks, it lists other local worktrees whose unmerged branches change the same files, with the branch, worktree path and shared files, so parallel designs get reconciled before they collide.
+
 ## 2026-11-21 — Parallel worktree launches on Windows no longer fail on a busy Git config
 
 - On Windows, starting several worktrees in one repository at once could fail with "unknown error occurred while reading the configuration files" when one Git command read `.git/config` while another replaced it. Git now repeats a command that died at that point, since it had not done anything yet.

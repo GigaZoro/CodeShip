@@ -6,6 +6,7 @@ const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const { REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
+const path = require("node:path");
 const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs");
 
 const LEASE_REF = "refs/heads/landing-lease/main";
@@ -225,6 +226,55 @@ function rebaseOnto(cwd, base) {
 }
 
 /**
+ * Other local worktrees whose branch is ahead of `base` and changes a file HEAD changes, with the shared files.
+ * Agents search main before building something, so work parked on another worktree's branch stays invisible until
+ * two designs collide at landing.
+ */
+function overlappingWorktrees({ cwd, base }) {
+  const changed = (ref) =>
+    git(cwd, ["diff", "--name-only", `${base}...${ref}`], { allowFailure: true })
+      .stdout.split("\n")
+      .filter(Boolean);
+  const mine = new Set(changed("HEAD"));
+  if (mine.size === 0) return [];
+  const self = git(cwd, ["rev-parse", "--show-toplevel"]).stdout;
+  const overlaps = [];
+  for (const block of git(cwd, ["worktree", "list", "--porcelain"]).stdout.split("\n\n")) {
+    const fields = Object.fromEntries(
+      block.split("\n").map((line) => {
+        const space = line.indexOf(" ");
+        return space < 0 ? [line, ""] : [line.slice(0, space), line.slice(space + 1)];
+      }),
+    );
+    if (!fields.worktree || fields.bare !== undefined || fields.prunable !== undefined) continue;
+    if (path.resolve(fields.worktree) === path.resolve(self)) continue;
+    if (!fields.HEAD) continue;
+    const shared = changed(fields.HEAD).filter((file) => mine.has(file));
+    if (shared.length > 0) {
+      overlaps.push({
+        branch:
+          fields.branch?.replace(/^refs\/heads\//, "") ?? `(detached ${fields.HEAD.slice(0, 10)})`,
+        worktree: fields.worktree,
+        files: shared,
+      });
+    }
+  }
+  return overlaps;
+}
+
+/** The overlap listing a lander reads before the rebase and checks, so it can reconcile first. */
+function formatOverlaps(overlaps) {
+  if (overlaps.length === 0) return "";
+  const lines = [
+    `Other local worktrees have unmerged work on files this change also changes (a report, not a refusal):`,
+  ];
+  for (const { branch, worktree, files } of overlaps) {
+    lines.push(`- ${branch} (${worktree})`, ...files.map((file) => `    ${file}`));
+  }
+  return lines.join("\n");
+}
+
+/**
  * Lands HEAD on main under the turn: rebases onto main, runs `check` once and pushes the checked tree.
  * `check(turn, base, budgetSeconds)` returns true when the checks passed against `base`, the commit main is at, which
  * the push gate requires as their base; `budgetSeconds` is what the lease leaves its longest step.
@@ -235,6 +285,7 @@ function land({
   check,
   branch = "main",
   turnClock = () => performance.now(),
+  report = (text) => console.error(text),
   ...rest
 }) {
   // check:changed passes for the working tree, untracked files included, but the push carries HEAD alone,
@@ -264,6 +315,8 @@ function land({
     ]);
     const base = git(cwd, ["rev-parse", fetched]).stdout;
     git(cwd, ["update-ref", "-d", fetched]);
+    const overlap = formatOverlaps(overlappingWorktrees({ cwd, base }));
+    if (overlap) report(overlap);
     const contained = git(cwd, ["merge-base", "--is-ancestor", base, "HEAD"], {
       allowFailure: true,
     }).ok;
@@ -345,4 +398,5 @@ module.exports = {
   withTurn,
   verifyPush,
   land,
+  overlappingWorktrees,
 };

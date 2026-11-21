@@ -13,6 +13,7 @@ const {
   checkBudgetSeconds,
   acquire,
   land,
+  overlappingWorktrees,
   release,
   tryAcquire,
   verifyPush,
@@ -457,6 +458,37 @@ test("a rebase that conflicts is aborted, and a worktree in a stopped rebase is 
     const stopped = land({ cwd: lander, remote: origin, check: () => assert.fail("checked") });
     assert.equal(stopped.status, "rebase-in-progress");
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+
+test("a landing lists other worktrees with unmerged work on the same files, and none that share nothing", () => {
+  const { root, git, clone, commit } = setup();
+  try {
+    const mine = clone("mine");
+    commit(mine, "shared.txt");
+    const base = git(mine, "rev-parse", "origin/main");
+    const add = (name, file) => {
+      const dir = path.join(root, name);
+      git(mine, "worktree", "add", "-q", "-b", name, dir, base);
+      commit(dir, file);
+    };
+    add("overlapping", "shared.txt");
+    add("unrelated", "other.txt");
+    const found = overlappingWorktrees({ cwd: mine, base });
+    assert.deepEqual(
+      found.map(({ branch, files }) => ({ branch, files })),
+      [{ branch: "overlapping", files: ["shared.txt"] }],
+    );
+    assert.equal(found[0].worktree, path.join(root, "overlapping"));
+
+    const reports = [];
+    const result = land({
+      cwd: mine,
+      remote: "origin",
+      check: () => true,
+      report: (text) => reports.push(text),
+    });
+    assert.equal(result.status, "landed");
+    assert.match(reports.join("\n"), /overlapping[\s\S]*shared\.txt/);
+    assert.doesNotMatch(reports.join("\n"), /unrelated/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
