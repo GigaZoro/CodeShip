@@ -1,4 +1,7 @@
-import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
+import {
+  connectionCanRetry,
+  type EnvironmentConnectionPhase,
+} from "@t3tools/client-runtime/connection";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useState } from "react";
 
@@ -18,11 +21,8 @@ export function useReconnectMachines(
   const retry = useAtomCommand(environmentCatalog.retryNow, "environment retry");
   const [refreshing, setRefreshing] = useState(false);
   const reconnect = async () => {
-    const targets = environments.filter(
-      (environment) =>
-        environment.connectionState !== "connected" &&
-        environment.connectionState !== "available" &&
-        environment.connectionState !== "unsupported",
+    const targets = environments.filter((environment) =>
+      connectionCanRetry(environment.connectionState),
     );
     if (targets.length === 0) return;
     setRefreshing(true);

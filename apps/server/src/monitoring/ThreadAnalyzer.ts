@@ -741,7 +741,8 @@ function helperLaneKind(subagent: AnalysisSubagent): MonitoringLaneKind {
 export function analyzeThread(input: ThreadAnalysisInput): MonitoringThreadDetail {
   const { thread } = input;
   const createdAt = epoch(thread.createdAt) ?? 0;
-  const settledAt = Math.max(createdAt, epoch(thread.settledAt) ?? createdAt);
+  const settleStamp = epoch(thread.settledAt) ?? createdAt;
+  const settledAt = Math.max(createdAt, settleStamp);
   const clamp = (value: number) => Math.min(settledAt, Math.max(createdAt, value));
 
   const runs = [...input.runs].toSorted((left, right) => left.ordinal - right.ordinal);
@@ -1369,7 +1370,8 @@ export function analyzeThread(input: ThreadAnalysisInput): MonitoringThreadDetai
     models,
     helperModels: [...helperModels],
     createdAt: iso(createdAt),
-    settledAt: iso(settledAt),
+    // The stamp itself, even one before creation: the window, the days and the list order read it.
+    settledAt: iso(settleStamp),
     lifetimeMs: settledAt - createdAt,
     activeMs,
     time,

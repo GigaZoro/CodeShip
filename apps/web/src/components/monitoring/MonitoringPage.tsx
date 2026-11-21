@@ -10,33 +10,46 @@ import {
   breakdownByKind,
   breakdownByModel,
   breakdownByProject,
+  chatFailures,
   dailyTrend,
-  dayKey,
-  filterChats,
-  mainModel,
+  failureRetry,
+  filterGroups,
+  missingEnvironments,
   monitoringChatKey,
-  monitoringWindowStart,
-  outliers,
+  monitoringFacets,
+  monitoringWindow,
   phaseTotals,
   projectKey,
   rankFindings,
   sumTimeBuckets,
   totalsOf,
+  unanalyzedCounts,
+  unreadableEnvironmentText,
   type MonitoringChat,
+  type MonitoringChatOrder,
+  type MonitoringChatsRequest,
+  type MonitoringFilters as ChatFilters,
+  type MonitoringOverviewView,
+  type MonitoringRetry,
+  type MonitoringWindow,
+  type MissingEnvironments,
 } from "@t3tools/client-runtime/monitoring";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
-import { enumerateDays, formatPercent, formatUsd } from "@t3tools/shared/usageFormat";
+import { formatPercent, formatUsd } from "@t3tools/shared/usageFormat";
 import { CircleAlertIcon, InfoIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
 import { isElectron } from "../../env";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { useProjects } from "../../state/entities";
-import { refreshMonitoringOverview, useMonitoringOverview } from "../../state/monitoring";
-import { Alert, AlertAction, AlertDescription } from "../ui/alert";
+import {
+  refreshMonitoring,
+  useMonitoringChats,
+  useMonitoringOverview,
+} from "../../state/monitoring";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
-import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { ScrollArea } from "../ui/scroll-area";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { SidebarInset } from "../ui/sidebar";
@@ -45,11 +58,16 @@ import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
-import { MonitoringChatList } from "./MonitoringChatList";
+import {
+  MissingEnvironmentNotes,
+  MONITORING_PAGE_SIZE,
+  MonitoringChatList,
+  RetryButton,
+} from "./MonitoringChatList";
 import { MonitoringFindingRanking } from "./MonitoringFindings";
-import { MonitoringKpi, MonitoringSection } from "./MonitoringSection";
+import { MonitoringKpi, MonitoringRefreshButton, MonitoringSection } from "./MonitoringSection";
 import { MonitoringBreakdownTable, MonitoringPhaseTable } from "./MonitoringTables";
-import { MonitoringThreadDeepDive } from "./MonitoringThreadDetail";
+import { MonitoringThreadDeepDive, MonitoringThreadRefresh } from "./MonitoringThreadDetail";
 import { MonitoringTimeBar } from "./MonitoringTimeBar";
 import { MonitoringTrendChart } from "./MonitoringTrendChart";
 import { KIND_LABEL } from "@t3tools/client-runtime/monitoring-text";
@@ -74,14 +92,68 @@ interface Filters {
 
 const NO_FILTERS: Filters = { project: null, kind: null, model: null, finding: null };
 
+const FIRST_PAGE: MonitoringChatOrder = {
+  sort: "settledAt",
+  direction: "desc",
+  limit: MONITORING_PAGE_SIZE,
+};
+
+const OUTLIERS = [
+  {
+    label: msg("Slowest"),
+    sort: "lifetimeMs",
+    score: (chat: MonitoringChat) => chat.summary.lifetimeMs,
+    value: (chat: MonitoringChat) => formatDuration(chat.summary.lifetimeMs),
+  },
+  {
+    label: msg("Most expensive"),
+    sort: "costUsd",
+    score: (chat: MonitoringChat) => chat.summary.costUsd,
+    value: (chat: MonitoringChat) => formatUsd(chat.summary.costUsd),
+  },
+  {
+    label: msg("Most failures"),
+    sort: "failures",
+    score: (chat: MonitoringChat) => chatFailures(chat.summary),
+    value: (chat: MonitoringChat) => String(chatFailures(chat.summary)),
+  },
+] as const;
+const OUTLIER_COUNT = 3;
+
+/** The chat lists the overview shows: the paged list and the three outlier lists. */
+function chatRequests(period: MonitoringWindow, filters: Filters, listOrder: MonitoringChatOrder) {
+  const scope: ChatFilters = {
+    projectKey: filters.project,
+    kind: filters.kind,
+    model: filters.model,
+  };
+  const bounds = { since: period.since, until: period.until };
+  return {
+    list: {
+      window: bounds,
+      filters: { ...scope, findingCode: filters.finding },
+      order: listOrder,
+      pageSize: MONITORING_PAGE_SIZE,
+    } satisfies MonitoringChatsRequest,
+    outliers: OUTLIERS.map((outlier): MonitoringChatsRequest => ({
+      window: bounds,
+      filters: scope,
+      order: { sort: outlier.sort, direction: "desc", limit: OUTLIER_COUNT },
+      pageSize: OUTLIER_COUNT,
+    })),
+  };
+}
+
 export function MonitoringPage() {
   const search = useSearch({ from: "/_chat/monitoring" });
-  const [days, setDays] = useState<(typeof WINDOW_OPTIONS)[number]["days"]>(30);
-  // Read once so the query key stays put until the person changes the window.
-  const [now] = useState(() => Date.now());
+  // The clock is read once per choice: a new value on every render would change the query key.
+  const [windowChoice, setWindowChoice] = useState(() => ({ days: 30, now: Date.now() }));
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
-  const since = monitoringWindowStart(days, now);
-  const overview = useMonitoringOverview({ since });
+  const [listOrder, setListOrder] = useState(FIRST_PAGE);
+  const period = monitoringWindow(windowChoice.days, windowChoice.now);
+  const overviewInput = { days: period.days, until: period.until };
+  const overview = useMonitoringOverview(overviewInput);
+  const requests = chatRequests(period, filters, listOrder);
   const projects = useProjects();
 
   const projectTitles = new Map(
@@ -99,12 +171,27 @@ export function MonitoringPage() {
         }
       : null;
 
-  const refresh = () =>
-    refreshMonitoringOverview(
-      overview.environments.map((environment) => environment.environmentId),
-      { since },
-    );
+  const refresh = () => {
+    const now = Date.now();
+    const today = monitoringWindow(windowChoice.days, now);
+    if (today.until === period.until) {
+      refreshMonitoring({ overview: overviewInput, chats: [requests.list, ...requests.outliers] });
+      return;
+    }
+    // A period left open past midnight moves to today. Its queries are new and load on their own,
+    // so the refresh only reconnects environments that are down.
+    setWindowChoice({ days: windowChoice.days, now });
+    refreshMonitoring({
+      overview: { days: today.days, until: today.until },
+      chats: [],
+    });
+  };
   const refreshing = overview.environments.some((environment) => environment.isPending);
+  // A new period or scope starts the list from its first page again.
+  const changeFilters = (next: Filters) => {
+    setFilters(next);
+    setListOrder({ ...listOrder, limit: MONITORING_PAGE_SIZE });
+  };
 
   return (
     <SidebarInset
@@ -122,10 +209,13 @@ export function MonitoringPage() {
           <ToggleGroup
             aria-label={t("Monitoring period")}
             variant="segmented"
-            value={[String(days)]}
+            value={[String(windowChoice.days)]}
             onValueChange={(next) => {
               const option = WINDOW_OPTIONS.find((entry) => String(entry.days) === next[0]);
-              if (option) setDays(option.days);
+              if (option) {
+                setWindowChoice({ days: option.days, now: Date.now() });
+                setListOrder({ ...listOrder, limit: MONITORING_PAGE_SIZE });
+              }
             }}
           >
             {WINDOW_OPTIONS.map((option) => (
@@ -134,16 +224,15 @@ export function MonitoringPage() {
               </Toggle>
             ))}
           </ToggleGroup>
-          <Button
-            onClick={refresh}
-            aria-label={t("Refresh monitoring")}
-            aria-busy={refreshing}
-            disabled={refreshing}
-            size="icon-sm"
-            variant="ghost"
-          >
-            <RefreshIcon size="sm" refreshing={refreshing} />
-          </Button>
+          {deepDive ? (
+            <MonitoringThreadRefresh
+              key={`${deepDive.environmentId}:${deepDive.threadId}`}
+              environmentId={deepDive.environmentId}
+              threadId={deepDive.threadId}
+            />
+          ) : (
+            <MonitoringRefreshButton refreshing={refreshing} onRefresh={refresh} />
+          )}
         </div>
       </WorkspacePageHeader>
       <ScrollArea className="min-h-0 flex-1">
@@ -157,12 +246,14 @@ export function MonitoringPage() {
           ) : (
             <MonitoringOverview
               overview={overview}
-              days={days}
-              now={now}
+              period={period}
               filters={filters}
-              onFiltersChange={setFilters}
+              onFiltersChange={changeFilters}
+              requests={requests}
+              onListOrderChange={setListOrder}
               projectTitleOfKey={projectTitleOfKey}
               projectTitleOf={projectTitleOf}
+              retry={failureRetry(overview)}
               onRetry={refresh}
             />
           )}
@@ -174,21 +265,25 @@ export function MonitoringPage() {
 
 function MonitoringOverview({
   overview,
-  days,
-  now,
+  period,
   filters,
   onFiltersChange,
+  requests,
+  onListOrderChange,
   projectTitleOfKey,
   projectTitleOf,
+  retry,
   onRetry,
 }: {
   readonly overview: ReturnType<typeof useMonitoringOverview>;
-  readonly days: number;
-  readonly now: number;
+  readonly period: MonitoringWindow;
   readonly filters: Filters;
   readonly onFiltersChange: (filters: Filters) => void;
+  readonly requests: ReturnType<typeof chatRequests>;
+  readonly onListOrderChange: (order: MonitoringChatOrder) => void;
   readonly projectTitleOfKey: (key: string) => string;
   readonly projectTitleOf: (chat: MonitoringChat) => string;
+  readonly retry: MonitoringRetry;
   readonly onRetry: () => void;
 }) {
   if (overview.environments.length === 0) {
@@ -207,109 +302,97 @@ function MonitoringOverview({
     return (
       <Alert variant="error">
         <CircleAlertIcon />
+        <AlertTitle>{t("Could not load monitoring")}</AlertTitle>
         <AlertDescription>
-          {t("Could not load monitoring: {error}", {
-            error: overview.environments[0]!.error ?? "",
-          })}
+          <ul className="flex flex-col gap-1">
+            {overview.unreadable.map((environment) => (
+              <li key={environment.environmentId} className="break-words">
+                {unreadableEnvironmentText(environment)}
+              </li>
+            ))}
+          </ul>
         </AlertDescription>
-        <AlertAction>
-          <Button size="xs" variant="outline" onClick={onRetry}>
-            {t("Retry")}
-          </Button>
-        </AlertAction>
+        {retry === "unavailable" ? null : (
+          <AlertAction>
+            <RetryButton retry={retry} onRetry={onRetry} />
+          </AlertAction>
+        )}
       </Alert>
     );
   }
+  const missingNotices = (
+    <MissingEnvironmentNotes
+      missing={missingEnvironments(overview)}
+      retry={retry}
+      onRetry={onRetry}
+    />
+  );
   if (overview.isLoading) {
     return (
-      <div className="flex flex-col gap-4" aria-busy>
-        <Skeleton className="h-20 w-full" />
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-64 w-full" />
+      <div className="flex flex-col gap-4">
+        {missingNotices}
+        <div className="flex flex-col gap-4" aria-busy>
+          <Skeleton className="h-20 w-full" />
+          <Skeleton className="h-32 w-full" />
+          <Skeleton className="h-64 w-full" />
+        </div>
       </div>
     );
   }
 
-  const scoped = filterChats(overview.chats, {
+  const scoped = filterGroups(overview.groups, {
     projectKey: filters.project,
     kind: filters.kind,
     model: filters.model,
   });
-  const listed = filterChats(scoped, { findingCode: filters.finding });
   const totals = totalsOf(scoped);
   const buckets = sumTimeBuckets(scoped);
   const ranks = rankFindings(scoped);
   const phases = phaseTotals(scoped);
-  const lastDay = dayKey(new Date(now).toISOString());
-  const trend = dailyTrend(scoped, {
-    days: enumerateDays(dayKey(monitoringWindowStart(days, now)), lastDay),
-  });
-  const top = outliers(scoped, 3);
-  const failedEnvironments = overview.environments.filter((environment) => environment.error);
+  const trend = dailyTrend(scoped, { days: period.days });
   const filtered = filters.project !== null || filters.kind !== null || filters.model !== null;
+  const unanalyzed = unanalyzedCounts(overview.unanalyzed, filters.project);
 
   return (
     <div className="flex flex-col gap-8">
-      {failedEnvironments.length > 0 ? (
-        <Alert variant="warning">
-          <CircleAlertIcon />
-          <AlertDescription>
-            {t("Some environments could not be read, so their chats are missing: {names}", {
-              names: failedEnvironments.map((environment) => environment.label).join(", "),
-            })}
-          </AlertDescription>
-          <AlertAction>
-            <Button size="xs" variant="outline" onClick={onRetry}>
-              {t("Retry")}
-            </Button>
-          </AlertAction>
-        </Alert>
-      ) : null}
-      {overview.pendingAnalysis > 0 ? (
+      {missingNotices}
+      {unanalyzed.pending > 0 ? (
         <Alert variant="info">
           <InfoIcon />
           <AlertDescription>
             {tn(
-              overview.pendingAnalysis,
+              unanalyzed.pending,
               "{count} settled chat is still being analyzed.",
               "{count} settled chats are still being analyzed.",
             )}
           </AlertDescription>
         </Alert>
       ) : null}
-      {overview.failedAnalysis > 0 ? (
+      {unanalyzed.failed > 0 ? (
         <Alert variant="warning">
           <CircleAlertIcon />
           <AlertDescription>
             {tn(
-              overview.failedAnalysis,
+              unanalyzed.failed,
               "{count} chat could not be analyzed. It is tried again every 30 minutes.",
               "{count} chats could not be analyzed. They are tried again every 30 minutes.",
             )}
           </AlertDescription>
         </Alert>
       ) : null}
-      {overview.truncated ? (
-        <Alert variant="info">
-          <InfoIcon />
-          <AlertDescription>
-            {t("More chats settled in this period than can be shown. These are the newest.")}
-          </AlertDescription>
-        </Alert>
-      ) : null}
 
       <MonitoringFilters
-        chats={overview.chats}
+        overview={overview}
         filters={filters}
         onChange={onFiltersChange}
         projectTitleOfKey={projectTitleOfKey}
       />
 
-      {scoped.length === 0 ? (
+      {scoped.length === 0 && overview.complete ? (
         <Empty>
           <EmptyHeader>
             <EmptyTitle>
-              {filtered ? t("No chats match these filters") : t("No settled chats in this period")}
+              {filtered ? t("No chats match these filters") : t("No analyzed chats in this period")}
             </EmptyTitle>
             <EmptyDescription>
               {filtered
@@ -423,8 +506,17 @@ function MonitoringOverview({
               ) : undefined
             }
           >
-            <MonitoringOutliers outliers={top} projectTitleOf={projectTitleOf} />
-            <MonitoringChatList chats={listed} projectTitleOf={projectTitleOf} />
+            <MonitoringOutliers
+              requests={requests.outliers}
+              onRetry={onRetry}
+              projectTitleOf={projectTitleOf}
+            />
+            <MonitoringChatListQuery
+              request={requests.list}
+              onOrderChange={onListOrderChange}
+              onRetry={onRetry}
+              projectTitleOf={projectTitleOf}
+            />
           </MonitoringSection>
         </>
       )}
@@ -432,40 +524,49 @@ function MonitoringOverview({
   );
 }
 
-function MonitoringOutliers({
-  outliers: top,
+function MonitoringChatListQuery({
+  request,
+  onOrderChange,
+  onRetry,
   projectTitleOf,
 }: {
-  readonly outliers: ReturnType<typeof outliers>;
+  readonly request: MonitoringChatsRequest;
+  readonly onOrderChange: (order: MonitoringChatOrder) => void;
+  readonly onRetry: () => void;
   readonly projectTitleOf: (chat: MonitoringChat) => string;
 }) {
-  const groups = [
-    {
-      label: t("Slowest"),
-      chats: top.slowest,
-      value: (chat: MonitoringChat) => formatDuration(chat.summary.lifetimeMs),
-    },
-    {
-      label: t("Most expensive"),
-      chats: top.mostExpensive,
-      value: (chat: MonitoringChat) => formatUsd(chat.summary.costUsd),
-    },
-    {
-      label: t("Most failures"),
-      chats: top.mostFailures,
-      value: (chat: MonitoringChat) =>
-        String(chat.summary.runs.failed + chat.summary.commands.failed),
-    },
-  ].filter((group) => group.chats.length > 0);
-  if (groups.length === 0) return null;
+  const { view, updating, retry, sortedBy } = useMonitoringChats(request);
   return (
-    <div className="grid gap-3 md:grid-cols-3">
-      {groups.map((group) => (
-        <OutlierGroup
-          key={group.label}
-          label={group.label}
-          chats={group.chats}
-          value={group.value}
+    <MonitoringChatList
+      view={view}
+      updating={updating}
+      retry={retry}
+      sortedBy={sortedBy}
+      order={request.order}
+      onOrderChange={onOrderChange}
+      onRetry={onRetry}
+      projectTitleOf={projectTitleOf}
+    />
+  );
+}
+
+function MonitoringOutliers({
+  requests,
+  onRetry,
+  projectTitleOf,
+}: {
+  readonly requests: ReadonlyArray<MonitoringChatsRequest>;
+  readonly onRetry: () => void;
+  readonly projectTitleOf: (chat: MonitoringChat) => string;
+}) {
+  return (
+    <div className="grid gap-3 empty:hidden md:grid-cols-3">
+      {OUTLIERS.map((outlier, index) => (
+        <OutlierGroupQuery
+          key={outlier.sort}
+          outlier={outlier}
+          request={requests[index]!}
+          onRetry={onRetry}
           projectTitleOf={projectTitleOf}
         />
       ))}
@@ -473,15 +574,50 @@ function MonitoringOutliers({
   );
 }
 
+function OutlierGroupQuery({
+  outlier,
+  request,
+  onRetry,
+  projectTitleOf,
+}: {
+  readonly outlier: (typeof OUTLIERS)[number];
+  readonly request: MonitoringChatsRequest;
+  readonly onRetry: () => void;
+  readonly projectTitleOf: (chat: MonitoringChat) => string;
+}) {
+  const { view, retry } = useMonitoringChats(request);
+  const chats = view.chats.filter((chat) => outlier.score(chat) > 0);
+  const missing = missingEnvironments(view);
+  if (chats.length === 0 && !missing.waiting && !missing.unreadable) return null;
+  return (
+    <OutlierGroup
+      label={t(outlier.label)}
+      chats={chats}
+      missing={missing}
+      value={outlier.value}
+      retry={retry}
+      onRetry={onRetry}
+      projectTitleOf={projectTitleOf}
+    />
+  );
+}
+
 function OutlierGroup({
   label,
   chats,
+  missing,
   value,
+  retry,
+  onRetry,
   projectTitleOf,
 }: {
   readonly label: string;
   readonly chats: ReadonlyArray<MonitoringChat>;
+  /** Environments whose chats this ranking does not include yet. */
+  readonly missing: MissingEnvironments;
   readonly value: (chat: MonitoringChat) => string;
+  readonly retry: MonitoringRetry;
+  readonly onRetry: () => void;
   readonly projectTitleOf: (chat: MonitoringChat) => string;
 }) {
   return (
@@ -508,6 +644,27 @@ function OutlierGroup({
           </li>
         ))}
       </ul>
+      {missing.waiting || missing.unreadable ? (
+        <div className="flex items-start justify-between gap-3 px-3 py-2 text-xs text-muted-foreground">
+          <div className="min-w-0 break-words">
+            {missing.unreadable ? (
+              <p>
+                {t("Some environments could not be read, so their chats are missing: {names}", {
+                  names: missing.unreadable,
+                })}
+              </p>
+            ) : null}
+            {missing.waiting ? (
+              <p>
+                {t("These environments are not counted yet: {names}", { names: missing.waiting })}
+              </p>
+            ) : null}
+          </div>
+          {missing.unreadable && retry !== "unavailable" ? (
+            <RetryButton retry={retry} onRetry={onRetry} />
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -547,21 +704,17 @@ function FilterSelect({
 }
 
 function MonitoringFilters({
-  chats,
+  overview,
   filters,
   onChange,
   projectTitleOfKey,
 }: {
-  readonly chats: ReadonlyArray<MonitoringChat>;
+  readonly overview: MonitoringOverviewView;
   readonly filters: Filters;
   readonly onChange: (filters: Filters) => void;
   readonly projectTitleOfKey: (key: string) => string;
 }) {
-  const projectKeys = [
-    ...new Set(chats.map((chat) => projectKey(chat.environmentId, chat.summary.projectId))),
-  ];
-  const kinds = [...new Set(chats.map((chat) => chat.summary.kind))];
-  const models = [...new Set(chats.map((chat) => mainModel(chat.summary)))];
+  const { projectKeys, kinds, models } = monitoringFacets(overview);
   // The model filter is keyed by a prefixed value because the no-model bucket is the empty string.
   const modelValue = filters.model === null ? null : `${MODEL_PREFIX}${filters.model}`;
   const active = filters.project !== null || filters.kind !== null || filters.model !== null;

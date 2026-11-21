@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import type { UsageSource } from "@t3tools/contracts";
 
+import { activateLanguage } from "./i18n.ts";
 import {
   enumerateHourStarts,
   formatDateTimeShort,
@@ -169,6 +170,20 @@ describe("hourly usage formatting", () => {
     expect(formatDateTimeShort("2026-11-01T06:37:00.000Z", "America/New_York", false)).toBe(
       "Nov 1, 01:00 EST",
     );
+  });
+
+  it("keeps a 12-hour setting in a locale whose clock is 24-hour, and the locale's clock without one", () => {
+    const instant = "2026-11-20T17:47:00.000Z";
+    activateLanguage({ language: "en", catalog: {}, formattingLocale: "en-GB" });
+    try {
+      expect([
+        formatDateTimeShort(instant, "UTC", true),
+        formatDateTimeShort(instant, "UTC"),
+        formatHourShort(instant, "UTC"),
+      ]).toEqual(["20 Nov, 5 pm", "20 Nov, 17", "17"]);
+    } finally {
+      activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined });
+    }
   });
 
   it("builds an exact minute-aligned 24-hour request", () => {

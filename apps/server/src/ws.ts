@@ -2245,6 +2245,7 @@ export const layerWsRpc = (
         [WS_METHODS.scheduledTasksSubscribeLinked]: (_input) => linkedScheduledTasks.subscribe(),
         [WS_METHODS.scheduledTasksStats]: (input) => scheduledTaskStats.stats(input),
         [WS_METHODS.monitoringOverview]: (input) => monitoring.overview(input),
+        [WS_METHODS.monitoringChats]: (input) => monitoring.chats(input),
         [WS_METHODS.monitoringThread]: (input) => monitoring.thread(input),
         [WS_METHODS.monitoringSubscribeChanges]: (_input) => monitoring.subscribeChanges,
         [WS_METHODS.scheduledTasksUpsert]: (input) =>

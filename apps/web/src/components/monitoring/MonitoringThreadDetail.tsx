@@ -1,23 +1,25 @@
 import { Link } from "@tanstack/react-router";
 import type { EnvironmentId, MonitoringThreadDetail, ThreadId } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
-import {
-  formatCount,
-  formatDateTimeShort,
-  formatPercent,
-  formatTokens,
-  formatUsd,
-} from "@t3tools/shared/usageFormat";
+import { formatMonitoringTime } from "@t3tools/client-runtime/monitoring";
+import { formatCount, formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import { ArrowLeftIcon, CircleAlertIcon, ExternalLinkIcon } from "lucide-react";
 
+import { usePrimarySettings } from "../../hooks/useSettings";
 import { refreshMonitoringThread, useMonitoringThread } from "../../state/monitoring";
+import { resolveHour12 } from "../../timestampFormat";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { MonitoringGantt } from "./MonitoringGantt";
-import { MonitoringKpi, MonitoringSection, MonitoringTruncated } from "./MonitoringSection";
+import {
+  MonitoringKpi,
+  MonitoringRefreshButton,
+  MonitoringSection,
+  MonitoringTruncated,
+} from "./MonitoringSection";
 import { MonitoringTimeBar } from "./MonitoringTimeBar";
 import {
   FINDING_DETAIL_LABELED,
@@ -60,13 +62,15 @@ export function MonitoringThreadDeepDive({
         <ArrowLeftIcon aria-hidden />
         {t("All chats")}
       </Button>
-      {detail ? (
-        <DeepDiveBody detail={detail} environmentId={environmentId} />
-      ) : error !== null ? (
+      {error !== null ? (
         <Alert variant="error">
           <CircleAlertIcon />
           <AlertDescription>
-            {t("Could not load this chat's analysis: {error}", { error })}
+            {detail
+              ? t("Could not refresh this chat's analysis, so it may be out of date: {error}", {
+                  error,
+                })
+              : t("Could not load this chat's analysis: {error}", { error })}
           </AlertDescription>
           <AlertAction>
             <Button
@@ -78,7 +82,10 @@ export function MonitoringThreadDeepDive({
             </Button>
           </AlertAction>
         </Alert>
-      ) : isPending ? (
+      ) : null}
+      {detail ? (
+        <DeepDiveBody detail={detail} environmentId={environmentId} />
+      ) : error !== null ? null : isPending ? (
         <div className="flex flex-col gap-4" aria-busy>
           <Skeleton className="h-8 w-1/2" />
           <Skeleton className="h-24 w-full" />
@@ -93,6 +100,23 @@ export function MonitoringThreadDeepDive({
   );
 }
 
+/** The header's Refresh while a chat is open: see `refreshMonitoringThread`. */
+export function MonitoringThreadRefresh({
+  environmentId,
+  threadId,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+}) {
+  const { isPending } = useMonitoringThread(environmentId, threadId);
+  return (
+    <MonitoringRefreshButton
+      refreshing={isPending}
+      onRefresh={() => refreshMonitoringThread(environmentId, threadId)}
+    />
+  );
+}
+
 function DeepDiveBody({
   detail,
   environmentId,
@@ -100,6 +124,7 @@ function DeepDiveBody({
   readonly detail: MonitoringThreadDetail;
   readonly environmentId: EnvironmentId;
 }) {
+  const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
   const { summary } = detail;
   const input = summary.tokens.inputTokens;
   const workingMs = summary.time.agentMs + summary.time.commandMs + summary.time.toolMs;
@@ -123,8 +148,8 @@ function DeepDiveBody({
             <span>{summary.models.join(", ") || t("No model recorded")}</span>
             <span>
               {t("{from} to {to}", {
-                from: formatDateTimeShort(summary.createdAt),
-                to: formatDateTimeShort(summary.settledAt),
+                from: formatMonitoringTime(summary.createdAt, hour12),
+                to: formatMonitoringTime(summary.settledAt, hour12),
               })}
             </span>
             {summary.reopens > 0 ? (

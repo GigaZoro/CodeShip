@@ -1,5 +1,6 @@
 import type { StaticScreenProps } from "@react-navigation/native";
 import type { EnvironmentId, MonitoringThreadDetail, ThreadId } from "@t3tools/contracts";
+import { formatMonitoringTime } from "@t3tools/client-runtime/monitoring";
 import {
   FINDING_DETAIL_LABELED,
   FINDING_TEXT,
@@ -9,13 +10,7 @@ import {
   findingExplanation,
 } from "@t3tools/client-runtime/monitoring-text";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
-import {
-  formatCount,
-  formatDateTimeShort,
-  formatPercent,
-  formatTokens,
-  formatUsd,
-} from "@t3tools/shared/usageFormat";
+import { formatCount, formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import { RefreshControl, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -25,6 +20,7 @@ import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { msg, t, tn } from "../../lib/i18n";
+import { refreshMonitoring } from "../../state/monitoring";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { usePullToRefresh } from "../../state/use-pull-to-refresh";
@@ -32,6 +28,7 @@ import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { useOpenScheduledTaskThread } from "../settings/ScheduledTaskRunsRouteScreen";
 import { MonitoringKpi } from "./MonitoringKpi";
+import { MonitoringNote } from "./MonitoringNote";
 import { MonitoringTimeBar } from "./MonitoringTimeBar";
 import { MonitoringTimeline } from "./MonitoringTimeline";
 
@@ -55,6 +52,11 @@ export function MonitoringThreadRouteScreen({
   const query = useEnvironmentQuery(threadAtom);
   const pullRefresh = usePullToRefresh(threadAtom);
   const detail = query.data;
+  // As Refresh on the list does, it also asks again every failure a monitoring view read.
+  const refreshAll = (refreshChat: () => void) => {
+    refreshMonitoring({});
+    refreshChat();
+  };
 
   return (
     <SettingsScreen title={t("Chat analysis")}>
@@ -67,11 +69,25 @@ export function MonitoringThreadRouteScreen({
         refreshControl={
           <RefreshControl
             refreshing={pullRefresh.refreshing}
-            onRefresh={() => pullRefresh.onRefresh()}
+            onRefresh={() => refreshAll(() => pullRefresh.onRefresh())}
           />
         }
       >
         <View className="w-full gap-5 self-center" style={{ maxWidth: MAX_CONTENT_WIDTH }}>
+          {detail && query.error !== null ? (
+            <MonitoringNote
+              text={t("Could not refresh this chat's analysis, so it may be out of date: {error}", {
+                error: query.error,
+              })}
+              action={
+                <Button
+                  label={t("Retry")}
+                  onPress={() => refreshAll(query.refresh)}
+                  loading={query.isPending}
+                />
+              }
+            />
+          ) : null}
           {detail ? (
             <DeepDiveBody detail={detail} onOpenChat={() => openThread(environmentId, threadId)} />
           ) : query.error !== null ? (
@@ -80,7 +96,7 @@ export function MonitoringThreadRouteScreen({
               title={t("Could not load this chat's analysis")}
               detail={query.error}
               actionLabel={t("Retry")}
-              onAction={query.refresh}
+              onAction={() => refreshAll(query.refresh)}
             />
           ) : query.isPending ? (
             <View className="items-center py-16" accessibilityState={{ busy: true }}>
@@ -124,8 +140,8 @@ function DeepDiveBody(props: {
             t(KIND_LABEL[summary.kind]),
             summary.models.join(", ") || t("No model recorded"),
             t("{from} to {to}", {
-              from: formatDateTimeShort(summary.createdAt),
-              to: formatDateTimeShort(summary.settledAt),
+              from: formatMonitoringTime(summary.createdAt),
+              to: formatMonitoringTime(summary.settledAt),
             }),
             summary.reopens > 0
               ? tn(summary.reopens, "Reopened once", "Reopened {count} times")

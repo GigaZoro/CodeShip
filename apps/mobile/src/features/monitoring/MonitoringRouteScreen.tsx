@@ -1,24 +1,32 @@
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import type {
-  EnvironmentId,
-  MonitoringFindingCode,
-  MonitoringThreadKind,
-  ThreadId,
+import {
+  type EnvironmentId,
+  type MonitoringFindingCode,
+  type MonitoringThreadKind,
+  type ThreadId,
 } from "@t3tools/contracts";
 import {
-  filterChats,
+  failureRetry,
+  filterGroups,
+  formatMonitoringTime,
   mainModel,
+  missingEnvironments,
   NO_MODEL,
   monitoringChatKey,
-  monitoringWindowStart,
+  monitoringFacets,
+  monitoringWindow,
   phaseTotals,
   projectKey,
   rankFindings,
-  sortChats,
   sumTimeBuckets,
   totalsOf,
+  unanalyzedCounts,
+  unreadableEnvironmentText,
   type MonitoringChat,
+  type MonitoringChatsRequest,
+  type MonitoringOverviewView,
+  type MonitoringRetry,
 } from "@t3tools/client-runtime/monitoring";
 import {
   FINDING_TEXT,
@@ -27,8 +35,8 @@ import {
   SEVERITY_LABEL,
 } from "@t3tools/client-runtime/monitoring-text";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
-import { formatDateTimeShort, formatPercent, formatUsd } from "@t3tools/shared/usageFormat";
-import { useMemo, useState, type ReactNode } from "react";
+import { formatPercent, formatUsd } from "@t3tools/shared/usageFormat";
+import { useMemo, useState } from "react";
 import { FlatList, Pressable, RefreshControl, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -42,10 +50,15 @@ import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { msg, t, tn } from "../../lib/i18n";
 import { useProjects } from "../../state/entities";
-import { useMonitoringOverview } from "../../state/monitoring";
+import {
+  refreshMonitoring,
+  useMonitoringChats,
+  useMonitoringOverview,
+} from "../../state/monitoring";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { MonitoringKpi } from "./MonitoringKpi";
+import { MonitoringNote } from "./MonitoringNote";
 import { MonitoringTimeBar } from "./MonitoringTimeBar";
 
 export type MonitoringRoutes = {
@@ -79,17 +92,43 @@ const PAGE_SIZE = 40;
 export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<MonitoringRoutes>>();
-  // The window start is read once per choice: a new value on every render would change the query key.
-  const [windowChoice, setWindowChoice] = useState(() => ({
-    days: 30,
-    since: monitoringWindowStart(30, Date.now()),
-  }));
+  // The clock is read once per choice: a new value on every render would change the query key.
+  const [windowChoice, setWindowChoice] = useState(() => ({ days: 30, now: Date.now() }));
   const [finding, setFinding] = useState<MonitoringFindingCode | null>(null);
   const [scope, setScope] = useState<Scope>(NO_SCOPE);
   const [shown, setShown] = useState(PAGE_SIZE);
-  const { overview, refresh } = useMonitoringOverview({ since: windowChoice.since });
+  const period = monitoringWindow(windowChoice.days, windowChoice.now);
+  const overviewInput = { days: period.days, until: period.until };
+  const overview = useMonitoringOverview(overviewInput);
+  const chatsRequest: MonitoringChatsRequest = {
+    window: { since: period.since, until: period.until },
+    filters: {
+      projectKey: scope.project,
+      kind: scope.kind,
+      model: scope.model,
+      findingCode: finding,
+    },
+    order: { sort: "settledAt", direction: "desc", limit: shown },
+    pageSize: PAGE_SIZE,
+  };
+  const { view: chats, updating, retry: chatsRetry } = useMonitoringChats(chatsRequest);
   const projects = useProjects();
   const refreshing = overview.environments.some((environment) => environment.isPending);
+  const refresh = () => {
+    const now = Date.now();
+    const today = monitoringWindow(windowChoice.days, now);
+    if (today.until === period.until) {
+      refreshMonitoring({ overview: overviewInput, chats: [chatsRequest] });
+      return;
+    }
+    // A period left open past midnight moves to today. Its queries are new and load on their own,
+    // so the refresh only reconnects environments that are down.
+    setWindowChoice({ days: windowChoice.days, now });
+    refreshMonitoring({
+      overview: { days: today.days, until: today.until },
+      chats: [],
+    });
+  };
 
   const projectTitles = useMemo(
     () =>
@@ -98,30 +137,35 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
       ),
     [projects],
   );
+  const projectTitleOfKey = (key: string) => projectTitles.get(key) ?? t("Unknown project");
   const projectTitleOf = (chat: MonitoringChat) =>
-    projectTitles.get(projectKey(chat.environmentId, chat.summary.projectId)) ??
-    t("Unknown project");
+    projectTitleOfKey(projectKey(chat.environmentId, chat.summary.projectId));
 
-  const chats = overview.chats;
+  const groups = overview.groups;
   const scoped = useMemo(
-    () => filterChats(chats, { projectKey: scope.project, kind: scope.kind, model: scope.model }),
-    [chats, scope],
+    () => filterGroups(groups, { projectKey: scope.project, kind: scope.kind, model: scope.model }),
+    [groups, scope],
   );
   const totals = useMemo(() => totalsOf(scoped), [scoped]);
+  const unanalyzed = unanalyzedCounts(overview.unanalyzed, scope.project);
   const buckets = useMemo(() => sumTimeBuckets(scoped), [scoped]);
   const ranks = useMemo(() => rankFindings(scoped), [scoped]);
   const phases = useMemo(() => phaseTotals(scoped), [scoped]);
-  const listed = useMemo(
-    () => sortChats(filterChats(scoped, { findingCode: finding }), "settledAt", "desc"),
-    [scoped, finding],
-  );
   const body = monitoringBody();
   function monitoringBody(): "empty-environments" | "failed" | "loading" | "empty" | "ready" {
     if (overview.environments.length === 0) return "empty-environments";
     if (overview.failed) return "failed";
     if (overview.isLoading) return "loading";
-    return chats.length === 0 ? "empty" : "ready";
+    return groups.length === 0 && overview.complete ? "empty" : "ready";
   }
+  const overviewMissing = missingEnvironments(overview);
+  // The list is its own query, so it can lack an environment the overview counted.
+  const chatsMissing = missingEnvironments(chats);
+  const overviewRetry = failureRetry(overview);
+  const retry = (state: MonitoringRetry, tone: "primary" | "secondary" = "secondary") =>
+    state === "unavailable" ? undefined : (
+      <Button tone={tone} label={t("Retry")} onPress={refresh} loading={state === "busy"} />
+    );
 
   const controls = (
     <View className="gap-4">
@@ -133,64 +177,68 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
         }))}
         selected={windowChoice.days}
         onSelect={(days) => {
-          setWindowChoice({ days, since: monitoringWindowStart(days, Date.now()) });
+          setWindowChoice({ days, now: Date.now() });
           setFinding(null);
           setScope(NO_SCOPE);
           setShown(PAGE_SIZE);
         }}
       />
-      {overview.environments.some((environment) => environment.error) && body !== "failed" ? (
-        <Note
+      {overviewMissing.unreadable && body !== "failed" ? (
+        <MonitoringNote
           text={t("Some environments could not be read, so their chats are missing: {names}", {
-            names: overview.environments
-              .filter((environment) => environment.error)
-              .map((environment) => environment.label)
-              .join(", "),
+            names: overviewMissing.unreadable,
           })}
-          action={<Button label={t("Retry")} onPress={refresh} />}
+          action={retry(overviewRetry)}
         />
       ) : null}
-      {overview.pendingAnalysis > 0 ? (
-        <Note
+      {overviewMissing.waiting ? (
+        <MonitoringNote
+          text={t("These environments are not counted yet: {names}", {
+            names: overviewMissing.waiting,
+          })}
+        />
+      ) : null}
+      {unanalyzed.pending > 0 ? (
+        <MonitoringNote
           text={tn(
-            overview.pendingAnalysis,
+            unanalyzed.pending,
             "{count} settled chat is still being analyzed.",
             "{count} settled chats are still being analyzed.",
           )}
         />
       ) : null}
-      {overview.failedAnalysis > 0 ? (
-        <Note
+      {unanalyzed.failed > 0 ? (
+        <MonitoringNote
           text={tn(
-            overview.failedAnalysis,
+            unanalyzed.failed,
             "{count} chat could not be analyzed. It is tried again every 30 minutes.",
             "{count} chats could not be analyzed. They are tried again every 30 minutes.",
           )}
         />
       ) : null}
-      {overview.truncated ? (
-        <Note
-          text={t("More chats settled in this period than can be shown. These are the newest.")}
-        />
-      ) : null}
     </View>
+  );
+
+  // Shown with no analyzed chat too: the pending and failed notes count the chosen project.
+  const scopeFilters = (
+    <ScopeFilters
+      overview={overview}
+      scope={scope}
+      projectTitleOf={projectTitleOfKey}
+      onChange={(next) => {
+        setScope(next);
+        setFinding(null);
+        setShown(PAGE_SIZE);
+      }}
+    />
   );
 
   const header =
     body === "ready" ? (
       <View className="gap-5">
         {controls}
-        <ScopeFilters
-          chats={chats}
-          scope={scope}
-          projectTitleOf={projectTitleOf}
-          onChange={(next) => {
-            setScope(next);
-            setFinding(null);
-            setShown(PAGE_SIZE);
-          }}
-        />
-        {scoped.length === 0 ? (
+        {scopeFilters}
+        {scoped.length === 0 && overview.complete ? (
           <EmptyState
             variant="plain"
             title={t("No chats match these filters")}
@@ -313,6 +361,11 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
           {t("Chats")}
         </Text>
       </View>
+    ) : body === "empty" ? (
+      <View className="gap-5">
+        {controls}
+        {scopeFilters}
+      </View>
     ) : (
       controls
     );
@@ -326,9 +379,8 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
       <EmptyState
         variant="plain"
         title={t("Could not load monitoring")}
-        detail={overview.environments[0]?.error ?? ""}
-        actionLabel={t("Retry")}
-        onAction={refresh}
+        detail={overview.unreadable.map(unreadableEnvironmentText).join("\n")}
+        action={retry(overviewRetry, "primary")}
       />
     ) : body === "empty-environments" ? (
       <EmptyState
@@ -339,12 +391,13 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
     ) : body === "empty" ? (
       <EmptyState
         variant="plain"
-        title={t("No settled chats in this period")}
+        title={t("No analyzed chats in this period")}
         detail={t("Chats show up here once they settle and have been analyzed.")}
       />
     ) : null;
 
-  const visible = body === "ready" ? listed.slice(0, shown) : [];
+  const visible = body === "ready" && !chats.isLoading ? chats.chats : [];
+  const more = chats.chats.length < chats.total;
 
   return (
     <SettingsScreen title={t("Monitoring")} workspaceRoot={props.workspace}>
@@ -362,6 +415,38 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
           <View className="w-full gap-3 self-center pb-3" style={{ maxWidth: MAX_CONTENT_WIDTH }}>
             {header}
             {status}
+            {body === "ready" && chatsMissing.unreadable ? (
+              <MonitoringNote
+                text={t(
+                  "Some environments could not be read, so their chats are missing: {names}",
+                  {
+                    names: chatsMissing.unreadable,
+                  },
+                )}
+                action={retry(chatsRetry)}
+              />
+            ) : null}
+            {body === "ready" && chatsMissing.waiting ? (
+              <MonitoringNote
+                text={t("These environments are not counted yet: {names}", {
+                  names: chatsMissing.waiting,
+                })}
+              />
+            ) : null}
+            {body === "ready" && chats.isLoading ? (
+              <View className="items-center py-8" accessibilityState={{ busy: true }}>
+                <AppActivityIndicator />
+              </View>
+            ) : null}
+            {body === "ready" &&
+            !chats.isLoading &&
+            visible.length === 0 &&
+            scoped.length > 0 &&
+            chats.complete ? (
+              <Text className="px-2 text-foreground-muted">
+                {t("No chats match these filters.")}
+              </Text>
+            ) : null}
           </View>
         }
         renderItem={({ item, index }) => (
@@ -381,9 +466,23 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
           </View>
         )}
         ListFooterComponent={
-          visible.length < listed.length ? (
-            <View className="items-center pt-4">
-              <Button label={t("Show more")} onPress={() => setShown(shown + PAGE_SIZE)} />
+          visible.length > 0 && more ? (
+            <View className="items-center gap-2 pt-4">
+              <Text textRole="footnote" className="text-foreground-muted">
+                {tn(
+                  chats.total,
+                  "Showing {shown} of {count} chat",
+                  "Showing {shown} of {count} chats",
+                  {
+                    shown: visible.length,
+                  },
+                )}
+              </Text>
+              <Button
+                label={t("Show more")}
+                disabled={updating}
+                onPress={() => setShown(shown + PAGE_SIZE)}
+              />
             </View>
           ) : undefined
         }
@@ -393,21 +492,13 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
 }
 
 function ScopeFilters(props: {
-  readonly chats: ReadonlyArray<MonitoringChat>;
+  readonly overview: MonitoringOverviewView;
   readonly scope: Scope;
-  readonly projectTitleOf: (chat: MonitoringChat) => string;
+  readonly projectTitleOf: (projectKey: string) => string;
   readonly onChange: (scope: Scope) => void;
 }) {
-  const { chats, scope } = props;
-  const projects = new Map<string, string>();
-  for (const chat of chats) {
-    projects.set(
-      projectKey(chat.environmentId, chat.summary.projectId),
-      props.projectTitleOf(chat),
-    );
-  }
-  const kinds = [...new Set(chats.map((chat) => chat.summary.kind))];
-  const models = [...new Set(chats.map((chat) => mainModel(chat.summary)))];
+  const { scope } = props;
+  const { projectKeys, kinds, models } = monitoringFacets(props.overview);
   const modelLabel = (model: string) => (model === NO_MODEL ? t("No model") : model);
   const byLabel = (a: { label: string }, b: { label: string }) => a.label.localeCompare(b.label);
   return (
@@ -416,7 +507,9 @@ function ScopeFilters(props: {
         label={t("Project")}
         allLabel={t("All projects")}
         value={scope.project}
-        options={[...projects].map(([value, label]) => ({ value, label })).sort(byLabel)}
+        options={projectKeys
+          .map((value) => ({ value, label: props.projectTitleOf(value) }))
+          .sort(byLabel)}
         onChange={(project) => props.onChange({ ...scope, project })}
       />
       <FilterMenu
@@ -482,17 +575,6 @@ function FilterMenu<Value extends string>(props: {
   );
 }
 
-function Note(props: { readonly text: string; readonly action?: ReactNode }) {
-  return (
-    <View className="gap-2 rounded-2xl bg-grouped-card p-3">
-      <Text textRole="footnote" className="text-foreground-muted">
-        {props.text}
-      </Text>
-      {props.action}
-    </View>
-  );
-}
-
 function ChatRow(props: {
   readonly chat: MonitoringChat;
   readonly first: boolean;
@@ -504,7 +586,7 @@ function ChatRow(props: {
   const model = mainModel(summary);
   const title = summary.title || t("Untitled chat");
   const metrics = [
-    formatDateTimeShort(summary.settledAt),
+    formatMonitoringTime(summary.settledAt),
     formatDuration(summary.lifetimeMs),
     formatUsd(summary.costUsd),
     tn(summary.findings.length, "{count} finding", "{count} findings"),

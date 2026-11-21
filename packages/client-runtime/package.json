@@ -111,6 +111,10 @@
       "types": "./src/monitoring/aggregate.ts",
       "default": "./src/monitoring/aggregate.ts"
     },
+    "./monitoring/atoms": {
+      "types": "./src/monitoring/atoms.ts",
+      "default": "./src/monitoring/atoms.ts"
+    },
     "./monitoring-text": {
       "types": "./src/monitoring/text.ts",
       "default": "./src/monitoring/text.ts"
