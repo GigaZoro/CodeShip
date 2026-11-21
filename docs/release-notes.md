@@ -1,3 +1,7 @@
+## 2026-11-22 — Release builds verify their source and bundle
+
+- The macOS build now runs only at its release's tag and stops when the tag, the release and the Linux bundle name different commits, and every workflow that can publish or holds secrets runs only actions pinned to a reviewed commit. macOS signs only the bundle from the publishing run after verifying its digest and version.
+
 ## 2026-11-22 — Commands wait for memory before they start
 
 - `t3_command_run` now waits until the machine has memory for a command before it starts it, as scheduled runs, delegated tasks, emulators and chats that resume by themselves already do. Before, every command started at once, so when many resumed chats started commands together after a restart, their shell wrappers alone could use up the free memory. A waiting command is never refused: commands start in the order they were asked for, `task_status` reports them as queued with the reason, each time limit counts from when the command starts, and a waiting command keeps its place through a restart. A waiting command whose task is cancelled or whose chat is archived never starts, and its task says why. The **Wait for memory before automated starts** setting in **Settings → Maintenance & about → Background activity** covers them too.

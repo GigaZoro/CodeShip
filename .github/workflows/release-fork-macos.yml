@@ -6,7 +6,9 @@ run-name: Release (fork) macOS v${{ inputs.version }}
 # GitHub runs short of hosted macOS runners for hours, and Windows and Linux do
 # not need one. Until it attaches, the release carries the previous release's
 # macOS feed, so Macs stay on that build. release-fork.yml starts it, and
-# release-fork-retry.yml reruns it while its release is the latest. See
+# release-fork-retry.yml reruns it while its release is the latest. Both start
+# it at the release's tag, so it runs the workflows and actions of the commit
+# that release was built and reviewed from, never a later main. See
 # "Releasing from a fork" in docs/operations/release.md.
 
 on:
@@ -59,7 +61,7 @@ jobs:
           fi
 
       - id: release
-        name: Find the release and its JS bundle
+        name: Verify the release and its JS bundle
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
@@ -70,16 +72,53 @@ jobs:
             echo "::error::Pass a version such as 2026.1113.13 and the numeric id of its Release (fork) run."
             exit 1
           fi
-          sha="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION" --jq .target_commitish)"
-          bundle_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUNDLE_RUN" --jq .head_sha)"
-          if [[ "$sha" != "$bundle_sha" ]]; then
-            echo "::error::v$VERSION was built from $sha, but run $BUNDLE_RUN built $bundle_sha."
+          if [[ "$GITHUB_REF" != "refs/tags/v$VERSION" ]]; then
+            echo "::error::Run this workflow at the release's tag (--ref v$VERSION), not $GITHUB_REF."
             exit 1
           fi
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION")"
+          sha="$(jq -er .target_commitish <<<"$release")"
+          provenance="$(jq -r '(.body // "" | split("\n") | map(sub("\r$"; "") | select(length > 0)) | last // "")' <<<"$release")"
+          if [[ ! "$provenance" =~ ^'<!-- codeship-bundle '([1-9][0-9]*)' '([1-9][0-9]*)' '([0-9a-f]{64})' -->'$ ]]; then
+            echo "::error::v$VERSION has no recorded JS bundle."
+            exit 1
+          fi
+          producer="${BASH_REMATCH[1]}"
+          artifact_id="${BASH_REMATCH[2]}"
+          digest="${BASH_REMATCH[3]}"
+          if [[ "$BUNDLE_RUN" != "$producer" ]]; then
+            echo "::error::v$VERSION records run $producer as its JS bundle producer, but got run $BUNDLE_RUN."
+            exit 1
+          fi
+
+          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/v$VERSION" --jq .sha)"
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ || "$tag_sha" != "$sha" || "$GITHUB_SHA" != "$sha" ]]; then
+            echo "::error::v$VERSION was built from $sha, but its tag is at $tag_sha and this run is at $GITHUB_SHA."
+            exit 1
+          fi
+          artifact="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id" \
+            --jq '[.id, .name, .expired, .workflow_run.id, .workflow_run.head_sha, .digest] | join(" ")')"
+          if [[ "$artifact" != "$artifact_id js-bundle false $producer $sha sha256:$digest" ]]; then
+            echo "::error::Artifact $artifact_id is unavailable or does not match the JS bundle recorded for v$VERSION."
+            exit 1
+          fi
+
+          archive="$RUNNER_TEMP/release-js-bundle.zip"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$archive"
+          checksum="$(sha256sum "$archive")"
+          if [[ "${checksum%% *}" != "$digest" ]]; then
+            echo "::error::The downloaded JS bundle does not match the recorded SHA-256 digest."
+            exit 1
+          fi
+          if [[ "$(unzip -p "$archive" bundle-version.txt)" != "$VERSION" ]]; then
+            echo "::error::The recorded JS bundle does not contain version $VERSION."
+            exit 1
+          fi
+          unzip -q "$archive" -d "$RUNNER_TEMP/js-bundle"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ steps.release.outputs.sha }}
           sparse-checkout: |
@@ -94,20 +133,12 @@ jobs:
           node .github/scripts/fork-release.cjs public-config > "$RUNNER_TEMP/public-config"
           cat "$RUNNER_TEMP/public-config" >> "$GITHUB_OUTPUT"
 
-      # release-desktop.yml reads the bundle from its own run.
-      - name: Download the release's JS bundle
-        uses: actions/download-artifact@v8
-        with:
-          name: js-bundle
-          path: js-bundle
-          run-id: ${{ inputs.bundle_run }}
-          github-token: ${{ github.token }}
-
+      # release-desktop.yml reads the verified bundle from its own run.
       - name: Upload JS bundle
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: js-bundle
-          path: js-bundle/
+          path: ${{ runner.temp }}/js-bundle/
           if-no-files-found: error
           retention-days: 3
 
@@ -145,7 +176,7 @@ jobs:
       contents: write
     steps:
       - name: Download macOS artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: desktop-mac-arm64
           path: release-assets
