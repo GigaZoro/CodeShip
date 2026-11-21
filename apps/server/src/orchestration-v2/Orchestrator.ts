@@ -436,6 +436,10 @@ export interface OrchestratorV2Shape {
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
   readonly recoverDelegatedTasks: Effect.Effect<void>;
   readonly recoverDelegatedTask: (threadId: ThreadId, sourceRunId: RunId) => Effect.Effect<void>;
+  /**
+   * Stops an open task's latest child run. Returns the task's child runs whose delegated tasks the
+   * caller still stops: all of them for a task with its result.
+   */
   readonly stopOwnedDelegatedChild: (input: {
     readonly commandId: CommandId;
     readonly parentThreadId: ThreadId;
@@ -443,7 +447,7 @@ export interface OrchestratorV2Shape {
     readonly childThreadId: ThreadId;
     readonly taskId: NodeId;
     readonly reason?: string | undefined;
-  }) => Effect.Effect<void, OrchestratorV2Error>;
+  }) => Effect.Effect<ReadonlyArray<RunId>, OrchestratorV2Error>;
   readonly delegatedTaskResultPending: (
     childThreadId: ThreadId,
     taskId?: NodeId,
@@ -811,6 +815,47 @@ function stopOwnedRuns<R extends { readonly id: RunId }>(
   runIds?: ReadonlyArray<RunId>,
 ): ReadonlyArray<R> {
   return runIds === undefined ? runs : runs.filter((run) => runIds.includes(run.id));
+}
+
+/** A run and every run it continues after a restart, back to the run the user started. */
+function restartChainRunIds(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  run: OrchestrationV2Run,
+): ReadonlySet<RunId> {
+  const runsById = new Map(runs.map((candidate) => [candidate.id, candidate]));
+  const chain = new Set<RunId>();
+  let ancestor: OrchestrationV2Run | undefined = run;
+  while (ancestor !== undefined && !chain.has(ancestor.id)) {
+    chain.add(ancestor.id);
+    ancestor =
+      ancestor.restartContinuationOfRunId === undefined
+        ? undefined
+        : runsById.get(ancestor.restartContinuationOfRunId);
+  }
+  return chain;
+}
+
+/**
+ * The child runs a delegated task owns. A follow-up owns the runs bound to it, restart
+ * continuations included. The task the chat was forked from owns the runs no follow-up claimed
+ * until its result; a run requested after that is independent of it.
+ */
+function delegatedTaskChildRuns(
+  task: Pick<OrchestrationV2Subagent, "id" | "result" | "completedAt">,
+  child: {
+    readonly thread: Pick<OrchestrationV2AppThread, "forkedFrom">;
+    readonly runs: ReadonlyArray<OrchestrationV2Run>;
+  },
+): ReadonlyArray<OrchestrationV2Run> {
+  const forkedFromTask =
+    child.thread.forkedFrom?.type === "node" && child.thread.forkedFrom.nodeId === task.id;
+  const settledAt = task.result === null ? null : task.completedAt;
+  return child.runs.filter((run) =>
+    run.delegatedTaskId === undefined
+      ? forkedFromTask &&
+        (settledAt === null || !DateTime.isGreaterThan(run.requestedAt, settledAt))
+      : run.delegatedTaskId === task.id,
+  );
 }
 
 /**
@@ -12897,16 +12942,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     let run =
       target === "thread" ? selectedRun : latestRestartContinuation(projection.runs, selectedRun);
     // Recovery can keep delegated work alive across several server restarts.
-    const chainRunIds = new Set<RunId>();
-    const runsById = new Map(projection.runs.map((candidate) => [candidate.id, candidate]));
-    let ancestor: OrchestrationV2Run | undefined = run;
-    while (ancestor !== undefined && !chainRunIds.has(ancestor.id)) {
-      chainRunIds.add(ancestor.id);
-      ancestor =
-        ancestor.restartContinuationOfRunId === undefined
-          ? undefined
-          : runsById.get(ancestor.restartContinuationOfRunId);
-    }
+    const chainRunIds = restartChainRunIds(projection.runs, run);
     const lastExecuted = latestExecutedRun(projection.runs);
     const queuedContinuation =
       run.status === "queued" && run.restartContinuationOfRunId !== undefined ? run : undefined;
@@ -15671,12 +15707,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         task?.origin !== "app_owned" ||
         task.runId !== parentRunId ||
-        task.result !== null ||
         task.childThreadId !== childThreadId
       )
-        return;
+        return [];
       const child = yield* projectionStore
-        .getThreadRecords(childThreadId, ["runs", "contextTransfers"])
+        .getThreadRecords(childThreadId, ["runs"])
         .pipe(
           Effect.mapError(
             (cause) => new OrchestratorProjectionError({ threadId: childThreadId, cause }),
@@ -15686,27 +15721,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         child.thread.lineage.parentThreadId !== parentThreadId ||
         child.thread.lineage.relationshipToParent !== "subagent"
       )
-        return;
-      // Original spawns bind through a context transfer. Follow-ups bind on their new run.
-      const spawn =
-        child.thread.forkedFrom?.type === "node" && child.thread.forkedFrom.nodeId === taskId
-          ? child.contextTransfers.find(
-              (transfer) =>
-                transfer.type === "subagent_spawn" &&
-                transfer.sourceThreadId === parentThreadId &&
-                transfer.targetThreadId === childThreadId,
-            )
-          : undefined;
-      const source = child.runs.findLast(
-        (run) => run.delegatedTaskId === taskId || run.id === spawn?.targetRunId,
-      );
-      if (source === undefined) return;
+        return [];
+      const owned = delegatedTaskChildRuns(task, child);
+      // A task with its result keeps it; only the delegated work its runs started is outstanding.
+      const source = task.result === null ? owned.at(-1) : undefined;
+      if (source === undefined) return owned.map((run) => run.id);
       const command = { commandId: input.commandId, threadId: childThreadId, runId: source.id };
+      const cancelsQueued =
+        source.status === "queued" && source.restartContinuationOfRunId === undefined;
       yield* dispatchWithReceiptEffect(
-        source.status === "queued" && source.restartContinuationOfRunId === undefined
+        cancelsQueued
           ? { ...command, type: "queued-run.cancel" }
           : { ...command, type: "run.interrupt", reason: input.reason },
       );
+      // The interrupt stops the tasks its restart chain owns; the caller walks the other runs'.
+      const interrupted = cancelsQueued
+        ? new Set([source.id])
+        : restartChainRunIds(child.runs, latestRestartContinuation(child.runs, source));
+      return owned.flatMap((run) => (interrupted.has(run.id) ? [] : [run.id]));
     },
     // Follow-up admission acquires the parent lock before the child lock.
     (effect, input) =>

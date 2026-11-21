@@ -6,6 +6,8 @@ import {
   MessageId,
   NodeId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2Run,
+  type OrchestrationV2Subagent,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -682,7 +684,8 @@ it.effect("a scoped delegated Stop rechecks ownership after a child admits a fol
       null,
     );
 
-    // A real Stop of the follow-up owns its grandchild, but not the previous child run's task.
+    // A real Stop of the follow-up owns its grandchild. The original owner's Stop above reached
+    // the task its own child run delegated, though that task had reported its result.
     const sql = yield* SqlClient.SqlClient;
     yield* sql`DELETE FROM orchestration_v2_effect_outbox`;
     yield* threads.stopDelegatedTasks({
@@ -693,7 +696,81 @@ it.effect("a scoped delegated Stop rechecks ownership after a child admits a fol
     const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
     yield* worker.drain();
     assert.deepEqual((yield* threadState(grandchild)).runs, ["interrupted"]);
-    assert.deepEqual((yield* threadState(previousGrandchild)).runs, ["starting"]);
+    assert.deepEqual((yield* threadState(previousGrandchild)).runs, ["interrupted"]);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("a scoped Stop reaches a grandchild a completed follow-up left, not a later run's", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+    const sql = yield* SqlClient.SqlClient;
+    const parentId = ThreadId.make("thread:parent-completed-follow-up");
+    yield* createWatchingThread(parentId, 7);
+    const now = yield* DateTime.now;
+    const complete = (run: OrchestrationV2Run) =>
+      projections.apply({
+        type: "run.updated",
+        threadId: run.threadId,
+        id: EventId.make(`completed:${run.id}`),
+        occurredAt: now,
+        payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+      });
+    const report = (task: OrchestrationV2Subagent) =>
+      projections.apply({
+        type: "subagent.updated",
+        threadId: parentId,
+        id: EventId.make(`result:${task.id}`),
+        occurredAt: now,
+        payload: { ...task, status: "completed", result: "Done", completedAt: now },
+      });
+    const latest = (threadId: ThreadId) =>
+      orchestrator
+        .getThreadProjection(threadId)
+        .pipe(Effect.map((projection) => projection.runs.at(-1)!));
+
+    yield* send(parentId, "first owner", "start_immediately");
+    const childId = yield* delegate(parentId, "original task");
+    yield* complete(yield* latest(childId));
+    yield* report((yield* orchestrator.getThreadProjection(parentId)).subagents[0]!);
+    yield* complete(yield* latest(parentId));
+
+    // The follow-up reports its result while the grandchild its run started still works.
+    yield* send(parentId, "follow-up owner", "start_immediately");
+    const owner = yield* latest(parentId);
+    yield* send(childId, "follow-up", "start_immediately");
+    const survivor = yield* delegate(childId, "surviving work");
+    const followUp = (yield* orchestrator.getThreadProjection(parentId)).subagents.at(-1)!;
+    assert.equal(followUp.runId, owner.id);
+    yield* complete(yield* latest(childId));
+    yield* report(followUp);
+    yield* complete(owner);
+
+    // A later run in the same child belongs to another owner's follow-up.
+    yield* send(parentId, "later owner", "start_immediately");
+    yield* send(childId, "later request", "start_immediately");
+    const independent = yield* delegate(childId, "later work");
+
+    const outcome = (projection: { readonly subagents: ReadonlyArray<OrchestrationV2Subagent> }) =>
+      projection.subagents.map(({ id, status, result }) => ({ id, status, result }));
+    const before = outcome(yield* orchestrator.getThreadProjection(parentId));
+    assert.isNotNull(before.find((task) => task.id === followUp.id)?.result);
+    yield* sql`DELETE FROM orchestration_v2_effect_outbox`;
+    yield* threads.stopDelegatedTasks({
+      commandId: CommandId.make("stop-completed-follow-up-owner"),
+      threadId: parentId,
+      parentRunId: owner.id,
+    });
+    yield* worker.drain();
+    assert.deepEqual((yield* threadState(survivor)).runs, ["interrupted"]);
+    assert.deepEqual((yield* threadState(independent)).runs, ["starting"]);
+    assert.deepEqual((yield* threadState(childId)).runs, ["completed", "completed", "starting"]);
+    // Every task keeps its result, and the later follow-up is still open.
+    const after = outcome(yield* orchestrator.getThreadProjection(parentId));
+    assert.deepEqual(after, before);
+    assert.equal(after.at(-1)?.result, null);
   }).pipe(Effect.provide(layerTest)),
 );
 

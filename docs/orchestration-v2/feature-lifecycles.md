@@ -265,8 +265,12 @@ queue instead of cancelling them; startup cancels those before any queued messag
 starts, archived threads included.
 
 A per-run interrupt follows the selected run's restart chain. It interrupts provider
-turns and stops delegated work owned by that chain. Children and completions from
-independent runs keep working. An independent run that is active, or that starts after
+turns and stops delegated work owned by that chain. A delegated task owns the child
+runs bound to it: a follow-up its own runs, and the task the chat was forked from the
+runs no follow-up claimed until its result. The walk goes down through those runs even
+after the task reports its result, so a grandchild a finished follow-up started is
+stopped too. Children and completions from independent runs keep working, including a
+later run in the same child thread. An independent run that is active, or that starts after
 the interrupt, neither blocks it nor loses its own work: each provider interrupt names
 the chain's turns, and an adapter that restarts its runtime to end background commands
 ends only theirs. Each provider interrupt also names the background tasks the chain owned

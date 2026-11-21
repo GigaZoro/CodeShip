@@ -1599,12 +1599,9 @@ const make = Effect.gen(function* () {
     const stoppedChildThreadIds = new Set<ThreadId>();
     for (const task of subagents) {
       if (task.origin !== "app_owned") continue;
-      // A scoped Stop owns only this run's outstanding tasks. A finished child's thread can be reused.
-      if (
-        input.parentRunId !== undefined &&
-        (task.runId !== input.parentRunId || task.result !== null)
-      )
-        continue;
+      // A scoped Stop owns this run's tasks and the work their child runs left outstanding, even
+      // after a task reports its result. The child's later runs keep theirs.
+      if (input.parentRunId !== undefined && task.runId !== input.parentRunId) continue;
       // A command ends with its result here; the command runner then stops its processes.
       if (task.command !== undefined) {
         if (task.result !== null) continue;
@@ -1633,6 +1630,7 @@ const make = Effect.gen(function* () {
         // A task in a linked environment ends here; its follower then stops it there.
         // One with its result keeps it, but its thread there may run follow-up work.
         if (task.remoteChild === undefined) continue;
+        if (input.parentRunId !== undefined && task.result !== null) continue;
         const commandId = CommandId.make(`${input.commandId}:stop:${task.id}`);
         yield* dispatch(
           task.result === null
@@ -1678,14 +1676,30 @@ const make = Effect.gen(function* () {
                 stopDelegatedTasks({ commandId: input.commandId, reason: input.reason, threadId }),
               ),
             )
-          : orchestrator.stopOwnedDelegatedChild({
-              commandId: CommandId.make(`${input.commandId}:stop:${task.id}`),
-              parentThreadId: input.threadId,
-              parentRunId: input.parentRunId,
-              taskId: task.id,
-              childThreadId: threadId,
-              reason: input.reason,
-            });
+          : orchestrator
+              .stopOwnedDelegatedChild({
+                commandId: CommandId.make(`${input.commandId}:stop:${task.id}`),
+                parentThreadId: input.threadId,
+                parentRunId: input.parentRunId,
+                taskId: task.id,
+                childThreadId: threadId,
+                reason: input.reason,
+              })
+              .pipe(
+                Effect.flatMap((childRunIds) =>
+                  Effect.forEach(
+                    childRunIds,
+                    (parentRunId) =>
+                      stopDelegatedTasks({
+                        commandId: input.commandId,
+                        reason: input.reason,
+                        threadId,
+                        parentRunId,
+                      }),
+                    { discard: true },
+                  ),
+                ),
+              );
       if (input.parentRunId === undefined) {
         // The thread-wide walk visits a reused thread once. Scoped effects visit individual tasks.
         if (stoppedChildThreadIds.has(threadId)) continue;

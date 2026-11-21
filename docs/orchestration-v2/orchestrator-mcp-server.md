@@ -558,8 +558,10 @@ server is about to enqueue its wake: after a user's session close, which enqueue
 none, the run reports `already_terminal` and its delegated work keeps running.
 Without `runId`, the tool selects the newest active run.
 After the interrupt commits, the worker stops the chain's app-owned commands
-and child runs, including their delegated descendants. A follow-up admitted
-under another owner survives, even when it reuses the same child thread.
+and child runs, including their delegated descendants. That includes work a
+delegated task's child run started before the task reported its result. A
+follow-up admitted under another owner survives, even when it reuses the same
+child thread.
 Force stop uses the same cascade when it dispatches a run interrupt.
 Pass `stop: true` to stop the whole thread and its delegated work across runs,
 including background work a completed run still awaits.
