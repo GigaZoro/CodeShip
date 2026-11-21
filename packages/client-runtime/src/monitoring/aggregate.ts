@@ -70,6 +70,7 @@ export interface MonitoringEnvironmentReport<
   readonly retryable: boolean;
   readonly stale?: boolean;
   readonly connectionFailure?: boolean;
+  readonly reconnecting?: boolean;
 }
 
 /** An environment the user asked to connect, and whether Monitoring can ask it yet. */
@@ -128,31 +129,30 @@ export function environmentReport<A>(
     current.error === null &&
     previousReport?.connectionFailure === true &&
     (unready !== null || current.isPending);
+  const reconnecting =
+    unready?.error === null || (previousReport?.reconnecting === true && current.isPending);
   return {
     ...current,
     isPending: current.isPending || retryingConnection,
     error: retryingConnection ? previousReport.error : current.error,
     connectionFailure: retryingConnection || (unready !== null && current.error !== null),
+    reconnecting,
     environmentId,
     label,
     retryable: retryingConnection || unready === null || unready.reconnects,
     result,
     stale:
       result !== null &&
-      (unready !== null || retryingConnection || current.error !== null || current.result === null),
+      (unready !== null ||
+        reconnecting ||
+        retryingConnection ||
+        current.error !== null ||
+        current.result === null),
   };
 }
 
 export const threadDetailOf = (answer: MonitoringThreadResult): MonitoringThreadDetail | null =>
   answer !== null && "detail" in answer ? answer.detail : answer;
-
-export function monitoringDetailReconnects(
-  ready: boolean,
-  wasReconnecting: boolean,
-  isPending: boolean,
-) {
-  return !ready || (wasReconnecting && isPending);
-}
 
 /** Which environments a merged answer is still missing, and whether it has any answer at all. */
 export interface MonitoringReportStatus<A> {
@@ -1113,7 +1113,7 @@ export function keepsShownChats(shown: MonitoringChatsShown, next: MonitoringCha
   const scope = ({ request }: MonitoringChatsShown) =>
     JSON.stringify([request.window, request.filters]);
   if (scope(next) !== scope(shown)) {
-    return shown.view.chats.length > 0 && next.view.awaitingPage;
+    return shown.view.chats.length > 0 && (next.view.awaitingPage || next.view.isLoading);
   }
   if (!next.view.awaitingPage || next.view.keptPendingPages) return false;
   const asked = new Set(shown.view.pages.map(({ environmentId }) => environmentId));
@@ -1153,6 +1153,7 @@ export function presentMonitoringChats(shown: MonitoringChatsShown, next: Monito
     keep && sameRequest
       ? view.waiting.filter(
           (report) =>
+            report.reconnecting ||
             !report.isPending ||
             !shown.view.environments.some(
               (previous) =>

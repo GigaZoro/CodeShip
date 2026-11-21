@@ -35,8 +35,14 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as HttpClient from "effect/http/HttpClient";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
-import { followMonitoringChanges, MONITORING_REQUEST_TIMEOUT_MS } from "../monitoring/atoms.ts";
+import { threadDetailOf } from "../monitoring/aggregate.ts";
 import {
+  followMonitoringChanges,
+  MONITORING_REQUEST_TIMEOUT_MS,
+  monitoringThreadPresentation,
+} from "../monitoring/atoms.ts";
+import {
+  connectedEnvironmentSessionAtom,
   createAtomCommandScheduler,
   createEnvironmentRpcCommand,
   createEnvironmentQueryAtomFamily,
@@ -57,6 +63,7 @@ import {
   isRpcClientError,
   request,
   requestGuarded,
+  requestWithSession,
   runStream,
   subscribe,
   subscribeDynamicWithSession,
@@ -1447,19 +1454,42 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.monitoringChats,
     }),
   );
-  const threadQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+  const sessionTokens = new WeakMap<RpcSession, symbol>();
+  const sessionToken = (session: RpcSession) => {
+    const existing = sessionTokens.get(session);
+    if (existing !== undefined) return existing;
+    const token = Symbol();
+    sessionTokens.set(session, token);
+    return token;
+  };
+  const threadQuery = createEnvironmentQueryAtomFamily(runtime, {
     ...monitoringQueryOptions,
     label: "environment-data:server:monitoring:thread",
-    tag: WS_METHODS.monitoringThread,
+    execute: (input: EnvironmentRpcInput<typeof WS_METHODS.monitoringThread>) =>
+      requestWithSession(WS_METHODS.monitoringThread, { ...input, withRevision: true }).pipe(
+        Effect.map(({ value, session }) => ({
+          revision: value !== null && "revision" in value ? value.revision : undefined,
+          serverEpoch: value !== null && "serverEpoch" in value ? value.serverEpoch : undefined,
+          detail: threadDetailOf(value),
+          sessionToken: sessionToken(session),
+        })),
+      ),
   });
-  const monitoringThread = watchMonitoringQuery(
-    (target: Parameters<typeof threadQuery>[0]) =>
-      threadQuery({
-        ...target,
-        input: { ...target.input, withRevision: true },
-      }),
-    ({ threadId }) => threadId,
+  const monitoringThread = watchMonitoringQuery(threadQuery, ({ threadId }) => threadId);
+  const monitoringSessionToken = Atom.family((environmentId: EnvironmentId) =>
+    Atom.map(connectedEnvironmentSessionAtom(runtime, environmentId), (session) =>
+      session === null ? null : sessionToken(session),
+    ),
   );
+  const monitoringThreadPresentationFor = Atom.family((key: string) => {
+    const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, ThreadId];
+    return monitoringThreadPresentation(
+      monitoringThread({ environmentId, input: { threadId } }),
+      monitoringSessionToken(environmentId),
+    );
+  });
+  const monitoringThreadView = (environmentId: EnvironmentId, threadId: ThreadId) =>
+    monitoringThreadPresentationFor(JSON.stringify([environmentId, threadId]));
   // The server lifts a hold when a sign-in changes, so a switch shows here within the minute.
   const usageHolds = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:provider:usage-holds",
@@ -1524,6 +1554,7 @@ export function createServerEnvironmentAtoms<R, E>(
     monitoringOverview,
     monitoringChats,
     monitoringThread,
+    monitoringThreadView,
     configValueAtom,
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",

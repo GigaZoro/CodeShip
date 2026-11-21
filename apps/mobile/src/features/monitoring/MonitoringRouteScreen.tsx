@@ -59,6 +59,7 @@ import { msg, t, tn } from "../../lib/i18n";
 import { useProjects } from "../../state/entities";
 import {
   refreshMonitoring,
+  useMonitoringRefresh,
   useMonitoringChats,
   useMonitoringOverview,
 } from "../../state/monitoring";
@@ -120,8 +121,7 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
   };
   const { view: chats, updating, retry: chatsRetry } = useMonitoringChats(chatsRequest);
   const projects = useProjects();
-  const [refreshing, setRefreshing] = useState(false);
-  const [timedOut, setTimedOut] = useState(false);
+  const { refreshing, timedOut, run } = useMonitoringRefresh();
   const refresh = () => {
     const now = Date.now();
     const today = monitoringWindow(windowChoice.days, now);
@@ -137,15 +137,7 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
     });
   };
 
-  const refreshFromPull = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    setTimedOut(false);
-    const answers = await Promise.resolve()
-      .then(refresh)
-      .finally(() => setRefreshing(false));
-    setTimedOut(answers.some(monitoringRefreshTimedOut));
-  };
+  const refreshFromPull = () => run(async () => (await refresh()).some(monitoringRefreshTimedOut));
 
   const projectTitles = useMemo(
     () =>
@@ -181,7 +173,7 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
   const overviewRetry = failureRetry(overview);
   const retry = (state: MonitoringRetry, tone: "primary" | "secondary" = "secondary") =>
     state === "unavailable" ? undefined : (
-      <Button tone={tone} label={t("Retry")} onPress={refresh} loading={state === "busy"} />
+      <Button tone={tone} label={t("Retry")} onPress={refreshFromPull} loading={refreshing} />
     );
 
   const controls = (
@@ -208,6 +200,7 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
         ) : null}
         {overviewMissing.unreadable && body !== "failed" ? (
           <MonitoringNote
+            announce
             text={t("Could not refresh these environments: {names}", {
               names: overviewMissing.unreadable,
             })}
@@ -216,6 +209,7 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
         ) : null}
         {overviewMissing.waiting ? (
           <MonitoringNote
+            announce
             text={t("Waiting for these environments: {names}", {
               names: overviewMissing.waiting,
             })}
@@ -464,6 +458,7 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
                 ) : null}
                 {chatsMissing.unreadable ? (
                   <MonitoringNote
+                    announce
                     text={t("Could not refresh these environments: {names}", {
                       names: chatsMissing.unreadable,
                     })}
@@ -472,6 +467,7 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
                 ) : null}
                 {chatsMissing.waiting ? (
                   <MonitoringNote
+                    announce
                     text={t("Waiting for these environments: {names}", {
                       names: chatsMissing.waiting,
                     })}

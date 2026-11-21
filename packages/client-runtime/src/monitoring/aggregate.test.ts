@@ -33,7 +33,6 @@ import {
   monitoringChatKey,
   monitoringChatsInput,
   monitoringEnvironment,
-  monitoringDetailReconnects,
   monitoringFacets,
   monitoringWindow,
   percentile,
@@ -1042,18 +1041,54 @@ describe("keepsShownChats", () => {
     const previous = at(byCost, a, b);
     const request = { ...byCost, filters: { projectKey: "env-a:p1" } };
     const pending = source("env-a", {});
-    const narrowed = {
+    const narrowedTo = (target: MonitoringChatsSource) => ({
       request,
-      view: mergeMonitoringChats([pending], request, undefined, [
+      view: mergeMonitoringChats([target], request, undefined, [
         a.environment.environmentId,
         b.environment.environmentId,
       ]),
-    };
-    expect(presentMonitoringChats(previous, narrowed)).toMatchObject({
-      keep: true,
-      view: { chats: previous.view.chats, stale: true, isLoading: false },
     });
+    for (const target of [pending, source("env-a", {}, [], { error: null, reconnects: true })]) {
+      expect(presentMonitoringChats(previous, narrowedTo(target))).toMatchObject({
+        keep: true,
+        view: {
+          chats: previous.view.chats,
+          stale: true,
+          isLoading: false,
+          complete: false,
+          waiting: [{ environmentId: "env-a" }],
+        },
+      });
+    }
+    expect(presentMonitoringChats(previous, narrowedTo(a)).keep).toBe(false);
     expect(keepsShownChats(previous, at(request, pending))).toBe(false);
+  });
+
+  it("marks cached rows until the replacement session answers and keeps ordinary refetches quiet", () => {
+    const a = source("env-a", { 0: answer([[chat("a"), 2]]) });
+    const oldB = answer([[chat("old-b"), 1]]);
+    const b = source("env-b", { 0: oldB });
+    const ready = mergeMonitoringChats([a, b], byCost);
+    const pending = source("env-b", { 0: { again: oldB } });
+    const quiet = mergeMonitoringChats([a, pending], byCost, ready);
+    expect(quiet).toMatchObject({ chats: ready.chats, stale: false, complete: true, waiting: [] });
+
+    const disconnected = mergeMonitoringChats(
+      [a, source("env-b", {}, [], { error: null, reconnects: true })],
+      byCost,
+      ready,
+    );
+    const replacing = mergeMonitoringChats([a, pending], byCost, disconnected);
+    expect(replacing).toMatchObject({
+      chats: ready.chats,
+      stale: true,
+      complete: false,
+      waiting: [{ environmentId: "env-b" }],
+    });
+    const replacement = source("env-b", { 0: answer([[chat("new-b"), 1]]) });
+    const recovered = mergeMonitoringChats([a, replacement], byCost, replacing);
+    expect(recovered.chats.map(monitoringChatKey)).toEqual(["env-a:a", "env-b:new-b"]);
+    expect(recovered).toMatchObject({ stale: false, complete: true, waiting: [] });
   });
 
   it("keeps each pending environment's coherent pages when another refresh fails first", () => {
@@ -1169,13 +1204,4 @@ describe("keepsShownChats", () => {
     );
     expect(keepsShownChats(shown, next)).toBe(false);
   });
-});
-
-it("marks retained detail until the replacement connection's read settles", () => {
-  const offline = monitoringDetailReconnects(false, false, false);
-  expect(offline).toBe(true);
-  const replacementReading = monitoringDetailReconnects(true, offline, true);
-  expect(replacementReading).toBe(true);
-  expect(monitoringDetailReconnects(true, replacementReading, false)).toBe(false);
-  expect(monitoringDetailReconnects(true, false, true)).toBe(false);
 });

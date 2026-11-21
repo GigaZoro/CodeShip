@@ -1,12 +1,18 @@
-import { useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import type { MonitoringOverviewInput } from "@t3tools/contracts";
 import {
   presentMonitoringChats,
   presentMonitoringOverview,
   type MonitoringChatsRequest,
 } from "@t3tools/client-runtime/monitoring";
-import { createMonitoringAtoms } from "@t3tools/client-runtime/monitoring/atoms";
-import { useState } from "react";
+import {
+  createMonitoringAtoms,
+  createMonitoringOperation,
+  executeMonitoringQuery,
+  monitoringRefreshTimedOut,
+} from "@t3tools/client-runtime/monitoring/atoms";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { useContext, useState } from "react";
 
 import { environmentCatalog } from "../connection/catalog";
 import { appAtomRegistry } from "./atom-registry";
@@ -43,3 +49,27 @@ export function useMonitoringChats(request: MonitoringChatsRequest) {
 }
 
 export const refreshMonitoring = monitoring.refresh;
+
+export function useMonitoringRefresh() {
+  const registry = useContext(RegistryContext);
+  const [operation] = useState(createMonitoringOperation);
+  const state = useAtomValue(operation.state);
+  return {
+    refreshing: state === "pending",
+    timedOut: state === "timed-out",
+    run: (refresh: () => Promise<boolean>) => operation.run(registry, refresh),
+  };
+}
+
+export async function refreshMonitoringThread(environmentId: EnvironmentId, threadId: ThreadId) {
+  const [detail, other] = await Promise.all([
+    executeMonitoringQuery(
+      appAtomRegistry,
+      serverEnvironment.monitoringThread({ environmentId, input: { threadId } }),
+      environmentId,
+      { refresh: true },
+    ),
+    monitoring.refresh({}),
+  ]);
+  return monitoringRefreshTimedOut(detail) || other.some(monitoringRefreshTimedOut);
+}

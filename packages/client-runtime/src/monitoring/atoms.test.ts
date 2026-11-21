@@ -17,9 +17,11 @@ import { executeAtomQuery } from "../state/runtime.ts";
 import type { MonitoringChatsRequest } from "./aggregate.ts";
 import {
   createMonitoringAtoms,
+  createMonitoringOperation,
   executeMonitoringQuery,
   followMonitoringChanges,
   monitoringRefreshTimedOut,
+  monitoringOperationRetry,
 } from "./atoms.ts";
 
 type MonitoringAtomsInput = Parameters<typeof createMonitoringAtoms>[0];
@@ -374,22 +376,78 @@ it("retries the selected detail after its first read on a new server fails", asy
   }
 });
 
-it("ends a manual Refresh at its own deadline through repeated connection replacements", async () => {
+it("discards an old-epoch notice when the replacement answer establishes a new baseline", async () => {
+  const registry = AtomRegistry.make();
+  const changes = Atom.make<AsyncResult.AsyncResult<MonitoringChange>>(AsyncResult.initial());
+  const first = AsyncResult.success({ revision: 3, serverEpoch: "old" });
+  const answer = Atom.make<AsyncResult.AsyncResult<typeof first.value, string>>(first);
+  let reloads = 0;
+  const query = Atom.readable(
+    (get) => get(answer),
+    () => {
+      reloads++;
+    },
+  );
+  const thread = ThreadId.make("selected");
+  const watched = followMonitoringChanges(query, changes, thread);
+  const unmount = registry.mount(watched);
+  try {
+    registry.set(answer, AsyncResult.waiting(first));
+    registry.set(
+      changes,
+      AsyncResult.success({ revision: 4, serverEpoch: "old", threadIds: [thread] }),
+    );
+    const replacement = AsyncResult.success({ revision: 0, serverEpoch: "new" });
+    registry.set(answer, replacement);
+    registry.set(answer, AsyncResult.waiting(replacement));
+    registry.set(
+      answer,
+      AsyncResult.failure(Cause.fail("manual read failed"), {
+        previousSuccess: Option.some(replacement),
+      }),
+    );
+    await Promise.resolve();
+    expect(reloads).toBe(0);
+  } finally {
+    unmount();
+    registry.dispose();
+  }
+});
+
+it("ends a manual Refresh at its own deadline through repeated connection replacements and enables Retry", async () => {
   vi.useFakeTimers();
   const registry = AtomRegistry.make();
   const previous = { revision: 7 };
   const answer = Atom.make(AsyncResult.success(previous, { waiting: true }));
   const query = Atom.readable((get) => get(answer));
+  const operation = createMonitoringOperation();
+  const unmount = registry.mount(operation.state);
   try {
-    const outcome = executeMonitoringQuery(registry, query, EnvironmentId.make("env-a"));
+    const run = () =>
+      operation.run(registry, async () =>
+        monitoringRefreshTimedOut(
+          await executeMonitoringQuery(registry, query, EnvironmentId.make("env-a")),
+        ),
+      );
+    const outcome = run();
+    expect(registry.get(operation.state)).toBe("pending");
     for (let generation = 1; generation <= 5; generation++) {
       await vi.advanceTimersByTimeAsync(3_000);
       registry.set(answer, AsyncResult.success(previous, { waiting: true, timestamp: generation }));
     }
-    expect(monitoringRefreshTimedOut(await outcome)).toBe(true);
+    await outcome;
+    expect(registry.get(operation.state)).toBe("timed-out");
+    expect(monitoringOperationRetry("busy", registry.get(operation.state) === "pending")).toBe(
+      "available",
+    );
     expect(registry.getNodes().get(query)?.listeners.size ?? 0).toBe(0);
     expect(AsyncResult.getOrElse(registry.get(query), () => null)).toEqual(previous);
+    const retry = run();
+    registry.set(answer, AsyncResult.success({ revision: 8 }));
+    await retry;
+    expect(registry.get(operation.state)).toBe("settled");
   } finally {
+    unmount();
     registry.dispose();
     vi.useRealTimers();
   }

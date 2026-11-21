@@ -1,5 +1,3 @@
-import { monitoringRefreshTimedOut } from "@t3tools/client-runtime/monitoring/atoms";
-import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import type { EnvironmentId, MonitoringThreadDetail, ThreadId } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
@@ -8,7 +6,8 @@ import { formatCount, formatPercent, formatTokens, formatUsd } from "@t3tools/sh
 import { ArrowLeftIcon, CircleAlertIcon, ExternalLinkIcon } from "lucide-react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
-import { refreshMonitoringThread, useMonitoringThread } from "../../state/monitoring";
+import { useMonitoringThread } from "../../state/monitoring";
+import { RetryButton } from "./MonitoringChatList";
 import { resolveHour12 } from "../../timestampFormat";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
@@ -16,12 +15,7 @@ import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { MonitoringGantt } from "./MonitoringGantt";
-import {
-  MonitoringKpi,
-  MonitoringRefreshButton,
-  MonitoringSection,
-  MonitoringTruncated,
-} from "./MonitoringSection";
+import { MonitoringKpi, MonitoringSection, MonitoringTruncated } from "./MonitoringSection";
 import { MonitoringTimeBar } from "./MonitoringTimeBar";
 import {
   FINDING_DETAIL_LABELED,
@@ -47,11 +41,15 @@ const SOURCE_LABEL = {
 export function MonitoringThreadDeepDive({
   environmentId,
   threadId,
+  refreshing,
+  onRetry,
 }: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
+  readonly refreshing: boolean;
+  readonly onRetry: () => void;
 }) {
-  const { detail, isPending, error, reconnecting } = useMonitoringThread(environmentId, threadId);
+  const { detail, isPending, error, retained } = useMonitoringThread(environmentId, threadId);
 
   return (
     <div className="flex flex-col gap-6">
@@ -75,16 +73,10 @@ export function MonitoringThreadDeepDive({
               : t("Could not load this chat's analysis: {error}", { error })}
           </AlertDescription>
           <AlertAction>
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => refreshMonitoringThread(environmentId, threadId)}
-            >
-              {t("Retry")}
-            </Button>
+            <RetryButton retry={refreshing ? "busy" : "available"} onRetry={onRetry} />
           </AlertAction>
         </Alert>
-      ) : reconnecting && detail ? (
+      ) : retained && detail ? (
         <p className="text-sm text-muted-foreground">{t("Showing previous monitoring results.")}</p>
       ) : null}
       {detail ? (
@@ -101,30 +93,6 @@ export function MonitoringThreadDeepDive({
         </p>
       )}
     </div>
-  );
-}
-
-/** The header's Refresh while a chat is open: see `refreshMonitoringThread`. */
-export function MonitoringThreadRefresh({
-  environmentId,
-  threadId,
-}: {
-  readonly environmentId: EnvironmentId;
-  readonly threadId: ThreadId;
-}) {
-  const [refreshing, setRefreshing] = useState(false);
-  const [timedOut, setTimedOut] = useState(false);
-  const refresh = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    setTimedOut(false);
-    const [answer] = await Promise.resolve()
-      .then(() => refreshMonitoringThread(environmentId, threadId))
-      .finally(() => setRefreshing(false));
-    setTimedOut(monitoringRefreshTimedOut(answer));
-  };
-  return (
-    <MonitoringRefreshButton refreshing={refreshing} timedOut={timedOut} onRefresh={refresh} />
   );
 }
 

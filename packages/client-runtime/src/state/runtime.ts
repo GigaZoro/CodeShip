@@ -635,6 +635,17 @@ const sessionGenerationAtomsByRuntime = new WeakMap<
   (environmentId: EnvironmentIdType) => Atom.Atom<number>
 >();
 
+export const connectedEnvironmentSessionAtom = <R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  environmentId: EnvironmentIdType,
+) => {
+  const connection = environmentConnectionAtoms(runtime)(environmentId);
+  return Atom.make((get) => {
+    const current = AsyncResult.getOrElse(get(connection), () => null);
+    return current?.[0].phase === "connected" ? Option.getOrNull(current[1]) : null;
+  });
+};
+
 /**
  * Counts established sessions; it changes only when a new one comes up, so failed one-shot reads
  * can watch it to run again. Keyed on the session object because the supervisor's `generation`

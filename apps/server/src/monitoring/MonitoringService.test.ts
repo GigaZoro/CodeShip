@@ -405,16 +405,19 @@ it.effect("reads the stored detail and returns nothing for one that is not settl
   }).pipe(Effect.scoped),
 );
 
-it.effect("scans sweep candidates once and uses indexed point lookups to recheck them", () =>
+it.effect("selects only IDs in one sweep and uses indexed point lookups to recheck them", () =>
   Effect.gen(function* () {
     const { monitoring, seedThread, sql } = yield* makeHarness();
     for (let i = 0; i < 27; i++) yield* seedThread(`candidate-${i}`);
     const scans: string[][] = [];
     const points: string[][] = [];
+    const projections: string[] = [];
     const observe: Statement.Transformer = (statement) =>
       Effect.gen(function* () {
         const [query, params] = statement.compile();
-        if (!query.includes("coalesce(m.attempts, 0)")) return statement;
+        if (!query.includes("m.attempts = 0 OR m.retry_at <=")) return statement;
+        if (!query.includes("t.thread_id = ?"))
+          projections.push(query.slice(0, query.indexOf("FROM")).trim());
         const queryPlan = yield* sql
           .unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, params)
           .pipe(Effect.provideService(Statement.CurrentTransformer, undefined), Effect.orDie);
@@ -432,6 +435,7 @@ it.effect("scans sweep candidates once and uses indexed point lookups to recheck
     yield* stored.done;
     expect((yield* overviewIds(monitoring)).ids).toHaveLength(27);
     expect(scans).toHaveLength(1);
+    expect(projections).toEqual(["SELECT t.thread_id"]);
     expect(points).toHaveLength(27);
     expect(points.every((plan) => plan.some((step) => step.includes("SEARCH t USING INDEX")))).toBe(
       true,
@@ -684,7 +688,7 @@ it.effect("batches a burst of settles and returns their revision on each read", 
 );
 
 it.effect(
-  "announces changed metadata once and uses the current title in both summary and timeline",
+  "announces a rename and a project-only move once each and uses the current title in the timeline",
   () =>
     Effect.gen(function* () {
       // The second chat analyzed waits for the scope to end, so it stays pending.
@@ -720,7 +724,24 @@ it.effect(
       expect((yield* monitoring.overview(january())).revision).toBe(analyzed);
 
       yield* sql`
-      UPDATE orchestration_v2_projection_threads SET title = 'New name', project_id = 'project-2'
+      UPDATE orchestration_v2_projection_threads SET title = 'New name'
+      WHERE thread_id = 'moved-chat'
+    `;
+      yield* send(
+        domainEvent(
+          "thread.metadata-updated",
+          {
+            ...original,
+            title: "New name",
+          },
+          "rename",
+        ),
+      );
+      yield* TestClock.adjust("3 seconds");
+      const renamed = (yield* monitoring.overview(january())).revision;
+      expect(renamed).toBe(analyzed + 1);
+      yield* sql`
+      UPDATE orchestration_v2_projection_threads SET project_id = 'project-2'
       WHERE thread_id = 'moved-chat'
     `;
       yield* send(
@@ -731,13 +752,12 @@ it.effect(
             title: "New name",
             projectId: ProjectId.make("project-2"),
           },
-          "rename",
+          "move-only",
         ),
       );
       yield* TestClock.adjust("3 seconds");
-      const renamed = (yield* monitoring.overview(january())).revision;
-      expect(renamed).toBe(analyzed + 1);
       const overview = yield* monitoring.overview(january());
+      expect(overview.revision).toBe(analyzed + 2);
       const listed = (projectId: string) =>
         monitoring
           .chats({
@@ -783,12 +803,12 @@ it.effect(
       );
       yield* TestClock.adjust("3 seconds");
       const pendingMoved = (yield* monitoring.overview(january())).revision;
-      expect(pendingMoved).toBe(analyzed + 2);
+      expect(pendingMoved).toBe(analyzed + 3);
       yield* sql`ALTER TABLE monitoring_thread_analyses RENAME TO hidden_analyses`;
       yield* send(domainEvent("thread.metadata-updated", original, "unreadable"));
       yield* TestClock.adjust("3 seconds");
       yield* sql`ALTER TABLE hidden_analyses RENAME TO monitoring_thread_analyses`;
-      expect((yield* monitoring.overview(january())).revision).toBe(analyzed + 3);
+      expect((yield* monitoring.overview(january())).revision).toBe(analyzed + 4);
 
       expect({
         groups: overview.groups.map((group) => group.projectId),

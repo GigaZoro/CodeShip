@@ -88,7 +88,9 @@ export function MonitoringOverviewNotices({
   return (
     <div className="flex h-24 flex-col gap-2 overflow-y-auto text-sm text-muted-foreground">
       {stale ? <p>{t("Showing previous monitoring results.")}</p> : null}
-      {children}
+      <div role="status" className="flex flex-col gap-2">
+        {children}
+      </div>
       {pending > 0 ? (
         <p>
           {tn(
@@ -123,10 +125,10 @@ export function MonitoringRefreshButton({
   return (
     <>
       <Button
-        onClick={onRefresh}
+        onClick={refreshing ? undefined : onRefresh}
         aria-label={t("Refresh monitoring")}
         aria-busy={refreshing}
-        disabled={refreshing}
+        aria-disabled={refreshing}
         size="icon-sm"
         variant="ghost"
       >

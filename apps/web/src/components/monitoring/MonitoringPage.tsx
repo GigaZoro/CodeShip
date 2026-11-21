@@ -1,4 +1,7 @@
-import { monitoringRefreshTimedOut } from "@t3tools/client-runtime/monitoring/atoms";
+import {
+  monitoringOperationRetry,
+  monitoringRefreshTimedOut,
+} from "@t3tools/client-runtime/monitoring/atoms";
 import { Link, useSearch } from "@tanstack/react-router";
 import {
   EnvironmentId,
@@ -46,6 +49,8 @@ import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { useProjects } from "../../state/entities";
 import {
   refreshMonitoring,
+  refreshMonitoringThread,
+  useMonitoringRefresh,
   useMonitoringChats,
   useMonitoringOverview,
 } from "../../state/monitoring";
@@ -74,7 +79,7 @@ import {
   MonitoringSection,
 } from "./MonitoringSection";
 import { MonitoringBreakdownTable, MonitoringPhaseTable } from "./MonitoringTables";
-import { MonitoringThreadDeepDive, MonitoringThreadRefresh } from "./MonitoringThreadDetail";
+import { MonitoringThreadDeepDive } from "./MonitoringThreadDetail";
 import { MonitoringTimeBar } from "./MonitoringTimeBar";
 import { MonitoringTrendChart } from "./MonitoringTrendChart";
 import { KIND_LABEL } from "@t3tools/client-runtime/monitoring-text";
@@ -195,16 +200,18 @@ export function MonitoringPage() {
       chats: [],
     });
   };
-  const [refreshing, setRefreshing] = useState(false);
-  const [timedOut, setTimedOut] = useState(false);
-  const refreshFromButton = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    setTimedOut(false);
-    const answers = await Promise.resolve()
-      .then(refresh)
-      .finally(() => setRefreshing(false));
-    setTimedOut(answers.some(monitoringRefreshTimedOut));
+  const overviewRefresh = useMonitoringRefresh();
+  const detailRefresh = useMonitoringRefresh(
+    deepDive === null ? null : JSON.stringify([deepDive.environmentId, deepDive.threadId]),
+  );
+  const refreshOverview = () =>
+    overviewRefresh.run(async () => (await refresh()).some(monitoringRefreshTimedOut));
+  const refreshDetail = () => {
+    if (deepDive !== null) {
+      void detailRefresh.run(() =>
+        refreshMonitoringThread(deepDive.environmentId, deepDive.threadId),
+      );
+    }
   };
   // A new period or scope starts the list from its first page again.
   const changeFilters = (next: Filters) => {
@@ -243,19 +250,11 @@ export function MonitoringPage() {
               </Toggle>
             ))}
           </ToggleGroup>
-          {deepDive ? (
-            <MonitoringThreadRefresh
-              key={`${deepDive.environmentId}:${deepDive.threadId}`}
-              environmentId={deepDive.environmentId}
-              threadId={deepDive.threadId}
-            />
-          ) : (
-            <MonitoringRefreshButton
-              refreshing={refreshing}
-              timedOut={timedOut}
-              onRefresh={refreshFromButton}
-            />
-          )}
+          <MonitoringRefreshButton
+            refreshing={(deepDive === null ? overviewRefresh : detailRefresh).refreshing}
+            timedOut={(deepDive === null ? overviewRefresh : detailRefresh).timedOut}
+            onRefresh={deepDive === null ? refreshOverview : refreshDetail}
+          />
         </div>
       </WorkspacePageHeader>
       <ScrollArea className="min-h-0 flex-1">
@@ -265,6 +264,8 @@ export function MonitoringPage() {
               key={`${deepDive.environmentId}:${deepDive.threadId}`}
               environmentId={deepDive.environmentId}
               threadId={deepDive.threadId}
+              refreshing={detailRefresh.refreshing}
+              onRetry={refreshDetail}
             />
           ) : (
             <MonitoringOverview
@@ -276,8 +277,9 @@ export function MonitoringPage() {
               onListOrderChange={setListOrder}
               projectTitleOfKey={projectTitleOfKey}
               projectTitleOf={projectTitleOf}
-              retry={failureRetry(overview)}
-              onRetry={refresh}
+              retry={monitoringOperationRetry(failureRetry(overview), overviewRefresh.refreshing)}
+              refreshing={overviewRefresh.refreshing}
+              onRetry={refreshOverview}
             />
           )}
         </WorkspacePageContainer>
@@ -297,6 +299,7 @@ function MonitoringOverview({
   projectTitleOf,
   retry,
   onRetry,
+  refreshing,
 }: {
   readonly overview: MonitoringOverviewView;
   readonly days: ReadonlyArray<MonitoringDay>;
@@ -308,6 +311,7 @@ function MonitoringOverview({
   readonly projectTitleOf: (chat: MonitoringChat) => string;
   readonly retry: MonitoringRetry;
   readonly onRetry: () => void;
+  readonly refreshing: boolean;
 }) {
   if (overview.environments.length === 0) {
     return (
@@ -353,7 +357,9 @@ function MonitoringOverview({
   if (overview.isLoading) {
     return (
       <div className="flex flex-col gap-4">
-        {missingNotices}
+        <MonitoringOverviewNotices stale={false} pending={0} failed={0}>
+          {missingNotices}
+        </MonitoringOverviewNotices>
         <div className="flex flex-col gap-4" aria-busy>
           <Skeleton className="h-20 w-full" />
           <Skeleton className="h-32 w-full" />
@@ -510,12 +516,14 @@ function MonitoringOverview({
             <MonitoringOutliers
               requests={requests.outliers}
               onRetry={onRetry}
+              refreshing={refreshing}
               projectTitleOf={projectTitleOf}
             />
             <MonitoringChatListQuery
               request={requests.list}
               onOrderChange={onListOrderChange}
               onRetry={onRetry}
+              refreshing={refreshing}
               projectTitleOf={projectTitleOf}
             />
           </MonitoringSection>
@@ -529,11 +537,13 @@ function MonitoringChatListQuery({
   request,
   onOrderChange,
   onRetry,
+  refreshing,
   projectTitleOf,
 }: {
   readonly request: MonitoringChatsRequest;
   readonly onOrderChange: (order: MonitoringChatOrder) => void;
   readonly onRetry: () => void;
+  readonly refreshing: boolean;
   readonly projectTitleOf: (chat: MonitoringChat) => string;
 }) {
   const { view, updating, retry, sortedBy } = useMonitoringChats(request);
@@ -541,7 +551,7 @@ function MonitoringChatListQuery({
     <MonitoringChatList
       view={view}
       updating={updating}
-      retry={retry}
+      retry={monitoringOperationRetry(retry, refreshing)}
       sortedBy={sortedBy}
       order={request.order}
       onOrderChange={onOrderChange}
@@ -554,10 +564,12 @@ function MonitoringChatListQuery({
 function MonitoringOutliers({
   requests,
   onRetry,
+  refreshing,
   projectTitleOf,
 }: {
   readonly requests: ReadonlyArray<MonitoringChatsRequest>;
   readonly onRetry: () => void;
+  readonly refreshing: boolean;
   readonly projectTitleOf: (chat: MonitoringChat) => string;
 }) {
   return (
@@ -568,6 +580,7 @@ function MonitoringOutliers({
           outlier={outlier}
           request={requests[index]!}
           onRetry={onRetry}
+          refreshing={refreshing}
           projectTitleOf={projectTitleOf}
         />
       ))}
@@ -579,11 +592,13 @@ function OutlierGroupQuery({
   outlier,
   request,
   onRetry,
+  refreshing,
   projectTitleOf,
 }: {
   readonly outlier: (typeof OUTLIERS)[number];
   readonly request: MonitoringChatsRequest;
   readonly onRetry: () => void;
+  readonly refreshing: boolean;
   readonly projectTitleOf: (chat: MonitoringChat) => string;
 }) {
   const { view, retry } = useMonitoringChats(request);
@@ -596,7 +611,7 @@ function OutlierGroupQuery({
       chats={chats}
       missing={missing}
       value={outlier.value}
-      retry={retry}
+      retry={monitoringOperationRetry(retry, refreshing)}
       onRetry={onRetry}
       projectTitleOf={projectTitleOf}
     />

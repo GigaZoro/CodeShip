@@ -1,22 +1,21 @@
-import { useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentId,
   MonitoringOverviewInput,
   MonitoringThreadDetail,
 } from "@t3tools/contracts";
 import {
-  monitoringDetailReconnects,
   presentMonitoringChats,
   presentMonitoringOverview,
-  threadDetailOf,
   type MonitoringChatsRequest,
 } from "@t3tools/client-runtime/monitoring";
 import {
   createMonitoringAtoms,
+  createMonitoringOperation,
   executeMonitoringQuery,
+  monitoringRefreshTimedOut,
 } from "@t3tools/client-runtime/monitoring/atoms";
-import { AsyncResult } from "effect/reactivity";
-import { useState } from "react";
+import { useContext, useState } from "react";
 
 import { environmentCatalog } from "../connection/catalog";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -54,9 +53,22 @@ export function useMonitoringChats(request: MonitoringChatsRequest) {
 
 export const refreshMonitoring = monitoring.refresh;
 
+export function useMonitoringRefresh(key: string | null = null) {
+  const registry = useContext(RegistryContext);
+  const [current, setCurrent] = useState(() => ({ key, operation: createMonitoringOperation() }));
+  const next = current.key === key ? current : { key, operation: createMonitoringOperation() };
+  if (next !== current) setCurrent(next);
+  const state = useAtomValue(next.operation.state);
+  return {
+    refreshing: state === "pending",
+    timedOut: state === "timed-out",
+    run: (refresh: () => Promise<boolean>) => next.operation.run(registry, refresh),
+  };
+}
+
 export interface MonitoringThreadView {
   readonly detail: MonitoringThreadDetail | null;
-  readonly reconnecting: boolean;
+  readonly retained: boolean;
   readonly isPending: boolean;
   readonly error: string | null;
 }
@@ -65,29 +77,23 @@ export function useMonitoringThread(
   environmentId: EnvironmentId,
   threadId: MonitoringThreadDetail["summary"]["threadId"],
 ): MonitoringThreadView {
-  const result = useAtomValue(
-    serverEnvironment.monitoringThread({ environmentId, input: { threadId } }),
+  const { result, detail, retained } = useAtomValue(
+    serverEnvironment.monitoringThreadView(environmentId, threadId),
   );
-  const ready =
-    useAtomValue(environmentPresentations.presentationsAtom).get(environmentId)?.connection
-      .phase === "connected";
-  const [wasReconnecting, setWasReconnecting] = useState(!ready);
-  const reconnecting = monitoringDetailReconnects(ready, wasReconnecting, result.waiting);
-  if (reconnecting !== wasReconnecting) setWasReconnecting(reconnecting);
   return {
-    reconnecting,
-    detail: threadDetailOf(AsyncResult.getOrElse(result, () => null)),
+    retained,
+    detail,
     isPending: result.waiting,
     error: result._tag === "Failure" ? formatEnvironmentQueryError(result.cause) : null,
   };
 }
 
 /** Asks for the chat's analysis again and, as Refresh on the list does, every failure a view read. */
-export function refreshMonitoringThread(
+export async function refreshMonitoringThread(
   environmentId: EnvironmentId,
   threadId: MonitoringThreadDetail["summary"]["threadId"],
 ) {
-  return Promise.all([
+  const [detail, other] = await Promise.all([
     executeMonitoringQuery(
       appAtomRegistry,
       serverEnvironment.monitoringThread({ environmentId, input: { threadId } }),
@@ -96,4 +102,5 @@ export function refreshMonitoringThread(
     ),
     monitoring.refresh({}),
   ]);
+  return monitoringRefreshTimedOut(detail) || other.some(monitoringRefreshTimedOut);
 }

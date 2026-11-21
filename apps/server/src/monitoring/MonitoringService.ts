@@ -32,6 +32,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
 import * as Struct from "effect/Struct";
 
@@ -140,21 +141,17 @@ interface StaleChat {
   readonly attempts: number;
 }
 
-function staleAnalysisCandidates(sql: SqlClient.SqlClient, now: string, threadId?: ThreadId) {
-  return sql<StaleChat>`
-    SELECT t.thread_id, json_extract(t.payload_json, '$.settledAt') AS settled_at,
-      m.error, coalesce(m.attempts, 0) AS attempts
+function staleAnalysisCandidates(sql: SqlClient.SqlClient, now: string) {
+  return sql`
     FROM orchestration_v2_projection_threads t
     LEFT JOIN monitoring_thread_analyses m
       ON m.thread_id = t.thread_id
       AND m.analyzer_version = ${ANALYZER_VERSION}
       AND m.settled_at = json_extract(t.payload_json, '$.settledAt')
     WHERE ${settledListedThread(sql)}
-      ${threadId === undefined ? sql`` : sql`AND t.thread_id = ${threadId}`}
       AND (m.thread_id IS NULL
         OR (m.error IS NULL AND m.detail_json IS NULL)
         OR (m.error IS NOT NULL AND (m.attempts = 0 OR m.retry_at <= ${now})))
-    ${threadId === undefined ? sql`ORDER BY m.thread_id IS NOT NULL, settled_at DESC, t.thread_id` : sql``}
   `;
 }
 
@@ -659,14 +656,25 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const selectStale = Effect.fn("MonitoringService.selectStale")(
-    function* (threadId: ThreadId | undefined) {
-      const now = DateTime.formatIso(yield* DateTime.now);
-      return yield* staleAnalysisCandidates(sql, now, threadId);
-    },
-    NodeSqliteClient.readOnly,
-    NodeSqliteClient.inBackground,
-  );
+  const readCandidates = <A>(query: Effect.Effect<ReadonlyArray<A>, SqlError>) =>
+    query.pipe(
+      NodeSqliteClient.readOnly,
+      NodeSqliteClient.inBackground,
+      Effect.catchCauseIf(notInterrupt, (cause) =>
+        Effect.logWarning("Monitoring could not select chats to analyze.", {
+          cause: Cause.pretty(cause),
+        }).pipe(Effect.as([])),
+      ),
+    );
+
+  const selectStale = Effect.fn("MonitoringService.selectStale")(function* (threadId: ThreadId) {
+    const now = DateTime.formatIso(yield* DateTime.now);
+    return yield* readCandidates(sql<StaleChat>`
+        SELECT t.thread_id, json_extract(t.payload_json, '$.settledAt') AS settled_at,
+          m.error, coalesce(m.attempts, 0) AS attempts
+        ${staleAnalysisCandidates(sql, now)} AND t.thread_id = ${threadId}
+      `);
+  });
 
   const analyzeAndStore = Effect.fn("MonitoringService.analyzeAndStore")(
     function* (stale: StaleChat) {
@@ -716,16 +724,14 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  const selectCandidates = Effect.fn("MonitoringService.selectCandidates")(
-    function* (threadId: ThreadId | undefined) {
-      return yield* selectStale(threadId);
-    },
-    Effect.catchCauseIf(notInterrupt, (cause) =>
-      Effect.logWarning("Monitoring could not select chats to analyze.", {
-        cause: Cause.pretty(cause),
-      }).pipe(Effect.as([])),
-    ),
-  );
+  const selectCandidates = Effect.fn("MonitoringService.selectCandidates")(function* () {
+    const now = DateTime.formatIso(yield* DateTime.now);
+    return yield* readCandidates(sql<{ readonly thread_id: ThreadId }>`
+      SELECT t.thread_id
+      ${staleAnalysisCandidates(sql, now)}
+      ORDER BY m.thread_id IS NOT NULL, json_extract(t.payload_json, '$.settledAt') DESC, t.thread_id
+    `);
+  });
 
   const enqueue = Effect.fn("MonitoringService.enqueue")(function* (threadId: ThreadId) {
     work.add(threadId);
@@ -733,26 +739,26 @@ const make = Effect.gen(function* () {
   });
 
   const analysisLoop = Effect.gen(function* () {
-    let candidates = yield* selectCandidates(undefined);
+    let candidates = yield* selectCandidates();
     let index = 0;
     let nextSweep = DateTime.addDuration(yield* DateTime.now, RETRY_SWEEP_INTERVAL);
     for (;;) {
       const pending = Array.from(work);
       work.clear();
       for (const threadId of pending) {
-        const [candidate] = yield* selectCandidates(threadId);
+        const [candidate] = yield* selectStale(threadId);
         if (candidate !== undefined) yield* analyzeAndStore(candidate);
       }
       const now = yield* DateTime.now;
       if (index >= candidates.length && DateTime.isGreaterThanOrEqualTo(now, nextSweep)) {
-        candidates = yield* selectCandidates(undefined);
+        candidates = yield* selectCandidates();
         index = 0;
         nextSweep = DateTime.addDuration(now, RETRY_SWEEP_INTERVAL);
       }
       const end = Math.min(index + ANALYSIS_BATCH, candidates.length);
       for (; index < end; index++) {
         const candidate = candidates[index]!;
-        const [current] = yield* selectCandidates(candidate.thread_id);
+        const [current] = yield* selectStale(candidate.thread_id);
         if (current !== undefined) yield* analyzeAndStore(current);
       }
       if (index >= candidates.length && work.size === 0) {

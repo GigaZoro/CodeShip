@@ -1,16 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useState } from "react";
-import {
-  executeMonitoringQuery,
-  monitoringRefreshTimedOut,
-} from "@t3tools/client-runtime/monitoring/atoms";
 import type { StaticScreenProps } from "@react-navigation/native";
 import type { EnvironmentId, MonitoringThreadDetail, ThreadId } from "@t3tools/contracts";
-import {
-  formatMonitoringTime,
-  monitoringDetailReconnects,
-  threadDetailOf,
-} from "@t3tools/client-runtime/monitoring";
+import { formatMonitoringTime } from "@t3tools/client-runtime/monitoring";
 import {
   FINDING_DETAIL_LABELED,
   FINDING_TEXT,
@@ -30,11 +21,9 @@ import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { msg, t, tn } from "../../lib/i18n";
-import { refreshMonitoring } from "../../state/monitoring";
-import { useEnvironmentQuery } from "../../state/query";
+import { refreshMonitoringThread, useMonitoringRefresh } from "../../state/monitoring";
+import { formatEnvironmentQueryError } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
-import { appAtomRegistry } from "../../state/atom-registry";
-import { environmentPresentations } from "../../state/presentation";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { useOpenScheduledTaskThread } from "../settings/ScheduledTaskRunsRouteScreen";
@@ -59,31 +48,12 @@ export function MonitoringThreadRouteScreen({
   const { environmentId, threadId } = route.params;
   const insets = useSafeAreaInsets();
   const openThread = useOpenScheduledTaskThread();
-  const threadAtom = serverEnvironment.monitoringThread({ environmentId, input: { threadId } });
-  const query = useEnvironmentQuery(threadAtom);
-  const detail = threadDetailOf(query.data);
-  const ready =
-    useAtomValue(environmentPresentations.presentationsAtom).get(environmentId)?.connection
-      .phase === "connected";
-  const [wasReconnecting, setWasReconnecting] = useState(!ready);
-  const reconnecting = monitoringDetailReconnects(ready, wasReconnecting, query.isPending);
-  if (reconnecting !== wasReconnecting) setWasReconnecting(reconnecting);
-  const [refreshing, setRefreshing] = useState(false);
-  const [timedOut, setTimedOut] = useState(false);
-  const refreshAll = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    setTimedOut(false);
-    const [result] = await Promise.resolve()
-      .then(() =>
-        Promise.all([
-          executeMonitoringQuery(appAtomRegistry, threadAtom, environmentId, { refresh: true }),
-          refreshMonitoring({}),
-        ]),
-      )
-      .finally(() => setRefreshing(false));
-    setTimedOut(monitoringRefreshTimedOut(result));
-  };
+  const { result, detail, retained } = useAtomValue(
+    serverEnvironment.monitoringThreadView(environmentId, threadId),
+  );
+  const error = result._tag === "Failure" ? formatEnvironmentQueryError(result.cause) : null;
+  const { refreshing, timedOut, run } = useMonitoringRefresh();
+  const refreshAll = () => run(() => refreshMonitoringThread(environmentId, threadId));
 
   return (
     <SettingsScreen title={t("Chat analysis")}>
@@ -101,27 +71,33 @@ export function MonitoringThreadRouteScreen({
               {t("The request timed out.")}
             </Text>
           ) : null}
-          {detail && query.error !== null ? (
+          {detail && error !== null ? (
             <MonitoringNote
               text={t("Could not refresh this chat's analysis, so it may be out of date: {error}", {
-                error: query.error,
+                error,
               })}
-              action={<Button label={t("Retry")} onPress={refreshAll} loading={query.isPending} />}
+              action={<Button label={t("Retry")} onPress={refreshAll} loading={refreshing} />}
             />
-          ) : reconnecting && detail ? (
+          ) : retained && detail ? (
             <Text textRole="footnote">{t("Showing previous monitoring results.")}</Text>
           ) : null}
           {detail ? (
             <DeepDiveBody detail={detail} onOpenChat={() => openThread(environmentId, threadId)} />
-          ) : query.error !== null ? (
+          ) : error !== null ? (
             <EmptyState
               variant="plain"
               title={t("Could not load this chat's analysis")}
-              detail={query.error}
-              actionLabel={t("Retry")}
-              onAction={refreshAll}
+              detail={error}
+              action={
+                <Button
+                  tone="primary"
+                  label={t("Retry")}
+                  onPress={refreshAll}
+                  loading={refreshing}
+                />
+              }
             />
-          ) : query.isPending ? (
+          ) : result.waiting ? (
             <View className="items-center py-16" accessibilityState={{ busy: true }}>
               <AppActivityIndicator />
             </View>

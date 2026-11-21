@@ -3,6 +3,7 @@ import type {
   MonitoringChange,
   MonitoringChatsInput,
   MonitoringOverviewInput,
+  MonitoringThreadDetail,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -29,7 +30,27 @@ import {
   type MonitoringEnvironment,
   type MonitoringOverviewView,
   type MonitoringQueryRead,
+  type MonitoringRetry,
 } from "./aggregate.ts";
+
+export function monitoringThreadPresentation<
+  A extends {
+    readonly detail: MonitoringThreadDetail | null;
+    readonly sessionToken: symbol;
+  },
+  E,
+>(query: Atom.Atom<AsyncResult.AsyncResult<A, E>>, sessionToken: Atom.Atom<symbol | null>) {
+  return Atom.make((get) => {
+    const result = get(query);
+    const active = get(sessionToken);
+    const answer = AsyncResult.getOrElse(result, () => null);
+    return {
+      result,
+      detail: answer?.detail ?? null,
+      retained: answer !== null && answer.sessionToken !== active,
+    };
+  });
+}
 
 function monitoringEnvironments(
   presentations: ReadonlyMap<EnvironmentId, EnvironmentPresentation>,
@@ -56,6 +77,7 @@ export function followMonitoringChanges<A extends object | null, E, F>(
     {
       seen: MonitoringChange | null;
       pending: MonitoringChange | null;
+      answerEpoch: string | undefined;
     }
   >();
   return Atom.transform(
@@ -63,9 +85,21 @@ export function followMonitoringChanges<A extends object | null, E, F>(
     (get) => {
       const notice = AsyncResult.getOrElse(get(changes), () => null);
       const result = get(query);
-      const cursor = state.get(get.registry) ?? { seen: null, pending: null };
+      const cursor = state.get(get.registry) ?? {
+        seen: null,
+        pending: null,
+        answerEpoch: undefined,
+      };
       state.set(get.registry, cursor);
       const answer = answerVersion(result);
+      if (
+        result._tag === "Success" &&
+        answer?.serverEpoch !== undefined &&
+        answer.serverEpoch !== cursor.answerEpoch
+      ) {
+        if (cursor.pending?.serverEpoch === cursor.answerEpoch) cursor.pending = null;
+        cursor.answerEpoch = answer.serverEpoch;
+      }
       if (notice !== null && notice !== cursor.seen) {
         const seen = cursor.seen;
         const sameEpoch = seen?.serverEpoch === notice.serverEpoch;
@@ -159,6 +193,31 @@ export function monitoringRefreshTimedOut(result: AsyncResult.AsyncResult<unknow
   if (result._tag !== "Failure") return false;
   const error = Cause.squash(result.cause);
   return isEnvironmentRpcUnavailable(error) && error.reason === "timeout";
+}
+
+type MonitoringOperationState = "settled" | "pending" | "timed-out";
+
+export function createMonitoringOperation() {
+  const state = Atom.make<MonitoringOperationState>("settled");
+  const run = async (registry: AtomRegistry.AtomRegistry, refresh: () => Promise<boolean>) => {
+    if (registry.get(state) === "pending") return;
+    registry.set(state, "pending");
+    try {
+      registry.set(state, (await refresh()) ? "timed-out" : "settled");
+    } catch (error) {
+      registry.set(state, "settled");
+      throw error;
+    }
+  };
+  return { state, run };
+}
+
+export function monitoringOperationRetry(
+  retry: MonitoringRetry,
+  pending: boolean,
+): MonitoringRetry {
+  if (retry === "unavailable") return retry;
+  return pending ? "busy" : "available";
 }
 
 /** The overview and chat lists merged across every environment the user asked to connect. */
