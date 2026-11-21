@@ -3,6 +3,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
@@ -90,6 +91,42 @@ describe("KeyedLock", () => {
         "boom",
       );
 
+      assert.deepStrictEqual(yield* lock.activeKeys, []);
+    }),
+  );
+
+  it.effect("withLockIfAvailable skips a held key, runs a free one and releases it", () =>
+    Effect.gen(function* () {
+      const lock = yield* KeyedLock.make<string>();
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const ran = yield* Ref.make(false);
+
+      const holder = yield* lock
+        .withLock(
+          "key",
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      assert.isTrue(
+        Option.isNone(
+          yield* lock.withLockIfAvailable("key", Ref.set(ran, true).pipe(Effect.as(1))),
+        ),
+      );
+      assert.isFalse(yield* Ref.get(ran));
+      assert.deepStrictEqual(yield* lock.activeKeys, ["key"]);
+
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(holder);
+      assert.deepStrictEqual(
+        yield* lock.withLockIfAvailable("key", Effect.succeed(2)),
+        Option.some(2),
+      );
+      assert.strictEqual(
+        yield* lock.withLockIfAvailable("other", Effect.fail("boom")).pipe(Effect.flip),
+        "boom",
+      );
       assert.deepStrictEqual(yield* lock.activeKeys, []);
     }),
   );
