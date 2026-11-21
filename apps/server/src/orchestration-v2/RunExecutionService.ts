@@ -54,6 +54,7 @@ import {
   knownProviderFailureMessage,
   makeProviderFailure,
   makeProviderFailureTurnItem,
+  providerFailureDiagnostic,
 } from "@t3tools/provider-core/server/failure";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
@@ -555,6 +556,16 @@ export const RunExecutionServiceV2Error = Schema.Union([
 ]);
 export type RunExecutionServiceV2Error = typeof RunExecutionServiceV2Error.Type;
 
+/** A provider turn its starter prepared: what to send, and what to record about the prompt. */
+export interface RunExecutionServiceV2PreparedTurn {
+  readonly turnInput: ProviderAdapter.ProviderAdapterV2TurnInput;
+  readonly accepted: Effect.Effect<void>;
+  /** The provider was not called (`undefined`), or failed with this error. */
+  readonly notAccepted: (
+    error: ProviderAdapter.ProviderAdapterV2Error | undefined,
+  ) => Effect.Effect<void>;
+}
+
 export interface RunExecutionServiceV2StartRootRunInput {
   readonly commandId: CommandId;
   readonly appThread: OrchestrationV2AppThread;
@@ -583,6 +594,11 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
   /** How a provider turn that failed to start is recorded: the starter knows what it waited through. */
   readonly startFailure: (error: unknown) => Effect.Effect<OrchestrationV2ProviderFailure>;
+  /** Builds the turn the provider gets, such as context handoffs; a Stop meanwhile ends the start. */
+  readonly prepareTurn?: (
+    turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
+    compact: boolean,
+  ) => Effect.Effect<RunExecutionServiceV2PreparedTurn, ProviderAdapter.ProviderAdapterV2Error>;
 }
 
 export interface RunExecutionServiceV2Shape {
@@ -1713,9 +1729,13 @@ export const layer: Layer.Layer<
             message: "Failed to refresh MCP credential liveness.",
           }),
         );
+        const compact =
+          input.message.attachments.length === 0 &&
+          input.message.text.trim().toLowerCase() === "/compact";
+        const callProvider = compact ? input.session.compactThread : input.session.startTurn;
         // A Stop before the provider turn starts leaves the consumer nothing to wait for. One during
         // the start does not: the provider may already hold the prompt, and its events settle the run.
-        const { turnInput, shouldStart } = yield* Effect.gen(function* () {
+        const { prepared, shouldStart } = yield* Effect.gen(function* () {
           yield* touchMcpCredential;
           const appContext = (yield* mcpAppModelContext
             .forThread(input.run.threadId)
@@ -1754,34 +1774,47 @@ export const layer: Layer.Layer<
             runtimePolicy: input.runtimePolicy,
             ...(appContext.length === 0 ? {} : { appContext }),
           };
-          // Check after the context read: ingestion can settle the run while
-          // it awaits. A failed ownership read fails the start below.
+          const prepared = yield* Effect.exit(
+            callProvider === undefined
+              ? Effect.fail(
+                  new ProviderAdapter.ProviderAdapterTurnStartError({
+                    driver: input.session.driver,
+                    threadId: input.run.threadId,
+                    providerThreadId: input.providerThread.id,
+                    runId: input.run.id,
+                    cause: "This provider does not support context compaction.",
+                  }),
+                )
+              : (
+                  input.prepareTurn?.(turnInput, compact) ??
+                  Effect.succeed<RunExecutionServiceV2PreparedTurn>({
+                    turnInput,
+                    accepted: Effect.void,
+                    notAccepted: () => Effect.void,
+                  })
+                ).pipe(Effect.map((turn) => ({ ...turn, callProvider }))),
+          );
+          // Check after the context read and the preparation: ingestion can settle the run while
+          // they await. A failed ownership read or preparation fails the start below.
           const shouldStart =
-            input.shouldStartProviderTurn === undefined
+            input.shouldStartProviderTurn === undefined || Exit.isFailure(prepared)
               ? Exit.succeed(true)
               : yield* Effect.exit(input.shouldStartProviderTurn());
-          return { turnInput, shouldStart };
+          if (Exit.isSuccess(prepared) && !(Exit.isSuccess(shouldStart) && shouldStart.value)) {
+            yield* prepared.value.notAccepted(undefined);
+          }
+          return { prepared, shouldStart };
         }).pipe(Effect.onInterrupt(() => Fiber.interrupt(providerEventFiber)));
         if (Exit.isSuccess(shouldStart) && !shouldStart.value) {
           yield* Fiber.interrupt(providerEventFiber);
           return;
         }
 
-        const compact =
-          input.message.attachments.length === 0 &&
-          input.message.text.trim().toLowerCase() === "/compact";
-        const startTurn = compact
-          ? (input.session.compactThread?.(turnInput) ??
-            Effect.fail(
-              new ProviderAdapter.ProviderAdapterTurnStartError({
-                driver: input.session.driver,
-                threadId: input.run.threadId,
-                providerThreadId: input.providerThread.id,
-                runId: input.run.id,
-                cause: "This provider does not support context compaction.",
-              }),
-            ))
-          : input.session.startTurn(turnInput);
+        const startTurn = Effect.flatMap(prepared, (turn) =>
+          turn
+            .callProvider(turn.turnInput)
+            .pipe(Effect.tapError(turn.notAccepted), Effect.andThen(turn.accepted)),
+        );
         yield* Effect.andThen(shouldStart, startTurn).pipe(
           // Wait for acceptance so abandoned startup cannot leave a refresher
           // on the already-detached ingestion fiber.
@@ -1795,7 +1828,7 @@ export const layer: Layer.Layer<
             Effect.logError("orchestration V2 provider turn start failed", {
               runId: input.run.id,
               providerInstanceId: input.run.providerInstanceId,
-              cause,
+              cause: providerFailureDiagnostic(cause),
             }).pipe(
               Effect.andThen(Fiber.interrupt(providerEventFiber)),
               Effect.andThen(

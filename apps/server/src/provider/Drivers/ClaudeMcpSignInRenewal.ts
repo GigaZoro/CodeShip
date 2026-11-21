@@ -101,12 +101,24 @@ export const planClaudeMcpRenewals = (input: {
   return { due, nextCheckAt };
 };
 
+/** A sign-in was still expired and being renewed when the wait ran out; the start can be retried. */
+export class ClaudeMcpSignInRenewalPendingError extends Schema.TaggedError<ClaudeMcpSignInRenewalPendingError>()(
+  "ClaudeMcpSignInRenewalPendingError",
+  {},
+) {
+  override get message(): string {
+    return "Claude was still renewing an expired MCP sign-in. Retry the turn if it does not start again by itself.";
+  }
+}
+
 export interface ClaudeMcpSignInRenewal {
   /**
    * Renews any sign-in that has expired or is about to, and waits for it (30 s at most), so a new
    * Claude process does not start holding an expired token alongside the account's other chats.
+   * Fails when a renewal of an expired sign-in outlasts the wait: Claude would renew it on a 401
+   * without its lock, retiring the refresh token the running renewal uses.
    */
-  readonly ensureFresh: Effect.Effect<void>;
+  readonly ensureFresh: Effect.Effect<void, ClaudeMcpSignInRenewalPendingError>;
 }
 
 // Renewals outlive a provider instance, and a rebuilt one must join a renewal still running instead
@@ -198,13 +210,30 @@ export const makeClaudeMcpSignInRenewal = Effect.fn("makeClaudeMcpSignInRenewal"
     }
   }).pipe(Effect.forkScoped);
 
+  const failIfRenewingExpired = Effect.gen(function* () {
+    const nowMs = yield* Clock.currentTimeMillis;
+    const stillExpired = [...renewing.keys()].some(
+      (serverName) =>
+        !store.signIns.some(
+          (signIn) =>
+            signIn.serverName === serverName &&
+            store.configured.get(serverName) === signIn.serverUrl &&
+            signIn.expiresAt > nowMs,
+        ),
+    );
+    if (stillExpired) return yield* new ClaudeMcpSignInRenewalPendingError();
+  });
+
   const ensureFresh = Effect.gen(function* () {
     yield* startDue;
     yield* Effect.forEach([...renewing.values()], (done) => Deferred.await(done), {
       concurrency: "unbounded",
       discard: true,
     });
-  }).pipe(Effect.timeout(PROCESS_START_WAIT), Effect.ignore, Effect.catchDefect(logDefect));
+  }).pipe(
+    Effect.timeoutOrElse({ duration: PROCESS_START_WAIT, orElse: () => failIfRenewingExpired }),
+    Effect.catchDefect(logDefect),
+  );
 
   return { ensureFresh } satisfies ClaudeMcpSignInRenewal;
 });

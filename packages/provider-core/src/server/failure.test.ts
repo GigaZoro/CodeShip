@@ -22,6 +22,7 @@ import {
   ContextHandoffBudgetError,
   ContextHandoffBackgroundWorkError,
   providerErrorClass,
+  providerFailureDiagnostic,
 } from "./failure.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -48,11 +49,6 @@ it("redacts credentials and URL secrets from provider failures", () => {
   assert.notInclude(failure.message, "4321");
   assert.notInclude(failure.message, "8765");
   assert.include(failure.message, "for [email]");
-  const detail = makeProviderFailure({
-    cause: new Error("request failed: Authorization: Bearer detail-secret"),
-  }).detail;
-  assert.include(detail, "[REDACTED]");
-  assert.notInclude(detail, "detail-secret");
 });
 
 it("redacts credentials whose key names end in a credential word", () => {
@@ -79,16 +75,15 @@ it("does not split a surrogate pair at the truncation boundary", () => {
   assert.notMatch(failure.message.slice(0, -1), /[\uD800-\uDBFF]$/u);
 });
 
-it("does not show arbitrary cause messages, keeps them as detail, and preserves explicit messages", () => {
+it("does not store arbitrary cause messages and preserves explicit messages", () => {
   const cause = new Error("Adapter failed", {
     cause: new Error("Session expired. Sign in again."),
   });
   for (const [value, detail] of [
-    [cause, "Error > Error: Session expired. Sign in again."],
-    [Cause.fail(cause), "Error > Error: Session expired. Sign in again."],
-    ["Session expired. Sign in again.", "Session expired. Sign in again."],
-    [{ message: "Session expired. Sign in again." }, "Session expired. Sign in again."],
-    [new Error(" \n "), "Error"],
+    [cause, "Error > Error"],
+    [Cause.fail(cause), "Error > Error"],
+    ["Session expired. Sign in again.", undefined],
+    [{ message: "Session expired. Sign in again." }, undefined],
     [" ", undefined],
   ] as const) {
     const failure = makeProviderFailure({ cause: value });
@@ -98,26 +93,68 @@ it("does not show arbitrary cause messages, keeps them as detail, and preserves 
     assert.equal(explicit.message, "Provider connection closed.");
     assert.isUndefined(explicit.detail);
   }
-  const exited = makeProviderFailure({
-    cause: {
-      _tag: "ProviderAdapterTurnStartError",
-      cause: {
-        _tag: "CodexAppServerProcessExitedError",
-        code: 1,
-        stderr: "private prompt text",
-        message: "Codex App Server process exited with code 1: private prompt text",
-      },
-    },
-  });
-  assert.equal(
-    exited.detail,
-    "ProviderAdapterTurnStartError > CodexAppServerProcessExitedError: process exited with code 1",
-  );
   assert.equal(
     makeProviderFailure({ cause, detail: " \u001b[31mtoken=detail-secret " }).detail,
     "token=[REDACTED]",
   );
   assert.isUndefined(makeProviderFailure({ cause, detail: " " }).detail);
+});
+
+it("stores a cause's error tags and identifiers but none of its text", () => {
+  const sentinel = "private prompt text";
+  const protocolError = { code: -32603, message: `invalid input: ${sentinel}`, data: { sentinel } };
+  for (const [cause, detail, diagnostic] of [
+    [
+      {
+        _tag: "ProviderAdapterTurnStartError",
+        cause: {
+          _tag: "CodexAppServerRequestError",
+          code: -32603,
+          errorMessage: protocolError.message,
+          message: protocolError.message,
+          data: protocolError.data,
+          method: "turn/start",
+          requestId: "request-7",
+          operation: "receive-response",
+          cause: protocolError,
+        },
+      },
+      "ProviderAdapterTurnStartError > CodexAppServerRequestError (method turn/start, operation receive-response, code -32603) > (code -32603)",
+      `ProviderAdapterTurnStartError > CodexAppServerRequestError (method turn/start, operation receive-response, code -32603) > (code -32603): invalid input: ${sentinel}`,
+    ],
+    [
+      {
+        _tag: "ProviderAdapterTurnStartError",
+        cause: {
+          _tag: "CodexAppServerProcessExitedError",
+          code: 1,
+          stderr: sentinel,
+          message: `Codex App Server process exited with code 1: ${sentinel}`,
+        },
+      },
+      "ProviderAdapterTurnStartError > CodexAppServerProcessExitedError (exited with code 1)",
+      "ProviderAdapterTurnStartError > CodexAppServerProcessExitedError (exited with code 1)",
+    ],
+    [
+      new Error(`fetch failed: ${sentinel}`, {
+        cause: Object.assign(new Error(`getaddrinfo ENOTFOUND ${sentinel}`), {
+          code: "ENOTFOUND",
+          hostname: sentinel,
+        }),
+      }),
+      "Error > Error (code ENOTFOUND)",
+      `Error > Error (code ENOTFOUND): getaddrinfo ENOTFOUND ${sentinel}`,
+    ],
+  ] as const) {
+    const failure = makeProviderFailure({ cause });
+    assert.equal(failure.detail, detail);
+    assert.notInclude(JSON.stringify(failure), sentinel);
+    assert.equal(providerFailureDiagnostic(cause), diagnostic);
+  }
+  assert.equal(
+    providerFailureDiagnostic(new Error("request failed: Authorization: Bearer detail-secret")),
+    "Error: request failed: Authorization: [REDACTED] [redacted]",
+  );
 });
 
 it("preserves T3.CodeShip's own actionable errors wrapped by turn startup", () => {

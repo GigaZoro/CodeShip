@@ -2831,17 +2831,39 @@ it.effect("records a provider turn that failed to start as its starter classifie
   }),
 );
 
-it.effect("ends the event consumer when a Stop cuts the start short before the provider turn", () =>
+it.effect.each([
+  "a Stop while it reads the context",
+  "a Stop while it prepares the turn",
+  "a run settled while it prepares the turn",
+] as const)("ends the event consumer after %s, before the provider turn", (scenario) =>
   Effect.gen(function* () {
-    const readingContext = yield* Deferred.make<void>();
+    const blocked = yield* Deferred.make<void>();
+    const block = Deferred.succeed(blocked, undefined).pipe(Effect.andThen(Effect.never));
     const turnsStarted: Array<string> = [];
+    const notAccepted: Array<unknown> = [];
+    const ownershipChecks = yield* Ref.make(0);
     const subscriptionClosedOnReturn: Array<boolean> = [];
     const { previewActivityEnded } = yield* captureRootRunTermination({
-      key: "start-stopped",
+      key: `start-stopped:${scenario.replaceAll(" ", "-")}`,
       shouldFinalizeRun: () => Effect.succeed(true),
       events: () => Stream.never,
-      appContext: Deferred.succeed(readingContext, undefined).pipe(Effect.andThen(Effect.never)),
-      stopStartWhen: Deferred.await(readingContext),
+      ...(scenario === "a Stop while it reads the context"
+        ? { appContext: block, stopStartWhen: Deferred.await(blocked) }
+        : scenario === "a Stop while it prepares the turn"
+          ? { prepareTurn: () => block, stopStartWhen: Deferred.await(blocked) }
+          : {
+              prepareTurn: (turnInput) =>
+                Effect.succeed({
+                  turnInput,
+                  accepted: Effect.void,
+                  notAccepted: (error) => Effect.sync(() => void notAccepted.push(error)),
+                }),
+              // Owned when the start begins; another start owns the run once the turn is ready.
+              shouldStartProviderTurn: () =>
+                Ref.getAndUpdate(ownershipChecks, (checks) => checks + 1).pipe(
+                  Effect.map((checks) => checks === 0),
+                ),
+            }),
       startTurn: (turn) => Effect.sync(() => void turnsStarted.push(turn.runId)),
       // Ends a subscription left open so the assertions below report it.
       afterStart: (closed) =>
@@ -2854,6 +2876,10 @@ it.effect("ends the event consumer when a Stop cuts the start short before the p
     assert.deepEqual(subscriptionClosedOnReturn, [true]);
     assert.isTrue(previewActivityEnded);
     assert.deepEqual(turnsStarted, []);
+    assert.deepEqual(
+      notAccepted,
+      scenario === "a run settled while it prepares the turn" ? [undefined] : [],
+    );
   }),
 );
 
@@ -3312,6 +3338,7 @@ function captureRootRunTermination(input: {
   readonly refreshAfterTurn?: Effect.Effect<void>;
   readonly onSubscriptionClose?: Effect.Effect<void>;
   readonly shouldStartProviderTurn?: RunExecutionService.RunExecutionServiceV2StartRootRunInput["shouldStartProviderTurn"];
+  readonly prepareTurn?: RunExecutionService.RunExecutionServiceV2StartRootRunInput["prepareTurn"];
   readonly appContext?: ReturnType<McpAppModelContext.McpAppModelContext["Service"]["forThread"]>;
   readonly ingestNormalized?: ProviderEventIngestor.ProviderEventIngestorV2["Service"]["ingestNormalized"];
   readonly beforeTerminalWrite?: (
@@ -3496,6 +3523,7 @@ function captureRootRunTermination(input: {
         ...(input.shouldStartProviderTurn === undefined
           ? {}
           : { shouldStartProviderTurn: input.shouldStartProviderTurn }),
+        ...(input.prepareTurn === undefined ? {} : { prepareTurn: input.prepareTurn }),
         ...(input.hasUnpairedRunInterruptRequest === undefined
           ? {}
           : {

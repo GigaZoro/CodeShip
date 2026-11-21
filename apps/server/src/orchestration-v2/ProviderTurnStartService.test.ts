@@ -63,7 +63,12 @@ import {
 import { CONTINUE_PROMPT } from "./RestartContinuation.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import {
+  ClaudeAgentSdkQueryRunnerError,
+  ClaudeAppendSystemPromptMissingValueError,
+} from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
@@ -914,14 +919,20 @@ function makeLocalCommandHarness(input: {
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
   >((runInput) =>
     input.sideChat !== undefined || input.nativeTurn === true
-      ? runInput.session
-          .startTurn({
-            ...runInput,
-            ...(runInput.run.restartContinuationOfRunId === undefined
-              ? {}
-              : { restartContinuationOfRunId: runInput.run.restartContinuationOfRunId }),
-          } as never)
-          .pipe(Effect.orDie)
+      ? Effect.gen(function* () {
+          const turn = yield* runInput.prepareTurn!(
+            {
+              ...runInput,
+              ...(runInput.run.restartContinuationOfRunId === undefined
+                ? {}
+                : { restartContinuationOfRunId: runInput.run.restartContinuationOfRunId }),
+            } as never,
+            false,
+          );
+          yield* runInput.session
+            .startTurn(turn.turnInput)
+            .pipe(Effect.tapError(turn.notAccepted), Effect.andThen(turn.accepted));
+        }).pipe(Effect.orDie)
       : input.failReadsAfterRunning === true || input.previousTurn !== undefined
         ? Effect.suspend(() =>
             providerBusy ? Effect.die("The previous provider turn is still running.") : Effect.void,
@@ -2046,6 +2057,16 @@ effectIt.effect.each([
     class: "provider_error",
     code: null,
   },
+  // Only the user can fix a refusal, so a wake does not make it worth another try.
+  {
+    message:
+      "This thread's workspace folder no longer exists or is not a directory: /gone. Restore the folder at this path before retrying.",
+    missingWorkspace: "/gone",
+    pause: undefined,
+    sinceWakeMs: 30_000,
+    class: "provider_error",
+    code: null,
+  },
 ] as const)(
   "terminalizes a starting run when its provider session cannot open: $message after $pause, $sinceWakeMs ms after a wake",
   (row) =>
@@ -2054,10 +2075,10 @@ effectIt.effect.each([
       const { pause } = row;
       const harness = makeLocalCommandHarness({
         text: "Continue",
-        openFailure: new Error(
-          row.message,
-          "cause" in row ? { cause: new Error(row.cause) } : undefined,
-        ),
+        openFailure:
+          "missingWorkspace" in row
+            ? new ProviderWorkspaceMissingError({ threadId: "thread", cwd: row.missingWorkspace })
+            : new Error(row.message, "cause" in row ? { cause: new Error(row.cause) } : undefined),
         ...(pause === undefined ? {} : { beforeOpenFailure: () => mac[pause]("8 hours") }),
       });
 
@@ -2326,6 +2347,25 @@ effectIt.effect.each([
     class: "transport_error",
     code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   },
+  // Refusals only the user can fix win over a sleep or a wake.
+  {
+    case: "30 seconds after a wake, for an account the provider turned away",
+    cause: "status 401",
+    beforePrompt: true,
+    pause: undefined,
+    sinceWakeMs: 30_000,
+    class: "provider_error",
+    code: null,
+  },
+  {
+    case: "across a sleep, for a launch argument the user must fix",
+    cause: "missing --append-system-prompt text",
+    beforePrompt: true,
+    pause: "sleep",
+    sinceWakeMs: undefined,
+    class: "provider_error",
+    code: null,
+  },
 ] as const)("records the cause of a provider turn that failed to start $case", (row) =>
   Effect.gen(function* () {
     const mac = yield* sleepingTestClock;
@@ -2333,14 +2373,20 @@ effectIt.effect.each([
     const harness = makeLocalCommandHarness({ text: "Continue", nativeTurn: true });
     const failures: Array<OrchestrationV2ProviderFailure> = [];
     const driver = ProviderDriverKind.make("claudeAgent");
-    const cause =
-      row.cause === "previous_turn_active"
-        ? new ProviderAdapter.ProviderAdapterProtocolError({
-            driver,
-            detail: "turn still active",
-            reason: row.cause,
-          })
-        : new Error(row.cause);
+    const causes = {
+      previous_turn_active: new ProviderAdapter.ProviderAdapterProtocolError({
+        driver,
+        detail: "turn still active",
+        reason: "previous_turn_active",
+      }),
+      "status 401": new ClaudeAgentSdkQueryRunnerError({ method: "query", cause: { status: 401 } }),
+      "missing --append-system-prompt text": new ClaudeAppendSystemPromptMissingValueError({
+        flag: "--append-system-prompt",
+      }),
+    } as const;
+    const cause = Object.hasOwn(causes, row.cause)
+      ? causes[row.cause as keyof typeof causes]
+      : new Error(row.cause);
     harness.startRootRun.mockImplementation((runInput) =>
       Effect.gen(function* () {
         if (pause !== undefined) mac[pause]("8 hours");
@@ -2361,20 +2407,26 @@ effectIt.effect.each([
       mac.provide,
     );
 
+    const shown = {
+      previous_turn_active: {
+        message:
+          "The provider could not start this turn: the previous turn is still running. Retry the turn; if it keeps failing, check the provider setup and server logs.",
+        detail: "ProviderAdapterTurnStartError > ProviderAdapterProtocolError",
+      },
+      "status 401": {
+        message: START_FAILURE_MESSAGE,
+        detail:
+          "ProviderAdapterTurnStartError > ClaudeAgentSdkQueryRunnerError (method query) > (status 401)",
+      },
+      "missing --append-system-prompt text": { message: cause.message },
+    } as const;
     expect(failures).toEqual([
       expect.objectContaining({
         class: row.class,
         code: row.code,
-        ...(row.cause === "previous_turn_active"
-          ? {
-              message:
-                "The provider could not start this turn: the previous turn is still running. Retry the turn; if it keeps failing, check the provider setup and server logs.",
-              detail: `ProviderAdapterTurnStartError > ProviderAdapterProtocolError: ${cause.message}`,
-            }
-          : {
-              message: START_FAILURE_MESSAGE,
-              detail: `ProviderAdapterTurnStartError > Error: ${cause.message}`,
-            }),
+        ...(Object.hasOwn(shown, row.cause)
+          ? shown[row.cause as keyof typeof shown]
+          : { message: START_FAILURE_MESSAGE, detail: "ProviderAdapterTurnStartError > Error" }),
       }),
     ]);
   }),

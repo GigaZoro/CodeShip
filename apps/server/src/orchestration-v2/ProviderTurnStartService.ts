@@ -76,7 +76,7 @@ import {
   makeProviderFailure,
   promptNotSentFailure,
   providerErrorClass,
-  providerFailureDetail,
+  providerFailureDiagnostic,
   providerFailureExplained,
 } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
@@ -181,13 +181,10 @@ const isProviderAdapterOpenSessionError = Schema.is(
 );
 const isProviderAdapterTurnStartError = Schema.is(ProviderAdapter.ProviderAdapterTurnStartError);
 
-/**
- * Claude refuses these before it reads the prompt: replacing a process running background work,
- * unreadable launch arguments or settings, managed settings that would override the chat's
- * Ultracode, MCP registration that never answers while the query opens, or an account that has
- * not reviewed Anthropic's updated Consumer Terms.
- */
-const PROMPT_REFUSAL_TAGS = [
+// Claude refuses these before it reads the prompt, and no wait changes them: replacing a process
+// running background work, unreadable launch arguments or settings, managed settings that would
+// override the chat's Ultracode, or unreviewed Consumer Terms.
+const CLAUDE_SETUP_REFUSAL_TAGS = [
   "ClaudeBackgroundWorkBlocksQueryReplacementError",
   "ClaudeAppendSystemPromptFileError",
   "ClaudeAppendSystemPromptMissingValueError",
@@ -195,8 +192,26 @@ const PROMPT_REFUSAL_TAGS = [
   "ClaudeSettingsLaunchArgError",
   "ClaudeProjectConfigRootError",
   "ClaudeSettingsResolveError",
-  "ClaudeMcpRegistrationTimeoutError",
   "ClaudeTermsReviewRequiredError",
+] as const;
+
+/** Claude refuses these before it reads the prompt; MCP registration that never answers is one too. */
+const PROMPT_REFUSAL_TAGS = [
+  ...CLAUDE_SETUP_REFUSAL_TAGS,
+  "ClaudeMcpRegistrationTimeoutError",
+] as const;
+
+/** Refusals the user has to act on first: a setup, workspace, model or request a retry gets again. */
+const SETUP_REFUSAL_TAGS = [
+  ...CLAUDE_SETUP_REFUSAL_TAGS,
+  "ProviderSetupError",
+  "ProviderWorkspaceMissingError",
+  "RuntimePolicyAboveCeilingError",
+  "WorktreeRecreateNoBaseError",
+  "AcpModelSelectionError",
+  "CursorModelUnavailableError",
+  "ContextHandoffBudgetError",
+  "ContextHandoffBackgroundWorkError",
 ] as const;
 
 function causedBy(error: unknown, matches: (cause: object) => boolean): boolean {
@@ -217,11 +232,14 @@ const refusedBeforePrompt = (error: unknown): boolean =>
       (isProviderAdapterTurnStartError(cause) && cause.beforePrompt === true),
   );
 
-/** The account has to sign in again, which no retry fixes. */
-const requiresSignIn = (error: unknown): boolean =>
+/** A sign-in, an account the provider turns away (HTTP 401 or 403), or a setup refusal: no retry fixes it. */
+const refusedUntilChanged = (error: unknown): boolean =>
   causedBy(
     error,
-    (cause) => isProviderAdapterOpenSessionError(cause) && cause.requiresSignIn === true,
+    (cause) =>
+      (isProviderAdapterOpenSessionError(cause) && cause.requiresSignIn === true) ||
+      SETUP_REFUSAL_TAGS.some((tag) => Predicate.isTagged(cause, tag)) ||
+      (Predicate.hasProperty(cause, "status") && (cause.status === 401 || cause.status === 403)),
   );
 
 // Starts fail for a while after a wake, as the network, DNS and sign-ins come back.
@@ -234,25 +252,24 @@ interface StartWait extends AwakeWait {
 
 /**
  * The agent never got the message, so a sleep, stall, lost connection or timeout (provider
- * deadlines expire meanwhile) retries it, and so does an unexplained failure right after a wake.
+ * deadlines expire meanwhile) retries it, and so does an unexplained failure right after a wake,
+ * unless the provider refused it for a reason only the user can change.
  */
 function unstartedTurnFailure(
   error: unknown,
   wait: StartWait | undefined,
   shown?: { readonly message: string; readonly explained: boolean },
 ): OrchestrationV2ProviderFailure {
-  if (requiresSignIn(error)) {
-    return makeProviderFailure({ cause: error, message: shown?.message, class: "provider_error" });
-  }
   const explained = shown?.explained === true || providerFailureExplained(error);
   const waitingFixes =
-    wait?.slept === true ||
-    wait?.stalled === true ||
-    (wait?.afterWake === true && !explained) ||
-    isProviderStartStepTimeoutError(error) ||
-    [shown?.message, providerFailureDetail(error)].some(
-      (text) => providerErrorClass(text) === "transport_error",
-    );
+    !refusedUntilChanged(error) &&
+    (wait?.slept === true ||
+      wait?.stalled === true ||
+      (wait?.afterWake === true && !explained) ||
+      isProviderStartStepTimeoutError(error) ||
+      [shown?.message, providerFailureDiagnostic(error)].some(
+        (text) => providerErrorClass(text) === "transport_error",
+      ));
   return waitingFixes
     ? promptNotSentFailure(shown?.message, error)
     : makeProviderFailure({ cause: error, message: shown?.message, class: "provider_error" });
@@ -461,16 +478,13 @@ export const layer: Layer.Layer<
           message,
           explained: failed.message !== undefined,
         });
-        // A worded failure keeps its cause off the chat, so the server log is where it stays.
-        if (failure.detail === undefined) {
-          yield* Effect.logError("orchestration-v2.provider-turn-start.failed", {
-            runId: context.run.id,
-            providerInstanceId: context.run.providerInstanceId,
-            class: failure.class,
-            code: failure.code,
-            cause: providerFailureDetail(failed.error),
-          });
-        }
+        yield* Effect.logError("orchestration-v2.provider-turn-start.failed", {
+          runId: context.run.id,
+          providerInstanceId: context.run.providerInstanceId,
+          class: failure.class,
+          code: failure.code,
+          cause: providerFailureDiagnostic(failed.error),
+        });
         yield* settleUnstartedRun(context, {
           signal: failed.signal,
           status: "failed",
@@ -675,41 +689,6 @@ export const layer: Layer.Layer<
               // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
               Effect.catchCause(() => Effect.succeed(undefined)),
             ),
-      };
-    };
-
-    const makeDeliverySession = (
-      session: ProviderAdapter.ProviderAdapterV2SessionRuntime,
-      startWithHandoffs: (
-        input: Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>[0],
-        compact?: boolean,
-      ) => ReturnType<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>,
-    ) => {
-      let deliver: typeof startWithHandoffs | undefined = startWithHandoffs;
-      const start = (
-        input: Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>[0],
-        compact = false,
-      ) =>
-        Effect.suspend(() => {
-          if (deliver !== undefined) return deliver(input, compact);
-          return compact && session.compactThread !== undefined
-            ? session.compactThread(input)
-            : session.startTurn(input);
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              deliver = undefined;
-            }),
-          ),
-        );
-      return {
-        ...session,
-        startTurn: (input: Parameters<typeof session.startTurn>[0]) => start(input),
-        ...(session.compactThread === undefined
-          ? {}
-          : {
-              compactThread: (input: Parameters<typeof session.startTurn>[0]) => start(input, true),
-            }),
       };
     };
 
@@ -1119,7 +1098,7 @@ export const layer: Layer.Layer<
         if (
           failure._tag !== "ProviderStartStepTimeoutError" &&
           input.willRetry === true &&
-          !requiresSignIn(failure)
+          !refusedUntilChanged(failure)
         ) {
           return yield* failure;
         }
@@ -1951,8 +1930,8 @@ export const layer: Layer.Layer<
           ],
         });
       });
-      const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
-        function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
+      const prepareTurn = Effect.fn("ProviderTurnStartService.prepareTurn")(
+        function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput, compact: boolean) {
           const delivery = yield* deliverContextHandoffs({
             handoffs: [...effectiveHandoffs, ...retryHandoff],
             deferInline: compact || goalCommand,
@@ -1970,8 +1949,6 @@ export const layer: Layer.Layer<
                 }),
             persist: persistHandoff,
           });
-          if (!(yield* isCurrentAttemptInStatus("running"))) return;
-          const start = compact ? session.compactThread! : session.startTurn;
           // Like history, the side chat context waits for a turn that sends a prompt.
           const sideChatContext =
             sideChatHandoff === undefined || compact || goalCommand
@@ -2011,53 +1988,52 @@ export const layer: Layer.Layer<
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
-          yield* start({
-            ...(noteContinuation ? promptedInput : turnInput),
-            ...(autoBrief === null ? {} : { autoModeInstructions: autoBrief }),
-            message: {
-              ...turnInput.message,
-              text: goalCommand ? userText : withInlineContext(context, userText),
-            },
-          }).pipe(
-            // Clear pending handoff markers for refused prompts so the next turn retains the native session.
-            Effect.tapError((error) =>
-              refusedBeforePrompt(error)
-                ? delivery.unsent.pipe(
-                    Effect.catchCause(() =>
-                      Effect.logWarning("Failed to restore unsent context handoffs", {
-                        runId: run.id,
-                      }),
-                    ),
-                  )
-                : Effect.void,
+          const unsent = delivery.unsent.pipe(
+            Effect.catchCause(() =>
+              Effect.logWarning("Failed to restore unsent context handoffs", { runId: run.id }),
             ),
           );
-          // After provider acceptance, failed delivery bookkeeping must not stop live ingestion.
           const nativeThreadId = runningProviderThread.nativeThreadRef?.nativeId;
-          yield* Effect.forEach(
-            [
-              delivery.delivered,
-              ...(sideChatContext === "" || sideChatHandoff === undefined || nativeThreadId == null
-                ? []
-                : [
-                    persistHandoff({
-                      ...sideChatHandoff,
-                      toProviderThreadId: runningProviderThread.id,
-                      delivery: { nativeThreadId, status: "inline" as const, itemIds: [] },
+          return {
+            turnInput: {
+              ...(noteContinuation ? promptedInput : turnInput),
+              ...(autoBrief === null ? {} : { autoModeInstructions: autoBrief }),
+              message: {
+                ...turnInput.message,
+                text: goalCommand ? userText : withInlineContext(context, userText),
+              },
+            },
+            // Failed delivery bookkeeping must not stop live ingestion.
+            accepted: Effect.forEach(
+              [
+                delivery.delivered,
+                ...(sideChatContext === "" ||
+                sideChatHandoff === undefined ||
+                nativeThreadId == null
+                  ? []
+                  : [
+                      persistHandoff({
+                        ...sideChatHandoff,
+                        toProviderThreadId: runningProviderThread.id,
+                        delivery: { nativeThreadId, status: "inline" as const, itemIds: [] },
+                      }),
+                    ]),
+              ],
+              (record) =>
+                record.pipe(
+                  Effect.catchCause(() =>
+                    Effect.logWarning("Failed to record accepted context handoff delivery", {
+                      runId: run.id,
+                      deliveryStatus: "pending",
                     }),
-                  ]),
-            ],
-            (record) =>
-              record.pipe(
-                Effect.catchCause(() =>
-                  Effect.logWarning("Failed to record accepted context handoff delivery", {
-                    runId: run.id,
-                    deliveryStatus: "pending",
-                  }),
+                  ),
                 ),
-              ),
-            { discard: true },
-          );
+              { discard: true },
+            ),
+            // Clear pending handoff markers for a prompt never sent so the next turn retains the native session.
+            notAccepted: (error) =>
+              error === undefined || refusedBeforePrompt(error) ? unsent : Effect.void,
+          } satisfies RunExecutionService.RunExecutionServiceV2PreparedTurn;
         },
         Effect.mapError((cause) =>
           cause._tag === "ProviderAdapterTurnStartError"
@@ -2071,20 +2047,12 @@ export const layer: Layer.Layer<
               }),
         ),
       );
-      const deliverySession =
-        effectiveHandoffs.length === 0 &&
-        retryHandoff.length === 0 &&
-        sideChatHandoff === undefined &&
-        restartNote === "" &&
-        !autoBriefed &&
-        !noteContinuation
-          ? session
-          : makeDeliverySession(session, startWithHandoffs);
       return runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,
         providerSessionId,
-        session: deliverySession,
+        session,
+        prepareTurn,
         run: runningRun,
         rootNode: runningRootNode,
         checkpointScope,

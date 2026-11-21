@@ -206,13 +206,17 @@ export function providerFailureExplained(cause: unknown): boolean {
   return curated.known !== undefined || curated.reason !== undefined;
 }
 
-/**
- * The tags of a cause chain and its innermost message, redacted and bounded: why a failure whose
- * message is generic happened.
- */
-export function providerFailureDetail(cause: unknown): string | undefined {
+// Identifiers a provider error names itself by: an errno, a JSON-RPC method, an HTTP status.
+const CAUSE_FACT_KEYS = ["method", "operation", "code", "status"] as const;
+const CAUSE_FACT_TEXT = /^[A-Za-z][\w./-]{0,63}$/u;
+
+/** Each error's tag with its structured facts, and the innermost message, of a cause chain. */
+function describeCause(cause: unknown): {
+  readonly links: ReadonlyArray<string>;
+  readonly message: string | undefined;
+} {
   const seen = new Set<unknown>();
-  const tags: Array<string> = [];
+  const links: Array<string> = [];
   let message: string | undefined;
   for (let depth = 0; depth < 16 && cause != null && !seen.has(cause); depth++) {
     seen.add(cause);
@@ -226,22 +230,57 @@ export function providerFailureDetail(cause: unknown): string | undefined {
         break;
       }
       if (typeof cause !== "object") break;
-      const { _tag: tag, stderr } = cause as Record<string, unknown>;
-      if (typeof tag === "string") tags.push(tag);
-      else if (cause instanceof Error) tags.push(cause.name);
-      if (stderr !== undefined) {
-        // Its message repeats the process output, which can carry the prompt or credentials.
-        message = `process exited${processExitStatus(cause)}`;
+      const record = cause as Record<string, unknown>;
+      const name =
+        typeof record._tag === "string"
+          ? record._tag
+          : cause instanceof Error
+            ? cause.name
+            : undefined;
+      // Its message repeats the process output, which can carry the prompt or credentials.
+      const exited = record.stderr !== undefined;
+      const facts = exited
+        ? [`exited${processExitStatus(cause)}`]
+        : CAUSE_FACT_KEYS.flatMap((key) => {
+            const value = record[key];
+            return (typeof value === "number" && Number.isSafeInteger(value)) ||
+              (typeof value === "string" && CAUSE_FACT_TEXT.test(value))
+              ? [`${key} ${value}`]
+              : [];
+          });
+      const link = [name, facts.length === 0 ? undefined : `(${facts.join(", ")})`]
+        .filter(Boolean)
+        .join(" ");
+      if (link !== "") links.push(link);
+      if (exited) {
+        message = undefined;
         break;
       }
       message = stringField(cause, "message")?.trim() || message;
-      cause = (cause as Record<string, unknown>).cause;
+      cause = record.cause;
     } catch {
       break;
     }
   }
-  const detail = [tags.join(" > "), message].filter(Boolean).join(": ");
-  return boundedText(detail, MAX_PROVIDER_FAILURE_DETAIL_LENGTH).trim() || undefined;
+  return { links, message };
+}
+
+function boundedDetail(text: string): string | undefined {
+  return boundedText(text, MAX_PROVIDER_FAILURE_DETAIL_LENGTH).trim() || undefined;
+}
+
+// Message text can quote the prompt or a tool's private output, and stored failures sync to every client.
+function providerFailureDetail(cause: unknown): string | undefined {
+  return boundedDetail(describeCause(cause).links.join(" > "));
+}
+
+/**
+ * The cause chain's tags and facts with its innermost message, redacted and bounded: for the server
+ * log and for telling a lost connection apart, never for a stored failure.
+ */
+export function providerFailureDiagnostic(cause: unknown): string | undefined {
+  const { links, message } = describeCause(cause);
+  return boundedDetail([links.join(" > "), message].filter(Boolean).join(": "));
 }
 
 function stringField(value: unknown, key: "message" | "code"): string | undefined {
@@ -348,7 +387,7 @@ export function makeProviderFailure(input: {
       ? input.message === undefined && curated.known === undefined
         ? providerFailureDetail(input.cause)
         : undefined
-      : boundedText(input.detail, MAX_PROVIDER_FAILURE_DETAIL_LENGTH).trim() || undefined;
+      : boundedDetail(input.detail);
   const message = boundedText(rawMessage, MAX_PROVIDER_FAILURE_MESSAGE_LENGTH);
   const rawCode = input.code ?? stringField(input.cause, "code") ?? null;
   const code =

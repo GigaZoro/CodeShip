@@ -1520,7 +1520,7 @@ it.effect(
         assert.isTrue(yield* release(sibling));
         assert.isFalse(yield* manager.isLive(providerSessionId));
 
-        // A turn that starts on a runtime released meanwhile fails instead of running on it.
+        // A turn that starts on a runtime released meanwhile fails, as never sent, instead of running on it.
         const startOnReleasedRuntime = Effect.gen(function* () {
           const lateRunId = idAllocator.derive.run({ threadId: stopping, ordinal: 1 });
           return yield* Effect.flip(
@@ -1545,7 +1545,10 @@ it.effect(
             }),
           );
         });
-        assert.equal((yield* startOnReleasedRuntime)._tag, "ProviderAdapterTurnStartError");
+        assert.include(yield* startOnReleasedRuntime, {
+          _tag: "ProviderAdapterTurnStartError",
+          beforePrompt: true,
+        });
 
         // Nor may it leave its turn busy on a replacement opened under the same id.
         yield* manager.open({
@@ -1554,7 +1557,10 @@ it.effect(
           modelSelection,
           runtimePolicy,
         });
-        assert.equal((yield* startOnReleasedRuntime)._tag, "ProviderAdapterTurnStartError");
+        assert.include(yield* startOnReleasedRuntime, {
+          _tag: "ProviderAdapterTurnStartError",
+          beforePrompt: true,
+        });
         assert.isTrue(yield* release(sibling));
       }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60 * 60_000 })));
     }),
