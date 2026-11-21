@@ -806,6 +806,8 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
           );
           yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+          // A running holder keeps the pid the command's, whatever the file says.
+          yield* hideHolder(NodePath.dirname(started.logPath));
           const file = NodePath.join(NodePath.dirname(started.logPath), "identity");
           if (otherStart && isLinuxHost) {
             const [, boot = ""] = NodeFS.readFileSync(file, "utf8").split("\n");
@@ -1793,14 +1795,20 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           const pidFile = NodePath.join(run.directory, "pid");
           const named = NodeFS.readFileSync(pidFile, "utf8");
           NodeFS.writeFileSync(pidFile, `${decoy.pid}\n`);
-          NodeFS.utimesSync(pidFile, 946_684_800, 946_684_800);
+          if (!isLinuxHost) {
+            // ps reads whole seconds, so the wrapper's recorded start goes well before the decoy's.
+            NodeFS.writeFileSync(
+              NodePath.join(run.directory, "identity"),
+              "Sat Jan  1 00:00:00 2000\n",
+            );
+          }
           yield* forgetPid(started.taskId);
           const sql = yield* SqlClient.SqlClient;
           // So that the cleanup finds the command's own group.
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => NodeFS.writeFileSync(pidFile, named)).pipe(
               Effect.andThen(
-                sql`UPDATE command_runs SET pid = ${run.pid} WHERE task_id = ${started.taskId}`,
+                sql`UPDATE command_runs SET pid = ${run.pid}, process_identity = ${run.process_identity} WHERE task_id = ${started.taskId}`,
               ),
               Effect.ignore,
             ),
