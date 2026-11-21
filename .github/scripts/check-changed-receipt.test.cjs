@@ -113,6 +113,27 @@ test("computing the working tree writes no objects to the repository", () =>
     assert.equal(git("write-tree"), tree);
   }));
 
+test("the working tree holds a same-size rewrite made in the second its index was written", () =>
+  withRoot((root) => {
+    const { work, git, write } = fixture(root);
+    // Whole-second stat checks, as macOS's git makes. app.txt and the index share one second.
+    git("config", "core.checkStat", "minimal");
+    const second = 1_700_000_000;
+    const file = path.join(work, "app.txt");
+    fs.utimesSync(file, second, second);
+    git("add", "app.txt");
+    fs.utimesSync(
+      git("rev-parse", "--path-format=absolute", "--git-path", "index"),
+      second,
+      second,
+    );
+    write("app.txt", "two\n");
+    fs.utimesSync(file, second, second);
+    const tree = workingTree(work);
+    git("add", "--all");
+    assert.equal(git("write-tree"), tree);
+  }));
+
 test("a pass covers the push only when it compared against the commit main is at", () =>
   withRoot((root) => {
     const { work, git, write, commit, base } = fixture(root);

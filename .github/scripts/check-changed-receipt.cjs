@@ -41,7 +41,14 @@ function workingTree(cwd) {
   try {
     const index = path.join(temp, "index");
     const real = git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
-    if (fs.existsSync(real)) fs.copyFileSync(real, index);
+    const indexed = fs.statSync(real, { throwIfNoEntry: false });
+    if (indexed) {
+      // Git rereads an entry no older than its index, which a same-size rewrite in that second can
+      // hide behind. A copy is newer, so it takes the index's second, read before the copy.
+      fs.copyFileSync(real, index);
+      const second = Math.floor(indexed.mtimeMs / 1000);
+      fs.utimesSync(index, second, second);
+    }
     const objects = path.join(temp, "objects");
     fs.mkdirSync(objects);
     const env = {
