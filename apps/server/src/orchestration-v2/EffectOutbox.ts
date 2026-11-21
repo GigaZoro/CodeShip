@@ -35,6 +35,11 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("provider-runtime.continue"),
     sourceRunId: RunId,
   }),
+  /** Settles the delegated task a cancelled restart continuation of `sourceRunId` held open. */
+  Schema.Struct({
+    type: Schema.Literal("delegated-task.recover"),
+    sourceRunId: RunId,
+  }),
   Schema.Struct({
     type: Schema.Literal("provider-session.detach"),
     providerSessionId: ProviderSessionId,
@@ -138,6 +143,7 @@ export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.T
 
 export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "provider-runtime.continue",
+  "delegated-task.recover",
   "provider-session.detach",
   "provider-thread.rollback",
   "checkpoint.capture",
@@ -223,6 +229,21 @@ export const restartContinuationEffect = (input: {
   threadId: input.threadId,
   request: { type: "provider-runtime.continue", sourceRunId: input.sourceRunId },
   ...(input.availableAt === undefined ? {} : { availableAt: input.availableAt }),
+});
+
+/**
+ * A continuation's handler settles the delegated task it held open once it ends. One a Stop
+ * cancels never runs, so the Stop queues this in its commit to settle the task instead.
+ */
+export const delegatedTaskRecoverEffect = (input: {
+  readonly commandId: CommandId;
+  readonly threadId: ThreadId;
+  readonly sourceRunId: RunId;
+}): PendingOrchestrationEffectV2 => ({
+  id: `effect:${input.commandId}:delegated-task.recover:${input.sourceRunId}`,
+  commandId: input.commandId,
+  threadId: input.threadId,
+  request: { type: "delegated-task.recover", sourceRunId: input.sourceRunId },
 });
 
 export class EffectOutboxError extends Schema.TaggedError<EffectOutboxError>()(

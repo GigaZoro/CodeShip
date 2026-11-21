@@ -150,6 +150,8 @@ export const layerExecutor: Layer.Layer<
               ),
             );
           }
+          case "delegated-task.recover":
+            return threads.recoverDelegatedTask(effect.threadId, effect.request.sourceRunId);
           case "provider-session.detach":
             return providerSessions
               .detach({
