@@ -444,12 +444,18 @@ function gitCommandContext(
 }
 
 // Stderr can echo credentials from argv/URLs; classify fixed patterns without exposing matched text.
+const CONFIG_UNREADABLE_RETRIES = 10;
+const CONFIG_UNREADABLE_RETRY_DELAY = "50 millis";
+
 const GIT_FAILURE_REASON_PATTERNS: ReadonlyArray<readonly [RegExp, GitCommandFailureReason]> = [
   [/would clobber existing tag/i, "tag_would_be_clobbered"],
   [/is already (?:used by worktree at|checked out at)/i, "branch_checked_out_in_worktree"],
   [/a branch named .+ already exists/i, "branch_already_exists"],
   // The same prefix also reports permission errors, which retrying cannot fix.
   [/could not lock config file .+: File exists/i, "config_locked"],
+  // On Windows a reader that opens .git/config while another git renames config.lock over it
+  // gets an access error instead of ENOENT. Git dies before it acts, so repeating is safe.
+  [/unknown error occurred while reading the configuration files/i, "config_unreadable"],
   [
     /(?:authentication failed|could not read Username|could not read Password|permission denied \([a-z-]+(?:,[a-z-]+)*\)|permission denied, please try again)/i,
     "authentication_failed",
@@ -486,6 +492,8 @@ const GIT_FAILURE_REASON_DETAILS: Partial<Record<GitCommandFailureReason, string
     "The remote has commits this branch doesn't have. Pull or rebase, then push again.",
   config_locked:
     "Another Git process kept the repository's config locked. Wait for it to finish, then retry.",
+  config_unreadable:
+    "Git could not read the repository's config while another Git process replaced it. Retry.",
 };
 
 function gitFailureDetail(reason: GitCommandFailureReason | null): string {
@@ -1266,8 +1274,33 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }),
     );
 
+  // Git reads its config before doing anything, so a command that died reading it did nothing.
+  const executeRetryingUnreadableConfig = (
+    input: GitVcsDriver.ExecuteGitInput,
+    attemptsLeft = CONFIG_UNREADABLE_RETRIES,
+  ): ReturnType<GitVcsDriver.GitVcsDriver["Service"]["execute"]> => {
+    const again = Effect.sleep(CONFIG_UNREADABLE_RETRY_DELAY).pipe(
+      Effect.andThen(
+        Effect.suspend(() => executeRetryingUnreadableConfig(input, attemptsLeft - 1)),
+      ),
+    );
+    return executeRaw(input).pipe(
+      Effect.filterOrElse(
+        (result) =>
+          attemptsLeft <= 0 ||
+          result.exitCode === 0 ||
+          classifyGitFailure(result.stderr) !== "config_unreadable",
+        () => again,
+      ),
+      Effect.catchIf(
+        (error) => attemptsLeft > 0 && error.reason === "config_unreadable",
+        () => again,
+      ),
+    );
+  };
+
   const execute: GitVcsDriver.GitVcsDriver["Service"]["execute"] = (input) =>
-    Effect.andThen(countGitSpawn, executeRaw(input)).pipe(
+    Effect.andThen(countGitSpawn, executeRetryingUnreadableConfig(input)).pipe(
       withMetrics({
         counter: gitCommandsTotal,
         timer: gitCommandDuration,

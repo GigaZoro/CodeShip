@@ -1,3 +1,7 @@
+## 2026-11-21 — Parallel worktree launches on Windows no longer fail on a busy Git config
+
+- On Windows, starting several worktrees in one repository at once could fail with "unknown error occurred while reading the configuration files" when one Git command read `.git/config` while another replaced it. Git now repeats a command that died at that point, since it had not done anything yet.
+
 ## 2026-11-21 — check:changed tests changed dependencies
 
 - A changed dependency patch, `patchedDependencies` entry or lockfile version now selects the tests that run that package, so a patch can no longer pass the checks while it breaks a test.

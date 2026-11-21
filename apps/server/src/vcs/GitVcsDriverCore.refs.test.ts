@@ -16,6 +16,7 @@ import {
   layerServerConfig,
   layerTest,
   makeDriverReleasingLock,
+  makeUnreadableConfigHandle,
   makeTmpDir,
   writeTextFile,
   git,
@@ -359,6 +360,47 @@ it.layer(layerTest)("Git references and remote configuration", (it) => {
 
       assert.equal(yield* Ref.get(failures), 1);
       assert.equal(yield* git(cwd, ["config", "t3.test"]), "written");
+    }),
+  );
+
+  it.effect.each([
+    { name: "a failing command", allowNonZeroExit: false },
+    { name: "a command whose exit code the caller reads", allowNonZeroExit: true },
+  ])("repeats $name that died reading a config another git was replacing", ({ allowNonZeroExit }) =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      yield* initRepoWithCommit(cwd);
+      yield* git(cwd, ["config", "t3.test", "present"]);
+      const attempts = yield* Ref.make(0);
+      const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const spawner = ChildProcessSpawner.make((command) =>
+        ChildProcess.isStandardCommand(command) && command.args.includes("t3.test")
+          ? Ref.updateAndGet(attempts, (count) => count + 1).pipe(
+              Effect.flatMap((count) =>
+                count === 1
+                  ? Effect.succeed(makeUnreadableConfigHandle())
+                  : delegate.spawn(command),
+              ),
+            )
+          : delegate.spawn(command),
+      );
+      const driver = yield* makeGitVcsDriverCore().pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provide(layerServerConfig),
+      );
+
+      // The retry waits on the real clock.
+      const result = yield* TestClock.withLive(
+        driver.execute({
+          operation: "test.readConfig",
+          cwd,
+          args: ["config", "--get", "t3.test"],
+          allowNonZeroExit,
+        }),
+      );
+
+      assert.equal(result.stdout.trim(), "present");
+      assert.equal(yield* Ref.get(attempts), 2);
     }),
   );
 
