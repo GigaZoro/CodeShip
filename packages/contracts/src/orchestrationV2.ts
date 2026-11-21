@@ -1055,6 +1055,31 @@ export function isAppOwnedTaskWork(task: {
   );
 }
 
+/** Review rounds a thread may delegate for one part of a change; then it re-plans or splits it. */
+export const DELEGATED_REVIEW_ROUND_LIMIT = 3;
+
+/** One line saying how a change was re-planned or split since its last review. */
+export const DelegatedReviewNewPartReason = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(300),
+  Schema.isPattern(/^[^\r\n]+$/),
+);
+
+/** What a `delegated_task.request` asks of the parent's review count. */
+export const OrchestrationV2DelegatedReviewRequest = Schema.Struct({
+  newPartReason: Schema.optional(DelegatedReviewNewPartReason),
+});
+export type OrchestrationV2DelegatedReviewRequest =
+  typeof OrchestrationV2DelegatedReviewRequest.Type;
+
+/** A review task's place in its parent's count. Reviewers started before a round answers share it. */
+export const OrchestrationV2SubagentReview = Schema.Struct({
+  part: PositiveInt,
+  round: PositiveInt,
+  // Checked when asked for; a stored record keeps whatever was accepted.
+  newPartReason: Schema.optional(Schema.String),
+});
+export type OrchestrationV2SubagentReview = typeof OrchestrationV2SubagentReview.Type;
+
 export const OrchestrationV2Subagent = Schema.Struct({
   id: NodeId,
   threadId: ThreadId,
@@ -1075,6 +1100,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
   completionDelivery: Schema.optional(OrchestrationV2DelegatedCompletionTaskDelivery),
+  review: Schema.optional(OrchestrationV2SubagentReview),
   status: Schema.Literals([
     "idle",
     "pending",
@@ -3619,6 +3645,8 @@ export const OrchestrationV2Command = Schema.Union([
     workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
     // Defaults to settled_only; fire-and-forget wakes require always.
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+    // A review task: the parent counts its review rounds and refuses one past the limit.
+    review: Schema.optional(OrchestrationV2DelegatedReviewRequest),
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
   Schema.Struct({
@@ -3736,6 +3764,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
     modelSelection: ModelSelection,
     remoteChild: OrchestrationV2RemoteTaskChild,
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+    review: Schema.optional(OrchestrationV2DelegatedReviewRequest),
   }),
   /**
    * Completes a delegated task that ran in a linked environment, with what its

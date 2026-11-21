@@ -239,6 +239,7 @@ type DelegateTaskInput = {
   };
   title?: string;
   role?: "implementation" | "research" | "review" | "design" | "test" | "general";
+  newReviewPart?: string;
   mode?: "async" | "wait";
   timeoutMs?: number;
   clientRequestId?: string;
@@ -265,6 +266,16 @@ Each independent delegated review round uses a new `delegate_task` call with the
 original brief, prior findings, responses, and unresolved objections. Track each
 round by its own `taskId` and use a distinct `clientRequestId` per round, stable
 across retries of that round.
+The parent thread counts its `role: "review"` tasks in rounds, and the result's
+`reviewRound` reports the task's round. Reviewers started while the latest round
+has no completed review join that round, so parallel reviewers of one diff share
+it. A review that would be round 4 is refused with `review_round_limit`, quoting
+the review rule that a third round still finding blocking defects means re-plan
+or split the change. A call with `newReviewPart`, one line saying how the change
+was re-planned or split, starts round 1 of a new part instead. The count and the
+reason live on each review task's record in the parent's projection, so
+compaction and restarts keep them, and a refusal records no receipt, so the same
+`clientRequestId` can retry with `newReviewPart`.
 A follow-up that needs the same child's conversation goes through `t3_thread_send`
 on its `childThreadId`. After the original task completes, that follow-up runs as a
 fresh task in the child thread; it does not reopen the completed task or change its
@@ -310,6 +321,7 @@ type DelegateTaskResult = {
     runId: string;
   } | null;
   waitTimedOut: boolean;
+  reviewRound?: string;
 };
 ```
 

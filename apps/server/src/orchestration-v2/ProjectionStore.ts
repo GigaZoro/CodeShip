@@ -457,6 +457,12 @@ export type ProjectionRecords<K extends ProjectionRecordField> = Pick<
   "thread" | K
 >;
 
+export interface ProjectionReviewRound {
+  readonly part: number;
+  readonly round: number;
+  readonly answered: boolean;
+}
+
 export interface ProjectionTimelinePageOptions {
   readonly afterPosition?: number;
   readonly itemId?: TurnItemId;
@@ -544,6 +550,10 @@ export interface ProjectionStoreV2Shape {
   ) => Effect.Effect<ProjectionTimelinePage, ProjectionStoreV2Error>;
   readonly getMessageCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
   readonly getSubagentCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
+  /** The thread's latest review round, and whether any of its reviewers has completed. */
+  readonly getLatestReviewRound: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProjectionReviewRound | null, ProjectionStoreV2Error>;
   readonly getNextTurnItemOrdinal: (
     threadId: ThreadId,
   ) => Effect.Effect<number, ProjectionStoreV2Error>;
@@ -6209,6 +6219,25 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.map((rows) => rows[0]?.count ?? 0),
         Effect.mapError(controlReadError(threadId)),
       );
+    const getLatestReviewRound: ProjectionStoreV2Shape["getLatestReviewRound"] = (threadId) =>
+      sql<{ part: number; round: number; answered: number }>`
+        SELECT
+          json_extract(payload_json, '$.review.part') AS part,
+          json_extract(payload_json, '$.review.round') AS round,
+          MAX(status = 'completed') AS answered
+        FROM orchestration_v2_projection_subagents
+        WHERE thread_id = ${threadId} AND json_type(payload_json, '$.review') IS NOT NULL
+        GROUP BY part, round
+        ORDER BY part DESC, round DESC
+        LIMIT 1`.pipe(
+        Effect.map((rows) => {
+          const row = rows[0];
+          return row === undefined
+            ? null
+            : { part: row.part, round: row.round, answered: row.answered === 1 };
+        }),
+        Effect.mapError(controlReadError(threadId)),
+      );
     const getNextTurnItemOrdinal: ProjectionStoreV2Shape["getNextTurnItemOrdinal"] = (threadId) =>
       sql<{ ordinal: number | null }>`SELECT MAX(ordinal) AS ordinal
         FROM orchestration_v2_projection_turn_items WHERE thread_id = ${threadId}`.pipe(
@@ -8176,6 +8205,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       isNodeStored: readOnReader(isNodeStored),
       getMessageCount: readOnReader(getMessageCount),
       getSubagentCount: readOnReader(getSubagentCount),
+      getLatestReviewRound: readOnReader(getLatestReviewRound),
       getNextTurnItemOrdinal: readOnReader(getNextTurnItemOrdinal),
       getTurnItem: readOnReader(getTurnItem),
       getThreadRecords: (threadId, fields, filter) =>

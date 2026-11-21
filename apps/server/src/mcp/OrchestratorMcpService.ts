@@ -152,6 +152,9 @@ import {
   interactionModeRank,
   resolveInteractionMode,
   resolveRuntimeMode,
+  reviewRequest,
+  reviewRoundLimitFailure,
+  reviewRoundText,
   runtimeModeRank,
   taskPrompt,
 } from "./delegatedTaskModes.ts";
@@ -2053,9 +2056,11 @@ const make = Effect.gen(function* () {
         instanceId: task.providerInstanceId,
         model: task.model,
       };
+    const reviewRound = reviewRoundText(task.review);
     const result = {
       taskId: task.id,
       childThreadId: task.childThreadId,
+      ...(reviewRound === undefined ? {} : { reviewRound }),
       link: formatThreadLink({
         environmentId: scope.environmentId,
         threadId: task.childThreadId,
@@ -2293,9 +2298,11 @@ const make = Effect.gen(function* () {
           ),
         );
     }
+    const reviewRound = reviewRoundText(task.review);
     return {
       taskId: task.id,
       childThreadId: null,
+      ...(reviewRound === undefined ? {} : { reviewRound }),
       ...(task.remoteChild === undefined
         ? {}
         : { remoteChild: task.remoteChild, link: formatThreadLink(task.remoteChild) }),
@@ -3372,6 +3379,7 @@ const make = Effect.gen(function* () {
       };
     }),
     delegateTask: Effect.fn("OrchestratorMcpService.delegateTask")(function* (callerScope, input) {
+      const review = yield* reviewRequest(input);
       const environmentId =
         input.target === undefined
           ? undefined
@@ -3553,15 +3561,18 @@ const make = Effect.gen(function* () {
           // delegations deliver through the blocking tool call, so a wake is
           // only needed if the parent settled first (timeout, disconnect).
           completionWake: input.mode === "wait" ? "settled_only" : "always",
+          ...(review === undefined ? {} : { review }),
         })
         .pipe(
           Effect.mapError((error) =>
             error._tag === "ThreadManagementProviderInstanceDisabledError"
               ? threadManagementFailure(error)
-              : failure(
-                  "orchestration_error",
-                  `Unable to create delegated task: ${errorMessage(error)}`,
-                ),
+              : error._tag === "OrchestratorReviewRoundLimitError"
+                ? reviewRoundLimitFailure(error)
+                : failure(
+                    "orchestration_error",
+                    `Unable to create delegated task: ${errorMessage(error)}`,
+                  ),
           ),
         );
       const taskEvent = result.storedEvents.find(
