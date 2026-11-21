@@ -53,7 +53,11 @@ import { totalTokens, type UsageRecord } from "@t3tools/provider-core/server/usa
 import * as UsageService from "./UsageService.ts";
 import * as MuseSdk from "../../../../packages/provider-muse/src/server/sdk.ts";
 import { MuseUsageHome } from "@t3tools/provider-muse/server";
-import { makeScanCacheWriter, SCAN_CACHE_FILE_NAME } from "./usageScanCache.ts";
+import {
+  makeScanCacheWriter,
+  SCAN_CACHE_FILE_NAME,
+  USAGE_SCAN_CACHE_VERSION,
+} from "./usageScanCache.ts";
 
 vi.mock("node:fs/promises", { spy: true });
 vi.mock("../../../../packages/provider-muse/src/server/sdk.ts", async (importOriginal) => ({
@@ -1532,9 +1536,9 @@ describe("UsageService", () => {
       }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
-  it.live(
-    "returns the aggregated snapshot without calling a stalled Codex tier resolver again",
-    () =>
+  it.live.each(["stalls", "interrupts"] as const)(
+    "recovers when the Codex tier resolver %s",
+    (mode) =>
       Effect.gen(function* () {
         const { settings, home } = yield* setup;
         yield* TestClock.setTime(CURSOR_NOW);
@@ -1566,15 +1570,36 @@ describe("UsageService", () => {
           const service = yield* UsageService.make.pipe(
             Effect.provideService(CodexUsageHistory.CodexUsageHistory, {
               resolve: (requests) =>
-                Effect.sync(() => {
+                Effect.suspend(() => {
                   calls++;
-                }).pipe(
-                  Effect.andThen(Deferred.succeed(entered, undefined)),
-                  Effect.andThen(Deferred.await(release)),
-                  Effect.as(new Map(requests.map((request) => [request, "fast"] as const))),
-                ),
+                  if (mode === "interrupts") {
+                    return calls === 1
+                      ? Effect.interrupt
+                      : Effect.succeed(
+                          new Map(requests.map((request) => [request, "fast"] as const)),
+                        );
+                  }
+                  return Effect.void.pipe(
+                    Effect.andThen(Deferred.succeed(entered, undefined)),
+                    Effect.andThen(Deferred.await(release)),
+                    Effect.as(new Map(requests.map((request) => [request, "fast"] as const))),
+                  );
+                }),
             }),
           );
+          if (mode === "interrupts") {
+            assert.strictEqual(
+              (yield* Effect.flip(service.readSummary(WINDOW))).reason,
+              "scanFailed",
+            );
+            const independent = yield* service.readSummary({
+              ...WINDOW,
+              timeZone: "America/New_York",
+            });
+            assert.strictEqual(totalOutputTokens(independent), 7);
+            assert.strictEqual(calls, 2);
+            return;
+          }
           const pending = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
           yield* Deferred.await(entered);
           yield* TestClock.adjust("30 seconds");
@@ -1641,7 +1666,11 @@ describe("UsageService", () => {
         yield* Deferred.succeed(releaseSettings, undefined);
         yield* Deferred.await(cacheStarted);
         yield* TestClock.adjust("24 seconds");
-        assert.strictEqual((yield* Fiber.join(waitingCache))._tag, "Failure");
+        const cacheResult = yield* Fiber.join(waitingCache);
+        assert.strictEqual(
+          cacheResult._tag === "Failure" && cacheResult.failure.reason,
+          "scanPending",
+        );
         yield* Deferred.succeed(releaseCache, undefined);
         assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
       }).pipe(
@@ -2898,7 +2927,7 @@ describe("UsageService", () => {
   );
 
   it.live.each(["read error", "invalid current JSON"] as const)(
-    "keeps all cache files on a current cache %s",
+    "handles a current cache %s without destroying its bytes",
     (failure) =>
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
@@ -2942,8 +2971,20 @@ describe("UsageService", () => {
           );
           assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 0);
           yield* service.awaitPersisted;
-          assert.strictEqual(yield* fs.readFileString(current), unreadable);
-          assert.strictEqual(yield* fs.readFileString(legacy), archive);
+          if (failure === "read error") {
+            assert.strictEqual(yield* fs.readFileString(current), unreadable);
+            assert.strictEqual(yield* fs.readFileString(legacy), archive);
+          } else {
+            const names = yield* fs.readDirectory(stateDir);
+            const backup = names.find((name) => name.startsWith(".usage-cache-unreadable-"));
+            assert.isDefined(backup);
+            assert.strictEqual(
+              yield* fs.readFileString(NodePath.join(stateDir, backup)),
+              unreadable,
+            );
+            assert.isFalse(yield* fs.exists(legacy));
+            assert.isNotEmpty(yield* fs.readFileString(current));
+          }
           yield* fs.writeFileString(current, saved);
           const restarted = yield* UsageService.make;
           assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 5);
@@ -2953,6 +2994,90 @@ describe("UsageService", () => {
           ),
         );
       }).pipe(Effect.scoped),
+  );
+
+  it.live.each(["v9 source", "v10 source", "v10 file"] as const)(
+    "salvages deleted Usage beside a malformed %s entry",
+    (damage) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        const projects = NodePath.join(home, "claude", "projects");
+        const actual = NodePath.join(home, "physical-projects");
+        yield* Effect.promise(async () => {
+          await NodeFSP.writeFile(transcript, claudeLine(1, 5));
+          await NodeFSP.rename(projects, actual);
+          await NodeFSP.symlink(actual, projects, "junction");
+        });
+        yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
+          const original = yield* UsageService.make;
+          assert.strictEqual(totalOutputTokens(yield* original.readSummary(WINDOW)), 5);
+          yield* original.awaitPersisted;
+          const cache = decodeUnknownJsonString(yield* fs.readFileString(current)) as {
+            version: number;
+            files: Record<string, unknown>;
+            sources: Record<string, unknown>;
+          };
+          if (damage === "v10 file") cache.files["broken.jsonl"] = { unexpected: true };
+          else cache.sources["bad-root"] = { dir: false };
+          let corrupted = current;
+          if (damage === "v9 source") {
+            cache.version = 9;
+            corrupted = NodePath.join(stateDir, "usage-scan-cache-v9.json");
+            yield* fs.remove(current);
+          }
+          const bytes = encodeUnknownJsonString(cache);
+          yield* fs.writeFileString(corrupted, bytes);
+          yield* fs.remove(projects);
+          yield* fs.remove(actual, { recursive: true });
+
+          const repaired = yield* UsageService.make;
+          assert.strictEqual(totalOutputTokens(yield* repaired.readSummary(WINDOW)), 5);
+          yield* repaired.awaitPersisted;
+          const names = yield* fs.readDirectory(stateDir);
+          const backups = names.filter((name) => name.startsWith(".usage-cache-unreadable-"));
+          assert.lengthOf(backups, 1);
+          assert.strictEqual(yield* fs.readFileString(NodePath.join(stateDir, backups[0]!)), bytes);
+          const persisted = decodeUnknownJsonString(
+            yield* fs.readFileString(current),
+          ) as typeof cache;
+          assert.strictEqual(persisted.version, USAGE_SCAN_CACHE_VERSION);
+          assert.isUndefined(persisted.sources["bad-root"]);
+          assert.isUndefined(persisted.files["broken.jsonl"]);
+          const restarted = yield* UsageService.make;
+          assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 5);
+        }).pipe(Effect.provide(layerService({ prefix: "usage-cache-salvage", home, settings })));
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("leaves a newer current cache untouched after scanning", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
+        const bytes = encodeUnknownJsonString({
+          version: USAGE_SCAN_CACHE_VERSION + 1,
+          future: true,
+        });
+        yield* fs.writeFileString(current, bytes);
+        const service = yield* UsageService.make;
+        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
+        yield* service.awaitPersisted;
+        assert.strictEqual(yield* fs.readFileString(current), bytes);
+        assert.isFalse(
+          (yield* fs.readDirectory(stateDir)).some((name) =>
+            name.startsWith(".usage-cache-unreadable-"),
+          ),
+        );
+      }).pipe(
+        Effect.provide(layerService({ prefix: "usage-cache-future-version", home, settings })),
+      );
+    }).pipe(Effect.scoped),
   );
 
   it.live.each([
@@ -3139,42 +3264,94 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("credits the same copy of a duplicate after its transcripts are deleted", () =>
-    Effect.gen(function* () {
-      const { transcript, settings, home } = yield* setup;
-      const dir = NodePath.dirname(transcript);
-      const [first = "", second = ""] = yield* Effect.promise(async () => {
-        await NodeFSP.writeFile(NodePath.join(dir, "a.jsonl"), "");
-        await NodeFSP.writeFile(NodePath.join(dir, "b.jsonl"), "");
-        return (await NodeFSP.readdir(dir)).map((name) => NodePath.join(dir, name));
-      });
-      const forked = (line: string) => line.replace('"session-1"', '"session-2"');
-      yield* Effect.promise(async () => {
-        await NodeFSP.writeFile(
-          first,
-          claudeLine(1, 5).replace(
-            '"message":',
-            '"padding":' + encodeUnknownJsonString("x".repeat(9 * 1024 * 1024)) + ',"message":',
-          ),
-        );
-        await NodeFSP.writeFile(second, forked(claudeLine(1, 5)) + forked(claudeLine(2, 7)));
-      });
-      yield* Effect.gen(function* () {
-        const service = yield* UsageService.make;
-        const live = yield* service.readSummary(WINDOW);
-        assert.strictEqual(live.buckets[0]?.sessions, 2);
+  it.live.each(["first copy deleted", "restart after cutoff"] as const)(
+    "credits the same duplicate with the %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        const dir = NodePath.dirname(transcript);
+        const first = NodePath.join(dir, "a.jsonl");
+        const second = NodePath.join(dir, "b.jsonl");
+        yield* Effect.promise(async () => {
+          await NodeFSP.writeFile(first, claudeLine(1, 5));
+          await NodeFSP.writeFile(
+            second,
+            claudeLine(1, 5, "claude-fable-5", "session-2") +
+              claudeLine(2, 7, "claude-fable-5", "session-2"),
+          );
+        });
+        yield* Effect.gen(function* () {
+          if (scenario === "restart after cutoff") {
+            const actual = yield* Effect.promise(() =>
+              vi.importActual<typeof NodeFSP>("node:fs/promises"),
+            );
+            const entered = Promise.withResolvers<void>();
+            const release = Promise.withResolvers<void>();
+            const readSecond = Promise.withResolvers<void>();
+            yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()));
+            using _open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+              if (args[0] === first) {
+                entered.resolve();
+                await release.promise;
+              }
+              return actual.open(...args);
+            });
+            const original = yield* UsageService.make;
+            const base = yield* Effect.tracer;
+            const tracer = Tracer.make({
+              span(options) {
+                const span = base.span(options);
+                if (options.name === "UsageService.readFileRecords") {
+                  const end = span.end.bind(span);
+                  span.end = (time, exit) => {
+                    end(time, exit);
+                    if (Exit.isSuccess(exit)) readSecond.resolve();
+                  };
+                }
+                return span;
+              },
+            });
+            const caller = yield* original
+              .readSummary(WINDOW)
+              .pipe(Effect.withTracer(tracer), Effect.result, Effect.forkChild);
+            yield* Effect.promise(() => Promise.all([entered.promise, readSecond.promise]));
+            yield* TestClock.adjust("299 seconds");
+            const cap = yield* original
+              .readSummary({ ...WINDOW, awaitRefresh: true })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* TestClock.adjust("1 second");
+            const stopped = yield* Fiber.join(cap);
+            assert.strictEqual(stopped._tag === "Failure" && stopped.failure.reason, "scanPending");
+            yield* Fiber.join(caller);
+            release.resolve();
+            yield* original.awaitPersisted;
+            const { stateDir } = yield* ServerConfig.ServerConfig;
+            const persisted = decodeUnknownJsonString(
+              yield* Effect.promise(() =>
+                NodeFSP.readFile(NodePath.join(stateDir, SCAN_CACHE_FILE_NAME), "utf8"),
+              ),
+            ) as { files: Record<string, unknown> };
+            assert.deepStrictEqual(Object.keys(persisted.files), [second]);
+          }
 
-        yield* Effect.promise(() => Promise.all([NodeFSP.rm(first), NodeFSP.rm(second)]));
-        const saved = yield* service.readSummary(WINDOW);
-        assert.deepStrictEqual(saved.buckets, live.buckets);
-        assert.deepStrictEqual(saved.sources, live.sources);
-        yield* service.awaitPersisted;
-        const restored = yield* (yield* UsageService.make).readSummary(WINDOW);
-        assert.deepStrictEqual(restored.buckets, live.buckets);
-      }).pipe(
-        Effect.provide(layerService({ prefix: "usage-service-copy-order-test", home, settings })),
-      );
-    }).pipe(Effect.scoped),
+          const service = yield* UsageService.make;
+          const live = yield* service.readSummary(WINDOW);
+          assert.strictEqual(totalOutputTokens(live), 12);
+          assert.strictEqual(live.buckets[0]?.sessions, 2);
+          yield* Effect.promise(() => NodeFSP.rm(first));
+          const oneDeleted = yield* service.readSummary(WINDOW);
+          assert.deepStrictEqual(oneDeleted.buckets, live.buckets);
+          yield* Effect.promise(() => NodeFSP.rm(second));
+          const bothDeleted = yield* service.readSummary(WINDOW);
+          assert.deepStrictEqual(bothDeleted.buckets, live.buckets);
+          yield* service.awaitPersisted;
+          const restored = yield* (yield* UsageService.make).readSummary(WINDOW);
+          assert.deepStrictEqual(restored.buckets, live.buckets);
+        }).pipe(
+          Effect.provide(layerService({ prefix: "usage-service-copy-order-test", home, settings })),
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
   it.live("scans a queued window after its first caller times out", () =>
@@ -3222,7 +3399,7 @@ describe("UsageService", () => {
         yield* Deferred.await(waiting);
         yield* TestClock.adjust("30 seconds");
         const result = yield* Fiber.join(narrow);
-        assert.strictEqual(result._tag, "Failure");
+        assert.strictEqual(result._tag === "Failure" && result.failure.reason, "scanPending");
         assert.strictEqual(scans, 1);
         yield* Deferred.succeed(release, undefined);
         assert.strictEqual((yield* Fiber.join(first))._tag, "Failure");
@@ -3324,13 +3501,78 @@ describe("UsageService", () => {
         const saved = decodeUnknownJsonString(
           yield* fs.readFileString(NodePath.join(stateDir, SCAN_CACHE_FILE_NAME)),
         ) as { files: Record<string, unknown> };
-        assert.deepStrictEqual(Object.keys(saved.files), listed);
+        assert.sameMembers(Object.keys(saved.files), listed);
         for (const path of first)
           assert.lengthOf(
             open.mock.calls.filter(([file]) => file === path),
             1,
           );
       }).pipe(Effect.provide(layerService({ prefix: "usage-scan-hard-cutoff", home, settings })));
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live("keeps one transcript scan running past five minutes while bytes arrive", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      const chunks = Array.from({ length: 3 }, () => ({
+        reached: Promise.withResolvers<void>(),
+        release: Promise.withResolvers<void>(),
+      }));
+      const actual = yield* Effect.promise(() =>
+        vi.importActual<typeof NodeFSP>("node:fs/promises"),
+      );
+      let reads = 0;
+      using _open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+        const handle = await actual.open(...args);
+        if (args[0] !== transcript) return handle;
+        reads++;
+        const create = handle.createReadStream.bind(handle);
+        handle.createReadStream = (options) => {
+          const stream = create(options);
+          const read = stream[Symbol.asyncIterator].bind(stream);
+          stream[Symbol.asyncIterator] = async function* () {
+            for await (const bytes of { [Symbol.asyncIterator]: read }) {
+              for (const [index, chunk] of chunks.entries()) {
+                chunk.reached.resolve();
+                await chunk.release.promise;
+                const width = Math.ceil(bytes.length / chunks.length);
+                yield bytes.subarray(index * width, (index + 1) * width);
+              }
+            }
+            return undefined;
+          };
+          return stream;
+        };
+        return handle;
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          for (const chunk of chunks) chunk.release.resolve();
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* UsageService.make;
+        const pending = yield* service.readSummary(WINDOW).pipe(Effect.result, Effect.forkChild);
+        yield* Effect.promise(() => chunks[0]!.reached.promise);
+        chunks[0]!.release.resolve();
+        yield* Effect.promise(() => chunks[1]!.reached.promise);
+        yield* TestClock.adjust("3 minutes");
+        chunks[1]!.release.resolve();
+        yield* Effect.promise(() => chunks[2]!.reached.promise);
+        yield* TestClock.adjust("3 minutes");
+        const followUp = yield* service
+          .readSummary({ ...WINDOW, awaitRefresh: true })
+          .pipe(Effect.forkChild);
+        chunks[2]!.release.resolve();
+        assert.strictEqual(totalOutputTokens(yield* Fiber.join(followUp)), 5);
+        assert.strictEqual(reads, 1);
+        const initial = yield* Fiber.join(pending);
+        assert.strictEqual(initial._tag === "Failure" && initial.failure.reason, "scanPending");
+      }).pipe(
+        Effect.provide(layerService({ prefix: "usage-scan-progress-timeout", home, settings })),
+      );
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
@@ -3358,27 +3600,36 @@ describe("UsageService", () => {
         );
         assert.strictEqual((yield* service.readSummary(WINDOW)).buckets[0]?.costUsd, 0);
         yield* service.readSummary(NARROW_WINDOW);
-        const slow = Effect.gen(function* () {
+        const slow = Effect.fn("UsageServiceTest.delayScan")(function* (waitForStall: boolean) {
           gate = { hit: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
           const pending = yield* service.readSummary(WINDOW).pipe(Effect.result, Effect.forkChild);
           yield* Deferred.await(gate.hit);
           yield* TestClock.adjust("30 seconds");
           const result = yield* Fiber.join(pending);
+          if (waitForStall) {
+            yield* TestClock.adjust("269 seconds");
+            const cap = yield* service
+              .readSummary({ ...WINDOW, awaitRefresh: true })
+              .pipe(Effect.forkChild);
+            yield* TestClock.adjust("1 second");
+            const stalled = yield* Fiber.join(cap);
+            assert.strictEqual(stalled.partialReason, "scanTimedOut");
+            assert.strictEqual(totalOutputTokens(stalled), 5);
+          }
           yield* Deferred.succeed(gate.release, undefined);
           gate = undefined;
           return result;
         });
-        const compatible = yield* slow;
+        const compatible = yield* slow(true);
         assert.isTrue(
           compatible._tag === "Success" && compatible.success.partialReason === "scanTimedOut",
         );
-        yield* service.readSummary({ ...WINDOW, awaitRefresh: true });
         yield* settingsService.updateSettings({
           usagePriceOverrides: {
             "example-model": { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 },
           },
         });
-        assert.strictEqual((yield* slow)._tag, "Failure");
+        assert.strictEqual((yield* slow(false))._tag, "Failure");
         const updated = yield* service.readSummary({ ...WINDOW, awaitRefresh: true });
         assert.closeTo(updated.buckets[0]?.costUsd ?? -1, 0.00006, 1e-12);
       }).pipe(Effect.provide(layerService({ prefix: "usage-scan-deadline-keys", home, settings })));
@@ -3427,7 +3678,8 @@ describe("UsageService", () => {
         yield* Deferred.await(started);
         yield* Effect.promise(() => read.promise);
         yield* TestClock.adjust("30 seconds");
-        assert.strictEqual((yield* Fiber.join(pending))._tag, "Failure");
+        const priced = yield* Fiber.join(pending);
+        assert.strictEqual(priced._tag === "Failure" && priced.failure.reason, "scanPending");
         yield* Deferred.succeed(release, undefined);
         const finished = yield* service.readSummary({ ...WINDOW, awaitRefresh: true });
         assert.strictEqual(finished.buckets[0]?.costUsd, 5);

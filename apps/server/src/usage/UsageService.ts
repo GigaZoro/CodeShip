@@ -19,6 +19,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -60,6 +61,7 @@ import {
   makeScanCacheWriter,
   pruneScanCache,
   SCAN_CACHE_FILE_NAME,
+  USAGE_SCAN_CACHE_VERSION,
   type CachedFile,
   type ScanCache,
 } from "./usageScanCache.ts";
@@ -83,7 +85,7 @@ const TRANSCRIPT_READ_CONCURRENCY = 4;
 const LISTING_TTL_MS = 5_000;
 const ACTIVE_TRANSCRIPT_AGE_MS = 24 * 60 * 60 * 1000;
 const SUMMARY_DEADLINE = "30 seconds";
-const SCAN_DEADLINE = "5 minutes";
+const SCAN_STALL_MS = 5 * 60 * 1000;
 const FOLLOW_UP_TTL_MS = 10_000;
 const MAX_SCAN_KEYS = 16;
 const monotonicMillis = Clock.currentTimeNanos.pipe(Effect.map((ns) => Number(ns / 1_000_000n)));
@@ -119,12 +121,19 @@ const ScanCacheJson = Schema.fromJsonString(Schema.Unknown);
 const decodeScanCacheFile = Schema.decodeUnknownEffect(ScanCacheJson);
 const encodeUsageRecordKey = Schema.encodeSync(ScanCacheJson);
 const CachedSource = Schema.Struct({ dir: Schema.String, volumeId: Schema.String });
+const decodeCachedSource = Schema.decodeUnknownOption(CachedSource);
+const decodeCacheVersion = Schema.decodeUnknownOption(Schema.Struct({ version: Schema.Number }));
+const decodeSourceRows = Schema.decodeUnknownOption(
+  Schema.Struct({ sources: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)) }),
+);
+const decodeFileRows = Schema.decodeUnknownOption(
+  Schema.Struct({ files: Schema.Record(Schema.String, Schema.Unknown) }),
+);
 const decodeCacheShape = Schema.decodeUnknownOption(
   Schema.Struct({
-    version: Schema.Literals([4, 5, 6, 7, 8, 9, 10]),
+    version: Schema.Int.check(Schema.isBetween({ minimum: 4, maximum: USAGE_SCAN_CACHE_VERSION })),
     models: Schema.Array(Schema.String),
     sessions: Schema.Array(Schema.String),
-    files: Schema.Record(Schema.String, Schema.Unknown),
   }),
 );
 const LEGACY_CLAIM_PREFIX = ".usage-cache-retiring-";
@@ -154,9 +163,6 @@ function sharedSessions(
   }
   return shared;
 }
-const decodeCachedSources = Schema.decodeUnknownOption(
-  Schema.Struct({ sources: Schema.Record(Schema.String, CachedSource) }),
-);
 
 export class UsageService extends Context.Service<
   UsageService,
@@ -183,8 +189,6 @@ export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
 
   const fileCache: ScanCache = new Map();
-  const fileOrder = new Map<string, number>();
-  let nextFileOrder = 0;
   const resolvedRecords = new WeakMap<UsageRecord, UsageRecord>();
   const correctedRecord = (record: UsageRecord) => resolvedRecords.get(record) ?? record;
   const correctedBatch = (records: readonly UsageRecord[]) =>
@@ -427,13 +431,74 @@ export const make = Effect.gen(function* () {
               info.type === "File" ? fileSystem.readFileString(filePath) : Effect.succeed(null),
             ),
           );
-      const loadSources = (document: unknown) => {
-        const sources = decodeCachedSources(document);
-        if (Option.isNone(sources)) return;
-        for (const [key, source] of Object.entries(sources.value.sources)) {
-          if (!sourceCache.has(key)) sourceCache.set(key, source);
+      const decodeDocument = Effect.fn("UsageService.decodeScanCache")(function* (
+        raw: string | null,
+      ) {
+        const document =
+          raw === null
+            ? null
+            : yield* decodeScanCacheFile(raw).pipe(Effect.orElseSucceed(() => null));
+        const version = Option.getOrUndefined(decodeCacheVersion(document))?.version;
+        const shape = decodeCacheShape(document);
+        const entries = decodeScanCache(document, transcriptFormats);
+        const rows = decodeSourceRows(document);
+        const sources = new Map<string, typeof CachedSource.Type>();
+        const sourceRows = Option.getOrUndefined(rows)?.sources ?? {};
+        for (const [key, row] of Object.entries(sourceRows)) {
+          const parsed = decodeCachedSource(row);
+          if (Option.isSome(parsed)) sources.set(key, parsed.value);
         }
+        const fileRows = decodeFileRows(document);
+        const entriesDropped = Option.isSome(fileRows)
+          ? Object.keys(fileRows.value.files).length - entries.size
+          : null;
+        const sourcesDropped = Option.isSome(rows)
+          ? Object.keys(sourceRows).length - sources.size
+          : null;
+        const complete = Option.isSome(shape) && entriesDropped === 0 && sourcesDropped === 0;
+        return { version, entries, sources, complete, entriesDropped, sourcesDropped };
+      });
+      const mergeSources = (sources: ReadonlyMap<string, typeof CachedSource.Type>) => {
+        let changed = false;
+        for (const [key, source] of sources) {
+          if (!sourceCache.has(key)) {
+            sourceCache.set(key, source);
+            changed = true;
+          }
+        }
+        return changed;
       };
+      const unreadableName = Effect.fn("UsageService.unreadableCachePath")(function* (
+        file: string,
+      ) {
+        const id = yield* crypto.randomUUIDv4();
+        return path.join(config.stateDir, `.usage-cache-unreadable-${id}-${path.basename(file)}`);
+      });
+      const syncCacheFile = (file: string) =>
+        Effect.scoped(
+          Effect.flatMap(fileSystem.open(file, { flag: "r+" }), (handle) => handle.sync),
+        );
+      const syncCacheDirectory =
+        HostProcess.Platform.defaultValue() === "win32"
+          ? Effect.void
+          : Effect.scoped(
+              Effect.flatMap(fileSystem.open(config.stateDir), (handle) => handle.sync),
+            );
+      const logCacheError = (
+        file: string,
+        version: number | undefined,
+        entriesDropped: number | null,
+        sourcesDropped: number | null,
+        cause?: unknown,
+      ) =>
+        Effect.logError("Keeping an incomplete Usage cache", {
+          path: file,
+          version: version ?? null,
+          entriesDropped,
+          sourcesDropped,
+          cause,
+        });
+
       const current = yield* readDocument(scanCachePath).pipe(
         Effect.asSome,
         Effect.catchIf(
@@ -442,38 +507,59 @@ export const make = Effect.gen(function* () {
         ),
         Effect.result,
       );
+      let rewriteCurrent = false;
       if (current._tag === "Failure") {
         cacheWritable = false;
-        yield* Effect.logWarning("Keeping the unreadable current Usage cache", {
-          path: scanCachePath,
-          cause: current.failure,
-        });
+        yield* logCacheError(scanCachePath, undefined, null, null, current.failure);
         return;
       }
       if (Option.isSome(current.success)) {
         const raw = current.success.value;
-        const decoded =
-          raw === null
-            ? null
-            : yield* decodeScanCacheFile(raw).pipe(Effect.orElseSucceed(() => null));
-        const shape = decodeCacheShape(decoded);
-        const entries = decodeScanCache(decoded, transcriptFormats);
-        if (
-          Option.isNone(shape) ||
-          shape.value.version !== 10 ||
-          entries.size !== Object.keys(shape.value.files).length
-        ) {
+        const decoded = yield* decodeDocument(raw);
+        if (raw === null || (decoded.version ?? 0) > USAGE_SCAN_CACHE_VERSION) {
           cacheWritable = false;
-          yield* Effect.logWarning("Keeping the invalid current Usage cache", {
-            path: scanCachePath,
-          });
+          yield* logCacheError(
+            scanCachePath,
+            decoded.version,
+            decoded.entriesDropped,
+            decoded.sourcesDropped,
+          );
           return;
         }
-        for (const [file, entry] of entries) fileCache.set(file, entry);
-        loadSources(decoded);
+        for (const [file, entry] of decoded.entries) fileCache.set(file, entry);
+        mergeSources(decoded.sources);
+        if (!decoded.complete) {
+          yield* logCacheError(
+            scanCachePath,
+            decoded.version,
+            decoded.entriesDropped,
+            decoded.sourcesDropped,
+          );
+          const backup = yield* unreadableName(scanCachePath);
+          const copied = yield* fileSystem.copyFile(scanCachePath, backup).pipe(
+            Effect.andThen(syncCacheFile(backup)),
+            Effect.andThen(syncCacheDirectory),
+            Effect.tapError((error) =>
+              logCacheError(
+                backup,
+                decoded.version,
+                decoded.entriesDropped,
+                decoded.sourcesDropped,
+                error,
+              ),
+            ),
+            Effect.isSuccess,
+          );
+          if (!copied) {
+            cacheWritable = false;
+            return;
+          }
+          rewriteCurrent = true;
+          cacheDirty = true;
+        }
       }
 
-      const claims: string[] = [];
+      const claims: { readonly path: string; readonly unreadablePath?: string }[] = [];
       const oldNames = yield* legacyNames;
       for (const legacy of LEGACY_SCAN_CACHE_FILE_NAMES) {
         for (const name of oldNames.filter((name) => name.endsWith(legacy))) {
@@ -492,29 +578,11 @@ export const make = Effect.gen(function* () {
             continue;
           const raw = yield* readDocument(claim).pipe(Effect.result);
           if (raw._tag === "Failure") {
-            yield* Effect.logWarning("Keeping an unreadable legacy Usage archive", {
-              archive: name,
-              cause: raw.failure,
-            });
+            yield* logCacheError(claim, undefined, null, null, raw.failure);
             continue;
           }
-          const archived =
-            raw.success === null
-              ? null
-              : yield* decodeScanCacheFile(raw.success).pipe(Effect.orElseSucceed(() => null));
-          const entries = decodeScanCache(archived, transcriptFormats);
-          const shape = decodeCacheShape(archived);
-          if (Option.isNone(shape) || entries.size !== Object.keys(shape.value.files).length) {
-            yield* fileSystem
-              .rename(
-                claim,
-                path.join(config.stateDir, `.usage-cache-unreadable-${path.basename(claim)}`),
-              )
-              .pipe(Effect.ignore({ log: true }));
-            yield* Effect.logWarning("Keeping an invalid legacy Usage archive", { archive: name });
-            continue;
-          }
-          for (const [file, entry] of entries) {
+          const decoded = yield* decodeDocument(raw.success);
+          for (const [file, entry] of decoded.entries) {
             const previous = fileCache.get(file);
             // At the same mtime, growth implies a later append. Equal bytes prefer the newer format read first.
             if (
@@ -526,24 +594,39 @@ export const make = Effect.gen(function* () {
               cacheDirty = true;
             }
           }
-          loadSources(archived);
-          claims.push(claim);
+          if (mergeSources(decoded.sources)) cacheDirty = true;
+          if (decoded.complete) {
+            claims.push({ path: claim });
+          } else {
+            yield* logCacheError(
+              claim,
+              decoded.version,
+              decoded.entriesDropped,
+              decoded.sourcesDropped,
+            );
+            claims.push({ path: claim, unreadablePath: yield* unreadableName(claim) });
+          }
         }
       }
-      if (claims.length === 0) return;
-      // Sync the new cache before dropping any archive that may contain deleted transcripts.
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          const contents = writeScanCache(fileCache, { sources: Object.fromEntries(sourceCache) });
-          yield* writeCacheFile(scanCachePath, contents);
-          yield* (yield* fileSystem.open(scanCachePath, { flag: "r+" })).sync;
-          if (HostProcess.Platform.defaultValue() !== "win32") {
-            yield* (yield* fileSystem.open(config.stateDir)).sync;
-          }
-          cacheDirty = false;
-          for (const claim of claims) yield* fileSystem.remove(claim, { force: true });
-        }),
-      ).pipe(Effect.ignore({ log: true }));
+      if (claims.length === 0 && !rewriteCurrent) return;
+      // Persist salvaged rows before moving archives out of the next startup's inputs.
+      yield* Effect.gen(function* () {
+        const contents = writeScanCache(fileCache, { sources: Object.fromEntries(sourceCache) });
+        yield* writeCacheFile(scanCachePath, contents);
+        yield* syncCacheFile(scanCachePath);
+        yield* syncCacheDirectory;
+        cacheDirty = false;
+        for (const claim of claims) {
+          yield* claim.unreadablePath === undefined
+            ? fileSystem.remove(claim.path, { force: true })
+            : fileSystem.rename(claim.path, claim.unreadablePath);
+        }
+      }).pipe(
+        Effect.tapError((error) =>
+          logCacheError(scanCachePath, USAGE_SCAN_CACHE_VERSION, null, null, error),
+        ),
+        Effect.ignore,
+      );
     }).pipe(
       Effect.mapError(
         (cause) =>
@@ -603,6 +686,7 @@ export const make = Effect.gen(function* () {
     mtimeMs: number,
     provider: UsageProviderKind,
     format: TranscriptUsageFormat<unknown>,
+    onProgress: () => void,
   ): Effect.fn.Return<{
     readonly records: readonly UsageRecord[];
     readonly malformedRecords: number;
@@ -635,7 +719,7 @@ export const make = Effect.gen(function* () {
         : undefined;
 
     const parsed = yield* Effect.promise((signal) =>
-      readTranscriptRecords(filePath, format, resumeFrom, { signal }),
+      readTranscriptRecords(filePath, format, resumeFrom, { signal, onProgress }),
     );
     // A read failure is not an empty transcript: caching it under this
     // (size, mtime) would silently drop the file's usage until it changes.
@@ -753,6 +837,7 @@ export const make = Effect.gen(function* () {
     source: TranscriptSource,
     windowStartMs: number,
     scanListings: Map<string, Listing>,
+    onProgress: () => void,
   ) {
     const { provider, format, dir, volumeId, fileName } = source;
     const key = `${dir}\0${fileName ?? ""}`;
@@ -766,20 +851,13 @@ export const make = Effect.gen(function* () {
     const listing = scanListings.get(key) ?? (yield* transcriptListing(key, dir, fileName));
     scanListings.set(key, listing);
     const candidates = listing.files.filter((file) => file.mtimeMs >= windowStartMs);
-    for (const name of fileCache.keys()) {
-      if (!fileOrder.has(name)) fileOrder.set(name, nextFileOrder++);
-    }
-    for (const { path } of candidates) {
-      if (!fileOrder.has(path)) fileOrder.set(path, nextFileOrder++);
-    }
-    let addedFile = false;
     const read = yield* Effect.forEach(
       candidates,
       (file) =>
-        readFileRecords(file.path, file.size, file.mtimeMs, provider, format).pipe(
+        readFileRecords(file.path, file.size, file.mtimeMs, provider, format, onProgress).pipe(
           Effect.map(({ records, malformedRecords, failed, update }) => {
+            onProgress();
             if (update !== undefined) {
-              addedFile ||= !fileCache.has(file.path);
               fileCache.set(file.path, {
                 ...update,
                 records: correctedBatch(update.records),
@@ -791,18 +869,6 @@ export const make = Effect.gen(function* () {
           }),
         ),
       { concurrency: TRANSCRIPT_READ_CONCURRENCY },
-    ).pipe(
-      Effect.ensuring(
-        Effect.sync(() => {
-          if (!addedFile) return;
-          // Retained duplicates follow discovery order even when an earlier read is interrupted.
-          const ordered = [...fileCache].sort(
-            ([left], [right]) => fileOrder.get(left)! - fileOrder.get(right)!,
-          );
-          fileCache.clear();
-          for (const [name, entry] of ordered) fileCache.set(name, entry);
-        }),
-      ),
     );
     const unread = listing.failedPaths + read.filter((file) => file.failed).length;
     return {
@@ -881,6 +947,7 @@ export const make = Effect.gen(function* () {
     input: UsageSummaryInput,
     settings: ServerSettingsValue,
     flight: ScanFlight,
+    onProgress: () => void,
   ): Effect.fn.Return<UsageSummary, UsageReadError> {
     if (input.sinceDay > input.untilDay) {
       return yield* new UsageReadError({
@@ -943,7 +1010,7 @@ export const make = Effect.gen(function* () {
     );
     const scanListings = new Map<string, Listing>();
     const transcripts = yield* Effect.forEach(dirs, (dir) =>
-      scanTranscriptDir(dir, windowStartMs, scanListings),
+      scanTranscriptDir(dir, windowStartMs, scanListings, onProgress),
     );
 
     yield* Fiber.join(rateLoad);
@@ -1068,10 +1135,63 @@ export const make = Effect.gen(function* () {
         ...(input.modelFilter === undefined ? {} : { modelFilter: input.modelFilter }),
       });
 
-      const sources: UsageSource[] = [];
-
       const crossFileSessions = sharedSessions(filesByDir.flat());
+      const counts = filesByDir.map(() => ({
+        scannedFiles: 0,
+        skippedFiles: 0,
+        malformedRecords: 0,
+        sessionIds: new Set<string>(),
+      }));
+      // The earliest first record wins duplicate credit, with byte-ordered paths breaking ties.
+      const orderedFiles = filesByDir
+        .flatMap((files, source) =>
+          files.map((file) => ({
+            file,
+            source,
+            first: file.records[0]?.timestampMs ?? Infinity,
+            pathBytes: Buffer.from(file.path),
+          })),
+        )
+        .sort(
+          (left, right) =>
+            left.first - right.first || Buffer.compare(left.pathBytes, right.pathBytes),
+        );
+      for (const { file, source } of orderedFiles) {
+        const count = counts[source]!;
+        const { dir } = scannedDirs[source]!;
+        count.malformedRecords += file.malformedRecords;
+        if (file.records.length === 0) {
+          count.skippedFiles++;
+          continue;
+        }
+        count.scannedFiles++;
+        const eventOccurrences = new Map<string, number>();
+        for (const rawRecord of file.records) {
+          const record = correctedRecord(rawRecord);
+          let usageRecord = record;
+          if (
+            sharedSessionProviders.has(record.provider) &&
+            crossFileSessions.has(record.sessionId)
+          ) {
+            // Preserve repeated equal events within a file, including second-precision timestamps.
+            const key = encodeUsageRecordKey([
+              record.provider,
+              record.sessionId,
+              record.timestampMs,
+              record.model,
+              record.totals,
+            ]);
+            const occurrence = (eventOccurrences.get(key) ?? 0) + 1;
+            eventOccurrences.set(key, occurrence);
+            usageRecord = { ...record, dedupeKey: key + ":" + occurrence };
+          }
+          if (aggregator.add(usageRecord, dir) && record.sessionId.length > 0) {
+            count.sessionIds.add(record.sessionId);
+          }
+        }
+      }
 
+      const sources: UsageSource[] = [];
       for (const [
         index,
         {
@@ -1086,46 +1206,7 @@ export const make = Effect.gen(function* () {
           hostId: sourceHostId,
         },
       ] of scannedDirs.entries()) {
-        let scannedFiles = 0;
-        let skippedFiles = 0;
-        let malformedRecords = 0;
-        // Distinct per directory. Buckets carry per-cell session counts, but a
-        // session spans days and models, so clients total this figure instead.
-        const sessionIds = new Set<string>();
-
-        for (const file of filesByDir[index] ?? []) {
-          malformedRecords += file.malformedRecords;
-          if (file.records.length === 0) {
-            skippedFiles += 1;
-            continue;
-          }
-          scannedFiles += 1;
-          const eventOccurrences = new Map<string, number>();
-          for (const rawRecord of file.records) {
-            const record = correctedRecord(rawRecord);
-            let usageRecord = record;
-            if (
-              sharedSessionProviders.has(record.provider) &&
-              crossFileSessions.has(record.sessionId)
-            ) {
-              // Dedupe moved copies but retain repeated equal events within a file, including second-precision timestamps.
-              const key = encodeUsageRecordKey([
-                record.provider,
-                record.sessionId,
-                record.timestampMs,
-                record.model,
-                record.totals,
-              ]);
-              const occurrence = (eventOccurrences.get(key) ?? 0) + 1;
-              eventOccurrences.set(key, occurrence);
-              usageRecord = { ...record, dedupeKey: key + ":" + occurrence };
-            }
-            if (aggregator.add(usageRecord, dir) && record.sessionId.length > 0) {
-              sessionIds.add(record.sessionId);
-            }
-          }
-        }
-
+        const { scannedFiles, skippedFiles, malformedRecords, sessionIds } = counts[index]!;
         const sourceMessage =
           message ?? (files === null ? "No transcript directory on this environment." : null);
         sources.push({
@@ -1223,7 +1304,6 @@ export const make = Effect.gen(function* () {
     }
     const pruned = pruneScanCache(fileCache, retentionCutoffMs);
     if (pruned > 0) cacheDirty = true;
-    for (const name of fileOrder.keys()) if (!fileCache.has(name)) fileOrder.delete(name);
 
     return yield* finish();
   });
@@ -1235,11 +1315,17 @@ export const make = Effect.gen(function* () {
   >();
   let draining = false;
 
-  const timedOut = (snapshot: UsageSummary | undefined) => {
-    const detail = "The usage scan timed out. Some usage may still be refreshing.";
+  const deadlineAnswer = (flight: ScanFlight) => {
+    const snapshot = flight.snapshot ?? completed.get(flight.key)?.summary;
     if (snapshot === undefined) {
-      return Effect.fail(new UsageReadError({ reason: "scanFailed", detail }));
+      return Effect.fail(
+        new UsageReadError({
+          reason: "scanPending",
+          detail: "The usage scan has no figures yet.",
+        }),
+      );
     }
+    const detail = "The usage scan timed out. Some usage may still be refreshing.";
     return Effect.succeed({
       ...snapshot,
       partialReason: "scanTimedOut",
@@ -1251,39 +1337,73 @@ export const make = Effect.gen(function* () {
     } satisfies UsageSummary);
   };
 
+  const runFlight = Effect.fn("UsageService.runFlight")(function* (flight: ScanFlight) {
+    const clock = yield* Clock.Clock;
+    const now = () => Number(clock.monotonicTimeNanosUnsafe() / 1_000_000n);
+    let lastProgress = now();
+    const stalled = Effect.gen(function* () {
+      let remaining = SCAN_STALL_MS;
+      while (remaining > 0) {
+        yield* Effect.sleep(remaining);
+        remaining = SCAN_STALL_MS - (now() - lastProgress);
+      }
+      return yield* deadlineAnswer(flight);
+    });
+    return yield* Effect.raceFirst(
+      scanSummary(flight.input, flight.settings, flight, () => {
+        lastProgress = now();
+      }),
+      stalled,
+    );
+  });
+
   const drainScans = Effect.gen(function* () {
-    for (const flight of flights.values()) {
-      const exit = yield* scanSummary(flight.input, flight.settings, flight).pipe(
-        Effect.timeoutOrElse({
-          duration: SCAN_DEADLINE,
-          orElse: () => timedOut(flight.snapshot),
-        }),
-        Effect.onExit((exit) =>
-          Effect.gen(function* () {
-            yield* schedulePersist;
-            if (exit._tag === "Success" && exit.value.partialReason === undefined) {
-              const now = yield* monotonicMillis;
-              completed.delete(flight.key);
-              completed.set(flight.key, {
-                summary: exit.value,
-                followUpUntil: flight.needsFollowUp ? now + FOLLOW_UP_TTL_MS : 0,
-              });
-              if (completed.size > MAX_SCAN_KEYS) {
-                const oldest = completed.keys().next();
-                if (!oldest.done) completed.delete(oldest.value);
-              }
+    while (true) {
+      const next = flights.values().next();
+      if (next.done) {
+        draining = false;
+        return;
+      }
+      const flight = next.value;
+      yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const result = yield* restore(runFlight(flight)).pipe(Effect.exit);
+          const exit =
+            Exit.isFailure(result) && Cause.hasInterruptsOnly(result.cause)
+              ? Exit.fail(
+                  new UsageReadError({
+                    reason: "scanFailed",
+                    detail: "The usage scan was interrupted.",
+                  }),
+                )
+              : result;
+          yield* schedulePersist;
+          if (Exit.isSuccess(exit) && exit.value.partialReason === undefined) {
+            const now = yield* monotonicMillis;
+            completed.delete(flight.key);
+            completed.set(flight.key, {
+              summary: exit.value,
+              followUpUntil: flight.needsFollowUp ? now + FOLLOW_UP_TTL_MS : 0,
+            });
+            if (completed.size > MAX_SCAN_KEYS) {
+              const oldest = completed.keys().next();
+              if (!oldest.done) completed.delete(oldest.value);
             }
-            flights.delete(flight.key);
-            yield* Deferred.done(flight.initial, exit);
-            yield* Deferred.done(flight.refreshed, exit);
-          }),
-        ),
-        Effect.exit,
+          }
+          flights.delete(flight.key);
+          yield* Deferred.done(flight.initial, exit);
+          yield* Deferred.done(flight.refreshed, exit);
+        }),
       );
-      if (exit._tag === "Failure" && Cause.hasInterruptsOnly(exit.cause)) return;
     }
-    draining = false;
-  }).pipe(Effect.withSpan("UsageService.drainScans"));
+  }).pipe(
+    Effect.onError(() =>
+      Effect.sync(() => {
+        draining = false;
+      }),
+    ),
+    Effect.withSpan("UsageService.drainScans"),
+  );
 
   const readSummary = Effect.fn("UsageService.readSummary")(function* (
     requested: UsageSummaryInput,
@@ -1300,11 +1420,10 @@ export const make = Effect.gen(function* () {
       input.untilTime ?? null,
       modelFilter ?? null,
     ]);
-    let requestKey: string | undefined;
+    let admitted: ScanFlight | undefined;
     return yield* Effect.gen(function* () {
       const settings = yield* readSettings;
       const key = encodeUsageRecordKey([query, settings]);
-      requestKey = key;
       const now = yield* monotonicMillis;
       const cached = completed.get(key);
       if (
@@ -1318,7 +1437,10 @@ export const make = Effect.gen(function* () {
       const flight = yield* Effect.uninterruptible(
         Effect.gen(function* () {
           const existing = flights.get(key);
-          if (existing !== undefined) return existing;
+          if (existing !== undefined) {
+            admitted = existing;
+            return existing;
+          }
           if (flights.size >= MAX_SCAN_KEYS) {
             return yield* new UsageReadError({
               reason: "scanFailed",
@@ -1334,6 +1456,7 @@ export const make = Effect.gen(function* () {
             needsFollowUp: false,
           };
           flights.set(key, created);
+          admitted = created;
           if (!draining) {
             draining = true;
             yield* drainScans.pipe(Effect.interruptible, Effect.forkIn(scope));
@@ -1346,10 +1469,15 @@ export const make = Effect.gen(function* () {
       Effect.timeoutOrElse({
         duration: SUMMARY_DEADLINE,
         orElse: () => {
-          if (requestKey === undefined) return timedOut(undefined);
-          const flight = flights.get(requestKey);
-          if (flight !== undefined) flight.needsFollowUp = true;
-          return timedOut(flight?.snapshot ?? completed.get(requestKey)?.summary);
+          if (admitted === undefined)
+            return Effect.fail(
+              new UsageReadError({
+                reason: "scanFailed",
+                detail: "The usage scan timed out before it could start.",
+              }),
+            );
+          admitted.needsFollowUp = true;
+          return deadlineAnswer(admitted);
         },
       }),
     );

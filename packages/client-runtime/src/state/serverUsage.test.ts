@@ -13,6 +13,7 @@ import {
   type UsageSummaryInput,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -177,9 +178,10 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
     clear: () => Effect.void,
   });
   const runtime = Atom.runtime(
-    Layer.merge(
+    Layer.mergeAll(
       Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environments),
       Layer.succeed(Persistence.EnvironmentCacheStore, cache),
+      Layer.succeed(Clock.Clock, yield* Clock.Clock),
     ),
   );
   const initialConfigValueAtom = Atom.make(CONFIG);
@@ -222,6 +224,18 @@ function settledUsage<E>(
     Stream.filter((result) => result._tag !== "Initial" && !result.waiting),
     Stream.runHead,
     Effect.map(Option.getOrThrow),
+  );
+}
+
+function settledSummary<E>(
+  registry: AtomRegistry.AtomRegistry,
+  atom: Atom.Atom<AsyncResult.AsyncResult<UsageSummary, E>>,
+) {
+  return settledUsage(registry, atom).pipe(
+    Effect.map((result) => {
+      if (!AsyncResult.isSuccess(result)) throw new Error("Expected settled usage figures");
+      return result.value;
+    }),
   );
 }
 
@@ -303,6 +317,67 @@ it.effect("publishes the first usage answer while the slow follow-up is pending"
       yield* Deferred.succeed(finish, undefined);
       const result = yield* settledUsage(harness.registry, summary);
       expect(AsyncResult.isSuccess(result) && result.value.sources).toEqual([cursorSource(false)]);
+      unmount();
+    }),
+  ),
+);
+
+it.effect("keeps a cold Usage query pending and follows it until the first figures arrive", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const harness = yield* makeHarness(
+        (request, input) =>
+          request === 1
+            ? Effect.fail(new UsageReadError({ reason: "scanPending", detail: "Scanning" }))
+            : Effect.sync(() => expect(input.awaitRefresh).toBe(true)).pipe(
+                Effect.andThen(Deferred.succeed(started, undefined)),
+                Effect.andThen(Deferred.await(release)),
+              ),
+        () => [],
+        () => ({ output: 12 }),
+      );
+      const summary = harness.summary();
+      const unmount = harness.registry.mount(summary);
+      yield* Deferred.await(started);
+      const result = harness.registry.get(summary);
+      expect(result.waiting).toBe(true);
+      expect(AsyncResult.isSuccess(result)).toBe(false);
+      yield* Deferred.succeed(release, undefined);
+      expect(
+        (yield* settledSummary(harness.registry, summary)).buckets[0]?.totals.outputTokens,
+      ).toBe(12);
+      expect(harness.requests()).toBe(2);
+      unmount();
+    }),
+  ),
+);
+
+it.effect("fails the Usage query when every follow-up stays pending", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const harness = yield* makeHarness(() =>
+        Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(
+            Effect.fail(new UsageReadError({ reason: "scanPending", detail: "Scanning" })),
+          ),
+        ),
+      );
+      const summary = harness.summary();
+      const unmount = harness.registry.mount(summary);
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("20 seconds");
+      const terminal = yield* AtomRegistry.toStream(harness.registry, summary).pipe(
+        Stream.filter((value) => AsyncResult.isFailure(value) && !value.waiting),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      expect(AsyncResult.isFailure(terminal) && terminal.cause.toString()).toContain(
+        "The usage scan timed out.",
+      );
+      expect(harness.requests()).toBe(21);
       unmount();
     }),
   ),

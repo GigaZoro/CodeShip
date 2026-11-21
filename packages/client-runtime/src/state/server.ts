@@ -1,4 +1,6 @@
 import {
+  UsageReadError,
+  type UsageSummary,
   type EnvironmentId,
   type ThreadId,
   type EnvironmentStartup,
@@ -13,7 +15,6 @@ import {
   type ServerProviderWorkspaceSnapshot,
   type ServerSelfUpdateProgressEvent,
   type ServerSelfUpdateResult,
-  type UsageSummary,
   offlineVacuumBytes,
   shouldRecommendDatabaseCompaction,
   WS_METHODS,
@@ -1889,31 +1890,36 @@ export function createServerEnvironmentAtoms<R, E>(
       staleTimeMs: 60_000,
       refreshTrigger: ({ environmentId }) => usageScanSettingsAtom(environmentId),
       execute: Effect.fn("ServerEnvironment.readUsageSummary")(function* (input, emit) {
-        let summary = yield* request(WS_METHODS.serverGetUsageSummary, input);
-        for (let attempt = 0; attempt < 20; attempt++) {
+        let previous: UsageSummary | undefined;
+        for (let attempt = 0; attempt <= 20; attempt++) {
+          if (attempt > 1) yield* Effect.sleep("1 second");
+          const result = yield* request(
+            WS_METHODS.serverGetUsageSummary,
+            attempt === 0 ? input : { ...input, awaitRefresh: true },
+          ).pipe(Effect.result);
+          if (Result.isFailure(result)) {
+            const error = result.failure;
+            if (error._tag === "UsageReadError" && error.reason === "scanPending") continue;
+            if (previous === undefined) return yield* error;
+            yield* Effect.logWarning("Could not refresh slow usage sources.").pipe(
+              Effect.annotateLogs({ ...safeErrorLogAttributes(error) }),
+            );
+            return markUnrefreshedSources(previous);
+          }
+          const summary = result.success;
           if (
             summary.partialReason === undefined &&
             !summary.sources.some((source) => source.refreshing)
-          )
-            break;
+          ) {
+            return summary;
+          }
+          previous = summary;
           yield* emit(summary);
-          if (attempt > 0) yield* Effect.sleep("1 second");
-          const refreshed = yield* request(WS_METHODS.serverGetUsageSummary, {
-            ...input,
-            awaitRefresh: true,
-          }).pipe(
-            Effect.asSome,
-            Effect.catch((error) =>
-              Effect.logWarning("Could not refresh slow usage sources.").pipe(
-                Effect.annotateLogs({ ...safeErrorLogAttributes(error) }),
-                Effect.as(Option.none()),
-              ),
-            ),
-          );
-          if (Option.isNone(refreshed)) return markUnrefreshedSources(summary);
-          summary = refreshed.value;
         }
-        return summary;
+        return yield* new UsageReadError({
+          reason: "scanFailed",
+          detail: "The usage scan timed out.",
+        });
       }),
     }),
     resourceTelemetry: createEnvironmentRpcSubscriptionAtomFamily(runtime, {

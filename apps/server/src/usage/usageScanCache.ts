@@ -9,7 +9,7 @@ import * as Schema from "effect/Schema";
 import { CLAUDE_SYNTHETIC_MODEL } from "../provider/Drivers/claudeUsage.ts";
 import { GUARD_LENGTH, type TranscriptParsePosition } from "./usageTranscriptReader.ts";
 
-const USAGE_SCAN_CACHE_VERSION = 10 as const;
+export const USAGE_SCAN_CACHE_VERSION = 10 as const;
 const SPEED_COMPATIBLE_SINCE_VERSION = 4;
 
 /**
