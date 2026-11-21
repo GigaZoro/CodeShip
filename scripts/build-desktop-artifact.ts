@@ -92,6 +92,8 @@ const StageWorkspaceConfig = Schema.Struct({
   // pnpm 11 reads build approvals only from pnpm-workspace.yaml; omission fails staged lifecycle installs.
   allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
   patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  // A stage carries every root patch, so a transitive patched package keeps its patch.
+  allowUnusedPatches: Schema.optional(Schema.Boolean),
   overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   nodeLinker: Schema.optional(Schema.Literals(["hoisted"])),
 });
@@ -104,8 +106,22 @@ const STAGE_PEER_OVERRIDES = {
   "@electron-webauthn/macos>typescript": "-",
 } as const;
 
+const PnpmImporterDependencies = Schema.optional(
+  Schema.Record(Schema.String, Schema.Struct({ version: Schema.String })),
+);
+
 const PnpmLockfileDocument = Schema.Struct({
   patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  importers: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        dependencies: PnpmImporterDependencies,
+        devDependencies: PnpmImporterDependencies,
+        optionalDependencies: PnpmImporterDependencies,
+      }),
+    ),
+  ),
   packages: Schema.optional(
     Schema.Record(
       Schema.String,
@@ -1635,7 +1651,7 @@ export function createStageWorkspaceConfig(input: {
     supportedArchitectures,
     ...(allowBuilds && Object.keys(allowBuilds).length > 0 ? { allowBuilds } : {}),
     ...(patchedDependencies && Object.keys(patchedDependencies).length > 0
-      ? { patchedDependencies }
+      ? { patchedDependencies, allowUnusedPatches: true }
       : {}),
     overrides: { ...overrides, ...STAGE_PEER_OVERRIDES },
   };
@@ -1643,8 +1659,10 @@ export function createStageWorkspaceConfig(input: {
 
 interface PnpmLockfileGraph {
   readonly resolutions: ReadonlyMap<string, Readonly<Record<string, unknown>>>;
-  /** Child versions per `name@version`, across every peer variant of that package. */
-  readonly childVersions: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>>;
+  /** Dependency edges per exact snapshot key; keys and references keep their peer and patch suffixes. */
+  readonly snapshots: ReadonlyMap<string, Readonly<Record<string, string>>>;
+  /** Direct dependency references per importer path. */
+  readonly importers: ReadonlyMap<string, Readonly<Record<string, string>>>;
   readonly patchHashes: ReadonlyMap<string, string>;
 }
 
@@ -1653,11 +1671,30 @@ const withoutPeerSuffix = (reference: string) => {
   return peerStart === -1 ? reference : reference.slice(0, peerStart);
 };
 
+const snapshotPackageName = (key: string) => {
+  const base = withoutPeerSuffix(key);
+  return base.slice(0, base.lastIndexOf("@"));
+};
+
+// An aliased reference ("@tsc-rs/typescript@0.8.0") names its snapshot itself.
+const snapshotKeyOf = (name: string, reference: string) =>
+  withoutPeerSuffix(reference).lastIndexOf("@") > 0 ? reference : `${name}@${reference}`;
+
+const versionsByName = (
+  ...groups: ReadonlyArray<Readonly<Record<string, { readonly version: string }>> | undefined>
+) =>
+  Object.fromEntries(
+    groups.flatMap((group) =>
+      Object.entries(group ?? {}).map(([name, entry]) => [name, entry.version] as const),
+    ),
+  );
+
 export const readPnpmLockfileGraph = Effect.fn("readPnpmLockfileGraph")(function* (
   lockfile: string,
 ) {
   const resolutions = new Map<string, Readonly<Record<string, unknown>>>();
-  const childVersions = new Map<string, Map<string, Set<string>>>();
+  const snapshots = new Map<string, Readonly<Record<string, string>>>();
+  const importers = new Map<string, Readonly<Record<string, string>>>();
   const patchHashes = new Map<string, string>();
   // pnpm writes its own install as a leading document; "---" at column 0 always starts one.
   for (const document of lockfile.split(/^---[ \t]*$/mu)) {
@@ -1666,25 +1703,98 @@ export const readPnpmLockfileGraph = Effect.fn("readPnpmLockfileGraph")(function
     for (const [key, hash] of Object.entries(decoded.patchedDependencies ?? {})) {
       patchHashes.set(key, hash);
     }
+    for (const [importer, entry] of Object.entries(decoded.importers ?? {})) {
+      importers.set(importer, {
+        ...importers.get(importer),
+        ...versionsByName(entry.optionalDependencies, entry.devDependencies, entry.dependencies),
+      });
+    }
     for (const [key, entry] of Object.entries(decoded.packages ?? {})) {
       resolutions.set(key, entry.resolution);
     }
     for (const [key, snapshot] of Object.entries(decoded.snapshots ?? {})) {
-      const parent = withoutPeerSuffix(key);
-      const children = childVersions.get(parent) ?? new Map<string, Set<string>>();
-      childVersions.set(parent, children);
-      for (const [child, version] of Object.entries({
-        ...snapshot.dependencies,
-        ...snapshot.optionalDependencies,
-      })) {
-        const versions = children.get(child) ?? new Set<string>();
-        children.set(child, versions);
-        versions.add(withoutPeerSuffix(version));
+      snapshots.set(key, { ...snapshot.dependencies, ...snapshot.optionalDependencies });
+    }
+  }
+  return { resolutions, snapshots, importers, patchHashes } satisfies PnpmLockfileGraph;
+});
+
+/** The root lockfile as a stage resolves it. */
+interface StagedRootGraph {
+  readonly importers: ReadonlyMap<string, Readonly<Record<string, string>>>;
+  /** Every root snapshot a stage snapshot key may stand for. */
+  readonly snapshots: ReadonlyMap<string, ReadonlyArray<Readonly<Record<string, string>>>>;
+}
+
+/**
+ * A STAGE_PEER_OVERRIDES entry removes that peer from its package, so in a stage each
+ * of the package's snapshots loses the edge and the peer suffix, and its peer variants
+ * become one snapshot.
+ */
+function stagedRootGraph(root: PnpmLockfileGraph): StagedRootGraph {
+  const removedPeers = new Map<string, Set<string>>();
+  for (const selector of Object.keys(STAGE_PEER_OVERRIDES)) {
+    const [parent = "", peer = ""] = selector.split(">");
+    removedPeers.set(parent, (removedPeers.get(parent) ?? new Set()).add(peer));
+  }
+  const removedSuffixes = new Map<string, Set<string>>();
+  for (const [key, edges] of root.snapshots) {
+    const parent = snapshotPackageName(key);
+    for (const peer of removedPeers.get(parent) ?? []) {
+      const reference = edges[peer];
+      if (reference === undefined) continue;
+      const suffixes = removedSuffixes.get(parent) ?? new Set();
+      removedSuffixes.set(parent, suffixes.add(`(${snapshotKeyOf(peer, reference)})`));
+    }
+  }
+  const withoutRemovedPeers = (name: string, reference: string) =>
+    [...(removedSuffixes.get(name) ?? [])].reduce(
+      (stripped, suffix) => stripped.replaceAll(suffix, ""),
+      reference,
+    );
+  const stagedEdges = (name: string, edges: Readonly<Record<string, string>>) =>
+    Object.fromEntries(
+      Object.entries(edges)
+        .filter(([child]) => removedPeers.get(name)?.has(child) !== true)
+        .map(([child, reference]) => [child, withoutRemovedPeers(child, reference)]),
+    );
+  const snapshots = new Map<string, Array<Readonly<Record<string, string>>>>();
+  for (const [key, edges] of root.snapshots) {
+    const name = snapshotPackageName(key);
+    const stagedKey = `${name}@${withoutRemovedPeers(name, key.slice(name.length + 1))}`;
+    snapshots.set(stagedKey, [...(snapshots.get(stagedKey) ?? []), stagedEdges(name, edges)]);
+  }
+  return {
+    importers: new Map(
+      [...root.importers].map(([importer, edges]) => [importer, stagedEdges("", edges)]),
+    ),
+    snapshots,
+  };
+}
+
+/**
+ * What the root lockfile pins for a stage's direct dependency: the first source
+ * importer's own entry, else the edge one of their direct dependencies has to it
+ * (a platform binary the stage names directly).
+ */
+function rootDirectReference(
+  root: StagedRootGraph,
+  sourceImporters: ReadonlyArray<string>,
+  name: string,
+): string | undefined {
+  for (const importer of sourceImporters) {
+    const reference = root.importers.get(importer)?.[name];
+    if (reference !== undefined) return reference;
+  }
+  for (const importer of sourceImporters) {
+    for (const [parent, reference] of Object.entries(root.importers.get(importer) ?? {})) {
+      for (const edges of root.snapshots.get(snapshotKeyOf(parent, reference)) ?? []) {
+        if (edges[name] !== undefined) return edges[name];
       }
     }
   }
-  return { resolutions, childVersions, patchHashes } satisfies PnpmLockfileGraph;
-});
+  return undefined;
+}
 
 const sameResolution = (
   left: Readonly<Record<string, unknown>>,
@@ -1693,32 +1803,63 @@ const sameResolution = (
   Object.keys(left).length === Object.keys(right).length &&
   Object.entries(left).every(([field, value]) => right[field] === value);
 
-/** Every package, dependency edge, and patch a stage resolved must already be in the root lockfile. */
+const differingEdges = (
+  edges: Readonly<Record<string, string>>,
+  rootEdges: Readonly<Record<string, string>>,
+) => Object.entries(edges).filter(([child, reference]) => rootEdges[child] !== reference);
+
+/**
+ * A stage must install exactly what the root lockfile pins: its direct dependencies
+ * at the source importers' references, and every package, snapshot (peer and patch
+ * variant included), dependency edge and patch as the root lockfile records them.
+ */
 export function findStageLockfileDrift(
-  root: PnpmLockfileGraph,
+  rootGraph: PnpmLockfileGraph,
   stage: PnpmLockfileGraph,
+  sourceImporters: ReadonlyArray<string>,
 ): ReadonlyArray<string> {
+  const root = stagedRootGraph(rootGraph);
   const drift: string[] = [];
+  for (const [name, reference] of Object.entries(stage.importers.get(".") ?? {})) {
+    if (/^(?:link|file):/u.test(reference)) {
+      drift.push(`${name} installs from a local path (${reference})`);
+      continue;
+    }
+    const pinned = rootDirectReference(root, sourceImporters, name);
+    if (pinned === undefined) {
+      drift.push(
+        `${name} is not a dependency of ${sourceImporters.join(" or ")} in pnpm-lock.yaml`,
+      );
+    } else if (pinned !== reference) {
+      drift.push(`${name} resolved to ${reference}, but pnpm-lock.yaml pins ${pinned}`);
+    }
+  }
   for (const [key, resolution] of stage.resolutions) {
-    const rootResolution = root.resolutions.get(key);
+    const rootResolution = rootGraph.resolutions.get(key);
     if (rootResolution === undefined) {
       drift.push(`${key} is not in pnpm-lock.yaml`);
     } else if (!sameResolution(resolution, rootResolution)) {
       drift.push(`${key} resolves to a different tarball than pnpm-lock.yaml`);
     }
   }
-  for (const [parent, children] of stage.childVersions) {
-    const rootChildren = root.childVersions.get(parent);
-    for (const [child, versions] of children) {
-      for (const version of versions) {
-        if (rootChildren?.get(child)?.has(version) !== true) {
-          drift.push(`${parent} depends on ${child}@${version}, which pnpm-lock.yaml does not`);
-        }
+  for (const [key, edges] of stage.snapshots) {
+    const variants = root.snapshots.get(key);
+    if (variants === undefined) {
+      // A package the root lockfile lacks altogether is reported with the resolutions.
+      if (rootGraph.resolutions.has(withoutPeerSuffix(key))) {
+        drift.push(`${key} is a peer or patch variant pnpm-lock.yaml does not have`);
       }
+      continue;
+    }
+    const closest = variants
+      .map((rootEdges) => differingEdges(edges, rootEdges))
+      .reduce((best, differing) => (differing.length < best.length ? differing : best));
+    for (const [child, reference] of closest) {
+      drift.push(`${key} depends on ${child}@${reference}, which pnpm-lock.yaml does not`);
     }
   }
   for (const [key, hash] of stage.patchHashes) {
-    if (root.patchHashes.get(key) !== hash) {
+    if (rootGraph.patchHashes.get(key) !== hash) {
       drift.push(`the patch for ${key} differs from pnpm-lock.yaml`);
     }
   }
@@ -1730,6 +1871,8 @@ export const installStagedDependencies = Effect.fn("installStagedDependencies")(
   readonly repoRoot: string;
   readonly stageDir: string;
   readonly label: string;
+  /** The root lockfile importers whose dependencies the stage installs, in the order the stage merged them. */
+  readonly sourceImporters: ReadonlyArray<string>;
   readonly verbose: boolean;
 }) {
   const fs = yield* FileSystem.FileSystem;
@@ -1742,6 +1885,7 @@ export const installStagedDependencies = Effect.fn("installStagedDependencies")(
   const drift = findStageLockfileDrift(
     yield* readPnpmLockfileGraph(rootLockfile),
     yield* readPnpmLockfileGraph(yield* fs.readFileString(stageLockfilePath)),
+    input.sourceImporters,
   );
   if (drift.length > 0) {
     return yield* new StageLockfileDriftError({ stage: input.label, drift: [...drift] });
@@ -1762,22 +1906,6 @@ const runStageVp = Effect.fn("runStageVp")(function* (
     { label: `vp ${args.join(" ")} (${stage.label})`, verbose: stage.verbose },
   );
 });
-
-export function createStagePatchedDependencies(
-  patchedDependencies: Record<string, string>,
-  dependencies: Record<string, unknown>,
-): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(patchedDependencies).filter(([patchKey]) =>
-      Object.hasOwn(dependencies, getPatchedDependencyPackageName(patchKey)),
-    ),
-  );
-}
-
-function getPatchedDependencyPackageName(patchKey: string): string {
-  const versionSeparator = patchKey.lastIndexOf("@");
-  return versionSeparator > 0 ? patchKey.slice(0, versionSeparator) : patchKey;
-}
 
 const AzureTrustedSigningOptionsConfig = Config.all({
   publisherName: Config.String("AZURE_TRUSTED_SIGNING_PUBLISHER_NAME"),
@@ -3302,10 +3430,6 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
     ...input.runtimeExternalDependencies,
     ...resolveFffNativeDependencies("win", input.arch, input.fffNodeVersion),
   };
-  const sidecarPatchedDependencies = createStagePatchedDependencies(
-    input.patchedDependencies,
-    sidecarDependencies,
-  );
   const sidecarPackageJson = {
     name: "t3code-server",
     version: input.appVersion,
@@ -3323,7 +3447,7 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
       platform: "win",
       arch: input.arch,
       allowBuilds: input.allowBuilds,
-      patchedDependencies: sidecarPatchedDependencies,
+      patchedDependencies: input.patchedDependencies,
       overrides: input.overrides,
     }),
     // server.asar cannot carry pnpm symlinks or junctions; install physical hoisted dependencies.
@@ -3334,7 +3458,7 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
     path.join(serverStageDir, "pnpm-workspace.yaml"),
     sidecarWorkspaceConfigString,
   );
-  if (Object.keys(sidecarPatchedDependencies).length > 0) {
+  if (Object.keys(input.patchedDependencies).length > 0) {
     yield* fs.copy(path.join(input.repoRoot, "patches"), path.join(serverStageDir, "patches"));
   }
 
@@ -3343,6 +3467,7 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
     repoRoot: input.repoRoot,
     stageDir: serverStageDir,
     label: "server sidecar",
+    sourceImporters: ["apps/server"],
     verbose: input.verbose,
   });
 
@@ -4037,10 +4162,6 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
           arch: options.arch,
           fffNodeVersion: serverPackageJson.dependencies["@ff-labs/fff-node"],
         });
-  const stagePatchedDependencies = createStagePatchedDependencies(
-    workspacePatchedDependencies,
-    stageDependencies,
-  );
   const windowsServerAsarPath =
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
@@ -4070,7 +4191,7 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
     platform: options.platform,
     arch: options.arch,
     allowBuilds: workspaceAllowBuilds,
-    patchedDependencies: stagePatchedDependencies,
+    patchedDependencies: workspacePatchedDependencies,
     overrides: resolvedOverrides,
   });
   const stageWorkspaceConfigString = yield* encodeStageWorkspaceConfig(stageWorkspaceConfig);
@@ -4079,7 +4200,7 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
     stageWorkspaceConfigString,
   );
 
-  if (Object.keys(stagePatchedDependencies).length > 0) {
+  if (Object.keys(workspacePatchedDependencies).length > 0) {
     yield* fs.copy(path.join(repoRoot, "patches"), path.join(stageAppDir, "patches"));
   }
 
@@ -4088,6 +4209,9 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
     repoRoot,
     stageDir: stageAppDir,
     label: "desktop app",
+    // A merged stage lets the desktop's dependencies win over the server's (resolveMergedStageDependencies).
+    sourceImporters:
+      options.platform === "win" ? ["apps/desktop"] : ["apps/desktop", "apps/server"],
     verbose: options.verbose,
   });
   yield* stageClerkPasskeyNativeBinaries(stageAppDir, options.platform, options.arch);

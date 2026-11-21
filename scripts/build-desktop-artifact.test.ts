@@ -13,6 +13,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
+import * as Result from "effect/Result";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
@@ -83,7 +84,8 @@ const decodePackageVersion = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
 );
 
-const ROOT_LOCKFILE_FIXTURE = `---
+// pnpm writes its own install as a leading document in both lockfiles.
+const PNPM_LOCKFILE_DOCUMENT = `---
 lockfileVersion: '9.0'
 
 importers:
@@ -103,7 +105,11 @@ packages:
 snapshots:
 
   pnpm@12.14.0: {}
+`;
 
+// Shaped like the repo lockfile: electron-webauthn carries a typescript peer that
+// STAGE_PEER_OVERRIDES removes in a stage, and fff-node reaches its platform binary.
+const ROOT_LOCKFILE_FIXTURE = `${PNPM_LOCKFILE_DOCUMENT}
 ---
 lockfileVersion: '9.0'
 
@@ -114,9 +120,12 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@t3tools/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       electron-webauthn:
         specifier: 1.3.1
-        version: 1.3.1
+        version: 1.3.1(@tsc-rs/typescript@0.8.0)
       node-pty:
         specifier: 1.2.0-beta.15
         version: 1.2.0-beta.15(patch_hash=a111)
@@ -124,7 +133,22 @@ importers:
         specifier: 4.6.5
         version: 4.6.5
 
+  apps/server:
+    dependencies:
+      '@ff-labs/fff-node':
+        specifier: 0.11.0
+        version: 0.11.0
+
 packages:
+
+  '@ff-labs/fff-bin-darwin-arm64@0.11.0':
+    resolution: {integrity: sha512-fff-bin}
+
+  '@ff-labs/fff-node@0.11.0':
+    resolution: {integrity: sha512-fff-node}
+
+  '@tsc-rs/typescript@0.8.0':
+    resolution: {integrity: sha512-tsc-rs}
 
   electron-webauthn@1.3.1:
     resolution: {integrity: sha512-webauthn}
@@ -135,18 +159,36 @@ packages:
   typescript@6.0.3:
     resolution: {integrity: sha512-typescript}
 
+  zod@4.6.4:
+    resolution: {integrity: sha512-zod-4.6.4}
+
   zod@4.6.5:
     resolution: {integrity: sha512-zod}
 
 snapshots:
 
-  electron-webauthn@1.3.1:
+  '@ff-labs/fff-bin-darwin-arm64@0.11.0': {}
+
+  '@ff-labs/fff-node@0.11.0':
+    optionalDependencies:
+      '@ff-labs/fff-bin-darwin-arm64': 0.11.0
+
+  '@tsc-rs/typescript@0.8.0': {}
+
+  electron-webauthn@1.3.1(@tsc-rs/typescript@0.8.0):
     dependencies:
+      typescript: '@tsc-rs/typescript@0.8.0'
       zod: 4.6.5
+
+  electron-webauthn@1.3.1(zod@4.6.4):
+    dependencies:
+      zod: 4.6.4
 
   node-pty@1.2.0-beta.15(patch_hash=a111): {}
 
   typescript@6.0.3: {}
+
+  zod@4.6.4: {}
 
   zod@4.6.5: {}
 `;
@@ -155,49 +197,47 @@ const stageLockfileFixture = (input: {
   readonly zod?: string;
   readonly zodIntegrity?: string;
   readonly webauthnSnapshot?: string;
-  readonly patchHash?: string;
+  /** `null` installs node-pty without its patch. */
+  readonly patchHash?: string | null;
+  readonly extraDirectDependency?: string;
 }) => {
   const zod = input.zod ?? "4.6.5";
-  const patchHash = input.patchHash ?? "a111";
-  return `---
-lockfileVersion: '9.0'
-
-importers:
-
-  .:
-    configDependencies: {}
-    packageManagerDependencies:
-      pnpm:
-        specifier: 12.14.0
-        version: 12.14.0
-
-packages:
-
-  pnpm@12.14.0:
-    resolution: {integrity: sha512-pnpm}
-
-snapshots:
-
-  pnpm@12.14.0: {}
-
+  const patchHash = input.patchHash === undefined ? "a111" : input.patchHash;
+  const nodePty = patchHash === null ? "1.2.0-beta.15" : `1.2.0-beta.15(patch_hash=${patchHash})`;
+  return `${PNPM_LOCKFILE_DOCUMENT}
 ---
 lockfileVersion: '9.0'
-
+${
+  patchHash === null
+    ? ""
+    : `
 patchedDependencies:
   node-pty@1.2.0-beta.15: ${patchHash}
-
+`
+}
 importers:
 
   .:
     dependencies:
+      '@ff-labs/fff-bin-darwin-arm64':
+        specifier: 0.11.0
+        version: 0.11.0
       electron-webauthn:
         specifier: 1.3.1
         version: 1.3.1
       node-pty:
         specifier: 1.2.0-beta.15
-        version: 1.2.0-beta.15(patch_hash=${patchHash})
+        version: ${nodePty}${
+          input.extraDirectDependency === undefined
+            ? ""
+            : `
+      ${input.extraDirectDependency}`
+        }
 
 packages:
+
+  '@ff-labs/fff-bin-darwin-arm64@0.11.0':
+    resolution: {integrity: sha512-fff-bin}
 
   electron-webauthn@1.3.1:
     resolution: {integrity: sha512-webauthn}
@@ -210,6 +250,8 @@ packages:
 
 snapshots:
 
+  '@ff-labs/fff-bin-darwin-arm64@0.11.0': {}
+
   ${
     input.webauthnSnapshot ??
     `electron-webauthn@1.3.1:
@@ -217,11 +259,13 @@ snapshots:
       zod: ${zod}`
   }
 
-  node-pty@1.2.0-beta.15(patch_hash=${patchHash}): {}
+  node-pty@${nodePty}: {}
 
   zod@${zod}: {}
 `;
 };
+
+const STAGE_SOURCE_IMPORTERS = ["apps/desktop", "apps/server"];
 
 const makeLinuxCliArchiveFixture = Effect.fn("test.makeLinuxCliArchiveFixture")(function* (input: {
   readonly root: string;
@@ -733,19 +777,62 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       typescript: 6.0.3
       zod: 4.6.5`,
       },
-      drift: ["electron-webauthn@1.3.1 depends on typescript@6.0.3, which pnpm-lock.yaml does not"],
+      drift: [
+        "electron-webauthn@1.3.1(typescript@6.0.3) is a peer or patch variant pnpm-lock.yaml does not have",
+      ],
+    },
+    {
+      name: "a peer variant with another variant's dependency",
+      stage: {
+        webauthnSnapshot: `electron-webauthn@1.3.1(zod@4.6.4):
+    dependencies:
+      zod: 4.6.5`,
+      },
+      drift: [
+        "electron-webauthn@1.3.1(zod@4.6.4) depends on zod@4.6.5, which pnpm-lock.yaml does not",
+      ],
     },
     {
       name: "a patch that differs from the root lockfile",
       stage: { patchHash: "b222" },
-      drift: ["the patch for node-pty@1.2.0-beta.15 differs from pnpm-lock.yaml"],
+      drift: [
+        "node-pty resolved to 1.2.0-beta.15(patch_hash=b222), but pnpm-lock.yaml pins 1.2.0-beta.15(patch_hash=a111)",
+        "node-pty@1.2.0-beta.15(patch_hash=b222) is a peer or patch variant pnpm-lock.yaml does not have",
+        "the patch for node-pty@1.2.0-beta.15 differs from pnpm-lock.yaml",
+      ],
+    },
+    {
+      name: "a patched package installed without its patch",
+      stage: { patchHash: null },
+      drift: [
+        "node-pty resolved to 1.2.0-beta.15, but pnpm-lock.yaml pins 1.2.0-beta.15(patch_hash=a111)",
+        "node-pty@1.2.0-beta.15 is a peer or patch variant pnpm-lock.yaml does not have",
+      ],
+    },
+    {
+      name: "a direct dependency no source importer has",
+      stage: {
+        extraDirectDependency: `typescript:
+        specifier: 6.0.3
+        version: 6.0.3`,
+      },
+      drift: ["typescript is not a dependency of apps/desktop or apps/server in pnpm-lock.yaml"],
+    },
+    {
+      name: "a workspace link",
+      stage: {
+        extraDirectDependency: `'@t3tools/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared`,
+      },
+      drift: ["@t3tools/shared installs from a local path (link:../../packages/shared)"],
     },
   ])("reports staged lockfile drift for $name", ({ stage, drift }) =>
     Effect.gen(function* () {
       const root = yield* readPnpmLockfileGraph(ROOT_LOCKFILE_FIXTURE);
       const staged = yield* readPnpmLockfileGraph(stageLockfileFixture(stage));
 
-      assert.deepStrictEqual(findStageLockfileDrift(root, staged), drift);
+      assert.deepStrictEqual(findStageLockfileDrift(root, staged, STAGE_SOURCE_IMPORTERS), drift);
     }),
   );
 
@@ -759,50 +846,78 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const graph = yield* readPnpmLockfileGraph(lockfile);
 
       assert.isTrue(graph.resolutions.has(`electron@${desktopElectronVersion}`));
+      assert.isTrue(
+        graph.importers.get("apps/desktop")?.["electron"]?.startsWith(desktopElectronVersion),
+      );
       assert.isTrue(graph.patchHashes.size > 0);
-      assert.deepStrictEqual(findStageLockfileDrift(graph, graph), []);
+      assert.isTrue([...graph.snapshots.keys()].some((key) => key.includes("(patch_hash=")));
     }),
   );
 
-  it.effect("fails a drifting staged install before anything is installed", () =>
+  it.effect.each([
+    {
+      name: "installs a stage that keeps the root resolutions",
+      resolved: stageLockfileFixture({}),
+      drift: undefined,
+      commands: [
+        "install --lockfile-only --no-frozen-lockfile --ignore-scripts",
+        "install --frozen-lockfile --prod",
+      ],
+    },
+    {
+      name: "fails a drifting stage before anything is installed",
+      // A newer zod release stands in for a fresh resolution.
+      resolved: stageLockfileFixture({ zod: "4.6.7" }),
+      drift: "zod@4.6.7 is not in pnpm-lock.yaml",
+      commands: ["install --lockfile-only --no-frozen-lockfile --ignore-scripts"],
+    },
+  ])("$name", ({ resolved, drift, commands }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const repoRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-stage-lockfile-" });
         const stageDir = path.join(repoRoot, "stage");
+        const stageLockfile = path.join(stageDir, "pnpm-lock.yaml");
         yield* fs.makeDirectory(stageDir);
         yield* fs.writeFileString(path.join(repoRoot, "pnpm-lock.yaml"), ROOT_LOCKFILE_FIXTURE);
-        const commands: string[] = [];
+        const ran: string[] = [];
+        const seeds: string[] = [];
         const spawner = ChildProcessSpawner.make((command) => {
           const { args } = command as unknown as { readonly args: ReadonlyArray<string> };
-          commands.push(args.join(" "));
-          // pnpm re-resolves the seeded lockfile; a newer zod release stands in for a fresh resolution.
+          ran.push(args.join(" "));
           return (
             args.includes("--lockfile-only")
-              ? fs.writeFileString(
-                  path.join(stageDir, "pnpm-lock.yaml"),
-                  stageLockfileFixture({ zod: "4.6.7" }),
+              ? fs.readFileString(stageLockfile).pipe(
+                  Effect.tap((seed) => Effect.sync(() => seeds.push(seed))),
+                  Effect.andThen(fs.writeFileString(stageLockfile, resolved)),
                 )
               : Effect.void
           ).pipe(Effect.as(mockProcess(0)));
         });
 
-        const error = yield* installStagedDependencies({
+        const result = yield* installStagedDependencies({
           repoRoot,
           stageDir,
           label: "desktop app",
+          sourceImporters: STAGE_SOURCE_IMPORTERS,
           verbose: false,
         }).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Effect.flip,
+          Effect.result,
         );
 
-        assert.instanceOf(error, StageLockfileDriftError);
-        assert.include(error.message, "zod@4.6.7 is not in pnpm-lock.yaml");
-        assert.deepStrictEqual(commands, [
-          "install --lockfile-only --no-frozen-lockfile --ignore-scripts",
-        ]);
+        assert.deepStrictEqual(seeds, [ROOT_LOCKFILE_FIXTURE]);
+        assert.deepStrictEqual(ran, commands);
+        if (drift === undefined) {
+          assert.isTrue(Result.isSuccess(result));
+        } else {
+          assert.isTrue(Result.isFailure(result));
+          if (Result.isFailure(result)) {
+            assert.instanceOf(result.failure, StageLockfileDriftError);
+            assert.include(result.failure.message, drift);
+          }
+        }
       }),
     ),
   );

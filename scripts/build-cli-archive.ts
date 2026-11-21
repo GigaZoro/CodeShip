@@ -20,7 +20,6 @@ import rootPackageJson from "../package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
 import {
-  createStagePatchedDependencies,
   createStageWorkspaceConfig,
   installStagedDependencies,
   resolveFffNativeDependencies,
@@ -157,10 +156,7 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
     ...selectCliRuntimeExternalDependencies(serverDependencies),
     ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
   };
-  const patchedDependencies = createStagePatchedDependencies(
-    workspace.patchedDependencies ?? {},
-    dependencies,
-  );
+  const patchedDependencies = workspace.patchedDependencies ?? {};
 
   yield* fs.writeFileString(
     path.join(input.stageDir, "package.json"),
@@ -193,6 +189,7 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
     repoRoot: input.repoRoot,
     stageDir: input.stageDir,
     label: "cli archive runtime externals",
+    sourceImporters: ["apps/server"],
     verbose: true,
   });
 
