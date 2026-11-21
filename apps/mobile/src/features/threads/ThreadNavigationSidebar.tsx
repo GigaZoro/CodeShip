@@ -58,6 +58,7 @@ import { useThreadListV2 } from "./useThreadListV2";
 import { useThreadJumpShortcuts } from "../keyboard/threadKeyboardShortcuts";
 import { requestThreadMessageJump } from "./threadMessageJump";
 import { useThreadListSearchMatches } from "./useThreadListSearchMatches";
+import { availableThreadTagsAtom } from "../../state/threads";
 import { useHomeListOptions } from "../home/home-list-options";
 import {
   ARCHIVED_THREADS_EVENT,
@@ -70,6 +71,8 @@ import {
   handleGroupByMenuEvent,
   showAllThreadsMenuItems,
   statusFilterMenuItems,
+  applyTagFilterMenuEvent,
+  tagFilterMenuItems,
   threadListFilterButtonLabel,
 } from "../home/home-list-filter-menu";
 import {
@@ -398,6 +401,7 @@ function ThreadNavigationSidebarPane(
     projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
     searchQuery: props.searchQuery,
     statusFilter: options.statusFilter,
+    selectedTags: options.selectedTags,
     searchMatches: threadSearchMatchByKey,
     settlementEnvironmentIds,
     snoozeEnvironmentIds,
@@ -436,8 +440,10 @@ function ThreadNavigationSidebarPane(
   const filterCustomized =
     options.selectedEnvironmentId !== null ||
     selectedProjectKey !== null ||
-    options.statusFilter !== "all";
+    options.statusFilter !== "all" ||
+    options.selectedTags.length > 0;
   const statusItems = statusFilterMenuItems(options.statusFilter);
+  const availableTags = useAtomValue(availableThreadTagsAtom);
   const listMenuActions = [
     ...showAllThreadsMenuItems(filterCustomized),
     {
@@ -482,6 +488,15 @@ function ThreadNavigationSidebarPane(
           },
         ] satisfies MenuAction[])),
     { id: "status", title: t("Status"), subactions: statusItems },
+    ...(availableTags.length > 0 || options.selectedTags.length > 0
+      ? [
+          {
+            id: "tags",
+            title: t("Filter by tags"),
+            subactions: tagFilterMenuItems(availableTags, options.selectedTags),
+          },
+        ]
+      : []),
     ...buildGroupByMenuActions(groupBy, environments.length),
     archivedThreadsMenuItem,
     artifactsMenuItem,
@@ -493,12 +508,22 @@ function ThreadNavigationSidebarPane(
   }) => {
     const event = nativeEvent.event;
     if (event === SHOW_ALL_THREADS_EVENT) {
-      updateOptions({ selectedEnvironmentId: null, selectedProjectKey: null, statusFilter: "all" });
+      updateOptions({
+        selectedEnvironmentId: null,
+        selectedProjectKey: null,
+        statusFilter: "all",
+        selectedTags: [],
+      });
       return;
     }
     const status = statusItems.find((item) => item.id === event);
     if (status) {
       updateOptions({ statusFilter: status.value });
+      return;
+    }
+    const selectedTags = applyTagFilterMenuEvent(event, options.selectedTags);
+    if (selectedTags !== null) {
+      updateOptions({ selectedTags });
       return;
     }
     if (event === ARCHIVED_THREADS_EVENT) {
@@ -856,6 +881,9 @@ function ThreadNavigationSidebarPane(
     grouping: groupBy,
     statusFilter: options.statusFilter,
     onStatusChange: (statusFilter) => updateOptions({ statusFilter }),
+    selectedTags: options.selectedTags,
+    availableTags,
+    onTagsChange: (selectedTags) => updateOptions({ selectedTags }),
     onEnvironmentChange: setSelectedEnvironmentId,
     onProjectChange: setSelectedProjectKey,
     onProjectGroupingChange: setProjectGrouping,
@@ -885,7 +913,7 @@ function ThreadNavigationSidebarPane(
             ? threadSearch.isPending
               ? t("Searching thread messages…")
               : t("No matching threads")
-            : options.statusFilter !== "all"
+            : options.statusFilter !== "all" || options.selectedTags.length > 0
               ? t("No threads match your filters")
               : selectedProjectScope !== null
                 ? t("No threads in {project}", { project: selectedProjectScope.title })

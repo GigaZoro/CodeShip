@@ -62,6 +62,7 @@ export function useThreadListV2(input: {
   readonly projectRefs: LayoutInput["projectRefs"];
   readonly searchQuery: string;
   readonly statusFilter?: LayoutInput["statusFilter"];
+  readonly selectedTags?: LayoutInput["selectedTags"];
   /** Threads that match the search by content, keyed like `threadSearchMatchKey`. */
   readonly searchMatches: ReadonlyMap<string, unknown>;
   readonly settlementEnvironmentIds: ReadonlySet<EnvironmentId>;
@@ -213,6 +214,7 @@ export function useThreadListV2(input: {
         projectRefs: input.projectRefs,
         searchQuery: input.searchQuery,
         statusFilter: input.statusFilter,
+        selectedTags: input.selectedTags,
         matchedThreadKeys: new Set(input.searchMatches.keys()),
         settlementEnvironmentIds: input.settlementEnvironmentIds,
         snoozeEnvironmentIds: input.snoozeEnvironmentIds,
@@ -240,6 +242,7 @@ export function useThreadListV2(input: {
       input.projectRefs,
       input.searchQuery,
       input.statusFilter,
+      input.selectedTags,
       input.searchMatches,
       input.settlementEnvironmentIds,
       input.snoozeEnvironmentIds,

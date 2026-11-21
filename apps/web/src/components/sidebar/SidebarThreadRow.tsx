@@ -1115,6 +1115,24 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     </span>
   );
   const accessibleTitle = isRenaming ? null : <span className="sr-only">{thread.title}</span>;
+  const tags = thread.source.tags;
+  const tagChips = tags?.length ? (
+    <span className="flex max-w-[40%] shrink-0 items-center gap-1">
+      {tags.slice(0, 2).map((tag) => (
+        <span
+          key={tag}
+          className="min-w-0 truncate rounded bg-muted px-1 text-2xs text-muted-foreground"
+        >
+          {tag}
+        </span>
+      ))}
+      {tags.length > 2 ? (
+        <span className="shrink-0 text-2xs text-muted-foreground">
+          {t("+{count}", { count: tags.length - 2 })}
+        </span>
+      ) : null}
+    </span>
+  ) : null;
 
   const prBadgeShape = supportsMultiplePullRequests
     ? resolveThreadPullRequestBadge(thread.pullRequests)
@@ -1354,6 +1372,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {draftIndicator}
               {queuedIndicator}
               {title}
+              {tagChips}
               {multiline ? titleLineIcons : null}
               {scheduledIndicator}
               {variant === "line" && pinIndicator !== null ? (
@@ -1704,6 +1723,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-1.5">
               {title}
+              {tagChips}
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">
                   {t("Regenerating title")}

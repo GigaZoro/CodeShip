@@ -5,6 +5,12 @@ import {
   type ThreadStatusDisplayKey,
   type ThreadStatusTone,
 } from "@t3tools/client-runtime/state/thread-status";
+import { useAtomValue } from "@effect/atom-react";
+import { parseThreadTag } from "@t3tools/client-runtime/state/thread-tag-filter";
+import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
+import { uuidv4 } from "../../lib/uuid";
+import { orchestrationEnvironment } from "../../state/orchestration";
+import { serverEnvironment } from "../../state/server";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
@@ -19,7 +25,7 @@ import { RowPressable } from "../../components/ui/RowPressable";
 import { CustomSnoozeSheet } from "./CustomSnoozeSheet";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { threadArrangementOpenAtom } from "../../state/thread-order";
-import { threadEnvironment } from "../../state/threads";
+import { availableThreadTagsAtom, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useVisibleWorkingDurationLabel } from "./use-visible-working-duration-label";
 import { useThreadHasScheduledTask } from "./use-thread-has-scheduled-task";
@@ -34,7 +40,7 @@ import {
   resolveThreadWorkingStartedAt,
 } from "@t3tools/client-runtime/state/models";
 import { minuteTick } from "@t3tools/client-runtime/clock";
-import { AuthOrchestrationOperateScope, threadFolderKeyOf } from "@t3tools/contracts";
+import { AuthOrchestrationOperateScope, CommandId, threadFolderKeyOf } from "@t3tools/contracts";
 import type { SnoozePresetSetting } from "@t3tools/contracts/settings";
 import { canSnooze } from "@t3tools/client-runtime/state/thread-settled";
 import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
@@ -1110,6 +1116,48 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const handleRename = useCallback(() => onRenameThread(thread), [onRenameThread, thread]);
   const canOperateThread = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
   const canShareWithGuest = useCanShareWithGuest(thread.environmentId);
+  const canEditTags = useAtomValue(
+    orchestrationEnvironment.v2.dispatchCommand.permissionAtom(thread.environmentId, {
+      type: "thread.tag.set",
+    }),
+  );
+  const hiddenTags = useAtomValue(serverEnvironment.hiddenThreadTagsAtom(thread.environmentId));
+  const availableTags = useAtomValue(availableThreadTagsAtom);
+  const setTag = useAtomCommand(orchestrationEnvironment.v2.dispatchCommand, {
+    reportFailure: false,
+  });
+  const tags = thread.source.tags;
+  const changeTag = useCallback(
+    async (value: string, tagged: boolean) => {
+      const tag = parseThreadTag(value);
+      if (tag === null) {
+        Dialog.alert(t("Invalid tag"), t("Enter a single line of up to 64 characters."));
+        return;
+      }
+      if (
+        appAtomRegistry
+          .get(serverEnvironment.hiddenThreadTagsAtom(thread.environmentId))
+          ?.includes(tag)
+      ) {
+        Dialog.alert(t("That tag is hidden in this environment."));
+        return;
+      }
+      const result = await setTag({
+        environmentId: thread.environmentId,
+        input: {
+          type: "thread.tag.set",
+          commandId: CommandId.make(uuidv4()),
+          threadId: thread.id,
+          tag,
+          tagged,
+        },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        Dialog.alert(t("Failed to update thread tags"));
+      }
+    },
+    [setTag, thread.environmentId, thread.id],
+  );
   const navigation = useNavigation();
   const handleRegenerateTitle = useCallback(
     () => onRegenerateThreadTitle(thread),
@@ -1374,6 +1422,21 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   );
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
+      if (nativeEvent.event === "tag:new") {
+        Dialog.prompt({
+          title: t("Add tag…"),
+          message: t("Enter a single line of up to 64 characters."),
+          initialValue: "",
+          confirmText: t("Add tag"),
+          onConfirm: (value) => void changeTag(value, true),
+        });
+        return;
+      }
+      if (nativeEvent.event.startsWith("tag:toggle:")) {
+        const tag = nativeEvent.event.slice("tag:toggle:".length);
+        void changeTag(tag, tags?.includes(tag) !== true);
+        return;
+      }
       if (nativeEvent.event === "new-thread-on-branch") onNewThreadOnBranch(thread);
       if (nativeEvent.event === "settle") handleSettle();
       if (nativeEvent.event === "unsettle") handleUnsettle();
@@ -1436,6 +1499,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       }
     },
     [
+      changeTag,
+      tags,
       folderNames,
       moveThreadToFolder,
       promptNewFolder,
@@ -1520,6 +1585,41 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         : null,
     [handleMenuAction, snoozePresetActions, swipeActions.secondary, thread.title],
   );
+  const tagMenu: MenuAction = {
+    id: "tags",
+    title: t("Tags"),
+    subactions: [
+      ...availableTags
+        .filter((tag) => !hiddenTags?.includes(tag))
+        .map((tag) => ({
+          id: `tag:toggle:${tag}`,
+          title: tag,
+          state: tags?.includes(tag) ? ("on" as const) : ("off" as const),
+        })),
+      { id: "tag:new", title: t("Add tag…"), image: "plus" },
+    ],
+  };
+  const tagChips = tags?.length ? (
+    <View className="max-w-[34%] shrink flex-row items-center gap-1">
+      {tags.slice(0, 2).map((tag) => (
+        <Text
+          key={tag}
+          className={cn(
+            "shrink rounded bg-subtle px-1 text-xs",
+            rowAppearance.mutedForegroundClassName,
+          )}
+          numberOfLines={1}
+        >
+          {tag}
+        </Text>
+      ))}
+      {tags.length > 2 ? (
+        <Text className={cn("text-xs", rowAppearance.mutedForegroundClassName)}>
+          {t("+{count}", { count: tags.length - 2 })}
+        </Text>
+      ) : null}
+    </View>
+  ) : null;
   const readOnlyMenuActions: MenuAction[] = [
     { id: "copy-thread", title: t("Copy thread"), image: "text.bubble" },
     { id: "copy-thread-id", title: t("Copy thread ID"), image: "doc.on.doc" },
@@ -1593,6 +1693,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         >
           {thread.title}
         </Text>
+        {tagChips}
         {/* Capped so large text cannot squeeze the title out. */}
         <View
           className="max-w-[50%] shrink flex-row items-center gap-1.5"
@@ -1924,6 +2025,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               />
             ) : null}
           </View>
+          {tagChips}
           {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
           <Text
             className={cn(
@@ -1989,6 +2091,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                   ]
                 : []),
               ...readOnlyMenuActions,
+              ...(canEditTags ? [tagMenu] : []),
               ...(snoozedRow
                 ? snoozedMenuActions
                 : !props.settlementSupported

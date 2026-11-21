@@ -118,6 +118,8 @@ interface HomeScreenProps {
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
   readonly statusFilter: ThreadListStatusFilter;
+  readonly selectedTags: readonly string[];
+  readonly onTagsChange: (tags: readonly string[]) => void;
   readonly onStatusChange: (status: ThreadListStatusFilter) => void;
   readonly projectGroupingMode: SidebarProjectGroupingMode;
   readonly onSearchQueryChange: (query: string) => void;
@@ -453,6 +455,7 @@ export function HomeScreen(props: HomeScreenProps) {
     projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
     searchQuery: props.searchQuery,
     statusFilter: props.statusFilter,
+    selectedTags: props.selectedTags,
     searchMatches: threadSearchMatchByKey,
     settlementEnvironmentIds,
     snoozeEnvironmentIds,
@@ -714,6 +717,7 @@ export function HomeScreen(props: HomeScreenProps) {
     props.onEnvironmentChange(null);
     props.onProjectChange(null);
     props.onStatusChange("all");
+    props.onTagsChange([]);
   };
   const emptyState = hasAnyThreads
     ? null
@@ -739,6 +743,8 @@ export function HomeScreen(props: HomeScreenProps) {
           selectedProjectKey={props.selectedProjectKey}
           grouping={groupBy}
           statusFilter={props.statusFilter}
+          selectedTags={props.selectedTags}
+          onTagsChange={props.onTagsChange}
           onStatusChange={props.onStatusChange}
           onEnvironmentChange={props.onEnvironmentChange}
           onProjectChange={props.onProjectChange}
@@ -815,7 +821,7 @@ export function HomeScreen(props: HomeScreenProps) {
           detail={t('No threads matching "{query}".', { query: props.searchQuery })}
           variant={plainEmpty}
         />
-      ) : props.statusFilter !== "all" ? (
+      ) : props.statusFilter !== "all" || props.selectedTags.length > 0 ? (
         <EmptyState
           title={t("No threads match your filters")}
           actionLabel={t("Show all threads")}

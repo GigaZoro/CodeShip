@@ -4,6 +4,13 @@ import {
   ThreadListStatusFilter,
 } from "@t3tools/client-runtime/state/thread-status";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
+import {
+  collectThreadTags,
+  matchesAnyThreadTag,
+  toggleThreadTagSelection,
+} from "@t3tools/client-runtime/state/thread-tag-filter";
+import { Checkbox } from "./ui/checkbox";
+import { readThreadTagsMenuState, useThreadTagActions } from "../hooks/useThreadTagActions";
 import { t, tn } from "~/i18n";
 import { liveShellEnvironmentIdsAtom } from "../state/shell";
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
@@ -203,6 +210,7 @@ import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import {
   buildDraftActionMenuItems,
   buildThreadActionMenuItems,
+  buildThreadTagsMenuItem,
   buildThreadFolderMenuItem,
   isThreadFolderMenuAction,
   threadActionRequiresOperate,
@@ -421,6 +429,7 @@ type SidebarOptimisticDrop = {
 
 interface SidebarThreadPartitionInput {
   readonly statusFilter: ThreadListStatusFilter;
+  readonly tagFilter: ReadonlySet<string>;
   readonly locallyUnreadKeys: ReadonlySet<string>;
   readonly threads: readonly EnvironmentThreadShell[];
   readonly scopedProjectKeys: ReadonlySet<string> | null;
@@ -553,6 +562,7 @@ function isSidebarFolderSibling(candidate: SidebarFolder, folder: SidebarFolder)
 // Separate hooks cache maps independently of later Sidebar hooks and preserve dnd-kit inputs.
 function useSidebarThreads(input: {
   readonly statusFilter: ThreadListStatusFilter;
+  readonly tagFilter: ReadonlySet<string>;
   readonly locallyUnreadKeys: ReadonlySet<string>;
   readonly projectScopeKey: string | null;
   readonly scopedProjectKeys: ReadonlySet<string> | null;
@@ -636,6 +646,7 @@ function useSidebarThreads(input: {
 
   const partition = partitionSidebarThreads({
     statusFilter: input.statusFilter,
+    tagFilter: input.tagFilter,
     locallyUnreadKeys: input.locallyUnreadKeys,
     threads,
     scopedProjectKeys,
@@ -1084,15 +1095,16 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     disconnectedEnvironmentIds,
   } = input;
   const preciseNow = new Date().toISOString();
-  const matchesStatus = (thread: EnvironmentThreadShell) =>
-    input.statusFilter === "all" ||
-    matchesThreadListStatus(thread, input.statusFilter, {
-      woke: hasUnseenServerWake(thread, preciseNow),
-      locallyUnread: input.locallyUnreadKeys.has(threadShellKey(thread)),
-    });
+  const matchesFilters = (thread: EnvironmentThreadShell) =>
+    matchesAnyThreadTag(thread.source.tags, input.tagFilter) &&
+    (input.statusFilter === "all" ||
+      matchesThreadListStatus(thread, input.statusFilter, {
+        woke: hasUnseenServerWake(thread, preciseNow),
+        locallyUnread: input.locallyUnreadKeys.has(threadShellKey(thread)),
+      }));
   // Ignores the project scope: a thread waiting on the user must not hide in a folder, shelf, or filter.
   const needsYou = collectNeedsYouThreads(
-    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent).filter(matchesStatus),
+    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent).filter(matchesFilters),
     { now: preciseNow },
   );
   // Put-off threads still wait on the user, so they stay out of the other sections too.
@@ -1104,7 +1116,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     delegatedUnderParent,
   ).filter((thread) => {
     const key = threadShellKey(thread);
-    return matchesStatus(thread) && (!hiddenTaskThreadKeys.has(key) || needsYouKeys.has(key));
+    return matchesFilters(thread) && (!hiddenTaskThreadKeys.has(key) || needsYouKeys.has(key));
   });
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
@@ -1514,6 +1526,7 @@ export default function Sidebar({
   const { handleNewThread } = newThreadContext;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const folderActions = useThreadFolderActions();
+  const runThreadTagAction = useThreadTagActions();
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
@@ -1530,6 +1543,14 @@ export default function Sidebar({
     "all",
     ThreadListStatusFilter,
   );
+  const [selectedTags, setSelectedTags] = useLocalStorage(
+    "t3code:sidebar-tag-filter",
+    [],
+    Schema.Array(Schema.String),
+  );
+  const tagFilter = new Set(selectedTags);
+  const availableTags = collectThreadTags(threads);
+  const hasThreadFilters = statusFilter !== "all" || tagFilter.size > 0;
   const locallyUnreadKeys = useLocallyUnreadThreadKeys(threads);
   const persistedProjectScopeKeys = useUiStateStore((store) => store.sidebarProjectScopeKeys);
   const setPersistedProjectScopeKeys = useUiStateStore((store) => store.setSidebarProjectScopeKeys);
@@ -1880,6 +1901,7 @@ export default function Sidebar({
     activeKeysById,
   } = useSidebarThreads({
     statusFilter,
+    tagFilter,
     locallyUnreadKeys,
     projectScopeKey,
     scopedProjectKeys,
@@ -3354,6 +3376,9 @@ export default function Sidebar({
                   },
                 ]
               : []),
+            ...(selectedThreads.every((thread) => serverConfigs.has(thread.environmentId))
+              ? [buildThreadTagsMenuItem(readThreadTagsMenuState(selectedThreadRefs))]
+              : []),
             { id: "mark-unread", label: t("Mark unread ({count})", { count }) },
             {
               id: "archive",
@@ -3391,6 +3416,10 @@ export default function Sidebar({
       if (isThreadFolderMenuAction(clicked.value)) {
         clearSelection();
         await folderActions.runMenuAction(clicked.value, selectedThreadRefs);
+        return;
+      }
+      if (clicked.value.startsWith("tag:")) {
+        await runThreadTagAction(clicked.value, selectedThreadRefs);
         return;
       }
       if (clicked.value?.startsWith("snooze:")) {
@@ -3692,6 +3721,7 @@ export default function Sidebar({
               ),
               canTurnIntoProject: canTurnThreadIntoProject(threadRef),
               folders: readThreadFolderMenuState([threadRef]),
+              ...(configLoaded ? { tags: readThreadTagsMenuState([threadRef]) } : {}),
               supports: {
                 settlement: configLoaded,
                 autoSettleOptOut: supportsAutoSettleOptOut,
@@ -3712,6 +3742,10 @@ export default function Sidebar({
         if (threadActionRequiresOperate(clicked.value) && !checkThreadOperations([thread])) return;
         if (isThreadFolderMenuAction(clicked.value)) {
           await folderActions.runMenuAction(clicked.value, [threadRef]);
+          return;
+        }
+        if (clicked.value.startsWith("tag:")) {
+          await runThreadTagAction(clicked.value, [threadRef]);
           return;
         }
         if (clicked.value?.startsWith("snooze:")) {
@@ -4175,6 +4209,27 @@ export default function Sidebar({
                         </SelectPopup>
                       </Select>
                     </div>
+                    {availableTags.length > 0 ? (
+                      <fieldset className="px-2.5 pt-2 text-xs text-muted-foreground">
+                        <legend>{t("Filter by tags")}</legend>
+                        <div className="max-h-28 overflow-y-auto">
+                          {availableTags.map((tag) => (
+                            <label key={tag} className="flex min-h-6 min-w-0 items-center gap-2">
+                              <Checkbox
+                                aria-label={tag}
+                                checked={tagFilter.has(tag)}
+                                onCheckedChange={() =>
+                                  setSelectedTags((current) =>
+                                    toggleThreadTagSelection(current, tag),
+                                  )
+                                }
+                              />
+                              <span className="truncate">{tag}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </fieldset>
+                    ) : null}
                     {offersSidebarMachineGrouping(machines.length, groupBy) ? (
                       <label className="flex items-center justify-between gap-2 px-2.5 pt-2 text-xs text-muted-foreground">
                         {t("Group by machine")}
@@ -4404,10 +4459,24 @@ export default function Sidebar({
               activeSearchResultIndex={activeSearchResultIndex}
               onClearSearch={clearThreadSearch}
             />
-            {statusFilter !== "all" ? (
+            {hasThreadFilters ? (
               <div className="mt-1 flex items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
-                <span>{t(THREAD_LIST_STATUS_LABELS[statusFilter])}</span>
-                <Button size="xs" variant="ghost" onClick={() => setStatusFilter("all")}>
+                <span>
+                  {[
+                    ...(statusFilter === "all" ? [] : [t(THREAD_LIST_STATUS_LABELS[statusFilter])]),
+                    ...(tagFilter.size === 0
+                      ? []
+                      : [tn(tagFilter.size, "{count} tag", "{count} tags")]),
+                  ].join(" · ")}
+                </span>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => {
+                    setStatusFilter("all");
+                    setSelectedTags([]);
+                  }}
+                >
                   {t("Clear filter")}
                 </Button>
               </div>
@@ -5053,7 +5122,7 @@ export default function Sidebar({
             settledCount ===
             0 ? (
             <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
-              {statusFilter !== "all" ? (
+              {hasThreadFilters ? (
                 t("No threads match your filters")
               ) : projects.length === 0 ? (
                 <>

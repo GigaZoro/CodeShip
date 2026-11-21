@@ -23,6 +23,7 @@ import {
   sortInboxThreadsByReturn,
   sortWorkingThreadsBySend,
 } from "@t3tools/client-runtime/state/thread-inbox";
+import { matchesAnyThreadTag } from "@t3tools/client-runtime/state/thread-tag-filter";
 import {
   hasUnseenCompletion as threadHasUnseenCompletion,
   matchesThreadListStatus,
@@ -820,6 +821,7 @@ export function buildThreadListV2Items(input: {
   readonly searchQuery: string;
   readonly matchedThreadKeys?: ReadonlySet<string>;
   readonly statusFilter?: ThreadListStatusFilter | undefined;
+  readonly selectedTags?: readonly string[] | undefined;
   readonly settlementEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly snoozeEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly settledLimit?: number;
@@ -874,10 +876,12 @@ export function buildThreadListV2Items(input: {
   let nextSnoozeWakeAt: string | null = null;
   const queuedThreadKeys = input.queuedThreadKeys?.size ? input.queuedThreadKeys : undefined;
   const statusFilter = input.statusFilter ?? "all";
+  const selectedTags = new Set(input.selectedTags);
   const listableThreads = input.threads.filter(
     (thread) =>
       thread.archivedAt === null &&
       isListedThreadLineage(thread.lineage) &&
+      matchesAnyThreadTag(thread.source.tags, selectedTags) &&
       (statusFilter === "all" ||
         matchesThreadListStatus(thread, statusFilter, {
           woke: resolveThreadListV2WokeAt(thread, { now }) !== null,

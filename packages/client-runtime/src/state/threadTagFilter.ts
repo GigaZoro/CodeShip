@@ -1,11 +1,16 @@
 import {
   type EnvironmentId,
   isListedThreadLineage,
+  ThreadTag,
   type OrchestrationV2ThreadShell,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
 
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+
+import type { EnvironmentThreadShell } from "./models.ts";
 import { threadKey } from "./entities.ts";
 
 type FilterableThread = Pick<
@@ -122,4 +127,37 @@ export function hiddenThreadKeys(
     if (isHidden(key)) hidden.add(key);
   }
   return hidden.size === 0 ? NO_HIDDEN_THREADS : hidden;
+}
+
+const decodeThreadTag = Schema.decodeUnknownOption(ThreadTag);
+
+export function parseThreadTag(value: string): string | null {
+  return Option.getOrNull(decodeThreadTag(value));
+}
+
+export function collectThreadTags(
+  visibleThreads: ReadonlyArray<EnvironmentThreadShell>,
+): readonly string[] {
+  const tags = new Set<string>();
+  for (const thread of visibleThreads) {
+    if (thread.archivedAt !== null || !isListedThreadLineage(thread.lineage)) continue;
+    for (const tag of thread.source.tags ?? []) {
+      if (parseThreadTag(tag) === tag) tags.add(tag);
+    }
+  }
+  return [...tags].sort();
+}
+
+export function matchesAnyThreadTag(
+  tags: readonly string[] | undefined,
+  selected: ReadonlySet<string>,
+): boolean {
+  return selected.size === 0 || tags?.some((tag) => selected.has(tag)) === true;
+}
+
+export function toggleThreadTagSelection(
+  selected: readonly string[],
+  tag: string,
+): readonly string[] {
+  return selected.includes(tag) ? selected.filter((value) => value !== tag) : [...selected, tag];
 }

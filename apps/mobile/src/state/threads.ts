@@ -1,3 +1,5 @@
+import { collectThreadTags } from "@t3tools/client-runtime/state/thread-tag-filter";
+import { arrayElementsEqual } from "@t3tools/client-runtime/state/entities";
 import { createChildThreadApprovalsAtom } from "@t3tools/client-runtime/state/thread-requests";
 import { createAllSavedThreadFoldersAtom } from "@t3tools/client-runtime/state/saved-thread-folders";
 import { useAtomValue } from "@effect/atom-react";
@@ -53,6 +55,10 @@ export const environmentThreadShells = createEnvironmentThreadShellAtoms({
   snapshotAtom: threadEnvironment.snapshotAtom,
   hiddenThreadTagsAtom: serverEnvironment.hiddenThreadTagsAtom,
 });
+export const availableThreadTagsAtom = Atom.make((get) =>
+  collectThreadTags(get(environmentThreadShells.navigationThreadShellsAtom)),
+).pipe(Atom.withEquality(arrayElementsEqual));
+
 export const childThreadApprovalsAtom = createChildThreadApprovalsAtom({
   childThreadInputsAtom: environmentThreadShells.childThreadInputsAtom,
   pendingRequestsAtom: environmentThreadDetails.pendingRequestsAtom,

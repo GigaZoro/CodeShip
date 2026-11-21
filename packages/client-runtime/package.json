@@ -427,6 +427,10 @@
       "types": "./src/state/threadOutbox.ts",
       "default": "./src/state/threadOutbox.ts"
     },
+    "./state/thread-tag-filter": {
+      "types": "./src/state/threadTagFilter.ts",
+      "default": "./src/state/threadTagFilter.ts"
+    },
     "./state/thread-status": {
       "types": "./src/state/threadStatus.ts",
       "default": "./src/state/threadStatus.ts"

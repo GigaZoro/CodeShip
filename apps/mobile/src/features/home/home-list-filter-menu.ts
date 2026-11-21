@@ -2,6 +2,7 @@ import {
   THREAD_LIST_STATUS_LABELS,
   ThreadListStatusFilter,
 } from "@t3tools/client-runtime/state/thread-status";
+import { toggleThreadTagSelection } from "@t3tools/client-runtime/state/thread-tag-filter";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { offersSidebarMachineGrouping, type SidebarGrouping } from "@t3tools/contracts/settings";
 import type { MenuAction } from "@react-native-menu/menu";
@@ -29,6 +30,31 @@ export function statusFilterMenuItems(selected: ThreadListStatusFilter) {
     state: selected === value ? ("on" as const) : ("off" as const),
     value,
   }));
+}
+
+export const CLEAR_TAGS_EVENT = "tags:clear";
+
+export function tagFilterMenuItems(available: readonly string[], selected: readonly string[]) {
+  const selectedSet = new Set(selected);
+  return [
+    {
+      id: CLEAR_TAGS_EVENT,
+      title: t("All tags"),
+      state: selected.length === 0 ? ("on" as const) : ("off" as const),
+    },
+    ...available.map((tag) => ({
+      id: `tags:toggle:${tag}`,
+      title: tag,
+      state: selectedSet.has(tag) ? ("on" as const) : ("off" as const),
+    })),
+  ];
+}
+
+export function applyTagFilterMenuEvent(event: string, selected: readonly string[]) {
+  if (event === CLEAR_TAGS_EVENT) return [];
+  if (event.startsWith("tags:toggle:"))
+    return toggleThreadTagSelection(selected, event.slice("tags:toggle:".length));
+  return null;
 }
 
 export const SHOW_ALL_THREADS_EVENT = "show-all-threads";
@@ -146,6 +172,9 @@ export function buildHomeListFilterMenu(
     readonly selectedProjectKey: string | null;
     readonly grouping: SidebarGrouping;
     readonly statusFilter: ThreadListStatusFilter;
+    readonly selectedTags: readonly string[];
+    readonly availableTags: readonly string[];
+    readonly onTagsChange: (tags: readonly string[]) => void;
     readonly onStatusChange: (status: ThreadListStatusFilter) => void;
     readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
     readonly onProjectChange: (projectKey: string | null) => void;
@@ -158,7 +187,8 @@ export function buildHomeListFilterMenu(
   if (
     props.selectedEnvironmentId !== null ||
     props.selectedProjectKey !== null ||
-    props.statusFilter !== "all"
+    props.statusFilter !== "all" ||
+    props.selectedTags.length > 0
   ) {
     items.push({
       type: "action",
@@ -167,6 +197,7 @@ export function buildHomeListFilterMenu(
         props.onEnvironmentChange(null);
         props.onProjectChange(null);
         props.onStatusChange("all");
+        props.onTagsChange([]);
       },
     });
   }
@@ -226,6 +257,24 @@ export function buildHomeListFilterMenu(
       onPress: () => props.onStatusChange(value),
     })),
   });
+
+  if (props.availableTags.length > 0 || props.selectedTags.length > 0) {
+    items.push({
+      type: "submenu",
+      title: t("Filter by tags"),
+      items: tagFilterMenuItems(props.availableTags, props.selectedTags).map(
+        ({ id, title, state }) => ({
+          type: "action",
+          title,
+          state,
+          onPress: () => {
+            const next = applyTagFilterMenuEvent(id, props.selectedTags);
+            if (next) props.onTagsChange(next);
+          },
+        }),
+      ),
+    });
+  }
 
   items.push({
     type: "submenu",

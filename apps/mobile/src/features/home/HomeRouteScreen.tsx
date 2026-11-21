@@ -254,6 +254,8 @@ export function HomeRouteScreen() {
 
         <HomeScreen
           statusFilter={listOptions.statusFilter}
+          selectedTags={listOptions.selectedTags}
+          onTagsChange={(selectedTags) => updateOptions({ selectedTags })}
           onStatusChange={(statusFilter) => updateOptions({ statusFilter })}
           catalogState={catalogState}
           environments={environments}

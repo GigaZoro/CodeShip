@@ -41,6 +41,7 @@ const ThreadListFilters = Schema.Struct({
   environmentId: Schema.NullOr(EnvironmentId),
   projectKey: Schema.NullOr(Schema.String),
   status: Schema.optionalKey(ThreadListStatusFilter),
+  tags: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 export type ThreadListFilters = typeof ThreadListFilters.Type;
 

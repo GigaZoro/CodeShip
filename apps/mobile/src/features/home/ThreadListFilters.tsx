@@ -16,9 +16,13 @@ import {
   machineGroupingMenuItem,
   projectGroupingMenuItems,
   statusFilterMenuItems,
+  applyTagFilterMenuEvent,
+  tagFilterMenuItems,
   threadListGroupingLabel,
 } from "./home-list-filter-menu";
-import { t } from "../../lib/i18n";
+import { t, tn } from "../../lib/i18n";
+import { useAtomValue } from "@effect/atom-react";
+import { availableThreadTagsAtom } from "../../state/threads";
 
 export function ThreadListFilters(
   props: Pick<
@@ -36,6 +40,8 @@ export function ThreadListFilters(
     /** List padding the scroller bleeds through so pills start where row content does. */
     readonly gutter: number;
     readonly statusFilter: ThreadListStatusFilter;
+    readonly selectedTags: readonly string[];
+    readonly onTagsChange: (tags: readonly string[]) => void;
     readonly onStatusChange: (status: ThreadListStatusFilter) => void;
   },
 ) {
@@ -49,6 +55,7 @@ export function ThreadListFilters(
     (project) => project.key === props.selectedProjectKey,
   );
   const statusItems = statusFilterMenuItems(props.statusFilter);
+  const availableTags = useAtomValue(availableThreadTagsAtom);
   return (
     <ScrollView
       horizontal
@@ -125,6 +132,22 @@ export function ThreadListFilters(
           if (item) props.onStatusChange(item.value);
         }}
       />
+      {availableTags.length > 0 || props.selectedTags.length > 0 ? (
+        <ListFilterMenu
+          label={
+            props.selectedTags.length === 0
+              ? t("Tags")
+              : tn(props.selectedTags.length, "{count} tag", "{count} tags")
+          }
+          accessibilityLabel={t("Filter by tags")}
+          active={props.selectedTags.length > 0}
+          actions={tagFilterMenuItems(availableTags, props.selectedTags)}
+          onSelect={(id) => {
+            const next = applyTagFilterMenuEvent(id, props.selectedTags);
+            if (next) props.onTagsChange(next);
+          }}
+        />
+      ) : null}
       <ListFilterMenu
         label={threadListGroupingLabel(props.grouping)}
         accessibilityLabel={t("Group threads")}
@@ -164,7 +187,8 @@ export function ThreadListFilters(
       />
       {props.selectedEnvironmentId !== null ||
       props.selectedProjectKey !== null ||
-      props.statusFilter !== "all" ? (
+      props.statusFilter !== "all" ||
+      props.selectedTags.length > 0 ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={t("Reset thread filters")}
@@ -174,6 +198,7 @@ export function ThreadListFilters(
             props.onEnvironmentChange(null);
             props.onProjectChange(null);
             props.onStatusChange("all");
+            props.onTagsChange([]);
           }}
         >
           <SymbolView name="xmark.circle.fill" size={18} tintColorClassName="accent-icon-muted" />

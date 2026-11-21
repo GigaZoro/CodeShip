@@ -174,6 +174,21 @@ or **Failed**. **Needs you** uses the same status rules as Projects, and **Unrea
 shows completed work you have yet to read. The device remembers your choice.
 Choose **All** or clear the filter to see every status again.
 
+Choose tags in the same filter menu to show threads with **any** of those tags.
+Status and tag filters can be combined. Clear the filters to return to the full list.
+
+## Tag threads
+
+Open a thread’s menu, choose **Tags**, then select an existing tag to add or
+remove it. Choose **Add tag…** to enter a new tag of up to 64 characters on one line.
+On web and desktop, select several threads to apply tags from the selection menu.
+A tag already on every selected thread is removed from all of them. Otherwise it
+is added to all of them.
+
+Tags follow the thread across devices. When an environment is set to hide tagged
+threads, its hidden threads stay out of the list and the app prevents applying
+its hidden tags there while hiding is on.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work. The command palette offers the same

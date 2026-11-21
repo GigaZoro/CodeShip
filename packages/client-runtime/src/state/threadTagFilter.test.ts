@@ -2,7 +2,14 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { threadKey } from "./entities.ts";
-import { hiddenThreadKeys, NO_HIDDEN_THREADS, visibleLinkedThreads } from "./threadTagFilter.ts";
+import {
+  hiddenThreadKeys,
+  matchesAnyThreadTag,
+  NO_HIDDEN_THREADS,
+  parseThreadTag,
+  toggleThreadTagSelection,
+  visibleLinkedThreads,
+} from "./threadTagFilter.ts";
 
 const local = EnvironmentId.make("local");
 const linked = EnvironmentId.make("linked");
@@ -124,4 +131,18 @@ describe("hiddenThreadKeys", () => {
     );
     expect([...archived]).toEqual([key(linked, "delegated-from-private")]);
   });
+});
+
+it("validates edits and matches any selected tag by exact spelling", () => {
+  expect(parseThreadTag("  release:next  ")).toBe("release:next");
+  expect(parseThreadTag(" ")).toBeNull();
+  expect(parseThreadTag("two\nlines")).toBeNull();
+  expect(parseThreadTag("x".repeat(65))).toBeNull();
+
+  const selected = toggleThreadTagSelection(["UI"], "release:next");
+  expect(matchesAnyThreadTag(["release:next"], new Set(selected))).toBe(true);
+  expect(matchesAnyThreadTag(["ui"], new Set(selected))).toBe(false);
+  expect(matchesAnyThreadTag(undefined, new Set(selected))).toBe(false);
+  expect(toggleThreadTagSelection(selected, "UI")).toEqual(["release:next"]);
+  expect(matchesAnyThreadTag(undefined, new Set())).toBe(true);
 });

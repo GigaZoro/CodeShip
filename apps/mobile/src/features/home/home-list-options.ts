@@ -11,6 +11,7 @@ export interface HomeListOptions {
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
   readonly statusFilter: ThreadListStatusFilter;
+  readonly selectedTags: readonly string[];
 }
 
 export interface ResolvedHomeListOptions extends HomeListOptions {
@@ -22,6 +23,7 @@ function defaultHomeListOptions(filters?: ThreadListFilters): HomeListOptions {
     selectedEnvironmentId: filters?.environmentId ?? null,
     selectedProjectKey: filters?.projectKey ?? null,
     statusFilter: filters?.status ?? "all",
+    selectedTags: filters?.tags ?? [],
   };
 }
 
@@ -53,13 +55,15 @@ export function HomeListOptionsProvider({
     if (
       next.selectedEnvironmentId !== current.selectedEnvironmentId ||
       next.selectedProjectKey !== current.selectedProjectKey ||
-      next.statusFilter !== current.statusFilter
+      next.statusFilter !== current.statusFilter ||
+      next.selectedTags !== current.selectedTags
     ) {
       savePreferences({
         threadListFilters: {
           environmentId: next.selectedEnvironmentId,
           projectKey: next.selectedProjectKey,
           ...(next.statusFilter === "all" ? {} : { status: next.statusFilter }),
+          ...(next.selectedTags.length === 0 ? {} : { tags: next.selectedTags }),
         },
       });
     }
