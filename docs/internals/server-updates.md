@@ -382,5 +382,7 @@ the child's cut run would stay cut whenever the parent recovered first. The orch
 completion deliveries in a startup pass after reconciliation, because the terminal-run
 listener ignores reconciliation's cancellations. A cancelled child whose restart
 continuation is still pending in the outbox is not a result yet; the continuation's run
-settles it, or the handler settles it when it declines to continue. Schedulers wait for
+settles it, or the handler settles it when it declines to continue. A Stop that cancels
+the pending continuation, or the delayed retry of one that failed to start, queues a
+`delegated-task.recover` effect in its commit, which settles it. Schedulers wait for
 activation so they cannot start runs that reconciliation would then cancel.

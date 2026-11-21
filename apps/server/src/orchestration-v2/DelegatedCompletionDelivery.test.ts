@@ -25,6 +25,7 @@ import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
@@ -41,6 +42,8 @@ import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
+import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
@@ -3245,6 +3248,127 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
         );
         assert.equal(finished?.status, "completed");
         assert.notEqual(finished?.completionDelivery?.state, "disposed");
+      }),
+  );
+});
+
+// The same layer references share the instances RuntimeLayer builds.
+const layerTestWithOutbox = Layer.merge(
+  layerTest,
+  EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+);
+
+it.layer(layerTestWithOutbox)("a Stop during a delegated continuation's retry backoff", (it) => {
+  it.effect.each(["thread.stop", "run.interrupt"] as const)(
+    "gives the parent its result when %s cancels the retry",
+    (stop) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread:retry-stop-parent:${stop}`);
+        const projectId = ProjectId.make(`project:retry-stop-parent:${stop}`);
+        const runId = RunId.make(`run:retry-stop-parent:${stop}`);
+        const rootNodeId = NodeId.make(`node:retry-stop-parent-root:${stop}`);
+        yield* seedParentWithTerminalTask({
+          threadId,
+          projectId,
+          runId,
+          rootNodeId,
+          taskId: NodeId.make(`node:retry-stop-parent-settled:${stop}`),
+          deliveryState: "delivered",
+          now,
+        });
+        const child = yield* seedRestartCancelledChild({
+          parentThreadId: threadId,
+          projectId,
+          parentRunId: runId,
+          rootNodeId,
+          name: `retry-stop-child-${stop}`,
+          completionWake: "always",
+          continuationPending: true,
+          now,
+        });
+        // The continuation's effect ran and started a run that failed before its prompt.
+        const started = yield* outbox.claimNext({ workerId: "test-worker" });
+        assert.equal(
+          Option.getOrUndefined(started)?.id,
+          EffectOutbox.restartContinuationEffectId(child.childRunId),
+        );
+        yield* outbox.succeed({ effectId: Option.getOrThrow(started).id, workerId: "test-worker" });
+        const continuationRunId = RunId.make(`run:retry-stop-child-${stop}:2`);
+        const retryEffectId = EffectOutbox.restartContinuationEffectId(continuationRunId);
+        const consumed = yield* Deferred.make<void>();
+        const withLock = executor.withLock;
+        // The parent lock taken once the retry exists is the failure's finalization.
+        const signalFinalized: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] =
+          (key, effect) =>
+            key !== threadId
+              ? withLock(key, effect)
+              : Effect.gen(function* () {
+                  const armed = Option.isSome(yield* outbox.get(retryEffectId).pipe(Effect.orDie));
+                  const result = yield* withLock(key, effect);
+                  if (armed) yield* Deferred.succeed(consumed, undefined);
+                  return result;
+                });
+        using _lock = vi.spyOn(executor, "withLock").mockImplementation(signalFinalized);
+        const failed = runEvent({
+          threadId: child.childThreadId,
+          runId: continuationRunId,
+          ordinal: 2,
+          status: "failed",
+          now,
+        });
+        yield* eventSink.write({
+          commandId: CommandId.make(`command:retry-stop-child-${stop}:failed`),
+          events: [
+            {
+              ...failed,
+              payload: {
+                ...failed.payload,
+                startedAt: null,
+                restartContinuationOfRunId: child.childRunId,
+              },
+            },
+          ],
+        });
+        yield* Deferred.await(consumed);
+        const retry = Option.getOrThrow(yield* outbox.get(retryEffectId));
+        assert.equal(retry.status, "pending");
+        assert.isAbove(Date.parse(retry.availableAt), DateTime.toEpochMillis(now));
+        const task = Effect.map(orchestrator.getThreadProjection(threadId), ({ subagents }) =>
+          subagents.find((row) => row.id === child.taskId),
+        );
+        assert.equal((yield* task)?.status, "running");
+
+        const commandId = CommandId.make(`command:retry-stop-child-${stop}:stop`);
+        yield* orchestrator.dispatch(
+          stop === "thread.stop"
+            ? { type: "thread.stop", commandId, threadId: child.childThreadId }
+            : {
+                type: "run.interrupt",
+                commandId,
+                threadId: child.childThreadId,
+                runId: continuationRunId,
+              },
+        );
+        assert.equal(Option.getOrThrow(yield* outbox.get(retryEffectId)).status, "cancelled");
+        yield* worker.drain();
+
+        // A continuation that never started is not a result: the cut run the restart cancelled is.
+        const settled = yield* task;
+        assert.equal(settled?.status, "cancelled");
+        assert.isNotNull(settled?.result ?? null);
+        assert.isTrue(
+          (yield* orchestrator.getThreadProjection(threadId)).contextTransfers.some(
+            (transfer) =>
+              transfer.type === "subagent_result" &&
+              transfer.sourceThreadId === child.childThreadId,
+          ),
+        );
       }),
   );
 });

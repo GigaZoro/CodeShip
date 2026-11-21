@@ -256,7 +256,9 @@ the `threadStop` capability. It cancels queued restart continuations, holds ordi
 queued messages, ends pull request watches, and disposes pending delegated completions
 across the thread. After commit, a worker stops its delegated commands and child threads,
 including descendants. A delegated child that cannot be read does not keep Stop from
-committing. Older servers receive `run.interrupt` with `holdQueue`; the server treats
+committing. A delegated child whose task waited on a continuation the Stop cancelled
+reports its result to the parent: the Stop queues the effect that settles it in its commit.
+Older servers receive `run.interrupt` with `holdQueue`; the server treats
 that command as `thread.stop`, so a client without the capability stops the whole
 thread too. A Stop from an earlier server version held restart continuations in the
 queue instead of cancelling them; startup cancels those before any queued message

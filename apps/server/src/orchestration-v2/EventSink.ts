@@ -767,33 +767,52 @@ const layerBase: Layer.Layer<
                   ...input.cancelUnsettledEffects,
                 });
           // Stop and its delayed retries settle in one transaction. Notify their waiters only after commit.
-          const restartEffectIds = storedEvents.flatMap(({ event }) =>
-            event.type === "turn-item.updated" &&
-            event.payload.type === "run_interrupt_request" &&
-            event.payload.runId !== null
-              ? [EffectOutbox.restartContinuationEffectId(event.payload.runId)]
-              : [],
-          );
+          const stoppedRestarts = new Map<string, { threadId: ThreadId; sourceRunId: RunId }>();
+          for (const { event } of storedEvents) {
+            if (
+              event.type === "turn-item.updated" &&
+              event.payload.type === "run_interrupt_request" &&
+              event.payload.runId !== null
+            ) {
+              stoppedRestarts.set(EffectOutbox.restartContinuationEffectId(event.payload.runId), {
+                threadId: event.threadId,
+                sourceRunId: event.payload.runId,
+              });
+            }
+          }
           const cancelledRestarts =
-            restartEffectIds.length === 0
+            stoppedRestarts.size === 0
               ? []
               : yield* effectOutbox.cancelUnsettled({
-                  effectIds: restartEffectIds,
+                  effectIds: [...stoppedRestarts.keys()],
                   reason: "Stop cancelled the pending restart continuation.",
                 });
+          const recoveries = cancelledRestarts.flatMap((effectId) => {
+            const stopped = stoppedRestarts.get(effectId);
+            return stopped === undefined
+              ? []
+              : [
+                  EffectOutbox.delegatedTaskRecoverEffect({
+                    commandId: input.commandId,
+                    ...stopped,
+                  }),
+                ];
+          });
+          yield* effectOutbox.enqueue(recoveries);
           return {
             receipt,
             storedEvents,
             outcomes,
             committed: true as const,
             cancelledEffectIds: [...cancelledEffectIds, ...cancelledRestarts],
+            enqueuedEffectCount: input.effects.length + recoveries.length,
           };
         }),
         (result) =>
           Effect.gen(function* () {
             yield* effectOutbox.signalCancellations(result.cancelledEffectIds);
-            if (result.committed && input.effects.length > 0) {
-              yield* effectOutbox.notifyAvailable(input.effects.length);
+            if (result.committed && result.enqueuedEffectCount > 0) {
+              yield* effectOutbox.notifyAvailable(result.enqueuedEffectCount);
             }
             if (result.committed) yield* publishStoredEvents(result.storedEvents, result.outcomes);
           }),
