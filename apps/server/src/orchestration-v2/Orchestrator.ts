@@ -8670,6 +8670,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       completionDelivery: { state: "pending", observedByRunId: null },
       status: run.status === "queued" ? (run.queueHeld === true ? "idle" : "pending") : "running",
       progress: undefined,
+      // A message to a reviewer is not a review round; counting it could answer a failed one.
+      review: undefined,
       result: null,
       startedAt: now,
       completedAt: null,
@@ -11008,7 +11010,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   /**
    * A review task's round in its parent thread. Reviewers started before the latest round has a
-   * completed review join it; a new part (the change re-planned or split) starts at round 1.
+   * completed review join it; a new part (the change re-planned or split) starts at round 1, and
+   * reviewers of that part named with the same reason before it is answered join it.
    */
   const reviewRound = Effect.fn("orchestrationV2.reviewRound")(function* (command: {
     readonly commandId: CommandId;
@@ -11021,10 +11024,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       .getLatestReviewRound(threadId)
       .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
     const reason = command.review.newPartReason;
+    const joins =
+      latest !== null &&
+      !latest.answered &&
+      (reason === undefined || (latest.round === 1 && latest.newPartReason === reason));
     const place =
       latest === null
         ? { part: 1, round: 1 }
-        : !latest.answered && (reason === undefined || latest.round === 1)
+        : joins
           ? { part: latest.part, round: latest.round }
           : reason === undefined
             ? { part: latest.part, round: latest.round + 1 }

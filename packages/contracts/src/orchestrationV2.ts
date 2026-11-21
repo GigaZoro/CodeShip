@@ -1061,7 +1061,7 @@ export const DELEGATED_REVIEW_ROUND_LIMIT = 3;
 /** One line saying how a change was re-planned or split since its last review. */
 export const DelegatedReviewNewPartReason = TrimmedNonEmptyString.check(
   Schema.isMaxLength(300),
-  Schema.isPattern(/^[^\r\n]+$/),
+  Schema.isPattern(/^[^\r\n\u2028\u2029]+$/),
 );
 
 /** What a `delegated_task.request` asks of the parent's review count. */

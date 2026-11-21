@@ -460,6 +460,8 @@ export type ProjectionRecords<K extends ProjectionRecordField> = Pick<
 export interface ProjectionReviewRound {
   readonly part: number;
   readonly round: number;
+  /** The reason the round's part was started with, on its first round. */
+  readonly newPartReason: string | null;
   readonly answered: boolean;
 }
 
@@ -6220,10 +6222,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError(controlReadError(threadId)),
       );
     const getLatestReviewRound: ProjectionStoreV2Shape["getLatestReviewRound"] = (threadId) =>
-      sql<{ part: number; round: number; answered: number }>`
+      sql<{ part: number; round: number; newPartReason: string | null; answered: number }>`
         SELECT
           json_extract(payload_json, '$.review.part') AS part,
           json_extract(payload_json, '$.review.round') AS round,
+          MAX(json_extract(payload_json, '$.review.newPartReason')) AS newPartReason,
           MAX(status = 'completed') AS answered
         FROM orchestration_v2_projection_subagents
         WHERE thread_id = ${threadId} AND json_type(payload_json, '$.review') IS NOT NULL
@@ -6234,7 +6237,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           const row = rows[0];
           return row === undefined
             ? null
-            : { part: row.part, round: row.round, answered: row.answered === 1 };
+            : {
+                part: row.part,
+                round: row.round,
+                newPartReason: row.newPartReason,
+                answered: row.answered === 1,
+              };
         }),
         Effect.mapError(controlReadError(threadId)),
       );

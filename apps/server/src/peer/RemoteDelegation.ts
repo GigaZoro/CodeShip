@@ -424,6 +424,17 @@ const make = Effect.gen(function* () {
           message: "The delegated task was not recorded.",
         });
       }
+      // A replayed key follows its task where it was recorded; a launch elsewhere has no follower.
+      if (
+        taskEvent === undefined &&
+        existing?.remoteChild !== undefined &&
+        existing.remoteChild.environmentId !== target.environmentId
+      ) {
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: `clientRequestId already names task ${taskId} in ${existing.remoteChild.label}. Use a new clientRequestId for a task in another environment.`,
+        });
+      }
       // A replayed request whose task already has its result (its thread was found gone, or it
       // ended) has nothing to launch.
       if (taskEvent === undefined && existing?.result != null) return { taskId };

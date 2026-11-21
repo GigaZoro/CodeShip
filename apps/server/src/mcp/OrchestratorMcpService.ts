@@ -1999,14 +1999,16 @@ const make = Effect.gen(function* () {
       messages: [...childControls.messages, ...resultRecords.messages],
       turnItems: resultRecords.turnItems,
     };
-    const heldForRestart =
+    // The review count reads the parent's record, so a review reports no result before it.
+    const heldForParentRecord =
       task.result === null &&
       taskWorkState === "result_available" &&
-      (yield* threadManagement
-        .delegatedTaskResultPending(task.childThreadId, childRun?.delegatedTaskId)
-        .pipe(Effect.mapError(threadManagementFailure)));
+      (task.review !== undefined ||
+        (yield* threadManagement
+          .delegatedTaskResultPending(task.childThreadId, childRun?.delegatedTaskId)
+          .pipe(Effect.mapError(threadManagementFailure))));
     const workState =
-      task.result !== null ? "result_available" : heldForRestart ? "working" : taskWorkState;
+      task.result !== null ? "result_available" : heldForParentRecord ? "working" : taskWorkState;
     const status =
       task.result !== null
         ? taskStatusForRun(

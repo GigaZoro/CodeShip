@@ -11,6 +11,7 @@ import {
   type ModelSelection,
   NodeId,
   type OrchestrationV2Run,
+  type OrchestrationV2SubagentReview,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -1234,6 +1235,7 @@ const seedRestartCancelledChild = (input: {
   readonly continuationPending: boolean;
   readonly runStatus?: "cancelled" | "completed";
   readonly lostWork?: OrchestrationV2Run["restartCancelledBackgroundWork"];
+  readonly review?: OrchestrationV2SubagentReview;
   readonly now: DateTime.Utc;
 }) =>
   Effect.gen(function* () {
@@ -1302,6 +1304,7 @@ const seedRestartCancelledChild = (input: {
             title: null,
             model: null,
             completionWake: input.completionWake,
+            ...(input.review === undefined ? {} : { review: input.review }),
             status: "running",
             result: null,
             startedAt: input.now,
@@ -1630,6 +1633,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
           completionWake: "always",
           continuationPending: false,
           runStatus: "completed",
+          review: { part: 1, round: 1 },
           now,
         });
         yield* orchestrator.recoverDelegatedTasks;
@@ -1722,6 +1726,8 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
         )!;
         assert.equal(followup.status, "completed");
         assert.equal(followup.result, "The background command finished cleanly.");
+        // The wake continues the reviewer; it is not another review round.
+        assert.isUndefined(followup.review);
         assert.equal(followup.completionDelivery?.state, "claimed");
         let wake = yield* requests.take;
         while (

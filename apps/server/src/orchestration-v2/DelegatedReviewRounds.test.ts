@@ -158,6 +158,26 @@ it.layer(layerFor(SqlitePersistence.layerMemory))("delegated review rounds", (it
       });
     }),
   );
+
+  it.effect("start a part split off while a round is open, shared by its reviewers", () =>
+    Effect.gen(function* () {
+      const parent = yield* seedLiveParent("split-in-round-one");
+      yield* requestReview(parent, "whole-change");
+      const newPartReason = "Split the cache migration into its own change.";
+      for (const key of ["split", "split-second-reviewer"]) {
+        yield* requestReview(parent, key, { newPartReason });
+        assert.deepEqual((yield* taskFor(parent, key)).review, {
+          part: 2,
+          round: 1,
+          newPartReason,
+        });
+      }
+      yield* requestReview(parent, "unnamed-reviewer");
+      assert.deepEqual((yield* taskFor(parent, "unnamed-reviewer")).review, { part: 2, round: 1 });
+      yield* requestReview(parent, "another-split", { newPartReason: "Split the decoder fix." });
+      assert.deepInclude((yield* taskFor(parent, "another-split")).review, { part: 3, round: 1 });
+    }),
+  );
 });
 
 it.effect("keeps the review count of a parent thread across a server restart", () =>

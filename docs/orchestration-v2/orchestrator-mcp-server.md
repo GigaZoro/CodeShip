@@ -272,10 +272,13 @@ has no completed review join that round, so parallel reviewers of one diff share
 it. A review that would be round 4 is refused with `review_round_limit`, quoting
 the review rule that a third round still finding blocking defects means re-plan
 or split the change. A call with `newReviewPart`, one line saying how the change
-was re-planned or split, starts round 1 of a new part instead. The count and the
-reason live on each review task's record in the parent's projection, so
-compaction and restarts keep them, and a refusal records no receipt, so the same
-`clientRequestId` can retry with `newReviewPart`.
+was re-planned or split, starts round 1 of a new part instead; reviewers of that
+part join its first round only while it is unanswered and with the same line.
+A round counts once the parent records a completed review, so a review task
+reports no result before that record. Follow-up work in a reviewer's thread is
+not a round. The count and the reason live on each review task's record in the
+parent's projection, so compaction and restarts keep them, and a refusal records
+no receipt, so the same `clientRequestId` can retry with `newReviewPart`.
 A follow-up that needs the same child's conversation goes through `t3_thread_send`
 on its `childThreadId`. After the original task completes, that follow-up runs as a
 fresh task in the child thread; it does not reopen the completed task or change its
