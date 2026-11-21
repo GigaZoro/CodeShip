@@ -823,6 +823,18 @@ export interface ProjectionStoreV2Shape {
   readonly getHeldQueuedRuns: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<OrchestrationV2Run>, ProjectionStoreV2Error>;
+  /**
+   * The automatic starts under memory admission, across threads: the ones still waiting, in the
+   * order they began to wait (the earlier request first when several began at once), and whether
+   * an admitted one is still on its way to its provider.
+   */
+  readonly getMemoryAdmissionQueue: () => Effect.Effect<
+    {
+      readonly waiting: ReadonlyArray<OrchestrationV2Run>;
+      readonly admittedStarting: boolean;
+    },
+    ProjectionStoreV2Error
+  >;
   readonly getRecoveryThreadIds: (
     kind: ProjectionRecoveryKind,
   ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionStoreV2Error>;
@@ -1397,6 +1409,9 @@ function nullableStringField(payload: Record<string, unknown>, field: string): s
 function booleanInt(value: boolean): 0 | 1 {
   return value ? 1 : 0;
 }
+
+// A machine has a few dozen chats; the queue is read a page at a time and only its head starts.
+const MEMORY_ADMISSION_QUEUE_LIMIT = 200;
 
 const decodeRows =
   <A, E>(decode: (json: string) => Effect.Effect<A, E>, threadId: ThreadId) =>
@@ -6209,6 +6224,34 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError(controlReadError(threadId)),
       );
 
+    const getMemoryAdmissionQueue = Effect.fn("ProjectionStore.getMemoryAdmissionQueue")(
+      function* () {
+        // The first status term is the recovery index's own condition, which lets SQLite read
+        // only unfinished runs through that index instead of scanning every run.
+        const waitingRows = yield* sql<PayloadRow>`
+          SELECT payload_json FROM orchestration_v2_projection_runs
+          WHERE status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
+            AND status IN ('preparing', 'starting')
+            AND json_extract(payload_json, '$.memoryAdmission.waitingSince') IS NOT NULL
+            AND json_extract(payload_json, '$.memoryAdmission.admittedAt') IS NULL
+          ORDER BY json_extract(payload_json, '$.memoryAdmission.waitingSince'), requested_at, run_id
+          LIMIT ${MEMORY_ADMISSION_QUEUE_LIMIT}
+        `;
+        const admittedRows = yield* sql<{ readonly admitted: number }>`
+          SELECT 1 AS admitted FROM orchestration_v2_projection_runs
+          WHERE status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
+            AND status IN ('preparing', 'starting')
+            AND json_extract(payload_json, '$.memoryAdmission.admittedAt') IS NOT NULL
+          LIMIT 1
+        `;
+        return {
+          waiting: yield* Effect.forEach(waitingRows, (row) => decodeRunPayload(row.payload_json)),
+          admittedStarting: admittedRows.length > 0,
+        };
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
     const getMessageCount: ProjectionStoreV2Shape["getMessageCount"] = (threadId) =>
       sql<{
         count: number;
@@ -8206,6 +8249,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getRunMessage: readOnReader(getRunMessage),
       canStartQueuedRun: readOnReader(canStartQueuedRun),
       getHeldQueuedRuns: readOnReader(getHeldQueuedRuns),
+      getMemoryAdmissionQueue: readOnReader(getMemoryAdmissionQueue),
       getPendingNativeUserInputs: readOnReader(getPendingNativeUserInputs),
       hasUnpairedRunInterruptRequest: readOnReader(hasUnpairedRunInterruptRequest),
       getRunTurnItemIdentities: readOnReader(getRunTurnItemIdentities),

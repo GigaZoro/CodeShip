@@ -1,3 +1,7 @@
+## 2026-11-21 — Chats that resume by themselves wait for memory and start one at a time
+
+- After a restart, every chat it cut resumed at once, which could overload the machine: one had 1.7 GiB free 13 minutes after it started. Chats that continue by themselves after a restart, a network outage or a usage limit now resume one at a time, the chat that stopped first first, each once the one before it has reached its agent, and none starts while memory is short (**Settings → Maintenance & about → Background activity**). A waiting chat says **Waiting for memory** and keeps its place through another restart; a message you send in it starts it at once. Chats you start are never held.
+
 ## 2026-11-21 — Landing flags overlapping local work
 
 - Before a landing rebases and checks, it lists other local worktrees whose unmerged branches change the same files, with the branch, worktree path and shared files, so parallel designs get reconciled before they collide.

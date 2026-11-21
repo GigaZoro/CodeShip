@@ -141,7 +141,9 @@ restart. Changes are saved to connected environments that support this setting;
 update older servers first. If a supported environment was offline or has a
 different value, use **Apply to all** in Settings after it connects.
 T3.CodeShip must start again on that machine;
-the setting does not enable automatic startup. Terminal commands may still be
+the setting does not enable automatic startup. Threads resume one at a time and wait
+while the machine is short of memory; see
+[Wait while memory is short](project-settings.md#wait-while-memory-is-short). Terminal commands may still be
 interrupted, and threads without saved provider resume state need a new message.
 A message the restart cut before the agent received it, while its worktree was
 being prepared or its agent was starting, is sent again as it was, with the same
@@ -172,7 +174,8 @@ the restarted turn is told.
 An interrupted `/compact` compacts again. An approval or secret the restart
 cancelled is asked for again when the thread resumes. A question the agent asked
 stays open for your answer, which continues the thread. A thread is not resumed
-while it is archived, snoozed, or settled, or after you stopped it. After three
+while it is archived, snoozed, or settled, or after you stopped it. One that waits
+for memory has begun to resume: snoozing it only hides it, and Stop ends it. After three
 automatic resumes within five minutes, the thread waits for your next message.
 Scheduled-task runs also stay stopped when a newer run of their task started, or its
 next scheduled time came, while they were stopped. After a crash, that counts from the

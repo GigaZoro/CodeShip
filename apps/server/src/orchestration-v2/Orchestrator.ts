@@ -64,6 +64,7 @@ import {
   type OrchestrationV2TurnItem,
   latestProviderTurnForAttempt,
   parseGoalCommand,
+  orchestrationV2RunAwaitsMemory,
   orchestrationV2RunWorkStartedAt,
   orchestrationV2WorktreePending,
   ProviderInstanceId,
@@ -681,6 +682,8 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.model-selection.set":
     case "provider-session.detach":
     case "provider-session.detach-idle":
+    case "run.memory-admit":
+    case "run.memory-wait":
     case "message.dispatch":
     case "notification.delivery.accept":
     case "prepared-run.release":
@@ -924,6 +927,51 @@ function worktreeSetupPending(
 
 const scheduledRecoverySkipItemId = (runId: RunId) =>
   TurnItemId.make(`scheduled-recovery-skip:${runId}`);
+
+const MEMORY_WAIT_NOTICE_PREFIX = "memory-wait:";
+const memoryWaitNoticeId = (runId: RunId, at: DateTime.Utc) =>
+  TurnItemId.make(`${MEMORY_WAIT_NOTICE_PREFIX}${runId}:${DateTime.toEpochMillis(at)}`);
+const isMemoryWaitNoticeId = (id: TurnItemId) => id.startsWith(MEMORY_WAIT_NOTICE_PREFIX);
+
+/**
+ * An automatic start waits for memory from when the run it continues stopped, so a restart that
+ * continues its cut runs in any order admits them in the order they stopped.
+ */
+const memoryAdmissionAfter = (
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  sourceRunId: RunId | undefined,
+  now: DateTime.Utc,
+) =>
+  sourceRunId === undefined
+    ? {}
+    : {
+        memoryAdmission: {
+          waitingSince: runs.find((run) => run.id === sourceRunId)?.completedAt ?? now,
+        },
+      };
+
+/**
+ * A run an automatic retry starts over waits for memory again, in the place it first waited in, or
+ * else from when it stopped.
+ */
+const waitingForMemoryAgain = (run: OrchestrationV2Run, at: DateTime.Utc): OrchestrationV2Run => ({
+  ...run,
+  memoryAdmission: { waitingSince: run.memoryAdmission?.waitingSince ?? run.completedAt ?? at },
+});
+
+/** A run a person retries by hand starts at once, whatever an earlier automatic start waited for. */
+const withoutMemoryAdmission = (run: OrchestrationV2Run): OrchestrationV2Run => {
+  const { memoryAdmission: _earlierWait, ...rest } = run;
+  return rest;
+};
+
+/** A message a person typed in a client, not one an agent, the server or a scheduled task sent. */
+const typedByPersonInClient = (
+  command: Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>,
+) =>
+  command.createdBy === "user" &&
+  (command.creationSource === "web" || command.creationSource === "mobile") &&
+  command.scheduledTaskId === undefined;
 
 /** Commands that can start work after a run a restart cut before its agent got the message. */
 type RunUpdatedEvent = Extract<OrchestrationV2DomainEvent, { readonly type: "run.updated" }>;
@@ -6508,16 +6556,41 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return;
     }
 
+    // A steer re-dispatched after it could not join its turn was sent before any Stop since, and
+    // was meant to go before the queue. If a Stop reached its run, it waits held, even once that
+    // run has ended.
+    const redispatchedMessage = projection.messages.find(
+      (message) => message.id === command.messageId,
+    );
+    const redispatchedSteer = redispatchedMessage !== undefined;
+    const sentByUserFromClient = typedByPersonInClient(command) && !redispatchedSteer;
     // A restart kept the thread's latest message from its agent. When a person or an agent sends
     // another, that message goes first, in the workspace it asked for, and this one queues behind
     // it. Server and provider messages (wakes, notifications, scheduled runs) bring nothing back.
-    if (
+    const sentBySomeone =
       automaticSourceRunId === undefined &&
       command.manualContinuationOfRunId === undefined &&
       command.creationSource !== "provider" &&
-      command.creationSource !== "server" &&
-      (yield* reviveLatestRestartCutRun(command, projection.runs, events, effects))
+      command.creationSource !== "server";
+    if (
+      sentBySomeone &&
+      (yield* reviveLatestRestartCutRun(
+        command,
+        { runs: projection.runs, waitsForMemory: !sentByUserFromClient },
+        events,
+        effects,
+      ))
     ) {
+      projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    }
+    // A person is at the thread now, so its automatic start stops waiting for memory and goes
+    // first. An agent's message, or a steer the server sends again, waits behind it.
+    const memoryHeldRun =
+      automaticSourceRunId === undefined && sentByUserFromClient
+        ? projection.runs.find(orchestrationV2RunAwaitsMemory)
+        : undefined;
+    if (memoryHeldRun !== undefined) {
+      yield* startMemoryHeldRun(command, memoryHeldRun, events, effects);
       projection = yield* getProjectionWithPendingEvents(command.threadId, events);
     }
     const activeProviderThread = projection.providerThreads.find(
@@ -6536,13 +6609,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection.thread.worktreePath === null
         ? latestRun
         : undefined;
-    // A steer re-dispatched after it could not join its turn was sent before any Stop since, and
-    // was meant to go before the queue. If a Stop reached its run, it waits held, even once that
-    // run has ended.
-    const redispatchedMessage = projection.messages.find(
-      (message) => message.id === command.messageId,
-    );
-    const redispatchedSteer = redispatchedMessage !== undefined;
     const steerRunId = redispatchedMessage?.runId ?? null;
     const stoppedSteerRun =
       steerRunId !== null && (yield* stopReachedRun(command, command.threadId, steerRunId))
@@ -6558,11 +6624,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // Client messages resume held queues; server continuations and scheduled tasks do not.
     // Provider failure or usage limits re-hold the queue.
     const worktreeSetupUnresolved = worktreeSetupPending(projection);
-    const sentByUserFromClient =
-      command.createdBy === "user" &&
-      (command.creationSource === "web" || command.creationSource === "mobile") &&
-      command.scheduledTaskId === undefined &&
-      !redispatchedSteer;
     const heldRunsToRelease =
       sentByUserFromClient && startsOrQueuesRun && !worktreeSetupUnresolved
         ? projection.runs.filter((run) => run.status === "queued" && run.queueHeld === true)
@@ -7081,6 +7142,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : {}),
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...wakeWorkStartedAt(projection.runs, command),
+        ...(dispatchMode.type === "defer_start"
+          ? {}
+          : memoryAdmissionAfter(projection.runs, automaticSourceRunId, now)),
       };
       const attempt: OrchestrationV2RunAttempt = {
         id: attemptId,
@@ -7279,14 +7343,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           payload: preparationTurnItem,
         });
       }
-      const pendingEffect = {
-        id: `effect:${command.commandId}:provider-turn.start:${runId}`,
-        commandId: command.commandId,
-        threadId: command.threadId,
-        request: { type: "provider-turn.start", runId },
-      } satisfies PendingOrchestrationEffectV2;
-      if (dispatchMode.type !== "defer_start") {
-        yield* Ref.update(effects, (existing) => [...existing, pendingEffect]);
+      if (run.status === "starting" && run.memoryAdmission === undefined) {
+        yield* addRunStartEffect(command, run, effects);
       }
       return;
     }
@@ -7836,6 +7894,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
       ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
       ...wakeWorkStartedAt(projection.runs, command),
+      ...memoryAdmissionAfter(projection.runs, automaticSourceRunId, now),
     };
     const attempt: OrchestrationV2RunAttempt = {
       id: attemptId,
@@ -8291,13 +8350,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         } satisfies PendingOrchestrationEffectV2,
       ]);
     }
-    const pendingEffect = {
-      id: `effect:${command.commandId}:provider-turn.start:${runId}`,
-      commandId: command.commandId,
-      threadId: command.threadId,
-      request: { type: "provider-turn.start", runId },
-    } satisfies PendingOrchestrationEffectV2;
-    yield* Ref.update(effects, (existing) => [...existing, pendingEffect]);
+    if (run.memoryAdmission === undefined) {
+      yield* addRunStartEffect(command, run, effects);
+    }
   });
 
   const dispatchDelegatedTaskRequest = Effect.fn("orchestrationV2.dispatch.delegatedTaskRequest")(
@@ -11189,15 +11244,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         occurredAt: now,
         payload: { ...state.run, status: "starting" },
       });
-      yield* Ref.update(effects, (existing) => [
-        ...existing,
-        {
-          id: `effect:${command.commandId}:provider-turn.start:${state.run.id}`,
-          commandId: command.commandId,
-          threadId: command.threadId,
-          request: { type: "provider-turn.start", runId: state.run.id },
-        } satisfies PendingOrchestrationEffectV2,
-      ]);
+      // A run waiting for memory keeps its ready workspace and starts once its turn comes.
+      if (!orchestrationV2RunAwaitsMemory(state.run)) {
+        yield* addRunStartEffect(command, { id: state.run.id, status: "starting" }, effects);
+      }
     },
   );
 
@@ -11309,6 +11359,122 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return turnItems.some((item) => item.id === noticeId);
   };
 
+  /** Starts a run from where it stands: its workspace preparation, or its provider turn. */
+  const addRunStartEffect = (
+    command: { readonly commandId: CommandId; readonly threadId: ThreadId },
+    run: Pick<OrchestrationV2Run, "id" | "status">,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) => {
+    const request =
+      run.status === "preparing"
+        ? ({ type: "workspace.prepare", runId: run.id } as const)
+        : ({ type: "provider-turn.start", runId: run.id } as const);
+    return Ref.update(effects, (existing) => [
+      ...existing,
+      {
+        id: `effect:${command.commandId}:${request.type}:${run.id}`,
+        commandId: command.commandId,
+        threadId: command.threadId,
+        request,
+      } satisfies PendingOrchestrationEffectV2,
+    ]);
+  };
+
+  /** An automatic start's turn has come: it starts now, and stays marked as admitted until it runs. */
+  const startMemoryHeldRun = Effect.fn("Orchestrator.startMemoryHeldRun")(function* (
+    command: Extract<
+      OrchestrationV2ServerCommand,
+      { readonly type: "run.memory-admit" | "message.dispatch" }
+    >,
+    run: OrchestrationV2Run,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const now = yield* DateTime.now;
+    const admitted: OrchestrationV2Run = {
+      ...run,
+      memoryAdmission: { waitingSince: run.memoryAdmission?.waitingSince ?? now, admittedAt: now },
+    };
+    yield* emit(
+      events,
+      command,
+    )<RunUpdatedEvent>({
+      type: "run.updated",
+      threadId: command.threadId,
+      runId: run.id,
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: now,
+      payload: admitted,
+    });
+    yield* addRunStartEffect(command, admitted, effects);
+  });
+
+  const dispatchRunMemoryAdmit = Effect.fn("Orchestrator.dispatchRunMemoryAdmit")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "run.memory-admit" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const { runs } = yield* loadProjectionForCommand(command, ["runs"], {
+      runIds: [command.runId],
+    });
+    const run = runs.find((candidate) => candidate.id === command.runId);
+    // A person's message or Stop may have got to it first.
+    if (run === undefined || !orchestrationV2RunAwaitsMemory(run)) return;
+    yield* startMemoryHeldRun(command, run, events, effects);
+  });
+
+  const dispatchRunMemoryWait = Effect.fn("Orchestrator.dispatchRunMemoryWait")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "run.memory-wait" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* loadProjectionForCommand(command, ["runs", "turnItems"], {
+      runIds: [command.runId],
+      turnItemRunIds: [command.runId],
+      turnItemTypes: ["system_notice"],
+    });
+    const run = projection.runs.find((candidate) => candidate.id === command.runId);
+    if (run === undefined || run.rootNodeId === null || !orchestrationV2RunAwaitsMemory(run))
+      return;
+    // One notice per wait: the run's latest notice already says it.
+    const latestNotice = projection.turnItems
+      .filter((item) => item.runId === run.id)
+      .reduce<OrchestrationV2TurnItem | undefined>(
+        (latest, item) => (latest === undefined || item.ordinal > latest.ordinal ? item : latest),
+        undefined,
+      );
+    if (latestNotice !== undefined && isMemoryWaitNoticeId(latestNotice.id)) return;
+    const now = yield* DateTime.now;
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "turn-item.updated",
+      threadId: command.threadId,
+      runId: run.id,
+      nodeId: run.rootNodeId,
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: now,
+      payload: {
+        id: memoryWaitNoticeId(run.id, now),
+        type: "system_notice",
+        threadId: command.threadId,
+        runId: run.id,
+        nodeId: run.rootNodeId,
+        providerThreadId: run.providerThreadId,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: yield* nextTurnItemOrdinal(projection),
+        status: "completed",
+        title: "Waiting for memory",
+        message: `This automatic start is waiting for free memory: ${command.shortage}. It starts by itself once there is room, one chat at a time. Send a message to start it now.`,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+      },
+    });
+  });
+
   // The provider never saw the message, so the run itself starts again: same message, model and
   // workspace (prepared again if that never finished), and the person's timeline gains no copy of
   // their message. Returns why it cannot, changing nothing then.
@@ -11321,11 +11487,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       readonly rootNode: OrchestrationV2ExecutionNode;
       readonly status: "preparing" | "starting";
       readonly at: DateTime.Utc;
+      // Only a start a person makes, or one asked for by hand, skips the memory admission.
+      readonly waitsForMemory: boolean;
     },
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
-    const { run, attempt, rootNode, status } = rerun;
+    const { run, attempt, rootNode, status, waitsForMemory } = rerun;
     const emitEvent = emit(events, command);
     const scope = {
       threadId: command.threadId,
@@ -11344,34 +11512,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       type: "node.updated",
       payload: { ...rootNode, status: "pending", startedAt: null, completedAt: null },
     });
+    const rerunRun: OrchestrationV2Run = {
+      ...(waitsForMemory ? waitingForMemoryAgain(run, rerun.at) : withoutMemoryAdmission(run)),
+      status,
+      queuePosition: null,
+      startedAt: null,
+      completedAt: null,
+    };
     yield* emitEvent<RunUpdatedEvent>({
       ...scope,
       type: "run.updated",
-      payload: { ...run, status, queuePosition: null, startedAt: null, completedAt: null },
+      payload: rerunRun,
       reopensTerminalRun: true,
     });
-    const request =
-      status === "preparing"
-        ? ({ type: "workspace.prepare", runId: run.id } as const)
-        : ({ type: "provider-turn.start", runId: run.id } as const);
-    yield* Ref.update(effects, (existing) => [
-      ...existing,
-      {
-        id: `effect:${command.commandId}:${request.type}:${run.id}`,
-        commandId: command.commandId,
-        threadId: command.threadId,
-        request,
-      } satisfies PendingOrchestrationEffectV2,
-    ]);
+    if (!waitsForMemory) yield* addRunStartEffect(command, rerunRun, effects);
   });
 
   const reviveRestartCutRun = Effect.fn("Orchestrator.reviveRestartCutRun")(function* (
     command: RevivingCommand,
     projection: RerunProjection,
-    run: OrchestrationV2Run,
+    revival: { readonly run: OrchestrationV2Run; readonly waitsForMemory: boolean },
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
+    const { run, waitsForMemory } = revival;
     const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
     const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
     const runItems = projection.turnItems.filter((item) => item.runId === run.id);
@@ -11464,7 +11628,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     yield* rerunFromStart(
       command,
-      { run, attempt, rootNode, status: prepare ? "preparing" : "starting", at: now },
+      {
+        run,
+        attempt,
+        rootNode,
+        status: prepare ? "preparing" : "starting",
+        at: now,
+        waitsForMemory,
+      },
       events,
       effects,
     );
@@ -11474,10 +11645,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   /** Before later work starts, the latest run goes again if a restart kept its message back. */
   const reviveLatestRestartCutRun = Effect.fn("Orchestrator.reviveLatestRestartCutRun")(function* (
     command: RevivingCommand,
-    runs: ReadonlyArray<OrchestrationV2Run>,
+    latest: { readonly runs: ReadonlyArray<OrchestrationV2Run>; readonly waitsForMemory: boolean },
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
+    const { runs, waitsForMemory } = latest;
     // Cancelled runs nothing has run after since; a removed queued message is one too.
     const candidates = runs.filter(
       (run) => run.status === "cancelled" && !supersededRun(run, runs),
@@ -11499,7 +11671,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
     return (
       cut !== undefined &&
-      (yield* reviveRestartCutRun(command, projection, cut, events, effects)) === undefined
+      (yield* reviveRestartCutRun(
+        command,
+        projection,
+        { run: cut, waitsForMemory },
+        events,
+        effects,
+      )) === undefined
     );
   });
 
@@ -11522,7 +11700,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "The thread was snoozed.",
         });
       }
-      const declined = yield* reviveRestartCutRun(command, projection, run, events, effects);
+      const declined = yield* reviveRestartCutRun(
+        command,
+        projection,
+        { run, waitsForMemory: command.automatic === true },
+        events,
+        effects,
+      );
       if (declined !== undefined) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -11601,7 +11785,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
       yield* rerunFromStart(
         command,
-        { run, attempt, rootNode, status: "starting", at: now },
+        {
+          run,
+          attempt,
+          rootNode,
+          status: "starting",
+          at: now,
+          waitsForMemory: command.automatic === true,
+        },
         events,
         effects,
       );
@@ -11708,7 +11899,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     yield* emitEvent<RunUpdatedEvent>({
       ...scope,
       type: "run.updated",
-      payload: { ...state.run, status: "preparing", completedAt: null },
+      payload: {
+        ...(command.automatic === true
+          ? waitingForMemoryAgain(state.run, now)
+          : withoutMemoryAdmission(state.run)),
+        status: "preparing",
+        completedAt: null,
+      },
       reopensTerminalRun: true,
     });
     yield* releaseFailureHolds(command, projection.runs, now, events);
@@ -14534,6 +14731,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "provider-session.detach-idle":
         yield* dispatchProviderSessionDetach(command, events, effects);
         break;
+      case "run.memory-admit":
+        yield* dispatchRunMemoryAdmit(command, events, effects);
+        break;
+      case "run.memory-wait":
+        yield* dispatchRunMemoryWait(command, events);
+        break;
       case "thread.project.adopt-folder":
         yield* dispatchThreadProjectAdoptFolder(command, events);
         break;
@@ -14711,7 +14914,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
         const now = yield* DateTime.now;
         const queued = projection.runs.filter((run) => run.status === "queued");
-        const revived = yield* reviveLatestRestartCutRun(command, projection.runs, events, effects);
+        // Resuming the queue or Send now is a start asked for by hand.
+        const revived = yield* reviveLatestRestartCutRun(
+          command,
+          { runs: projection.runs, waitsForMemory: false },
+          events,
+          effects,
+        );
         // The revived message goes first; the one Send now picked still goes right after it.
         const sendNowOrder =
           revived && selectedRun !== undefined
@@ -14926,6 +15135,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           // Closing a share again, or after it ended, is not an error.
           command.type === "thread.guest-share.close" ||
           command.type === "provider-session.detach-idle" ||
+          // A person's message or Stop got to the waiting run first.
+          command.type === "run.memory-admit" ||
+          command.type === "run.memory-wait" ||
           (command.type === "thread.delete" && command.onlyIfUnused === true),
         (_planned) =>
           new OrchestratorDispatchError({

@@ -1392,6 +1392,124 @@ it.effect("leaves a stopped failed preparation to the person", () => {
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("an admitted automatic retry prepares while its failed attempt still holds the run", () =>
+  Effect.gen(function* () {
+    const firstFetchEntered = yield* Deferred.make<void>();
+    let fetches = 0;
+    const harness = makeHarness({
+      // The failed attempt has reported its failure but has not let go of the run yet.
+      fetchWorktreeBaseCommit: () =>
+        fetches++ === 0
+          ? Deferred.succeed(firstFetchEntered, undefined).pipe(Effect.andThen(Effect.never))
+          : Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" }),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "command:launch:admitted-retry",
+          thread: "thread:launch:admitted-retry",
+          message: "Start from origin",
+          workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
+        }),
+      );
+      yield* Deferred.await(firstFetchEntered);
+      const threadId = launched.threadId;
+      const runId = launched.projection.runs[0]!.id;
+      yield* threads.dispatch({
+        type: "prepared-run.fail",
+        commandId: CommandId.make("command:launch:admitted-retry:fail"),
+        threadId,
+        runId,
+        failure: {
+          class: "transport_error",
+          message: "Git could not reach the remote.",
+          code: null,
+          retryable: true,
+        },
+      });
+      yield* launches.retryPreparation({
+        commandId: CommandId.make("command:launch:admitted-retry:automatic"),
+        threadId,
+        runId,
+        automatic: true,
+      });
+      const admit = CommandId.make("command:launch:admitted-retry:admit");
+      yield* threads.dispatch({ type: "run.memory-admit", commandId: admit, threadId, runId });
+      // The admission's workspace.prepare effect, as the effect worker runs it.
+      yield* launches.prepareRun({ commandId: admit, threadId, runId });
+
+      yield* threads.streamStoredEventsFrom({ threadId }).pipe(
+        Stream.filter((stored) => stored.commandId === `${admit}:release`),
+        Stream.runHead,
+      );
+      assert.equal(fetches, 2);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("a launch sent again after an automatic retry leaves the run to its admission", () =>
+  Effect.gen(function* () {
+    const fetchEntered = yield* Deferred.make<void>();
+    const allowFetch = yield* Deferred.make<void>();
+    let fetches = 0;
+    const harness = makeHarness({
+      fetchWorktreeBaseCommit: () =>
+        fetches++ === 0
+          ? Effect.fail(
+              new GitCommandError({
+                operation: "GitVcsDriver.fetchRemote",
+                command: "git",
+                cwd: project.workspaceRoot,
+                detail: "Git could not reach the remote.",
+                exitCode: 128,
+              }),
+            )
+          : Deferred.succeed(fetchEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(allowFetch)),
+              Effect.as({ commitSha: "remote-main-sha", remoteRefName: "origin/main" }),
+            ),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const input = launchInput({
+        command: "command:launch:replayed-retry",
+        thread: "thread:launch:replayed-retry",
+        message: "Start from origin",
+        workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
+      });
+      const launched = yield* launches.launch(input);
+      const threadId = launched.threadId;
+      const runId = launched.projection.runs[0]!.id;
+      yield* preparationSettled(threadId);
+      yield* launches.retryPreparation({
+        commandId: CommandId.make("command:launch:replayed-retry:automatic"),
+        threadId,
+        runId,
+        automatic: true,
+      });
+      const admit = CommandId.make("command:launch:replayed-retry:admit");
+      yield* threads.dispatch({ type: "run.memory-admit", commandId: admit, threadId, runId });
+      const afterSequence = yield* threads.getThreadEventSequence(threadId);
+      // The client sends the launch again before the admission's workspace.prepare effect runs.
+      yield* launches.launch(input);
+      yield* launches.prepareRun({ commandId: admit, threadId, runId });
+      yield* Deferred.await(fetchEntered);
+      yield* Deferred.succeed(allowFetch, undefined);
+
+      const released = yield* threads.streamStoredEventsFrom({ threadId, afterSequence }).pipe(
+        Stream.filter((stored) => stored.commandId?.endsWith(":release") === true),
+        Stream.runHead,
+      );
+      // Only the admission prepares the run, so the first release is its own.
+      assert.equal(Option.getOrUndefined(released)?.commandId, `${admit}:release`);
+      assert.equal(fetches, 2);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 it.effect("does not release a prepared run after the project disables its provider", () => {
   return Effect.gen(function* () {
     const setupEntered = yield* Deferred.make<void>();

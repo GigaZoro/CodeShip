@@ -365,6 +365,13 @@ A task an agent delegates is refused, so the agent does the work in its own
 chat, and an emulator or simulator an agent asks to start stays off. Chats you
 start, **Run now** and webhook runs always start.
 
+Chats that continue by themselves after a restart, a network outage or a usage
+limit resume one at a time, each once the one before it has reached its agent,
+the chat that stopped first first, and none resumes while memory is short. A
+waiting chat says **Waiting for memory** and keeps its place through another
+restart. A message you send in a waiting chat starts it at once; one an agent
+sends waits behind it.
+
 - On macOS, memory is short once compressed memory takes 35% of it, or when
   macOS reports memory pressure. On Linux and Windows, memory is short once
   less than 2 GiB is available.

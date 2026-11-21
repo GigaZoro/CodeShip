@@ -21,6 +21,8 @@ import * as ServerConfig from "../../config.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
+import * as MemoryAdmission from "../../resourceTelemetry/MemoryAdmission.ts";
+import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as ThreadManagementService from "../ThreadManagementService.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
@@ -38,6 +40,7 @@ import * as EffectWorker from "../EffectWorker.ts";
 import * as EventSink from "../EventSink.ts";
 import * as EventStore from "../EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as MemoryAdmissionQueue from "../MemoryAdmissionQueue.ts";
 import * as Orchestrator from "../Orchestrator.ts";
 import * as ProjectionStore from "../ProjectionStore.ts";
 import * as ProjectStore from "../ProjectStore.ts";
@@ -582,7 +585,7 @@ export function layerWithRegistry<Error>(
           ),
         )
       : Layer.empty;
-  return Layer.effect(
+  const layerOrchestrator = Layer.effect(
     Orchestrator.OrchestratorV2,
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -593,4 +596,10 @@ export function layerWithRegistry<Error>(
       return orchestrator;
     }),
   ).pipe(Layer.provideMerge(layerReplayRuntime), Layer.provide(layerStartupRecovery));
+  // Held automatic starts go as they do in production, with memory always to spare here, also
+  // when the test drives the effect worker itself.
+  return MemoryAdmissionQueue.layer.pipe(
+    Layer.provide(Layer.merge(Scheduler.layer, MemoryAdmission.layerTest())),
+    Layer.provideMerge(layerOrchestrator),
+  );
 }

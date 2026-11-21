@@ -373,6 +373,59 @@ it.effect("SQL queue readiness skips held runs without bypassing active work", (
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("reads the memory admission queue through the recovery index", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const sql = yield* SqlClient.SqlClient;
+    const threadId = yield* addRolledBackRecoveryCandidate("memory-queue");
+    const run = (yield* store.getThreadProjection(threadId)).runs[0]!;
+    const now = yield* DateTime.now;
+    const waiting = {
+      ...run,
+      status: "preparing" as const,
+      completedAt: null,
+      memoryAdmission: { waitingSince: now },
+    };
+    const admitted = {
+      ...run,
+      id: RunId.make("run:memory-queue:admitted"),
+      ordinal: 2,
+      status: "starting" as const,
+      completedAt: null,
+      memoryAdmission: { waitingSince: now, admittedAt: now },
+    };
+    for (const payload of [waiting, admitted]) {
+      yield* store.apply({
+        id: EventId.make(`memory-queue:${payload.id}`),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload,
+      });
+    }
+    const { statements, tracer } = traceSqlStatements();
+
+    const queue = yield* store.getMemoryAdmissionQueue().pipe(Effect.withTracer(tracer));
+
+    assert.deepEqual(
+      queue.waiting.map((queued) => queued.id),
+      [waiting.id],
+    );
+    assert.isTrue(queue.admittedStarting);
+    const queueStatements = statements.filter((statement) => statement.includes("memoryAdmission"));
+    assert.lengthOf(queueStatements, 2);
+    for (const statement of queueStatements) {
+      const plan = yield* sql.unsafe<{ readonly detail: string }>(
+        `EXPLAIN QUERY PLAN ${statement}`,
+      );
+      assert.isTrue(
+        plan.some((row) => row.detail.includes("orchestration_v2_projection_runs_recovery_idx")),
+        plan.map((row) => row.detail).join("; "),
+      );
+    }
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("SQL shells flag only an active turn blocked solely on T3 thread waits", () =>
   Effect.gen(function* () {
     const store = yield* ProjectionStore.ProjectionStoreV2;

@@ -773,6 +773,16 @@ export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
 export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
   typeof OrchestrationV2ThreadLaunchWorkspaceStrategy.Type;
 
+/**
+ * An automatic start (a restart, network or usage-limit continuation) waits here until memory
+ * leaves room, and starts one at a time: `admittedAt` is set when its turn comes.
+ */
+export const OrchestrationV2RunMemoryAdmission = Schema.Struct({
+  waitingSince: Schema.DateTimeUtc,
+  admittedAt: Schema.optional(Schema.DateTimeUtc),
+});
+export type OrchestrationV2RunMemoryAdmission = typeof OrchestrationV2RunMemoryAdmission.Type;
+
 export const ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE = "workspace_preparation_failed";
 /** The agent failed to start before it received the message, so the run can go again. */
 export const ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE = "prompt_not_sent";
@@ -815,8 +825,20 @@ export const OrchestrationV2Run = Schema.Struct({
   ),
   delegatedCompletion: Schema.optional(OrchestrationV2DelegatedCompletionCohort),
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+  memoryAdmission: Schema.optional(OrchestrationV2RunMemoryAdmission),
 });
 export type OrchestrationV2Run = typeof OrchestrationV2Run.Type;
+
+/** An automatic start still waiting for its turn to start; nothing has started its work yet. */
+export function orchestrationV2RunAwaitsMemory(
+  run: Pick<OrchestrationV2Run, "status" | "memoryAdmission">,
+): boolean {
+  return (
+    (run.status === "preparing" || run.status === "starting") &&
+    run.memoryAdmission !== undefined &&
+    run.memoryAdmission.admittedAt === undefined
+  );
+}
 
 export function orchestrationV2RunWorkStartedAt(
   run: Pick<OrchestrationV2Run, "workStartedAt" | "startedAt" | "requestedAt">,
@@ -2543,6 +2565,12 @@ export const OrchestrationV2RunJson = OrchestrationV2Run.mapFields((fields) => (
   startedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   completedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   workStartedAt: Schema.optional(Schema.DateTimeUtcFromString),
+  memoryAdmission: Schema.optional(
+    OrchestrationV2RunMemoryAdmission.mapFields(() => ({
+      waitingSince: Schema.DateTimeUtcFromString,
+      admittedAt: Schema.optional(Schema.DateTimeUtcFromString),
+    })),
+  ),
 }));
 export type OrchestrationV2RunJson = typeof OrchestrationV2RunJson.Type;
 
@@ -3932,6 +3960,21 @@ const OrchestrationV2InternalCommand = Schema.Union([
     providerThreadId: ProviderThreadId,
     providerSessionId: ProviderSessionId,
     reason: Schema.String,
+  }),
+  /** Starts an automatic start that waits for memory; nothing when it no longer waits. */
+  Schema.Struct({
+    type: Schema.Literal("run.memory-admit"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+  }),
+  /** Tells the thread its automatic start waits for memory, once per wait. */
+  Schema.Struct({
+    type: Schema.Literal("run.memory-wait"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    shortage: Schema.String,
   }),
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;

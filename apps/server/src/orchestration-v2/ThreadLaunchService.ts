@@ -14,6 +14,7 @@ import {
   type OrchestrationV2LinkOrigin,
   type OrchestrationV2ProviderThreadNativeMetadata,
   type OrchestrationV2ThreadProjection,
+  orchestrationV2RunAwaitsMemory,
   type ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderInteractionMode,
@@ -1067,9 +1068,11 @@ const make = Effect.gen(function* () {
         const projection = yield* threads
           .getThreadProjection(threadId)
           .pipe(Effect.mapError(mapError(input, "create-thread", threadId)));
+        const preparingRun =
+          runId === null ? undefined : projection.runs.find((run) => run.id === runId);
+        // A run an automatic retry gave to the memory admission prepares once it is admitted.
         const runIsPreparing =
-          runId !== null &&
-          projection.runs.some((run) => run.id === runId && run.status === "preparing");
+          preparingRun?.status === "preparing" && preparingRun.memoryAdmission === undefined;
         const shouldSchedule = runId === null ? Option.isNone(launchReceipt) : runIsPreparing;
         const boundWorktreePath = projection.thread.worktreePath;
         const preparationStrategy: ThreadLaunchWorkspaceStrategy =
@@ -1082,8 +1085,6 @@ const make = Effect.gen(function* () {
                 branch: workspaceStrategy.branch,
               }
             : workspaceStrategy;
-        const preparingRun =
-          runId === null ? undefined : projection.runs.find((run) => run.id === runId);
         if (shouldSchedule && preparingRun?.workspacePreparation !== undefined) {
           // The run's own preparation, so a replay reuses a checkout an earlier attempt bound.
           yield* startRunPreparation({
@@ -1134,15 +1135,21 @@ const make = Effect.gen(function* () {
 
   const startRunPreparation = Effect.fn("ThreadLaunchService.startRunPreparation")(function* (
     input: ThreadLaunchPreparationInput,
-    takeOver: boolean = false,
+    takesOver: (run: OrchestrationV2ThreadProjection["runs"][number]) => boolean = () => false,
   ) {
     const { thread, runs } = yield* threads.getThreadRecords(input.threadId, ["runs"], {
       runIds: [input.runId],
     });
     const run = runs.find((candidate) => candidate.id === input.runId);
     const workspacePreparation = run?.workspacePreparation;
-    if (run?.status !== "preparing" || workspacePreparation === undefined) return;
-    if (!(yield* reservePreparation(input.commandId, run.id, takeOver))) return;
+    // A run waiting for memory prepares once its turn comes, through its workspace.prepare effect.
+    if (
+      run?.status !== "preparing" ||
+      workspacePreparation === undefined ||
+      orchestrationV2RunAwaitsMemory(run)
+    )
+      return;
+    if (!(yield* reservePreparation(input.commandId, run.id, takesOver(run)))) return;
     yield* scheduleRunPreparation(input, thread, run, workspacePreparation).pipe(
       Effect.onError(() => releasePreparation(input.commandId, run.id)),
     );
@@ -1150,17 +1157,19 @@ const make = Effect.gen(function* () {
 
   const prepareRunOrFail = Effect.fn("ThreadLaunchService.prepareRunOrFail")(function* (
     input: ThreadLaunchPreparationInput,
-    takeOver: boolean,
+    takesOver: (run: OrchestrationV2ThreadProjection["runs"][number]) => boolean,
   ) {
-    const scheduled = yield* startRunPreparation(input, takeOver).pipe(Effect.exit);
+    const scheduled = yield* startRunPreparation(input, takesOver).pipe(Effect.exit);
     if (Exit.isFailure(scheduled)) {
       yield* failPreparedRun(input, input.threadId, input.runId, Cause.squash(scheduled.cause));
     }
   });
 
+  // An admitted run's start prepares it like a retry: the automatic retry that held it came
+  // after its earlier attempt failed, and that attempt may not have released yet.
   const prepareRun: ThreadLaunchService["Service"]["prepareRun"] = Effect.fn(
     "ThreadLaunchService.prepareRun",
-  )((input) => prepareRunOrFail(input, false));
+  )((input) => prepareRunOrFail(input, (run) => run.memoryAdmission?.admittedAt !== undefined));
 
   const retryPreparation: ThreadLaunchService["Service"]["retryPreparation"] = Effect.fn(
     "ThreadLaunchService.retryPreparation",
@@ -1172,7 +1181,8 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       runId: input.runId,
     });
-    yield* prepareRunOrFail(input, true);
+    // An automatic retry waits for memory; its admission starts the preparation.
+    if (input.automatic !== true) yield* prepareRunOrFail(input, () => true);
     return dispatched;
   });
 
