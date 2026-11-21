@@ -231,7 +231,11 @@ it("keeps two slow hourly scan failures visible until a later response", async (
   };
   function Scan({ seconds }: { readonly seconds: number }) {
     const usage = useUsage(time(seconds));
-    const { coverage } = usageNotices(usage.selectedEnvironments, usage.shown?.environments ?? []);
+    const { coverage } = usageNotices(
+      usage.selectedEnvironments,
+      usage.shown?.environments ?? [],
+      usage.failures,
+    );
     return (
       <UsageGapsNotice notice={coverage} retrying={false} onRetry={() => void usage.refresh()} />
     );
@@ -254,6 +258,83 @@ it("keeps two slow hourly scan failures visible until a later response", async (
   requests.set([...requests.keys()][2]!, [{ ...answered, summary }]);
   await screen.rerender(<Scan seconds={240} />);
   await expect.element(screen.getByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+});
+
+function ScopedUsage({ window }: { readonly window: UsageSummaryInput }) {
+  const usage = useUsage(window);
+  const { coverage } = usageNotices(
+    usage.selectedEnvironments,
+    usage.shown?.environments ?? [],
+    usage.failures,
+  );
+  return (
+    <>
+      {usage.shown?.hasAnswer ? <p>{usage.shown.merged.totalTokens} tokens</p> : null}
+      <UsageGapsNotice notice={coverage} retrying={false} onRetry={() => void usage.refresh()} />
+    </>
+  );
+}
+
+it("keeps Laptop's figures on web after Desk loses access", async () => {
+  const { window, answered, summary } = setup();
+  const laptop = {
+    ...answered,
+    environmentId: EnvironmentId.make("laptop"),
+    label: "Laptop",
+    summary: {
+      ...summary,
+      sources: summary.sources.map((source) => ({
+        ...source,
+        fingerprint: { ...source.fingerprint, hostId: "laptop" },
+      })),
+      buckets: summary.buckets.map((bucket) => ({
+        ...bucket,
+        totals: { ...bucket.totals, uncachedInputTokens: 200 },
+      })),
+    },
+  };
+  state.environments = [answered, laptop];
+  await using screen = await render(<ScopedUsage window={window} />);
+  await expect.element(screen.getByText("300 tokens")).toBeVisible();
+  state.environments = [
+    { ...answered, canReadDiagnostics: false, summary: null, error: "Access revoked" },
+    { ...laptop, summary: null, isPending: true },
+  ];
+  await screen.rerender(<ScopedUsage window={window} />);
+  await expect.element(screen.getByText("200 tokens")).toBeVisible();
+  await expect.element(screen.getByText("300 tokens")).not.toBeInTheDocument();
+});
+
+it("reports only the new period's failures on web while retaining the previous figures", async () => {
+  const { answered } = setup();
+  const date = new Date("2026-11-21T18:56:00Z");
+  const week = makeWindow(7, date);
+  const month = makeWindow(30, date);
+  const desk = { ...answered, label: "Desk", summary: null, error: "Weekly scan failed" };
+  const laptop = { ...answered, environmentId: EnvironmentId.make("laptop"), label: "Laptop" };
+  state.environments = [desk, laptop];
+  await using screen = await render(<ScopedUsage window={week} />);
+  await expect.element(screen.getByText(/Weekly scan failed/)).toBeVisible();
+  const pending = [desk, laptop].map((env) => ({
+    ...env,
+    summary: null,
+    error: null,
+    isPending: true,
+  }));
+  state.environments = pending;
+  await screen.rerender(<ScopedUsage window={month} />);
+  await expect.element(screen.getByText("100 tokens")).toBeVisible();
+  await expect.element(screen.getByText(/Weekly scan failed/)).not.toBeInTheDocument();
+  state.environments = [
+    { ...pending[0]!, isPending: false, error: "Monthly scan failed" },
+    pending[1]!,
+  ];
+  await screen.rerender(<ScopedUsage window={month} />);
+  await expect.element(screen.getByText(/Monthly scan failed/)).toBeVisible();
+  state.environments = pending;
+  await screen.rerender(<ScopedUsage window={month} />);
+  await expect.element(screen.getByText(/Monthly scan failed/)).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
 });
 
 it("reads environment grants on a cold Limits visit without requesting a usage summary", async () => {

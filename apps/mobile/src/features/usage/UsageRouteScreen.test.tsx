@@ -95,6 +95,7 @@ vi.mock("../../state/usage", async () => {
       state.readsEnabled.push(options?.enabled);
       return {
         requestedWindow: window,
+        failures: null,
         shown: state.shown,
         showingKept: false,
         environments: state.live,

@@ -6,10 +6,12 @@ import {
   type UsageProviderKind,
   type UsageSummary,
 } from "@t3tools/contracts";
+import { DateTime } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   isKeptUsage,
+  settleUsageScanFailures,
   settleUsageSnapshot,
   usageEnvironmentProgress,
   usageGaps,
@@ -17,6 +19,7 @@ import {
   usageProgress,
   type EnvironmentUsageStatus,
 } from "./usageProgress.ts";
+import { makeWindow } from "@t3tools/shared/usageFormat";
 
 function summary(refreshing: readonly UsageProviderKind[] = []): UsageSummary {
   return {
@@ -126,6 +129,10 @@ describe("settleUsageSnapshot", () => {
       [status("Offline", { summary: null, isConnected: false, canReadDiagnostics: false })],
     ],
     ["mixed", [status("Ready"), status("Failed", { summary: null, error: "Scan failed." })]],
+    [
+      "partially authorized",
+      [status("Ready"), status("Denied", { summary: null, canReadDiagnostics: false })],
+    ],
     ["answered", [status("Ready")]],
   ] as const)("reuses the settled snapshot for %s selections", (_kind, selected) => {
     const window = summary();
@@ -332,7 +339,11 @@ it("reports a live partial failure while keeping same-window figures", () => {
   ];
   const shown = settleUsageSnapshot(previous, window, live, live);
   expect(shown).toBe(previous);
-  const notices = usageNotices(live, shown!.environments).coverage;
+  const notices = usageNotices(
+    live,
+    shown!.environments,
+    settleUsageScanFailures(null, window, live),
+  ).coverage;
   expect(notices?.title).toBe("Some totals may be out of date");
   expect(notices?.gaps.map(({ message }) => message)).toEqual([
     "Laptop: Read failed. Showing its last values.",
@@ -373,7 +384,7 @@ it("uses live compatibility and source notices while keeping saved figures", () 
   const selected = [pending, incompatible];
   const shown = settleUsageSnapshot(prior, window, selected, selected);
   expect(shown).toBe(prior);
-  const notices = usageNotices(selected, shown!.environments);
+  const notices = usageNotices(selected, shown!.environments, null);
   expect(notices.contractMismatches.map(({ environmentId }) => environmentId)).toEqual([
     laptop.environmentId,
   ]);
@@ -388,10 +399,104 @@ it("uses live compatibility and source notices while keeping saved figures", () 
     message: "Cursor fetch failed",
   };
   const duringTrouble = [pending, { ...laptop, summary: { ...window, sources: [source] } }];
-  expect(usageNotices(duringTrouble, shown!.environments).sourceMessages).toEqual([
+  expect(usageNotices(duringTrouble, shown!.environments, null).sourceMessages).toEqual([
     "Cursor fetch failed",
   ]);
   expect(
-    usageNotices(duringTrouble, shown!.environments, new Set(["cursor"])).sourceMessages,
+    usageNotices(duringTrouble, shown!.environments, null, new Set(["cursor"])).sourceMessages,
   ).toEqual([]);
+});
+
+function reading(label: string, tokens: number, provider: UsageProviderKind = "codex") {
+  const rollup = summary();
+  return status(label, {
+    summary: {
+      ...rollup,
+      sources: rollup.sources.map((source) => ({
+        ...source,
+        fingerprint: { ...source.fingerprint, hostId: label, provider },
+      })),
+      buckets: [
+        {
+          day: rollup.sinceDay,
+          provider,
+          model: "model",
+          totals: {
+            uncachedInputTokens: tokens,
+            cachedInputTokens: 0,
+            cacheCreationTokens: 0,
+            outputTokens: 0,
+            reasoningTokens: 0,
+          },
+          costUsd: 0,
+          cacheSavingsUsd: 0,
+          costSource: "unpriced",
+          records: 1,
+          unpricedRecords: 1,
+          sessions: 1,
+        },
+      ],
+    },
+  });
+}
+
+it("re-merges authorized saved figures without mixing hourly requests after another grant is revoked", () => {
+  const tick = makeWindow(1, DateTime.toDate(DateTime.makeUnsafe("2026-09-05T12:00:00Z")), "hour");
+  const next = makeWindow(1, DateTime.toDate(DateTime.makeUnsafe("2026-09-05T12:01:00Z")), "hour");
+  const a = reading("Desk", 100, "cursor");
+  const b = reading("Laptop", 200);
+  const previous = settleUsageSnapshot(null, tick, [a, b], [a, b]);
+  expect(previous?.merged.totalTokens).toBe(300);
+  const revoked = { ...a, canReadDiagnostics: false, summary: null, error: "Access revoked" };
+  const refresh = { ...b, isPending: true, summary: reading("Laptop", 250).summary };
+  const kept = settleUsageSnapshot(previous, next, [revoked, refresh], [revoked, refresh]);
+  expect(kept?.window).toBe(tick);
+  expect(kept?.merged.totalTokens).toBe(200);
+  expect(kept?.providers.map(({ provider }) => provider)).toEqual(["codex"]);
+  const finished = [revoked, { ...refresh, isPending: false }];
+  expect(settleUsageSnapshot(kept, next, finished, finished)?.merged.totalTokens).toBe(250);
+  const nobody = [
+    { ...revoked, isPending: false },
+    { ...refresh, canReadDiagnostics: false, summary: null, isPending: false },
+  ];
+  expect(settleUsageSnapshot(kept, next, nobody, nobody)?.hasAnswer).toBe(false);
+});
+
+it("scopes failures to the requested period even while the previous period is displayed", () => {
+  const date = DateTime.toDate(DateTime.makeUnsafe("2026-09-05T12:00:00Z"));
+  const week = makeWindow(7, date);
+  const month = makeWindow(30, date);
+  const desk = status("Desk", { summary: null, error: "Weekly scan failed" });
+  const laptop = reading("Laptop", 200);
+  const old = [desk, laptop];
+  const previous = settleUsageSnapshot(null, week, old, old)!;
+  const weeklyFailure = settleUsageScanFailures(null, week, old);
+  expect(
+    usageNotices(old, previous.environments, weeklyFailure).coverage?.gaps[0]?.message,
+  ).toContain("Weekly scan failed");
+
+  const pending = old.map((env) => ({ ...env, summary: null, error: null, isPending: true }));
+  const kept = settleUsageSnapshot(previous, month, pending, pending)!;
+  expect(kept).toBe(previous);
+  const empty = settleUsageScanFailures(weeklyFailure, month, pending);
+  expect(usageNotices(pending, kept.environments, empty).coverage).toBeNull();
+
+  const failed = [{ ...pending[0]!, isPending: false, error: "Monthly scan failed" }, pending[1]!];
+  expect(settleUsageSnapshot(kept, month, failed, failed)).toBe(previous);
+  const failure = settleUsageScanFailures(empty, month, failed);
+  const next = settleUsageScanFailures(failure, month, pending);
+  expect(next).toBe(failure);
+  expect(usageNotices(pending, kept.environments, next).coverage?.gaps[0]).toMatchObject({
+    message: "Desk: Monthly scan failed",
+    retryable: true,
+  });
+  const nextMonthTick = makeWindow(
+    30,
+    DateTime.toDate(DateTime.makeUnsafe("2026-09-06T12:00:00Z")),
+  );
+  expect(settleUsageScanFailures(next, nextMonthTick, pending)).toBe(next);
+  const answered = [{ ...desk, error: null, summary: summary() }, pending[1]!];
+  expect(settleUsageScanFailures(next, month, answered).errors.size).toBe(0);
+  const revoked = [{ ...pending[0]!, canReadDiagnostics: false }, pending[1]!];
+  expect(settleUsageScanFailures(next, month, revoked).errors.size).toBe(0);
 });

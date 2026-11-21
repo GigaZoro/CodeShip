@@ -1,6 +1,7 @@
 import {
   AuthDiagnosticsReadScope,
   EnvironmentId,
+  USAGE_CONTRACT_VERSION,
   UsageDay,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
@@ -145,6 +146,7 @@ it("keeps two slow mobile scan errors and Retry visible across later ticks", asy
     const coverage = usageNotices(
       usage.selectedEnvironments,
       usage.shown?.environments ?? [],
+      usage.failures,
     ).coverage;
     return (
       <>
@@ -173,6 +175,125 @@ it("keeps two slow mobile scan errors and Retry visible across later ticks", asy
     expect(requests.size).toBe(index + 2);
     expect(screen.container.textContent).toContain(error);
   }
+});
+
+function statusWithTokens(label: string, tokens: number): EnvironmentUsageStatus {
+  return {
+    ...failedScan(""),
+    label,
+    environmentId: EnvironmentId.make(label.toLowerCase()),
+    error: null,
+    summary: {
+      ...window,
+      contractVersion: USAGE_CONTRACT_VERSION,
+      readAt: "2026-10-23T12:00:00Z",
+      buckets: [
+        {
+          day: window.sinceDay,
+          provider: "codex",
+          model: "test",
+          totals: {
+            uncachedInputTokens: tokens,
+            cachedInputTokens: 0,
+            cacheCreationTokens: 0,
+            outputTokens: 0,
+            reasoningTokens: 0,
+          },
+          costUsd: 0,
+          cacheSavingsUsd: 0,
+          costSource: "unpriced",
+          records: 1,
+          unpricedRecords: 1,
+          sessions: 1,
+        },
+      ],
+      sources: [
+        {
+          fingerprint: {
+            hostId: label,
+            provider: "codex",
+            resolvedHomePath: "/test",
+            volumeId: "test",
+          },
+          status: "ok",
+          scannedFiles: 1,
+          skippedFiles: 0,
+          malformedRecords: 0,
+          distinctSessions: 1,
+          message: null,
+        },
+      ],
+      pricing: { status: "cached", source: "test", fetchedAt: null, knownModels: 0 },
+      scanDurationMs: 0,
+    },
+  };
+}
+
+function ScopedUsage({ period }: { readonly period: UsageSummaryInput }) {
+  const usage = useUsage(period);
+  const { coverage } = usageNotices(
+    usage.selectedEnvironments,
+    usage.shown?.environments ?? [],
+    usage.failures,
+  );
+  return (
+    <>
+      {usage.shown?.hasAnswer ? <output>{usage.shown.merged.totalTokens} tokens</output> : null}
+      {coverage?.gaps.map(({ environment, message }) => (
+        <p key={environment.environmentId}>{message}</p>
+      ))}
+      {coverage?.gaps.some(({ retryable }) => retryable) ? (
+        <button type="button">Retry</button>
+      ) : null}
+    </>
+  );
+}
+
+it("keeps Laptop's figures on mobile after Desk loses access", async () => {
+  await using screen = mountUsageProbe();
+  const desk = statusWithTokens("Desk", 100);
+  const laptop = statusWithTokens("Laptop", 200);
+  state.environments = [desk, laptop];
+  await act(() => screen.root.render(<ScopedUsage period={window} />));
+  expect(screen.container.querySelector("output")?.textContent).toBe("300 tokens");
+  state.environments = [
+    { ...desk, canReadDiagnostics: false, summary: null, error: "Access revoked" },
+    { ...laptop, summary: null, isPending: true },
+  ];
+  await act(() => screen.root.render(<ScopedUsage period={window} />));
+  expect(screen.container.querySelector("output")?.textContent).toBe("200 tokens");
+});
+
+it("reports only the new period's failures on mobile while retaining the previous figures", async () => {
+  await using screen = mountUsageProbe();
+  const date = new Date("2026-10-23T12:00:00Z");
+  const week = makeWindow(7, date);
+  const month = makeWindow(30, date);
+  const desk = failedScan("Weekly scan failed");
+  const laptop = statusWithTokens("Laptop", 200);
+  state.environments = [desk, laptop];
+  await act(() => screen.root.render(<ScopedUsage period={week} />));
+  expect(screen.container.textContent).toContain("Weekly scan failed");
+  const pending = [desk, laptop].map((env) => ({
+    ...env,
+    summary: null,
+    error: null,
+    isPending: true,
+  }));
+  state.environments = pending;
+  await act(() => screen.root.render(<ScopedUsage period={month} />));
+  expect(screen.container.textContent).toContain("200 tokens");
+  expect(screen.container.textContent).not.toContain("Weekly scan failed");
+  state.environments = [
+    { ...pending[0]!, isPending: false, error: "Monthly scan failed" },
+    pending[1]!,
+  ];
+  await act(() => screen.root.render(<ScopedUsage period={month} />));
+  expect(screen.container.textContent).toContain("Monthly scan failed");
+  state.environments = pending;
+  await act(() => screen.root.render(<ScopedUsage period={month} />));
+  expect(screen.container.textContent).toContain("Monthly scan failed");
+  expect(screen.container.querySelector("button")?.textContent).toBe("Retry");
 });
 
 it("keeps mobile Limits connected without starting a cold transcript scan", async () => {

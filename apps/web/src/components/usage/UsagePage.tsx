@@ -27,7 +27,7 @@ import {
   mergeAnsweredUsage,
   retainedUsageLabel,
   refreshingUsageProviders,
-  canRetainUsageSnapshot,
+  retainUsageSnapshot,
   usageWindowKey,
   usageNotices,
   usageProgress,
@@ -178,7 +178,8 @@ function UsageModelDialogHost({
     readonly model: MergedUsage["models"][number];
     readonly chartWindow: typeof dialogProps.chartWindow;
   } | null>(null);
-  const revoked = last !== null && !canRetainUsageSnapshot(last.snapshot, liveEnvironments);
+  const revoked =
+    last !== null && retainUsageSnapshot(last.snapshot, liveEnvironments) !== last.snapshot;
   const closeRevoked = revoked && currentModel === undefined;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes the shared model selection when the open reading loses diagnostic access
   useEffect(() => {
@@ -258,11 +259,18 @@ export function UsagePage() {
   const now = useUsageNow(advanceWindow);
   const window = makeWindow(windowDays, new Date(now), resolution);
   const chartType = preferences.chartType ?? "area";
-  const { requestedWindow, environments, selectedEnvironments, shown, showingKept, refresh } =
-    useUsage(window, selectedEnvironmentIds, preferences.hiddenProviders, {
-      advanceWindow,
-      enabled: !showingLimits,
-    });
+  const {
+    requestedWindow,
+    failures,
+    environments,
+    selectedEnvironments,
+    shown,
+    showingKept,
+    refresh,
+  } = useUsage(window, selectedEnvironmentIds, preferences.hiddenProviders, {
+    advanceWindow,
+    enabled: !showingLimits,
+  });
   const merged = shown?.merged ?? EMPTY_USAGE;
   const shownEnvironments = shown?.environments ?? selectedEnvironments;
   const shownWindow = shown?.window ?? window;
@@ -287,6 +295,7 @@ export function UsagePage() {
   const { coverage, sourceMessages } = usageNotices(
     selectedEnvironments,
     shownEnvironments,
+    failures,
     hiddenProviders,
   );
   const shownHiddenProviders = shown?.hiddenProviders ?? hiddenProviders;
@@ -653,7 +662,7 @@ export function UsagePage() {
                 </span>
                 <UsageGapsNotice
                   notice={coverage}
-                  retrying={refreshingUsage || showingKept}
+                  retrying={refreshingUsage}
                   onRetry={refreshWindow}
                 />
               </>

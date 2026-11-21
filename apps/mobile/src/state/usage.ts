@@ -23,9 +23,11 @@ import {
   equalUsageStatuses,
   isKeptUsage,
   nextUsageRequest,
+  settleUsageScanFailures,
   settleUsageSnapshot,
   usageWindowKey,
   type EnvironmentUsageStatus,
+  type UsageScanFailures,
   type UsageSnapshot,
 } from "@t3tools/client-runtime/state/usage-progress";
 
@@ -44,18 +46,20 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
         session: AsyncResult.getOrElse(sessionResult, () => null),
         hasSessionError: sessionResult._tag === "Failure",
       });
+      const modelFilter =
+        input === null ? undefined : get(serverEnvironment.usageModelFilterAtom(environmentId));
       if (input === null || !access.canReadDiagnostics) {
         statuses.push({
           environmentId,
           label: presentation.entry.target.label,
           isConnected: presentation.connection.phase === "connected",
           ...access,
+          modelFilter,
           summary: null,
           needsCursorKeychainAccess: false,
         });
         continue;
       }
-      const modelFilter = get(serverEnvironment.usageModelFilterAtom(environmentId));
       const result = get(
         serverEnvironment.usageSummary({
           environmentId,
@@ -105,6 +109,11 @@ export function useUsage(
     selectedEnvironmentIds === null
       ? environments
       : environments.filter(({ environmentId }) => selectedEnvironmentIds.has(environmentId));
+  const [savedFailures, setSavedFailures] = useState<UsageScanFailures | null>(null);
+  const failures = enabled
+    ? settleUsageScanFailures(savedFailures, requestedWindow, selectedEnvironments)
+    : null;
+  if (failures !== savedFailures) setSavedFailures(failures);
   const [previous, setPrevious] = useState<UsageSnapshot | null>(null);
   const shown = enabled
     ? settleUsageSnapshot(previous, requestedWindow, environments, selectedEnvironments)
@@ -132,6 +141,7 @@ export function useUsage(
 
   return {
     requestedWindow,
+    failures,
     environments,
     selectedEnvironments,
     shown,

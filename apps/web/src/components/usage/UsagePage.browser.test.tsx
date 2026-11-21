@@ -7,6 +7,7 @@ import {
 import type {
   EnvironmentUsageStatus,
   UsageSnapshot,
+  UsageScanFailures,
 } from "@t3tools/client-runtime/state/usage-progress";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -29,6 +30,7 @@ const state = vi.hoisted(() => ({
   totalTokens: 100,
   costSource: "unpriced" as "unpriced" | "modelPriced" | "providerReported",
   previous: null as UsageSnapshot | null,
+  failures: null as UsageScanFailures | null,
   revision: 0,
   listeners: new Set<() => void>(),
 }));
@@ -57,8 +59,13 @@ vi.mock("../../state/usage", async () => {
     };
   };
   const revision = () => state.revision;
-  const { isKeptUsage, mergeAnsweredUsage, settleUsageSnapshot, usageWindowKey } =
-    await import("@t3tools/client-runtime/state/usage-progress");
+  const {
+    isKeptUsage,
+    mergeAnsweredUsage,
+    settleUsageScanFailures,
+    settleUsageSnapshot,
+    usageWindowKey,
+  } = await import("@t3tools/client-runtime/state/usage-progress");
   return {
     mergeAnsweredUsage,
     useUsage: (window: UsageSummaryInput) => {
@@ -69,8 +76,10 @@ vi.mock("../../state/usage", async () => {
       const environments = [reading(window), ...other];
       const shown = settleUsageSnapshot(state.previous, window, environments, environments);
       state.previous = shown;
+      state.failures = settleUsageScanFailures(state.failures, window, environments);
       return {
         requestedWindow: window,
+        failures: state.failures,
         environments,
         selectedEnvironments: environments,
         shown,
@@ -199,6 +208,7 @@ function setup(windowDays: 1 | 7 = 1) {
   state.totalTokens = 100;
   state.costSource = "unpriced";
   state.previous = null;
+  state.failures = null;
 }
 
 async function update() {

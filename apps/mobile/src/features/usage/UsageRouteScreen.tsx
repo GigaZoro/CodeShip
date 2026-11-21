@@ -134,8 +134,15 @@ function UsageScreen(props: {
   const window = makeWindow(windowDays, new Date(now), resolution);
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
-  const { requestedWindow, shown, showingKept, environments, selectedEnvironments, refresh } =
-    useUsage(window, selectedEnvironmentIds, { advanceWindow, enabled: !showingLimits });
+  const {
+    requestedWindow,
+    failures,
+    shown,
+    showingKept,
+    environments,
+    selectedEnvironments,
+    refresh,
+  } = useUsage(window, selectedEnvironmentIds, { advanceWindow, enabled: !showingLimits });
   const merged = shown?.merged ?? EMPTY_USAGE;
   const shownWindow = shown?.window ?? window;
   const shownEnvironments = shown?.environments ?? selectedEnvironments;
@@ -146,7 +153,11 @@ function UsageScreen(props: {
     void refresh();
     void limits.refreshAfterEnable();
   };
-  const { coverage, sourceMessages } = usageNotices(selectedEnvironments, shownEnvironments);
+  const { coverage, sourceMessages } = usageNotices(
+    selectedEnvironments,
+    shownEnvironments,
+    failures,
+  );
   const canReadDiagnostics = selectedEnvironments.some(
     (environment) => environment.canReadDiagnostics,
   );
@@ -400,7 +411,7 @@ function UsageScreen(props: {
                     {coverage.gaps.some(({ retryable }) => retryable) ? (
                       <Button
                         label={t("Retry")}
-                        disabled={refreshingUsage || showingKept}
+                        disabled={refreshingUsage}
                         onPress={refreshWindow}
                       />
                     ) : null}
