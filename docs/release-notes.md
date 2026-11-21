@@ -1,3 +1,7 @@
+## 2026-11-22 — Release builds verify their source and bundle
+
+- The macOS build now runs only at its release's tag and stops when the tag, the release and the Linux bundle name different commits, and every workflow that can publish or holds secrets runs only actions pinned to a reviewed commit. macOS signs only the bundle from the publishing run after verifying its digest and version.
+
 ## 2026-11-21 — Claude's held resets say what they clear, or why they cannot
 
 - In `orchestrator_capabilities` with `usage`, every Claude banked reset, usable now or held back, names what it clears in `kind`. When Claude gave only a total because no reset can be used now, the reset has `kind: null` and `kindUnknownReason: "total_only"`.
