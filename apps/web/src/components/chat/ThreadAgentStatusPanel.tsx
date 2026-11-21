@@ -3,7 +3,6 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import {
   deriveProviderSubagentStatus,
   deriveThreadActivityRun,
-  presentPendingBackgroundWork,
 } from "@t3tools/client-runtime/state/thread-execution";
 import {
   isThreadWaitingOnWork,
@@ -28,7 +27,11 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AgentElapsed } from "./AgentElapsed";
 import { liveWorkEntryLabel } from "./MessagesTimeline.logic";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
-import { deriveThreadAgentStatus, type ThreadAgentStatusKind } from "./threadAgentStatus.logic";
+import {
+  deriveThreadAgentStatus,
+  waitingOnWorkLabel,
+  type ThreadAgentStatusKind,
+} from "./threadAgentStatus.logic";
 import { msg, t } from "~/i18n";
 
 const STATUS_PRESENTATION: Record<
@@ -92,17 +95,10 @@ export function ThreadAgentStatusPanel(props: {
   const { activeSince, finishedAt } = status;
 
   let activity: { readonly text: string; readonly command: boolean } | null = null;
-  const background = presentPendingBackgroundWork(shell.pendingBackgroundTasks);
-  const [onlyBackgroundItem] = background?.items ?? [];
-  if (status.kind === "waitingOnWork" && background?.waiting === true) {
-    // The status already says Waiting, so one task is named by itself.
-    activity = {
-      text:
-        background.items.length === 1 && onlyBackgroundItem !== undefined
-          ? onlyBackgroundItem.label
-          : background.title,
-      command: false,
-    };
+  const waitedOn =
+    status.kind === "waitingOnWork" ? waitingOnWorkLabel(shell.pendingBackgroundTasks) : null;
+  if (waitedOn !== null) {
+    activity = { text: waitedOn, command: false };
   } else if ((status.kind === "working" || status.kind === "waitingOnWork") && structure !== null) {
     const runId = deriveThreadActivityRun(structure.projection)?.runId ?? null;
     const row = structure.projection.visibleTurnItems.findLast(

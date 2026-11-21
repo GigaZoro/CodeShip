@@ -2293,6 +2293,10 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   activityRunStatus: Schema.optional(
     Schema.NullOr(Schema.Literals(["preparing", "starting", "running", "waiting"])),
   ),
+  /** The latest run's own selection; `modelSelection` is what the next run uses and can change first. */
+  latestRunModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
+  /** The activity run's own selection. */
+  activityRunModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   blockedOnThreadWait: Schema.optional(Schema.Boolean),
   status: OrchestrationV2ShellThreadStatus,
   lastError: Schema.optional(Schema.NullOr(Schema.String)),

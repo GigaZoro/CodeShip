@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveThreadAgentStatus, type ThreadAgentStatusInput } from "./threadAgentStatus.logic";
+import {
+  deriveThreadAgentStatus,
+  waitingOnWorkLabel,
+  type ThreadAgentStatusInput,
+} from "./threadAgentStatus.logic";
 
 const base: ThreadAgentStatusInput = {
   runtimeStatus: "idle",
@@ -119,5 +123,24 @@ describe("deriveThreadAgentStatus", () => {
     expected: Record<string, unknown>;
   }>)("$name", ({ input, expected }) => {
     expect(deriveThreadAgentStatus({ ...base, ...input })).toMatchObject(expected);
+  });
+});
+
+describe("waitingOnWorkLabel", () => {
+  const review = { taskId: "review", kind: "subagent" as const, description: "Review the diff" };
+  const devServer = { taskId: "dev", kind: "command" as const, description: "pnpm dev" };
+
+  it("names the one task the run waits on, not the dev server it left running", () => {
+    expect(waitingOnWorkLabel([devServer, review])).toBe("Review the diff");
+  });
+
+  it("counts the tasks when the run waits on several", () => {
+    expect(
+      waitingOnWorkLabel([devServer, review, { ...review, taskId: "tests", description: "Tests" }]),
+    ).toBe("Waiting on 2 subagents");
+  });
+
+  it("names nothing when the run waits on none of them", () => {
+    expect(waitingOnWorkLabel([devServer])).toBeNull();
   });
 });

@@ -379,6 +379,26 @@ describe("resolveThreadStatusPill", () => {
     });
   });
 
+  it("keeps a failed run's usage limit ahead of the background work it waits on", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          latestRun: { ...makeLatestRun(), status: "failed" },
+          pendingBackgroundTasks: [
+            { taskId: "bg-1", description: "Watch build", kind: "monitor", awaited: true },
+          ],
+          runtime: {
+            ...baseThread.runtime,
+            status: "failed",
+            activeRunId: null,
+            lastErrorClass: "usage_limit",
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Limited" });
+  });
+
   it("shows plan ready when a settled plan turn has a proposed plan ready for follow-up", () => {
     expect(
       resolveThreadStatusPill({

@@ -56,7 +56,10 @@ export function resolveThreadStatus(thread: ThreadStatusInput): ThreadStatus {
   return "ready";
 }
 
-/** The agent waits on work it started: another thread it awaits, or background work holding its run. */
+/**
+ * The agent waits on work it started: another thread its running turn awaits, or background work
+ * holding its run. A failed run stays failed, as the shell keeps it, whatever it left running.
+ */
 export function isThreadWaitingOnWork(thread: {
   readonly runtime: Pick<NonNullable<EnvironmentThreadShell["runtime"]>, "status"> | null;
   readonly blockedOnThreadWait?: boolean | undefined;
@@ -66,7 +69,8 @@ export function isThreadWaitingOnWork(thread: {
 }): boolean {
   return (
     (thread.runtime?.status === "running" && thread.blockedOnThreadWait === true) ||
-    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
+    (thread.runtime?.status !== "failed" &&
+      backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []))
   );
 }
 

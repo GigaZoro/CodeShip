@@ -1,10 +1,14 @@
 import { t, tn } from "~/i18n";
 import {
   deriveLatestThreadRun,
+  deriveThreadActivityRun,
   deriveThreadRuntime,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { checkpointFileTotals } from "@t3tools/client-runtime/state/thread-checkpoints";
-import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  deriveBlockedOnThreadWait,
+  derivePendingBackgroundWork,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   latestUnheldRun,
   usageLimitRunPresentedAsLatest,
@@ -1430,6 +1434,9 @@ export function presentThreadShellFromProjection(
 ) {
   const { updatedAt, lastVisitedAt } = live;
   const latestRun = deriveLatestThreadRun(projection);
+  const activityRun = deriveThreadActivityRun(projection);
+  const runSelection = (runId: RunId | undefined) =>
+    projection.runs.find((run) => run.id === runId)?.modelSelection ?? null;
   const runtime = deriveThreadRuntime({ ...projection, updatedAt });
   const pendingRuntimeRequest =
     projection.runtimeRequests.findLast((request) => request.status === "pending") ?? null;
@@ -1443,6 +1450,13 @@ export function presentThreadShellFromProjection(
         latestRunId: latestRun?.runId ?? null,
         activeRunId: runtime?.activeRunId ?? null,
         status: runtime?.status ?? "idle",
+        latestRunModelSelection: runSelection(latestRun?.runId),
+        activityRunModelSelection: runSelection(activityRun?.runId),
+        blockedOnThreadWait: deriveBlockedOnThreadWait({
+          activeRun: projection.runs.find((run) => run.id === runtime?.activeRunId) ?? null,
+          turnItems: projection.turnItems,
+        }),
+        pendingBackgroundTasks: deriveThreadPendingBackgroundTasks(projection),
         pendingRuntimeRequest,
         latestVisibleMessage: null,
         latestUserMessageAt:

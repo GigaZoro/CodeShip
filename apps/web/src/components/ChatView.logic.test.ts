@@ -28,7 +28,10 @@ import {
 import * as DateTime from "effect/DateTime";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
+import {
+  isThreadWaitingOnWork,
+  resolveThreadStatus,
+} from "@t3tools/client-runtime/state/thread-status";
 import type { Thread } from "../types";
 import { makeThreadFixture, makeThreadProjectionFixture } from "../test-fixtures";
 import {
@@ -971,5 +974,94 @@ describe("presentThreadShellFromProjection", () => {
 
     expect(shell.pendingSubagentRequest).toBe("approval");
     expect(resolveThreadStatus(shell)).toBe("approval");
+  });
+
+  it("waits on the thread its running turn awaits", () => {
+    const projection = makeThreadProjectionFixture();
+    const at = projection.updatedAt;
+    const runId = RunId.make("run-awaiting");
+    const run = {
+      id: runId,
+      threadId: projection.thread.id,
+      ordinal: 1,
+      providerInstanceId: projection.thread.providerInstanceId,
+      modelSelection: projection.thread.modelSelection,
+      providerThreadId: null,
+      userMessageId: MessageId.make("message-awaiting"),
+      rootNodeId: null,
+      activeAttemptId: null,
+      status: "running" as const,
+      requestedAt: at,
+      startedAt: at,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+    };
+    const threadWait = {
+      id: TurnItemId.make("item-thread-wait"),
+      threadId: projection.thread.id,
+      runId,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 1,
+      status: "running" as const,
+      title: null,
+      startedAt: at,
+      completedAt: null,
+      updatedAt: at,
+      type: "dynamic_tool" as const,
+      toolName: "mcp__t3-code__t3_thread_wait",
+      input: {},
+    };
+    const shell = presentThreadShellFromProjection(
+      environmentId,
+      projection.thread.id,
+      { ...projection, runs: [run], turnItems: [threadWait] },
+      { updatedAt: at, lastVisitedAt: null, pendingSubagentRequest: null },
+    );
+
+    expect(shell.blockedOnThreadWait).toBe(true);
+    expect(isThreadWaitingOnWork(shell)).toBe(true);
+    expect(resolveThreadStatus(shell)).toBe("waiting");
+  });
+
+  it("waits on the background work that holds a thread", () => {
+    const projection = makeThreadProjectionFixture();
+    const watchedPullRequest = {
+      host: "github.com",
+      repository: "acme/app",
+      number: 7,
+      url: "https://github.com/acme/app/pull/7",
+      source: "agent",
+      linkedAt: "2026-01-01T00:00:00.000Z",
+      snapshot: null,
+      stack: null,
+      watch: {
+        startedAt: "2026-01-01T00:00:00.000Z",
+        headSha: null,
+        failedChecks: [],
+        passed: false,
+        passedChecks: [],
+        remarksThrough: "2026-01-01T00:00:00.000Z",
+        remarkIds: [],
+        conflicting: false,
+        wakes: 0,
+      },
+    } as unknown as NonNullable<typeof projection.thread.pullRequests>[number];
+    const shell = presentThreadShellFromProjection(
+      environmentId,
+      projection.thread.id,
+      { ...projection, thread: { ...projection.thread, pullRequests: [watchedPullRequest] } },
+      { updatedAt: projection.updatedAt, lastVisitedAt: null, pendingSubagentRequest: null },
+    );
+
+    expect(shell.pendingBackgroundTasks).toEqual([
+      expect.objectContaining({ kind: "monitor", awaited: true }),
+    ]);
+    expect(isThreadWaitingOnWork(shell)).toBe(true);
+    expect(resolveThreadStatus(shell)).toBe("waiting");
   });
 });

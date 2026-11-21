@@ -95,7 +95,7 @@ describe("isThreadWaitingOnWork", () => {
     ).toBe(false);
   });
 
-  it("waits on background work that holds the run, not on work left running", () => {
+  it("waits on background work that holds a run that has not failed, not on work left running", () => {
     expect(
       isThreadWaitingOnWork({
         runtime: { status: "idle" },
@@ -106,6 +106,12 @@ describe("isThreadWaitingOnWork", () => {
       isThreadWaitingOnWork({
         runtime: { status: "idle" },
         pendingBackgroundTasks: [{ kind: "command" }],
+      }),
+    ).toBe(false);
+    expect(
+      isThreadWaitingOnWork({
+        runtime: { status: "failed" },
+        pendingBackgroundTasks: [{ kind: "monitor", awaited: true }],
       }),
     ).toBe(false);
     expect(isThreadWaitingOnWork({ runtime: null })).toBe(false);

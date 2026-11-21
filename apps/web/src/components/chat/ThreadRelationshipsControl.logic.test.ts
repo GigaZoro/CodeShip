@@ -36,7 +36,8 @@ const childRunning = {
   latestRunRequestedAt: DateTime.makeUnsafe("2026-01-01T11:00:00.000Z"),
   latestRunStartedAt: DateTime.makeUnsafe("2026-01-01T11:00:00.000Z"),
   latestRunCompletedAt: null,
-  modelSelection: childSelection,
+  latestRunModelSelection: childSelection,
+  activityRunModelSelection: childSelection,
 };
 
 describe("currentSubagent", () => {
@@ -52,6 +53,39 @@ describe("currentSubagent", () => {
       modelSelection: childSelection,
       progress: null,
       result: null,
+    });
+  });
+
+  it("shows the model a finished run used, not the one chosen for the next run", () => {
+    const nextSelection = { ...childSelection, model: "claude-model-c" };
+    const childFinished = {
+      ...childRunning,
+      status: "completed" as const,
+      activityRunStatus: null,
+      activityRunModelSelection: null,
+      latestRunCompletedAt: DateTime.makeUnsafe("2026-01-01T11:20:00.000Z"),
+      modelSelection: nextSelection,
+    };
+
+    expect(currentSubagent(finishedAgent("app_owned"), childFinished)).toMatchObject({
+      status: "completed",
+      completedAt: "2026-01-01T11:20:00.000Z",
+      model: childSelection.model,
+      modelSelection: childSelection,
+    });
+  });
+
+  it("keeps the delegation's model when the server does not say what the run used", () => {
+    const {
+      latestRunModelSelection: _latest,
+      activityRunModelSelection: _activity,
+      ...older
+    } = childRunning;
+
+    expect(currentSubagent(finishedAgent("app_owned"), older)).toMatchObject({
+      status: "running",
+      model: delegatedSelection.model,
+      modelSelection: delegatedSelection,
     });
   });
 

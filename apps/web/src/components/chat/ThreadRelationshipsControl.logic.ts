@@ -20,12 +20,14 @@ type CurrentSubagentChildThread = Pick<
   | "latestRunRequestedAt"
   | "latestRunStartedAt"
   | "latestRunCompletedAt"
-  | "modelSelection"
+  | "latestRunModelSelection"
+  | "activityRunModelSelection"
 >;
 
 /**
  * The subagent as its child thread runs now: once the delegated work has ended, a run started in
- * the child itself replaces the delegation's status, times and, for an app-owned child, its model.
+ * the child itself replaces the delegation's status, times and, for an app-owned child, the model
+ * that run was started with.
  */
 export function currentSubagent<Agent extends CurrentSubagentInput>(
   agent: Agent | undefined,
@@ -42,14 +44,18 @@ export function currentSubagent<Agent extends CurrentSubagentInput>(
   const status = liveStatus ?? childThread.status;
   const startedAt = liveStatus ? childThread.activityRunStartedAt : childThread.latestRunStartedAt;
   const completedAt = liveStatus ? null : childThread.latestRunCompletedAt;
+  // The thread's own selection is what its next run uses, and can change before that run starts.
+  const runSelection = liveStatus
+    ? childThread.activityRunModelSelection
+    : childThread.latestRunModelSelection;
   return {
     ...agent,
     // A provider-native child runs inside its parent, so only an app-owned child picks its own model.
-    ...(agent.origin === "app_owned"
+    ...(agent.origin === "app_owned" && runSelection
       ? {
-          model: childThread.modelSelection.model,
-          providerInstanceId: childThread.modelSelection.instanceId,
-          modelSelection: childThread.modelSelection,
+          model: runSelection.model,
+          providerInstanceId: runSelection.instanceId,
+          modelSelection: runSelection,
         }
       : {}),
     status:

@@ -4779,6 +4779,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.equal(shell?.status, "waiting");
       assert.isNull(shell?.activeRunId);
       const later = DateTime.add(now, { hours: 1 });
+      const newerSelection = { ...run.modelSelection, model: "newer-run-model" };
       for (const status of ["queued", "cancelled"] as const) {
         yield* projectionStore.apply({
           id: EventId.make(`event:clock:newer:${status}`),
@@ -4789,6 +4790,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             ...run,
             id: RunId.make("run:clock:newer"),
             ordinal: 2,
+            modelSelection: newerSelection,
             status,
             requestedAt: later,
             startedAt: null,
@@ -4819,6 +4821,14 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           assert.equal(timestamp(sqlShell.activityRunStartedAt), expected);
           assert.equal(timestamp(memoryShell.activityRunStartedAt), expected);
           assert.equal(sqlShell.latestRunId, "run:clock:newer");
+          // Each presented run carries the selection it was started with, not the thread's.
+          for (const runShell of [sqlShell, memoryShell]) {
+            assert.deepEqual(runShell.latestRunModelSelection, newerSelection);
+            assert.deepEqual(
+              runShell.activityRunModelSelection,
+              activityStatus === "completed" ? null : run.modelSelection,
+            );
+          }
         }
       }
 

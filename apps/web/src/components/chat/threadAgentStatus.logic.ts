@@ -1,5 +1,12 @@
-import type { ProviderSubagentStatus } from "@t3tools/client-runtime/state/thread-execution";
-import type { OrchestrationV2RunStatus } from "@t3tools/contracts";
+import {
+  presentPendingBackgroundWork,
+  type ProviderSubagentStatus,
+} from "@t3tools/client-runtime/state/thread-execution";
+import type {
+  OrchestrationV2PendingBackgroundTask,
+  OrchestrationV2RunStatus,
+} from "@t3tools/contracts";
+import { backgroundTaskHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 
 export type ThreadAgentStatusKind =
   | "working"
@@ -119,4 +126,19 @@ export function deriveThreadAgentStatus(input: ThreadAgentStatusInput): ThreadAg
     default:
       return ended("idle");
   }
+}
+
+/**
+ * What a Waiting status waits on: one task by its name, since the status already says Waiting, or a
+ * count of them. Work the run left running, such as a dev server, is not waited on.
+ */
+export function waitingOnWorkLabel(
+  tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
+): string | null {
+  const presentation = presentPendingBackgroundWork(
+    tasks.filter((task) => backgroundTaskHoldsCompletion(task)),
+  );
+  if (presentation === null) return null;
+  const [only] = presentation.items;
+  return presentation.items.length === 1 && only !== undefined ? only.label : presentation.title;
 }

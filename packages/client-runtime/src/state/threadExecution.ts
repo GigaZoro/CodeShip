@@ -25,6 +25,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import {
+  backgroundTaskHoldsCompletion,
   backgroundWorkHoldsCompletion,
   derivePendingBackgroundWork,
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
@@ -443,7 +444,6 @@ export function presentPendingBackgroundWork(
   tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
 ): PendingBackgroundWorkPresentation | null {
   if (tasks.length === 0) return null;
-  const waiting = backgroundWorkHoldsCompletion(tasks);
   const items = tasks
     .map((task): PendingBackgroundWorkItem => {
       const description = task.description?.trim();
@@ -471,8 +471,14 @@ export function presentPendingBackgroundWork(
       (left, right) =>
         BACKGROUND_WORK_KINDS[left.kind].order - BACKGROUND_WORK_KINDS[right.kind].order,
     );
-  const [only] = items;
-  if (items.length === 1 && only !== undefined) {
+  const heldTaskIds = new Set(
+    tasks.filter((task) => backgroundTaskHoldsCompletion(task)).map((task) => task.taskId),
+  );
+  const waiting = heldTaskIds.size > 0;
+  // The title names what the run waits on; work it left running stays in the list.
+  const titled = waiting ? items.filter((item) => heldTaskIds.has(item.taskId)) : items;
+  const [only] = titled;
+  if (titled.length === 1 && only !== undefined) {
     const kindLabels = BACKGROUND_WORK_KINDS[only.kind];
     const named = only.label !== t(kindLabels.singular);
     const title = named
@@ -483,7 +489,7 @@ export function presentPendingBackgroundWork(
     return { title, items, waiting };
   }
   const counts = new Map<BackgroundWorkKind, number>();
-  for (const item of items) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
+  for (const item of titled) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
   const groups = Array.from(counts, ([kind, count]) => backgroundWorkCount(kind, count));
   const joined = joinWithAnd(groups);
   return {

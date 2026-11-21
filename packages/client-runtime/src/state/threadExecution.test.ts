@@ -643,4 +643,14 @@ describe("presentPendingBackgroundWork", () => {
     ]);
     expect(presentation?.items[0]?.label).toBe("mv a.ts b.ts\ncat > b.ts <<'EOF'\nexport {};\nEOF");
   });
+
+  it("names the work the run waits on and lists what it left running", () => {
+    const presentation = presentPendingBackgroundWork([
+      { taskId: "dev", kind: "command", description: "pnpm dev" },
+      { taskId: "review", kind: "subagent", description: "Review the diff" },
+    ]);
+
+    expect(presentation).toMatchObject({ title: "Waiting · Review the diff", waiting: true });
+    expect(presentation?.items.map((item) => item.taskId)).toEqual(["review", "dev"]);
+  });
 });
