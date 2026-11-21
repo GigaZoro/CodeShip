@@ -139,6 +139,7 @@ export function HomeRouteScreen() {
     options: listOptions,
     setSelectedEnvironmentId,
     setSelectedProjectKey,
+    updateOptions,
   } = useHomeListOptions(availableEnvironmentIds);
   const selectedEnvironmentId = listOptions.selectedEnvironmentId;
   // A legacy per-environment scratch key resolves here on every render; the stored
@@ -252,6 +253,8 @@ export function HomeRouteScreen() {
         />
 
         <HomeScreen
+          statusFilter={listOptions.statusFilter}
+          onStatusChange={(statusFilter) => updateOptions({ statusFilter })}
           catalogState={catalogState}
           environments={environments}
           onAddConnection={() => openSettings(navigation, "SettingsEnvironmentNew")}

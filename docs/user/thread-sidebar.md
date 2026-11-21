@@ -166,6 +166,14 @@ Wherever the task shows, a thread it runs in shows a calendar icon in the thread
 and desktop, hover it for the schedule and next run, or click it to open the task. A task that
 starts a new thread for each run marks only the thread from its latest run.
 
+## Filter the thread list
+
+Open the sidebar’s filter menu on web and desktop, or the thread list filters on
+mobile. Under **Status**, choose **All**, **Needs you**, **Working**, **Unread**,
+or **Failed**. **Needs you** uses the same status rules as Projects, and **Unread**
+shows completed work you have yet to read. The device remembers your choice.
+Choose **All** or clear the filter to see every status again.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work. The command palette offers the same

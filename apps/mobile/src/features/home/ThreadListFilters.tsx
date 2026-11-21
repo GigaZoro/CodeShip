@@ -1,3 +1,7 @@
+import {
+  THREAD_LIST_STATUS_LABELS,
+  type ThreadListStatusFilter,
+} from "@t3tools/client-runtime/state/thread-status";
 import { offersSidebarMachineGrouping } from "@t3tools/contracts/settings";
 import { Pressable, ScrollView } from "react-native";
 import { SymbolView } from "../../components/ui/AppSymbol";
@@ -11,6 +15,7 @@ import {
   handleGroupByMenuEvent,
   machineGroupingMenuItem,
   projectGroupingMenuItems,
+  statusFilterMenuItems,
   threadListGroupingLabel,
 } from "./home-list-filter-menu";
 import { t } from "../../lib/i18n";
@@ -30,6 +35,8 @@ export function ThreadListFilters(
   > & {
     /** List padding the scroller bleeds through so pills start where row content does. */
     readonly gutter: number;
+    readonly statusFilter: ThreadListStatusFilter;
+    readonly onStatusChange: (status: ThreadListStatusFilter) => void;
   },
 ) {
   const openArchivedThreads = useOpenArchivedThreads();
@@ -41,6 +48,7 @@ export function ThreadListFilters(
   const selectedProject = props.projects.find(
     (project) => project.key === props.selectedProjectKey,
   );
+  const statusItems = statusFilterMenuItems(props.statusFilter);
   return (
     <ScrollView
       horizontal
@@ -104,6 +112,20 @@ export function ThreadListFilters(
         }}
       />
       <ListFilterMenu
+        label={
+          props.statusFilter === "all"
+            ? t("Status")
+            : t(THREAD_LIST_STATUS_LABELS[props.statusFilter])
+        }
+        accessibilityLabel={t("Filter threads by status")}
+        active={props.statusFilter !== "all"}
+        actions={statusItems}
+        onSelect={(id) => {
+          const item = statusItems.find((candidate) => candidate.id === id);
+          if (item) props.onStatusChange(item.value);
+        }}
+      />
+      <ListFilterMenu
         label={threadListGroupingLabel(props.grouping)}
         accessibilityLabel={t("Group threads")}
         active={props.grouping.project || props.grouping.machine}
@@ -140,7 +162,9 @@ export function ThreadListFilters(
         accessibilityLabel={t("Artifacts")}
         onPress={openArtifacts}
       />
-      {props.selectedEnvironmentId !== null || props.selectedProjectKey !== null ? (
+      {props.selectedEnvironmentId !== null ||
+      props.selectedProjectKey !== null ||
+      props.statusFilter !== "all" ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={t("Reset thread filters")}
@@ -149,6 +173,7 @@ export function ThreadListFilters(
           onPress={() => {
             props.onEnvironmentChange(null);
             props.onProjectChange(null);
+            props.onStatusChange("all");
           }}
         >
           <SymbolView name="xmark.circle.fill" size={18} tintColorClassName="accent-icon-muted" />

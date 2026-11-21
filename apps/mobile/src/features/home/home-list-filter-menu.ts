@@ -1,3 +1,7 @@
+import {
+  THREAD_LIST_STATUS_LABELS,
+  ThreadListStatusFilter,
+} from "@t3tools/client-runtime/state/thread-status";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { offersSidebarMachineGrouping, type SidebarGrouping } from "@t3tools/contracts/settings";
 import type { MenuAction } from "@react-native-menu/menu";
@@ -16,6 +20,15 @@ export function threadListGroupingLabel(grouping: SidebarGrouping): string {
 /** The filter button marks a filter only by filling its icon, so its label says it too. */
 export function threadListFilterButtonLabel(filtered: boolean): string {
   return filtered ? t("Filter threads, filtered") : t("Filter threads");
+}
+
+export function statusFilterMenuItems(selected: ThreadListStatusFilter) {
+  return ThreadListStatusFilter.literals.map((value) => ({
+    id: `status:${value}`,
+    title: t(THREAD_LIST_STATUS_LABELS[value]),
+    state: selected === value ? ("on" as const) : ("off" as const),
+    value,
+  }));
 }
 
 export const SHOW_ALL_THREADS_EVENT = "show-all-threads";
@@ -132,6 +145,8 @@ export function buildHomeListFilterMenu(
     readonly selectedEnvironmentId: EnvironmentId | null;
     readonly selectedProjectKey: string | null;
     readonly grouping: SidebarGrouping;
+    readonly statusFilter: ThreadListStatusFilter;
+    readonly onStatusChange: (status: ThreadListStatusFilter) => void;
     readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
     readonly onProjectChange: (projectKey: string | null) => void;
     readonly onOpenArchived: () => void;
@@ -140,13 +155,18 @@ export function buildHomeListFilterMenu(
 ): HomeListFilterMenu {
   const items: Array<HomeListFilterMenuAction | HomeListFilterMenuSubmenu> = [];
 
-  if (props.selectedEnvironmentId !== null || props.selectedProjectKey !== null) {
+  if (
+    props.selectedEnvironmentId !== null ||
+    props.selectedProjectKey !== null ||
+    props.statusFilter !== "all"
+  ) {
     items.push({
       type: "action",
       title: t("Show all threads"),
       onPress: () => {
         props.onEnvironmentChange(null);
         props.onProjectChange(null);
+        props.onStatusChange("all");
       },
     });
   }
@@ -195,6 +215,17 @@ export function buildHomeListFilterMenu(
       ],
     });
   }
+
+  items.push({
+    type: "submenu",
+    title: t("Status"),
+    items: statusFilterMenuItems(props.statusFilter).map(({ title, state, value }) => ({
+      type: "action",
+      title,
+      state,
+      onPress: () => props.onStatusChange(value),
+    })),
+  });
 
   items.push({
     type: "submenu",

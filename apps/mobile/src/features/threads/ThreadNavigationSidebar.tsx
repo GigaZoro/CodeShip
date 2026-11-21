@@ -69,6 +69,7 @@ import {
   buildHomeListFilterMenu,
   handleGroupByMenuEvent,
   showAllThreadsMenuItems,
+  statusFilterMenuItems,
   threadListFilterButtonLabel,
 } from "../home/home-list-filter-menu";
 import {
@@ -233,7 +234,7 @@ function ThreadNavigationSidebarPane(
   const availableEnvironmentIds = new Set(
     environments.map((environment) => environment.environmentId),
   );
-  const { options, setSelectedEnvironmentId, setSelectedProjectKey } =
+  const { options, setSelectedEnvironmentId, setSelectedProjectKey, updateOptions } =
     useHomeListOptions(availableEnvironmentIds);
   const searchEnvironmentIds =
     options.selectedEnvironmentId === null
@@ -396,6 +397,7 @@ function ThreadNavigationSidebarPane(
     environmentId: options.selectedEnvironmentId,
     projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
     searchQuery: props.searchQuery,
+    statusFilter: options.statusFilter,
     searchMatches: threadSearchMatchByKey,
     settlementEnvironmentIds,
     snoozeEnvironmentIds,
@@ -431,7 +433,11 @@ function ThreadNavigationSidebarPane(
           },
         ]
       : threadListV2Items;
-  const filterCustomized = options.selectedEnvironmentId !== null || selectedProjectKey !== null;
+  const filterCustomized =
+    options.selectedEnvironmentId !== null ||
+    selectedProjectKey !== null ||
+    options.statusFilter !== "all";
+  const statusItems = statusFilterMenuItems(options.statusFilter);
   const listMenuActions = [
     ...showAllThreadsMenuItems(filterCustomized),
     {
@@ -475,6 +481,7 @@ function ThreadNavigationSidebarPane(
             ],
           },
         ] satisfies MenuAction[])),
+    { id: "status", title: t("Status"), subactions: statusItems },
     ...buildGroupByMenuActions(groupBy, environments.length),
     archivedThreadsMenuItem,
     artifactsMenuItem,
@@ -486,8 +493,12 @@ function ThreadNavigationSidebarPane(
   }) => {
     const event = nativeEvent.event;
     if (event === SHOW_ALL_THREADS_EVENT) {
-      setSelectedEnvironmentId(null);
-      setSelectedProjectKey(null);
+      updateOptions({ selectedEnvironmentId: null, selectedProjectKey: null, statusFilter: "all" });
+      return;
+    }
+    const status = statusItems.find((item) => item.id === event);
+    if (status) {
+      updateOptions({ statusFilter: status.value });
       return;
     }
     if (event === ARCHIVED_THREADS_EVENT) {
@@ -843,6 +854,8 @@ function ThreadNavigationSidebarPane(
     selectedEnvironmentId: options.selectedEnvironmentId,
     selectedProjectKey,
     grouping: groupBy,
+    statusFilter: options.statusFilter,
+    onStatusChange: (statusFilter) => updateOptions({ statusFilter }),
     onEnvironmentChange: setSelectedEnvironmentId,
     onProjectChange: setSelectedProjectKey,
     onProjectGroupingChange: setProjectGrouping,
@@ -872,9 +885,11 @@ function ThreadNavigationSidebarPane(
             ? threadSearch.isPending
               ? t("Searching thread messages…")
               : t("No matching threads")
-            : selectedProjectScope !== null
-              ? t("No threads in {project}", { project: selectedProjectScope.title })
-              : t("No threads yet")}
+            : options.statusFilter !== "all"
+              ? t("No threads match your filters")
+              : selectedProjectScope !== null
+                ? t("No threads in {project}", { project: selectedProjectScope.title })
+                : t("No threads yet")}
     </Text>
   );
 

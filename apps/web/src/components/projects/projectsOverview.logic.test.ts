@@ -1,11 +1,11 @@
+import {
+  matchesThreadListStatus,
+  resolveProjectThreadState,
+} from "@t3tools/client-runtime/state/thread-status";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  countProjectThreads,
-  resolveProjectThreadState,
-  validateProjectsSearch,
-} from "./projectsOverview.logic";
+import { countProjectThreads, validateProjectsSearch } from "./projectsOverview.logic";
 
 describe("resolveProjectThreadState", () => {
   it("sorts threads into what each asks of the user", () => {
@@ -55,6 +55,23 @@ describe("resolveProjectThreadState", () => {
       approval: "attention",
       failed: "attention",
     });
+    expect(
+      Object.entries(threads)
+        .filter(([, thread]) => matchesThreadListStatus(thread, "failed"))
+        .map(([name]) => name),
+    ).toEqual(["failed"]);
+    expect(
+      Object.entries(threads)
+        .filter(([, thread]) => matchesThreadListStatus(thread, "unread"))
+        .map(([name]) => name),
+    ).toEqual(["unread"]);
+    expect(
+      Object.entries(threads)
+        .filter(([, thread]) => matchesThreadListStatus(thread, "attention"))
+        .map(([name]) => name),
+    ).toEqual(["approval", "failed"]);
+    expect(matchesThreadListStatus(threads.seen, "attention", { woke: true })).toBe(true);
+    expect(matchesThreadListStatus(threads.seen, "unread", { locallyUnread: true })).toBe(true);
     expect(countProjectThreads(Object.values(threads), resolveProjectThreadState)).toEqual({
       attention: 2,
       working: 1,

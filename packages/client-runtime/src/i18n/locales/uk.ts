@@ -6002,6 +6002,7 @@ const catalog: MessageCatalog = {
   "Filter threads": "Фільтр чатів",
   "Filter threads by environment": "Фільтрувати чати за середовищем",
   "Filter threads by project": "Фільтрувати чати за проєктом",
+  "Filter threads by status": "Фільтрувати чати за станом",
   "Filter threads, filtered": "Фільтрувати чати, фільтр увімкнено",
   "Filter threads: {scope}": "Фільтр чатів: {scope}",
   "Filter usage environments": "Фільтрувати середовища використання",
@@ -8124,6 +8125,7 @@ const catalog: MessageCatalog = {
   "No threads in {project}": "Немає чатів у {project}",
   "No threads in {project} yet": "У проєкті {project} ще немає чатів",
   "No threads in these projects yet": "У цих проєктах ще немає чатів",
+  "No threads match your filters": "Жоден чат не відповідає вибраним фільтрам",
   'No threads matching "{query}".': "Немає чатів за запитом «{query}».",
   "No threads on {machine} yet": "На комп’ютері {machine} ще немає чатів",
   "No threads on these machines yet": "На цих комп’ютерах ще немає чатів",
@@ -13708,6 +13710,7 @@ const catalog: MessageCatalog = {
   Unpriced: "Без ціни",
   "Unpriced usage details": "Відомості про використання без ціни",
   Unreachable: "Недоступно",
+  Unread: "Непрочитані",
   "Unreadable records and attachment files are still saved. Other messages can still be sent.":
     "Нечитабельні записи та файли вкладень досі збережено. Інші повідомлення можна надсилати.",
   Unresolve: "Відновити",

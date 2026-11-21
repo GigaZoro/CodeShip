@@ -1,4 +1,9 @@
-import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
+import {
+  resolveProjectThreadState,
+  resolveThreadStatus,
+  THREAD_LIST_STATUS_LABELS,
+  type ProjectThreadState,
+} from "@t3tools/client-runtime/state/thread-status";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import {
@@ -101,12 +106,10 @@ import {
   EMPTY_PROJECT_THREAD_COUNTS,
   matchesProjectSearch,
   matchesProjectsOverviewFilter,
-  resolveProjectThreadState,
   validateProjectsSearch,
   type ProjectsOverviewFilter,
   type ProjectsSearch,
   type ProjectThreadCounts,
-  type ProjectThreadState,
 } from "./projectsOverview.logic";
 
 import { msg, t, tn, type Message } from "~/i18n";
@@ -245,20 +248,11 @@ export function ProjectsPage() {
     }
     // Server visits, as in the sidebar's folder preview, so streaming never re-renders the page.
     const key = threadKeyOf(thread);
-    const state = resolveProjectThreadState({
-      ...thread,
-      lastVisitedAt: thread.lastVisitedAt ?? undefined,
-    });
     const woke = hasUnseenServerWake(thread, now);
     if (woke) wokeKeys.add(key);
-    // A woken snooze is the reminder the user asked for, so it waits with what needs them.
     stateByKey.set(
       key,
-      woke && (state === "quiet" || state === "done")
-        ? "attention"
-        : state === "quiet" && locallyUnreadKeys.has(key)
-          ? "done"
-          : state,
+      resolveProjectThreadState(thread, { woke, locallyUnread: locallyUnreadKeys.has(key) }),
     );
     openThreads.push(thread);
   }
@@ -463,10 +457,10 @@ export function ProjectsPage() {
     readonly label: string;
     readonly count: number;
   }> = [
-    { value: "all", label: t("All"), count: totals.open },
-    { value: "attention", label: t("Needs you"), count: totals.attention },
-    { value: "working", label: t("Working"), count: totals.working },
-    { value: "done", label: t("Done"), count: totals.done },
+    { value: "all", label: t(THREAD_LIST_STATUS_LABELS.all), count: totals.open },
+    { value: "attention", label: t(THREAD_LIST_STATUS_LABELS.attention), count: totals.attention },
+    { value: "working", label: t(THREAD_LIST_STATUS_LABELS.working), count: totals.working },
+    { value: "done", label: t(THREAD_LIST_STATUS_LABELS.done), count: totals.done },
   ];
 
   return (

@@ -1,4 +1,5 @@
 import {
+  hasUnseenCompletion,
   resolveThreadStatus,
   THREAD_STATUS_DISPLAY,
   type ThreadStatus,
@@ -6,6 +7,7 @@ import {
   type ThreadStatusInput as ThreadRowStatusInput,
   type ThreadStatusTone,
 } from "@t3tools/client-runtime/state/thread-status";
+export { hasUnseenCompletion } from "@t3tools/client-runtime/state/thread-status";
 import { t, type Message } from "~/i18n";
 import {
   resolveThreadFolders,
@@ -773,17 +775,6 @@ export function resolveThreadLastVisitedAt(
   // servers.
   if (serverLastVisitedAt === undefined) return localLastVisitedAt;
   return serverLastVisitedAt ?? undefined;
-}
-
-export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
-  if (!thread.latestRun?.completedAt) return false;
-  const completedAt = Date.parse(thread.latestRun.completedAt);
-  if (Number.isNaN(completedAt)) return false;
-  if (!thread.lastVisitedAt) return false;
-
-  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
-  if (Number.isNaN(lastVisitedAt)) return true;
-  return completedAt > lastVisitedAt;
 }
 
 /** A snooze that woke after the user last looked, which rows flag as Woke until they do. */

@@ -23,7 +23,14 @@ import {
   sortInboxThreadsByReturn,
   sortWorkingThreadsBySend,
 } from "@t3tools/client-runtime/state/thread-inbox";
-import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
+import {
+  hasUnseenCompletion as threadHasUnseenCompletion,
+  matchesThreadListStatus,
+  resolveThreadStatus,
+  type ThreadListStatusFilter,
+} from "@t3tools/client-runtime/state/thread-status";
+
+export { hasUnseenCompletion as threadHasUnseenCompletion } from "@t3tools/client-runtime/state/thread-status";
 import {
   sortActiveThreadsByOrderKey,
   resolveSettledThreadTimestamp,
@@ -184,19 +191,6 @@ export function threadListV2LayoutTime(input: {
 
 export const THREAD_LIST_V2_SETTLED_INITIAL_COUNT = 10;
 export const THREAD_LIST_V2_SETTLED_PAGE_COUNT = 25;
-
-export function threadHasUnseenCompletion(
-  thread: Pick<EnvironmentThreadShell, "latestRun" | "lastVisitedAt">,
-): boolean {
-  const completedAt = thread.latestRun?.completedAt;
-  if (!completedAt) return false;
-  const completedAtMs = Date.parse(completedAt);
-  if (Number.isNaN(completedAtMs)) return false;
-  if (!thread.lastVisitedAt) return false;
-  const lastVisitedAtMs = Date.parse(thread.lastVisitedAt);
-  if (Number.isNaN(lastVisitedAtMs)) return true;
-  return completedAtMs > lastVisitedAtMs;
-}
 
 export function resolveThreadListV2WokeAt(
   thread: EnvironmentThreadShell,
@@ -825,6 +819,7 @@ export function buildThreadListV2Items(input: {
   }> | null;
   readonly searchQuery: string;
   readonly matchedThreadKeys?: ReadonlySet<string>;
+  readonly statusFilter?: ThreadListStatusFilter | undefined;
   readonly settlementEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly snoozeEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly settledLimit?: number;
@@ -878,8 +873,15 @@ export function buildThreadListV2Items(input: {
   const chatSettled: EnvironmentThreadShell[] = [];
   let nextSnoozeWakeAt: string | null = null;
   const queuedThreadKeys = input.queuedThreadKeys?.size ? input.queuedThreadKeys : undefined;
+  const statusFilter = input.statusFilter ?? "all";
   const listableThreads = input.threads.filter(
-    (thread) => thread.archivedAt === null && isListedThreadLineage(thread.lineage),
+    (thread) =>
+      thread.archivedAt === null &&
+      isListedThreadLineage(thread.lineage) &&
+      (statusFilter === "all" ||
+        matchesThreadListStatus(thread, statusFilter, {
+          woke: resolveThreadListV2WokeAt(thread, { now }) !== null,
+        })),
   );
   const awaiting = collectNeedsYouThreads(listableThreads, { now });
   // Put-off threads still wait on the user, so they stay in Needs you, after the others.

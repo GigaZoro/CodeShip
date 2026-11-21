@@ -1,3 +1,9 @@
+import {
+  matchesThreadListStatus,
+  THREAD_LIST_STATUS_LABELS,
+  ThreadListStatusFilter,
+} from "@t3tools/client-runtime/state/thread-status";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { t, tn } from "~/i18n";
 import { liveShellEnvironmentIdsAtom } from "../state/shell";
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
@@ -414,6 +420,8 @@ type SidebarOptimisticDrop = {
 };
 
 interface SidebarThreadPartitionInput {
+  readonly statusFilter: ThreadListStatusFilter;
+  readonly locallyUnreadKeys: ReadonlySet<string>;
   readonly threads: readonly EnvironmentThreadShell[];
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   /** Tasks linked environments run for a listed thread; they show under it. */
@@ -544,6 +552,8 @@ function isSidebarFolderSibling(candidate: SidebarFolder, folder: SidebarFolder)
 
 // Separate hooks cache maps independently of later Sidebar hooks and preserve dnd-kit inputs.
 function useSidebarThreads(input: {
+  readonly statusFilter: ThreadListStatusFilter;
+  readonly locallyUnreadKeys: ReadonlySet<string>;
   readonly projectScopeKey: string | null;
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
@@ -625,6 +635,8 @@ function useSidebarThreads(input: {
     settledTail.scopeKey === projectScopeKey ? settledTail.count : SETTLED_TAIL_INITIAL_COUNT;
 
   const partition = partitionSidebarThreads({
+    statusFilter: input.statusFilter,
+    locallyUnreadKeys: input.locallyUnreadKeys,
     threads,
     scopedProjectKeys,
     delegatedUnderParent,
@@ -719,7 +731,7 @@ function useSidebarThreads(input: {
   const visibleWorkingThreads = workingShelfExpanded
     ? workingThreads
     : routeThreadOnly(workingThreads, routeRowThreadKey);
-  const locallyUnreadKeys = useLocallyUnreadThreadKeys(threads);
+  const { locallyUnreadKeys } = input;
   // A capped folder still lists the open thread, a woken snooze, and any thread its closed dot
   // would flag. Visits come from the server; reading local ones would re-render on every tick.
   const keepInFolderPreview = (thread: EnvironmentThreadShell) => {
@@ -1072,9 +1084,15 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     disconnectedEnvironmentIds,
   } = input;
   const preciseNow = new Date().toISOString();
+  const matchesStatus = (thread: EnvironmentThreadShell) =>
+    input.statusFilter === "all" ||
+    matchesThreadListStatus(thread, input.statusFilter, {
+      woke: hasUnseenServerWake(thread, preciseNow),
+      locallyUnread: input.locallyUnreadKeys.has(threadShellKey(thread)),
+    });
   // Ignores the project scope: a thread waiting on the user must not hide in a folder, shelf, or filter.
   const needsYou = collectNeedsYouThreads(
-    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent),
+    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent).filter(matchesStatus),
     { now: preciseNow },
   );
   // Put-off threads still wait on the user, so they stay out of the other sections too.
@@ -1086,7 +1104,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     delegatedUnderParent,
   ).filter((thread) => {
     const key = threadShellKey(thread);
-    return !hiddenTaskThreadKeys.has(key) || needsYouKeys.has(key);
+    return matchesStatus(thread) && (!hiddenTaskThreadKeys.has(key) || needsYouKeys.has(key));
   });
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
@@ -1507,6 +1525,12 @@ export default function Sidebar({
   );
   const environmentMachineById = useEnvironmentMachines();
   const projectGroupsRef = useRef(projectGroups);
+  const [statusFilter, setStatusFilter] = useLocalStorage(
+    "t3code:sidebar-status-filter",
+    "all",
+    ThreadListStatusFilter,
+  );
+  const locallyUnreadKeys = useLocallyUnreadThreadKeys(threads);
   const persistedProjectScopeKeys = useUiStateStore((store) => store.sidebarProjectScopeKeys);
   const setPersistedProjectScopeKeys = useUiStateStore((store) => store.setSidebarProjectScopeKeys);
   const persistedMachineScopeIds = useUiStateStore((store) => store.sidebarMachineScopeIds);
@@ -1855,6 +1879,8 @@ export default function Sidebar({
     pinnedKeysById,
     activeKeysById,
   } = useSidebarThreads({
+    statusFilter,
+    locallyUnreadKeys,
     projectScopeKey,
     scopedProjectKeys,
     serverConfigs,
@@ -2278,7 +2304,6 @@ export default function Sidebar({
             return thread ? threadSearchSubject(thread, null) : undefined;
           },
           foldSearchQuery(threadSearchQuery),
-          // oxlint-disable-next-line react/purity -- Recency ranking samples the clock when the search matches change; the compiler recomputes it only then.
           Date.now(),
           // A list filter, as on mobile: a pick would move rows unexplained.
           { picks: false },
@@ -3192,7 +3217,6 @@ export default function Sidebar({
         threadKey,
         currentThreadKey: readRouteThreadKey(router),
         action: "snooze",
-        // oxlint-disable-next-line react/purity -- runs in an event handler (oxc#27309)
         now: new Date().toISOString(),
         thread: readThreadShell(threadRef),
       })
@@ -3232,7 +3256,6 @@ export default function Sidebar({
       );
       if (threadKeys.length === 0) return;
       const count = threadKeys.length;
-      // oxlint-disable-next-line react/purity -- runs in an event handler (oxc#27309)
       const selectionNow = new Date();
       const selectedThreads = threadKeys.flatMap((threadKey) => {
         const thread = threadByKeyRef.current.get(threadKey);
@@ -3271,7 +3294,6 @@ export default function Sidebar({
       );
       const selectionFolderState = readThreadFolderMenuState(selectedThreadRefs);
       // Presets sync across environments, so the first selected thread's stand for all.
-      // oxlint-disable-next-line react/purity -- runs in an event handler (oxc#27309)
       const menuOpenedAt = new Date();
       const snoozePresets = resolveSnoozePresets(
         menuOpenedAt,
@@ -4133,6 +4155,26 @@ export default function Sidebar({
                         <Toggle value="project">{t("Project")}</Toggle>
                       </ToggleGroup>
                     </div>
+                    <div className="flex items-center justify-between gap-2 px-2.5 pt-2 text-xs text-muted-foreground">
+                      <span>{t("Status")}</span>
+                      <Select
+                        value={statusFilter}
+                        onValueChange={(value) => {
+                          if (value !== null) setStatusFilter(value);
+                        }}
+                      >
+                        <SelectTrigger aria-label={t("Filter threads by status")} size="xs">
+                          <SelectValue>{t(THREAD_LIST_STATUS_LABELS[statusFilter])}</SelectValue>
+                        </SelectTrigger>
+                        <SelectPopup>
+                          {ThreadListStatusFilter.literals.map((status) => (
+                            <SelectItem key={status} value={status}>
+                              {t(THREAD_LIST_STATUS_LABELS[status])}
+                            </SelectItem>
+                          ))}
+                        </SelectPopup>
+                      </Select>
+                    </div>
                     {offersSidebarMachineGrouping(machines.length, groupBy) ? (
                       <label className="flex items-center justify-between gap-2 px-2.5 pt-2 text-xs text-muted-foreground">
                         {t("Group by machine")}
@@ -4362,6 +4404,14 @@ export default function Sidebar({
               activeSearchResultIndex={activeSearchResultIndex}
               onClearSearch={clearThreadSearch}
             />
+            {statusFilter !== "all" ? (
+              <div className="mt-1 flex items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
+                <span>{t(THREAD_LIST_STATUS_LABELS[statusFilter])}</span>
+                <Button size="xs" variant="ghost" onClick={() => setStatusFilter("all")}>
+                  {t("Clear filter")}
+                </Button>
+              </div>
+            ) : null}
           </SidebarGroup>
         }
       >
@@ -5003,7 +5053,9 @@ export default function Sidebar({
             settledCount ===
             0 ? (
             <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
-              {projects.length === 0 ? (
+              {statusFilter !== "all" ? (
+                t("No threads match your filters")
+              ) : projects.length === 0 ? (
                 <>
                   <span>{t("No projects yet")}</span>
                   <button

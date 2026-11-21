@@ -1,3 +1,7 @@
+## 2026-11-21 — Filter, tag, and sort threads
+
+- Filter the thread list by status on web, desktop, and mobile. The list shows when a filter is active and gives you a quick way to clear it.
+
 ## 2026-11-21 — A landing reads real git history and refuses marked files
 
 - The landing turn, its checks receipt, the pre-push hook, `check:changed` and the upstream sync read git history past replace refs and grafts, so an invented ancestry can no longer let a push move main past a commit it never held.

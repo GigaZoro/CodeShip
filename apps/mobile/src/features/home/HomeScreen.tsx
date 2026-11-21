@@ -87,6 +87,7 @@ import {
   useScheduledTaskHiddenThreadKeys,
 } from "../threads/ThreadListPinnedTasks";
 import { ThreadListManualSteps } from "../threads/ThreadListManualSteps";
+import type { ThreadListStatusFilter } from "@t3tools/client-runtime/state/thread-status";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
   buildHomeProjectScopes,
@@ -116,6 +117,8 @@ interface HomeScreenProps {
   readonly searchQuery: string;
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
+  readonly statusFilter: ThreadListStatusFilter;
+  readonly onStatusChange: (status: ThreadListStatusFilter) => void;
   readonly projectGroupingMode: SidebarProjectGroupingMode;
   readonly onSearchQueryChange: (query: string) => void;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
@@ -449,6 +452,7 @@ export function HomeScreen(props: HomeScreenProps) {
     environmentId: props.selectedEnvironmentId,
     projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
     searchQuery: props.searchQuery,
+    statusFilter: props.statusFilter,
     searchMatches: threadSearchMatchByKey,
     settlementEnvironmentIds,
     snoozeEnvironmentIds,
@@ -709,6 +713,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const resetFilters = () => {
     props.onEnvironmentChange(null);
     props.onProjectChange(null);
+    props.onStatusChange("all");
   };
   const emptyState = hasAnyThreads
     ? null
@@ -733,6 +738,8 @@ export function HomeScreen(props: HomeScreenProps) {
           selectedEnvironmentId={props.selectedEnvironmentId}
           selectedProjectKey={props.selectedProjectKey}
           grouping={groupBy}
+          statusFilter={props.statusFilter}
+          onStatusChange={props.onStatusChange}
           onEnvironmentChange={props.onEnvironmentChange}
           onProjectChange={props.onProjectChange}
           onProjectGroupingChange={setProjectGrouping}
@@ -806,6 +813,13 @@ export function HomeScreen(props: HomeScreenProps) {
         <EmptyState
           title={t("No results")}
           detail={t('No threads matching "{query}".', { query: props.searchQuery })}
+          variant={plainEmpty}
+        />
+      ) : props.statusFilter !== "all" ? (
+        <EmptyState
+          title={t("No threads match your filters")}
+          actionLabel={t("Show all threads")}
+          onAction={resetFilters}
           variant={plainEmpty}
         />
       ) : v2ScopedProjectGroup !== null ? (
