@@ -323,9 +323,11 @@ to retain packaging files for inspection. Run `vp run dist:desktop:artifact --he
 options.
 
 The staged app, the Windows server sidecar and the CLI archive install exactly the versions in the
-root `pnpm-lock.yaml`. A package, dependency or patch the root lockfile does not hold fails the
-build instead of resolving from the registry, so run `vp i` and commit the lockfile after changing
-a dependency.
+root `pnpm-lock.yaml`, with the root workspace's patches, overrides and package extensions. A
+package, dependency or patch the root lockfile does not hold, or a dependency it lists that the
+stage would drop, fails the build instead of resolving from the registry, so run `vp i` and commit
+the lockfile after changing a dependency. Staged installs run without signing, notarization or
+registry credentials in their environment, so their install scripts never see them.
 
 Release jobs build in two steps so no install runs with signing credentials: `--phase stage
 --stage-dir <dir>` builds and installs everything that ships into an empty `<dir>`, and `--phase

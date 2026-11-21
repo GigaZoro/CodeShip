@@ -354,7 +354,10 @@ jobs:
           if [[ "${{ inputs.relay_client_tracing }}" == "true" ]]; then
             config_dir="$RUNNER_TEMP/relay-client-tracing"
             trap 'rm -rf "$config_dir"' EXIT
-            while IFS='=' read -r name value || [[ -n "$name" ]]; do
+            # read drops a trailing separator, and base64 tokens can end in '='.
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              name="${line%%=*}"
+              value="${line#*=}"
               case "$name" in
                 T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN)
                   echo "::add-mask::$value"
@@ -464,41 +467,12 @@ jobs:
           path: ${{ steps.stage_pnpm.outputs.dir }}
           key: ${{ steps.stage_pnpm_cache.outputs.cache-primary-key }}
 
-      - name: Import macOS signing certificate for the CLI archive
-        if: inputs.cli_archive && inputs.platform == 'mac'
-        shell: bash
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" ]]; then
-            echo "macOS CLI signing disabled (missing CSC_LINK); the archive is signed ad hoc."
-            exit 0
-          fi
-          keychain="$RUNNER_TEMP/t3-cli-signing.keychain-db"
-          keychain_password="$(openssl rand -hex 16)"
-          cert_path="$RUNNER_TEMP/t3-cli-signing.p12"
-          printf '%s' "$CSC_LINK" | base64 --decode > "$cert_path"
-          security create-keychain -p "$keychain_password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$cert_path" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-          identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)"
-          if [[ -z "$identity" ]]; then
-            echo "No Developer ID Application identity found in CSC_LINK." >&2
-            exit 1
-          fi
-          echo "::add-mask::$keychain_password"
-          echo "T3CODE_CLI_MAC_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
-          echo "macOS CLI signing enabled."
-
       - name: Package CLI archive
         if: inputs.cli_archive
         shell: bash
         env:
+          CSC_LINK: ${{ inputs.platform == 'mac' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ inputs.platform == 'mac' && secrets.CSC_KEY_PASSWORD || '' }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -510,10 +484,45 @@ jobs:
           AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
         run: |
           set -euo pipefail
-          if [[ "${{ inputs.platform }}" == "mac" && -n "${APPLE_API_KEY:-}" ]]; then
-            key_path="$RUNNER_TEMP/AuthKey_cli_${APPLE_API_KEY_ID}.p8"
-            printf '%s' "$APPLE_API_KEY" > "$key_path"
-            export APPLE_API_KEY="$key_path"
+          # Later steps run the archive and the app, so the identity and the notarization key
+          # exist only while this step signs.
+          signing_dir=""
+          keychain=""
+          cleanup() {
+            if [[ -n "$keychain" ]]; then security delete-keychain "$keychain"; fi
+            if [[ -n "$signing_dir" ]]; then rm -rf "$signing_dir"; fi
+          }
+          trap cleanup EXIT
+          if [[ "${{ inputs.platform }}" == "mac" ]]; then
+            signing_dir="$(mktemp -d "$RUNNER_TEMP/cli-signing.XXXXXX")"
+            if [[ -n "$CSC_LINK" && -n "$CSC_KEY_PASSWORD" ]]; then
+              keychain_password="$(openssl rand -hex 16)"
+              echo "::add-mask::$keychain_password"
+              cert_path="$signing_dir/signing.p12"
+              printf '%s' "$CSC_LINK" | base64 --decode > "$cert_path"
+              security create-keychain -p "$keychain_password" "$signing_dir/signing.keychain-db"
+              keychain="$signing_dir/signing.keychain-db"
+              security set-keychain-settings -lut 21600 "$keychain"
+              security unlock-keychain -p "$keychain_password" "$keychain"
+              security import "$cert_path" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
+              rm -f "$cert_path"
+              security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+              security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+              identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)"
+              if [[ -z "$identity" ]]; then
+                echo "No Developer ID Application identity found in CSC_LINK." >&2
+                exit 1
+              fi
+              export T3CODE_CLI_MAC_SIGN_IDENTITY="$identity"
+              echo "macOS CLI signing enabled."
+            else
+              echo "macOS CLI signing disabled (missing CSC_LINK); the archive is signed ad hoc."
+            fi
+            if [[ -n "${APPLE_API_KEY:-}" ]]; then
+              key_path="$signing_dir/AuthKey_${APPLE_API_KEY_ID}.p8"
+              printf '%s' "$APPLE_API_KEY" > "$key_path"
+              export APPLE_API_KEY="$key_path"
+            fi
           fi
           node scripts/build-cli-archive.ts \
             --phase package \
@@ -618,6 +627,16 @@ jobs:
           AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
         run: |
+          # The launch check after this step runs the app, so the notarization key, the profile
+          # and the self-signed keychain exist only while this step signs.
+          signing_dir=""
+          keychain=""
+          cleanup() {
+            if [[ -n "$keychain" ]]; then security delete-keychain "$keychain"; fi
+            if [[ -n "$signing_dir" ]]; then rm -rf "$signing_dir"; fi
+          }
+          trap cleanup EXIT
+
           args=(
             --phase package
             --stage-dir "$RUNNER_TEMP/desktop-artifact-stage"
@@ -644,11 +663,12 @@ jobs:
                 exit 1
               fi
 
-              key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+              signing_dir="$(mktemp -d "$RUNNER_TEMP/desktop-signing.XXXXXX")"
+              key_path="$signing_dir/AuthKey_${APPLE_API_KEY_ID}.p8"
               printf '%s' "$APPLE_API_KEY" > "$key_path"
               export APPLE_API_KEY="$key_path"
 
-              profile_path="$RUNNER_TEMP/t3code.provisionprofile"
+              profile_path="$signing_dir/t3code.provisionprofile"
               printf '%s' "$MACOS_PROVISIONING_PROFILE" | base64 -D > "$profile_path"
               security cms -D -i "$profile_path" >/dev/null
               export T3CODE_APPLE_TEAM_ID="$APPLE_TEAM_ID"
@@ -657,12 +677,13 @@ jobs:
               echo "macOS signing enabled."
               args+=(--signed)
             elif has_all "$MACOS_SELF_SIGNED_CERTIFICATE" "$MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD"; then
-              keychain="$RUNNER_TEMP/t3-self-signed.keychain-db"
+              signing_dir="$(mktemp -d "$RUNNER_TEMP/desktop-signing.XXXXXX")"
               keychain_password="$(openssl rand -hex 16)"
               echo "::add-mask::$keychain_password"
-              cert_path="$RUNNER_TEMP/t3-self-signed.p12"
+              cert_path="$signing_dir/t3-self-signed.p12"
               printf '%s' "$MACOS_SELF_SIGNED_CERTIFICATE" | base64 -D > "$cert_path"
-              security create-keychain -p "$keychain_password" "$keychain"
+              security create-keychain -p "$keychain_password" "$signing_dir/t3-self-signed.keychain-db"
+              keychain="$signing_dir/t3-self-signed.keychain-db"
               security set-keychain-settings -lut 21600 "$keychain"
               security unlock-keychain -p "$keychain_password" "$keychain"
               security import "$cert_path" -k "$keychain" -P "$MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD" -T /usr/bin/codesign

@@ -3,7 +3,8 @@
 - Release builds of the desktop app, its Windows server sidecar and the CLI archive install exactly the dependency versions in the repository's lockfile and fail on any it does not hold, instead of resolving new versions from the registry while building a release.
 - Those installs now finish before any signing certificate or key reaches the build machine, and signing works only on what they staged.
 - The Electron each release ships is downloaded while staging and checked against the SHA-256 that the locked Electron version lists, so packaging never downloads it with signing credentials loaded. When Electron's own install download did not finish, its fallback download is checked the same way.
-- Code that runs while a release is signed gets only the environment it needs, and the relay tracing token reaches only the CLI executable build.
+- Code that runs while a release is signed gets only the environment it needs, and the relay tracing token reaches only the CLI executable build. A relay tracing token that ends in `=` keeps it.
+- Dependency installs during a release build run without signing, notarization or registry credentials, and each signing step deletes its certificates, keys and keychain when it ends, so the checks that run the app afterwards never find them.
 
 ## 2026-11-21 — Start a worktree from a branch that exists only on the remote
 

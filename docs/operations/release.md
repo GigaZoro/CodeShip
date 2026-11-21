@@ -63,14 +63,19 @@ the version.
 - Signing is optional and auto-detected per platform from secrets.
 - Each build job installs before it signs. It stages the CLI archive and the desktop app first,
   before any signing secret is in a step's environment or any certificate or key is on the runner,
-  and those installs take exactly the root `pnpm-lock.yaml` versions for that platform. Staging
-  also downloads the Electron zip of each target architecture and checks it against the SHA-256
-  the locked `electron` package lists. Only then do the package steps import certificates and
-  keys, and they sign and package the staged files, unpacking that Electron zip, without
-  installing anything. Code that runs during packaging, such as the bytecode and bundle probes,
-  gets an allowlisted environment without the signing variables. The relay tracing config is
-  downloaded just before the CLI executable build, the one step that reads it, and deleted when
-  that step ends. `scripts/release-desktop-workflow.test.ts` keeps that order.
+  and those installs take exactly the root `pnpm-lock.yaml` versions for that platform. Staged
+  installs also run without signing, notarization or registry credentials in their environment,
+  whichever step starts them. Staging downloads the Electron zip of each target architecture and
+  checks it against the SHA-256 the locked `electron` package lists. Only then do the package
+  steps import certificates and keys, and they sign and package the staged files, unpacking that
+  Electron zip, without installing anything. Each package step writes its certificates, keys and
+  keychain into a folder it deletes when it ends, so the launch check and smoke tests after it,
+  which run the app and the archive, find none. Code that runs during packaging, such as the
+  bytecode and bundle probes, gets an allowlisted environment without the signing variables. It
+  still runs on the runner that holds the signing material, so a process an install left running
+  could reach it; only a separate signing job closes that. The relay tracing config is downloaded
+  just before the CLI executable build, the one step that reads it, and deleted when that step
+  ends. `scripts/release-desktop-workflow.test.ts` keeps that order.
 
 ## Releasing from a fork
 
@@ -736,7 +741,8 @@ Checklist:
 Notes:
 
 - `APPLE_API_KEY` is stored as raw key text in secrets.
-- The workflow writes it to a temporary `AuthKey_<id>.p8` file at runtime.
+- The package step writes it to an `AuthKey_<id>.p8` file in a temporary folder that it deletes
+  when it ends.
 - The workflow decodes `MACOS_PROVISIONING_PROFILE`, validates it with `security cms`, and passes it
   to the desktop packager.
 - In-app browser passkeys depend on the same profile. The packager adds each entitlement only when

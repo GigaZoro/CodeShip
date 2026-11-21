@@ -76,6 +76,40 @@ describe("desktop release build", () => {
     }
   });
 
+  it("removes the signing material a step wrote before the next step runs", () => {
+    // Steps after signing run the archive and the app, so nothing a signing step wrote or
+    // unlocked may outlive it.
+    for (const step of build.steps.filter(readsSecrets)) {
+      const run = runOf(step);
+      const name = String(step.name);
+      expect(run, name).not.toMatch(/GITHUB_ENV|GITHUB_PATH|GITHUB_OUTPUT/);
+      const written = [...run.matchAll(/printf '%s' "\$\w+"[^\n>]*>\s*"\$(\w+)"/g)].map(
+        (match) => match[1]!,
+      );
+      const keychains = [...run.matchAll(/security create-keychain .* "([^"]+)"\n/g)].map(
+        (match) => match[1]!,
+      );
+      if (written.length === 0 && keychains.length === 0) continue;
+      expect(run, name).toMatch(/trap cleanup EXIT/);
+      expect(run, name).toContain('rm -rf "$signing_dir"');
+      for (const variable of written) {
+        expect(run, `${name}: ${variable}`).toMatch(new RegExp(`\\b${variable}="\\$signing_dir/`));
+      }
+      for (const keychain of keychains) {
+        expect(keychain, name).toMatch(/^\$signing_dir\//);
+        expect(run, name).toContain('security delete-keychain "$keychain"');
+      }
+    }
+  });
+
+  it("reads a relay tracing value that ends in '='", () => {
+    const reader = runOf(
+      build.steps.find((step) => runOf(step).includes("relay-client-tracing.env"))!,
+    );
+    expect(reader).not.toMatch(/IFS='='/);
+    expect(reader).toContain('value="${line#*=}"');
+  });
+
   it("hands the relay tracing config to the CLI executable build alone", () => {
     const readers = build.steps.flatMap((step, index) =>
       JSON.stringify(step).includes("relay-client-tracing") ? [index] : [],
