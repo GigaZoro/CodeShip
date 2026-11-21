@@ -1,5 +1,6 @@
 import * as Dialog from "../../components/ui/Dialog";
 import { useRememberThreadProject } from "./useRememberThreadProject";
+import { useThreadPinAction } from "./useThreadPinAction";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
 import { buildProjectThreadStartTurnInput } from "../../lib/projectThreadStartTurn";
@@ -372,6 +373,7 @@ function ThreadRouteContent(
     selectedThread?.environmentId ?? null,
     AuthOrchestrationOperateScope,
   );
+  const threadPin = useThreadPinAction(selectedThread);
   const canReadTerminal = useEnvironmentScope(
     selectedThread?.environmentId ?? null,
     AuthTerminalReadScope,
@@ -1082,6 +1084,7 @@ function ThreadRouteContent(
                 onOpenGitInspector={handleOpenGitInspector}
                 onOpenFilesInspector={handleOpenFilesInspector}
                 onReturnToThread={props.onReturnToThread}
+                pin={threadPin}
               />
             )
           }

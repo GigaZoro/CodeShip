@@ -12,6 +12,7 @@ import {
   useThreadGitCenterHeaderItems,
   useThreadGitRightHeaderItems,
 } from "./ThreadGitControls";
+import type { ThreadPinAction } from "./useThreadPinAction";
 import { t } from "../../lib/i18n";
 
 type NativeHeaderItems = ReadonlyArray<Record<string, unknown>>;
@@ -24,6 +25,7 @@ export function useThreadHeaderOptions(props: {
   readonly gitControls: ThreadGitControlsProps;
   readonly onReturnToThread?: () => void;
   readonly draft?: boolean;
+  readonly pin?: ThreadPinAction | null;
 }) {
   const usesNativeWorkspaceColumns = useNativeWorkspaceColumnsSupported();
   const deviceType = useDeviceType();
@@ -31,8 +33,25 @@ export function useThreadHeaderOptions(props: {
   const navigation = useNavigation();
   const { layout, startNewTask } = useAdaptiveWorkspaceLayout();
   const sidebarHeaderItem = useWorkspaceSidebarHeaderItem();
-  const threadCenterHeaderItems = useThreadGitCenterHeaderItems(props.gitControls);
-  const compactRightHeaderItems = useThreadGitRightHeaderItems(props.gitControls);
+  const pinHeaderItems: NativeHeaderItems = props.pin
+    ? [
+        withNativeGlassHeaderItem({
+          accessibilityLabel: props.pin.pinned ? t("Unpin thread") : t("Pin thread"),
+          icon: { name: props.pin.pinned ? "pin.slash" : "pin", type: "sfSymbol" as const },
+          identifier: "thread-right-pin",
+          onPress: props.pin.onToggle,
+          type: "button" as const,
+        }),
+      ]
+    : [];
+  const threadCenterHeaderItems = [
+    ...useThreadGitCenterHeaderItems(props.gitControls),
+    ...pinHeaderItems,
+  ];
+  const compactRightHeaderItems = [
+    ...useThreadGitRightHeaderItems(props.gitControls),
+    ...pinHeaderItems,
+  ];
   const splitLeftHeaderItems: NativeHeaderItems = [
     ...(!usesDuoHeader
       ? [
