@@ -86,26 +86,35 @@ const StageWorkspaceConfig = Schema.Struct({
   allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
   patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  packageExtensions: Schema.optional(
-    Schema.Record(
-      Schema.String,
-      Schema.Struct({
-        peerDependenciesMeta: Schema.Record(
-          Schema.String,
-          Schema.Struct({ optional: Schema.Boolean }),
-        ),
-      }),
-    ),
-  ),
   nodeLinker: Schema.optional(Schema.Literals(["hoisted"])),
 });
 type StageWorkspaceConfig = typeof StageWorkspaceConfig.Type;
 
-// TypeScript is a typings-only peer; pnpm auto-installation would ship a compiler.
-const STAGE_PACKAGE_EXTENSIONS = {
-  "electron-webauthn": { peerDependenciesMeta: { typescript: { optional: true } } },
-  "@electron-webauthn/macos": { peerDependenciesMeta: { typescript: { optional: true } } },
+// TypeScript is a typings-only peer. Seeded with the root lockfile, pnpm satisfies it
+// with another workspace's compiler, which the app would then ship.
+const STAGE_PEER_OVERRIDES = {
+  "electron-webauthn>typescript": "-",
+  "@electron-webauthn/macos>typescript": "-",
 } as const;
+
+const PnpmLockfileDocument = Schema.Struct({
+  patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  packages: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({ resolution: Schema.Record(Schema.String, Schema.Unknown) }),
+    ),
+  ),
+  snapshots: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+        optionalDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+      }),
+    ),
+  ),
+});
 
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
@@ -116,6 +125,7 @@ const decodeReleasePackageManifest = Schema.decodeEffect(
 );
 const decodeWorkspaceConfig = Schema.decodeEffect(fromYaml(WorkspaceConfig));
 const encodeStageWorkspaceConfig = Schema.encodeEffect(fromYaml(StageWorkspaceConfig));
+const decodePnpmLockfileDocument = Schema.decodeEffect(fromYaml(PnpmLockfileDocument));
 
 export const readWorkspaceConfig = Effect.fn("readWorkspaceConfig")(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -334,6 +344,22 @@ export class BuildCommandFailedError extends Schema.TaggedError<BuildCommandFail
     ].filter((section): section is string => section !== undefined);
     const outputSuffix = outputSections.length > 0 ? `\n\n${outputSections.join("\n\n")}` : "";
     return `Command exited with non-zero exit code (${this.exitCode})${outputSuffix}`;
+  }
+}
+
+export class StageLockfileDriftError extends Schema.TaggedError<StageLockfileDriftError>()(
+  "StageLockfileDriftError",
+  { stage: Schema.String, drift: Schema.Array(Schema.String) },
+) {
+  override get message(): string {
+    const shown = this.drift.slice(0, 20).map((line) => `  - ${line}`);
+    const hidden = this.drift.length - shown.length;
+    return [
+      `The ${this.stage} install resolved versions that pnpm-lock.yaml does not pin:`,
+      ...shown,
+      ...(hidden > 0 ? [`  ...and ${String(hidden)} more`] : []),
+      "Release builds install only the root lockfile's versions. Run `vp install` at the repository root and commit pnpm-lock.yaml, or align the staged dependencies with it.",
+    ].join("\n");
   }
 }
 
@@ -973,7 +999,14 @@ interface StagePackageJson {
   };
 }
 
-export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
+// Resolution only: nothing is installed and no lifecycle script runs before the drift check.
+const STAGE_LOCKFILE_ARGS = [
+  "install",
+  "--lockfile-only",
+  "--no-frozen-lockfile",
+  "--ignore-scripts",
+] as const;
+const STAGE_INSTALL_ARGS = ["install", "--frozen-lockfile", "--prod"] as const;
 export const DESKTOP_ELECTRON_LANGUAGES = ["en-US"] as const;
 export const DESKTOP_FILE_EXCLUSIONS = [
   // Cursor walks from argv[1] to platform assets; helpers and native addons need real paths outside ASAR.
@@ -1000,7 +1033,7 @@ export const MAC_FILE_EXCLUSIONS = [
   "!**/node_modules/node-pty/prebuilds/win32-*/**/*",
   "!**/node_modules/node-pty/third_party/conpty/**/*",
 ] as const;
-// Linux builds node-pty from source; its prebuilds target other platforms.
+// Linux runs node-pty's linux-* prebuilds; the macOS and Windows ones are dead weight.
 export const LINUX_FILE_EXCLUSIONS = [
   ...MAC_FILE_EXCLUSIONS,
   "!**/node_modules/node-pty/prebuilds/darwin-*/**/*",
@@ -1596,10 +1629,131 @@ export function createStageWorkspaceConfig(input: {
     ...(patchedDependencies && Object.keys(patchedDependencies).length > 0
       ? { patchedDependencies }
       : {}),
-    ...(overrides && Object.keys(overrides).length > 0 ? { overrides } : {}),
-    packageExtensions: STAGE_PACKAGE_EXTENSIONS,
+    overrides: { ...overrides, ...STAGE_PEER_OVERRIDES },
   };
 }
+
+interface PnpmLockfileGraph {
+  readonly resolutions: ReadonlyMap<string, Readonly<Record<string, unknown>>>;
+  /** Child versions per `name@version`, across every peer variant of that package. */
+  readonly childVersions: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>>;
+  readonly patchHashes: ReadonlyMap<string, string>;
+}
+
+const withoutPeerSuffix = (reference: string) => {
+  const peerStart = reference.indexOf("(");
+  return peerStart === -1 ? reference : reference.slice(0, peerStart);
+};
+
+export const readPnpmLockfileGraph = Effect.fn("readPnpmLockfileGraph")(function* (
+  lockfile: string,
+) {
+  const resolutions = new Map<string, Readonly<Record<string, unknown>>>();
+  const childVersions = new Map<string, Map<string, Set<string>>>();
+  const patchHashes = new Map<string, string>();
+  // pnpm writes its own install as a leading document; "---" at column 0 always starts one.
+  for (const document of lockfile.split(/^---[ \t]*$/mu)) {
+    if (document.trim() === "") continue;
+    const decoded = yield* decodePnpmLockfileDocument(document);
+    for (const [key, hash] of Object.entries(decoded.patchedDependencies ?? {})) {
+      patchHashes.set(key, hash);
+    }
+    for (const [key, entry] of Object.entries(decoded.packages ?? {})) {
+      resolutions.set(key, entry.resolution);
+    }
+    for (const [key, snapshot] of Object.entries(decoded.snapshots ?? {})) {
+      const parent = withoutPeerSuffix(key);
+      const children = childVersions.get(parent) ?? new Map<string, Set<string>>();
+      childVersions.set(parent, children);
+      for (const [child, version] of Object.entries({
+        ...snapshot.dependencies,
+        ...snapshot.optionalDependencies,
+      })) {
+        const versions = children.get(child) ?? new Set<string>();
+        children.set(child, versions);
+        versions.add(withoutPeerSuffix(version));
+      }
+    }
+  }
+  return { resolutions, childVersions, patchHashes } satisfies PnpmLockfileGraph;
+});
+
+const sameResolution = (
+  left: Readonly<Record<string, unknown>>,
+  right: Readonly<Record<string, unknown>>,
+) =>
+  Object.keys(left).length === Object.keys(right).length &&
+  Object.entries(left).every(([field, value]) => right[field] === value);
+
+/** Every package, dependency edge, and patch a stage resolved must already be in the root lockfile. */
+export function findStageLockfileDrift(
+  root: PnpmLockfileGraph,
+  stage: PnpmLockfileGraph,
+): ReadonlyArray<string> {
+  const drift: string[] = [];
+  for (const [key, resolution] of stage.resolutions) {
+    const rootResolution = root.resolutions.get(key);
+    if (rootResolution === undefined) {
+      drift.push(`${key} is not in pnpm-lock.yaml`);
+    } else if (!sameResolution(resolution, rootResolution)) {
+      drift.push(`${key} resolves to a different tarball than pnpm-lock.yaml`);
+    }
+  }
+  for (const [parent, children] of stage.childVersions) {
+    const rootChildren = root.childVersions.get(parent);
+    for (const [child, versions] of children) {
+      for (const version of versions) {
+        if (rootChildren?.get(child)?.has(version) !== true) {
+          drift.push(`${parent} depends on ${child}@${version}, which pnpm-lock.yaml does not`);
+        }
+      }
+    }
+  }
+  for (const [key, hash] of stage.patchHashes) {
+    if (root.patchHashes.get(key) !== hash) {
+      drift.push(`the patch for ${key} differs from pnpm-lock.yaml`);
+    }
+  }
+  return drift;
+}
+
+/** Installs a staged manifest at the root lockfile's versions, so releases never resolve fresh. */
+export const installStagedDependencies = Effect.fn("installStagedDependencies")(function* (input: {
+  readonly repoRoot: string;
+  readonly stageDir: string;
+  readonly label: string;
+  readonly verbose: boolean;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const rootLockfile = yield* fs.readFileString(path.join(input.repoRoot, "pnpm-lock.yaml"));
+  const stageLockfilePath = path.join(input.stageDir, "pnpm-lock.yaml");
+  // A seeded lockfile makes pnpm keep the root's resolutions and prune the rest.
+  yield* fs.writeFileString(stageLockfilePath, rootLockfile);
+  yield* runStageVp(input, STAGE_LOCKFILE_ARGS);
+  const drift = findStageLockfileDrift(
+    yield* readPnpmLockfileGraph(rootLockfile),
+    yield* readPnpmLockfileGraph(yield* fs.readFileString(stageLockfilePath)),
+  );
+  if (drift.length > 0) {
+    return yield* new StageLockfileDriftError({ stage: input.label, drift: [...drift] });
+  }
+  yield* runStageVp(input, STAGE_INSTALL_ARGS);
+});
+
+const runStageVp = Effect.fn("runStageVp")(function* (
+  stage: { readonly stageDir: string; readonly label: string; readonly verbose: boolean },
+  args: ReadonlyArray<string>,
+) {
+  const command = yield* resolveSpawnCommand("vp", [...args]);
+  yield* runCommand(
+    ChildProcess.make(command.command, command.args, {
+      cwd: stage.stageDir,
+      shell: command.shell,
+    }),
+    { label: `vp ${args.join(" ")} (${stage.label})`, verbose: stage.verbose },
+  );
+});
 
 export function createStagePatchedDependencies(
   patchedDependencies: Record<string, string>,
@@ -2773,6 +2927,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
 ) {
   const buildConfig: Record<string, unknown> = {
     afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
+    // Native addons ship N-API prebuilds the staged install already placed. A rebuild would
+    // compile sources while signing credentials are loaded, and shadow the prebuilds.
+    npmRebuild: false,
     appId: DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
     artifactName: "T3-Code-${version}-${arch}.${ext}",
@@ -2948,7 +3105,6 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   }
 
   if (platform === "win") {
-    buildConfig.npmRebuild = false;
     buildConfig.nsis = {
       differentialPackage: true,
       include: "apps/desktop/resources/installer.nsh",
@@ -3145,14 +3301,12 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
   }
 
   yield* Effect.log("[desktop-artifact] Installing server sidecar runtime externals...");
-  const installCommand = yield* resolveSpawnCommand("vp", [...STAGE_INSTALL_ARGS]);
-  yield* runCommand(
-    ChildProcess.make(installCommand.command, installCommand.args, {
-      cwd: serverStageDir,
-      shell: installCommand.shell,
-    }),
-    { label: "vp install --prod (server sidecar)", verbose: input.verbose },
-  );
+  yield* installStagedDependencies({
+    repoRoot: input.repoRoot,
+    stageDir: serverStageDir,
+    label: "server sidecar",
+    verbose: input.verbose,
+  });
 
   yield* Effect.log("[desktop-artifact] Packing server.asar...");
   yield* fs.makeDirectory(path.dirname(input.asarPath), { recursive: true });
@@ -3926,14 +4080,12 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   }
 
   yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
-  const installCommand = yield* resolveSpawnCommand("vp", [...STAGE_INSTALL_ARGS]);
-  yield* runCommand(
-    ChildProcess.make(installCommand.command, installCommand.args, {
-      cwd: stageAppDir,
-      shell: installCommand.shell,
-    }),
-    { label: "vp install --prod", verbose: options.verbose },
-  );
+  yield* installStagedDependencies({
+    repoRoot,
+    stageDir: stageAppDir,
+    label: "desktop app",
+    verbose: options.verbose,
+  });
   yield* stageClerkPasskeyNativeBinaries(stageAppDir, options.platform, options.arch);
   yield* stageKeyringNativeBinaries(stageAppDir, options.platform, options.arch);
 

@@ -229,8 +229,8 @@ minimumReleaseAgeExclude:
   - agent-device@0.21.32
 
 overrides:
-  # Pin every patched package, including transitive dependencies, so lockfile-free
-  # release installs cannot drift past the patch. Update these with patchedDependencies.
+  # Pin every patched package, including transitive dependencies, to the version its
+  # patch was written for. Update these with patchedDependencies.
   react-native-image-viewing: 0.2.2
   mdast-util-math: 3.0.0
   micromark-extension-llm-math: 3.1.0
@@ -326,8 +326,8 @@ overrides:
   "@opencode/protocol>effect": "catalog:"
   "@opencode/schema>effect": "catalog:"
   node-abi: 4.33.0
-  # The desktop app installs these without a lockfile when it packages them, so
-  # pin the native passkey code that runs in its main process.
+  # The native passkey code runs in the desktop main process; a lockfile refresh
+  # must not move it off the reviewed version.
   "electron-webauthn>@electron-webauthn/macos": "catalog:"
   "@electron-webauthn/macos>objc-js": "catalog:"
   lightningcss: "catalog:"

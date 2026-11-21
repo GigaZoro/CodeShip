@@ -16,15 +16,14 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import rootPackageJson from "../package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
 import {
   createStagePatchedDependencies,
   createStageWorkspaceConfig,
+  installStagedDependencies,
   resolveFffNativeDependencies,
-  STAGE_INSTALL_ARGS,
 } from "./build-desktop-artifact.ts";
 import { assertLinuxArm64PageCompatibility } from "./lib/linux-arm64-sea.ts";
 import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-packages.ts";
@@ -183,16 +182,12 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
     yield* fs.copy(path.join(input.repoRoot, "patches"), path.join(input.stageDir, "patches"));
   }
 
-  const install = yield* resolveSpawnCommand("vp", [...STAGE_INSTALL_ARGS]);
-  yield* runCommand(
-    ChildProcess.make(install.command, install.args, {
-      cwd: input.stageDir,
-      shell: install.shell,
-      stdout: "inherit",
-      stderr: "inherit",
-    }),
-    "vp install --prod (cli archive runtime externals)",
-  );
+  yield* installStagedDependencies({
+    repoRoot: input.repoRoot,
+    stageDir: input.stageDir,
+    label: "cli archive runtime externals",
+    verbose: true,
+  });
 
   const platformKey = cliArchivePlatformKey(input.platform, input.arch);
   const prebuildsDir = path.join(input.stageDir, "node_modules/node-pty/prebuilds");
