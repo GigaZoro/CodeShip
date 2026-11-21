@@ -14542,7 +14542,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           "turnItems",
           "contextTransfers",
         ],
-        { turnItemTypes: ["subagent"], messageRoles: ["user"] },
+        { turnItemTypes: ["subagent", "run_interrupt_request"], messageRoles: ["user"] },
       );
       const task = parentProjection.subagents.find(
         (candidate) =>
@@ -14565,8 +14565,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
 
+      // A Stop that reaches the task while a restart holds its work leaves the last run cancelled or
+      // failed. The marker is on the child's restart chain, or on the parent run that owns the task,
+      // whose Stop a due retry can see before the Stop reaches the child.
+      const stopped =
+        (outcome === "cancelled" || outcome === "failed") &&
+        ((task.runId !== null && runStopRequested(task.runId, parentProjection.turnItems)) ||
+          (yield* projectionStore.getThreadRecords(childThreadId, ["turnItems"], {
+            turnItemTypes: ["run_interrupt_request"],
+            turnItemRunIds: [
+              ...restartChainRunIds(
+                childControls.runs,
+                latestRestartContinuation(childControls.runs, childRun),
+              ),
+            ],
+          })).turnItems.length > 0);
+      const status = stopped ? "interrupted" : terminalStatus;
       const now = yield* DateTime.now;
-      const result = subagentResultForRun(childProjection, { ...childRun, status: outcome });
+      const result = subagentResultForRun(childProjection, {
+        ...childRun,
+        status: stopped ? "interrupted" : outcome,
+      });
       const parentRun =
         task.runId === null
           ? undefined
@@ -14578,7 +14597,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const updatedTask: OrchestrationV2Subagent = {
         ...task,
         providerThreadId: childRun.providerThreadId,
-        status: terminalStatus,
+        status,
         result: result.text,
         completedAt: now,
         updatedAt: now,
@@ -14668,7 +14687,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 occurredAt: now,
                 payload: {
                   ...parentNode,
-                  status: terminalStatus,
+                  status,
                   providerThreadId: childRun.providerThreadId,
                   completedAt: now,
                 },
@@ -14686,7 +14705,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 occurredAt: now,
                 payload: {
                   ...parentTurnItem,
-                  status: terminalStatus,
+                  status,
                   result: result.text,
                   completedAt: now,
                   updatedAt: now,

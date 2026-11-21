@@ -2550,10 +2550,11 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
         threadId: stoppedChild.childThreadId,
         sourceRunId: stoppedChild.childRunId,
       }).pipe(Effect.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true })));
+      // The parent's Stop, not the restart, ended the work, so the task reports it stopped.
       const afterStop = yield* orchestrator.getThreadProjection(threadId);
       assert.equal(
         afterStop.subagents.find((row) => row.id === stoppedChild.taskId)?.status,
-        "cancelled",
+        "interrupted",
       );
       assert.deepEqual(
         (yield* orchestrator.getThreadProjection(stoppedChild.childThreadId)).runs.map(
@@ -3359,8 +3360,9 @@ it.layer(layerTestWithOutbox)("a Stop during a delegated continuation's retry ba
         yield* worker.drain();
 
         // A continuation that never started is not a result: the cut run the restart cancelled is.
+        // The Stop that ended its wait ends the task as stopped.
         const settled = yield* task;
-        assert.equal(settled?.status, "cancelled");
+        assert.equal(settled?.status, "interrupted");
         assert.isNotNull(settled?.result ?? null);
         assert.isTrue(
           (yield* orchestrator.getThreadProjection(threadId)).contextTransfers.some(

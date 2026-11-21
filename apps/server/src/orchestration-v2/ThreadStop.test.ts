@@ -932,6 +932,129 @@ it.effect("interrupting the restart source stops children owned by every run in 
   }).pipe(Effect.provide(layerTest)),
 );
 
+const RETRY_DUE_FIRST = "a retry due before run.interrupt reaches the child";
+
+it.effect.each([
+  { stop: "run.interrupt", retrying: "started" },
+  { stop: "thread.stop", retrying: "started" },
+  { stop: RETRY_DUE_FIRST, retrying: "started" },
+  { stop: "run.interrupt", retrying: "unstarted" },
+  { stop: "thread.stop", retrying: "unstarted" },
+  { stop: RETRY_DUE_FIRST, retrying: "unstarted" },
+] as const)(
+  "$stop ends a delegated task whose $retrying restart waits on a delayed retry as interrupted",
+  ({ stop, retrying }) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const sql = yield* SqlClient.SqlClient;
+      const parentThreadId = ThreadId.make("thread:stop-retrying-child");
+      yield* createWatchingThread(parentThreadId, 21);
+      yield* send(parentThreadId, "delegate", "start_immediately");
+      const childThreadId = yield* delegate(parentThreadId, "retrying task");
+      yield* send(childThreadId, "continue", "queue_after_active");
+      const parentRun = (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!;
+      const [cut, continuation] = (yield* orchestrator.getThreadProjection(childThreadId)).runs;
+      assert.isDefined(cut);
+      assert.isDefined(continuation);
+      const now = yield* DateTime.now;
+      yield* projections.apply({
+        id: EventId.make("parent-completed"),
+        type: "run.updated",
+        threadId: parentThreadId,
+        occurredAt: now,
+        payload: { ...parentRun, status: "completed", startedAt: now, completedAt: now },
+      });
+      yield* projections.apply({
+        id: EventId.make("child-cut"),
+        type: "run.updated",
+        threadId: childThreadId,
+        occurredAt: now,
+        payload: { ...cut, status: "cancelled", startedAt: now, completedAt: now },
+      });
+      yield* projections.apply({
+        id: EventId.make("continuation-failed"),
+        type: "run.updated",
+        threadId: childThreadId,
+        occurredAt: now,
+        payload: {
+          ...continuation,
+          restartContinuationOfRunId: cut.id,
+          status: "failed",
+          startedAt: retrying === "started" ? now : null,
+          completedAt: now,
+        },
+      });
+      // Setup effects would start the runs on a provider; only Stop's effects run.
+      yield* sql`DELETE FROM orchestration_v2_effect_outbox`;
+      yield* outbox.enqueue([
+        EffectOutbox.restartContinuationEffect({
+          commandId: CommandId.make("retry-child-continuation"),
+          threadId: childThreadId,
+          sourceRunId: continuation.id,
+          availableAt: stop === RETRY_DUE_FIRST ? now : DateTime.add(now, { minutes: 1 }),
+        }),
+      ]);
+      const finalized = yield* orchestrator
+        .streamStoredEventsFrom({
+          threadId: parentThreadId,
+          afterSequence: yield* orchestrator.getThreadEventSequence(parentThreadId),
+          eventType: "subagent.updated",
+        })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "subagent.updated" && stored.event.payload.result !== null,
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+      const commandId = CommandId.make("stop-retrying-child");
+      if (stop === RETRY_DUE_FIRST) {
+        // The parent's Stop committed its marker; the effect that stops its tasks has not run.
+        yield* projections.apply({
+          id: EventId.make("parent-stop-marker"),
+          type: "turn-item.updated",
+          threadId: parentThreadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make("item:parent-stop-marker"),
+            threadId: parentThreadId,
+            runId: parentRun.id,
+            nodeId: parentRun.rootNodeId,
+            providerThreadId: parentRun.providerThreadId,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 99,
+            status: "completed",
+            title: "Interrupt requested",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "run_interrupt_request",
+            message: "Stopped",
+          },
+        });
+      } else {
+        yield* orchestrator.dispatch(
+          stop === "run.interrupt"
+            ? { type: stop, commandId, threadId: parentThreadId, runId: parentRun.id }
+            : { type: stop, commandId, threadId: parentThreadId },
+        );
+      }
+      yield* worker.drain();
+      yield* Fiber.join(finalized);
+      const [task] = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents;
+      assert.equal(task?.status, "interrupted");
+      assert.isNotNull(task?.result);
+      assert.isFalse(yield* orchestrator.restartContinuationPending(continuation));
+    }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect.each(["run.interrupt", "run.interrupt only if active", "thread.stop"] as const)(
   "%s cancels a chain's delayed restart while another run is active",
   (stop) =>
