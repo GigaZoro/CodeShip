@@ -222,22 +222,6 @@ jobs:
           toolchain: stable
           targets: ${{ inputs.rust_target }}
 
-      - name: Download relay client tracing config
-        if: inputs.relay_client_tracing
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: relay-client-tracing-config
-          path: ${{ runner.temp }}/relay-client-tracing
-
-      - name: Load relay client tracing config
-        if: inputs.relay_client_tracing
-        shell: bash
-        run: |
-          config_path="$RUNNER_TEMP/relay-client-tracing/relay-client-tracing.env"
-          tracing_token="$(sed -n 's/^T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN=//p' "$config_path")"
-          echo "::add-mask::$tracing_token"
-          cat "$config_path" >> "$GITHUB_ENV"
-
       - name: Align package versions to release version
         run: node scripts/update-release-package-versions.ts "${{ inputs.version }}"
 
@@ -349,6 +333,15 @@ jobs:
       # Setup Vite+ selects the exact engines.node version from package.json.
       # Native builds embed that executable; cross-target builds download the
       # same version for their target.
+      # Only the executable build reads the tracing config: it never reaches
+      # $GITHUB_ENV or outlives that step, so the stage installs never see it.
+      - name: Download relay client tracing config
+        if: inputs.cli_archive && inputs.relay_client_tracing
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: relay-client-tracing-config
+          path: ${{ runner.temp }}/relay-client-tracing
+
       - name: Build CLI single-executable
         if: inputs.cli_archive
         shell: bash
@@ -356,7 +349,24 @@ jobs:
           # The executable bundles the server again, so it needs the same stamp
           # as release.yml's JS bundle.
           T3CODE_TELEMETRY_CHANNEL: ${{ github.repository == 'pingdotgg/t3code' && inputs.release_channel || 'dev' }}
-        run: node apps/server/scripts/cli.ts build-exe --verbose ${{ inputs.platform == 'win' && format('--target win-{0}', inputs.arch) || '' }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.relay_client_tracing }}" == "true" ]]; then
+            config_dir="$RUNNER_TEMP/relay-client-tracing"
+            trap 'rm -rf "$config_dir"' EXIT
+            while IFS='=' read -r name value || [[ -n "$name" ]]; do
+              case "$name" in
+                T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN)
+                  echo "::add-mask::$value"
+                  export "$name=$value"
+                  ;;
+                T3CODE_RELAY_CLIENT_OTLP_TRACES_URL | T3CODE_RELAY_CLIENT_OTLP_TRACES_DATASET)
+                  export "$name=$value"
+                  ;;
+              esac
+            done < "$config_dir/relay-client-tracing.env"
+          fi
+          node apps/server/scripts/cli.ts build-exe --verbose ${{ inputs.platform == 'win' && format('--target win-{0}', inputs.arch) || '' }}
 
       - name: Stage resource monitor for the CLI archive
         if: inputs.cli_archive
