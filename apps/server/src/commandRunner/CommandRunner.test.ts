@@ -671,6 +671,36 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
 
   describe.skipIf(isWindowsHost)("POSIX shell and process groups", () => {
     it.effect.each([
+      ["names another process's start", "command-recovered-other", true],
+      ["is missing, as an older server left it", "command-recovered-unowned", false],
+    ] as const)(
+      "leaves running the group of a recovered command whose recorded identity %s",
+      ([, name, otherStart]) =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat(name);
+          const started = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+          );
+          yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+          const file = NodePath.join(NodePath.dirname(started.logPath), "identity");
+          if (otherStart && isLinuxHost) {
+            const [, boot = ""] = NodeFS.readFileSync(file, "utf8").split("\n");
+            NodeFS.writeFileSync(file, `1 (x) S ${"0 ".repeat(18)}1\n${boot}\n`);
+          } else if (otherStart) {
+            NodeFS.writeFileSync(file, "Sat Jan  1 00:00:00 2000\n");
+          } else {
+            NodeFS.rmSync(file);
+          }
+          yield* forgetPid(started.taskId);
+          yield* withServer(() => nextWake(chat.threadId));
+          const row = yield* commandRow(started.taskId);
+          assert.equal(row?.status, "lost");
+          assert.equal(row?.lost_reason, "pid-reused");
+          assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+        }),
+    );
+
+    it.effect.each([
       ["/t3-agent-tools", true, "command-agent-shell"],
       ["", true, "command-agent-shell-empty-path"],
       ["/t3-agent-tools", false, "command-agent-shell-no-host-path"],

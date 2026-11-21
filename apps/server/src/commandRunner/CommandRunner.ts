@@ -60,6 +60,7 @@ import {
   identityWindow,
   launchIdentity,
   linuxIdentity,
+  recordedIdentity,
   timeIdentity,
 } from "./processIdentity.ts";
 import { isServerOnlyEnvKey } from "../terminal/userShellEnv.ts";
@@ -73,6 +74,7 @@ export const WatchInterval = Context.Reference<Duration.Duration>(
 const LOG_FILE = "output.log";
 const STATUS_FILE = "exit-status";
 const PID_FILE = "pid";
+const IDENTITY_FILE = "identity";
 const LOG_TRIM_AT_BYTES = 8 * 1024 * 1024;
 const LOG_KEEP_BYTES = 4 * 1024 * 1024;
 const LOG_COPY_CHUNK_BYTES = 1024 * 1024;
@@ -138,12 +140,19 @@ const WINDOWS_WRAPPER = [
 export const windowsStartOrEnded = (pid: string) =>
   `$made = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($made) { $made.StartTime.ToUniversalTime().ToString('o') } else { '${ENDED_IDENTITY}' }`;
 
-// Names itself first, then runs the command and outlives it to write its exit status; each rename
-// makes its file appear whole. Arguments: log, status file, pid file, then the command's argv.
+// Records its own identity, then names itself, then runs the command and outlives it to write its
+// exit status; each rename makes its file appear whole. Arguments: log, status file, pid file,
+// identity file, then the command's argv. Linux writes its stat line and the boot id, elsewhere
+// ps's start; a file with no usable line gives a later server no ownership.
 const POSIX_WRAPPER = [
+  'if [ -r "/proc/$$/stat" ]; then',
+  '  { read -r s <"/proc/$$/stat" && read -r b </proc/sys/kernel/random/boot_id && printf "%s\\n%s\\n" "$s" "$b"; } >"$4.tmp" && mv -f "$4.tmp" "$4"',
+  "else",
+  '  { LC_ALL=C TZ=UTC ps -p "$$" -o lstart=; } >"$4.tmp" 2>/dev/null && mv -f "$4.tmp" "$4"',
+  "fi",
   'printf "%s\\n" "$$" >"$3.tmp" && mv -f "$3.tmp" "$3"',
   'exec >>"$1" 2>&1 </dev/null',
-  'run() { shift 3; "$@"; }',
+  'run() { shift 4; "$@"; }',
   'run "$@"',
   "code=$?",
   'printf "%s\\n" "$code" >"$2.tmp" && mv -f "$2.tmp" "$2"',
@@ -1146,6 +1155,7 @@ const make = Effect.gen(function* () {
           logPath,
           statusPath,
           path.join(directory, PID_FILE),
+          path.join(directory, IDENTITY_FILE),
           ...prefix,
           resolveCommandShell(platform, env, shell).path,
           "-c",
@@ -1583,17 +1593,35 @@ const make = Effect.gen(function* () {
     if (!isProcessAlive(pid)) {
       return { ...row, pid, process_identity: ENDED_IDENTITY };
     }
-    const startedAt = yield* startedAtOf(pid);
-    const writtenAt = named.writtenAt?.getTime();
-    // It started before it wrote the file; a later process reusing the pid did not. ps reports
-    // whole seconds.
-    if (startedAt !== undefined && writtenAt !== undefined && startedAt > writtenAt + 1_000) {
-      return { ...row, lost_reason: "pid-reused" as const };
+    // Windows keeps its creation time from the launch; elsewhere the wrapper recorded its own
+    // identity before it named itself, which no step of the clock can move. A file without one
+    // (an older server's, or an unreadable start) gives no ownership: the group is left running.
+    const recorded =
+      platform === "win32"
+        ? undefined
+        : recordedIdentity(
+            platform,
+            yield* fs
+              .readFileString(path.join(row.directory, IDENTITY_FILE))
+              .pipe(Effect.option, Effect.map(Option.getOrElse(() => ""))),
+          );
+    if (platform !== "win32") {
+      if (recorded === undefined || compareIdentity(recorded, yield* identityOf(pid)) === "other") {
+        return { ...row, lost_reason: "pid-reused" as const };
+      }
+    } else {
+      const startedAt = yield* startedAtOf(pid);
+      const writtenAt = named.writtenAt?.getTime();
+      // It started before it wrote the file; a later process reusing the pid did not. ps reports
+      // whole seconds.
+      if (startedAt !== undefined && writtenAt !== undefined && startedAt > writtenAt + 1_000) {
+        return { ...row, lost_reason: "pid-reused" as const };
+      }
     }
     const recovered: CommandRunRow = {
       ...row,
       pid,
-      process_identity: (yield* identityOf(pid)) ?? null,
+      process_identity: recorded ?? (yield* identityOf(pid)) ?? null,
     };
     yield* writeRow(recovered);
     return recovered;

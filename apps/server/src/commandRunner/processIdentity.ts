@@ -91,3 +91,11 @@ export const compareIdentity = (
   if (was === undefined || now === undefined) return "unknown";
   return now >= was.from - TIME_SLACK_MS && now <= was.to + TIME_SLACK_MS ? "same" : "other";
 };
+
+/** The identity a wrapper recorded for itself: its stat line and boot id on Linux, else ps's start. */
+export const recordedIdentity = (platform: NodeJS.Platform, text: string): string | undefined => {
+  const [first = "", second = ""] = text.split("\n");
+  if (platform === "linux") return linuxIdentity(first, second);
+  const startedAt = Date.parse(`${first.trim()} UTC`);
+  return first.trim() !== "" && Number.isFinite(startedAt) ? timeIdentity(startedAt) : undefined;
+};

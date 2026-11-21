@@ -1,3 +1,7 @@
+## 2026-11-21 — Recovered commands are matched by their recorded identity
+
+- After a restart, a command run by the agent is recognized by the identity its wrapper recorded at launch, so setting the system clock back can no longer make Stop signal an unrelated process. A command from an older version is reported lost and left running.
+
 ## 2026-11-21 — Release builds install only locked versions, before signing
 
 - Release builds of the desktop app, its Windows server sidecar and the CLI archive install exactly the dependency versions in the repository's lockfile and fail on any it does not hold, instead of resolving new versions from the registry while building a release.

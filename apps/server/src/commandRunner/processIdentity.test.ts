@@ -6,6 +6,7 @@ import {
   identityWindow,
   launchIdentity,
   linuxIdentity,
+  recordedIdentity,
   timeIdentity,
   windowIdentity,
 } from "./processIdentity.ts";
@@ -84,5 +85,19 @@ describe("processIdentity", () => {
     ["no Linux read", "linux", undefined, null],
   ] as const)("records a launched wrapper from %s", (_, platform, read, identity) => {
     assert.strictEqual(launchIdentity(read, { from: 10_000, to: 12_000 }, platform), identity);
+  });
+
+  it("reads the identity a wrapper recorded, and none from an empty or malformed file", () => {
+    const stat = "42 (a) S 1 42 42 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1 2";
+    assert.deepStrictEqual(
+      [
+        recordedIdentity("linux", `${stat}\nboot-1\n`),
+        recordedIdentity("linux", ""),
+        recordedIdentity("darwin", "Sat Jan  1 00:00:00 2000\n"),
+        recordedIdentity("darwin", "\n"),
+        recordedIdentity("darwin", "not a date\n"),
+      ],
+      ["boot:boot-1:987654", undefined, timeIdentity(946_684_800_000), undefined, undefined],
+    );
   });
 });
