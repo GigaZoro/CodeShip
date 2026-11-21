@@ -58,7 +58,7 @@ function Shelf(props: {
 
 describe("useOlderSettledShelf", () => {
   it("resets chat folder previews when the project or tag filter changes", async () => {
-    const threads = Array.from({ length: 7 }, (_, index) => {
+    const threads = Array.from({ length: 35 }, (_, index) => {
       const thread = makeThreadFixture({ id: ThreadId.make(`filed-${index}`), environmentId });
       return presentThreadShell(environmentId, {
         ...thread.source,
@@ -70,10 +70,12 @@ describe("useOlderSettledShelf", () => {
       projectScopeKey,
       filtered = false,
       hasServer = false,
+      activeCount = 7,
     }: {
       projectScopeKey: string;
       filtered?: boolean;
       hasServer?: boolean;
+      activeCount?: number;
     }) {
       const list = useSidebarThreads({
         projectScopeKey,
@@ -86,7 +88,7 @@ describe("useOlderSettledShelf", () => {
         serverConfigs: new Map(hasServer ? [[environmentId, {} as EnvironmentServerConfig]] : []),
         connectedEnvironmentIds: [environmentId],
         optimisticDrop: null,
-        threads,
+        threads: threads.slice(0, activeCount),
         delegatedUnderParent: new Set(),
         hiddenTaskThreadKeys: new Set(),
         routeRowThreadKey: null,
@@ -130,6 +132,24 @@ describe("useOlderSettledShelf", () => {
     >([]);
     await using screen = await render(<FolderView projectScopeKey="project-a" />);
     const listed = screen.getByRole("status");
+    {
+      using shelves = vi
+        .spyOn(olderSettledThreads, "shelvesAtom")
+        .mockImplementation(([scopes]) =>
+          scopes?.[0]?.scope.folder === "autopilot" ? ready : empty,
+        );
+      await screen.rerender(
+        <FolderView projectScopeKey="project-filtered" filtered hasServer activeCount={35} />,
+      );
+      await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+      expect.soft(listed.element().textContent).toBe("30");
+      expect.soft(shelves.mock.calls.flat(3).some(({ pages }) => pages > 0)).toBe(false);
+      await screen.rerender(<FolderView projectScopeKey="project-few" filtered hasServer />);
+      await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+      expect(listed.element().textContent).toBe("7");
+      expect(shelves.mock.calls.flat(3).some(({ pages }) => pages === 1)).toBe(true);
+      expect(shelves.mock.calls.flat(3).some(({ pages }) => pages > 1)).toBe(false);
+    }
     {
       using _shelves = vi
         .spyOn(olderSettledThreads, "shelvesAtom")

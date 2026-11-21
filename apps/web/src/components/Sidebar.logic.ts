@@ -982,6 +982,7 @@ export function capSidebarFolderThreads<T>(
   threads: readonly T[],
   limit: number,
   keep: (thread: T) => boolean,
+  revealTo?: number,
 ): { readonly visible: readonly T[]; readonly overflow: readonly T[] } {
   const all = { visible: threads, overflow: [] };
   if (threads.length <= limit + 1) return all;
@@ -990,7 +991,13 @@ export function capSidebarFolderThreads<T>(
   for (const [index, thread] of threads.entries()) {
     (index < limit || keep(thread) ? visible : overflow).push(thread);
   }
-  return overflow.length > 1 ? { visible, overflow } : all;
+  if (overflow.length <= 1) return all;
+  const reveal = Math.max(0, (revealTo ?? limit) - visible.length);
+  if (reveal === 0) return { visible, overflow };
+  if (reveal >= overflow.length) return all;
+  const folded = overflow.slice(reveal);
+  const foldedSet = new Set(folded);
+  return { visible: threads.filter((thread) => !foldedSet.has(thread)), overflow: folded };
 }
 
 /**

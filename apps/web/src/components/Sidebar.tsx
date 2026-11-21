@@ -572,7 +572,7 @@ interface SidebarUserFolder extends SidebarFolderContents {
   readonly entry: ThreadFolderEntry;
   readonly shelf: OlderSettledShelf;
   readonly listedSettledCount: number;
-  readonly shownSettledCount: number;
+  readonly listedCount: number;
   /** A filter hides how many of its older settled threads not loaded yet match. */
   readonly olderUncounted: boolean;
 }
@@ -852,13 +852,17 @@ export function useSidebarThreads(input: {
         more: null,
       };
     }
+    const target = targets?.folders?.get(key);
+    const batchFolder = filtered && older !== null;
     const preview = capSidebarFolderThreads(
       threads,
       SIDEBAR_FOLDER_PREVIEW_COUNT,
       keepInFolderPreview,
+      batchFolder ? target : undefined,
     );
     const showingAll =
-      targets?.folders?.has(key) === true &&
+      !batchFolder &&
+      target !== undefined &&
       (preview.overflow.length > 0 || older?.shelf.hasPages === true);
     const count =
       (showingAll ? 0 : preview.overflow.length) + Math.min(olderCount, SETTLED_TAIL_PAGE_COUNT);
@@ -878,7 +882,7 @@ export function useSidebarThreads(input: {
         ? { state: "loading", count: 0 }
         : canShowMore
           ? { state: "show", count: uncounted || older?.countLess ? null : count }
-          : showingAll
+          : showingAll || (batchFolder && target !== undefined)
             ? { state: "less", count: 0 }
             : null,
     };
@@ -947,29 +951,27 @@ export function useSidebarThreads(input: {
       const shelf = folderShelves[index]!;
       const listed = listedFolderSettled[index]!;
       const older = olderSettledCount(shelf);
-      const target = filtered ? targets?.folders?.get(key) : undefined;
-      const visible = target === undefined ? listed : listed.slice(0, target);
+      const combined = [...threads, ...listed];
       const contents = folderContents(
         key,
         [key],
-        [...threads, ...visible],
+        combined,
         resolveProjectExpanded(projectExpandedById, [key]),
         {
           shelf,
-          count: older.counted + settled.length - visible.length,
-          hasHiddenLoaded: settled.length > visible.length,
+          count: older.counted + settled.length - listed.length,
+          hasHiddenLoaded: settled.length > listed.length,
           uncounted: older.uncounted,
           countLess: filtered,
         },
       );
-      const shown = new Set(contents.threads);
       return {
         ...contents,
         kind: "user",
         entry,
         shelf,
         listedSettledCount: listed.length,
-        shownSettledCount: visible.filter((thread) => shown.has(thread)).length,
+        listedCount: combined.length,
         olderUncounted: older.uncounted,
       };
     },
@@ -1143,10 +1145,7 @@ export function useSidebarThreads(input: {
     toggleFolderOverflow: (key: string) => {
       const folder = userFolders.find((candidate) => candidate.key === key);
       if (filtered && folder?.more?.state === "show") {
-        const count = folder.shelf.showMoreFiltered(
-          folder.shownSettledCount,
-          folder.listedSettledCount,
-        );
+        const count = folder.shelf.showMoreFiltered(folder.threads.length, folder.listedCount);
         setViewTargets((current) => ({
           ...current,
           folders: new Map(current.folders).set(key, count),
