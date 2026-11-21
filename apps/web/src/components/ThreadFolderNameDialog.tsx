@@ -32,6 +32,14 @@ export function requestThreadFolderName(
   return new Promise((resolve) => useRequest.setState({ request: { ...options, resolve } }));
 }
 
+export function requestNewFolderName() {
+  return requestThreadFolderName({
+    title: t("New folder"),
+    submitLabel: t("Create folder"),
+    initialName: "",
+  });
+}
+
 function finish(name: string | null) {
   const request = useRequest.getState().request;
   useRequest.setState({ request: null });

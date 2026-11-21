@@ -2014,6 +2014,12 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    setScheduledTaskGroup: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:scheduled-task:set-group",
+      tag: WS_METHODS.scheduledTasksSetGroup,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
     setScheduledTaskGroupPaused: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:set-group-paused",
       tag: WS_METHODS.scheduledTasksSetGroupPaused,

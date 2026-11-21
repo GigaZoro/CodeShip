@@ -136,3 +136,14 @@ export function useThreadFolderActions() {
 
   return { moveThreadToFolder, promptNewFolder, promptRenameFolder, confirmDeleteFolder };
 }
+
+export function useSaveThreadFolder() {
+  const saveFolders = useAtomCommand(threadEnvironment.saveFolders, { reportFailure: false });
+  return async (environmentId: EnvironmentId, name: string) => {
+    const current = appAtomRegistry.get(threadEnvironment.savedFoldersAtom(environmentId));
+    const folders = addSavedThreadFolder(current, name);
+    if (folders === current) return;
+    const result = await saveFolders({ environmentId, input: { folders } });
+    alertFailures(t("Could not save folder"), [result]);
+  };
+}

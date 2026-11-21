@@ -67,6 +67,7 @@ import {
   type ScheduledTaskReorderPinnedResult,
   type ScheduledTaskSetPlacementInput,
   type ScheduledTaskSetPlacementResult,
+  type ScheduledTaskSetGroupInput,
   type ScheduledTaskSetGroupPausedInput,
   type ScheduledTaskSetGroupPausedResult,
   type ServerSettings as ServerSettingsValue,
@@ -76,7 +77,6 @@ import {
   resolveProjectProviderInstanceEnabled,
   managedRuntimeModeDenial,
   sameThreadFolder,
-  type ThreadFolder,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -562,7 +562,7 @@ export class ScheduledTaskService extends Context.Service<
      * It never turns a task on or off or runs it.
      */
     readonly setGroup: (
-      input: { readonly id: ScheduledTaskId; readonly group: ThreadFolder | null },
+      input: ScheduledTaskSetGroupInput,
       by: ScheduledTaskChanger,
     ) => Effect.Effect<void, ScheduledTaskError>;
     readonly reorderPinned: (
@@ -5333,21 +5333,35 @@ export const layer = Layer.effect(
     const setGroup: ScheduledTaskService["Service"]["setGroup"] = Effect.fn(
       "ScheduledTaskService.setGroup",
     )(function* (input, by) {
-      const existing = yield* loadTask(input.id);
-      if ((existing.group ?? null) === input.group) return;
-      yield* sql
+      const changed = yield* sql
         .withTransaction(
-          writeGroup(input.id, input.group, "keep").pipe(
-            Effect.andThen(recordChange(input.id, by)),
-          ),
+          Effect.gen(function* () {
+            const [existing] = yield* sql<{ readonly label: string | null }>`
+              SELECT g.label
+              FROM scheduled_tasks t
+              LEFT JOIN scheduled_task_group g ON g.task_id = t.task_id
+              WHERE t.task_id = ${input.id}
+            `;
+            if (existing === undefined) {
+              return yield* taskError("Schedule task not found.", { taskId: input.id });
+            }
+            if (existing.label === input.group) return false;
+            yield* writeGroup(input.id, input.group, "keep");
+            yield* recordChange(input.id, by);
+            return true;
+          }),
         )
         .pipe(
           Effect.mapError((cause) =>
-            taskError("Could not update schedule task.", { taskId: input.id, cause }),
+            isScheduledTaskError(cause)
+              ? cause
+              : taskError("Could not update schedule task.", { taskId: input.id, cause }),
           ),
         );
-      yield* notifyChanged;
-      yield* fileTaskChats(input.id);
+      if (changed) {
+        yield* notifyChanged;
+        yield* fileTaskChats(input.id);
+      }
     });
 
     // Why a task may not be turned on, whether by hand or by resuming its group.

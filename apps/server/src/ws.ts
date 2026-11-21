@@ -2254,6 +2254,10 @@ export const layerWsRpc = (
             Effect.andThen(scheduledTasks.setEnabled(input, ScheduledTasks.CHANGED_IN_APP)),
           ),
         [WS_METHODS.scheduledTasksSetPlacement]: (input) => scheduledTasks.setPlacement(input),
+        [WS_METHODS.scheduledTasksSetGroup]: (input) =>
+          Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
+            Effect.andThen(scheduledTasks.setGroup(input, ScheduledTasks.CHANGED_IN_APP)),
+          ),
         [WS_METHODS.scheduledTasksSetGroupPaused]: (input) =>
           scheduledTasks.setGroupPaused(input, ScheduledTasks.CHANGED_IN_APP),
         [WS_METHODS.threadFoldersRename]: (input) =>

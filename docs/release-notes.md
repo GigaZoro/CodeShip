@@ -1,3 +1,7 @@
+## 2026-11-21 — Organize tasks into folders from Scheduled
+
+- In **Scheduled**, open a task’s menu and choose **Move to folder** to file it in an existing or new folder. You can also create an empty folder from the **Scheduled tasks** page.
+
 ## 2026-11-21 — Search the release history offline
 
 - On web and desktop, Release notes opens with the ten newest entries. Page through older changes or search the full history by date, title, or text, including offline.

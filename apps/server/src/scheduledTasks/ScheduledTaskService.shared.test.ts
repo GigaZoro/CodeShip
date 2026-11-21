@@ -325,6 +325,16 @@ it.effect(
         expect((yield* taskOf(service))?.shared?.revision.at).toBe("2031-01-01T00:00:00.002Z");
 
         yield* service.setGroup({ id: saved.id, group: "Autopilot" }, agent);
+        const moved = yield* taskOf(service);
+        expect(moved).toMatchObject({
+          group: "Autopilot",
+          enabled: false,
+          nextRunAt: null,
+          prompt: saved.prompt,
+          schedule: saved.schedule,
+          shared: { revision: { at: "2031-01-01T00:00:00.003Z" } },
+        });
+        yield* service.setGroup({ id: saved.id, group: "Autopilot" }, agent);
         expect((yield* taskOf(service))?.shared?.revision.at).toBe("2031-01-01T00:00:00.003Z");
 
         // Where a task sits is this machine's own business: no revision, and the author stays.

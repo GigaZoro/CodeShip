@@ -109,9 +109,10 @@ Each scheduled task has a place in the app:
 - **Scheduled section** adds a row for the task in the collapsible **Scheduled** section at the
   top of the thread list, so you can watch its runs and next scheduled start. This is the default.
 
-To change the order of tasks in the Scheduled section on web and desktop, drag one, or right-click
-it and choose **Move up** or **Move down**. Every device shows the same order, and a task newly
-added there goes to the bottom.
+To file a task from **Scheduled**, right-click its row (long-press on mobile) and choose
+**Move to folder**. Pick a folder, choose **New folder…**, or use **Remove from folder**.
+On web and desktop, drag a task within its folder or choose **Move up** or **Move down** to
+change its order. Tasks without a folder can be reordered together.
 
 Change a task's choice with **Show in** in its menu on the **Scheduled tasks** page, in the
 **Automations** card of its thread, in the right-click menu of its row, or in its menu on mobile.
@@ -131,9 +132,10 @@ there and refresh every few minutes. To change them, add the machine under
 
 ### Group scheduled tasks
 
-Give related tasks the same **Group** in the task editor, such as "Machine care" or "PolyBot
-delivery"; labels match regardless of case. Agents can set it with `schedule_task` too. Once a
-task has a group, the **Scheduled tasks** page lists tasks under a header per group, with tasks
+Choose **New folder** on the **Scheduled tasks** page to create an empty folder. To add a task,
+choose **Move to folder** in its menu or set **Group** in the task editor. Agents can set the
+same field with `schedule_task`. Folder names match regardless of case. The page lists tasks
+under a header per folder, with tasks
 without one under **No group** at the end. Each header shows how many tasks the group has, its
 next run, and its runs, failures and usage-limited runs in the last 24 hours. Click a header to
 collapse it; each device remembers which groups you collapsed. The machine and project filter

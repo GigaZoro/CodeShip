@@ -455,6 +455,7 @@ import {
   ScheduledTaskSetFollowsDefaultModelResult,
   ScheduledTaskSetPlacementInput,
   ScheduledTaskSetPlacementResult,
+  ScheduledTaskSetGroupInput,
   ScheduledTaskSetGroupPausedInput,
   ScheduledTaskSetGroupPausedResult,
   ScheduledTaskStatsInput,
@@ -660,6 +661,7 @@ export const WS_METHODS = {
   scheduledTasksUpsert: "scheduledTasks.upsert",
   scheduledTasksSetEnabled: "scheduledTasks.setEnabled",
   scheduledTasksSetPlacement: "scheduledTasks.setPlacement",
+  scheduledTasksSetGroup: "scheduledTasks.setGroup",
   scheduledTasksSetGroupPaused: "scheduledTasks.setGroupPaused",
   scheduledTasksStats: "scheduledTasks.stats",
   monitoringOverview: "monitoring.overview",
@@ -2272,6 +2274,12 @@ const WsScheduledTasksSetPlacementRpc = Rpc.make(WS_METHODS.scheduledTasksSetPla
   error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
 });
 
+const WsScheduledTasksSetGroupRpc = Rpc.make(WS_METHODS.scheduledTasksSetGroup, {
+  payload: ScheduledTaskSetGroupInput,
+  success: Schema.Void,
+  error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksSetGroupPausedRpc = Rpc.make(WS_METHODS.scheduledTasksSetGroupPaused, {
   payload: ScheduledTaskSetGroupPausedInput,
   success: ScheduledTaskSetGroupPausedResult,
@@ -2500,6 +2508,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,
   WsScheduledTasksSetPlacementRpc,
+  WsScheduledTasksSetGroupRpc,
   WsScheduledTasksSetGroupPausedRpc,
   WsScheduledTasksStatsRpc,
   WsMonitoringOverviewRpc,

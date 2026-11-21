@@ -12,6 +12,7 @@ import {
   CopyIcon,
   CopyPlusIcon,
   FolderIcon,
+  FolderPlusIcon,
   HistoryIcon,
   InboxIcon,
   MoreHorizontalIcon,
@@ -22,7 +23,7 @@ import {
   Trash2Icon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { type ReactNode, useContext, useRef, useState } from "react";
+import { Fragment, type ReactNode, useContext, useRef, useState } from "react";
 import type {
   EnvironmentId,
   EnvironmentMachineKind,
@@ -98,6 +99,10 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import {
+  useSaveScheduledTaskFolder,
+  useScheduledTaskFolderMenu,
+} from "../../hooks/useScheduledTaskFolders";
+import {
   supportsScheduledTaskPlacement,
   useSetScheduledTaskPlacement,
 } from "../../hooks/useSetScheduledTaskPlacement";
@@ -119,6 +124,7 @@ import {
 import {
   scheduledTaskGroupLabels,
   scheduledTaskGroupUpsertField,
+  scheduledTaskListItemGroupCopy,
   type ScheduledTaskListItem,
 } from "@t3tools/client-runtime/scheduled-task-groups";
 import {
@@ -152,8 +158,10 @@ import { environmentAtomList, environmentIdsKey } from "../../state/environmentA
 import { formatEnvironmentQueryError, useEnvironmentQuery } from "../../state/query";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { useInheritedDefaultModelSelection } from "../../state/inheritedDefaultModel";
-import { threadFamilies } from "../../state/threads";
+import { threadEnvironment, threadFamilies } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { requestNewFolderName } from "../ThreadFolderNameDialog";
+import { isThreadFolderMenuAction } from "../threadActionMenu.logic";
 import { WorktreeBaseBranchPicker } from "../WorktreeBaseBranchPicker";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { ConnectionStatusDot, connectionPhaseDotClassName } from "../ConnectionStatusDot";
@@ -219,6 +227,7 @@ import {
   MenuTrigger,
   MenuPopup,
   MenuItem,
+  MenuCheckboxItem,
   MenuSeparator,
   MenuSub,
   MenuSubPopup,
@@ -733,6 +742,18 @@ export function ScheduledTasksSettings(target: {
   const openForEdit = (environmentId: EnvironmentId, task: ScheduledTask) => {
     setEditor({ environmentId, task });
   };
+  const folderEnvironmentIds = connectedEnvironments
+    .filter(supportsSavedScheduledTaskFolders)
+    .map((entry) => entry.environmentId);
+  const folderKey = environmentIdsKey(folderEnvironmentIds);
+  const savedFolders = useAtomValue(savedScheduledTaskFoldersAtom(folderKey)).flat();
+  const folderPermissions = useAtomValue(saveScheduledTaskFolderPermissionsAtom(folderKey));
+  const saveFolder = useSaveScheduledTaskFolder();
+  const saveFolderIds = folderEnvironmentIds.filter((_id, index) => folderPermissions[index]);
+  const createFolder = async () => {
+    const name = await requestNewFolderName();
+    if (name !== null) await Promise.all(saveFolderIds.map((id) => saveFolder(id, name)));
+  };
   const defaultEnvironment = environment ?? connectedEnvironments[0];
   const linkedEnvironmentId = target.environmentId ?? defaultEnvironment?.environmentId;
   const linkedEnvironmentConnected = environments.some(
@@ -822,6 +843,12 @@ export function ScheduledTasksSettings(target: {
         </WorkspaceBreadcrumb>
         <div className="ms-auto flex shrink-0 items-center">
           <ShowAllTasksIn />
+          {saveFolderIds.length > 0 ? (
+            <Button size="xs" variant="ghost" onClick={() => void createFolder()}>
+              <FolderPlusIcon className="size-3" />
+              <span className="sr-only sm:not-sr-only">{t("New folder…")}</span>
+            </Button>
+          ) : null}
           <Button size="xs" variant="ghost" disabled={!startTask} onClick={startTask}>
             <PlusIcon className="size-3" />
             {t("New task")}
@@ -851,6 +878,7 @@ export function ScheduledTasksSettings(target: {
             taskId={target.taskId}
             actions={actions}
             onCreate={startTask}
+            savedFolders={savedFolders}
           />
         ) : (
           <div className="space-y-8">
@@ -861,6 +889,7 @@ export function ScheduledTasksSettings(target: {
                 taskId={linkedEnvironmentId === entry.environmentId ? target.taskId : undefined}
                 actions={actions}
                 onCreate={startTask}
+                savedFolders={savedFolders}
               />
             ))}
           </div>
@@ -879,6 +908,23 @@ export function ScheduledTasksSettings(target: {
     </>
   );
 }
+
+function supportsSavedScheduledTaskFolders(environment: EnvironmentPresentation) {
+  return (
+    supportsScheduledTaskGroups(environment) &&
+    environment.serverConfig?.environment.capabilities.threadFolders === true
+  );
+}
+
+const savedScheduledTaskFoldersAtom = environmentAtomList(
+  "web-scheduled-task-saved-folders",
+  threadEnvironment.savedFoldersAtom,
+);
+
+const saveScheduledTaskFolderPermissionsAtom = environmentAtomList(
+  "web-scheduled-task-save-folder-permissions",
+  threadEnvironment.saveFolders.permissionAtom,
+);
 
 const scheduledTaskCreatePermissionsAtom = environmentAtomList(
   "web-scheduled-task-create-permissions",
@@ -960,11 +1006,13 @@ function ScheduledTaskEnvironmentList({
   taskId,
   actions,
   onCreate,
+  savedFolders,
 }: {
   readonly environmentId: EnvironmentId | undefined;
   readonly taskId: ScheduledTaskId | undefined;
   readonly actions: ScheduledTaskActions;
   readonly onCreate: (() => void) | undefined;
+  readonly savedFolders: ReadonlyArray<string>;
 }) {
   const { scope, environments } = useSettingsScope();
   const connectedIds = environments.flatMap((environment) =>
@@ -1047,13 +1095,14 @@ function ScheduledTaskEnvironmentList({
       })),
     ),
   ];
-  const grouped = hasScheduledTaskGroups(listItems);
+  const grouped = savedFolders.length > 0 || hasScheduledTaskGroups(listItems);
 
   return (
     <SettingsGroup>
       {grouped ? (
         <ScheduledTaskGroupSections
           items={listItems}
+          savedFolders={savedFolders}
           renderItem={(item) =>
             item.kind === "shared" ? (
               <SharedScheduledTaskRow group={item.group} actions={actions} />
@@ -1476,11 +1525,13 @@ function ScheduledTaskEnvironmentSection({
   taskId,
   actions,
   onCreate,
+  savedFolders,
 }: {
   readonly environment: EnvironmentPresentation;
   readonly taskId?: ScheduledTaskId | undefined;
   readonly actions: ScheduledTaskActions;
   readonly onCreate: (() => void) | undefined;
+  readonly savedFolders: ReadonlyArray<string>;
 }) {
   const { scope } = useSettingsScope();
   const connected =
@@ -1497,8 +1548,12 @@ function ScheduledTaskEnvironmentSection({
     matchesScheduledTaskScope(scope, environment.environmentId, task.projectId),
   );
   const linkedTask = tasks?.find((task) => task.id === taskId);
-  const listItems = (list: ReadonlyArray<ScheduledTask>): ReadonlyArray<ScheduledTaskListItem> =>
-    list.map((task) => ({ kind: "local", environmentId: environment.environmentId, task }));
+  const listItems: ReadonlyArray<ScheduledTaskListItem> = (tasks ?? []).map((task) => ({
+    kind: "local",
+    environmentId: environment.environmentId,
+    task,
+  }));
+  const grouped = savedFolders.length > 0 || hasScheduledTaskGroups(listItems);
   return (
     <SettingsSection
       title={environment.label}
@@ -1548,11 +1603,10 @@ function ScheduledTaskEnvironmentSection({
               role="status"
             />
           ) : null}
-          {tasks.length === 0 ? (
-            <ScheduledTasksEmptyRow onCreate={onCreate} everyMachineAnswered />
-          ) : hasScheduledTaskGroups(listItems(tasks)) ? (
+          {grouped ? (
             <ScheduledTaskGroupSections
-              items={listItems(tasks)}
+              items={listItems}
+              savedFolders={savedFolders}
               renderItem={(item) =>
                 item.kind === "local" ? (
                   <ScheduledTaskRow
@@ -1573,6 +1627,9 @@ function ScheduledTaskEnvironmentSection({
               />
             ))
           )}
+          {tasks.length === 0 ? (
+            <ScheduledTasksEmptyRow onCreate={onCreate} everyMachineAnswered />
+          ) : null}
         </>
       )}
     </SettingsSection>
@@ -1893,6 +1950,42 @@ function useScheduledTaskCommands() {
   return { busy, toggleEnabled, runNow, deleteTask };
 }
 
+function ScheduledTaskFolderMenu({ target }: { readonly target: ScheduledTaskListItem }) {
+  const { environmentId, task } = scheduledTaskListItemGroupCopy(target);
+  const folder = useScheduledTaskFolderMenu(environmentId, task);
+  if (folder === null) return null;
+  const item = folder.menu();
+  if (!item.children?.length) return null;
+  return (
+    <MenuSub>
+      <MenuSubTrigger>
+        <FolderIcon />
+        {item.label}
+      </MenuSubTrigger>
+      <MenuSubPopup>
+        {item.children.map((entry) => {
+          const action = entry.id;
+          if (!isThreadFolderMenuAction(action)) return null;
+          return (
+            <Fragment key={action}>
+              {entry.separatorBefore ? <MenuSeparator /> : null}
+              {entry.checked ? (
+                <MenuCheckboxItem checked disabled>
+                  {entry.label}
+                </MenuCheckboxItem>
+              ) : (
+                <MenuItem disabled={entry.disabled} onClick={() => void folder.choose(action)}>
+                  {entry.label}
+                </MenuItem>
+              )}
+            </Fragment>
+          );
+        })}
+      </MenuSubPopup>
+    </MenuSub>
+  );
+}
+
 function ScheduledTaskRow({
   environmentId,
   task,
@@ -1998,6 +2091,7 @@ function ScheduledTaskRow({
                   {t("Move to another machine")}
                 </MenuItem>
               ) : null}
+              <ScheduledTaskFolderMenu target={{ kind: "local", environmentId, task }} />
               {isWebhook ? (
                 <MenuItem onClick={() => setDeliveriesOpen(true)}>
                   <InboxIcon />
@@ -2223,6 +2317,7 @@ function SharedScheduledTaskRow({
                   {t("Duplicate")}
                 </MenuItem>
               ) : null}
+              <ScheduledTaskFolderMenu target={{ kind: "shared", group }} />
               {copies.length === 1 ? (
                 <MenuItem onClick={() => void commands.runNow(environmentId, task)}>
                   <PlayIcon />
@@ -2871,11 +2966,21 @@ function ScheduledTaskEditorForm({
       environmentIdsKey(connectedEnvironments.map((entry) => entry.environmentId)),
     ),
   );
-  const groupSuggestions = scheduledTaskGroupLabels(
-    groupQueries.flatMap(
-      (query) => AsyncResult.getOrElse(query, () => null)?.tasks.map((entry) => entry.group) ?? [],
+  const savedFolders = useAtomValue(
+    savedScheduledTaskFoldersAtom(
+      environmentIdsKey(
+        connectedEnvironments
+          .filter(supportsSavedScheduledTaskFolders)
+          .map((entry) => entry.environmentId),
+      ),
     ),
   );
+  const groupSuggestions = scheduledTaskGroupLabels([
+    ...savedFolders.flat(),
+    ...groupQueries.flatMap(
+      (query) => AsyncResult.getOrElse(query, () => null)?.tasks.map((entry) => entry.group) ?? [],
+    ),
+  ]);
   const catchUpMissedRun =
     draft.catchUpMissedRun ??
     defaultCatchUpMissedRun({

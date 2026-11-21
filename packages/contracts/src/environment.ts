@@ -153,6 +153,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   scheduledTaskDescriptions: Schema.optionalKey(Schema.Boolean),
   /** Stores a task's `group`, serves `scheduledTasks.setGroupPaused` and `scheduledTasks.stats`; hide groups where absent. */
   scheduledTaskGroups: Schema.optionalKey(Schema.Boolean),
+  /** Supports changing a task's folder without resaving the whole task. */
+  scheduledTaskSetGroup: Schema.optionalKey(Schema.Boolean),
   /**
    * Stores a thread's `folder` (`thread.folder.set`), files a scheduled task's
    * chats in its group's folder, and serves `threadFolders.rename`; hide folder actions where absent.

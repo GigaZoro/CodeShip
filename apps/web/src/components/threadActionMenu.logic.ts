@@ -135,6 +135,7 @@ export interface ThreadActionMenuState {
 
 export interface ThreadFolderMenuState {
   readonly entries: ReadonlyArray<ThreadFolderEntry>;
+  readonly canCreate?: boolean;
   /** The folder every chosen thread shares, if any. */
   readonly currentKey: string | null;
   readonly inFolder: boolean;
@@ -142,7 +143,7 @@ export interface ThreadFolderMenuState {
 
 export function buildThreadFolderMenuItem(
   folders: ThreadFolderMenuState,
-): ContextMenuItem<ThreadActionMenuId> {
+): ContextMenuItem<"folder" | ThreadFolderMenuAction> {
   return {
     id: "folder",
     label: t("Move to folder"),
@@ -154,11 +155,15 @@ export function buildThreadFolderMenuItem(
         checked: entry.key === folders.currentKey,
         disabled: entry.key === folders.currentKey,
       })),
-      {
-        id: THREAD_FOLDER_NEW_ID,
-        label: t("New folder…"),
-        separatorBefore: folders.entries.length > 0,
-      },
+      ...(folders.canCreate === false
+        ? []
+        : [
+            {
+              id: THREAD_FOLDER_NEW_ID as ThreadFolderMenuAction,
+              label: t("New folder…"),
+              separatorBefore: folders.entries.length > 0,
+            },
+          ]),
       ...(folders.inFolder
         ? [
             {

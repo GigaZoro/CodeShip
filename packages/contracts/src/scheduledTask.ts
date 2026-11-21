@@ -946,6 +946,12 @@ export const ScheduledTaskSetEnabledInput = Schema.Struct({
 });
 export type ScheduledTaskSetEnabledInput = typeof ScheduledTaskSetEnabledInput.Type;
 
+export const ScheduledTaskSetGroupInput = Schema.Struct({
+  id: ScheduledTaskId,
+  group: Schema.NullOr(ScheduledTaskGroupLabel),
+});
+export type ScheduledTaskSetGroupInput = typeof ScheduledTaskSetGroupInput.Type;
+
 /** Pauses a group's tasks, or turns back on those its pause turned off. */
 export const ScheduledTaskSetGroupPausedInput = Schema.Struct({
   ids: Schema.Array(ScheduledTaskId).check(Schema.isMinLength(1)),
