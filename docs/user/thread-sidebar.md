@@ -167,6 +167,46 @@ Wherever the task shows, a thread it runs in shows a calendar icon in the thread
 and desktop, hover it for the schedule and next run, or click it to open the task. A task that
 starts a new thread for each run marks only the thread from its latest run.
 
+## Filter the thread list
+
+Open the sidebar’s filter menu on web and desktop, or the thread list filters on
+mobile. Under **Status**, choose **All**, **Needs you**, **Working**, **Unread**,
+or **Failed**. **Needs you** uses the same status rules as Projects, and **Unread**
+shows completed work you have yet to read. The device remembers your choice.
+Choose **All** or clear the filter to see every status again.
+
+Choose tags in the same filter menu to show threads with **any** of those tags.
+Status and tag filters can be combined. Clear the filters to return to the full list.
+While a filter is on, **Settled** counts only the matches already loaded.
+In **Settled** and chat folders, **Show more** reveals another batch of matches.
+If there are too few matches already loaded, the press reads one more page
+from each available machine at the current cutoff. A page may contain no matches.
+Changing filters resets folder paging. If a page read fails, use
+**Could not load older threads. Retry** to try it again.
+
+## Tag threads
+
+Open a thread’s menu, choose **Tags** (**Tags…** on mobile), then select an existing tag to add or
+remove it. Choose **Add tag…** to enter a new tag of up to 64 characters on one line.
+On web and desktop, select several threads to apply tags from the selection menu.
+A tag already on every selected thread is removed from all of them. Otherwise it
+is added to all of them.
+
+Tags follow the thread across devices. When an environment is set to hide tagged
+threads, its hidden threads stay out of the list and the app prevents applying
+its hidden tags there while hiding is on.
+
+## Sort threads
+
+Open the thread list filters and choose **Sort by**. **Last activity** puts the
+most recently updated threads first, **Created** puts the newest first, and
+**Name** sorts alphabetically. Sorting works within the existing shelves and
+folders. Pinned threads keep their manual order, **Needs you** still lists
+the longest waits first, and **Settled** keeps the most recently settled first
+because older settled threads load in that order. Select **Default** to return to the usual order and
+drag to reorder active threads where manual ordering is available. The sort
+choice is saved on each device.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work. The command palette offers the same

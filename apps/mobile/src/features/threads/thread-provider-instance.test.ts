@@ -129,7 +129,12 @@ describe("createThreadRowProviderInstanceResolver", () => {
     const configs = Atom.make<ReadonlyMap<EnvironmentId, ServerConfig>>(
       new Map([[environmentId, config]]),
     );
-    const environments = createThreadListEnvironmentsAtom(configs, Atom.make([environmentId]));
+    const canOperate = Atom.make(true);
+    const environments = createThreadListEnvironmentsAtom(
+      configs,
+      Atom.make([environmentId]),
+      () => canOperate,
+    );
     const registry = AtomRegistry.make();
     registry.mount(environments);
     try {
@@ -173,7 +178,7 @@ describe("createThreadRowProviderInstanceResolver", () => {
 
 describe("thread list reorder availability", () => {
   it.each(["active", "pinned"] as const)(
-    "updates %s moves on disconnect and reconnect without changing cached config",
+    "updates %s moves when connection or grants change without changing cached config",
     (section) => {
       const onlineId = EnvironmentId.make("online");
       const offlineId = EnvironmentId.make("offline");
@@ -185,7 +190,11 @@ describe("thread list reorder availability", () => {
         ]),
       );
       const connected = Atom.make<ReadonlyArray<EnvironmentId>>([onlineId, offlineId]);
-      const environments = createThreadListEnvironmentsAtom(configs, connected);
+      const onlineCanOperate = Atom.make(true);
+      const offlineCanOperate = Atom.make(true);
+      const environments = createThreadListEnvironmentsAtom(configs, connected, (id) =>
+        id === onlineId ? onlineCanOperate : offlineCanOperate,
+      );
       const registry = AtomRegistry.make();
       registry.mount(environments);
       try {
@@ -289,6 +298,13 @@ describe("thread list reorder availability", () => {
         expect(registry.get(environments).snoozePresetsByEnvironmentId.get(offlineId)).toBe(
           updated.snoozePresetsByEnvironmentId.get(offlineId),
         );
+
+        registry.set(offlineCanOperate, false);
+        expect(registry.get(environments).pinReorderEnvironmentIds.has(offlineId)).toBe(false);
+        expect(registry.get(environments).activeReorderEnvironmentIds.has(offlineId)).toBe(false);
+        expect(createThreadMovePlanner(plannerInput())(movedId, "down")).toBeNull();
+        registry.set(offlineCanOperate, true);
+        expect(createThreadMovePlanner(plannerInput())(movedId, "down")).toHaveLength(2);
 
         registry.set(configs, new Map([[onlineId, config]]));
 

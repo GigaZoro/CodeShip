@@ -1,3 +1,4 @@
+import { hiddenScheduledTaskThreadKeysAtom } from "../../state/threads";
 import { useAtomValue } from "@effect/atom-react";
 import type { MenuAction } from "@react-native-menu/menu";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -11,7 +12,6 @@ import {
   pinnedTaskTimingText,
   resolvePinnedTaskStatus,
   resolveScheduledTaskPlacement,
-  scheduledTaskHiddenThreadKeys,
   scheduledTaskPlacementOptions,
   type PinnedTaskRowStatus,
   type PinnedTaskStatus,
@@ -77,25 +77,9 @@ const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
   ).pipe(Atom.withLabel(`mobile:thread-list-pinned-tasks:${environmentIdsKey}`)),
 );
 
-const hiddenThreadKeysAtom = Atom.family((environmentIdsKey: string) => {
-  let previous: ReadonlySet<string> = new Set();
-  return Atom.make((get) => {
-    previous = scheduledTaskHiddenThreadKeys(
-      JSON.parse(environmentIdsKey) as ReadonlyArray<EnvironmentId>,
-      (environmentId) =>
-        AsyncResult.getOrElse(
-          get(serverEnvironment.scheduledTasksLive({ environmentId, input: {} })),
-          () => null,
-        )?.tasks ?? [],
-      previous,
-    );
-    return previous;
-  }).pipe(Atom.withLabel(`mobile:thread-list-hidden-task-threads:${environmentIdsKey}`));
-});
-
 /** Scoped keys of the threads that scheduled tasks placed nowhere in the thread list. */
 export function useScheduledTaskHiddenThreadKeys(environmentIdsKey: string): ReadonlySet<string> {
-  return useAtomValue(hiddenThreadKeysAtom(environmentIdsKey));
+  return useAtomValue(hiddenScheduledTaskThreadKeysAtom(environmentIdsKey));
 }
 
 const STATUS_DISPLAY = {

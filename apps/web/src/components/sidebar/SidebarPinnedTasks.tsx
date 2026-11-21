@@ -1,3 +1,4 @@
+import { hiddenScheduledTaskThreadKeysAtom } from "../../state/threads";
 import {
   resolveThreadStatus,
   THREAD_STATUS_DISPLAY,
@@ -33,7 +34,6 @@ import {
   type HeldPinOrder,
   resolveScheduledTaskPlacement,
   scheduledTaskPlacementOptions,
-  scheduledTaskHiddenThreadKeys,
   type PinnedTaskRowStatus,
   type PinnedTaskStatus,
 } from "@t3tools/client-runtime/scheduled-task-pins";
@@ -116,25 +116,9 @@ const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
   ).pipe(Atom.withLabel(`web:sidebar-pinned-tasks:${environmentIdsKey}`)),
 );
 
-const hiddenThreadKeysAtom = Atom.family((environmentIdsKey: string) => {
-  let previous: ReadonlySet<string> = new Set();
-  return Atom.make((get) => {
-    previous = scheduledTaskHiddenThreadKeys(
-      JSON.parse(environmentIdsKey) as ReadonlyArray<EnvironmentId>,
-      (environmentId) =>
-        AsyncResult.getOrElse(
-          get(serverEnvironment.scheduledTasksLive({ environmentId, input: {} })),
-          () => null,
-        )?.tasks ?? [],
-      previous,
-    );
-    return previous;
-  }).pipe(Atom.withLabel(`web:sidebar-hidden-task-threads:${environmentIdsKey}`));
-});
-
 /** Scoped keys of the threads that scheduled tasks placed nowhere in the thread list. */
 export function useScheduledTaskHiddenThreadKeys(environmentIdsKey: string): ReadonlySet<string> {
-  return useAtomValue(hiddenThreadKeysAtom(environmentIdsKey));
+  return useAtomValue(hiddenScheduledTaskThreadKeysAtom(environmentIdsKey));
 }
 
 const STATUS_ICON: Record<Exclude<PinnedTaskStatus, "idle">, typeof CircleDashedIcon> = {

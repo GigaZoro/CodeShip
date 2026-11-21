@@ -8,9 +8,9 @@ export type ThreadListProvider = Pick<
 
 const capabilityKeys = ["threadAutoSettleOptOut"] as const;
 
-function selectEnvironment(config: ServerConfig, isConnected: boolean) {
+function selectEnvironment(config: ServerConfig, canReorder: boolean) {
   return {
-    isConnected,
+    canReorder,
     providers: config.providers.map(
       ({ instanceId, driver, enabled, displayName, accentColor, iconUrl }) => ({
         instanceId,
@@ -56,13 +56,13 @@ function collectEnvironments(environments: ReadonlyMap<EnvironmentId, ListEnviro
   const laterEnvironmentIds = new Set<EnvironmentId>();
   const reorderableEnvironmentIds = new Set<EnvironmentId>();
   const snoozePresetsByEnvironmentId = new Map<EnvironmentId, ListEnvironment["snoozePresets"]>();
-  for (const [id, { providers, capabilities, isConnected, snoozePresets }] of environments) {
+  for (const [id, { providers, capabilities, canReorder, snoozePresets }] of environments) {
     providersByEnvironmentId.set(id, providers);
     snoozePresetsByEnvironmentId.set(id, snoozePresets);
     loadedEnvironmentIds.add(id);
     if (capabilities.threadAutoSettleOptOut === true) autoSettleOptOutEnvironmentIds.add(id);
     if (capabilities.threadLater === true) laterEnvironmentIds.add(id);
-    if (isConnected) reorderableEnvironmentIds.add(id);
+    if (canReorder) reorderableEnvironmentIds.add(id);
   }
   return {
     providersByEnvironmentId,
@@ -81,6 +81,7 @@ function collectEnvironments(environments: ReadonlyMap<EnvironmentId, ListEnviro
 export function createThreadListEnvironmentsAtom(
   configsAtom: Atom.Atom<ReadonlyMap<EnvironmentId, ServerConfig>>,
   connectedEnvironmentIdsAtom: Atom.Atom<ReadonlyArray<EnvironmentId>>,
+  operatePermissionAtom: (id: EnvironmentId) => Atom.Atom<boolean>,
 ) {
   let previous = new Map<EnvironmentId, ListEnvironment>();
   let result = collectEnvironments(previous);
@@ -90,7 +91,10 @@ export function createThreadListEnvironmentsAtom(
     const next = new Map<EnvironmentId, ListEnvironment>();
     let changed = configs.size !== previous.size;
     for (const [id, config] of configs) {
-      const selected = selectEnvironment(config, connectedEnvironmentIds.has(id));
+      const selected = selectEnvironment(
+        config,
+        connectedEnvironmentIds.has(id) && get(operatePermissionAtom(id)),
+      );
       const prior = previous.get(id);
       if (prior && sameProviders(prior.providers, selected.providers)) {
         selected.providers = prior.providers;
@@ -101,7 +105,7 @@ export function createThreadListEnvironmentsAtom(
       const unchanged =
         prior &&
         prior.providers === selected.providers &&
-        prior.isConnected === selected.isConnected &&
+        prior.canReorder === selected.canReorder &&
         prior.snoozePresets === selected.snoozePresets &&
         capabilityKeys.every(
           (key) => (prior.capabilities[key] === true) === (selected.capabilities[key] === true),

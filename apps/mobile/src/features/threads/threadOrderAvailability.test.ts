@@ -9,6 +9,9 @@ import {
   computeThreadMoveAvailability,
   createThreadMovePlanner,
   listedThreadMove,
+  planThreadListMove,
+  resolveThreadArrangementDrop,
+  threadListActiveManualOrder,
   type OrderRow,
 } from "./threadOrder";
 
@@ -261,5 +264,155 @@ describe("listedThreadMove", () => {
     ["missing", "up", null],
   ] as const)("moves %s %s past rows listed elsewhere", (id, direction, expected) => {
     expect(listedThreadMove(ordered, id, direction, listed)).toEqual(expected);
+  });
+});
+
+describe("planThreadListMove", () => {
+  it("writes keys only to the rows the list shows, around a hidden row's key", () => {
+    const reserved = makeRow("reserved", "env-x", generateSpreadPinOrderKeys(3)[0]!, true);
+    const a = makeRow("a", "env-w", null, true);
+    const hidden = makeRow("hidden", "env-x", null, true);
+    const c = makeRow("c", "env-w", null, true);
+    const ordered = [reserved, a, hidden, c];
+
+    expect(
+      planThreadListMove({
+        movedId: "env-w:c",
+        section: "pinned",
+        direction: "up",
+        ordered,
+        allThreads: ordered,
+        arrangement: { pinned: [a, c], active: [], activeManualOrder: true },
+        reorderableEnvironmentIds: WRITABLE,
+      }),
+    ).toEqual({
+      crossSection: false,
+      destination: { targetId: "env-w:a", placement: "before" },
+      assignments: [
+        { id: "env-w:c", orderKey: generateSpreadPinOrderKeys(3)[1] },
+        { id: "env-w:a", orderKey: generateSpreadPinOrderKeys(3)[2] },
+      ],
+    });
+  });
+
+  it("moves past the committed neighbor after a remote reorder with the same membership", () => {
+    const a = makeRow("a", "env-w", "bb", true);
+    const b = makeRow("b", "env-w", "dd", true);
+    const c = makeRow("c", "env-w", "ff", true);
+    const reordered = [a, { ...c, pinOrderKey: "dd" }, { ...b, pinOrderKey: "ff" }];
+    const input = {
+      movedId: "env-w:a",
+      section: "pinned",
+      direction: "down",
+      ordered: reordered,
+      allThreads: reordered,
+      arrangement: { pinned: [a, b, c], active: [], activeManualOrder: true },
+      reorderableEnvironmentIds: WRITABLE,
+    } as const;
+    expect(planThreadListMove(input)).toEqual({
+      crossSection: false,
+      destination: { targetId: "env-w:b", placement: "after" },
+      assignments: [{ id: "env-w:a", orderKey: pinOrderKeyBetween("ff", null) }],
+    });
+    expect(planThreadListMove({ ...input, ordered: reordered.slice(0, 2) })).toBeNull();
+  });
+
+  it.each([
+    { sort: "default", workingShelfEnabled: true, grouped: false },
+    { sort: "default", workingShelfEnabled: false, grouped: true },
+    { sort: "name", workingShelfEnabled: false, grouped: false },
+  ] as const)("writes no Active keys for a drop into Active ordered by %o", (options) => {
+    const pinned = makeRow("pinned", "env-w", "m", true);
+    const active = makeRow("active", "env-w", null, false);
+    const arrangement = {
+      pinned: [pinned],
+      active: [active],
+      activeManualOrder: threadListActiveManualOrder(options),
+    };
+    const input = {
+      section: "active",
+      ordered: [active],
+      allThreads: [pinned, active],
+      arrangement,
+      reorderableEnvironmentIds: WRITABLE,
+    } as const;
+
+    expect(
+      planThreadListMove({
+        ...input,
+        movedId: "env-w:pinned",
+        direction: { section: "active", targetId: null, placement: "before" },
+      }),
+    ).toEqual({
+      crossSection: true,
+      destination: { section: "active", targetId: null, placement: "before" },
+      assignments: [],
+    });
+    expect(planThreadListMove({ ...input, movedId: "env-w:active", direction: "up" })).toBeNull();
+  });
+});
+
+describe("resolveThreadArrangementDrop", () => {
+  const rejectAll = { pinned: () => null, active: () => null };
+  const base = {
+    movedId: "env:t",
+    writable: true,
+    planners: rejectAll,
+  } as const;
+  const onRow = { section: "active", targetId: "env:other", placement: "after" } as const;
+  const head = { section: "active", targetId: null, placement: "before" } as const;
+
+  it.each([
+    ["pinned", head],
+    ["settled", head],
+    ["snoozed", head],
+    ["active", null],
+  ] as const)(
+    "resolves a %s drop into an Active list with no manual order",
+    (sourceSection, expected) => {
+      expect(
+        resolveThreadArrangementDrop({
+          ...base,
+          sourceSection,
+          candidate: onRow,
+          activeManualOrder: false,
+        }),
+      ).toEqual(expected);
+    },
+  );
+
+  it.each([
+    [onRow, "settled"],
+    [{ section: "settled", targetId: null, placement: "before" }, "active"],
+  ] as const)("needs a writable environment for a drop at %j", (candidate, sourceSection) => {
+    expect(
+      resolveThreadArrangementDrop({
+        ...base,
+        sourceSection,
+        candidate,
+        activeManualOrder: false,
+        writable: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("asks the planner when Active has a manual order", () => {
+    expect(
+      resolveThreadArrangementDrop({
+        ...base,
+        sourceSection: "settled",
+        candidate: onRow,
+        activeManualOrder: true,
+      }),
+    ).toBeNull();
+    expect(
+      resolveThreadArrangementDrop({
+        ...base,
+        sourceSection: "settled",
+        candidate: onRow,
+        activeManualOrder: true,
+        planners: { ...rejectAll, active: () => [] },
+      }),
+    ).toEqual(onRow);
   });
 });

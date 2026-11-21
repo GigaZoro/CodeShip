@@ -1,3 +1,4 @@
+import * as Schema from "effect/Schema";
 import { msg, type Message } from "@t3tools/shared/i18n";
 import {
   backgroundWorkHoldsCompletion,
@@ -54,6 +55,14 @@ export function resolveThreadStatus(thread: ThreadStatusInput): ThreadStatus {
     return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
   }
   return "ready";
+}
+
+export function threadFailureFromStatus(
+  status: ThreadStatus,
+  latestRun: Pick<NonNullable<EnvironmentThreadShell["latestRun"]>, "status"> | null,
+): "failed" | "limited" | null {
+  if (status === "failed" || status === "limited") return status;
+  return status === "ready" && latestRun?.status === "failed" ? "failed" : null;
 }
 
 /**
@@ -114,3 +123,92 @@ export const THREAD_STATUS_DISPLAY = {
 } as const satisfies Record<string, ThreadStatusDisplay>;
 
 export type ThreadStatusDisplayKey = keyof typeof THREAD_STATUS_DISPLAY;
+
+export const ThreadListStatusFilter = Schema.Literals([
+  "all",
+  "attention",
+  "working",
+  "unread",
+  "failed",
+]);
+export type ThreadListStatusFilter = typeof ThreadListStatusFilter.Type;
+
+export const THREAD_LIST_STATUS_LABELS = {
+  all: msg("All"),
+  attention: msg("Needs you"),
+  working: THREAD_STATUS_DISPLAY.working.label,
+  unread: msg("Unread"),
+  failed: THREAD_STATUS_DISPLAY.failed.label,
+  done: THREAD_STATUS_DISPLAY.done.label,
+} satisfies Record<ThreadListStatusFilter | "done", Message>;
+
+export type ProjectThreadState = "attention" | "working" | "done" | "quiet";
+
+type ThreadCompletionInput = {
+  readonly latestRun: Pick<NonNullable<EnvironmentThreadShell["latestRun"]>, "completedAt"> | null;
+  readonly lastVisitedAt?: string | null | undefined;
+};
+
+type ThreadListStatusInput = ThreadStatusInput &
+  ThreadCompletionInput & {
+    readonly latestRun: Pick<
+      NonNullable<EnvironmentThreadShell["latestRun"]>,
+      "completedAt" | "status"
+    > | null;
+  };
+
+export function resolveThreadListStatus(
+  thread: ThreadStatusInput & Pick<ThreadListStatusInput, "latestRun">,
+): ThreadStatus {
+  const status = resolveThreadStatus(thread);
+  return threadFailureFromStatus(status, thread.latestRun) ?? status;
+}
+
+export function hasUnseenCompletion(thread: ThreadCompletionInput): boolean {
+  if (!thread.latestRun?.completedAt) return false;
+  const completedAt = Date.parse(thread.latestRun.completedAt);
+  if (Number.isNaN(completedAt) || !thread.lastVisitedAt) return false;
+  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
+  return Number.isNaN(lastVisitedAt) || completedAt > lastVisitedAt;
+}
+
+function classifyThreadStatus(
+  status: ThreadStatus,
+  thread: ThreadCompletionInput,
+  flags: { readonly woke?: boolean; readonly locallyUnread?: boolean },
+): ProjectThreadState {
+  switch (status) {
+    case "approval":
+    case "input":
+    case "request":
+    case "limited":
+    case "failed":
+      return "attention";
+    case "working":
+      return "working";
+    case "ready":
+      if (flags.woke) return "attention";
+      return flags.locallyUnread || hasUnseenCompletion(thread) ? "done" : "quiet";
+    case "waiting":
+      if (flags.woke) return "attention";
+      return flags.locallyUnread ? "done" : "quiet";
+  }
+}
+
+export function resolveProjectThreadState(
+  thread: ThreadListStatusInput,
+  flags: Parameters<typeof classifyThreadStatus>[2] = {},
+): ProjectThreadState {
+  return classifyThreadStatus(resolveThreadListStatus(thread), thread, flags);
+}
+
+export function matchesThreadListStatus(
+  thread: ThreadListStatusInput,
+  filter: ThreadListStatusFilter,
+  flags: Parameters<typeof classifyThreadStatus>[2] = {},
+): boolean {
+  if (filter === "all") return true;
+  const status = resolveThreadListStatus(thread);
+  if (filter === "failed") return status === "failed";
+  return classifyThreadStatus(status, thread, flags) === (filter === "unread" ? "done" : filter);
+}

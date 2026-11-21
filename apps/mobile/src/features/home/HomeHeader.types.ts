@@ -4,6 +4,7 @@ import type {
   HomeListFilterMenuEnvironment,
   HomeListFilterMenuProject,
   ThreadListGroupingHandlers,
+  ThreadListRefinement,
 } from "./home-list-filter-menu";
 
 export type HomeHeaderEnvironment = HomeListFilterMenuEnvironment;
@@ -15,6 +16,8 @@ export interface HomeHeaderProps extends ThreadListGroupingHandlers {
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
   readonly grouping: SidebarGrouping;
+  readonly refinement: ThreadListRefinement;
+  readonly onRefinementChange: (change: Partial<ThreadListRefinement>) => void;
   readonly onSearchQueryChange: (query: string) => void;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectChange: (projectKey: string | null) => void;

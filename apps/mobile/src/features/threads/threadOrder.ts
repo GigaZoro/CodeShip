@@ -3,6 +3,7 @@ import {
   generateSpreadPinOrderKeys,
   pinOrderKeyBetween,
   planPinnedReorder,
+  type ThreadListSort,
 } from "@t3tools/client-runtime/state/thread-sort";
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -123,6 +124,54 @@ export function createThreadMovePlanner(input: {
       ? null
       : assignments;
   };
+}
+
+/** The Pinned and Active rows a list shows, in its order. */
+export interface ThreadListArrangement<T extends OrderRow = OrderRow> {
+  readonly pinned: ReadonlyArray<T>;
+  readonly active: ReadonlyArray<T>;
+  readonly activeManualOrder: boolean;
+}
+
+/** A sort, folders or the Working shelf order Active, so its keys order nothing a list shows. */
+export function threadListActiveManualOrder(input: {
+  readonly sort: ThreadListSort;
+  readonly workingShelfEnabled: boolean;
+  readonly grouped: boolean;
+}): boolean {
+  return input.sort === "default" && !input.workingShelfEnabled && !input.grouped;
+}
+
+/** Keys go only to the rows the list shows; a row a filter hides keeps its key. */
+export function planThreadListMove(input: {
+  readonly movedId: string;
+  readonly section: PendingThreadOrder["section"];
+  readonly direction: ThreadMoveDestination;
+  readonly ordered: readonly OrderRow[];
+  readonly allThreads: readonly OrderRow[];
+  readonly arrangement: ThreadListArrangement;
+  readonly reorderableEnvironmentIds: ReadonlySet<EnvironmentId>;
+}) {
+  const crossSection = !input.ordered.some((row) => rowId(row) === input.movedId);
+  if (input.section === "active" && !input.arrangement.activeManualOrder)
+    return crossSection && typeof input.direction !== "string"
+      ? { crossSection, destination: input.direction, assignments: [] }
+      : null;
+  const committedIds = input.arrangement[input.section].map(rowId);
+  const listedIds = new Set(committedIds);
+  const listed = input.ordered.filter((row) => listedIds.has(rowId(row)));
+  const destination =
+    typeof input.direction === "string"
+      ? listedThreadMove(committedIds, input.movedId, input.direction, () => true)
+      : input.direction;
+  if (destination === null) return null;
+  const assignments = createThreadMovePlanner({
+    ordered: listed,
+    allThreads: input.allThreads,
+    section: input.section,
+    reorderableEnvironmentIds: input.reorderableEnvironmentIds,
+  })(input.movedId, destination);
+  return assignments === null ? null : { crossSection, destination, assignments };
 }
 
 export interface ThreadMoveAvailability {
@@ -313,4 +362,31 @@ export function threadDragAction(source: ThreadDragSection, destination: ThreadD
   if (source === "pinned") return t("Unpin");
   if (source === "settled") return t("Unsettle");
   return t("Unsnooze");
+}
+
+export type ThreadArrangementDestination = Exclude<ThreadMoveDestination, string> & {
+  readonly section: "pinned" | "active" | "settled";
+};
+
+/** Without a manual Active order, a drop into Active from another section lands at its head and only unpins, unsettles or unsnoozes. */
+export function resolveThreadArrangementDrop(input: {
+  readonly movedId: string;
+  readonly sourceSection: ThreadDragSection;
+  readonly candidate: ThreadArrangementDestination;
+  readonly writable: boolean;
+  readonly activeManualOrder: boolean;
+  readonly planners: Readonly<
+    Record<"pinned" | "active", (movedId: string, destination: ThreadMoveDestination) => unknown>
+  >;
+}): ThreadArrangementDestination | null {
+  const { candidate } = input;
+  if (candidate.section === "settled")
+    return input.sourceSection !== "settled" && input.writable
+      ? { section: "settled", targetId: null, placement: "before" }
+      : null;
+  if (candidate.section === "active" && !input.activeManualOrder)
+    return input.sourceSection !== "active" && input.writable
+      ? { section: "active", targetId: null, placement: "before" }
+      : null;
+  return input.planners[candidate.section](input.movedId, candidate) != null ? candidate : null;
 }

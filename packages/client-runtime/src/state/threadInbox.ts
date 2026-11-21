@@ -4,7 +4,11 @@ import * as DateTime from "effect/DateTime";
 import { threadRuntimeIsActive, type EnvironmentThreadShell } from "./models.ts";
 import { toSortableTimestamp } from "./threadSort.ts";
 import { effectiveSnoozed, type ThreadSnoozeShell } from "./threadSettled.ts";
-import { resolveThreadStatus, type ThreadStatusInput } from "./threadStatus.ts";
+import {
+  resolveThreadStatus,
+  threadFailureFromStatus,
+  type ThreadStatusInput,
+} from "./threadStatus.ts";
 
 type WorkingThreadInput = Pick<
   EnvironmentThreadShell,
@@ -61,15 +65,7 @@ type FailureInput = ThreadStatusInput & Pick<EnvironmentThreadShell, "latestRun"
  * the session itself idled on. Notifications and Needs you both count these.
  */
 export function threadFailureStatus(thread: FailureInput): "failed" | "limited" | null {
-  return failureFromStatus(resolveThreadStatus(thread), thread);
-}
-
-function failureFromStatus(
-  status: ReturnType<typeof resolveThreadStatus>,
-  thread: Pick<EnvironmentThreadShell, "latestRun">,
-): "failed" | "limited" | null {
-  if (status === "failed" || status === "limited") return status;
-  return status === "ready" && thread.latestRun?.status === "failed" ? "failed" : null;
+  return threadFailureFromStatus(resolveThreadStatus(thread), thread.latestRun);
 }
 
 export type NeedsYouInput = FailureInput &
@@ -96,7 +92,7 @@ export function threadNeedsYouReason(
 ): NeedsYouReason | null {
   const status = resolveThreadStatus(thread);
   if (status === "approval" || status === "input" || status === "request") return status;
-  const failure = failureFromStatus(status, thread);
+  const failure = threadFailureFromStatus(status, thread.latestRun);
   if (failure === null || !failureWaitsOnUser(thread)) return null;
   if (effectiveSnoozed(thread, options)) return null;
   const recovery = thread.limitRecovery;

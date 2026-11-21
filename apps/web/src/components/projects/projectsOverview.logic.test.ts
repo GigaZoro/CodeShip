@@ -1,11 +1,11 @@
+import {
+  matchesThreadListStatus,
+  resolveProjectThreadState,
+} from "@t3tools/client-runtime/state/thread-status";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  countProjectThreads,
-  resolveProjectThreadState,
-  validateProjectsSearch,
-} from "./projectsOverview.logic";
+import { countProjectThreads, validateProjectsSearch } from "./projectsOverview.logic";
 
 describe("resolveProjectThreadState", () => {
   it("sorts threads into what each asks of the user", () => {
@@ -41,6 +41,12 @@ describe("resolveProjectThreadState", () => {
       waiting: { ...idle, runtime: { ...runtime, status: "idle" as const } },
       approval: { ...idle, hasPendingApprovals: true },
       failed: { ...idle, runtime: { ...runtime, status: "failed" as const } },
+      failedWithoutRuntime: {
+        ...idle,
+        createdBy: "user" as const,
+        settledOverride: null,
+        latestRun: { ...idle.latestRun, status: "failed" as const },
+      },
     };
 
     expect(
@@ -54,12 +60,30 @@ describe("resolveProjectThreadState", () => {
       waiting: "quiet",
       approval: "attention",
       failed: "attention",
+      failedWithoutRuntime: "attention",
     });
+    expect(
+      Object.entries(threads)
+        .filter(([, thread]) => matchesThreadListStatus(thread, "failed"))
+        .map(([name]) => name),
+    ).toEqual(["failed", "failedWithoutRuntime"]);
+    expect(
+      Object.entries(threads)
+        .filter(([, thread]) => matchesThreadListStatus(thread, "unread"))
+        .map(([name]) => name),
+    ).toEqual(["unread"]);
+    expect(
+      Object.entries(threads)
+        .filter(([, thread]) => matchesThreadListStatus(thread, "attention"))
+        .map(([name]) => name),
+    ).toEqual(["approval", "failed", "failedWithoutRuntime"]);
+    expect(matchesThreadListStatus(threads.seen, "attention", { woke: true })).toBe(true);
+    expect(matchesThreadListStatus(threads.seen, "unread", { locallyUnread: true })).toBe(true);
     expect(countProjectThreads(Object.values(threads), resolveProjectThreadState)).toEqual({
-      attention: 2,
+      attention: 3,
       working: 1,
       done: 1,
-      open: 6,
+      open: 7,
     });
   });
 });

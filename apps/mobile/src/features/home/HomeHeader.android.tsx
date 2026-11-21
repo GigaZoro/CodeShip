@@ -1,4 +1,5 @@
 import type { MenuAction } from "@react-native-menu/menu";
+import { useAtomValue } from "@effect/atom-react";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { ThreadListToolbar } from "./ThreadListToolbar";
 import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
@@ -10,9 +11,13 @@ import {
   archivedThreadsMenuItem,
   artifactsMenuItem,
   buildGroupByMenuActions,
+  buildThreadListRefinementMenuActions,
   handleGroupByMenuEvent,
   showAllThreadsMenuItems,
+  threadListRefinementFilters,
+  threadListRefinementMenuChange,
 } from "./home-list-filter-menu";
+import { threadFilterTagsAtom } from "../../state/threads";
 import type { HomeHeaderProps } from "./HomeHeader.types";
 import { t } from "../../lib/i18n";
 
@@ -25,8 +30,11 @@ function checkedMenuState(checked: boolean) {
 export function HomeHeader(props: HomeHeaderProps) {
   const openArchivedThreads = useOpenArchivedThreads();
   const openArtifacts = useOpenArtifacts();
+  const availableTags = useAtomValue(threadFilterTagsAtom);
   const hasCustomListOptions =
-    props.selectedEnvironmentId !== null || props.selectedProjectKey !== null;
+    props.selectedEnvironmentId !== null ||
+    props.selectedProjectKey !== null ||
+    threadListRefinementFilters(props.refinement);
   const menuActions: MenuAction[] = [
     ...showAllThreadsMenuItems(hasCustomListOptions),
     {
@@ -65,6 +73,7 @@ export function HomeHeader(props: HomeHeaderProps) {
             ],
           },
         ] satisfies MenuAction[])),
+    ...buildThreadListRefinementMenuActions(props.refinement, availableTags),
     ...buildGroupByMenuActions(props.grouping, props.environments.length),
     archivedThreadsMenuItem,
     artifactsMenuItem,
@@ -74,6 +83,12 @@ export function HomeHeader(props: HomeHeaderProps) {
     if (id === SHOW_ALL_THREADS_EVENT) {
       props.onEnvironmentChange(null);
       props.onProjectChange(null);
+      props.onRefinementChange({ statusFilter: "all", selectedTags: [] });
+      return;
+    }
+    const refinementChange = threadListRefinementMenuChange(id, props.refinement);
+    if (refinementChange) {
+      props.onRefinementChange(refinementChange);
       return;
     }
     if (id === ARCHIVED_THREADS_EVENT) {

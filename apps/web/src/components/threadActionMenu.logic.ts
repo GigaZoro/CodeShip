@@ -20,7 +20,30 @@ export function isThreadFolderMenuAction(action: string): action is ThreadFolder
   );
 }
 
+export type ThreadTagMenuAction = "tag:new" | `tag:add:${string}` | `tag:remove:${string}`;
+
+export function buildThreadTagsMenuItem(state: {
+  readonly entries: readonly { readonly tag: string; readonly checked: boolean }[];
+  readonly canEdit: boolean;
+}): ContextMenuItem<"tags" | ThreadTagMenuAction> {
+  return {
+    id: "tags",
+    label: t("Tags"),
+    disabled: !state.canEdit,
+    children: [
+      ...state.entries.map(({ tag, checked }) => ({
+        id: `tag:${checked ? "remove" : "add"}:${tag}` as const,
+        label: tag,
+        checked,
+      })),
+      { id: "tag:new", label: t("Add tag…"), separatorBefore: state.entries.length > 0 },
+    ],
+  };
+}
+
 export type ThreadActionMenuId =
+  | "tags"
+  | ThreadTagMenuAction
   | "find"
   | "new-thread-on-branch"
   | "filter-by-project"
@@ -131,6 +154,7 @@ export interface ThreadActionMenuState {
   readonly canTurnIntoProject?: boolean;
   /** Absent where the server cannot file chats in sidebar folders. */
   readonly folders?: ThreadFolderMenuState | null;
+  readonly tags?: Parameters<typeof buildThreadTagsMenuItem>[0];
 }
 
 export interface ThreadFolderMenuState {
@@ -268,6 +292,7 @@ export function buildThreadActionMenuItems(
       ? [{ id: "share-guest" as const, label: t("Share with guest"), icon: "user-plus" }]
       : []),
     ...(state.folders ? [buildThreadFolderMenuItem(state.folders)] : []),
+    ...(state.tags ? [buildThreadTagsMenuItem(state.tags)] : []),
     ...(state.projectFilter
       ? [
           {

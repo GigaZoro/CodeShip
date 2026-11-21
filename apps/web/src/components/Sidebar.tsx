@@ -1,3 +1,21 @@
+import {
+  matchesThreadListStatus,
+  THREAD_LIST_STATUS_LABELS,
+  ThreadListStatusFilter,
+} from "@t3tools/client-runtime/state/thread-status";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
+import {
+  matchesAnyThreadTag,
+  toggleThreadTagSelection,
+} from "@t3tools/client-runtime/state/thread-tag-filter";
+import {
+  sortThreadList,
+  type ThreadLastActivityOrder,
+  THREAD_LIST_SORT_LABELS,
+  ThreadListSort,
+} from "@t3tools/client-runtime/state/thread-sort";
+import { Checkbox } from "./ui/checkbox";
+import { readThreadTagsMenuState, useThreadTagActions } from "../hooks/useThreadTagActions";
 import { t, tn } from "~/i18n";
 import { liveShellEnvironmentIdsAtom } from "../state/shell";
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
@@ -68,7 +86,12 @@ import {
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
-import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
+import {
+  settledFooterHiddenCount,
+  olderSettledViewRequestSetters,
+  type OlderSettledViewTargets,
+  type OlderSettledScope,
+} from "@t3tools/client-runtime/state/threads";
 
 import {
   ArchiveIcon,
@@ -170,7 +193,12 @@ import {
 import { environmentPresentations } from "../state/presentation";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { environmentProjects } from "../state/projects";
-import { savedThreadFoldersAtom, threadEnvironment } from "../state/threads";
+import {
+  environmentThreadShells,
+  hiddenScheduledTaskThreadKeysAtom,
+  savedThreadFoldersAtom,
+  threadEnvironment,
+} from "../state/threads";
 import {
   type OlderSettledShelf,
   useOlderSettledShelf,
@@ -196,6 +224,7 @@ import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import {
   buildDraftActionMenuItems,
   buildThreadActionMenuItems,
+  buildThreadTagsMenuItem,
   buildThreadFolderMenuItem,
   isThreadFolderMenuAction,
   threadActionRequiresOperate,
@@ -413,7 +442,14 @@ type SidebarOptimisticDrop = {
   readonly assignedKeys: ReadonlyMap<string, string>;
 };
 
+const SidebarTagFilter = Schema.Array(Schema.String);
+
 interface SidebarThreadPartitionInput {
+  readonly statusFilter: ThreadListStatusFilter;
+  readonly tagFilter: ReadonlySet<string>;
+  readonly sort: ThreadListSort;
+  readonly lastActivityOrder: ThreadLastActivityOrder;
+  readonly locallyUnreadKeys: ReadonlySet<string>;
   readonly threads: readonly EnvironmentThreadShell[];
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   /** Tasks linked environments run for a listed thread; they show under it. */
@@ -454,23 +490,30 @@ function resolveDraggedOrders(input: {
   readonly settledThreads: readonly EnvironmentThreadShell[];
   readonly activeThreads: readonly EnvironmentThreadShell[];
   readonly workingShelfEnabled: boolean;
+  readonly sort: ThreadListSort;
+  readonly lastActivityOrder: ThreadLastActivityOrder;
 }): typeof NO_DRAGGED_ORDERS {
   const { drag, threadByKey, settledThreads, activeThreads, workingShelfEnabled } = input;
   const thread = threadByKey.get(drag.activeKey);
   if (thread === undefined) return NO_DRAGGED_ORDERS;
   const others = (list: readonly EnvironmentThreadShell[]) =>
     list.filter((candidate) => threadShellKey(candidate) !== drag.activeKey);
+  const settled = [
+    ...others(settledThreads),
+    applySidebarThreadDrop(thread, "settled", drag.occurredAt),
+  ];
+  const active = [
+    ...others(activeThreads),
+    applySidebarThreadDrop(thread, "active", drag.occurredAt),
+  ];
   return {
-    settledOrder: sortSettledThreads([
-      ...others(settledThreads),
-      applySidebarThreadDrop(thread, "settled", drag.occurredAt),
-    ]).map(threadShellKey),
-    activeOrder: workingShelfEnabled
-      ? sortInboxThreadsByReturn(
-          [...others(activeThreads), applySidebarThreadDrop(thread, "active", drag.occurredAt)],
-          inboxReturns.returnedAt,
-        ).map(threadShellKey)
-      : undefined,
+    settledOrder: sortSettledThreads(settled).map(threadShellKey),
+    activeOrder:
+      input.sort !== "default"
+        ? sortThreadList(active, input.sort, input.lastActivityOrder).map(threadShellKey)
+        : workingShelfEnabled
+          ? sortInboxThreadsByReturn(active, inboxReturns.returnedAt).map(threadShellKey)
+          : undefined,
   };
 }
 
@@ -504,8 +547,8 @@ interface SidebarFolderContents {
   readonly hiddenThreads: readonly EnvironmentThreadShell[];
   /** Older threads past the listed ones: not loaded, or not listed yet. */
   readonly olderCount: number;
-  /** The row under an open folder that lists past its preview, or folds it again. */
-  readonly more: { readonly state: SidebarFolderMoreState; readonly count: number } | null;
+  /** The row under an open folder that lists past its preview, or folds it again. Its count is null when a filter hides it. */
+  readonly more: { readonly state: SidebarFolderMoreState; readonly count: number | null } | null;
 }
 
 interface SidebarProjectFolder extends SidebarFolderContents {
@@ -529,6 +572,9 @@ interface SidebarUserFolder extends SidebarFolderContents {
   readonly entry: ThreadFolderEntry;
   readonly shelf: OlderSettledShelf;
   readonly listedSettledCount: number;
+  readonly shownSettledCount: number;
+  /** A filter hides how many of its older settled threads not loaded yet match. */
+  readonly olderUncounted: boolean;
 }
 
 type SidebarFolder = SidebarProjectFolder | SidebarMachineFolder | SidebarUserFolder;
@@ -543,7 +589,12 @@ function isSidebarFolderSibling(candidate: SidebarFolder, folder: SidebarFolder)
 }
 
 // Separate hooks cache maps independently of later Sidebar hooks and preserve dnd-kit inputs.
-function useSidebarThreads(input: {
+export function useSidebarThreads(input: {
+  readonly statusFilter: ThreadListStatusFilter;
+  readonly tagFilter: ReadonlySet<string>;
+  readonly sort: ThreadListSort;
+  readonly lastActivityOrder: ThreadLastActivityOrder;
+  readonly locallyUnreadKeys: ReadonlySet<string>;
   readonly projectScopeKey: string | null;
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
@@ -610,10 +661,7 @@ function useSidebarThreads(input: {
   // Shared with the old per-project sidebar, so folders keep their open state.
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const setProjectExpanded = useUiStateStore((store) => store.setProjectExpanded);
-  // Folders that list past their preview, by how many settled threads they list.
-  const [showAllFolders, setShowAllFolders] = useState<ReadonlyMap<string, number>>(
-    () => new Map(),
-  );
+  // A target holds only in the view it was raised in; another view starts from the first page.
   const [settledTail, setSettledTail] = useState({
     scopeKey: projectScopeKey,
     count: SETTLED_TAIL_INITIAL_COUNT,
@@ -621,10 +669,30 @@ function useSidebarThreads(input: {
   if (settledTail.scopeKey !== projectScopeKey) {
     setSettledTail({ scopeKey: projectScopeKey, count: SETTLED_TAIL_INITIAL_COUNT });
   }
-  const settledVisibleCount =
+  const unfilteredVisibleCount =
     settledTail.scopeKey === projectScopeKey ? settledTail.count : SETTLED_TAIL_INITIAL_COUNT;
+  const filterViewKey = JSON.stringify([
+    projectScopeKey,
+    input.statusFilter,
+    [...input.tagFilter].sort(),
+  ]);
+  const [viewTargets, setViewTargets] = useState<OlderSettledViewTargets>({
+    viewKey: filterViewKey,
+  });
+  if (viewTargets.viewKey !== filterViewKey) setViewTargets({ viewKey: filterViewKey });
+  const targets = viewTargets.viewKey === filterViewKey ? viewTargets : null;
+  const pageRequestSetters = olderSettledViewRequestSetters(filterViewKey, setViewTargets);
+  const filtered = input.statusFilter !== "all" || input.tagFilter.size > 0;
+  const settledVisibleCount = filtered
+    ? (targets?.settled ?? SETTLED_TAIL_INITIAL_COUNT)
+    : unfilteredVisibleCount;
 
   const partition = partitionSidebarThreads({
+    statusFilter: input.statusFilter,
+    tagFilter: input.tagFilter,
+    sort: input.sort,
+    lastActivityOrder: input.lastActivityOrder,
+    locallyUnreadKeys: input.locallyUnreadKeys,
     threads,
     scopedProjectKeys,
     delegatedUnderParent,
@@ -649,17 +717,30 @@ function useSidebarThreads(input: {
   // Older settled threads load in pages, and a shelf lists them only as far as they are loaded:
   // the Settled shelf those in no folder, and each folder its own.
   const settledScopes = olderSettledScopes([...serverConfigs.keys()], scopedProjectKeys);
-  const olderSettledShelf = useOlderSettledShelf({
-    scopes: settledScopes.map((scope) => ({ ...scope, folder: null })),
-    expanded: settledShelfExpanded,
-    visibleCount: settledVisibleCount,
-  });
+  const olderSettledShelf = useOlderSettledShelf(
+    {
+      scopes: settledScopes.map((scope) => ({ ...scope, folder: null })),
+      expanded: settledShelfExpanded,
+      visibleCount: settledVisibleCount,
+      filtered,
+    },
+    {
+      requested: targets?.settledPages,
+      setRequested: pageRequestSetters.settled,
+    },
+  );
   const savedFolders = useAtomValue(savedThreadFoldersAtom);
   // Working threads sit in folders too, as in project folders; their shelf row is a copy.
   const folderCandidates =
     workingThreads.length === 0
       ? allActiveThreads
-      : sortWorkingThreadsBySend([...allActiveThreads, ...workingThreads]);
+      : input.sort === "default"
+        ? sortWorkingThreadsBySend([...allActiveThreads, ...workingThreads])
+        : sortThreadList(
+            [...allActiveThreads, ...workingThreads],
+            input.sort,
+            input.lastActivityOrder,
+          );
   const userFolderSplit = partitionSidebarUserFolders({
     saved: savedFolders,
     older: olderSettledShelf.folderNames,
@@ -672,14 +753,18 @@ function useSidebarThreads(input: {
   const folderShelves = useOlderSettledShelves(
     userFolderSplit.folders.map(({ entry }) => {
       const key = sidebarUserFolderKey(entry.key);
-      const listedCount = showAllFolders.get(key);
       return {
         id: entry.key,
         scopes: settledScopes.map((scope) => ({ ...scope, folder: entry.key })),
-        expanded: listedCount !== undefined && resolveProjectExpanded(projectExpandedById, [key]),
-        visibleCount: listedCount ?? 0,
+        expanded: resolveProjectExpanded(projectExpandedById, [key]),
+        visibleCount: filtered ? 0 : (targets?.folders?.get(key) ?? 0),
+        filtered,
       };
     }),
+    {
+      requested: targets?.folderPages,
+      setRequested: pageRequestSetters.folder,
+    },
   );
   const listedFolderSettled = userFolderSplit.folders.map(({ settled }, index) =>
     settled.filter(folderShelves[index]!.isListed),
@@ -692,8 +777,16 @@ function useSidebarThreads(input: {
       listedCount: listedFolderSettled[index]!.length,
     })),
   ]);
-  const settledCount =
-    settledThreads.length + olderSettledShelf.unloadedCount(partition.visibleThreads);
+  // A filter cannot tell which older settled threads not loaded yet match, so it counts loaded ones.
+  const olderSettledCount = (shelf: OlderSettledShelf) => {
+    const unloaded = shelf.unloadedCount;
+    return {
+      counted: filtered ? 0 : unloaded,
+      uncounted: (filtered || unloaded === 0) && shelf.hasMorePages,
+    };
+  };
+  const olderSettled = olderSettledCount(olderSettledShelf);
+  const settledCount = settledThreads.length + olderSettled.counted;
   const visibleSettledThreads = (() => {
     const visible = listedSettledThreads.slice(0, settledVisibleCount);
     if (
@@ -719,7 +812,7 @@ function useSidebarThreads(input: {
   const visibleWorkingThreads = workingShelfExpanded
     ? workingThreads
     : routeThreadOnly(workingThreads, routeRowThreadKey);
-  const locallyUnreadKeys = useLocallyUnreadThreadKeys(threads);
+  const { locallyUnreadKeys } = input;
   // A capped folder still lists the open thread, a woken snooze, and any thread its closed dot
   // would flag. Visits come from the server; reading local ones would re-render on every tick.
   const keepInFolderPreview = (thread: EnvironmentThreadShell) => {
@@ -739,7 +832,13 @@ function useSidebarThreads(input: {
     expansionKeys: readonly string[],
     threads: readonly EnvironmentThreadShell[],
     expanded: boolean,
-    older: { readonly shelf: OlderSettledShelf; readonly count: number } | null = null,
+    older: {
+      readonly shelf: OlderSettledShelf;
+      readonly count: number;
+      readonly hasHiddenLoaded: boolean;
+      readonly uncounted: boolean;
+      readonly countLess: boolean;
+    } | null = null,
   ): SidebarFolderContents => {
     const olderCount = older?.count ?? 0;
     if (!expanded) {
@@ -759,9 +858,15 @@ function useSidebarThreads(input: {
       keepInFolderPreview,
     );
     const showingAll =
-      showAllFolders.has(key) && (preview.overflow.length > 0 || older?.shelf.hasPages === true);
+      targets?.folders?.has(key) === true &&
+      (preview.overflow.length > 0 || older?.shelf.hasPages === true);
     const count =
       (showingAll ? 0 : preview.overflow.length) + Math.min(olderCount, SETTLED_TAIL_PAGE_COUNT);
+    const uncounted = older?.uncounted === true;
+    const canShowMore =
+      (preview.overflow.length > 0 && !showingAll) ||
+      older?.shelf.hasMorePages === true ||
+      older?.hasHiddenLoaded === true;
     return {
       key,
       expansionKeys,
@@ -771,13 +876,11 @@ function useSidebarThreads(input: {
       olderCount,
       more: older?.shelf.loading
         ? { state: "loading", count: 0 }
-        : older?.shelf.failed
-          ? { state: "retry", count: 0 }
-          : count > 0
-            ? { state: "show", count }
-            : showingAll
-              ? { state: "less", count: 0 }
-              : null,
+        : canShowMore
+          ? { state: "show", count: uncounted || older?.countLess ? null : count }
+          : showingAll
+            ? { state: "less", count: 0 }
+            : null,
     };
   };
   const projectFolder = (
@@ -843,21 +946,31 @@ function useSidebarThreads(input: {
       const key = sidebarUserFolderKey(entry.key);
       const shelf = folderShelves[index]!;
       const listed = listedFolderSettled[index]!;
+      const older = olderSettledCount(shelf);
+      const target = filtered ? targets?.folders?.get(key) : undefined;
+      const visible = target === undefined ? listed : listed.slice(0, target);
+      const contents = folderContents(
+        key,
+        [key],
+        [...threads, ...visible],
+        resolveProjectExpanded(projectExpandedById, [key]),
+        {
+          shelf,
+          count: older.counted + settled.length - visible.length,
+          hasHiddenLoaded: settled.length > visible.length,
+          uncounted: older.uncounted,
+          countLess: filtered,
+        },
+      );
+      const shown = new Set(contents.threads);
       return {
+        ...contents,
         kind: "user",
         entry,
         shelf,
         listedSettledCount: listed.length,
-        ...folderContents(
-          key,
-          [key],
-          [...threads, ...listed],
-          resolveProjectExpanded(projectExpandedById, [key]),
-          {
-            shelf,
-            count: shelf.unloadedCount(partition.visibleThreads) + settled.length - listed.length,
-          },
-        ),
+        shownSettledCount: visible.filter((thread) => shown.has(thread)).length,
+        olderUncounted: older.uncounted,
       };
     },
   );
@@ -953,12 +1066,26 @@ function useSidebarThreads(input: {
     settledVisibleCount,
     settledCount,
     olderSettledShelf,
-    hiddenSettledCount: Math.max(0, settledCount - visibleSettledThreads.length),
-    showMoreSettled: () =>
-      setSettledTail((current) => ({
-        scopeKey: current.scopeKey,
-        count: current.count + SETTLED_TAIL_PAGE_COUNT,
-      })),
+    hiddenSettledCount: settledFooterHiddenCount({
+      filtered,
+      hasMorePages: olderSettledShelf.hasMorePages,
+      hiddenLoaded: settledThreads.length - visibleSettledThreads.length,
+      displayCount: settledCount - visibleSettledThreads.length,
+    }),
+    showMoreSettled: () => {
+      if (filtered) {
+        const count = olderSettledShelf.showMoreFiltered(
+          Math.min(listedSettledThreads.length, settledVisibleCount),
+          listedSettledThreads.length,
+        );
+        setViewTargets((current) => ({ ...current, settled: count }));
+      } else {
+        setSettledTail({
+          scopeKey: projectScopeKey,
+          count: unfilteredVisibleCount + SETTLED_TAIL_PAGE_COUNT,
+        });
+      }
+    },
     settledShelfExpanded,
     toggleSettledShelf: () => setSettledShelfExpanded((value) => !value),
     pinnedShelfExpanded,
@@ -1015,18 +1142,27 @@ function useSidebarThreads(input: {
     },
     toggleFolderOverflow: (key: string) => {
       const folder = userFolders.find((candidate) => candidate.key === key);
-      if (folder?.more?.state === "retry") {
-        folder.shelf.retry();
+      if (filtered && folder?.more?.state === "show") {
+        const count = folder.shelf.showMoreFiltered(
+          folder.shownSettledCount,
+          folder.listedSettledCount,
+        );
+        setViewTargets((current) => ({
+          ...current,
+          folders: new Map(current.folders).set(key, count),
+        }));
         return;
       }
-      setShowAllFolders((current) => {
-        const next = new Map(current);
-        if (folder !== undefined && folder.olderCount > 0) {
+      setViewTargets((current) => {
+        const next = new Map(current.folders);
+        if (folder?.more?.state === "less") {
+          next.delete(key);
+        } else if (folder?.shelf.hasMorePages) {
           next.set(key, folder.listedSettledCount + SETTLED_TAIL_PAGE_COUNT);
         } else if (!next.delete(key)) {
           next.set(key, 0);
         }
-        return next;
+        return { ...current, folders: next };
       });
     },
     renderedSettledThreads,
@@ -1072,9 +1208,17 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     disconnectedEnvironmentIds,
   } = input;
   const preciseNow = new Date().toISOString();
-  // Ignores the project scope: a thread waiting on the user must not hide in a folder, shelf, or filter.
+  const matchesFilters = (thread: EnvironmentThreadShell) =>
+    matchesAnyThreadTag(thread.source.tags, input.tagFilter) &&
+    (input.statusFilter === "all" ||
+      matchesThreadListStatus(thread, input.statusFilter, {
+        woke: hasUnseenServerWake(thread, preciseNow),
+        locallyUnread: input.locallyUnreadKeys.has(threadShellKey(thread)),
+      }));
+  // Ignores the project scope, not the status and tag filters the user picked: a thread waiting
+  // on the user must not hide in a folder, shelf, or project filter.
   const needsYou = collectNeedsYouThreads(
-    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent),
+    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent).filter(matchesFilters),
     { now: preciseNow },
   );
   // Put-off threads still wait on the user, so they stay out of the other sections too.
@@ -1086,7 +1230,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     delegatedUnderParent,
   ).filter((thread) => {
     const key = threadShellKey(thread);
-    return !hiddenTaskThreadKeys.has(key) || needsYouKeys.has(key);
+    return matchesFilters(thread) && (!hiddenTaskThreadKeys.has(key) || needsYouKeys.has(key));
   });
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
@@ -1146,11 +1290,14 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   }
   // Availability gates dragging only; sorting must stay consistent across clients.
   const sortedPinned = sortPinnedThreadsForSidebar(pinned);
-  const sortedActive = sortActiveBySend
-    ? sortWorkingThreadsBySend(active)
-    : workingShelfEnabled
-      ? sortInboxThreadsByReturn(active, inboxObservation.returnedAt)
-      : sortThreadsForSidebar(active);
+  const sortedActive =
+    input.sort !== "default"
+      ? sortThreadList(active, input.sort, input.lastActivityOrder)
+      : sortActiveBySend
+        ? sortWorkingThreadsBySend(active)
+        : workingShelfEnabled
+          ? sortInboxThreadsByReturn(active, inboxObservation.returnedAt)
+          : sortThreadsForSidebar(active);
   return {
     needsYouThreads,
     needsYouNowThreads: needsYou.threads,
@@ -1174,14 +1321,20 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
             preferredIds: optimisticDrop.order,
             getId: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
           }),
-    workingThreads: sortWorkingThreadsBySend(working),
-    snoozedThreads: snoozed.toSorted(
-      (left, right) =>
-        firstValidTimestampMs(left.snoozedUntil ?? null) -
-        firstValidTimestampMs(right.snoozedUntil ?? null),
-    ),
+    workingThreads:
+      input.sort === "default"
+        ? sortWorkingThreadsBySend(working)
+        : sortThreadList(working, input.sort, input.lastActivityOrder),
+    snoozedThreads:
+      input.sort !== "default"
+        ? sortThreadList(snoozed, input.sort, input.lastActivityOrder)
+        : snoozed.toSorted(
+            (left, right) =>
+              firstValidTimestampMs(left.snoozedUntil ?? null) -
+              firstValidTimestampMs(right.snoozedUntil ?? null),
+          ),
+    // Older settled threads load in settlement order, so the shelf keeps that order under any sort.
     settledThreads: sortSettledThreads(settled),
-    visibleThreads: visible,
     snoozeNow: preciseNow,
   };
 }
@@ -1497,6 +1650,7 @@ export default function Sidebar({
   const { handleNewThread } = newThreadContext;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const folderActions = useThreadFolderActions();
+  const runThreadTagAction = useThreadTagActions();
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
@@ -1508,6 +1662,23 @@ export default function Sidebar({
   );
   const environmentMachineById = useEnvironmentMachines();
   const projectGroupsRef = useRef(projectGroups);
+  const [statusFilter, setStatusFilter] = useLocalStorage(
+    "t3code:sidebar-status-filter",
+    "all",
+    ThreadListStatusFilter,
+  );
+  const [threadSort, setThreadSort] = useLocalStorage(
+    "t3code:sidebar-thread-sort",
+    "default",
+    ThreadListSort,
+  );
+  const [selectedTags, setSelectedTags] = useLocalStorage(
+    "t3code:sidebar-tag-filter",
+    [],
+    SidebarTagFilter,
+  );
+  const tagFilter = new Set(selectedTags);
+  const hasThreadFilters = statusFilter !== "all" || tagFilter.size > 0;
   const persistedProjectScopeKeys = useUiStateStore((store) => store.sidebarProjectScopeKeys);
   const setPersistedProjectScopeKeys = useUiStateStore((store) => store.setSidebarProjectScopeKeys);
   const persistedMachineScopeIds = useUiStateStore((store) => store.sidebarMachineScopeIds);
@@ -1614,6 +1785,13 @@ export default function Sidebar({
     chosenEnvironmentIds: new Set(chosenMachines.map((machine) => machine.environmentId)),
   });
   const threads = useQuietThreadShells();
+  const lastActivityOrder = useAtomValue(environmentThreadShells.lastActivityOrderAtom(threadSort));
+  const locallyUnreadKeys = useLocallyUnreadThreadKeys(threads);
+  const availableTags = useAtomValue(
+    environmentThreadShells.threadFilterTagsAtom(
+      hiddenScheduledTaskThreadKeysAtom(taskEnvironmentIdsKey),
+    ),
+  );
   const routeRowThreadKey =
     routeThreadRef === null
       ? null
@@ -1856,6 +2034,11 @@ export default function Sidebar({
     pinnedKeysById,
     activeKeysById,
   } = useSidebarThreads({
+    statusFilter,
+    tagFilter,
+    sort: threadSort,
+    lastActivityOrder,
+    locallyUnreadKeys,
     projectScopeKey,
     scopedProjectKeys,
     serverConfigs,
@@ -2886,6 +3069,8 @@ export default function Sidebar({
     // Folders keep a pinned open project, or a project or machine the user filtered to, so it can start a thread.
     if (
       !hasFolders &&
+      !olderSettledShelf.failed &&
+      hiddenSettledCount !== null &&
       pinnedThreads.length +
         activeThreads.length +
         workingThreads.length +
@@ -2985,7 +3170,10 @@ export default function Sidebar({
           settledThreads,
           activeThreads,
           workingShelfEnabled,
+          sort: threadSort,
+          lastActivityOrder,
         });
+  const activeTimeOrdered = workingShelfEnabled || threadSort !== "default";
   const sidebarSortingStrategy = createSidebarSortingStrategy({
     items: sidebarListItems,
     enabled: !isContextDrag,
@@ -3024,7 +3212,7 @@ export default function Sidebar({
             activeOrder: activeKeys,
             activeKeysById,
             activeReorderableKeys: activeReorderableThreadKeys,
-            activeTimeOrdered: workingShelfEnabled,
+            activeTimeOrdered,
           }).kind !== "none"
         );
       },
@@ -3055,7 +3243,7 @@ export default function Sidebar({
       activeOrder: activeKeys,
       activeKeysById,
       activeReorderableKeys: activeReorderableThreadKeys,
-      activeTimeOrdered: workingShelfEnabled,
+      activeTimeOrdered,
     });
     if (plan.kind === "none") return;
     if (plan.kind === "settle" && settlingThreadKeysRef.current.has(activeKey)) return;
@@ -3345,6 +3533,9 @@ export default function Sidebar({
                   },
                 ]
               : []),
+            ...(selectedThreads.every((thread) => serverConfigs.has(thread.environmentId))
+              ? [buildThreadTagsMenuItem(readThreadTagsMenuState(selectedThreadRefs))]
+              : []),
             { id: "mark-unread", label: t("Mark unread ({count})", { count }) },
             {
               id: "archive",
@@ -3384,6 +3575,10 @@ export default function Sidebar({
       if (isThreadFolderMenuAction(clicked.value)) {
         clearSelection();
         await folderActions.runMenuAction(clicked.value, selectedThreadRefs);
+        return;
+      }
+      if (clicked.value.startsWith("tag:")) {
+        await runThreadTagAction(clicked.value, selectedThreadRefs);
         return;
       }
       if (clicked.value?.startsWith("snooze:")) {
@@ -3692,6 +3887,7 @@ export default function Sidebar({
               ),
               canTurnIntoProject: canTurnThreadIntoProject(threadRef),
               folders: readThreadFolderMenuState([threadRef]),
+              ...(configLoaded ? { tags: readThreadTagsMenuState([threadRef]) } : {}),
               supports: {
                 settlement: configLoaded,
                 autoSettleOptOut: supportsAutoSettleOptOut,
@@ -3712,6 +3908,10 @@ export default function Sidebar({
         if (threadActionRequiresOperate(clicked.value) && !checkThreadOperations([thread])) return;
         if (isThreadFolderMenuAction(clicked.value)) {
           await folderActions.runMenuAction(clicked.value, [threadRef]);
+          return;
+        }
+        if (clicked.value.startsWith("tag:")) {
+          await runThreadTagAction(clicked.value, [threadRef]);
           return;
         }
         if (clicked.value?.startsWith("snooze:")) {
@@ -3966,8 +4166,15 @@ export default function Sidebar({
         return true;
       };
       if (command === "thread.nextNeedsYou") {
-        const next = nextNeedsYouThread(needsYouNowThreads, routeThreadRef);
-        navigateToThreadKey(next === null ? null : threadShellKey(next));
+        const next = nextNeedsYouThread(
+          appAtomRegistry.get(environmentThreadShells.needsYouThreadsAtom).threads,
+          routeThreadRef,
+        );
+        if (next !== null) {
+          event.preventDefault();
+          event.stopPropagation();
+          navigateToThread(scopeThreadRef(next.environmentId, next.id));
+        }
         return;
       }
       const traversalDirection = threadTraversalDirectionFromCommand(command);
@@ -3990,7 +4197,6 @@ export default function Sidebar({
   }, [
     keybindings,
     navigateToThread,
-    needsYouNowThreads,
     orderedThreadKeys,
     routeRowThreadKey,
     routeThreadRef,
@@ -4155,6 +4361,72 @@ export default function Sidebar({
                         <Toggle value="project">{t("Project")}</Toggle>
                       </ToggleGroup>
                     </div>
+                    <div className="flex items-center justify-between gap-2 px-2.5 pt-2 text-xs text-muted-foreground">
+                      <span>{t("Status")}</span>
+                      <Select
+                        value={statusFilter}
+                        onValueChange={(value) => {
+                          if (value !== null) setStatusFilter(value);
+                        }}
+                      >
+                        <SelectTrigger aria-label={t("Filter threads by status")} size="xs">
+                          <SelectValue>{t(THREAD_LIST_STATUS_LABELS[statusFilter])}</SelectValue>
+                        </SelectTrigger>
+                        <SelectPopup>
+                          {ThreadListStatusFilter.literals.map((status) => (
+                            <SelectItem key={status} value={status}>
+                              {t(THREAD_LIST_STATUS_LABELS[status])}
+                            </SelectItem>
+                          ))}
+                        </SelectPopup>
+                      </Select>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 px-2.5 pt-2 text-xs text-muted-foreground">
+                      <span>{t("Sort by")}</span>
+                      <Select
+                        value={threadSort}
+                        onValueChange={(value) => {
+                          if (value !== null) setThreadSort(value);
+                        }}
+                      >
+                        <SelectTrigger aria-label={t("Sort by")} size="xs">
+                          <SelectValue>{t(THREAD_LIST_SORT_LABELS[threadSort])}</SelectValue>
+                        </SelectTrigger>
+                        <SelectPopup>
+                          {ThreadListSort.literals.map((sort) => (
+                            <SelectItem key={sort} value={sort}>
+                              {t(THREAD_LIST_SORT_LABELS[sort])}
+                            </SelectItem>
+                          ))}
+                        </SelectPopup>
+                      </Select>
+                    </div>
+                    {threadSort === "default" ? null : (
+                      <p className="px-2.5 pt-1 text-xs text-muted-foreground">
+                        {t("Choose Default sorting to manually arrange active threads.")}
+                      </p>
+                    )}
+                    {availableTags.length > 0 ? (
+                      <fieldset className="px-2.5 pt-2 text-xs text-muted-foreground">
+                        <legend>{t("Filter by tags")}</legend>
+                        <div className="max-h-28 overflow-y-auto">
+                          {availableTags.map((tag) => (
+                            <label key={tag} className="flex min-h-6 min-w-0 items-center gap-2">
+                              <Checkbox
+                                aria-label={tag}
+                                checked={tagFilter.has(tag)}
+                                onCheckedChange={() =>
+                                  setSelectedTags((current) =>
+                                    toggleThreadTagSelection(current, tag),
+                                  )
+                                }
+                              />
+                              <span className="truncate">{tag}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </fieldset>
+                    ) : null}
                     {offersSidebarMachineGrouping(machines.length, groupBy) ? (
                       <label className="flex items-center justify-between gap-2 px-2.5 pt-2 text-xs text-muted-foreground">
                         {t("Group by machine")}
@@ -4384,6 +4656,28 @@ export default function Sidebar({
               activeSearchResultIndex={activeSearchResultIndex}
               onClearSearch={clearThreadSearch}
             />
+            {hasThreadFilters ? (
+              <div className="mt-1 flex items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
+                <span>
+                  {[
+                    ...(statusFilter === "all" ? [] : [t(THREAD_LIST_STATUS_LABELS[statusFilter])]),
+                    ...(tagFilter.size === 0
+                      ? []
+                      : [tn(tagFilter.size, "{count} tag", "{count} tags")]),
+                  ].join(" · ")}
+                </span>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => {
+                    setStatusFilter("all");
+                    setSelectedTags([]);
+                  }}
+                >
+                  {t("Clear filter")}
+                </Button>
+              </div>
+            ) : null}
           </SidebarGroup>
         }
       >
@@ -4732,6 +5026,18 @@ export default function Sidebar({
                         );
                       }
                       const pushFolderMoreRow = (folder: SidebarFolder, nested: boolean) => {
+                        if (folder.kind === "user" && !folder.collapsed && folder.shelf.failed) {
+                          items.push(
+                            <SidebarFolderMoreRow
+                              key={`folder-retry:${folder.key}`}
+                              folderKey={folder.key}
+                              nested={nested}
+                              state="retry"
+                              count={0}
+                              onToggle={folder.shelf.retry}
+                            />,
+                          );
+                        }
                         if (folder.more === null) return;
                         items.push(
                           <SidebarFolderMoreRow
@@ -4772,7 +5078,9 @@ export default function Sidebar({
                             !folder.collapsed &&
                             folder.threads.length === 0 &&
                             folder.hiddenThreads.length === 0 &&
-                            folder.olderCount === 0
+                            folder.olderCount === 0 &&
+                            !folder.shelf.failed &&
+                            !folder.olderUncounted
                           ) {
                             items.push(
                               <SidebarUserFolderEmptyRow
@@ -4972,7 +5280,23 @@ export default function Sidebar({
                       }
                       return items;
                     })()}
-                    {settledShelfExpanded && hiddenSettledCount > 0 ? (
+                    {settledShelfExpanded && olderSettledShelf.failed ? (
+                      <li className="list-none">
+                        <button
+                          type="button"
+                          role="treeitem"
+                          tabIndex={-1}
+                          data-sidebar-row="settled:retry"
+                          data-sidebar-parent="shelf:settled"
+                          onClick={olderSettledShelf.retry}
+                          className="flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
+                        >
+                          <ChevronDownIcon aria-hidden className="size-4 shrink-0" />
+                          {t("Could not load older threads. Retry")}
+                        </button>
+                      </li>
+                    ) : null}
+                    {settledShelfExpanded && hiddenSettledCount !== 0 ? (
                       <li className="list-none">
                         <button
                           type="button"
@@ -4981,18 +5305,15 @@ export default function Sidebar({
                           data-sidebar-row="settled:more"
                           data-sidebar-parent="shelf:settled"
                           disabled={olderSettledShelf.loading}
-                          onClick={() => {
-                            olderSettledShelf.retry();
-                            showMoreSettled();
-                          }}
+                          onClick={showMoreSettled}
                           className="flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground disabled:cursor-default"
                         >
                           {/* Plus means "add", so revealing more uses a chevron. */}
                           <ChevronDownIcon aria-hidden className="size-4 shrink-0" />
                           {olderSettledShelf.loading
                             ? t("Loading")
-                            : olderSettledShelf.failed
-                              ? t("Could not load older threads. Retry")
+                            : hiddenSettledCount === null
+                              ? t("Show more")
                               : t("Show {count} more", {
                                   count: Math.min(hiddenSettledCount, SETTLED_TAIL_PAGE_COUNT),
                                 })}
@@ -5006,6 +5327,8 @@ export default function Sidebar({
           ) : null}
           {!isSearchingThreads &&
           !hasFolders &&
+          !olderSettledShelf.failed &&
+          hiddenSettledCount !== null &&
           visibleDraftSessionCount === 0 &&
           needsYouThreads.length +
             pinnedThreads.length +
@@ -5015,7 +5338,9 @@ export default function Sidebar({
             settledCount ===
             0 ? (
             <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
-              {projects.length === 0 ? (
+              {hasThreadFilters ? (
+                t("No threads match your filters")
+              ) : projects.length === 0 ? (
                 <>
                   <span>{t("No projects yet")}</span>
                   <button

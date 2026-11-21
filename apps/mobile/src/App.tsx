@@ -22,6 +22,7 @@ import { pipe } from "effect/Function";
 
 import { RegistryContext } from "@effect/atom-react";
 import { ProjectChipIconRasterizer } from "./native/ProjectChipIconImages";
+import { ThreadTagPickerHost } from "./features/threads/ThreadTagPicker";
 import { ThreadArrangementHost } from "./features/threads/ThreadArrangementSheet";
 import * as Dialog from "./components/ui/Dialog";
 import { ThreadFolderNamePromptHost } from "./features/threads/ThreadFolderNamePrompt";
@@ -265,6 +266,7 @@ function AppContent() {
                   <Dialog.Host />
                   <ThreadFolderNamePromptHost />
                   <ThreadArrangementHost />
+                  <ThreadTagPickerHost />
                   <ProjectChipIconRasterizer />
                 </NativeLayoutMetricsProvider>
               </GlobalVoiceInputControl>

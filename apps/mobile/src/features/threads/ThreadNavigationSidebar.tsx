@@ -21,6 +21,7 @@ import { machineAvailabilityOf } from "./thread-row-emphasis";
 import { useReconnectMachines } from "../connection/useReconnectMachines";
 import { ThreadListPinnedTasks, useScheduledTaskHiddenThreadKeys } from "./ThreadListPinnedTasks";
 import { ThreadListManualSteps } from "./ThreadListManualSteps";
+import type { ThreadMoveDestination } from "./threadOrder";
 import type { MenuAction } from "@react-native-menu/menu";
 import { useAtomValue } from "@effect/atom-react";
 import { useMemo, useRef, useState } from "react";
@@ -42,7 +43,7 @@ import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
 import { useOpenArtifacts } from "../artifacts/useOpenArtifacts";
-import { useProjects, useNavigationThreadShells } from "../../state/entities";
+import { useProjects } from "../../state/entities";
 import { useSavedThreadFolders, useThreadFolderNames } from "../../state/thread-folders";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
@@ -58,6 +59,7 @@ import { useThreadListV2 } from "./useThreadListV2";
 import { useThreadJumpShortcuts } from "../keyboard/threadKeyboardShortcuts";
 import { requestThreadMessageJump } from "./threadMessageJump";
 import { useThreadListSearchMatches } from "./useThreadListSearchMatches";
+import { environmentThreadShells, threadFilterTagsAtom } from "../../state/threads";
 import { useHomeListOptions } from "../home/home-list-options";
 import {
   ARCHIVED_THREADS_EVENT,
@@ -68,8 +70,11 @@ import {
   buildGroupByMenuActions,
   buildHomeListFilterMenu,
   handleGroupByMenuEvent,
+  buildThreadListRefinementMenuActions,
   showAllThreadsMenuItems,
   threadListFilterButtonLabel,
+  threadListRefinementFilters,
+  threadListRefinementMenuChange,
 } from "../home/home-list-filter-menu";
 import {
   buildHomeProjectScopes,
@@ -97,7 +102,7 @@ import {
   ThreadListV2PendingRow,
   ThreadListV2Row,
   ThreadListV2SettledShelfHeader,
-  ThreadListV2ShowMoreRow,
+  ThreadListV2OlderThreadsFooter,
   ThreadListV2SnoozedShelfHeader,
   ThreadListV2NeedsYouHeader,
   ThreadListV2WorkingShelfHeader,
@@ -108,8 +113,6 @@ import { ThreadPrDemandProvider } from "../../state/thread-pr-demand";
 import {
   isThreadListV2ListItem,
   threadListV2ListItemsAreEqual,
-  THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
-  THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   type ThreadListV2Folder,
   type ThreadListV2ListItem,
 } from "./threadListV2";
@@ -122,8 +125,9 @@ type SidebarListItem =
   | {
       readonly type: "v2-show-more";
       readonly key: string;
-      readonly hiddenCount: number;
-      readonly state?: "loading" | "failed";
+      readonly hiddenCount: number | null;
+      readonly state: "loading" | null;
+      readonly failed: boolean;
     };
 
 const SIDEBAR_STICKY_HEADER_HEIGHT = 106;
@@ -185,7 +189,7 @@ function ThreadNavigationSidebarPane(
   const enabledTabs = useEnabledNavigationTabs();
   const floatingTabs = floatingTabsMetrics(enabledTabs.length + 1, scale, fabSize, props.width);
   const projects = useProjects();
-  const threads = useNavigationThreadShells();
+  const threads = useAtomValue(environmentThreadShells.listedThreadShellsAtom);
   const openArchivedThreads = useOpenArchivedThreads();
   const openArtifacts = useOpenArtifacts();
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
@@ -233,7 +237,7 @@ function ThreadNavigationSidebarPane(
   const availableEnvironmentIds = new Set(
     environments.map((environment) => environment.environmentId),
   );
-  const { options, setSelectedEnvironmentId, setSelectedProjectKey } =
+  const { options, setSelectedEnvironmentId, setSelectedProjectKey, updateOptions } =
     useHomeListOptions(availableEnvironmentIds);
   const searchEnvironmentIds =
     options.selectedEnvironmentId === null
@@ -305,17 +309,6 @@ function ThreadNavigationSidebarPane(
     return map;
   }, [projects]);
 
-  const [settledVisibleCount, setSettledVisibleCount] = useState(
-    THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
-  );
-  const settledResetKey = `${options.selectedEnvironmentId ?? "all"}:${selectedProjectKey ?? "all"}:${props.searchQuery.trim()}`;
-  const [lastSettledResetKey, setLastSettledResetKey] = useState(settledResetKey);
-  if (lastSettledResetKey !== settledResetKey) {
-    setLastSettledResetKey(settledResetKey);
-    setSettledVisibleCount(THREAD_LIST_V2_SETTLED_INITIAL_COUNT);
-  }
-  const showMoreSettled = () =>
-    setSettledVisibleCount((count) => count + THREAD_LIST_V2_SETTLED_PAGE_COUNT);
   const {
     loaded: shelfPreferencesLoaded,
     settledShelfExpanded,
@@ -384,18 +377,29 @@ function ThreadNavigationSidebarPane(
   const hiddenTaskThreadKeys = useScheduledTaskHiddenThreadKeys(
     JSON.stringify([...settlementEnvironmentIds]),
   );
+  const lastActivityOrder = useAtomValue(
+    environmentThreadShells.lastActivityOrderAtom(options.sort),
+  );
   const {
     layout: threadListV2Layout,
     items: threadListV2Items,
     contentOnlyThreadKeys,
     olderSettledShelf,
+    settledFooter,
+    retryFolder,
     showMoreInFolder,
+    showMoreSettled,
+    getListedArrangement,
   } = useThreadListV2({
     threads,
     pendingTasks,
     environmentId: options.selectedEnvironmentId,
     projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
     searchQuery: props.searchQuery,
+    statusFilter: options.statusFilter,
+    sort: options.sort,
+    lastActivityOrder,
+    selectedTags: options.selectedTags,
     searchMatches: threadSearchMatchByKey,
     settlementEnvironmentIds,
     snoozeEnvironmentIds,
@@ -403,7 +407,6 @@ function ThreadNavigationSidebarPane(
     activeReorderEnvironmentIds,
     queuedThreadKeys,
     hiddenTaskThreadKeys,
-    settledLimit: settledVisibleCount,
     now,
     pendingOrder,
     shelfPreferencesLoaded,
@@ -415,23 +418,24 @@ function ThreadNavigationSidebarPane(
     grouping,
     chatFolders,
   });
+  const moveListedThread = (thread: EnvironmentThreadShell, direction: ThreadMoveDestination) =>
+    moveThread(thread, direction, getListedArrangement);
   const listItems: readonly SidebarListItem[] =
-    settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0
+    settledFooter !== null
       ? [
           ...threadListV2Items,
           {
             type: "v2-show-more",
             key: "v2-show-more",
-            hiddenCount: threadListV2Layout.hiddenSettledCount,
-            ...(olderSettledShelf.loading
-              ? { state: "loading" as const }
-              : olderSettledShelf.failed
-                ? { state: "failed" as const }
-                : {}),
+            ...settledFooter,
           },
         ]
       : threadListV2Items;
-  const filterCustomized = options.selectedEnvironmentId !== null || selectedProjectKey !== null;
+  const filterCustomized =
+    options.selectedEnvironmentId !== null ||
+    selectedProjectKey !== null ||
+    threadListRefinementFilters(options);
+  const availableTags = useAtomValue(threadFilterTagsAtom);
   const listMenuActions = [
     ...showAllThreadsMenuItems(filterCustomized),
     {
@@ -475,6 +479,7 @@ function ThreadNavigationSidebarPane(
             ],
           },
         ] satisfies MenuAction[])),
+    ...buildThreadListRefinementMenuActions(options, availableTags),
     ...buildGroupByMenuActions(groupBy, environments.length),
     archivedThreadsMenuItem,
     artifactsMenuItem,
@@ -486,8 +491,17 @@ function ThreadNavigationSidebarPane(
   }) => {
     const event = nativeEvent.event;
     if (event === SHOW_ALL_THREADS_EVENT) {
-      setSelectedEnvironmentId(null);
-      setSelectedProjectKey(null);
+      updateOptions({
+        selectedEnvironmentId: null,
+        selectedProjectKey: null,
+        statusFilter: "all",
+        selectedTags: [],
+      });
+      return;
+    }
+    const refinementChange = threadListRefinementMenuChange(event, options);
+    if (refinementChange) {
+      updateOptions(refinementChange);
       return;
     }
     if (event === ARCHIVED_THREADS_EVENT) {
@@ -615,7 +629,11 @@ function ThreadNavigationSidebarPane(
       return threadListV2ListItemsAreEqual(previous, item);
     }
     if (previous.type === "v2-show-more" && item.type === "v2-show-more") {
-      return previous.hiddenCount === item.hiddenCount && previous.state === item.state;
+      return (
+        previous.hiddenCount === item.hiddenCount &&
+        previous.state === item.state &&
+        previous.failed === item.failed
+      );
     }
     return false;
   };
@@ -738,8 +756,7 @@ function ThreadNavigationSidebarPane(
               item.item.needsYou !== true &&
               (item.item.pinned
                 ? pinReorderEnvironmentIds.has(thread.environmentId)
-                : !workingShelfEnabled &&
-                  grouping === null &&
+                : threadListV2Layout.listedSections.activeManualOrder &&
                   activeReorderEnvironmentIds.has(thread.environmentId))
             }
             canMoveUp={item.canMoveUp}
@@ -756,7 +773,7 @@ function ThreadNavigationSidebarPane(
                 ? item.item.later === true
                 : undefined
             }
-            onMoveThread={moveThread}
+            onMoveThread={moveListedThread}
             onSwipeableClose={handleSwipeableClose}
             onSwipeableWillOpen={handleSwipeableWillOpen}
             simultaneousSwipeGesture={sidebarScrollGesture}
@@ -781,11 +798,12 @@ function ThreadNavigationSidebarPane(
         );
       case "v2-folder-more":
         return (
-          <ThreadListV2ShowMoreRow
+          <ThreadListV2OlderThreadsFooter
             pane="sidebar"
             hiddenCount={item.hiddenCount}
             state={item.state}
-            onPress={() => showMoreInFolder(item.folderKey, item.listedCount)}
+            onShowMore={() => showMoreInFolder(item.folderKey, item.listedCount)}
+            onRetry={item.failed ? () => retryFolder(item.folderKey) : undefined}
           />
         );
       case "v2-needs-you":
@@ -822,14 +840,12 @@ function ThreadNavigationSidebarPane(
         );
       case "v2-show-more":
         return (
-          <ThreadListV2ShowMoreRow
+          <ThreadListV2OlderThreadsFooter
             pane="sidebar"
             hiddenCount={item.hiddenCount}
-            {...(item.state === undefined ? {} : { state: item.state })}
-            onPress={() => {
-              olderSettledShelf.retry();
-              showMoreSettled();
-            }}
+            state={item.state}
+            onShowMore={showMoreSettled}
+            onRetry={item.failed ? olderSettledShelf.retry : undefined}
           />
         );
     }
@@ -843,6 +859,13 @@ function ThreadNavigationSidebarPane(
     selectedEnvironmentId: options.selectedEnvironmentId,
     selectedProjectKey,
     grouping: groupBy,
+    statusFilter: options.statusFilter,
+    onStatusChange: (statusFilter) => updateOptions({ statusFilter }),
+    sort: options.sort,
+    onSortChange: (sort) => updateOptions({ sort }),
+    selectedTags: options.selectedTags,
+    availableTags,
+    onTagsChange: (selectedTags) => updateOptions({ selectedTags }),
     onEnvironmentChange: setSelectedEnvironmentId,
     onProjectChange: setSelectedProjectKey,
     onProjectGroupingChange: setProjectGrouping,
@@ -872,9 +895,11 @@ function ThreadNavigationSidebarPane(
             ? threadSearch.isPending
               ? t("Searching thread messages…")
               : t("No matching threads")
-            : selectedProjectScope !== null
-              ? t("No threads in {project}", { project: selectedProjectScope.title })
-              : t("No threads yet")}
+            : threadListRefinementFilters(options)
+              ? t("No threads match your filters")
+              : selectedProjectScope !== null
+                ? t("No threads in {project}", { project: selectedProjectScope.title })
+                : t("No threads yet")}
     </Text>
   );
 

@@ -1,10 +1,15 @@
 import {
-  resolveThreadStatus,
+  resolveThreadListStatus,
   THREAD_STATUS_DISPLAY,
   type ThreadStatus,
   type ThreadStatusDisplayKey,
   type ThreadStatusTone,
 } from "@t3tools/client-runtime/state/thread-status";
+import { useAtomValue } from "@effect/atom-react";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { threadTagPickerTargetAtom } from "./ThreadTagPicker";
+import { orchestrationEnvironment } from "../../state/orchestration";
+import { serverEnvironment } from "../../state/server";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
@@ -70,6 +75,7 @@ import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { copyThreadReference } from "../../lib/copyThreadReference";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useEnvironmentScope } from "../../state/session";
+import { useThreadShell } from "../../state/entities";
 import { useThreadFolderNames } from "../../state/thread-folders";
 import {
   environmentSupportsThreadFolders,
@@ -568,7 +574,8 @@ export const ThreadListV2FolderHeader = memo(function ThreadListV2FolderHeader(p
 
 export const ThreadListV2ShowMoreRow = memo(function ThreadListV2ShowMoreRow(props: {
   readonly pane?: "screen" | "sidebar";
-  readonly hiddenCount: number;
+  /** Null when a filter hides how many older threads not loaded yet match. */
+  readonly hiddenCount: number | null;
   /** Older settled threads are loading, or their last read failed. */
   readonly state?: "loading" | "failed" | null;
   readonly onPress: () => void;
@@ -578,12 +585,14 @@ export const ThreadListV2ShowMoreRow = memo(function ThreadListV2ShowMoreRow(pro
       ? t("Loading")
       : props.state === "failed"
         ? t("Could not load older threads. Retry")
-        : t("Show more ({count} settled hidden)", { count: props.hiddenCount });
+        : props.hiddenCount === null
+          ? t("Show more")
+          : t("Show more ({count} settled hidden)", { count: props.hiddenCount });
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={
-        props.state === undefined
+        props.state === undefined && props.hiddenCount !== null
           ? tn(
               Math.min(props.hiddenCount, THREAD_LIST_V2_SETTLED_PAGE_COUNT),
               "Show {count} more settled thread",
@@ -608,6 +617,36 @@ export const ThreadListV2ShowMoreRow = memo(function ThreadListV2ShowMoreRow(pro
     </Pressable>
   );
 });
+
+export function ThreadListV2OlderThreadsFooter(props: {
+  readonly pane?: "screen" | "sidebar";
+  readonly hiddenCount: number | null;
+  readonly state: "loading" | null;
+  readonly onShowMore: () => void;
+  readonly onRetry?: (() => void) | undefined;
+}) {
+  const pane = props.pane ?? "screen";
+  return (
+    <>
+      {props.onRetry !== undefined ? (
+        <ThreadListV2ShowMoreRow
+          pane={pane}
+          hiddenCount={null}
+          state="failed"
+          onPress={props.onRetry}
+        />
+      ) : null}
+      {props.hiddenCount !== 0 ? (
+        <ThreadListV2ShowMoreRow
+          pane={pane}
+          hiddenCount={props.hiddenCount}
+          {...(props.state === null ? {} : { state: props.state })}
+          onPress={props.onShowMore}
+        />
+      ) : null}
+    </>
+  );
+}
 
 const pendingTaskMenuActions = (): MenuAction[] => [
   { id: "delete", title: t("Delete"), image: "trash", attributes: { destructive: true } },
@@ -975,7 +1014,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const titleLineHeight =
     Platform.OS === "android" ? androidTitleLineHeight : titleTypography.lineHeight * fontScale;
   const {
-    thread,
     variant,
     onSelectThread,
     onOpenThreadPullRequests,
@@ -993,6 +1031,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     onSetThreadAutoSettle,
     onMoveThread,
   } = props;
+  const thread =
+    useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id)) ?? props.thread;
   const snoozedRow = props.snoozed === true;
   const pinnedRow = props.pinned === true;
   const dormant = useSwipeRowDormant(props.activationKey);
@@ -1022,7 +1062,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const selected = props.selected === true;
   const rowAppearance = getThreadListV2RowAppearance(theme, sidebarPane, selected);
 
-  const status = resolveThreadStatus(thread);
+  const status = resolveThreadListStatus(thread);
   const isUnread = status === "ready" && threadHasUnseenCompletion(thread);
   const workingLabel = STATUS_LABEL_BY_STATUS[status];
   const showsWoke = status === "ready" && props.wokeAt !== null;
@@ -1110,6 +1150,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const handleRename = useCallback(() => onRenameThread(thread), [onRenameThread, thread]);
   const canOperateThread = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
   const canShareWithGuest = useCanShareWithGuest(thread.environmentId);
+  const canEditTags = useAtomValue(
+    orchestrationEnvironment.v2.dispatchCommand.permissionAtom(thread.environmentId, {
+      type: "thread.tag.set",
+    }),
+  );
+  const blockedTags = useAtomValue(serverEnvironment.blockedThreadTagsAtom(thread.environmentId));
+  const tags = thread.source.tags;
   const navigation = useNavigation();
   const handleRegenerateTitle = useCallback(
     () => onRegenerateThreadTitle(thread),
@@ -1374,6 +1421,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   );
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
+      if (nativeEvent.event === "tags") {
+        appAtomRegistry.set(threadTagPickerTargetAtom, {
+          environmentId: thread.environmentId,
+          threadId: thread.id,
+        });
+        return;
+      }
       if (nativeEvent.event === "new-thread-on-branch") onNewThreadOnBranch(thread);
       if (nativeEvent.event === "settle") handleSettle();
       if (nativeEvent.event === "unsettle") handleUnsettle();
@@ -1520,6 +1574,27 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         : null,
     [handleMenuAction, snoozePresetActions, swipeActions.secondary, thread.title],
   );
+  const tagChips = tags?.length ? (
+    <View className="max-w-[34%] shrink flex-row items-center gap-1">
+      {tags.slice(0, 2).map((tag) => (
+        <Text
+          key={tag}
+          className={cn(
+            "shrink rounded bg-subtle px-1 text-xs",
+            rowAppearance.mutedForegroundClassName,
+          )}
+          numberOfLines={1}
+        >
+          {tag}
+        </Text>
+      ))}
+      {tags.length > 2 ? (
+        <Text className={cn("text-xs", rowAppearance.mutedForegroundClassName)}>
+          {t("+{count}", { count: tags.length - 2 })}
+        </Text>
+      ) : null}
+    </View>
+  ) : null;
   const readOnlyMenuActions: MenuAction[] = [
     { id: "copy-thread", title: t("Copy thread"), image: "text.bubble" },
     { id: "copy-thread-id", title: t("Copy thread ID"), image: "doc.on.doc" },
@@ -1593,6 +1668,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         >
           {thread.title}
         </Text>
+        {tagChips}
         {/* Capped so large text cannot squeeze the title out. */}
         <View
           className="max-w-[50%] shrink flex-row items-center gap-1.5"
@@ -1924,6 +2000,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               />
             ) : null}
           </View>
+          {tagChips}
           {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
           <Text
             className={cn(
@@ -1989,6 +2066,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                   ]
                 : []),
               ...readOnlyMenuActions,
+              ...(canEditTags && blockedTags !== null
+                ? [{ id: "tags", title: t("Tags…"), image: "tag" }]
+                : []),
               ...(snoozedRow
                 ? snoozedMenuActions
                 : !props.settlementSupported

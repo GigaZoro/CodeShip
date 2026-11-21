@@ -1,7 +1,12 @@
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { isThreadWaitingOnWork, resolveThreadStatus } from "./threadStatus.ts";
+import {
+  isThreadWaitingOnWork,
+  matchesThreadListStatus,
+  resolveThreadListStatus,
+  resolveThreadStatus,
+} from "./threadStatus.ts";
 
 describe("resolveThreadStatus", () => {
   const runtime = {
@@ -63,6 +68,15 @@ describe("resolveThreadStatus", () => {
   });
 
   it("reports failed only while the latest run failed", () => {
+    const agentStarted = {
+      ...idle,
+      createdBy: "agent",
+      latestRun: { status: "failed" as const, completedAt: "2026-03-09T10:00:00.000Z" },
+      lastVisitedAt: "2026-03-09T09:00:00.000Z",
+    };
+    expect(resolveThreadListStatus(agentStarted)).toBe("failed");
+    expect(matchesThreadListStatus(agentStarted, "failed")).toBe(true);
+    expect(matchesThreadListStatus(agentStarted, "unread")).toBe(false);
     expect(
       resolveThreadStatus({
         ...idle,

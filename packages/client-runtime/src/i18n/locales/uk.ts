@@ -1040,6 +1040,12 @@ const catalog: MessageCatalog = {
     other: "Знайдено {count} підтримуваної теми.",
   },
   "{count} tabs open": "Відкрито вкладок: {count}",
+  "{count} tags": {
+    one: "{count} тег",
+    few: "{count} теги",
+    many: "{count} тегів",
+    other: "{count} тегу",
+  },
   "{count} tasks": {
     one: "{count} завдання",
     few: "{count} завдання",
@@ -1876,6 +1882,7 @@ const catalog: MessageCatalog = {
     many: "+ {count} файлів",
     other: "+ {count} файлу",
   },
+  "+{count}": "+{count}",
   "+{count} runs unpriced": {
     one: "+{count} запуск без ціни",
     few: "+{count} запуски без ціни",
@@ -2199,6 +2206,8 @@ const catalog: MessageCatalog = {
   "Add Simlock host": "Додати хост Simlock",
   "Add source": "Додати джерело",
   "Add T3 Connect": "Додати T3 Connect",
+  "Add tag": "Додати тег",
+  "Add tag…": "Додати тег…",
   "Add the backend at {origin}?": "Додати бекенд за адресою {origin}?",
   "Add the commits without a merge commit.": "Додати коміти без коміту злиття.",
   "Add theme": "Додати тему",
@@ -2339,6 +2348,7 @@ const catalog: MessageCatalog = {
     "Усі вибрані підключені середовища мають підтримувати продовження після перезапуску.",
   "All servers": "Усі сервери",
   "All states": "Усі стани",
+  "All tags": "Усі теги",
   Allow: "Дозволити",
   "Allow {server} to run {tool}?": "Дозволити {server} запускати {tool}?",
   "Allow {server} to run {tool}?\n{args}": "Дозволити {server} запустити {tool}?\n{args}",
@@ -3377,6 +3387,8 @@ const catalog: MessageCatalog = {
     "Виберіть темний варіант, варіантів: {count}, зараз {name}",
   "Choose date": "Виберіть дату",
   "Choose days": "Виберіть дні",
+  "Choose Default sorting to manually arrange active threads.":
+    "Виберіть сортування за замовчуванням, щоб упорядкувати активні чати вручну.",
   "Choose editor": "Вибрати редактор",
   "Choose environment, {label}, {status}": "Виберіть середовище, {label}, {status}",
   "Choose environments you trust to share PR data and use each other's source control access. Enable both environments. This applies only to this client.":
@@ -4831,6 +4843,7 @@ const catalog: MessageCatalog = {
     "Створення терміналів і надсилання введення в запущені оболонки.",
   "Create theme": "Створити тему",
   "Create worktree": "Створити worktree",
+  Created: "Дата створення",
   "Created {count} threads": {
     one: "Створено {count} чат",
     few: "Створено {count} чати",
@@ -5543,6 +5556,7 @@ const catalog: MessageCatalog = {
     "Введіть назву змінної середовища провайдера. Її значення можна отримати із секретів.",
   "Enter a repository path and press Enter to look it up.":
     "Введіть шлях до репозиторію та натисніть Enter, щоб його знайти.",
+  "Enter a single line of up to 64 characters.": "Введіть один рядок довжиною до 64 символів.",
   "Enter a URL": "Введіть URL",
   "Enter a valid environment variable name.": "Введіть дійсну назву змінної середовища.",
   "Enter a valid secret reference.": "Введіть дійсне посилання на секрет.",
@@ -5912,6 +5926,7 @@ const catalog: MessageCatalog = {
   "Failed to update network exposure.": "Не вдалося оновити мережевий доступ.",
   "Failed to update project": "Не вдалося оновити проєкт",
   "Failed to update project icon": "Не вдалося оновити значок проєкту",
+  "Failed to update thread tags": "Не вдалося оновити теги чату",
   "Failed to update WSL backend.": "Не вдалося оновити бекенд WSL.",
   "Failed to wake thread": "Не вдалося повернути чат",
   "Failed: {reason}": "Не вдалося: {reason}",
@@ -5993,6 +6008,7 @@ const catalog: MessageCatalog = {
   "Filter by label": "Фільтр за міткою",
   "Filter by provider": "Фільтр за провайдером",
   "Filter by state": "Фільтр за станом",
+  "Filter by tags": "Фільтрувати за тегами",
   "Filter colors": "Фільтрувати кольори",
   "Filter comments": "Фільтр коментарів",
   "Filter files in ZIP": "Фільтр файлів у ZIP",
@@ -6003,6 +6019,7 @@ const catalog: MessageCatalog = {
   "Filter threads": "Фільтр чатів",
   "Filter threads by environment": "Фільтрувати чати за середовищем",
   "Filter threads by project": "Фільтрувати чати за проєктом",
+  "Filter threads by status": "Фільтрувати чати за станом",
   "Filter threads, filtered": "Фільтрувати чати, фільтр увімкнено",
   "Filter threads: {scope}": "Фільтр чатів: {scope}",
   "Filter usage environments": "Фільтрувати середовища використання",
@@ -6923,6 +6940,7 @@ const catalog: MessageCatalog = {
   "Large diffs are not rendered by default.": "Великі зміни за замовчуванням не відображаються.",
   "Large paste attached as {name}": "Великий фрагмент додано як {name}",
   "Largest shown": "Спочатку більші",
+  "Last activity": "Остання активність",
   "Last connected at {time}": "Востаннє підключено {time}",
   "last project": "останній проєкт",
   "Last run": "Останній запуск",
@@ -8123,6 +8141,7 @@ const catalog: MessageCatalog = {
   "No threads in {project}": "Немає чатів у {project}",
   "No threads in {project} yet": "У проєкті {project} ще немає чатів",
   "No threads in these projects yet": "У цих проєктах ще немає чатів",
+  "No threads match your filters": "Жоден чат не відповідає вибраним фільтрам",
   'No threads matching "{query}".': "Немає чатів за запитом «{query}».",
   "No threads on {machine} yet": "На комп’ютері {machine} ще немає чатів",
   "No threads on these machines yet": "На цих комп’ютерах ще немає чатів",
@@ -11860,6 +11879,11 @@ const catalog: MessageCatalog = {
   Tablet: "Планшет",
   tabs: "вкладки",
   Tabs: "Вкладки",
+  "Tag name": "Назва тегу",
+  Tags: "Теги",
+  "Tags are unavailable until this environment's settings load.":
+    "Теги недоступні, доки не завантажаться налаштування цього середовища.",
+  "Tags…": "Теги…",
   tailscale: "tailscale",
   "Tailscale CLI not found. Install Tailscale to set up HTTPS access through MagicDNS.":
     "Tailscale CLI не знайдено. Встановіть Tailscale, щоб налаштувати HTTPS-доступ через MagicDNS.",
@@ -12006,6 +12030,7 @@ const catalog: MessageCatalog = {
     },
   "That snooze time has passed. Choose another time.":
     "Цей час відкладання минув. Виберіть інший час.",
+  "That tag is hidden in this environment.": "Цей тег приховано в цьому середовищі.",
   "That theme collection is invalid.": "Ця колекція тем недійсна.",
   "That theme could not be added.": "Не вдалося додати цю тему.",
   "That theme file is invalid.": "Цей файл теми недійсний.",
@@ -13482,6 +13507,7 @@ const catalog: MessageCatalog = {
   "Try a different project name or workspace path.":
     "Спробуйте іншу назву проєкту або шлях до робочого простору.",
   "Try a different search.": "Спробуйте інший пошук.",
+  "Try a different status or tag.": "Виберіть інший стан або тег.",
   "Try a shortcut such as Ctrl+Shift+2.": "Спробуйте скорочення на кшталт Ctrl+Shift+2.",
   "Try again": "Спробувати ще раз",
   "Try Again": "Спробувати ще раз",
@@ -13705,6 +13731,7 @@ const catalog: MessageCatalog = {
   Unpriced: "Без ціни",
   "Unpriced usage details": "Відомості про використання без ціни",
   Unreachable: "Недоступно",
+  Unread: "Непрочитані",
   "Unreadable records and attachment files are still saved. Other messages can still be sent.":
     "Нечитабельні записи та файли вкладень досі збережено. Інші повідомлення можна надсилати.",
   Unresolve: "Відновити",

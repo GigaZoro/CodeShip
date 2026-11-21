@@ -52,12 +52,9 @@ export function HomeRouteScreen() {
     useAdaptiveWorkspaceLayout();
   const selectDetail = useSelectWorkspaceDetail();
   const projects = useProjects();
-  // Stop rebuilding the streaming thread list while Thread covers Home.
+  // Stop arranging the thread list while Thread covers Home.
   const visible = useHomeRouteVisible();
-  const threads = useAtomValueWhileVisible(
-    environmentThreadShells.navigationThreadShellsAtom,
-    visible,
-  );
+  const threads = useAtomValueWhileVisible(environmentThreadShells.listedThreadShellsAtom, visible);
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const navigation = useNavigation();
@@ -139,6 +136,7 @@ export function HomeRouteScreen() {
     options: listOptions,
     setSelectedEnvironmentId,
     setSelectedProjectKey,
+    updateOptions,
   } = useHomeListOptions(availableEnvironmentIds);
   const selectedEnvironmentId = listOptions.selectedEnvironmentId;
   // A legacy per-environment scratch key resolves here on every render; the stored
@@ -241,6 +239,8 @@ export function HomeRouteScreen() {
           selectedEnvironmentId={selectedEnvironmentId}
           selectedProjectKey={selectedProjectKey}
           grouping={grouping}
+          refinement={listOptions}
+          onRefinementChange={updateOptions}
           onProjectGroupingChange={setProjectGrouping}
           onMachineGroupingToggle={toggleMachineGrouping}
           onEnvironmentChange={setSelectedEnvironmentId}
@@ -252,6 +252,12 @@ export function HomeRouteScreen() {
         />
 
         <HomeScreen
+          statusFilter={listOptions.statusFilter}
+          sort={listOptions.sort}
+          onSortChange={(sort) => updateOptions({ sort })}
+          selectedTags={listOptions.selectedTags}
+          onTagsChange={(selectedTags) => updateOptions({ selectedTags })}
+          onStatusChange={(statusFilter) => updateOptions({ statusFilter })}
           catalogState={catalogState}
           environments={environments}
           onAddConnection={() => openSettings(navigation, "SettingsEnvironmentNew")}

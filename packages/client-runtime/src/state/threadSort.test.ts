@@ -1,4 +1,4 @@
-import { RunId } from "@t3tools/contracts";
+import { EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -10,6 +10,7 @@ import {
   sortActiveThreadsByOrderKey,
   sortSettledThreads,
   sortThreads,
+  sortThreadList,
   type SettledThreadTimestampInput,
   type ThreadSortInput,
 } from "./threadSort.ts";
@@ -26,6 +27,24 @@ function makeThread(overrides: Partial<TestThread> = {}): TestThread {
     ...overrides,
   };
 }
+
+it("sorts by latest activity, creation, or natural name order", () => {
+  const row = (id: string, title: string, createdAt: string, updatedAt: string) => ({
+    id: ThreadId.make(id),
+    environmentId: EnvironmentId.make("local"),
+    title,
+    createdAt,
+    updatedAt,
+  });
+  const first = row("a", "Build 10", "2026-03-09T10:00:00Z", "2026-03-10T10:00:00Z");
+  const second = row("b", "build 2", "2026-03-09T12:00:00Z", "2026-03-09T12:00:00Z");
+  const third = row("c", "Docs", "2026-03-09T11:00:00Z", "2026-03-09T11:00:00Z");
+  const threads = [third, first, second];
+  expect(sortThreadList(threads, "last-activity")).toEqual([first, second, third]);
+  expect(sortThreadList(threads, "created")).toEqual([second, third, first]);
+  expect(sortThreadList(threads, "name")).toEqual([second, first, third]);
+  expect(threads).toEqual([third, first, second]);
+});
 
 describe("resolveSettledThreadTimestamp", () => {
   it("prefers the persisted settlement stamp over later activity", () => {

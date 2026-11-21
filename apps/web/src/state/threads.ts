@@ -1,3 +1,4 @@
+import { scheduledTaskHiddenThreadKeys } from "@t3tools/client-runtime/scheduled-task-pins";
 import { createChildThreadApprovalsAtom } from "@t3tools/client-runtime/state/thread-requests";
 import { useAtomValue } from "@effect/atom-react";
 import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
@@ -22,11 +23,23 @@ import { connectionAtomRuntime } from "../connection/runtime";
 import { environmentServerConfigsAtom, serverEnvironment } from "./server";
 import { environmentShell } from "./shell";
 
+export const hiddenScheduledTaskThreadKeysAtom = Atom.family((environmentIdsKey: string) => {
+  let previous: ReadonlySet<string> = new Set();
+  return Atom.make((get) => {
+    previous = scheduledTaskHiddenThreadKeys(
+      JSON.parse(environmentIdsKey) as ReadonlyArray<EnvironmentId>,
+      (environmentId) =>
+        AsyncResult.getOrElse(
+          get(serverEnvironment.scheduledTasksLive({ environmentId, input: {} })),
+          () => null,
+        )?.tasks ?? [],
+      previous,
+    );
+    return previous;
+  }).pipe(Atom.withLabel(`web:sidebar-hidden-task-threads:${environmentIdsKey}`));
+});
+
 export const threadFamilies = createThreadFamilyAtoms(
-  connectionAtomRuntime,
-  environmentShell.stateAtom,
-);
-export const olderSettledThreads = createOlderSettledThreadAtoms(
   connectionAtomRuntime,
   environmentShell.stateAtom,
 );
@@ -49,6 +62,11 @@ export const environmentThreadShells = createEnvironmentThreadShellAtoms({
   snapshotAtom: threadEnvironment.snapshotAtom,
   hiddenThreadTagsAtom: serverEnvironment.hiddenThreadTagsAtom,
 });
+export const olderSettledThreads = createOlderSettledThreadAtoms(
+  connectionAtomRuntime,
+  environmentShell.stateAtom,
+  environmentThreadShells.environmentThreadsAtom,
+);
 export const childThreadApprovalsAtom = createChildThreadApprovalsAtom({
   childThreadInputsAtom: environmentThreadShells.childThreadInputsAtom,
   pendingRequestsAtom: environmentThreadDetails.pendingRequestsAtom,

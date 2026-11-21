@@ -343,7 +343,8 @@ export const SidebarFolderMoreRow = memo(function SidebarFolderMoreRow(props: {
   /** Set when the folder sits in a machine folder, so the label lines up with nested titles. */
   nested: boolean;
   state: SidebarFolderMoreState;
-  count: number;
+  /** Null when a filter hides how many older threads match. */
+  count: number | null;
   onToggle: (folderKey: string) => void;
 }) {
   const { folderKey, state } = props;
@@ -353,7 +354,9 @@ export const SidebarFolderMoreRow = memo(function SidebarFolderMoreRow(props: {
         type="button"
         role="treeitem"
         tabIndex={-1}
-        data-sidebar-row={sidebarFolderMoreRowId(folderKey)}
+        data-sidebar-row={
+          state === "retry" ? `folder-retry:${folderKey}` : sidebarFolderMoreRowId(folderKey)
+        }
         data-sidebar-parent={sidebarFolderRowId(folderKey)}
         disabled={state === "loading"}
         onClick={() => props.onToggle(folderKey)}
@@ -368,7 +371,9 @@ export const SidebarFolderMoreRow = memo(function SidebarFolderMoreRow(props: {
             ? t("Could not load older threads. Retry")
             : state === "less"
               ? t("Show less")
-              : t("Show {count} more", { count: props.count })}
+              : props.count === null
+                ? t("Show more")
+                : t("Show {count} more", { count: props.count })}
       </button>
     </li>
   );
