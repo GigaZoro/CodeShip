@@ -1961,7 +1961,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       },
     ) {
       if (!(yield* projectionStore.canStartQueuedRun(threadId))) return;
-      let projection = yield* readCommandProjection(threadId);
+      const projection = yield* readCommandProjection(threadId);
       if (
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
@@ -1970,30 +1970,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
 
-      // Older Stop events held queued continuations. Discard them before choosing the next message.
-      const stale = yield* stoppedQueuedRestarts(threadId, projection.runs);
-      for (const run of stale) {
-        const commandId = CommandId.make(`command:system:cancel-stopped-restart:${run.id}`);
-        const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
-        const now = yield* DateTime.now;
-        yield* cancelStoppedRestart({
-          command: { type: "thread.stop", commandId, threadId },
-          events,
-          thread: projection.thread,
-          run,
-          now,
-        });
-        // The marker and cancellation of any pending retry share the command transaction.
-        yield* eventSink.commitCommand({
-          commandId,
-          threadId,
-          commandType: "thread.stop",
-          acceptedAt: now,
-          events: yield* Ref.get(events),
-          effects: [],
-        });
-      }
-      if (stale.length > 0) projection = yield* readCommandProjection(threadId);
       const storedQueuedRun =
         options?.queuedRunId === undefined
           ? nextQueuedRun(projection)
@@ -2922,7 +2898,53 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         DateTime.isGreaterThanOrEqualTo(cut.completedAt, run.requestedAt),
     );
 
+  // A Stop from an older server held restart continuations instead of cancelling them. Startup
+  // cancels them before any queued message can start or release them.
+  const cancelStoppedRestarts = Effect.gen(function* () {
+    const threadIds = yield* projectionStore.getRecoveryThreadIds("stopped-restarts");
+    for (const threadId of threadIds) {
+      yield* threadDispatch
+        .withLock(
+          threadId,
+          Effect.gen(function* () {
+            const { runs, thread } = yield* projectionStore.getThreadRecords(threadId, ["runs"]);
+            for (const run of yield* stoppedQueuedRestarts(threadId, runs)) {
+              const commandId = CommandId.make(`command:system:cancel-stopped-restart:${run.id}`);
+              const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+              const now = yield* DateTime.now;
+              yield* cancelStoppedRestart({
+                command: { type: "thread.stop", commandId, threadId },
+                events,
+                thread,
+                run,
+                now,
+              });
+              // The marker and cancellation of any pending retry share the command transaction.
+              yield* eventSink.commitCommand({
+                commandId,
+                threadId,
+                commandType: "thread.stop",
+                acceptedAt: now,
+                events: yield* Ref.get(events),
+                effects: [],
+              });
+            }
+          }),
+        )
+        .pipe(
+          // The next startup selects the thread again.
+          Effect.catch((cause) =>
+            Effect.logError("Failed to cancel restart continuations an older Stop held", {
+              threadId,
+              cause,
+            }),
+          ),
+        );
+    }
+  });
+
   const resumeQueuedRuns = Effect.gen(function* () {
+    yield* cancelStoppedRestarts;
     const threadIds = yield* projectionStore.getRecoveryThreadIds("queued-runs");
     let resumed = 0;
     for (const threadId of threadIds) {
@@ -6709,20 +6731,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? projection.runs.filter((run) => run.status === "queued" && run.queueHeld === true)
         : [];
     const releasedAt = yield* DateTime.now;
-    const staleRestarts = yield* stoppedQueuedRestarts(command.threadId, heldRunsToRelease).pipe(
-      mapDispatchError(command),
-    );
     for (const held of heldRunsToRelease) {
-      if (staleRestarts.includes(held)) {
-        yield* cancelStoppedRestart({
-          command,
-          thread: projection.thread,
-          run: held,
-          events,
-          now: releasedAt,
-        });
-        continue;
-      }
       yield* emit(
         events,
         command,
@@ -12253,7 +12262,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const markStoppedRun = Effect.fnUntraced(function* (input: {
     readonly command: Extract<
       OrchestrationV2ServerCommand,
-      { readonly type: "run.interrupt" | "thread.stop" | "message.dispatch" }
+      { readonly type: "run.interrupt" | "thread.stop" }
     >;
     readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
     readonly thread: OrchestrationV2AppThread;
@@ -12296,9 +12305,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         completedAt: now,
         updatedAt: now,
         type: "run_interrupt_request",
-        message:
-          (command.type === "message.dispatch" ? undefined : command.reason) ??
-          RunExecutionService.USER_STOP_REASON,
+        message: command.reason ?? RunExecutionService.USER_STOP_REASON,
       },
     });
   });

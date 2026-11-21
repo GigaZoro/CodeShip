@@ -1255,6 +1255,7 @@ it.effect.each([
   "queue.resume",
   "persisted marker and user send",
   "persisted marker and queue.resume",
+  "persisted marker on an archived thread",
 ] as const)("thread Stop keeps a queued restart cancelled after %s", (release) =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -1312,6 +1313,29 @@ it.effect.each([
         occurredAt: now,
         payload: { ...queued, queueHeld: true },
       });
+      const archived = release.endsWith("archived thread");
+      if (archived) {
+        const { thread } = yield* orchestrator.getThreadProjection(threadId);
+        yield* projections.apply({
+          type: "thread.archived",
+          threadId,
+          id: EventId.make("archived"),
+          occurredAt: now,
+          payload: { ...thread, archivedAt: now },
+        });
+      }
+      // Startup cancels it, so neither a message nor a queue resume can release it later.
+      yield* orchestrator.resumeQueuedRuns;
+      assert.isFalse(yield* orchestrator.restartContinuationPending(restart));
+      const repaired = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(repaired.runs.find((run) => run.id === restart.id)?.status, "cancelled");
+      assert.sameMembers(
+        repaired.turnItems
+          .filter((item) => item.type === "run_interrupt_request")
+          .map((item) => item.runId),
+        [source.id, restart.id],
+      );
+      if (archived) return;
     }
     if (userSend) yield* send(threadId, "new work", "start_immediately");
     else
