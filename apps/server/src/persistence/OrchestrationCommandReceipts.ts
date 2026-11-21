@@ -22,6 +22,8 @@ export const OrchestrationCommandReceipt = Schema.Struct({
   resultSequence: NonNegativeInt,
   status: Schema.Literals(["accepted", "rejected"]),
   error: Schema.NullOr(Schema.String),
+  /** JSON of what the command resolved, for commands whose replay must report it. */
+  result: Schema.NullOr(Schema.String),
 });
 export type OrchestrationCommandReceipt = typeof OrchestrationCommandReceipt.Type;
 
@@ -65,7 +67,8 @@ const makeOrchestrationCommandReceiptRepository = Effect.gen(function* () {
           accepted_at,
           result_sequence,
           status,
-          error
+          error,
+          result_json
         )
         VALUES (
           ${receipt.commandId},
@@ -75,7 +78,8 @@ const makeOrchestrationCommandReceiptRepository = Effect.gen(function* () {
           ${receipt.acceptedAt},
           ${receipt.resultSequence},
           ${receipt.status},
-          ${receipt.error}
+          ${receipt.error},
+          ${receipt.result}
         )
         ON CONFLICT (command_id)
         DO UPDATE SET
@@ -85,7 +89,8 @@ const makeOrchestrationCommandReceiptRepository = Effect.gen(function* () {
           accepted_at = excluded.accepted_at,
           result_sequence = excluded.result_sequence,
           status = excluded.status,
-          error = excluded.error
+          error = excluded.error,
+          result_json = excluded.result_json
       `,
   });
 
@@ -102,7 +107,8 @@ const makeOrchestrationCommandReceiptRepository = Effect.gen(function* () {
           accepted_at AS "acceptedAt",
           result_sequence AS "resultSequence",
           status,
-          error
+          error,
+          result_json AS "result"
         FROM orchestration_command_receipts
         WHERE command_id = ${commandId}
       `,
@@ -125,7 +131,8 @@ const makeOrchestrationCommandReceiptRepository = Effect.gen(function* () {
         accepted_at,
         result_sequence,
         status,
-        error
+        error,
+        result_json
       )
       VALUES (
         ${receipt.commandId},
@@ -135,7 +142,8 @@ const makeOrchestrationCommandReceiptRepository = Effect.gen(function* () {
         ${receipt.acceptedAt},
         ${receipt.resultSequence},
         ${receipt.status},
-        ${receipt.error}
+        ${receipt.error},
+        ${receipt.result}
       )
       ON CONFLICT(command_id) DO NOTHING
       RETURNING command_id

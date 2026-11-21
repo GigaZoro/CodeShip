@@ -52,6 +52,7 @@ const box = descriptorOf("environment-box", "Box");
 const boxProject = ProjectId.make("project:box");
 const boxThread = ThreadId.make("thread:box-auto");
 const boxRun = RunId.make("run:box-auto");
+const endedRun = RunId.make("run:box-auto:ended");
 
 /** What B's thread service was asked to do. */
 interface Seen {
@@ -102,12 +103,16 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
     getProjectThreadRecords: (input) => projectionOf(input.threadId),
     getThreadRecords: (threadId) => projectionOf(threadId),
     listProjectThreads: () => linked.pipe(Effect.map((shell) => [shell] as never)),
-    interruptThread: () =>
-      Effect.succeed({
-        type: "interrupt_requested" as const,
-        run: run("running"),
-        dispatch: { sequence: 0, storedEvents: [] },
-      }),
+    interruptThread: (input) =>
+      Effect.succeed(
+        input.runId === endedRun
+          ? { type: "already_terminal" as const, runId: endedRun, status: "completed" as const }
+          : {
+              type: "interrupt_requested" as const,
+              runId: boxRun,
+              dispatch: { sequence: 0, storedEvents: [] },
+            },
+      ),
     sendToThread: (input) =>
       Ref.update(seen, (current) => ({ ...current, sends: [...current.sends, input] })).pipe(
         Effect.as({ run: run("running"), delivery: "started" } as never),
@@ -452,6 +457,7 @@ it.effect("an agent here works on a linked environment's threads within its own 
         threadId: boxThread,
         runId: boxRun,
         status: "interrupt_requested",
+        outcome: "interrupt_requested",
       });
       expect((yield* Ref.get(seen)).stops).toEqual([
         `thread.stop ${boxThread}`,
@@ -470,6 +476,20 @@ it.effect("an agent here works on a linked environment's threads within its own 
         runId: boxRun,
         requestedRunId: cutRun,
         status: "interrupt_requested",
+        outcome: "interrupt_requested",
+      });
+      // The outcome tells an ended run from an interrupted one across the link.
+      const ended = yield* a.call("thread:laptop-full", "t3_thread_interrupt", {
+        environmentId: box.environmentId,
+        threadId: boxThread,
+        runId: endedRun,
+        clientRequestId: "interrupt-ended",
+      });
+      expect(ended.structuredContent).toEqual({
+        threadId: boxThread,
+        runId: endedRun,
+        status: "completed",
+        outcome: "already_terminal",
       });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),

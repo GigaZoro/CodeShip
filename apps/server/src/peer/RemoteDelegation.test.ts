@@ -492,7 +492,11 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
       }),
     interruptThread: (input) =>
       recordStop(input.commandId, "interrupt").pipe(
-        Effect.as({ type: "interrupt_requested", run: runOf("running") } as never),
+        Effect.as({
+          type: "interrupt_requested",
+          runId: runOf("running").id,
+          dispatch: { sequence: 0, storedEvents: [] },
+        } as never),
       ),
     dispatch: (command) =>
       command.type === "thread.stop"

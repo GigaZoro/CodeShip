@@ -358,7 +358,7 @@ it.effect.each([
               .pipe(
                 Effect.map((dispatch) => ({
                   type: "interrupt_requested" as const,
-                  run: latest,
+                  runId: latest.id,
                   dispatch,
                 })),
                 Effect.result,
@@ -374,7 +374,7 @@ it.effect.each([
         if (scenario === "manual" || scenario === "unrelated") {
           expect(Result.isSuccess(result) && result.success).toMatchObject({
             type: "already_terminal",
-            run: { id: middle.id },
+            runId: middle.id,
           });
           expect(
             yield* orchestrator.dispatch({
@@ -394,7 +394,7 @@ it.effect.each([
             scenario === "ended" || scenario === "queued-direct"
               ? "already_terminal"
               : "interrupt_requested",
-          run: { id: latest.id },
+          runId: latest.id,
         });
         if (waiting !== undefined) {
           // The retry worker is paused. Both waiters must finish on Stop's commit.
@@ -414,7 +414,7 @@ it.effect.each([
               runId: source.id,
               commandId: CommandId.make("interrupt-pending-again"),
             }),
-          ).toMatchObject({ type: "already_terminal", run: { id: latest.id } });
+          ).toMatchObject({ type: "already_terminal", runId: latest.id });
           const stopped = yield* projections.getThreadProjection(threadId);
           if (queued) {
             expect(stopped.runs.at(-1)).toMatchObject({ id: latest.id, status: "cancelled" });
@@ -473,7 +473,7 @@ it.effect.each([
             runId: source.id,
             commandId: CommandId.make("interrupt-after-later-work"),
           }),
-        ).toMatchObject({ type: "already_terminal", run: { id: latest.id } });
+        ).toMatchObject({ type: "already_terminal", runId: latest.id });
         expect((yield* projections.getThreadProjection(threadId)).runs).toEqual(later.runs);
       }).pipe(Effect.provide(layer));
     }),

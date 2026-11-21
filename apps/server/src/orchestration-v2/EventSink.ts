@@ -162,6 +162,8 @@ export interface EventSinkV2Shape {
       readonly effectTypes: ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2["type"]>;
       readonly reason: string;
     };
+    /** Stored with the receipt, in the same transaction, for the command's replays. */
+    readonly result?: CommandReceiptStore.CommandResultV2;
   }) => Effect.Effect<
     {
       readonly receipt: CommandReceiptStore.CommandReceiptV2;
@@ -754,6 +756,7 @@ const layerBase: Layer.Layer<
             resultSequence: sequence,
             status: "accepted",
             error: null,
+            ...(input.result === undefined ? {} : { result: input.result }),
           };
           yield* commandReceipts.upsert(receipt);
           const cancelledEffectIds =

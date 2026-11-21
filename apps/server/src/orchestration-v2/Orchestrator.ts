@@ -29,6 +29,7 @@ import {
   type GuestMessageId,
   isAppOwnedTaskWork,
   isCompactionCommandMessage,
+  isOrchestrationV2TerminalRunStatus,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
   MessageId,
@@ -119,7 +120,7 @@ import {
   isNativeMaintenanceCommand,
   resolveMessageDispatchIntent,
 } from "./CommandPolicy.ts";
-import { CommandReceiptStoreV2 } from "./CommandReceiptStore.ts";
+import { CommandReceiptStoreV2, type CommandResultV2 } from "./CommandReceiptStore.ts";
 import {
   ContextHandoffServiceV2,
   readForkHistoryItems,
@@ -427,6 +428,8 @@ export interface OrchestratorV2DispatchResult {
   readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
   /** The command id was already accepted; analytics skip it. */
   readonly replayed?: true;
+  /** What the command resolved under its lock, the same on every replay: set for run.interrupt. */
+  readonly result?: CommandResultV2;
 }
 
 export interface OrchestratorV2Shape {
@@ -12788,6 +12791,55 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return;
   });
 
+  /**
+   * The run an interrupt reached and whether it requested an interrupt or found the run ended,
+   * read under the command lock from the command's own events.
+   */
+  const runInterruptResult = Effect.fn("Orchestrator.runInterruptResult")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "run.interrupt" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const pending = yield* Ref.get(events);
+    const { runs: storedRuns } = yield* loadProjectionForCommand(command, ["runs"]);
+    const runs = storedRuns.map(
+      (run) =>
+        pending.findLast(
+          (event): event is Extract<OrchestrationV2DomainEvent, { readonly type: "run.updated" }> =>
+            event.type === "run.updated" && event.payload.id === run.id,
+        )?.payload ?? run,
+    );
+    const interruptedRunId = pending.find(
+      (event) =>
+        event.type === "turn-item.updated" && event.payload.type === "run_interrupt_request",
+    )?.runId;
+    const selectedRun = runs.find((candidate) => candidate.id === command.runId);
+    if (selectedRun === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Run ${command.runId} is not interruptible.`,
+      });
+    }
+    const run =
+      runs.find((candidate) => candidate.id === interruptedRunId) ??
+      latestRestartContinuation(runs, selectedRun);
+    const result: CommandResultV2 =
+      interruptedRunId === undefined && isOrchestrationV2TerminalRunStatus(run.status)
+        ? {
+            type: "run.interrupt",
+            outcome: "already_terminal",
+            runId: run.id,
+            runStatus: run.status,
+          }
+        : {
+            type: "run.interrupt",
+            outcome: "interrupt_requested",
+            runId: run.id,
+            runStatus: run.status,
+          };
+    return result;
+  });
+
   const dispatchRunInterrupt = Effect.fn("Orchestrator.dispatchRunInterrupt")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "run.interrupt" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -14772,6 +14824,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
         readonly reason: string;
       };
+      readonly result?: CommandResultV2;
     },
     OrchestratorV2Error
   > {
@@ -14782,6 +14835,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
 
     const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+    let result: CommandResultV2 | undefined;
     const effects = yield* Ref.make<Array<PendingOrchestrationEffectV2>>([]);
     let cancelUnsettledEffects:
       | {
@@ -15083,6 +15137,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...Array.from(parentRunIds, (id) => delegatedTasksStopEffect(command, id)),
           ]);
         }
+        result = yield* runInterruptResult(command, events);
         break;
       }
       case "thread.stop":
@@ -15268,6 +15323,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       events: yield* Ref.get(events),
       effects: yield* Ref.get(effects),
       ...(cancelUnsettledEffects === undefined ? {} : { cancelUnsettledEffects }),
+      ...(result === undefined ? {} : { result }),
     };
   });
 
@@ -15336,6 +15392,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         sequence: receipt.resultSequence,
         storedEvents,
         replayed: true,
+        ...(receipt.result === undefined ? {} : { result: receipt.result }),
       } satisfies OrchestratorV2DispatchResult;
     }
 
@@ -15436,7 +15493,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (plan.events.length === 0 && plan.effects.length === 0) {
       // A settle that ended nothing still records its receipt: a replayed Stop
       // effect then finds it instead of settling work that appeared since.
-      const { resultSequence, inserted } = yield* Effect.gen(function* () {
+      const { resultSequence, inserted, result } = yield* Effect.gen(function* () {
         const sequence = yield* eventSink.latestSequence({ threadId: commandThreadId(command) });
         const inserted = yield* commandReceipts.insertIfAbsent({
           commandId: command.commandId,
@@ -15446,8 +15503,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           resultSequence: sequence,
           status: "accepted",
           error: null,
+          ...(plan.result === undefined ? {} : { result: plan.result }),
         });
-        return { resultSequence: sequence, inserted };
+        const result = inserted
+          ? plan.result
+          : Option.getOrUndefined(yield* commandReceipts.getByCommandId(command.commandId))?.result;
+        return { resultSequence: sequence, inserted, result };
       }).pipe(
         Effect.mapError(
           (cause) =>
@@ -15462,6 +15523,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         sequence: resultSequence,
         storedEvents: [],
         ...(inserted ? {} : { replayed: true as const }),
+        ...(result === undefined ? {} : { result }),
       } satisfies OrchestratorV2DispatchResult;
     }
     const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
@@ -15476,6 +15538,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
+        ...(plan.result === undefined ? {} : { result: plan.result }),
       })
       .pipe(
         Effect.mapError(
@@ -15532,6 +15595,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       sequence: committed.receipt.resultSequence,
       storedEvents: committed.storedEvents,
       ...(committed.committed ? {} : { replayed: true as const }),
+      ...(committed.receipt.result === undefined ? {} : { result: committed.receipt.result }),
     } satisfies OrchestratorV2DispatchResult;
   }, withCommandMetrics);
 

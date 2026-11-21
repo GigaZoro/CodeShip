@@ -646,6 +646,13 @@ export const OrchestratorMcpThreadInterruptResult = Schema.Struct({
     Schema.Literal("no_active_run"),
     Schema.Literals(["completed", "failed", "cancelled", "interrupted", "rolled_back"]),
   ]),
+  /**
+   * What the call did. `already_terminal`: the run had ended with no pending restart, and
+   * `status` is its terminal status. Servers from before this field omit it.
+   */
+  outcome: Schema.optional(
+    Schema.Literals(["interrupt_requested", "already_terminal", "no_active_run"]),
+  ),
 });
 export type OrchestratorMcpThreadInterruptResult = typeof OrchestratorMcpThreadInterruptResult.Type;
 
