@@ -261,6 +261,7 @@ test("a waiting lander waits through failed reads of origin, and only failures t
       cwd: waiter,
       remote: origin,
       clock: () => minutes * 60_000,
+      awakeClock: () => minutes * 60_000,
       sleep: () => {
         minutes += 6;
         pauses.shift()();
@@ -268,13 +269,65 @@ test("a waiting lander waits through failed reads of origin, and only failures t
     });
 
     assert.deepEqual([pauses.length, git(origin, "rev-parse", "landing-lease/main")], [0, turn]);
+    release({ cwd: waiter, remote: origin }, turn);
+
+    // A Mac asleep with its lid closed wakes for a few seconds every half hour, without a network. The failures span an
+    // hour of the clock that counts sleep, but under a minute awake, so the wait goes on; failures the lander meets
+    // for as long as failingMs awake end it.
+    const again = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    let asleepMs = 0;
+    let awakeMs = 0;
+    const dark = [
+      () => fs.renameSync(origin, away),
+      () => {},
+      () => {},
+      () => {
+        fs.renameSync(away, origin);
+        release({ cwd: holder, remote: origin }, again);
+      },
+    ];
+    const afterSleep = acquire({
+      cwd: waiter,
+      remote: origin,
+      clock: () => asleepMs + awakeMs,
+      awakeClock: () => awakeMs,
+      sleep: () => {
+        asleepMs += 30 * 60_000;
+        awakeMs += 10_000;
+        dark.shift()();
+      },
+    });
+    assert.deepEqual(
+      [dark.length, git(origin, "rev-parse", "landing-lease/main")],
+      [0, afterSleep],
+    );
+    release({ cwd: waiter, remote: origin }, afterSleep);
+    const stillHeld = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    fs.renameSync(origin, away);
+    let awakeMinutes = 0;
+    assert.throws(
+      () =>
+        acquire({
+          cwd: waiter,
+          remote: origin,
+          clock: () => 0,
+          awakeClock: () => awakeMinutes * 60_000,
+          sleep: () => {
+            awakeMinutes += 6;
+          },
+        }),
+      /git ls-remote failed/,
+    );
+    assert.equal(awakeMinutes, 12);
+    fs.renameSync(away, origin);
+    release({ cwd: holder, remote: origin }, stillHeld);
+
     fs.renameSync(origin, away);
     assert.throws(
       () => acquire({ cwd: holder, remote: origin, failingMs: 0 }),
       /git ls-remote failed/,
     );
     fs.renameSync(away, origin);
-    release({ cwd: waiter, remote: origin }, turn);
 
     // Origin answers, but this checkout cannot write the lease commit: waiting does not change that.
     const broken = clone("broken");

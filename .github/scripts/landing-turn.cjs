@@ -19,7 +19,7 @@ const LEASE_RESERVE_MS = 20 * 60 * 1000;
 const POLL_MS = 5000;
 const MAX_WAIT_MS = 6 * 60 * 60 * 1000;
 // A wait polls origin thousands of times, and one poll can meet a passing DNS or credential failure. Failures that go
-// on this long end the wait, so a remote that cannot be reached is not tried for hours.
+// on this long while the machine is awake end the wait, so a remote that cannot be reached is not tried for hours.
 const FAILING_MS = 10 * 60 * 1000;
 // One read or write of the lease; a remote that stops answering must not hold a wait past its limits.
 const LEASE_CALL_MS = 60 * 1000;
@@ -144,8 +144,32 @@ function sleepSync(ms) {
 }
 
 /**
- * Waits for the turn on the monotonic clock, so a stepped wall clock cannot cut or stretch the wait. The wait makes its
- * own run id, so no other wait can carry it.
+ * Milliseconds the machine has been awake, for a span inside one process. On macOS performance.now() counts sleep, and a
+ * Mac asleep with its lid closed wakes for seconds without a network; mach_absolute_time, the second number of
+ * kern.monotonicclock_usecs, stops while it sleeps. Linux's monotonic clock stops too; Windows hosts stay awake.
+ */
+function awakeNow() {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime; tests pass awakeClock.
+  if (process.platform !== "darwin") return performance.now();
+  const names = ["kern.monotonicclock_usecs", "hw.tbfrequency"];
+  // By its path: launchd jobs and minimal shells run with a PATH that lacks /usr/sbin.
+  const result = spawnSync("/usr/sbin/sysctl", ["-n", ...names], {
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  const match = /^\d+ (\d+)\s+(\d+)\s*$/.exec(result.stdout ?? "");
+  if (result.status !== 0 || !match || match[2] === "0") {
+    throw new Error(
+      `sysctl ${names.join(" ")} failed: ${result.error?.message ?? (result.stderr.trim() || result.stdout.trim())}`,
+    );
+  }
+  // In BigInt: an Intel Mac counts nanoseconds, past 2^53 after 104 days awake.
+  return Number((BigInt(match[1]) * 1000n) / BigInt(match[2]));
+}
+
+/**
+ * Waits for the turn on the monotonic clock, so a stepped wall clock cannot cut or stretch the wait. Failures of origin
+ * count on `awakeClock`: a sleep is no time the lander tried. The wait makes its own run id, so no other wait can carry it.
  */
 function acquire({
   maxWaitMs = MAX_WAIT_MS,
@@ -153,6 +177,7 @@ function acquire({
   pollMs = POLL_MS,
   sleep = sleepSync,
   clock = () => performance.now(),
+  awakeClock = awakeNow,
   ...options
 }) {
   const started = clock();
@@ -168,14 +193,14 @@ function acquire({
       if (!(error instanceof RemoteFailure)) throw error;
       failure = error;
     }
-    const now = clock();
-    if (now - started >= maxWaitMs) {
+    if (clock() - started >= maxWaitMs) {
       throw failure ?? new Error("landing turn: another lander still holds main's landing turn.");
     }
     if (failure) {
+      const awake = awakeClock();
       const first = failingSince === null;
-      if (first) failingSince = now;
-      if (now - failingSince >= failingMs) throw failure;
+      if (first) failingSince = awake;
+      if (awake - failingSince >= failingMs) throw failure;
       if (first) process.stderr.write(`landing turn: ${failure.message}\nTrying again.\n`);
     }
     sleep(pollMs);

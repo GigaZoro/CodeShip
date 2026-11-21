@@ -1,3 +1,7 @@
+## 2026-11-21 — A landing waits through a Mac's sleep
+
+- A landing that waits for main's landing turn ends its wait when origin stays unreachable for 10 minutes. On macOS that limit counted the time the Mac slept, so a landing left waiting on a closed laptop gave up during a brief wake without a network. It now counts only the time the machine is awake. No change to the app.
+
 ## 2026-11-21 — Start a worktree from a branch that exists only on the remote
 
 - Creating a worktree on a new branch from a base that exists only on the remote, such as a branch pushed from another machine and never checked out here, now starts from the remote copy instead of failing with "git worktree add failed".
