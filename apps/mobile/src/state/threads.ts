@@ -57,7 +57,7 @@ export const environmentThreadShells = createEnvironmentThreadShellAtoms({
 });
 export const availableThreadTagsAtom = Atom.make((get) =>
   collectThreadTags(get(environmentThreadShells.navigationThreadShellsAtom)),
-).pipe(Atom.withEquality(arrayElementsEqual));
+).pipe(Atom.withEquality<readonly string[]>(arrayElementsEqual));
 
 export const childThreadApprovalsAtom = createChildThreadApprovalsAtom({
   childThreadInputsAtom: environmentThreadShells.childThreadInputsAtom,

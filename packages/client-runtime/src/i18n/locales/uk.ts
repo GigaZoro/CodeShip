@@ -13508,6 +13508,7 @@ const catalog: MessageCatalog = {
   "Try a different project name or workspace path.":
     "Спробуйте іншу назву проєкту або шлях до робочого простору.",
   "Try a different search.": "Спробуйте інший пошук.",
+  "Try a different status or tag.": "Виберіть інший стан або тег.",
   "Try a shortcut such as Ctrl+Shift+2.": "Спробуйте скорочення на кшталт Ctrl+Shift+2.",
   "Try again": "Спробувати ще раз",
   "Try Again": "Спробувати ще раз",

@@ -831,6 +831,7 @@ export function HomeScreen(props: HomeScreenProps) {
       ) : props.statusFilter !== "all" || props.selectedTags.length > 0 ? (
         <EmptyState
           title={t("No threads match your filters")}
+          detail={t("Try a different status or tag.")}
           actionLabel={t("Show all threads")}
           onAction={resetFilters}
           variant={plainEmpty}

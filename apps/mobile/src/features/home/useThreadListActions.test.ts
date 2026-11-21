@@ -1,4 +1,5 @@
 import { makeThreadShellFixture } from "../../test-fixtures";
+import type { ThreadListSort } from "@t3tools/client-runtime/state/thread-sort";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   AuthOrchestrationOperateScope,
@@ -14,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 const state = vi.hoisted(() => ({
   connectedEnvironmentIds: [] as EnvironmentId[],
+  sort: "default" as ThreadListSort,
   pendingOrder: null as object | null,
   dropBusy: false,
   failedAction: null as string | null,
@@ -91,37 +93,40 @@ vi.mock("../../state/presentation", () => ({
 vi.mock("../../state/server", () => ({
   environmentServerConfigsAtom: "server-configs",
 }));
+vi.mock("../../state/preferences", () => ({ mobilePreferencesAtom: "mobile-preferences" }));
 vi.mock("../../state/atom-registry", () => ({
   appAtomRegistry: {
     set: (_atom: string, value: boolean) => {
       state.dropBusy = value;
     },
     get: (atom: string) =>
-      atom === "connected-environments"
-        ? state.connectedEnvironmentIds
-        : atom === "thread-drop-busy"
-          ? state.dropBusy
-          : atom === "thread-shells"
-            ? state.shells
-            : atom === "queued-thread-keys"
-              ? new Set<string>()
-              : new Map(
-                  [...state.scopes.keys()].map((environmentId) => [
-                    environmentId,
-                    {
-                      environment: {
-                        capabilities: {
-                          threadSettlement: true,
-                          threadSnooze: true,
-                          threadPinning: true,
-                          threadPinReorder: true,
-                          threadTitleRegeneration: true,
-                          vcsUnmergedWork: true,
+      atom === "mobile-preferences"
+        ? AsyncResult.success({ threadListFilters: { sort: state.sort } })
+        : atom === "connected-environments"
+          ? state.connectedEnvironmentIds
+          : atom === "thread-drop-busy"
+            ? state.dropBusy
+            : atom === "thread-shells"
+              ? state.shells
+              : atom === "queued-thread-keys"
+                ? new Set<string>()
+                : new Map(
+                    [...state.scopes.keys()].map((environmentId) => [
+                      environmentId,
+                      {
+                        environment: {
+                          capabilities: {
+                            threadSettlement: true,
+                            threadSnooze: true,
+                            threadPinning: true,
+                            threadPinReorder: true,
+                            threadTitleRegeneration: true,
+                            vcsUnmergedWork: true,
+                          },
                         },
                       },
-                    },
-                  ]),
-                ),
+                    ]),
+                  ),
   },
 }));
 vi.mock("../../state/use-atom-command", () => ({
@@ -213,6 +218,7 @@ const mutationCases = [
 
 beforeEach(() => {
   state.connectedEnvironmentIds = [primaryEnvironmentId, otherEnvironmentId];
+  state.sort = "default";
   state.failedAction = null;
   state.archivedRefreshes = [];
   state.pendingOrder = null;
@@ -384,7 +390,7 @@ describe("thread reorder connection availability", () => {
   );
 
   it.each(["active", "pinned"] as const)(
-    "uses the latest connection state in a retained %s move callback",
+    "uses the current connection and sort in a retained %s move callback",
     async (section) => {
       const moved = makeThread({
         pinnedAt: section === "pinned" ? "2026-09-02T00:00:00.000Z" : null,
@@ -408,6 +414,12 @@ describe("thread reorder connection availability", () => {
       expect(state.requests).toEqual([]);
 
       state.connectedEnvironmentIds = [primaryEnvironmentId];
+      state.sort = "name";
+      if (section === "active") {
+        expect(await moveThread(moved, "up")).toBe(false);
+        expect(state.requests).toEqual([]);
+        state.sort = "default";
+      }
 
       expect(await moveThread(moved, "up")).toBe(true);
       expect(state.requests).toEqual([
