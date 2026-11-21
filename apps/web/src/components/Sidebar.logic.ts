@@ -719,6 +719,13 @@ export function buildBulkTitleRegenerationContextMenuItem(input: {
   };
 }
 
+export function buildBulkPinContextMenuItem(input: {
+  unpinnedCount: number;
+}): ContextMenuItem<"pin"> | null {
+  if (input.unpinnedCount === 0) return null;
+  return { id: "pin", label: t("Pin ({count})", { count: input.unpinnedCount }) };
+}
+
 export function buildBulkUnpinContextMenuItem(input: {
   pinnedCount: number;
 }): ContextMenuItem<"unpin"> | null {

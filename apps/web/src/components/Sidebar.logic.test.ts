@@ -17,6 +17,7 @@ import {
   belongsInSidebarWorkingShelf,
   isSidebarEnvironmentDisconnected,
   orderItemsByPreferredIds,
+  buildBulkPinContextMenuItem,
   pinOrderKeyBetween,
   resolveSidebarSweepKeys,
   resolveThreadStatusPill,
@@ -658,6 +659,16 @@ describe("pinOrderKeyBetween", () => {
     expect(pinOrderKeyBetween("A!", null)).toBeNull();
     expect(pinOrderKeyBetween(null, "ma")).toBeNull();
     expect(pinOrderKeyBetween("m", "m")).toBeNull();
+  });
+});
+
+describe("buildBulkPinContextMenuItem", () => {
+  it("offers Pin only when a selected thread is unpinned", () => {
+    expect(buildBulkPinContextMenuItem({ unpinnedCount: 0 })).toBeNull();
+    expect(buildBulkPinContextMenuItem({ unpinnedCount: 3 })).toEqual({
+      id: "pin",
+      label: "Pin (3)",
+    });
   });
 });
 

@@ -669,6 +669,7 @@ type SidebarThreadRowProps = {
   onUnsettle: (threadRef: ScopedThreadRef) => void;
   onSnooze: (threadRef: ScopedThreadRef, preset: Pick<SnoozePreset, "snoozedUntil">) => void;
   onUnsnooze: (threadRef: ScopedThreadRef) => void;
+  onPin: (threadRef: ScopedThreadRef) => void;
   onUnpin: (threadRef: ScopedThreadRef) => void;
   onAcknowledgeWoke: (threadRef: ScopedThreadRef, visitedAt: string) => void;
   onFileDropThreads?: ((threadRef: ScopedThreadRef, files: File[]) => void) | undefined;
@@ -733,6 +734,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     onThreadClick,
     onUnsettle,
     onUnsnooze,
+    onPin,
     onUnpin,
     openPullRequestsInRightPanel,
     renamingTitle,
@@ -954,6 +956,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     event.preventDefault();
     event.stopPropagation();
     onUnsnooze(threadRef);
+  };
+  const handlePinClick = (event: ReactMouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onPin(threadRef);
   };
   const handleUnpinClick = (event: ReactMouseEvent) => {
     event.preventDefault();
@@ -1211,6 +1218,30 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     )
   ) : null;
 
+  const canPinOnHover =
+    !props.isPinned &&
+    props.pinningSupported &&
+    canOperateThread &&
+    !machineUnreachable &&
+    !sortable?.isDragging;
+  const renderPinButton = (className: string, iconClassName: string) => (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={t("Pin thread")}
+            onClick={handlePinClick}
+            className={className}
+          />
+        }
+      >
+        <PinIcon aria-hidden className={iconClassName} />
+      </TooltipTrigger>
+      <TooltipPopup>{t("Pin thread")}</TooltipPopup>
+    </Tooltip>
+  );
+
   const scheduledIndicator = (
     <ThreadScheduledTaskIndicator environmentId={thread.environmentId} threadId={thread.id} />
   );
@@ -1360,6 +1391,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 // One-line pinned rows sit under the Pinned header, so the pin shows as Unpin on hover.
                 <span className="inline-flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-any-hover/sidebar-row:opacity-100 motion-reduce:transition-none">
                   {pinIndicator}
+                </span>
+              ) : canPinOnHover ? (
+                // The slot is always reserved so revealing Pin never moves the title.
+                <span className="inline-flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-any-hover/sidebar-row:opacity-100 motion-reduce:transition-none">
+                  {renderPinButton(
+                    "inline-flex cursor-pointer items-center rounded-sm text-muted-foreground/65 outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                    "size-3 shrink-0",
+                  )}
                 </span>
               ) : (
                 pinIndicator
@@ -1641,7 +1680,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       <RelativeTimeLabel timestamp={threadTimeTimestamp(thread)} />
                     )}
                   </span>
-                  {settlementSupported || showSnoozeButton || hasUnsentDraft ? (
+                  {settlementSupported || showSnoozeButton || hasUnsentDraft || canPinOnHover ? (
                     <span
                       className={cn(
                         // Mouse clicks leave Settle focused; focus-within would pin controls over
@@ -1667,6 +1706,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           <TooltipPopup side="top">{t("Discard draft")}</TooltipPopup>
                         </Tooltip>
                       ) : null}
+                      {canPinOnHover
+                        ? renderPinButton(
+                            "inline-flex cursor-pointer items-center rounded-md bg-transparent px-1.5 text-xs text-muted-foreground hover:text-foreground",
+                            "size-3.5",
+                          )
+                        : null}
                       {showSnoozeButton ? (
                         <SnoozeMenuButton
                           open={snoozeMenuOpen}
