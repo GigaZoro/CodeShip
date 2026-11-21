@@ -1,3 +1,7 @@
+## 2026-11-22 — Long keys work for tasks on linked environments
+
+- Starting or cancelling a task on a linked environment no longer fails when the chat's request key is at the 256-character limit.
+
 ## 2026-11-22 — Release build tests pass on Windows
 
 - The staged-install tests no longer depend on how the host runs `vp`, and the development launcher's file-permission test is skipped on Windows, which has no POSIX permissions, so the Windows check passes for release build changes.
@@ -157,10 +161,6 @@
 ## 2026-11-21 — Use 1Password tokens for MCP servers
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
-
-## 2026-11-20 — Long keys work for tasks on linked environments
-
-- Starting or cancelling a task on a linked environment no longer fails when the chat's request key is at the 256-character limit.
 
 ## 2026-11-20 — The server test suite runs on Windows in CI
 
