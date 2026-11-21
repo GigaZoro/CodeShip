@@ -4,6 +4,8 @@
 // cannot move under the checked tree and one verification covers the landed tree.
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
+const fs = require("node:fs");
+const { REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
 const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs");
 
 const LEASE_REF = "refs/heads/landing-lease/main";
@@ -26,7 +28,7 @@ function git(cwd, args, { env, config = [], allowFailure = false, timeoutMs } = 
   const flags = config.flatMap(([key, value]) => ["-c", `${key}=${value}`]);
   const result = spawnSync("git", ["-C", cwd, ...flags, ...args], {
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...REAL_HISTORY_ENV, ...env },
     timeout: timeoutMs,
     windowsHide: true,
   });
@@ -206,6 +208,22 @@ function checkBudgetSeconds(elapsedMs) {
   return Math.max(1, Math.floor((LEASE_TTL_MS - LEASE_RESERVE_MS - elapsedMs) / 1000));
 }
 
+function stoppedRebase(cwd) {
+  return ["rebase-merge", "rebase-apply"].some((name) =>
+    fs.existsSync(git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", name]).stdout),
+  );
+}
+
+/** A conflict must not leave the worktree in the middle of the rebase: the next landing would refuse it. */
+function rebaseOnto(cwd, base) {
+  try {
+    git(cwd, ["rebase", base], { config: MERGE_DRIVER_CONFIG });
+  } catch (error) {
+    if (stoppedRebase(cwd)) git(cwd, ["rebase", "--abort"], { allowFailure: true });
+    throw error;
+  }
+}
+
 /**
  * Lands HEAD on main under the turn: rebases onto main, runs `check` once and pushes the checked tree.
  * `check(turn, base, budgetSeconds)` returns true when the checks passed against `base`, the commit main is at, which
@@ -221,8 +239,12 @@ function land({
 }) {
   // check:changed passes for the working tree, untracked files included, but the push carries HEAD alone,
   // so the pre-push hook would refuse it only after the whole check.
+  if (stoppedRebase(cwd)) return { status: "rebase-in-progress" };
   const uncommitted = git(cwd, ["status", "--porcelain"]).stdout;
   if (uncommitted) return { status: "uncommitted", files: uncommitted.split("\n") };
+  // `status` does not list edits to files marked assume-unchanged or skip-worktree, which the checks would read.
+  const marked = markedFiles(cwd);
+  if (marked.length > 0) return { status: "marked-files", files: marked };
   // Found before the wait, not after a rebase that breaks the notes and checks that fail on them.
   const problem = notesMergeProblem(cwd);
   if (problem) throw new Error(problem);
@@ -246,7 +268,7 @@ function land({
       allowFailure: true,
     }).ok;
     // Main gains release notes while a lander waits; the driver merges them on machines whose git config predates it.
-    if (!contained) git(cwd, ["rebase", base], { config: MERGE_DRIVER_CONFIG });
+    if (!contained) rebaseOnto(cwd, base);
     if (!check(turn, base, checkBudgetSeconds(turnClock() - turnStarted)))
       return { status: "check-failed" };
     git(cwd, ["push", "--quiet", remote, `HEAD:refs/heads/${branch}`], {

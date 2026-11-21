@@ -198,4 +198,21 @@ describe("upstream sync", () => {
     });
     expect(repo.originMain()).toBe(frozen);
   });
+
+  it("reports a landing whose push reply was lost as landed, past the time limit too", () => {
+    const repo = fixture();
+    begin(repo.sync, START);
+    git(repo.sync, "push", "-q", "origin", "HEAD:main");
+    expect(land(repo.sync, new Date(START.getTime() + RUN_LIMIT_MS + 60_000))).toEqual({
+      status: "landed",
+      commit: repo.head(),
+    });
+  });
+
+  it("refuses a worktree with files marked assume-unchanged", () => {
+    const repo = fixture();
+    begin(repo.sync, START);
+    git(repo.sync, "update-index", "--assume-unchanged", "shared.txt");
+    expect(() => land(repo.sync, later(60))).toThrow("Commit or resolve every change");
+  });
 });

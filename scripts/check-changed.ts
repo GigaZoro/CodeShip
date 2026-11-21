@@ -52,6 +52,7 @@ import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { recordPass, workingTree } from "../.github/scripts/check-changed-receipt.cjs";
+import { REAL_HISTORY_ENV } from "../.github/scripts/git-history.cjs";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { checkNodeRuntime } from "../.github/scripts/check-node-runtime.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
@@ -325,7 +326,11 @@ export const git = Effect.fn("checkChanged.git")(function* (
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const handle = yield* spawner.spawn(
-        ChildProcess.make("git", ["-c", "core.quotePath=false", ...args], { cwd }),
+        ChildProcess.make("git", ["-c", "core.quotePath=false", ...args], {
+          cwd,
+          env: REAL_HISTORY_ENV,
+          extendEnv: true,
+        }),
       );
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [collectBytes(handle.stdout), collectBytes(handle.stderr), handle.exitCode],

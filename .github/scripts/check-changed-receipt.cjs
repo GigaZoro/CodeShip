@@ -5,6 +5,7 @@ const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
 
 const RECEIPT_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -13,7 +14,7 @@ const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const git = (cwd, args, env = process.env) =>
   execFileSync("git", args, {
     cwd,
-    env,
+    env: { ...env, ...REAL_HISTORY_ENV },
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
@@ -30,6 +31,12 @@ const receiptDirectory = (cwd) =>
 // keeps its stat cache. New objects go to a scratch directory: nothing references them, so in the
 // repository they would pile up as loose garbage.
 function workingTree(cwd) {
+  const marked = markedFiles(cwd);
+  if (marked.length > 0) {
+    throw new Error(
+      `check-changed: files marked assume-unchanged or skip-worktree would pass for the commit's content: ${marked.join(", ")}`,
+    );
+  }
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "t3-check-changed-index-"));
   try {
     const index = path.join(temp, "index");

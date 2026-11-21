@@ -1,3 +1,8 @@
+## 2026-11-21 — A landing reads real git history and refuses marked files
+
+- The landing turn, its checks receipt, the pre-push hook, `check:changed` and the upstream sync read git history past replace refs and grafts, so an invented ancestry can no longer let a push move main past a commit it never held.
+- A landing and a checks run refuse files marked assume-unchanged or skip-worktree, whose edits `git status` hides. A rebase that conflicts is aborted, a worktree in a stopped rebase is refused, and the upstream sync counts a push whose reply was lost as landed when main holds it.
+
 ## 2026-11-21 — Commits no longer run knip beside check:changed
 
 - The pre-commit hook ran `knip:check` on every commit that touched code, outside the memory budget that `check:changed` shares across a repository's worktrees. Each knip pass takes about 7 GB, so agents committing in several worktrees at once could use up a machine's memory. The hook now formats and lints the staged files only. `check:changed` still runs knip within that budget, and the standard landing on main (`landing-turn.cjs land`) runs `check:changed`. No change to the app.

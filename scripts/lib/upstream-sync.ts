@@ -3,6 +3,8 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
+import { REAL_HISTORY_ENV, markedFiles } from "../../.github/scripts/git-history.cjs";
+
 // A busy main moves every few minutes while a sync's checks take an hour, so a sync that chased
 // it by re-merging never ended. These limits make a run land or hold within a working morning.
 const MAX_MERGES = 3;
@@ -57,7 +59,11 @@ interface SyncStatus {
 }
 
 function run(cwd: string, args: ReadonlyArray<string>) {
-  const result = NodeChildProcess.spawnSync("git", args, { cwd, encoding: "utf8" });
+  const result = NodeChildProcess.spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, ...REAL_HISTORY_ENV },
+  });
   if (result.error) throw result.error;
   return { ok: result.status === 0, stdout: result.stdout, stderr: result.stderr.trim() };
 }
@@ -174,6 +180,15 @@ function resolveReleaseNotes(worktree: string): boolean {
   return true;
 }
 
+/** True when the fetched main already holds HEAD, the commit this run would push. */
+function holdsCandidate(worktree: string): boolean {
+  return git(worktree, "merge-base", "--is-ancestor", "HEAD", "origin/main").ok;
+}
+
+function landed(worktree: string): SyncResult {
+  return { status: "landed", commit: gitOrThrow(worktree, "rev-parse", "HEAD") };
+}
+
 /**
  * Pushes the branch to main when that is a fast-forward of the commit it was verified against.
  * When main moved, merges it in once and asks for the checks again, holding instead when the
@@ -186,21 +201,27 @@ export function land(worktree: string, now: Date): SyncResult {
     reason,
     conflicts: allConflicts(from),
   });
+  gitOrThrow(worktree, "fetch", "-q", "origin");
+  // A push whose reply was lost, or one cut by the time limit, may have landed.
+  if (holdsCandidate(worktree)) return landed(worktree);
   if (now.getTime() >= Date.parse(state.startedAt) + RUN_LIMIT_MS) return hold("time-limit");
-  if (gitOrThrow(worktree, "status", "--porcelain", "--untracked-files=no") !== "") {
+  if (
+    gitOrThrow(worktree, "status", "--porcelain", "--untracked-files=no") !== "" ||
+    markedFiles(worktree).length > 0
+  ) {
     throw new Error("Commit or resolve every change before landing.");
   }
-  gitOrThrow(worktree, "fetch", "-q", "origin");
   let main = gitOrThrow(worktree, "rev-parse", "origin/main");
   if (main === state.base) {
     // Main refuses a push from anyone who does not hold its landing turn (.github/scripts/landing-turn.cjs).
-    const landed = NodeChildProcess.spawnSync(process.execPath, [LANDING_TURN, "push"], {
+    const pushRun = NodeChildProcess.spawnSync(process.execPath, [LANDING_TURN, "push"], {
       cwd: worktree,
       encoding: "utf8",
     });
-    const pushed = { ok: landed.status === 0, stderr: landed.stderr.trim() };
-    if (pushed.ok) return { status: "landed", commit: gitOrThrow(worktree, "rev-parse", "HEAD") };
+    const pushed = { ok: pushRun.status === 0, stderr: pushRun.stderr.trim() };
+    if (pushed.ok) return landed(worktree);
     gitOrThrow(worktree, "fetch", "-q", "origin");
+    if (holdsCandidate(worktree)) return landed(worktree);
     main = gitOrThrow(worktree, "rev-parse", "origin/main");
     if (main === state.base) return { status: "push-failed", detail: pushed.stderr };
   }

@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { execFileSync } = require("node:child_process");
+const { execFileSync, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -385,6 +385,78 @@ test("land passes the budget measured from the turn's start", () => {
     });
     assert.equal(result.status, "landed");
     assert.equal(budget, (LEASE_TTL_MS - LEASE_RESERVE_MS) / 1000 - 600);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a replace ref cannot make main look contained in a commit that does not hold it", () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const lander = clone("lander");
+    commit(lander, "mine.txt");
+    const mover = clone("mover");
+    commit(mover, "newer.txt");
+    git(mover, "push", "-q", "origin", "HEAD:main");
+    const newer = git(mover, "rev-parse", "HEAD");
+    // A commit with HEAD's tree on top of main's newer commit, shown in HEAD's place.
+    git(lander, "fetch", "-q", "origin");
+    const fake = git(lander, "commit-tree", "HEAD^{tree}", "-p", newer, "-m", "fake");
+    git(lander, "replace", "HEAD", fake);
+    assert.equal(git(lander, "merge-base", "--is-ancestor", newer, "HEAD"), "");
+
+    const result = land({ cwd: lander, remote: origin, check: () => true });
+
+    assert.equal(result.status, "landed");
+    assert.equal(git(origin, "merge-base", "--is-ancestor", newer, "main") ?? "", "");
+    assert.equal(git(origin, "show", "main:newer.txt"), "newer.txt");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a lander refuses files marked assume-unchanged or skip-worktree, whose edits status does not list", () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const dir = clone("lander");
+    commit(dir, "change.txt");
+    for (const flag of ["--assume-unchanged", "--skip-worktree"]) {
+      git(dir, "update-index", flag, "base.txt");
+      const result = land({
+        cwd: dir,
+        remote: origin,
+        check: () => assert.fail("checked a tree it cannot push"),
+      });
+      assert.deepEqual(result, { status: "marked-files", files: ["base.txt"] });
+      git(dir, "update-index", flag.replace("--", "--no-"), "base.txt");
+    }
+    assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a rebase that conflicts is aborted, and a worktree in a stopped rebase is refused before the wait", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const lander = clone("lander");
+    fs.writeFileSync(path.join(lander, "base.txt"), "mine\n");
+    git(lander, "commit", "-qam", "mine");
+    const mover = clone("mover");
+    fs.writeFileSync(path.join(mover, "base.txt"), "theirs\n");
+    git(mover, "commit", "-qam", "theirs");
+    git(mover, "push", "-q", "origin", "HEAD:main");
+
+    assert.throws(() => land({ cwd: lander, remote: origin, check: () => true }), /rebase/);
+    assert.equal(git(lander, "status", "--porcelain"), "");
+    assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+
+    // Stop a rebase by hand: the next landing must not start from it.
+    git(lander, "fetch", "-q", "origin");
+    spawnSync("git", ["-C", lander, "rebase", "origin/main"], { encoding: "utf8" });
+    const stopped = land({ cwd: lander, remote: origin, check: () => assert.fail("checked") });
+    assert.equal(stopped.status, "rebase-in-progress");
+    assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

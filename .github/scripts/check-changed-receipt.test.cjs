@@ -44,6 +44,7 @@ const fixture = (root) => {
   for (const file of [
     ".vite-hooks/pre-push",
     ".github/scripts/release-notes.cjs",
+    ".github/scripts/git-history.cjs",
     ".github/scripts/check-changed-receipt.cjs",
     ".github/scripts/landing-turn.cjs",
   ]) {
@@ -129,4 +130,16 @@ test("a pass covers the push only when it compared against the commit main is at
 
     recordPass(work, tree, main);
     requirePass(work, head, main);
+  }));
+
+test("a pass is never recorded for a tree computed while files are marked assume-unchanged or skip-worktree", () =>
+  withRoot((root) => {
+    const { work, git, write } = fixture(root);
+    for (const flag of ["--assume-unchanged", "--skip-worktree"]) {
+      git("update-index", flag, "app.txt");
+      write("app.txt", "edited behind the mark\n");
+      assert.throws(() => workingTree(work), /app\.txt/);
+      git("update-index", flag.replace("--", "--no-"), "app.txt");
+      git("checkout", "--", "app.txt");
+    }
   }));
