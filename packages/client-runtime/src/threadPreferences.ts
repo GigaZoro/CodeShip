@@ -1,11 +1,6 @@
-import {
-  CommandId,
-  ThreadColor,
-  ThreadNotificationLevel,
-  type OrchestrationV2ThreadShell,
-  type ThreadId,
-} from "@t3tools/contracts";
+import { CommandId, ThreadColor, ThreadNotificationLevel, type ThreadId } from "@t3tools/contracts";
 import { msg, t } from "@t3tools/shared/i18n";
+import type { EnvironmentThreadShell } from "./state/models.ts";
 
 const colorLabels = {
   red: msg("Red"),
@@ -23,7 +18,7 @@ const levelLabels = {
   following: msg("Follow"),
 } satisfies Record<ThreadNotificationLevel, string>;
 
-type Preferences = Pick<OrchestrationV2ThreadShell, "notificationLevel" | "color">;
+type Preferences = Pick<EnvironmentThreadShell, "notificationLevel" | "color">;
 type Capabilities = { readonly threadNotificationLevel?: boolean; readonly threadColor?: boolean };
 type Action = `notifications:${ThreadNotificationLevel}` | `color:${ThreadColor | "none"}`;
 

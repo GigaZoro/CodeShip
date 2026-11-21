@@ -165,6 +165,26 @@ describe("command permissions", () => {
       }),
     ),
   );
+  it.effect("guards only the new thread preference payloads on the shared dispatch RPC", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const dispatch = createCommandPermissions(
+          runtime,
+          ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+        );
+        registry.set(sessions(env), AsyncResult.success(grant(false)));
+        for (const type of ["thread.notification-level.set", "thread.color.set"]) {
+          const input = { type };
+          expect(registry.get(dispatch.permissionAtom(env, input))).toBe(false);
+          expect((yield* dispatch.authorize(registry, env, input).pipe(Effect.flip))._tag).toBe(
+            "EnvironmentAuthorizationError",
+          );
+        }
+        yield* dispatch.authorize(registry, env, { type: "thread.tag.set" });
+      }),
+    ),
+  );
   it.effect("waits for an initial grant", () =>
     Effect.scoped(
       Effect.gen(function* () {
