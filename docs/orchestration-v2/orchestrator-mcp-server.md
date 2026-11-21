@@ -590,7 +590,9 @@ sub-agent turn item so the existing debug UI can render progress.
 Terminal provider events trigger finalization. The event stream first replays
 persisted events and then follows live events, so finalization also runs after
 a server restart. An existing `subagent_result` transfer makes finalization
-idempotent.
+idempotent. A child that awaits a restart continuation finalizes once it settles.
+A Stop that cancels that pending restart writes no run update, so its stop
+request finalizes the task instead, as `interrupted`.
 
 Users rarely watch child threads, so a child question would otherwise go
 unanswered. When a child opens a pending `user_input` request, the parent gets

@@ -22,10 +22,12 @@
 
 ## 2026-11-20 — Stop reaches work continued after a server restart
 
-- On web and mobile, Stop cancels queued restart continuations, holds ordinary queued messages, and stops background work and delegated tasks across the thread. Sending a new message or resuming the queue cannot revive a stopped continuation.
-- Interrupting a run by ID follows its restart chain. It interrupts the chain's provider turns and stops its delegated commands, child runs, and descendants. Independent runs keep their work, including a new follow-up in a reused child thread.
+- On web and mobile, Stop cancels queued restart continuations, holds ordinary queued messages, and stops background work and delegated tasks across the thread, also from a client that is older than this server. Sending a new message or resuming the queue cannot revive a stopped continuation.
+- Interrupting a run by ID follows its restart chain. It interrupts the chain's provider turns and stops its delegated commands, child runs, and descendants, and it cancels the chain's pending restart even while another run is working. The chain's background work ends even when the next queued message starts right away. Independent runs keep their work, including a new follow-up in a reused child thread.
+- Stop goes through when a delegated chat's data can't be read.
 - An MCP interrupt settles owned work when it cancels a queued restart or delayed retry. A terminal run with no pending restart returns `already_terminal`. The response identifies the run reached and includes the requested ID when it differs.
-- A busy thread lock during shutdown preserves the restart request for startup. Related change AB#5487 (`7672a1cfb7`) settles a finished delegated chat once its parent has the result.
+- Stopping a delegated task that was waiting to retry after a restart ends the task as interrupted, so waiting for its result returns.
+- A busy thread lock during shutdown preserves the restart request for startup.
 
 ## 2026-11-20 — The machine check compares each machine's Node with the project's pin
 
