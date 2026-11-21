@@ -456,7 +456,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           const nowIso = DateTime.formatIso(now);
           yield* Effect.forEach(
             effects,
-            (effect) => sql`
+            (effect) =>
+              Effect.gen(function* () {
+                const written = yield* sql<{ readonly effect_id: string }>`
               INSERT INTO orchestration_v2_effect_outbox (
                 effect_id,
                 command_id,
@@ -502,7 +504,26 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               -- so waiters on the resume find it; an unsettled one is the same resume.
               WHERE orchestration_v2_effect_outbox.effect_type = 'provider-runtime.continue'
                 AND orchestration_v2_effect_outbox.status IN ('succeeded', 'failed', 'cancelled')
-            `,
+              RETURNING effect_id
+            `;
+                if (written.length > 0 || effect.request.type !== "provider-runtime.continue")
+                  return;
+                // An unsettled resume of the same run also leaves nothing written; only Stop is news.
+                const stopped = yield* sql`
+                  SELECT 1 FROM orchestration_v2_projection_turn_items
+                  WHERE thread_id = ${effect.threadId}
+                    AND run_id = ${effect.request.sourceRunId}
+                    AND type = 'run_interrupt_request'
+                  LIMIT 1
+                `;
+                if (stopped.length > 0) {
+                  yield* Effect.logDebug("Dropped a restart continuation for a stopped run", {
+                    effectId: effect.id,
+                    threadId: effect.threadId,
+                    sourceRunId: effect.request.sourceRunId,
+                  });
+                }
+              }),
             { concurrency: 1, discard: true },
           );
           // EventSink owns the corresponding post-commit notification.

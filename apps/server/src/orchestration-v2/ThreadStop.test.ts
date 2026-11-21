@@ -25,6 +25,9 @@ import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -1332,6 +1335,54 @@ it.effect.each([
       [source.id, restart.id],
     );
   }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "the outbox drops a restart continuation a producer writes after Stop, at debug level",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threadId = ThreadId.make("thread:late-restart-continuation");
+      yield* createWatchingThread(threadId, 7);
+      yield* send(threadId, "source", "start_immediately");
+      const source = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        threadId,
+        commandId: CommandId.make("stop"),
+      });
+      assert.isTrue(
+        (yield* orchestrator.getThreadProjection(threadId)).turnItems.some(
+          (item) => item.type === "run_interrupt_request" && item.runId === source.id,
+        ),
+      );
+      const logs: Array<{ readonly level: string; readonly message: string }> = [];
+      const logger = Logger.make(({ logLevel, message }) => {
+        logs.push({ level: logLevel, message: JSON.stringify(message) });
+      });
+      // A producer that read before Stop can enqueue after it.
+      const late = EffectOutbox.restartContinuationEffect({
+        commandId: CommandId.make("late-producer"),
+        threadId,
+        sourceRunId: source.id,
+      });
+      yield* outbox
+        .enqueue([late])
+        .pipe(
+          Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+          Effect.provideService(References.MinimumLogLevel, "Debug"),
+        );
+      assert.isTrue(Option.isNone(yield* outbox.get(late.id)));
+      const dropped = logs.filter(({ message }) =>
+        message.includes("Dropped a restart continuation for a stopped run"),
+      );
+      assert.deepEqual(
+        dropped.map(({ level }) => level),
+        ["Debug"],
+      );
+      assert.include(dropped[0]!.message, source.id);
+    }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect(
