@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 // Cold windows span ~1.4 GB/1,500 files; node:fs buffer streaming is ~10x cheaper than materializing files.
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeStringDecoder from "node:string_decoder";
@@ -70,12 +71,13 @@ function fnv1a(buffer: Buffer): number {
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
-  options?: { readonly fileName?: string },
+  options?: { readonly fileName?: string | undefined; readonly signal?: AbortSignal },
 ): Promise<{ readonly files: readonly TranscriptFile[]; readonly failedPaths: number }> {
   const fileName = options?.fileName;
   const candidates: string[] = [];
   let failedPaths = 0;
   const walk = async (dir: string): Promise<void> => {
+    options?.signal?.throwIfAborted();
     let entries;
     try {
       entries = await NodeFSP.readdir(dir, { withFileTypes: true });
@@ -96,14 +98,24 @@ export async function listTranscriptFiles(
     }
   };
   await walk(root);
+  const result = await statTranscriptFiles(candidates, sinceMs, options?.signal);
+  return { files: result.files, failedPaths: failedPaths + result.failedPaths };
+}
 
+export async function statTranscriptFiles(
+  candidates: readonly string[],
+  sinceMs: number,
+  signal?: AbortSignal,
+) {
   const found: Array<TranscriptFile | undefined> = Array.from({ length: candidates.length });
   const queue = candidates.entries();
+  let failedPaths = 0;
   const statQueued = async (): Promise<void> => {
     for (const [index, path] of queue) {
+      signal?.throwIfAborted();
       try {
         const stats = await NodeFSP.stat(path);
-        if (stats.mtimeMs >= sinceMs) {
+        if (stats.isFile() && stats.mtimeMs >= sinceMs) {
           found[index] = { path, size: stats.size, mtimeMs: stats.mtimeMs };
         }
       } catch (error) {
@@ -164,18 +176,20 @@ export async function readTranscriptRecords<State>(
   filePath: string,
   format: TranscriptUsageFormat<State>,
   resumeFrom?: TranscriptParsePosition,
-  options?: { readonly streamingThresholdBytes?: number },
+  options?: { readonly streamingThresholdBytes?: number; readonly signal?: AbortSignal },
 ): Promise<TranscriptParseResult | null> {
   const streamingThresholdBytes = options?.streamingThresholdBytes ?? STREAMING_THRESHOLD_BYTES;
   const compressed = filePath.endsWith(".jsonl.zst");
   let handle: NodeFSP.FileHandle;
   try {
-    handle = await NodeFSP.open(filePath, "r");
+    handle = await NodeFSP.open(filePath, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NONBLOCK);
   } catch {
     return null;
   }
 
   try {
+    if (!(await handle.stat()).isFile()) return null;
+    options?.signal?.throwIfAborted();
     const codec = format.state;
     const decodeState = codec === undefined ? undefined : Schema.decodeUnknownOption(codec.schema);
     const encodeState = codec === undefined ? undefined : Schema.encodeSync(codec.schema);
@@ -255,6 +269,7 @@ export async function readTranscriptRecords<State>(
       decoder = undefined;
     };
     const input = handle.createReadStream({
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
       start,
       autoClose: compressed,
       highWaterMark: 256 * 1024,
