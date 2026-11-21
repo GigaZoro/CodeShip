@@ -4,6 +4,7 @@ import {
   resolveThreadDetailsVisibility,
   setThreadDetailsItem,
   THREAD_DETAILS_ITEMS,
+  threadDetailsVisibilityFor,
 } from "./threadDetailsItems";
 
 const item = (id: string) => THREAD_DETAILS_ITEMS.find((candidate) => candidate.id === id)!;
@@ -35,6 +36,20 @@ describe("thread details items", () => {
     expect(visibility.gitActions).toBe(row.gitActions);
     expect(visibility.agentActions).toBe(row.agentActions);
     expect(visibility.machineLoad).toBe(true);
+  });
+
+  it("shows a draft only the chosen controls for where it runs", () => {
+    const everything = resolveThreadDetailsVisibility({
+      threadDetailsItems: Object.fromEntries(THREAD_DETAILS_ITEMS.map((entry) => [entry.id, true])),
+    });
+    const shown = (visibility: Record<string, boolean>) =>
+      Object.keys(visibility).filter((id) => visibility[id]);
+
+    expect(shown(threadDetailsVisibilityFor(everything, true))).toEqual(["environment", "branch"]);
+    expect(shown(threadDetailsVisibilityFor({ ...everything, branch: false }, true))).toEqual([
+      "environment",
+    ]);
+    expect(threadDetailsVisibilityFor(everything, false)).toBe(everything);
   });
 
   it.each([

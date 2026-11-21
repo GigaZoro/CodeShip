@@ -1,4 +1,5 @@
 import {
+  isThreadWaitingOnWork,
   resolveThreadStatus,
   THREAD_STATUS_DISPLAY,
   type ThreadStatus,
@@ -15,7 +16,6 @@ import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
-import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
 import {
@@ -1424,10 +1424,7 @@ export function resolveThreadStatusPill(input: {
   ) {
     return statusPill("starting", true);
   }
-  if (
-    (thread.runtime?.status === "running" && thread.blockedOnThreadWait === true) ||
-    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
-  ) {
+  if (isThreadWaitingOnWork(thread)) {
     return statusPill("waiting");
   }
   if (hasUnseenFailure(thread)) {

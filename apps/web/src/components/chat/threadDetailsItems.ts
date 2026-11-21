@@ -26,6 +26,12 @@ export const THREAD_DETAILS_ITEMS = [
 export type ThreadDetailsItemId = (typeof THREAD_DETAILS_ITEMS)[number]["id"];
 export type ThreadDetailsVisibility = Readonly<Record<ThreadDetailsItemId, boolean>>;
 
+// A draft has no run yet, so it shows only the controls for choosing where it runs.
+const DRAFT_THREAD_DETAILS_ITEMS: ReadonlySet<ThreadDetailsItemId> = new Set([
+  "environment",
+  "branch",
+]);
+
 type ThreadDetailsItem = (typeof THREAD_DETAILS_ITEMS)[number];
 type ThreadDetailsItemSettings = Pick<ClientSettings, "threadDetailsItems">;
 
@@ -36,6 +42,20 @@ export function resolveThreadDetailsVisibility(
     THREAD_DETAILS_ITEMS.map((item) => [
       item.id,
       settings.threadDetailsItems[item.id] ?? item.defaultVisible,
+    ]),
+  ) as Record<ThreadDetailsItemId, boolean>;
+}
+
+/** The items a thread's card shows: a draft keeps only the chosen ones that pick where it runs. */
+export function threadDetailsVisibilityFor(
+  visibility: ThreadDetailsVisibility,
+  isDraft: boolean,
+): ThreadDetailsVisibility {
+  if (!isDraft) return visibility;
+  return Object.fromEntries(
+    THREAD_DETAILS_ITEMS.map((item) => [
+      item.id,
+      visibility[item.id] && DRAFT_THREAD_DETAILS_ITEMS.has(item.id),
     ]),
   ) as Record<ThreadDetailsItemId, boolean>;
 }

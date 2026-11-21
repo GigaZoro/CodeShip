@@ -14,7 +14,6 @@ import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environ
 import {
   deriveWorkflowGroups,
   projectedSubagentsToRuntime,
-  type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
 import { deriveProviderSubagentStatus } from "@t3tools/client-runtime/state/thread-execution";
@@ -48,6 +47,7 @@ import { deriveSubagentElapsedMs } from "@t3tools/shared/orchestrationTiming";
 import { groupBy } from "effect/Array";
 import * as DateTime from "effect/DateTime";
 import { useNavigate } from "@tanstack/react-router";
+import { currentSubagent } from "./ThreadRelationshipsControl.logic";
 import {
   ArrowRightIcon,
   BotIcon,
@@ -222,37 +222,6 @@ function LineageTooltipContent(props: {
       <span className="block text-muted-foreground">{props.hint}</span>
     </>
   );
-}
-
-function currentSubagent<Agent extends RuntimeSubagent>(
-  agent: Agent | undefined,
-  childThread: OrchestrationV2ThreadShell | null | undefined,
-): Agent | undefined {
-  if (!agent || !childThread || isOrchestrationV2WorkActive(agent.status)) return agent;
-  const liveStatus =
-    childThread.activityRunStatus ?? (childThread.status === "queued" ? "queued" : null);
-  const newerRun =
-    childThread.latestRunRequestedAt &&
-    DateTime.toEpochMillis(childThread.latestRunRequestedAt) >
-      Date.parse(agent.completedAt ?? agent.startedAt ?? agent.updatedAt);
-  if (!liveStatus && !newerRun) return agent;
-  const status = liveStatus ?? childThread.status;
-  const startedAt = liveStatus ? childThread.activityRunStartedAt : childThread.latestRunStartedAt;
-  const completedAt = liveStatus ? null : childThread.latestRunCompletedAt;
-  return {
-    ...agent,
-    status:
-      status === "preparing" || status === "starting" || status === "queued"
-        ? "pending"
-        : status === "rolled_back"
-          ? "interrupted"
-          : status,
-    startedAt: startedAt ? DateTime.formatIso(startedAt) : null,
-    completedAt: completedAt ? DateTime.formatIso(completedAt) : null,
-    progress: null,
-    result: null,
-    error: null,
-  };
 }
 
 /** The row detail with the effort the child's saved model selection names. */
@@ -756,7 +725,7 @@ export function ThreadRelationshipsPanel(props: {
       (entry) =>
         entry.instanceId === (agent?.providerInstanceId ?? node?.thread?.providerInstanceId),
     );
-    const providerDriver = agent?.driver ?? provider?.driver;
+    const providerDriver = provider?.driver ?? agent?.driver;
     const canStopWorkflow =
       canOperateWorkflow &&
       workflowGroup?.workflow.status === "running" &&

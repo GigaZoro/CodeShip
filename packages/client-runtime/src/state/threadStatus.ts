@@ -1,4 +1,8 @@
 import { msg, type Message } from "@t3tools/shared/i18n";
+import {
+  backgroundWorkHoldsCompletion,
+  type PendingBackgroundWorkTask,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 
 import type { EnvironmentThreadShell } from "./models.ts";
 
@@ -50,6 +54,20 @@ export function resolveThreadStatus(thread: ThreadStatusInput): ThreadStatus {
     return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
   }
   return "ready";
+}
+
+/** The agent waits on work it started: another thread it awaits, or background work holding its run. */
+export function isThreadWaitingOnWork(thread: {
+  readonly runtime: Pick<NonNullable<EnvironmentThreadShell["runtime"]>, "status"> | null;
+  readonly blockedOnThreadWait?: boolean | undefined;
+  readonly pendingBackgroundTasks?:
+    | ReadonlyArray<Pick<PendingBackgroundWorkTask, "kind" | "awaited">>
+    | undefined;
+}): boolean {
+  return (
+    (thread.runtime?.status === "running" && thread.blockedOnThreadWait === true) ||
+    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
+  );
 }
 
 /**

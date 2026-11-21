@@ -1,7 +1,7 @@
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveThreadStatus } from "./threadStatus.ts";
+import { isThreadWaitingOnWork, resolveThreadStatus } from "./threadStatus.ts";
 
 describe("resolveThreadStatus", () => {
   const runtime = {
@@ -81,5 +81,33 @@ describe("resolveThreadStatus", () => {
         runtime: { ...runtime, status: "idle" as const, lastError: "persisted" },
       }),
     ).toBe("waiting");
+  });
+});
+
+describe("isThreadWaitingOnWork", () => {
+  const running = { status: "running" as const };
+
+  it("waits on another thread only while the run is going", () => {
+    expect(isThreadWaitingOnWork({ runtime: running, blockedOnThreadWait: true })).toBe(true);
+    expect(isThreadWaitingOnWork({ runtime: running, blockedOnThreadWait: false })).toBe(false);
+    expect(
+      isThreadWaitingOnWork({ runtime: { status: "completed" }, blockedOnThreadWait: true }),
+    ).toBe(false);
+  });
+
+  it("waits on background work that holds the run, not on work left running", () => {
+    expect(
+      isThreadWaitingOnWork({
+        runtime: { status: "idle" },
+        pendingBackgroundTasks: [{ kind: "command", awaited: true }],
+      }),
+    ).toBe(true);
+    expect(
+      isThreadWaitingOnWork({
+        runtime: { status: "idle" },
+        pendingBackgroundTasks: [{ kind: "command" }],
+      }),
+    ).toBe(false);
+    expect(isThreadWaitingOnWork({ runtime: null })).toBe(false);
   });
 });

@@ -3,8 +3,10 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import {
   deriveProviderSubagentStatus,
   deriveThreadActivityRun,
+  presentPendingBackgroundWork,
 } from "@t3tools/client-runtime/state/thread-execution";
 import {
+  isThreadWaitingOnWork,
   resolveThreadStatus,
   type ThreadStatusInput,
 } from "@t3tools/client-runtime/state/thread-status";
@@ -35,6 +37,7 @@ const STATUS_PRESENTATION: Record<
 > = {
   working: { label: msg("Working"), dotClassName: "bg-info-foreground" },
   waiting: { label: msg("Waiting for you"), dotClassName: "bg-warning-foreground" },
+  waitingOnWork: { label: msg("Waiting"), dotClassName: "bg-muted-foreground/60" },
   queued: { label: msg("Queued"), dotClassName: "bg-muted-foreground/60" },
   starting: { label: msg("Starting"), dotClassName: "bg-info-foreground" },
   stopped: { label: msg("Stopped"), dotClassName: "bg-muted-foreground/60" },
@@ -54,7 +57,8 @@ const ACTIVITY_ITEM_TYPES: ReadonlySet<string> = new Set([
 
 const IN_PROGRESS_ITEM_STATUSES: ReadonlySet<string> = new Set(["pending", "running", "waiting"]);
 
-type AgentStatusShell = ThreadStatusInput & Pick<EnvironmentThreadShell, "latestRun">;
+type AgentStatusShell = ThreadStatusInput &
+  Pick<EnvironmentThreadShell, "latestRun" | "pendingBackgroundTasks">;
 
 /** What the agent is doing, from the same work entries the timeline labels. */
 export function ThreadAgentStatusPanel(props: {
@@ -77,6 +81,7 @@ export function ThreadAgentStatusPanel(props: {
   const status = deriveThreadAgentStatus({
     runtimeStatus: shell.runtime?.status ?? null,
     needsUser: threadStatus === "approval" || threadStatus === "input",
+    waitingOnWork: isThreadWaitingOnWork(shell),
     lastErrorClass: shell.runtime?.lastErrorClass ?? null,
     usageLimitResetAt: shell.runtime?.usageLimitResetAt ?? null,
     activityStartedAt: shell.runtime?.activityStartedAt ?? null,
@@ -87,7 +92,18 @@ export function ThreadAgentStatusPanel(props: {
   const { activeSince, finishedAt } = status;
 
   let activity: { readonly text: string; readonly command: boolean } | null = null;
-  if (status.kind === "working" && structure !== null) {
+  const background = presentPendingBackgroundWork(shell.pendingBackgroundTasks);
+  const [onlyBackgroundItem] = background?.items ?? [];
+  if (status.kind === "waitingOnWork" && background?.waiting === true) {
+    // The status already says Waiting, so one task is named by itself.
+    activity = {
+      text:
+        background.items.length === 1 && onlyBackgroundItem !== undefined
+          ? onlyBackgroundItem.label
+          : background.title,
+      command: false,
+    };
+  } else if ((status.kind === "working" || status.kind === "waitingOnWork") && structure !== null) {
     const runId = deriveThreadActivityRun(structure.projection)?.runId ?? null;
     const row = structure.projection.visibleTurnItems.findLast(
       (candidate) =>

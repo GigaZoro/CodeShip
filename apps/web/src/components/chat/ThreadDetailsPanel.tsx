@@ -37,7 +37,11 @@ import {
   type ThreadDetailsUsageInput,
 } from "./ThreadDetailsUsage";
 import { ThreadDetailsItemsMenuItems } from "./ThreadDetailsItemsMenu";
-import { resolveThreadDetailsVisibility, THREAD_DETAILS_ITEMS } from "./threadDetailsItems";
+import {
+  resolveThreadDetailsVisibility,
+  THREAD_DETAILS_ITEMS,
+  threadDetailsVisibilityFor,
+} from "./threadDetailsItems";
 import { useClientSettings } from "../../hooks/useSettings";
 import { useBrowserAssistants } from "../../browser/browserAssistants";
 import { usePreviewAvailable } from "../../browser/previewRuntime";
@@ -113,7 +117,11 @@ interface ThreadDetailsPanelProps extends Pick<
 }
 
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
-  const visible = useClientSettings(resolveThreadDetailsVisibility);
+  const isDraft = props.draftId !== undefined;
+  const visible = threadDetailsVisibilityFor(
+    useClientSettings(resolveThreadDetailsVisibility),
+    isDraft,
+  );
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   // The card opens information-first: the controls fold again for every thread.
   const threadKey = `${props.environmentId}:${props.threadId}`;
@@ -122,7 +130,6 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   if (expandedKey !== null && expandedKey !== threadKey) setExpandedKey(null);
   const controlsExpanded = expandedKey === threadKey;
   // A draft picks its machine and branch here before it is sent, so it keeps those controls open.
-  const isDraft = props.draftId !== undefined;
   const foldsControls =
     !isDraft &&
     (visible.environment ||
@@ -135,7 +142,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   const showControls = isDraft || controlsExpanded;
   const fileScripts = useT3ProjectFileScripts(
     props.environmentId,
-    props.activeProjectScripts && visible.scripts && !isDraft ? props.gitCwd : null,
+    props.activeProjectScripts && visible.scripts ? props.gitCwd : null,
   );
   const activeThreadRef = { environmentId: props.environmentId, threadId: props.threadId };
   const assistants = useBrowserAssistants();
@@ -198,18 +205,16 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
         // Section flags follow the rows that will render, so no empty section steals the divider rule.
         const show = {
           environment: density === "full" && visible.environment,
-          openIn: !isDraft && density !== "essential" && visible.openIn && props.showOpenInPicker,
-          scripts: !isDraft && visible.scripts && props.activeProjectScripts !== undefined,
+          openIn: density !== "essential" && visible.openIn && props.showOpenInPicker,
+          scripts: visible.scripts && props.activeProjectScripts !== undefined,
           assistants:
             density !== "essential" &&
             visible.assistants &&
-            !isDraft &&
             assistants.length > 0 &&
             previewAvailable &&
             canOperatePreview,
           branch: props.gitCwd !== null && props.isGitRepo && visible.branch,
           git:
-            !isDraft &&
             props.gitCwd !== null &&
             props.activeProjectName !== undefined &&
             (visible.gitActions || (visible.changes && props.isGitRepo)),
@@ -310,7 +315,6 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                         showChanges={visible.changes}
                         gitCwd={props.gitCwd}
                         activeThreadRef={activeThreadRef}
-                        {...(props.draftId ? { draftId: props.draftId } : {})}
                         {...(props.onOpenChanges ? { onOpenChanges: props.onOpenChanges } : {})}
                       />
                     ) : null}
@@ -318,7 +322,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 </ThreadDetailsSection>
               ) : null}
 
-              {!isDraft && visible.status ? (
+              {visible.status ? (
                 <ThreadAgentStatusPanel
                   environmentId={props.environmentId}
                   threadId={props.threadId}
@@ -335,11 +339,11 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
 
               {density === "full" && visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}
 
-              {!isDraft && visible.tasks ? (
+              {visible.tasks ? (
                 <ThreadTasksPanel environmentId={props.environmentId} threadId={props.threadId} />
               ) : null}
 
-              {!isDraft && (visible.lineage || visible.sideChats) ? (
+              {visible.lineage || visible.sideChats ? (
                 <ThreadRelationshipsPanel
                   environmentId={props.environmentId}
                   threadId={props.threadId}
@@ -348,19 +352,19 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 />
               ) : null}
 
-              {!isDraft && visible.outline ? (
+              {visible.outline ? (
                 <ThreadOutlinePanel environmentId={props.environmentId} threadId={props.threadId} />
               ) : null}
 
-              {density === "full" && !isDraft && visible.machineLoad ? (
+              {density === "full" && visible.machineLoad ? (
                 <ThreadMachineLoadPanel environmentId={props.environmentId} />
               ) : null}
 
-              {density === "full" && !isDraft && visible.servers ? (
+              {density === "full" && visible.servers ? (
                 <ThreadServersPanel environmentId={props.environmentId} threadId={props.threadId} />
               ) : null}
 
-              {density === "full" && !isDraft && visible.automations ? (
+              {density === "full" && visible.automations ? (
                 <ThreadAutomationsPanel
                   environmentId={props.environmentId}
                   threadId={props.threadId}

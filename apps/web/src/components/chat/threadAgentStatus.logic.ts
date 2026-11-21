@@ -4,6 +4,7 @@ import type { OrchestrationV2RunStatus } from "@t3tools/contracts";
 export type ThreadAgentStatusKind =
   | "working"
   | "waiting"
+  | "waitingOnWork"
   | "queued"
   | "starting"
   | "stopped"
@@ -16,6 +17,8 @@ export interface ThreadAgentStatusInput {
   readonly runtimeStatus: OrchestrationV2RunStatus | "idle" | null;
   /** An approval or answer the thread, or a subagent of it, waits on. */
   readonly needsUser: boolean;
+  /** Another thread or background work the agent waits on, which the thread list shows as Waiting. */
+  readonly waitingOnWork: boolean;
   readonly lastErrorClass: string | null;
   readonly usageLimitResetAt: string | null;
   readonly activityStartedAt: string | null;
@@ -91,6 +94,10 @@ export function deriveThreadAgentStatus(input: ThreadAgentStatusInput): ThreadAg
   // parent's run is idle.
   if (input.needsUser) {
     return ACTIVE_STATUSES.has(runtimeStatus) ? active("waiting") : pending("waiting");
+  }
+  // Work the agent waits on holds the run open, or parks it at idle until that work ends.
+  if (input.waitingOnWork) {
+    return ACTIVE_STATUSES.has(runtimeStatus) ? active("waitingOnWork") : pending("waitingOnWork");
   }
   switch (runtimeStatus) {
     case "queued":

@@ -692,7 +692,8 @@ The thread details card shows what is going on rather than a set of buttons. At 
 thread has started, a summary names the machine, the branch and its pull request, and how much
 changed; select it to show the workspace and Git controls, and again to fold them. They are folded
 whenever you open a thread. **Agent status** shows whether the agent is working, waiting for you
-(its own request or a subagent's), stopped, reverted or idle, how long the run has taken, the model
+(its own request or a subagent's approval), waiting on another thread or a background task,
+stopped, reverted or idle, how long the run has taken, the model
 it uses, and what it is doing now, with the full command it runs. Below it
 sit the context window, usage limits, the agent's to-do list for the turn it is on, lineage and side
 chats, **Your prompts**, and **Machine load**: CPU, memory and disk of the machine the chat runs

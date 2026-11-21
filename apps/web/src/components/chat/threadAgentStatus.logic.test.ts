@@ -5,6 +5,7 @@ import { deriveThreadAgentStatus, type ThreadAgentStatusInput } from "./threadAg
 const base: ThreadAgentStatusInput = {
   runtimeStatus: "idle",
   needsUser: false,
+  waitingOnWork: false,
   lastErrorClass: null,
   usageLimitResetAt: null,
   activityStartedAt: null,
@@ -29,6 +30,21 @@ describe("deriveThreadAgentStatus", () => {
       name: "a subagent request holds an idle parent without a clock",
       input: { runtimeStatus: "completed", needsUser: true, latestRun: run },
       expected: { kind: "waiting", activeSince: null, finishedAt: null, tookMs: null },
+    },
+    {
+      name: "a run blocked on another thread waits on it, with the run's clock",
+      input: { runtimeStatus: "running", waitingOnWork: true, activityStartedAt: run.startedAt },
+      expected: { kind: "waitingOnWork", activeSince: run.startedAt, tookMs: null },
+    },
+    {
+      name: "background work holding a run parked at idle waits on it, not finished",
+      input: { runtimeStatus: "idle", waitingOnWork: true, latestRun: run },
+      expected: { kind: "waitingOnWork", activeSince: null, finishedAt: null, tookMs: null },
+    },
+    {
+      name: "the user's request outranks the work the agent waits on",
+      input: { runtimeStatus: "running", needsUser: true, waitingOnWork: true, latestRun: run },
+      expected: { kind: "waiting", activeSince: run.startedAt },
     },
     {
       name: "a waiting run without a request is still working",
