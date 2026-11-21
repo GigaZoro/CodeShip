@@ -23,7 +23,7 @@
 - Filter the thread list by status on web, desktop, and mobile. The list shows when a filter is active and gives you a quick way to clear it.
 - Add, remove, and filter by thread tags on web, desktop, and mobile. On web and desktop you can tag several selected threads together.
 - Sort threads by last activity, creation, or name on web, desktop, and mobile. Pinned threads keep their manual order, and Settled stays in the order threads settled.
-- While a status or tag filter is on, **Show more** in Settled and chat folders reveals loaded matches first. If more are needed, each press loads one page from each available machine at the current cutoff. Changing filters resets folder paging. A separate retry button handles failed page reads.
+- While a status or tag filter is on, **Show more** in Settled and chat folders reveals loaded matches first. If more are needed, each press loads one page from each available machine at the current cutoff. Changing filters resets folder paging, and **Show less** on web and desktop returns that folder to its preview and releases its pages. A separate retry button handles failed page reads.
 
 ## 2026-11-21 — Recent threads keep their places while chats run
 

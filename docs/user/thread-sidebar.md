@@ -181,7 +181,8 @@ While a filter is on, **Settled** counts only the matches already loaded.
 In **Settled** and chat folders, **Show more** reveals another batch of matches.
 If there are too few matches already loaded, the press reads one more page
 from each available machine at the current cutoff. A page may contain no matches.
-Changing filters resets folder paging. If a page read fails, use
+In chat folders on web and desktop, **Show less** returns to the preview and releases the pages
+that folder loaded. Changing filters also resets folder paging. If a page read fails, use
 **Could not load older threads. Retry** to try it again.
 
 ## Tag threads

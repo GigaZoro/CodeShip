@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import {
   hasMoreSettledMatches,
   type OlderSettledScope,
@@ -14,7 +15,8 @@ import { userEvent } from "vite-plus/test/browser";
 import { render } from "../../test/render";
 import { useSidebarThreads } from "../components/Sidebar";
 import { makeThreadFixture } from "../test-fixtures";
-import { olderSettledThreads } from "./threads";
+import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
+import { olderSettledThreads, threadFamilies } from "./threads";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "./olderSettledShelf";
 
 const environmentId = EnvironmentId.make("env-a");
@@ -66,6 +68,20 @@ describe("useOlderSettledShelf", () => {
         tags: ["work"],
       });
     });
+    const pageThreads = Array.from({ length: 3 }, (_, index) => {
+      const thread = makeThreadFixture({
+        id: ThreadId.make(`older-filed-${index}`),
+        environmentId,
+        settledOverride: "settled",
+        settledAt: "2026-01-01T00:00:00.000Z",
+      });
+      return presentThreadShell(environmentId, {
+        ...thread.source,
+        folder: "Autopilot",
+        tags: ["work"],
+      });
+    });
+    const pageMounted = Atom.make(false);
     function FolderView({
       projectScopeKey,
       filtered = false,
@@ -77,6 +93,7 @@ describe("useOlderSettledShelf", () => {
       hasServer?: boolean;
       activeCount?: number;
     }) {
+      const hasPage = useAtomValue(pageMounted);
       const list = useSidebarThreads({
         projectScopeKey,
         scopedProjectKeys: null,
@@ -88,7 +105,7 @@ describe("useOlderSettledShelf", () => {
         serverConfigs: new Map(hasServer ? [[environmentId, {} as EnvironmentServerConfig]] : []),
         connectedEnvironmentIds: [environmentId],
         optimisticDrop: null,
-        threads: threads.slice(0, activeCount),
+        threads: [...threads.slice(0, activeCount), ...(hasPage ? pageThreads : [])],
         delegatedUnderParent: new Set(),
         hiddenTaskThreadKeys: new Set(),
         routeRowThreadKey: null,
@@ -107,7 +124,7 @@ describe("useOlderSettledShelf", () => {
       );
     }
     const before = "2026-01-02T00:00:00.000Z";
-    const folderShelf = (status: "ready" | "failed") =>
+    const folderShelf = (status: "ready" | "failed", exhausted = false) =>
       Atom.make([
         new Map<EnvironmentId, OlderSettledShelfEnvironment>([
           [
@@ -119,14 +136,15 @@ describe("useOlderSettledShelf", () => {
                 counts: new Map([[first, 3]]),
                 folders: null,
               },
-              unloaded: 3,
-              pages: { reads: [], frontier: { settledAt: before }, status },
+              unloaded: exhausted ? 0 : 3,
+              pages: { reads: [], frontier: exhausted ? null : { settledAt: before }, status },
             },
           ],
         ]),
       ]);
     const ready = folderShelf("ready");
     const failed = folderShelf("failed");
+    const exhausted = folderShelf("ready", true);
     const empty = Atom.make<
       ReadonlyArray<ReadonlyMap<EnvironmentId, OlderSettledShelfEnvironment>>
     >([]);
@@ -149,6 +167,37 @@ describe("useOlderSettledShelf", () => {
       expect(listed.element().textContent).toBe("7");
       expect(shelves.mock.calls.flat(3).some(({ pages }) => pages === 1)).toBe(true);
       expect(shelves.mock.calls.flat(3).some(({ pages }) => pages > 1)).toBe(false);
+    }
+    {
+      using shelves = vi
+        .spyOn(olderSettledThreads, "shelvesAtom")
+        .mockImplementation(([scopes]) => {
+          const entry = scopes?.[0];
+          if (entry?.scope.folder !== "autopilot") return empty;
+          return entry.pages > 0 ? exhausted : ready;
+        });
+      using _mount = vi.spyOn(threadFamilies, "mountRows").mockImplementation((registry) => {
+        registry.set(pageMounted, true);
+        return () => registry.set(pageMounted, false);
+      });
+      for (const filtered of [true, false]) {
+        await screen.rerender(
+          <AppAtomRegistryProvider>
+            <FolderView
+              projectScopeKey={String(filtered)}
+              filtered={filtered}
+              hasServer
+              activeCount={3}
+            />
+          </AppAtomRegistryProvider>,
+        );
+        await expect.element(listed).toHaveTextContent("3");
+        await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+        await expect.element(listed).toHaveTextContent("6");
+        await userEvent.click(screen.getByRole("button", { name: "Show less" }));
+        expect.soft(listed.element().textContent).toBe("3");
+        expect.soft(shelves.mock.calls.at(-1)?.flat(2)[0]?.pages).toBe(0);
+      }
     }
     {
       using _shelves = vi

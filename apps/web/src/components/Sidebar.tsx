@@ -1154,10 +1154,15 @@ export function useSidebarThreads(input: {
         return;
       }
       setViewTargets((current) => {
+        if (current.viewKey !== filterViewKey) return current;
         const next = new Map(current.folders);
         if (folder?.more?.state === "less") {
           next.delete(key);
-        } else if (folder?.shelf.hasMorePages) {
+          const folderPages = new Map(current.folderPages);
+          folderPages.delete(folder.entry.key);
+          return { ...current, folders: next, folderPages };
+        }
+        if (folder?.shelf.hasMorePages) {
           next.set(key, folder.listedSettledCount + SETTLED_TAIL_PAGE_COUNT);
         } else if (!next.delete(key)) {
           next.set(key, 0);
