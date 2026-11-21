@@ -1399,7 +1399,7 @@ export function createServerEnvironmentAtoms<R, E>(
         : AsyncResult.success(result.value, result);
     }).pipe(Atom.withLabel(`environment-data:server:welcome:${environmentId}`)),
   );
-  // A settled chat changes the analyses, so both queries follow this stream instead of polling.
+  // A settled chat changes the analyses, so the queries follow this stream instead of polling.
   const monitoringChanges = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
     label: "environment-data:server:monitoring:changes",
     tag: WS_METHODS.monitoringSubscribeChanges,
@@ -1407,6 +1407,12 @@ export function createServerEnvironmentAtoms<R, E>(
   const monitoringOverview = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:server:monitoring:overview",
     tag: WS_METHODS.monitoringOverview,
+    staleTimeMs: 60_000,
+    refreshTrigger: ({ environmentId }) => monitoringChanges({ environmentId, input: {} }),
+  });
+  const monitoringChats = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:monitoring:chats",
+    tag: WS_METHODS.monitoringChats,
     staleTimeMs: 60_000,
     refreshTrigger: ({ environmentId }) => monitoringChanges({ environmentId, input: {} }),
   });
@@ -1478,6 +1484,7 @@ export function createServerEnvironmentAtoms<R, E>(
   return {
     monitoringChanges,
     monitoringOverview,
+    monitoringChats,
     monitoringThread,
     configValueAtom,
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {

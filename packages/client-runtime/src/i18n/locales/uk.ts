@@ -4395,7 +4395,6 @@ const catalog: MessageCatalog = {
   "Could not load linked environments": "Не вдалося завантажити пов’язані середовища",
   "Could not load mobile clients": "Не вдалося завантажити мобільних клієнтів",
   "Could not load monitoring": "Не вдалося завантажити моніторинг",
-  "Could not load monitoring: {error}": "Не вдалося завантажити моніторинг: {error}",
   "Could not load older threads. Retry": "Не вдалося завантажити старіші чати. Повторити",
   "Could not load PDF": "Не вдалося завантажити PDF",
   "Could not load pull requests": "Не вдалося завантажити пул-реквести",
@@ -4544,6 +4543,8 @@ const catalog: MessageCatalog = {
   "Could not refresh guide": "Не вдалося оновити посібник",
   "Could not refresh models": "Не вдалося оновити моделі",
   "Could not refresh plugins": "Не вдалося оновити плагіни",
+  "Could not refresh this chat's analysis, so it may be out of date: {error}":
+    "Не вдалося оновити аналіз цього чату, тож він може бути застарілим: {error}",
   "Could not regenerate title": "Не вдалося перегенерувати назву",
   "Could not register the capture shortcut.": "Не вдалося зареєструвати скорочення захоплення.",
   "Could not release the account": "Не вдалося розблокувати обліковий запис",
@@ -7648,8 +7649,6 @@ const catalog: MessageCatalog = {
   "More actions for this machine": "Більше дій для цього комп’ютера",
   "More activity is available on the provider.": "Більше активності доступно у провайдера.",
   "More approval options": "Більше варіантів схвалення",
-  "More chats settled in this period than can be shown. These are the newest.":
-    "За цей період завершилося більше чатів, ніж можна показати. Показано найновіші.",
   "More comments could not be loaded": "Не вдалося завантажити інші коментарі",
   "More composer controls": "Більше елементів керування",
   "More device actions": "Більше дій з пристроєм",
@@ -7885,6 +7884,7 @@ const catalog: MessageCatalog = {
   "No agents are available.": "Немає доступних агентів.",
   "No agents in this turn.": "У цьому ході немає агентів.",
   "No agents yet": "Агентів поки немає",
+  "No analyzed chats in this period": "За цей період немає проаналізованих чатів",
   "No Android virtual devices found. Create one in Android Studio's Device Manager, then refresh.":
     "Віртуальних пристроїв Android не знайдено. Створіть один у Device Manager в Android Studio, а потім оновіть.",
   "no answer in time": "немає відповіді вчасно",
@@ -8128,7 +8128,6 @@ const catalog: MessageCatalog = {
   "No servers registered": "Немає зареєстрованих серверів",
   "No settings found": "Налаштувань не знайдено",
   "No settings match “{query}”.": "Жодне налаштування не відповідає «{query}».",
-  "No settled chats in this period": "За цей період немає завершених чатів",
   "No shortcut is assigned. Choose one in your desktop's shortcut settings.":
     "Скорочення не призначено. Виберіть його в налаштуваннях скорочень вашого робочого стола.",
   "No shortcut is assigned. Open shortcut permissions to choose one.":
@@ -12683,6 +12682,7 @@ const catalog: MessageCatalog = {
   "These cells could not be drawn.": "Не вдалося відобразити ці комірки.",
   "These cells could not be drawn. Try scrolling to another area.":
     "Не вдалося відобразити ці комірки. Спробуйте прокрутити до іншої ділянки.",
+  "These environments are not counted yet: {names}": "Ці середовища ще не враховано: {names}",
   "These permissions apply to this client’s current connection.":
     "Ці дозволи діють для поточного підключення цього клієнта.",
   "These permissions apply to your active route. Other routes may have different permissions.":
@@ -12933,8 +12933,6 @@ const catalog: MessageCatalog = {
   "This environment can display stacks but cannot merge them.":
     "Це середовище може показувати стеки, але не може їх зливати.",
   "This environment connection is read-only.": "З’єднання з цим середовищем лише для читання.",
-  "This environment could not report monitoring.":
-    "Це середовище не змогло надати дані моніторингу.",
   "This environment could not report usage: {error}":
     "Це середовище не змогло повідомити про використання: {error}",
   "This environment could not report usage.":
@@ -13930,6 +13928,8 @@ const catalog: MessageCatalog = {
     "Оновіть сервер цього середовища, щоб змінювати порядок активних чатів.",
   "Update this environment's T3.CodeShip server to browse pull requests.":
     "Оновіть сервер T3.CodeShip цього середовища, щоб переглядати пул-реквести.",
+  "Update this environment's T3.CodeShip server to see it in Monitoring.":
+    "Оновіть сервер T3.CodeShip цього середовища, щоб бачити його в Моніторингу.",
   "Update this environment's T3.CodeShip server to use side chats.":
     "Оновіть сервер T3.CodeShip цього середовища, щоб користуватися побічними чатами.",
   "Update this provider on the environment's machine.":

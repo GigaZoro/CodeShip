@@ -81,6 +81,9 @@ describe("V2 preview upgrade", () => {
         [99, "ScheduledTaskDescriptions"],
         [100, "TurnItemPayloadWithoutColumnKeys"],
         [101, "CommandRunShell"],
+        [102, "MonitoringSettledThreadIndex"],
+        [103, "MonitoringAnalysesWithoutProject"],
+        [104, "MonitoringAnalysesSettleStamp"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -205,6 +208,9 @@ describe("V2 preview upgrade", () => {
         [99, "ScheduledTaskDescriptions"],
         [100, "TurnItemPayloadWithoutColumnKeys"],
         [101, "CommandRunShell"],
+        [102, "MonitoringSettledThreadIndex"],
+        [103, "MonitoringAnalysesWithoutProject"],
+        [104, "MonitoringAnalysesSettleStamp"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

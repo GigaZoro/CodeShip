@@ -185,6 +185,9 @@ describe("analyzeThread", () => {
       summary.lifetimeMs,
     );
     expect(summary.lifetimeMs).toBe(ms(60));
+    // Every read of a period dates a chat by its settle stamp, also one before its creation.
+    const stampedEarly = analyzeThread(input({ thread: thread({ settledAt: at(-5) }) })).summary;
+    expect([stampedEarly.settledAt, stampedEarly.lifetimeMs]).toEqual([at(-5), 0]);
     expect(summary.activeMs).toBe(ms(23));
     expect(summary.runs).toMatchObject({
       total: 3,

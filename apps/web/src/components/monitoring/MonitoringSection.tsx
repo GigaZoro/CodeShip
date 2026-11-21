@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
+import { t } from "~/i18n";
+import { Button } from "../ui/button";
+import { RefreshIcon } from "../ui/refresh-icon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export function MonitoringSection({
@@ -68,5 +71,26 @@ export function MonitoringTruncated({
         <span className="block max-w-96 break-words">{text}</span>
       </TooltipPopup>
     </Tooltip>
+  );
+}
+
+export function MonitoringRefreshButton({
+  refreshing,
+  onRefresh,
+}: {
+  readonly refreshing: boolean;
+  readonly onRefresh: () => void;
+}) {
+  return (
+    <Button
+      onClick={onRefresh}
+      aria-label={t("Refresh monitoring")}
+      aria-busy={refreshing}
+      disabled={refreshing}
+      size="icon-sm"
+      variant="ghost"
+    >
+      <RefreshIcon size="sm" refreshing={refreshing} />
+    </Button>
   );
 }

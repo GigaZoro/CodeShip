@@ -180,13 +180,20 @@ export function enumerateHourStarts(sinceTime: string, untilTime: string): reado
   return starts;
 }
 
-function hourOptions(hour12: boolean): Intl.DateTimeFormatOptions {
+/** `hour12` is the Timestamp format setting; without one, as on mobile, the locale's clock decides. */
+function hourOptions(hour12: boolean | undefined): Intl.DateTimeFormatOptions {
   // ICU 78+ writes a bare 24-hour hour with a zone as "01h EDT"; with minutes it is "01:37 EDT".
-  return hour12 ? { hour: "numeric" } : { hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+  if (hour12 === false) return { hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+  // Without a cycle the locale picks one, so en-GB writes 17 for a 12-hour setting.
+  return hour12 === true ? { hour: "numeric", hour12: true } : { hour: "numeric" };
 }
 
-function formatHour(formatter: Intl.DateTimeFormat, date: Date, hour12: boolean): string {
-  if (hour12) return formatter.format(date);
+function formatHour(
+  formatter: Intl.DateTimeFormat,
+  date: Date,
+  hour12: boolean | undefined,
+): string {
+  if (hour12 !== false) return formatter.format(date);
   // Rolling buckets can start between whole hours, but their labels always name the hour.
   return formatter
     .formatToParts(date)
@@ -198,7 +205,7 @@ function formatHour(formatter: Intl.DateTimeFormat, date: Date, hour12: boolean)
  * Repeated wall-clock hours during a fall-back transition include their short zone name so the
  * two distinct buckets remain distinguishable.
  */
-export function formatHourShort(hourStart: string, timeZone?: string, hour12 = true): string {
+export function formatHourShort(hourStart: string, timeZone?: string, hour12?: boolean): string {
   const instant = new Date(hourStart);
   if (Number.isNaN(instant.getTime())) return hourStart;
   const options = timeZone === undefined ? {} : { timeZone };
@@ -228,7 +235,7 @@ export function formatHourShort(hourStart: string, timeZone?: string, hour12 = t
   return formatHour(zonedHourFormat, instant, hour12);
 }
 
-export function formatDateTimeShort(instant: string, timeZone?: string, hour12 = true): string {
+export function formatDateTimeShort(instant: string, timeZone?: string, hour12?: boolean): string {
   const date = new Date(instant);
   if (Number.isNaN(date.getTime())) return instant;
   const dateFormat = dateTimeFormatter(displayLocale(), {
@@ -243,7 +250,7 @@ export function formatRelativeHourShort(
   hourStart: string,
   relativeTo: string,
   timeZone?: string,
-  hour12 = true,
+  hour12?: boolean,
 ): string {
   const instant = new Date(hourStart);
   const reference = new Date(relativeTo);

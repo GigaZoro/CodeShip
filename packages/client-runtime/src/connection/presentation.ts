@@ -141,6 +141,11 @@ export function connectionMayStillAnswer(phase: EnvironmentConnectionPhase): boo
   return phase === "connecting" || phase === "reconnecting" || phase === "connected";
 }
 
+/** Wanted but not up, so a retry can skip its backoff. A live connection is never dropped. */
+export function connectionCanRetry(phase: EnvironmentConnectionPhase): boolean {
+  return phase !== "connected" && phase !== "available" && phase !== "unsupported";
+}
+
 export function connectionStatusTitle(connection: EnvironmentConnectionPresentation): string {
   if (connection.phase === "reconnecting" && connection.error) {
     return t("Failed to connect. Reconnecting...");

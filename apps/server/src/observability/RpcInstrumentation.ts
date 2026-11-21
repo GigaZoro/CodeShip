@@ -127,6 +127,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.threadFoldersSave]: "threadFolders",
   [WS_METHODS.scheduledTasksStats]: "scheduledTasks",
   [WS_METHODS.monitoringOverview]: "monitoring",
+  [WS_METHODS.monitoringChats]: "monitoring",
   [WS_METHODS.monitoringThread]: "monitoring",
   [WS_METHODS.monitoringSubscribeChanges]: "monitoring",
   [WS_METHODS.scheduledTasksReorderPinned]: "scheduledTasks",

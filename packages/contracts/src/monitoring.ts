@@ -7,6 +7,7 @@ import {
   ProjectId,
   RunId,
   ThreadId,
+  TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
@@ -320,26 +321,133 @@ export const MonitoringThreadDetail = Schema.Struct({
 });
 export type MonitoringThreadDetail = typeof MonitoringThreadDetail.Type;
 
-/** Chats settled from `since` until `until` (default now). */
-export const MonitoringOverviewInput = Schema.Struct({
+/** The most days one overview can ask about. */
+const MONITORING_MAX_DAYS = 366;
+
+const MONITORING_DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/** A day on the viewer's clock: its `YYYY-MM-DD` name and the instant it starts. */
+export const MonitoringDay = Schema.Struct({
+  day: TrimmedNonEmptyString.check(Schema.isPattern(MONITORING_DAY_PATTERN)),
   since: IsoDateTime,
-  until: Schema.optional(IsoDateTime),
+});
+export type MonitoringDay = typeof MonitoringDay.Type;
+
+/**
+ * Chats settled from the first day's start until `until`, each counted on the last day that had
+ * started by then. The viewer's clock draws the days, so every environment counts a chat on the
+ * same day, whatever time zone data its own machine has.
+ */
+export const MonitoringOverviewInput = Schema.Struct({
+  days: Schema.NonEmptyArray(MonitoringDay).check(Schema.isMaxLength(MONITORING_MAX_DAYS)),
+  until: IsoDateTime,
 });
 export type MonitoringOverviewInput = typeof MonitoringOverviewInput.Type;
 
+/** One finding code within a group: the chats it hit, how often, and the time it cost. */
+export const MonitoringFindingTotal = Schema.Struct({
+  code: MonitoringFindingCode,
+  /** The highest severity it had in any of the chats. */
+  severity: MonitoringFindingSeverity,
+  chats: NonNegativeInt,
+  occurrences: NonNegativeInt,
+  wastedMs: NonNegativeInt,
+});
+export type MonitoringFindingTotal = typeof MonitoringFindingTotal.Type;
+
+/**
+ * The chats that settled on one day, in one project, of one kind, on one main model, summed. Each
+ * chat counts in exactly one group, so groups add up across filters and environments, and the
+ * per-chat times keep medians exact.
+ */
+export const MonitoringGroup = Schema.Struct({
+  /** The name of the requested day the chats settled on. */
+  day: Schema.String,
+  projectId: ProjectId,
+  kind: MonitoringThreadKind,
+  /** The chats' own latest model; empty for chats that ran none. */
+  model: Schema.String,
+  /** One entry per chat, so their length is the group's chat count. */
+  lifetimesMs: Schema.Array(NonNegativeInt),
+  activesMs: Schema.Array(NonNegativeInt),
+  time: MonitoringTimeBuckets,
+  tokens: MonitoringTokenTotals,
+  costUsd: Schema.Number,
+  unpricedTurns: NonNegativeInt,
+  runs: NonNegativeInt,
+  failedRuns: NonNegativeInt,
+  userPrompts: NonNegativeInt,
+  /** Subagents, delegates, commands and workflows. */
+  helpers: NonNegativeInt,
+  findings: ForwardCompatibleArray(MonitoringFindingTotal),
+  phases: ForwardCompatibleArray(MonitoringPhaseStats),
+});
+export type MonitoringGroup = typeof MonitoringGroup.Type;
+
+/** The settled chats of one project in the window that no group holds yet. */
+export const MonitoringUnanalyzed = Schema.Struct({
+  projectId: ProjectId,
+  /** Still waiting for their first analysis. */
+  pending: NonNegativeInt,
+  /** Their analysis failed; they are analyzed again later. */
+  failed: NonNegativeInt,
+});
+export type MonitoringUnanalyzed = typeof MonitoringUnanalyzed.Type;
+
 export const MonitoringOverviewResult = Schema.Struct({
-  /** Newest settle first, capped at {@link MONITORING_OVERVIEW_LIMIT}. */
-  threads: ForwardCompatibleArray(MonitoringThreadSummary),
-  /** More chats settled in the window than the result holds. */
-  truncated: Schema.Boolean,
-  /** Settled chats still waiting for their first analysis. */
-  pendingAnalysis: NonNegativeInt,
-  /** Settled chats whose analysis failed; they are analyzed again later. */
-  failedAnalysis: NonNegativeInt,
+  /** Every analyzed chat in the window, grouped. */
+  groups: Schema.Array(MonitoringGroup),
+  /** One entry per project that has such chats; kind and model are known only after analysis. */
+  unanalyzed: Schema.Array(MonitoringUnanalyzed),
 });
 export type MonitoringOverviewResult = typeof MonitoringOverviewResult.Type;
 
-export const MONITORING_OVERVIEW_LIMIT = 2_000;
+export const MonitoringChatSort = Schema.Literals([
+  "settledAt",
+  "lifetimeMs",
+  "activeMs",
+  "costUsd",
+  "findings",
+  "failures",
+]);
+export type MonitoringChatSort = typeof MonitoringChatSort.Type;
+
+const MONITORING_CHATS_PAGE_LIMIT = 500;
+
+/** One page of the analyzed chats of the window that match, in the requested order. */
+export const MonitoringChatsInput = Schema.Struct({
+  since: IsoDateTime,
+  until: Schema.optional(IsoDateTime),
+  projectId: Schema.optional(ProjectId),
+  kind: Schema.optional(MonitoringThreadKind),
+  /** A main model; empty for chats that ran none. */
+  model: Schema.optional(Schema.String),
+  findingCode: Schema.optional(MonitoringFindingCode),
+  sort: MonitoringChatSort,
+  direction: Schema.Literals(["asc", "desc"]),
+  limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MONITORING_CHATS_PAGE_LIMIT })),
+  /** How many matching chats come before the page. */
+  offset: NonNegativeInt,
+});
+export type MonitoringChatsInput = typeof MonitoringChatsInput.Type;
+
+export const MonitoringListedChat = Schema.Struct({
+  summary: MonitoringThreadSummary,
+  /**
+   * The key the environment sorted by, as a number: epoch milliseconds for `settledAt`. A merge
+   * across environments compares these, since a client of another version can count the same
+   * summary differently.
+   */
+  sortValue: Schema.Finite,
+});
+export type MonitoringListedChat = typeof MonitoringListedChat.Type;
+
+export const MonitoringChatsResult = Schema.Struct({
+  chats: Schema.Array(MonitoringListedChat),
+  /** Every chat that matches, on every page. */
+  total: NonNegativeInt,
+});
+export type MonitoringChatsResult = typeof MonitoringChatsResult.Type;
 
 export const MonitoringThreadInput = Schema.Struct({
   threadId: ThreadId,

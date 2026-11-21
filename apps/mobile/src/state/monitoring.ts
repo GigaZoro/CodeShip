@@ -1,56 +1,57 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { EnvironmentId, MonitoringOverviewInput } from "@t3tools/contracts";
+import type { MonitoringOverviewInput } from "@t3tools/contracts";
 import {
-  mergeMonitoringOverviews,
-  type MonitoringEnvironmentReport,
+  failureRetry,
+  keepsShownChats,
+  type MonitoringChatsRequest,
+  type MonitoringChatsView,
   type MonitoringOverviewView,
+  type MonitoringRetry,
 } from "@t3tools/client-runtime/monitoring";
-import { AsyncResult, Atom } from "effect/reactivity";
-import { useCallback } from "react";
+import { createMonitoringAtoms } from "@t3tools/client-runtime/monitoring/atoms";
+import { useState } from "react";
 
-import { t } from "../lib/i18n";
+import { environmentCatalog } from "../connection/catalog";
 import { appAtomRegistry } from "./atom-registry";
 import { environmentPresentations } from "./presentation";
+import { formatEnvironmentQueryError } from "./query";
 import { serverEnvironment } from "./server";
 
-/** Connected environments answer; their chats merge. A chat stays in the list while it refreshes. */
-const monitoringOverviewAtom = Atom.family((inputKey: string) =>
-  Atom.make((get): MonitoringOverviewView => {
-    const input = JSON.parse(inputKey) as MonitoringOverviewInput;
-    const reports: MonitoringEnvironmentReport[] = [];
-    for (const [environmentId, presentation] of get(environmentPresentations.presentationsAtom)) {
-      if (presentation.connection.phase !== "connected") continue;
-      const result = get(serverEnvironment.monitoringOverview({ environmentId, input }));
-      reports.push({
-        environmentId,
-        label: presentation.entry.target.label,
-        isPending: result.waiting,
-        error:
-          result._tag === "Failure" ? t("This environment could not report monitoring.") : null,
-        result: AsyncResult.getOrElse(result, () => null),
-      });
-    }
-    return mergeMonitoringOverviews(reports);
-  }).pipe(Atom.withLabel(`mobile-monitoring:overview:${inputKey}`)),
-);
+const monitoring = createMonitoringAtoms({
+  label: "mobile-monitoring",
+  registry: appAtomRegistry,
+  server: serverEnvironment,
+  presentations: environmentPresentations,
+  catalog: environmentCatalog,
+  describeFailure: formatEnvironmentQueryError,
+});
 
-export function useMonitoringOverview(input: MonitoringOverviewInput): {
-  readonly overview: MonitoringOverviewView;
-  readonly refresh: () => void;
-} {
-  const key = JSON.stringify(input);
-  const overview = useAtomValue(monitoringOverviewAtom(key));
-  const environmentIds = overview.environments.map((environment) => environment.environmentId);
-  const idsKey = environmentIds.join(",");
-  const refresh = useCallback(() => {
-    for (const environmentId of idsKey === "" ? [] : (idsKey.split(",") as EnvironmentId[])) {
-      appAtomRegistry.refresh(
-        serverEnvironment.monitoringOverview({
-          environmentId,
-          input: JSON.parse(key) as MonitoringOverviewInput,
-        }),
-      );
-    }
-  }, [idsKey, key]);
-  return { overview, refresh };
+export function useMonitoringOverview(input: MonitoringOverviewInput): MonitoringOverviewView {
+  return useAtomValue(monitoring.overviewAtom(JSON.stringify(input)));
 }
+
+/**
+ * The chats for `request`. While a longer list or a later answer of the same chats loads, the
+ * chats on screen stay until it shows as many, and a complete list stays until it is read again
+ * whole, so the list does not collapse under the reader; `retry` is what Retry offers for the
+ * failures they name.
+ */
+export function useMonitoringChats(request: MonitoringChatsRequest): {
+  readonly view: MonitoringChatsView;
+  readonly updating: boolean;
+  readonly retry: MonitoringRetry;
+} {
+  const view = useAtomValue(monitoring.chatsAtom(JSON.stringify(request)));
+  const next = { request, view };
+  const [shown, setShown] = useState(next);
+  const keep = keepsShownChats(shown, next);
+  if (!keep && shown.view !== view) setShown(next);
+  const displayed = keep ? shown.view : view;
+  return {
+    view: displayed,
+    updating: view.awaitingPage,
+    retry: failureRetry(displayed, view),
+  };
+}
+
+export const refreshMonitoring = monitoring.refresh;
