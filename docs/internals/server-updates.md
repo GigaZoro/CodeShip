@@ -353,8 +353,10 @@ result, so a restart between the end and its delivery cannot wake the chat twice
 Stop, archiving and deleting the thread also give the task its result, and the runner then kills
 the command's process group (its tree on Windows). On POSIX a holder outside that group, reading a
 FIFO in the command's state folder, keeps the group's number from launch until the end is delivered,
-across restarts too; once neither it nor the wrapper runs, the runner signals no group, since the
-number may be another's. The hold leaves these tasks out like every app-owned task, and the continuation of a cut turn tells the agent the commands it started still
+across restarts too. The runner signals the group only while that holder runs, or the wrapper under
+the identity recorded for it, and asks again before each signal; once neither runs it signals no
+group and leaves what the command started running, since the number may be another's. A running
+holder also proves the machine did not restart since launch, whatever step the wall clock took. The hold leaves these tasks out like every app-owned task, and the continuation of a cut turn tells the agent the commands it started still
 run and will wake it.
 
 The hold also lists a running turn's in-flight tool calls and native subagents as `turnCall`

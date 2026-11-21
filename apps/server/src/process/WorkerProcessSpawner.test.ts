@@ -373,6 +373,31 @@ describe("WorkerProcessSpawner", () => {
         assert.equal(outcome, "survived");
       }).pipe(Effect.scoped, Effect.provide(layer)),
     );
+
+    // The command ends its holder, then reports; nothing else ends it once the worker stopped.
+    it.live("of a referenced child whose holder ended ends with a stopped worker", () =>
+      Effect.gen(function* () {
+        const pipe = yield* processPipe;
+        const losesHolder = [
+          AWAIT_HOLDER_PYTHON,
+          "import signal, socket, time",
+          "def end_holder():",
+          "    for pid in holders():",
+          "        try: os.kill(pid, signal.SIGKILL)",
+          "        except ProcessLookupError: pass",
+          "s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])",
+          "await_holder(end_holder)",
+          "s.send(str(os.getpid()).encode()); time.sleep(300)",
+        ].join("\n");
+        yield* ChildProcess.make("python3", ["-c", losesHolder, pipe.path], quiet);
+        yield* pipe.started;
+        yield* WorkerProcessSpawner.settle;
+
+        yield* WorkerProcessSpawner.__testing.stopWorker;
+
+        yield* pipe.ended;
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
   });
 
   // Linux hands a ptrace stop to the tracer's waitpid, and Node reports it as an exit of the leader,

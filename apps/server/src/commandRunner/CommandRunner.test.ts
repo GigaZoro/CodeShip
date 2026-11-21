@@ -23,6 +23,7 @@ import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import {
+  holdProcessGroup,
   isFifoHolderHeld,
   layerHeldProcessGroups,
   releaseFifoHolder,
@@ -505,9 +506,13 @@ const leavePidFile = (taskId: string, pid: number) =>
     nameWrapper(row.directory, pid, Date.parse(row.started_at));
   });
 
+/** Whether this host holds a command's group: not under an init that leaves orphans unreaped. */
+const holdsGroups = holdProcessGroup({ command: "/bin/sh", args: [] }, { fd: 3 }) !== undefined;
+
 /** Out of the runner's sight, the command's holder still keeps the number, for the cleanup to use. */
 const hideHolder = (directory: string) =>
   Effect.gen(function* () {
+    if (!holdsGroups) return;
     const holder = NodePath.join(directory, "group-holder");
     const hidden = `${holder}.hidden`;
     NodeFS.renameSync(holder, hidden);
@@ -1255,8 +1260,12 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
       "command-win-recovered-gone",
       true,
     ],
-    // Not from when it named itself: with no window for its start, that also bounds the root.
-    ["while its wrapper ran, its start unread, from its record on", "command-win-recovered", false],
+    // A process that took its pid later, after its file was written, is not taken for its root.
+    [
+      "while its wrapper ran, its start unread, as made between its record and its file",
+      "command-win-recovered",
+      false,
+    ],
   ] as const)(
     "stops a Windows command that a later server recovered from its pid file %s",
     ([, name, gone]) =>
@@ -1269,11 +1278,15 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           leavePidFile(taskId, pid).pipe(Effect.orDie),
         );
         const recorded = Date.parse(row.started_at);
-        const since = gone ? secondAfter(recorded) : recorded;
+        const named = secondAfter(recorded);
         assert.deepEqual(yield* Queue.clear(windows.stops), [
           // Whatever holds a gone wrapper's pid is another process, so it is no root. No clock
           // reading caps its children: one taken after a step back can come before their starts.
-          windowsStopTreeArgs({ pid, since, ...(gone ? { created: { from: 0, to: 0 } } : {}) }),
+          windowsStopTreeArgs({
+            pid,
+            since: named,
+            created: gone ? { from: 0, to: 0 } : { from: recorded, to: named },
+          }),
         ]);
       }),
   );
@@ -1895,6 +1908,31 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         }),
     );
 
+    it.effect.skipIf(!holdsGroups)(
+      "stops a held command after the wall clock stepped past its start",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-clock-stepped-ahead");
+          const ready = awaitFile(NodePath.join(chat.workspace, "ready"));
+          const started = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+          );
+          yield* ready;
+          const sql = yield* SqlClient.SqlClient;
+          // A forward step of the wall clock puts the boot it estimates after the command's start.
+          yield* sql`
+          UPDATE command_runs SET started_at = '2000-01-01T00:00:00.000Z'
+          WHERE task_id = ${started.taskId}
+        `;
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
+          yield* withServer((runner) => runner.run(callerOf(chat.threadId), { command: "true" }));
+
+          assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+          assert.equal((yield* commandRow(started.taskId))?.status, "stopped");
+        }),
+    );
+
     it.effect.each([
       ["the group its ended wrapper's pid names", "command-rebooted-orphaned", true],
       ["a process of unknown start under its wrapper's pid", "command-rebooted-reused", false],
@@ -1915,6 +1953,8 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
             yield* orphaned;
           }
+          // A reboot leaves no holder running.
+          yield* hideHolder((yield* commandRow(started.taskId))!.directory);
           const sql = yield* SqlClient.SqlClient;
           // Started before the machine last booted, so what its pid names now is someone else's.
           yield* sql`

@@ -58,26 +58,29 @@ function recordSignalsToFreedGroups(
 }
 
 /**
- * Python, for a held command that leads its group, that defines `await_holder(watching)`. It finds
- * the holder as the other process of the command's session, calls `watching()` once it watches it,
- * and returns once the holder ended, at once when none is left. It imports os, select and sys.
+ * Python, for a held command that leads its group, that defines `holders()`, the other processes of
+ * the command's session, and `await_holder(watching)`, which calls `watching()` once it watches the
+ * first of them and returns once that one ended, at once when none is left. It imports os, select,
+ * subprocess and sys.
  */
 export const AWAIT_HOLDER_PYTHON = [
   "import os, select, subprocess, sys",
-  "def await_holder(watching):",
+  "def holders():",
   "    me = os.getpid()",
   "    pids = [int(p) for p in os.listdir('/proc') if p.isdigit()] if os.path.isdir('/proc/self') else \\",
   "        [int(p) for p in subprocess.run(['ps', '-A', '-o', 'pid='], capture_output=True, text=True, check=True).stdout.split()]",
   "    def session(pid):",
   "        try: return os.getsid(pid)",
   "        except OSError: return None",
-  "    holders = [pid for pid in pids if pid != me and session(pid) == me]",
+  "    return [pid for pid in pids if pid != me and session(pid) == me]",
+  "def await_holder(watching):",
+  "    held = holders()",
   "    try:",
   "        if sys.platform == 'darwin':",
   "            ended = select.kqueue()",
-  "            ended.control([select.kevent(holders[0], select.KQ_FILTER_PROC, select.KQ_EV_ADD, select.KQ_NOTE_EXIT)], 0)",
+  "            ended.control([select.kevent(held[0], select.KQ_FILTER_PROC, select.KQ_EV_ADD, select.KQ_NOTE_EXIT)], 0)",
   "        else:",
-  "            ended = os.pidfd_open(holders[0])",
+  "            ended = os.pidfd_open(held[0])",
   "    except (IndexError, ProcessLookupError):",
   "        watching()",
   "        return",

@@ -229,6 +229,45 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
     }).pipe(provideHost),
   );
 
+  it.live("stops the group of a held launch that a server which died never recorded", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-" });
+      const previousServer = yield* spawnGroup([]);
+      const previousLedger = yield* OpenCodeServerLedger.make({
+        stateDir,
+        ownerPid: previousServer.pid,
+      });
+      // Its scope stays open, as when the server crashes before `track` records the group.
+      const holder = yield* previousLedger.holderFifo.pipe(
+        Effect.provideService(Scope.Scope, yield* Scope.make()),
+      );
+      if (holder === undefined) return yield* Effect.die("the ledger made no holder FIFO");
+      yield* Effect.addFinalizer(() => Effect.sync(() => releaseFifoHolder(holder)));
+      const orphan = yield* spawnGroup(
+        SERVE_ARGS,
+        `trap '(trap "" TERM; sleep 600) & exit 0' TERM; echo ready; sleep 600 & wait`,
+        holder,
+      );
+      yield* orphan.printed;
+      yield* killGroup(previousServer);
+      yield* previousServer.exited;
+
+      const restarted = yield* OpenCodeServerLedger.make({ stateDir });
+      const freedGroupSignals = yield* Effect.scoped(
+        watchFreedGroupSignals.pipe(
+          Effect.tap(() => restarted.reapOrphans),
+          Effect.map((freed) => freed.signals()),
+        ),
+      );
+
+      yield* orphan.closed;
+      expect(freedGroupSignals).toEqual([]);
+      expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toEqual([]);
+    }).pipe(provideHost),
+  );
+
   it.live("records a group whose spawned wrapper already exited", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -302,6 +341,7 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-" });
+      const directory = path.join(stateDir, "opencode-servers");
       const running = yield* OpenCodeServerLedger.make({ stateDir });
       const server = yield* spawnGroup(SERVE_ARGS);
       const forget = yield* running.track({
@@ -310,13 +350,19 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
         args: SERVE_ARGS,
         holder: undefined,
       });
+      // And one it launched but has not recorded yet.
+      const holder = yield* running.holderFifo;
+      if (holder === undefined) return yield* Effect.die("the ledger made no holder FIFO");
+      yield* Effect.addFinalizer(() => Effect.sync(() => releaseFifoHolder(holder)));
+      const launched = yield* spawnGroup(SERVE_ARGS, undefined, holder);
 
       const other = yield* OpenCodeServerLedger.make({ stateDir });
       yield* other.reapOrphans;
-      expect(groupExists(server.pid)).toBe(true);
+      expect([groupExists(server.pid), groupExists(launched.pid)]).toEqual([true, true]);
+      expect(isFifoHolderHeld(holder)).toBe(true);
 
       yield* forget;
-      expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toEqual([]);
+      expect(yield* fs.exists(path.join(directory, `${server.pid}.json`))).toBe(false);
     }).pipe(provideHost),
   );
 });

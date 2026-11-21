@@ -73,6 +73,7 @@ import {
   linuxIdentity,
   recordedIdentity,
   timeIdentity,
+  windowIdentity,
 } from "./processIdentity.ts";
 import { isServerOnlyEnvKey } from "../terminal/userShellEnv.ts";
 
@@ -591,11 +592,22 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  /** Nothing a command started outlives a reboot, after which its pid can name anything. */
+  /**
+   * Nothing a command started outlives a reboot, after which its pid can name anything. A holder
+   * that still runs proves there was none, whatever step the wall clock took since.
+   */
   const rebootedSince = (row: CommandRunRow) =>
-    DateTime.now.pipe(
-      Effect.map(
-        (now) => DateTime.toEpochMillis(now) - NodeOS.uptime() * 1_000 > Date.parse(row.started_at),
+    isHeld(row).pipe(
+      Effect.flatMap((held) =>
+        held
+          ? Effect.succeed(false)
+          : DateTime.now.pipe(
+              Effect.map(
+                (now) =>
+                  DateTime.toEpochMillis(now) - NodeOS.uptime() * 1_000 >
+                  Date.parse(row.started_at),
+              ),
+            ),
       ),
     );
 
@@ -1955,14 +1967,16 @@ const make = Effect.gen(function* () {
       }
     } else {
       // It started before it wrote the file, to the second; a later process under the pid did not.
-      // The identity is read first, so a process that took the pid since fails the check. Without
-      // both times it has no identity.
+      // Without both times a stop takes as root only a process made between its record and its file.
       const read = yield* identityOf(pid);
-      const startedAt = yield* startedAtOf(pid);
+      const startedAt = identityTime(read ?? null);
       const writtenAt = named.writtenAt?.getTime();
       if (startedAt !== undefined && writtenAt !== undefined) {
         if (startedAt > writtenAt + 1_000) return { ...row, lost_reason: "pid-reused" as const };
         identity = read ?? null;
+      } else {
+        const to = writtenAt ?? DateTime.toEpochMillis(yield* DateTime.now);
+        identity = windowIdentity(Date.parse(row.started_at), to);
       }
     }
     const recovered: CommandRunRow = { ...row, pid, process_identity: identity };
