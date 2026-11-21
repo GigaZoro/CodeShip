@@ -89,8 +89,11 @@ export function usageProgress(
     ...new Set(progress.flatMap((entry) => (entry.phase === "partway" ? entry.providers : []))),
   ];
   return {
-    announcement:
-      refreshingEnvironmentIds && refreshingEnvironmentIds.size > 0 ? t("Updating…") : null,
+    announcement: environments.some(({ environmentId }) =>
+      refreshingEnvironmentIds?.has(environmentId),
+    )
+      ? t("Updating…")
+      : null,
     label:
       waiting.length === 0
         ? providers.length === 0
@@ -629,10 +632,10 @@ function usagePeriodKey(window: UsageSummaryInput): string {
   return JSON.stringify([days, resolution, window.timeZone]);
 }
 
-function usageSelectionKey(
+export function usageSelectionKey(
   window: UsageSummaryInput,
   selected: readonly EnvironmentUsageStatus[],
-  hidden: readonly UsageProviderKind[],
+  hidden: readonly UsageProviderKind[] = [],
 ): string {
   return JSON.stringify([
     usagePeriodKey(window),

@@ -33,6 +33,7 @@ const state = vi.hoisted(() => ({
   },
   usageCalls: new Set<string>(),
   startOnLimits: false,
+  scheduledGrantProbe: false,
   now: 0,
   windowDays: 1 as 1 | 7,
   realClock: false,
@@ -46,6 +47,7 @@ const state = vi.hoisted(() => ({
     | "cursorPending"
     | "failed",
   secondEnvironment: null as
+    | "waiting"
     | "ready"
     | "incompatible"
     | "sourceFailure"
@@ -97,11 +99,38 @@ vi.mock("../../state/presentation", async (importOriginal) => {
     },
   };
 });
+vi.mock("../../state/environments", async (original) => {
+  const actual = await original<typeof import("../../state/environments")>();
+  return {
+    ...actual,
+    useEnvironments: () => {
+      const result = actual.useEnvironments();
+      return state.scheduledGrantProbe
+        ? {
+            ...result,
+            environments: ["desk", "laptop"].map((environmentId) => ({
+              environmentId,
+              serverConfig: { environment: { capabilities: { scheduledTaskGroups: true } } },
+            })),
+          }
+        : result;
+    },
+  };
+});
 vi.mock("../../state/session", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../state/session")>();
   const { AsyncResult, Atom } = await import("effect/reactivity");
   return {
     ...actual,
+    environmentSessionStatesAtom: (ids: string) =>
+      state.scheduledGrantProbe
+        ? Atom.make(
+            ids
+              .split("\n")
+              .filter(Boolean)
+              .map(() => AsyncResult.fail(new Error("Grant lookup failed"))),
+          )
+        : actual.environmentSessionStatesAtom(ids),
     environmentSession: {
       ...actual.environmentSession,
       sessionStateAtom: (id: EnvironmentId) =>
@@ -284,9 +313,9 @@ function otherReading(
   window: UsageSummaryInput,
   response: NonNullable<typeof state.secondEnvironment>,
 ): EnvironmentUsageStatus {
-  if (response === "revoked") {
+  if (response === "revoked" || response === "waiting") {
     return {
-      ...reading(window, "revoked"),
+      ...reading(window, response),
       environmentId: EnvironmentId.make("laptop"),
       label: "Laptop",
     };
@@ -320,6 +349,7 @@ function setup(windowDays: 1 | 7 = 1) {
   state.cursorSetup = null;
   state.usageCalls.clear();
   state.startOnLimits = false;
+  state.scheduledGrantProbe = false;
   state.now = new Date(2026, 10, 21, 23, windowDays === 1 ? 56 : 59).getTime();
   state.windowDays = windowDays;
   state.realClock = false;
@@ -864,4 +894,26 @@ it("removes Laptop's reserved row from the web overview when its grant is revoke
   state.secondEnvironment = "revoked";
   await update();
   expect(cursor.query()).toBeNull();
+});
+
+it("shows the live selected scheduled grant even without usage figures", async () => {
+  setup();
+  state.scheduledGrantProbe = true;
+  state.response = "failed";
+  await using screen = await render(<Screen />);
+  expect(screen.container.textContent).toContain(
+    "Could not check access to scheduled task runs on Desk.",
+  );
+  state.response = "ready";
+  state.secondEnvironment = "waiting";
+  await update();
+  await screen.getByRole("button", { name: /All environments/ }).click();
+  await page.getByRole("menuitemcheckbox", { name: /Desk/ }).click();
+  await userEvent.keyboard("{Escape}");
+  expect(screen.container.textContent).toContain(
+    "Could not check access to scheduled task runs on Laptop.",
+  );
+  expect(screen.container.textContent).not.toContain(
+    "Could not check access to scheduled task runs on Desk.",
+  );
 });

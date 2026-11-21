@@ -126,3 +126,36 @@ it("clears a Limits environment's pending state as soon as its own request settl
   expect(registry.get(atom).size).toBe(0);
   unmount();
 });
+
+it("keeps the Limits request pending when the view unmounts and remounts", async () => {
+  const id = EnvironmentId.make("remount");
+  const request = Promise.withResolvers<RefreshResult>();
+  const started = Promise.withResolvers<void>();
+  state.refresh = () => {
+    started.resolve();
+    return request.promise;
+  };
+  const tasks = new Set<() => void>();
+  const registry = AtomRegistry.make({
+    scheduleTask: (task) => {
+      tasks.add(task);
+      return () => tasks.delete(task);
+    },
+  });
+  const atom = limitsRefreshingEnvironmentIdsAtom(environmentIdsKey([id]));
+  const stop = registry.mount(atom);
+  const refresh = refreshEnvironmentLimits(registry, id);
+  await started.promise;
+  stop();
+  for (const task of tasks) {
+    tasks.delete(task);
+    task();
+  }
+  const unmount = registry.mount(atom);
+  expect(registry.get(atom).has(id)).toBe(true);
+  request.resolve(success);
+  await refresh;
+  expect(registry.get(atom).has(id)).toBe(false);
+  unmount();
+  registry.dispose();
+});

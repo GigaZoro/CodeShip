@@ -97,7 +97,7 @@ function harness(ids = ["a"], modelFilters: Record<string, UsageModelFilter> = {
       presentationAtom: (environmentId: EnvironmentId) => get(environmentId).presentation,
     },
   } satisfies Parameters<typeof refreshUsage>[0];
-  return { registry, environments, requested, refresh: () => refreshUsage(options) };
+  return { registry, environments, requested, options, refresh: () => refreshUsage(options) };
 }
 
 describe("manual usage refresh", () => {
@@ -323,4 +323,37 @@ describe("Cursor account usage access", () => {
       ]),
     ).toEqual([off]);
   });
+});
+
+it("keeps overlapping Usage refresh counts through unmount and remount", async () => {
+  const tasks = new Set<() => void>();
+  const registry = AtomRegistry.make({
+    scheduleTask: (task) => {
+      tasks.add(task);
+      return () => tasks.delete(task);
+    },
+  });
+  registries.push(registry);
+  const atom = usageRefreshingEnvironmentIdsAtom;
+  const old = harness();
+  const newer = harness();
+  const stop = registry.mount(atom);
+  const first = refreshUsage({ ...old.options, registry });
+  stop();
+  for (const task of tasks) {
+    tasks.delete(task);
+    task();
+  }
+  const unmount = registry.mount(atom);
+  expect([...registry.get(atom)]).toEqual(["a"]);
+  const second = refreshUsage({ ...newer.options, registry });
+  old.environments[0]!.rates.resolve(AsyncResult.success(pricing));
+  old.environments[0]!.scan.resolve(summary);
+  await first;
+  expect([...registry.get(atom)]).toEqual(["a"]);
+  newer.environments[0]!.rates.resolve(AsyncResult.success(pricing));
+  newer.environments[0]!.scan.resolve(summary);
+  await second;
+  expect(registry.get(atom).size).toBe(0);
+  unmount();
 });

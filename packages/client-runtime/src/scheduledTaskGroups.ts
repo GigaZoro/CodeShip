@@ -1,4 +1,7 @@
 import {
+  AuthOrchestrationReadScope,
+  type SessionGrantInput,
+  sessionGrantsScope,
   compareScheduledTaskSharedRevisions,
   type EnvironmentId,
   type ScheduledTask,
@@ -6,10 +9,30 @@ import {
   type ScheduledTaskRunStats,
   threadFolderKey,
 } from "@t3tools/contracts";
+import type { AsyncResult } from "effect/reactivity";
+import { t } from "@t3tools/shared/i18n";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 import type { ScheduledTaskCopy, SharedScheduledTaskGroup } from "./scheduledTaskSharing.ts";
+
+export function scheduledTaskAccessNotice(
+  grant: AsyncResult.AsyncResult<SessionGrantInput, unknown>,
+  environment: string,
+): string | null {
+  switch (grant._tag) {
+    case "Initial":
+      return t("Checking access to scheduled task runs on {environment}…", { environment });
+    case "Failure":
+      return t("Could not check access to scheduled task runs on {environment}.", { environment });
+    case "Success":
+      return sessionGrantsScope(grant.value, AuthOrchestrationReadScope)
+        ? null
+        : t("This connection lacks permission to read scheduled task runs on {environment}.", {
+            environment,
+          });
+  }
+}
 
 export interface ScheduledTaskGroupSection<T> {
   /** Null for the tasks without a group. */

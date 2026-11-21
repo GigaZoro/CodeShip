@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import {
   scheduledTaskGroupUsage,
+  scheduledTaskAccessNotice,
   scheduledTaskStatsRange,
 } from "@t3tools/client-runtime/scheduled-task-groups";
 import { formatCount, formatUsd } from "@t3tools/shared/usageFormat";
@@ -29,6 +30,13 @@ import { Button } from "../ui/button";
 
 const warningTone = (count: number) => (count > 0 ? "text-warning-foreground" : undefined);
 
+function restoreSectionFocus(button: HTMLButtonElement | null) {
+  if (!button) return;
+  return () => {
+    if (document.activeElement === button) button.closest("section")?.querySelector("h2")?.focus();
+  };
+}
+
 /** Usage's Refresh asks again too, after the usage refresh has updated the prices runs cost at. */
 export function refreshScheduledTaskGroupUsage(
   registry: AtomRegistry.AtomRegistry,
@@ -49,11 +57,9 @@ export function UsageScheduledTaskGroups({
   selectionKey,
   period,
   environments,
-  readOnly,
 }: {
   readonly selectionKey: string;
   readonly period: UsageSummaryInput;
-  readonly readOnly: boolean;
   readonly environments: readonly EnvironmentUsageStatus[];
 }) {
   const registry = useContext(RegistryContext);
@@ -86,20 +92,17 @@ export function UsageScheduledTaskGroups({
     readonly readings: readonly Reading[];
   } | null>(null);
   const retained = new Map(last?.key === key ? last.readings : []);
-  const readings = readOnly
-    ? []
-    : results.flatMap(({ environmentId, stats, error }): Reading[] => {
-        if (error !== null) return [];
-        const available = stats ?? retained.get(environmentId);
-        return available === undefined ? [] : [[environmentId, available]];
-      });
+  const readings = results.flatMap(({ environmentId, stats, error }): Reading[] => {
+    if (error !== null) return [];
+    const available = stats ?? retained.get(environmentId);
+    return available === undefined ? [] : [[environmentId, available]];
+  });
   if (
     (last !== null || readings.length > 0) &&
     (last?.key !== key || JSON.stringify(last.readings) !== JSON.stringify(readings))
   )
     setLast({ key, readings });
-  const loadingStats =
-    readOnly || results.some(({ stats, error }) => stats === null && error === null);
+  const loadingStats = results.some(({ stats, error }) => stats === null && error === null);
   const displayedRows = scheduledTaskGroupUsage(readings.map(([, stats]) => stats)).filter(
     (row) => row.runs > 0,
   );
@@ -122,7 +125,9 @@ export function UsageScheduledTaskGroups({
   return (
     <section className="flex flex-col gap-3" aria-busy={loadingStats || pendingGrants.size > 0}>
       <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-medium text-foreground">{t("Scheduled task groups")}</h2>
+        <h2 tabIndex={-1} className="text-sm font-medium text-foreground">
+          {t("Scheduled task groups")}
+        </h2>
         <p className="text-xs text-muted-foreground">
           {t("Estimated API-equivalent cost of the turns scheduled task runs started.")}
         </p>
@@ -143,6 +148,7 @@ export function UsageScheduledTaskGroups({
         )
         .map(({ environmentId, label }) => {
           const grant = grants[supportedIds.indexOf(environmentId)]!;
+          const message = scheduledTaskAccessNotice(grant, label);
           if (grant._tag === "Failure") {
             return (
               <div
@@ -150,16 +156,14 @@ export function UsageScheduledTaskGroups({
                 role="status"
                 className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground"
               >
-                <p className="min-w-0 break-words">
-                  {t("Could not check access to scheduled task runs on {environment}.", {
-                    environment: label,
-                  })}
-                </p>
+                <p className="min-w-0 break-words">{message}</p>
                 <Button
                   size="xs"
                   variant="outline"
-                  disabled={grant.waiting}
+                  ref={restoreSectionFocus}
+                  aria-disabled={grant.waiting}
                   onClick={() =>
+                    !grant.waiting &&
                     registry.refresh(environmentSession.sessionStateAtom(environmentId))
                   }
                 >
@@ -170,14 +174,7 @@ export function UsageScheduledTaskGroups({
           }
           return (
             <p key={environmentId} role="status" className="text-xs text-muted-foreground">
-              {grant._tag === "Initial"
-                ? t("Checking access to scheduled task runs on {environment}…", {
-                    environment: label,
-                  })
-                : t(
-                    "This connection lacks permission to read scheduled task runs on {environment}.",
-                    { environment: label },
-                  )}
+              {message}
             </p>
           );
         })}
@@ -197,7 +194,6 @@ export function UsageScheduledTaskGroups({
           <Button
             size="xs"
             variant="outline"
-            disabled={readOnly}
             onClick={() =>
               refreshScheduledTaskGroupUsage(registry, [failure.environmentId], period)
             }

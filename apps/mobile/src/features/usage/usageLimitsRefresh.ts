@@ -5,10 +5,11 @@ import { Atom, type AtomRegistry } from "effect/reactivity";
 
 import { serverEnvironment } from "../../state/server";
 
-const limitsRefreshStateAtom = Atom.family((environmentId: EnvironmentId) =>
-  Atom.make({ pending: false, failed: false }).pipe(
-    Atom.withLabel(`mobile:limits-refresh-state:${environmentId}`),
-  ),
+const limitsRefreshPendingAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make(false).pipe(Atom.keepAlive, Atom.withLabel(`mobile:limits-pending:${environmentId}`)),
+);
+const limitsRefreshFailedAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make(false).pipe(Atom.withLabel(`mobile:limits-failed:${environmentId}`)),
 );
 
 export async function refreshEnvironmentLimits(
@@ -21,9 +22,8 @@ export async function refreshEnvironmentLimits(
   await refreshUsageLimits(
     environmentId,
     async () => {
-      const atom = limitsRefreshStateAtom(environmentId);
-      let failed = registry.get(atom).failed;
-      registry.set(atom, { pending: true, failed });
+      const pending = limitsRefreshPendingAtom(environmentId);
+      registry.set(pending, true);
       try {
         const result = await runAtomCommand(
           registry,
@@ -31,9 +31,9 @@ export async function refreshEnvironmentLimits(
           { environmentId, input: {} },
           { reportFailure: false },
         );
-        failed = result._tag === "Failure";
+        registry.set(limitsRefreshFailedAtom(environmentId), result._tag === "Failure");
       } finally {
-        registry.set(atom, { pending: false, failed });
+        registry.set(pending, false);
       }
     },
     options.automatic,
@@ -68,8 +68,8 @@ export const limitsAutoRefreshSetAtom = Atom.family((environmentIds: string) =>
 
 export const limitsRefreshFailuresAtom = Atom.family((environmentIds: string) =>
   Atom.make((get) =>
-    splitEnvironmentIds(environmentIds).filter(
-      (environmentId) => get(limitsRefreshStateAtom(environmentId)).failed,
+    splitEnvironmentIds(environmentIds).filter((environmentId) =>
+      get(limitsRefreshFailedAtom(environmentId)),
     ),
   ),
 );
@@ -78,8 +78,8 @@ export const limitsRefreshingEnvironmentIdsAtom = Atom.family((environmentIds: s
   Atom.make(
     (get) =>
       new Set(
-        splitEnvironmentIds(environmentIds).filter(
-          (environmentId) => get(limitsRefreshStateAtom(environmentId)).pending,
+        splitEnvironmentIds(environmentIds).filter((environmentId) =>
+          get(limitsRefreshPendingAtom(environmentId)),
         ),
       ),
   ),

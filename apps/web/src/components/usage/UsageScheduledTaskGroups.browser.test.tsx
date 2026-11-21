@@ -4,6 +4,8 @@ import {
   ScheduledTaskId,
   type ScheduledTaskRunStats,
 } from "@t3tools/contracts";
+import { RegistryContext } from "@effect/atom-react";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { makeWindow } from "@t3tools/shared/usageFormat";
 import { expect, it, vi } from "vite-plus/test";
 import { render } from "../../../test/render";
@@ -16,7 +18,7 @@ const data = vi.hoisted(() => ({
   denied: new Set<string>(),
   checking: new Set<string>(),
   grantFailures: new Set<string>(),
-  sessionRetries: new Set<string>(),
+  recovering: null as null | ReturnType<typeof recoveryGrant>,
   requests: new Set<string>(),
 }));
 vi.mock("../../state/environments", () => ({
@@ -29,25 +31,24 @@ vi.mock("../../state/session", async (importOriginal) => {
   return {
     ...(await importOriginal<typeof import("../../state/session")>()),
     environmentSession: {
-      sessionStateAtom: (id: EnvironmentId) => {
-        data.sessionRetries.add(id);
-        return Atom.make(AsyncResult.initial());
-      },
+      sessionStateAtom: () => data.recovering ?? Atom.make(AsyncResult.initial()),
     },
     environmentSessionStatesAtom: (key: string) =>
-      Atom.make(
-        key === ""
-          ? []
-          : key.split("\n").map((id) =>
-              data.checking.has(id)
-                ? AsyncResult.initial(true)
-                : data.grantFailures.has(id)
-                  ? AsyncResult.fail(new Error("Session request failed"))
-                  : AsyncResult.success({
-                      authenticated: true,
-                      scopes: data.denied.has(id) ? [] : [AuthOrchestrationReadScope],
-                    }),
-            ),
+      Atom.make((get) =>
+        data.recovering
+          ? [get(data.recovering)]
+          : key === ""
+            ? []
+            : key.split("\n").map((id) =>
+                data.checking.has(id)
+                  ? AsyncResult.initial(true)
+                  : data.grantFailures.has(id)
+                    ? AsyncResult.fail(new Error("Session request failed"))
+                    : AsyncResult.success({
+                        authenticated: true,
+                        scopes: data.denied.has(id) ? [] : [AuthOrchestrationReadScope],
+                      }),
+              ),
       ),
   };
 });
@@ -88,7 +89,6 @@ function groups(minutes: number, changed = false, withLaptop = false) {
             ]
           : [environment]
       }
-      readOnly={false}
     />
   );
 }
@@ -99,7 +99,7 @@ function readyStats() {
   data.denied.clear();
   data.checking.clear();
   data.grantFailures.clear();
-  data.sessionRetries.clear();
+  data.recovering = null;
   data.requests.clear();
   data.stats.set("desk", [
     {
@@ -172,19 +172,34 @@ it("waits for the scheduled-task grant before requesting stats or reporting a de
   expect(data.requests).toEqual(new Set(["desk"]));
 });
 
-it("reports a failed scheduled-task access check with Retry and fetches stats after recovery", async () => {
+function recoveryGrant() {
+  let checks = 0;
+  return Atom.make(() =>
+    ++checks === 1
+      ? AsyncResult.fail(new Error("Session request failed"))
+      : AsyncResult.success({ authenticated: true, scopes: [AuthOrchestrationReadScope] }),
+  );
+}
+
+it("restores scheduled rows and focus by retrying the observed session grant", async () => {
   readyStats();
-  data.grantFailures.add("desk");
-  await using screen = await render(groups(0));
+  data.recovering = recoveryGrant();
+  const registry = AtomRegistry.make();
+  using _registry = { [Symbol.dispose]: () => registry.dispose() };
+  const refresh = vi.spyOn(registry, "refresh");
+  await using screen = await render(
+    <RegistryContext value={registry}>{groups(0)}</RegistryContext>,
+  );
   expect(data.requests.size).toBe(0);
   expect(screen.container.textContent).toContain(
     "Could not check access to scheduled task runs on Desk.",
   );
-  await screen.getByRole("button", { name: "Retry" }).click();
-  expect(data.sessionRetries).toEqual(new Set(["desk"]));
-  await expect.element(screen.getByText(/lacks permission/)).not.toBeInTheDocument();
-  data.grantFailures.clear();
-  await screen.rerender(groups(0));
+  const retry = screen.getByRole("button", { name: "Retry" });
+  (retry.element() as HTMLButtonElement).focus();
+  await retry.click();
+  expect(refresh).toHaveBeenCalledWith(data.recovering);
   await expect.element(screen.getByRole("row", { name: /Nightly/ })).toBeVisible();
-  expect(data.requests).toEqual(new Set(["desk"]));
+  expect(document.activeElement).toBe(
+    screen.getByRole("heading", { name: "Scheduled task groups" }).element(),
+  );
 });

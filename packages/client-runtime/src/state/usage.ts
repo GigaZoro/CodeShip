@@ -179,6 +179,7 @@ export async function refreshUsage({
 }
 
 const usageRefreshCountsAtom = Atom.make<ReadonlyMap<EnvironmentId, number>>(new Map()).pipe(
+  Atom.keepAlive,
   Atom.withLabel("usage-manual-refresh-counts"),
 );
 

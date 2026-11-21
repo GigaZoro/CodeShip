@@ -292,6 +292,12 @@ it("keeps two consecutive background refetches quiet and announces a manual refr
   expect(progress.map(({ label }) => label)).toEqual([null, "Updating…", null, "Updating…", null]);
   expect(progress.map(({ announcement }) => announcement)).toEqual([null, null, null, null, null]);
   expect(
+    usageProgress([ready], {
+      ...options,
+      refreshingEnvironmentIds: new Set([EnvironmentId.make("other")]),
+    }).announcement,
+  ).toBeNull();
+  expect(
     usageProgress([refetching], {
       ...options,
       refreshingEnvironmentIds: new Set([refetching.environmentId]),

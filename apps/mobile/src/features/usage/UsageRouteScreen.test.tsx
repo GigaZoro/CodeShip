@@ -1,7 +1,8 @@
 import { RegistryContext } from "@effect/atom-react";
-import { AtomRegistry } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import {
   AuthDiagnosticsReadScope,
+  AuthOrchestrationReadScope,
   AuthSettingsWriteScope,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
@@ -34,6 +35,7 @@ const { Contents, state } = vi.hoisted(() => ({
     tab: "usage" as string | undefined,
     live: [] as readonly EnvironmentUsageStatus[],
     shown: null as UsageSnapshot | null,
+    grantProbe: null as ReturnType<typeof mobileGrantProbe> | null,
     scanFailures: null as UsageScanFailures | null,
     simulateRequests: false,
     requestedWindow: null as UsageSummaryInput | null,
@@ -77,8 +79,16 @@ vi.mock("../../components/ui/Notice", () => ({
   Notice: ({ message }: { message: string }) => <p role="status">{message}</p>,
 }));
 vi.mock("../../components/ui/Button", () => ({
-  Button: ({ label, accessibilityLabel }: { label: string; accessibilityLabel?: string }) => (
-    <button type="button" aria-label={accessibilityLabel}>
+  Button: ({
+    label,
+    accessibilityLabel,
+    onPress,
+  }: {
+    label: string;
+    accessibilityLabel?: string;
+    onPress: () => void;
+  }) => (
+    <button type="button" aria-label={accessibilityLabel} onClick={onPress}>
       {label}
     </button>
   ),
@@ -243,12 +253,14 @@ vi.mock("../../state/session", async () => {
   const { Atom, AsyncResult } = await import("effect/reactivity");
   return {
     environmentSession: {
-      sessionStateAtom: () =>
+      sessionStateAtom: (id: EnvironmentId) =>
+        state.grantProbe?.(id) ??
         Atom.make(
           AsyncResult.success({
             authenticated: true,
             scopes: [
               AuthDiagnosticsReadScope,
+              AuthOrchestrationReadScope,
               ...(state.cursorSetup?.canEnable ? [AuthSettingsWriteScope] : []),
             ],
           }),
@@ -293,6 +305,7 @@ function setup(tab: string | undefined = "usage") {
   state.live = [];
   state.shown = null;
   state.scanFailures = null;
+  state.grantProbe = null;
   state.simulateRequests = false;
   state.requestedWindow = null;
   state.readsEnabled.length = 0;
@@ -307,6 +320,7 @@ function setup(tab: string | undefined = "usage") {
   const registry = AtomRegistry.make();
   return {
     container,
+    registry,
     render: () =>
       act(() => {
         state.revision += 1;
@@ -326,7 +340,7 @@ function setup(tab: string | undefined = "usage") {
   };
 }
 
-it("shows live mobile coverage before figures and uses the same message in the menu", async () => {
+it("keeps the mobile compatibility explanation in coverage and the short status in the menu", async () => {
   await using screen = setup();
   const window = makeWindow(30, new Date("2026-11-21T18:56:00Z"));
   const desk: EnvironmentUsageStatus = {
@@ -361,15 +375,17 @@ it("shows live mobile coverage before figures and uses the same message in the m
   expect(screen.container.querySelector('[role="status"]')?.textContent).toContain(
     "Totals leave out Laptop",
   );
-  expect(screen.container.querySelector('[role="menu"]')?.textContent).toContain(
-    "Laptop runs an older server version and is excluded from totals.",
+  expect(menuEnvironment(screen.container, "laptop").querySelector("span")?.textContent).toBe(
+    "Update required.",
   );
 
   state.shown = settleUsageSnapshot(null, window, [desk, laptop], [desk, laptop]);
   await screen.render();
   const message = "Laptop runs an older server version. Showing its last compatible values.";
   expect(screen.container.querySelector('[role="status"]')?.textContent).toContain(message);
-  expect(screen.container.querySelector('[role="menu"]')?.textContent).toContain(message);
+  expect(menuEnvironment(screen.container, "laptop").querySelector("span")?.textContent).toBe(
+    "Update required.",
+  );
   expect(screen.container.querySelector('[role="menu"]')?.textContent).not.toContain(
     "excluded from totals",
   );
@@ -674,4 +690,45 @@ it("removes Laptop's reserved row from mobile Providers when its grant is revoke
   state.live = [pending, denied];
   await screen.render();
   expect(providers()).not.toContain("Cursor");
+});
+
+function mobileGrantProbe() {
+  return Atom.family((id: EnvironmentId) => {
+    let reads = 0;
+    return Atom.make(() => {
+      if (id === "desk") return AsyncResult.initial();
+      if (id === "other") return AsyncResult.success({ authenticated: true, scopes: [] });
+      return ++reads === 1
+        ? AsyncResult.fail(new Error("Unavailable"))
+        : AsyncResult.success({ authenticated: true, scopes: [AuthOrchestrationReadScope] });
+    });
+  });
+}
+
+it("checks each mobile scheduled grant and retries the failed environment's session", async () => {
+  await using screen = setup();
+  state.grantProbe = mobileGrantProbe();
+  const laptop = EnvironmentId.make("laptop");
+  state.live = [
+    liveEnvironment("desk", "Desk"),
+    liveEnvironment(laptop, "Laptop"),
+    liveEnvironment("other", "Other"),
+  ];
+  const refresh = vi.spyOn(screen.registry, "refresh");
+  await screen.render();
+  expect(screen.container.textContent).toContain("Checking access to scheduled task runs on Desk…");
+  expect(screen.container.textContent).toContain(
+    "Could not check access to scheduled task runs on Laptop.",
+  );
+  expect(screen.container.textContent).toContain(
+    "This connection lacks permission to read scheduled task runs on Other.",
+  );
+  const retry = [...screen.container.querySelectorAll("button")].find(
+    (button) => button.textContent === "Retry",
+  )!;
+  await act(() => retry.click());
+  expect(refresh).toHaveBeenCalledWith(state.grantProbe(laptop));
+  expect(screen.container.textContent).not.toContain(
+    "Could not check access to scheduled task runs on Laptop.",
+  );
 });

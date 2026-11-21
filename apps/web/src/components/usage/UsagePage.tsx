@@ -29,6 +29,7 @@ import {
   refreshingUsageProviders,
   retainUsageSnapshot,
   usageWindowKey,
+  usageSelectionKey,
   usageNotices,
   waitingForFirstUsage,
   usageProgress,
@@ -750,7 +751,6 @@ export function UsagePage() {
                       ? null
                       : (progress.label ?? (showingKept ? t("Updating…") : null))
                   }
-                  selectionKey={shown.key}
                   metric={metric === "tokens" ? "tokens" : "cost"}
                   selectedEnvironments={shownEnvironments}
                   sourceMessages={sourceMessages}
@@ -772,6 +772,17 @@ export function UsagePage() {
                 />
               </>
             )}
+            {!showingLimits && selectedEnvironments.length > 0 ? (
+              <UsageScheduledTaskGroups
+                selectionKey={usageSelectionKey(
+                  requestedWindow,
+                  selectedEnvironments,
+                  preferences.hiddenProviders,
+                )}
+                period={requestedWindow}
+                environments={selectedEnvironments}
+              />
+            ) : null}
           </WorkspacePageContainer>
         </ScrollArea>
       </div>
@@ -815,7 +826,6 @@ function UsageOverview({
   days,
   hours,
   showingKept,
-  selectionKey,
   progressLabel,
   chartType,
   chartControls,
@@ -840,7 +850,6 @@ function UsageOverview({
   readonly days: readonly string[];
   readonly hours: readonly string[];
   readonly showingKept: boolean;
-  readonly selectionKey: string;
   readonly progressLabel: string | null;
   readonly metric: "tokens" | "cost";
   readonly selectedEnvironments: readonly EnvironmentUsageStatus[];
@@ -1301,13 +1310,6 @@ function UsageOverview({
           </div>
         )}
       </section>
-
-      <UsageScheduledTaskGroups
-        selectionKey={selectionKey}
-        period={shownWindow}
-        environments={selectedEnvironments}
-        readOnly={showingKept}
-      />
     </div>
   );
 }
