@@ -8,8 +8,9 @@ import { serverEnvironment } from "./server";
 
 export function supportsScheduledTaskGroups(
   environment: Pick<EnvironmentPresentation, "serverConfig"> | null | undefined,
-): boolean {
-  return environment?.serverConfig?.environment.capabilities.scheduledTaskGroups === true;
+): boolean | null {
+  if (environment?.serverConfig == null) return null;
+  return environment.serverConfig.environment.capabilities.scheduledTaskGroups === true;
 }
 
 /** Keyed by the ids and range so equal lists reuse the atom, like `environmentAtomList`. */

@@ -65,16 +65,17 @@ export function UsageScheduledTaskGroups({
   const registry = useContext(RegistryContext);
   const presentations = useEnvironments().environments;
   const connected = environments.filter((environment) => environment.isConnected);
-  const supportedIds = connected.flatMap((environment) =>
-    supportsScheduledTaskGroups(
+  const support = connected.map((environment) => ({
+    ...environment,
+    supported: supportsScheduledTaskGroups(
       presentations.find((entry) => entry.environmentId === environment.environmentId),
-    )
-      ? [environment.environmentId]
-      : [],
-  );
-  const unsupported = connected.filter(
-    (environment) => !supportedIds.includes(environment.environmentId),
-  );
+    ),
+  }));
+  const supportedIds = support
+    .filter((env) => env.supported === true)
+    .map((env) => env.environmentId);
+  const unsupported = support.filter((env) => env.supported === false);
+  const checkingSupport = support.filter((env) => env.supported === null);
   const grants = useAtomValue(environmentSessionStatesAtom(environmentIdsKey(supportedIds)));
   const readableIds = supportedIds.filter((_, index) =>
     sessionHasScope(grants[index]!, AuthOrchestrationReadScope),
@@ -123,7 +124,10 @@ export function UsageScheduledTaskGroups({
         ],
   );
   return (
-    <section className="flex flex-col gap-3" aria-busy={loadingStats || pendingGrants.size > 0}>
+    <section
+      className="flex flex-col gap-3"
+      aria-busy={loadingStats || pendingGrants.size > 0 || checkingSupport.length > 0}
+    >
       <div className="flex flex-col gap-1">
         <h2 tabIndex={-1} className="text-sm font-medium text-foreground">
           {t("Scheduled task groups")}
@@ -133,6 +137,13 @@ export function UsageScheduledTaskGroups({
         </p>
       </div>
 
+      {checkingSupport.map((environment) => (
+        <p key={environment.environmentId} role="status" className="text-xs text-muted-foreground">
+          {t("Checking scheduled task support on {environment}…", {
+            environment: environment.label,
+          })}
+        </p>
+      ))}
       {unsupported.length > 0 ? (
         <p className="text-xs text-muted-foreground">
           {t("Not available on {environments}: they run an older T3.CodeShip.", {

@@ -1377,6 +1377,19 @@ describe("pooled account columns", () => {
     expect(poolResetSummary(shared!, now)).toEqual({ text: "+20% back in 2h 0m", resetsAt: null });
   });
 
+  it("advances the multi-account refill summary past elapsed deadlines", () => {
+    const before = account("before", [
+      { ...window, usedPercent: 100, resetsAt: "2026-09-03T12:00:30Z" },
+    ]);
+    const after = account("after", [
+      { ...window, usedPercent: 20, resetsAt: "2026-09-03T12:02:00Z" },
+    ]);
+    const pool = collectLimitPools([before, after], now)[0]!.windows[0]!;
+    expect(poolResetSummary(pool, now)?.text).toContain("+50%");
+    expect(poolResetSummary(pool, now + 60_000)?.text).toBe("+10% back in 1m");
+    expect(poolResetSummary(pool, now + 120_000)).toBeNull();
+  });
+
   // regression: #20349 sessions stay visible while the weekly quota is exhausted
   it.each([
     ["claudeAgent", "13:00", 40, "14:00", 100],

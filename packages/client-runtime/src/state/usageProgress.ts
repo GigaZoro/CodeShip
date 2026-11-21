@@ -1,3 +1,4 @@
+import { groupBy } from "effect/Array";
 import { Atom } from "effect/reactivity";
 import * as Option from "effect/Option";
 import {
@@ -587,15 +588,23 @@ export function usageNotices(
       },
     ];
   });
-  const sourceMessages = usageSourceMessages(
-    live.flatMap((environment) =>
-      hasCompatibleUsage(environment)
-        ? (environment.summary?.sources ?? []).filter(
-            ({ fingerprint }) => !hidden.has(fingerprint.provider),
-          )
-        : [],
-    ),
-  );
+  const sourceMessages = live.flatMap((environment) => {
+    if (!hasCompatibleUsage(environment)) return [];
+    const byProvider = groupBy(
+      environment.summary!.sources,
+      (source) => source.fingerprint.provider,
+    );
+    return Object.values(byProvider).flatMap((sources) => {
+      const provider = sources[0].fingerprint.provider;
+      if (hidden.has(provider)) return [];
+      return usageSourceMessages(sources).map((message) => ({
+        environmentId: environment.environmentId,
+        environmentLabel: environment.label,
+        provider,
+        message,
+      }));
+    });
+  });
   return {
     contractMismatches,
     sourceMessages,
@@ -611,6 +620,20 @@ export function usageNotices(
       represented,
     ),
   };
+}
+
+export function formatUsageSourceNotices(
+  notices: ReturnType<typeof usageNotices>["sourceMessages"],
+  providerLabel: (provider: UsageProviderKind) => string,
+) {
+  return notices.map(({ environmentId, environmentLabel, provider, message }) => ({
+    key: JSON.stringify([environmentId, provider, message]),
+    text: t("{environment} · {provider}: {message}", {
+      environment: environmentLabel,
+      provider: providerLabel(provider),
+      message,
+    }),
+  }));
 }
 
 export function isKeptUsage(

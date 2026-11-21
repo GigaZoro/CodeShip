@@ -410,11 +410,50 @@ it("uses live compatibility and source notices while keeping saved figures", () 
   };
   const duringTrouble = [pending, { ...laptop, summary: { ...window, sources: [source] } }];
   expect(usageNotices(duringTrouble, shown!.environments, null).sourceMessages).toEqual([
-    "Cursor fetch failed",
+    {
+      environmentId: laptop.environmentId,
+      environmentLabel: laptop.label,
+      provider: "cursor",
+      message: "Cursor fetch failed",
+    },
   ]);
   expect(
     usageNotices(duringTrouble, shown!.environments, null, new Set(["cursor"])).sourceMessages,
   ).toEqual([]);
+});
+
+it("keeps identical warnings from distinct environments and providers", () => {
+  const source = (provider: UsageProviderKind) => ({
+    ...summary().sources[0]!,
+    fingerprint: { ...summary().sources[0]!.fingerprint, provider },
+    status: "failed" as const,
+    message: "Read failed.",
+  });
+  const desk = status("Desk", {
+    summary: { ...summary(), sources: [source("codex"), source("codex"), source("cursor")] },
+  });
+  const laptop = status("Laptop", { summary: { ...summary(), sources: [source("cursor")] } });
+  const live = [desk, laptop];
+  expect(usageNotices(live, live, null).sourceMessages).toEqual([
+    {
+      environmentId: desk.environmentId,
+      environmentLabel: "Desk",
+      provider: "codex",
+      message: "Read failed.",
+    },
+    {
+      environmentId: desk.environmentId,
+      environmentLabel: "Desk",
+      provider: "cursor",
+      message: "Read failed.",
+    },
+    {
+      environmentId: laptop.environmentId,
+      environmentLabel: "Laptop",
+      provider: "cursor",
+      message: "Read failed.",
+    },
+  ]);
 });
 
 function reading(label: string, tokens: number, provider: UsageProviderKind = "codex") {

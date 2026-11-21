@@ -31,6 +31,7 @@ import {
   usageWindowKey,
   usageSelectionKey,
   usageNotices,
+  formatUsageSourceNotices,
   waitingForFirstUsage,
   usageProgress,
   type UsageSnapshot,
@@ -158,9 +159,11 @@ function selectUsageModel(key: string | null): void {
 function UsageModelDialogHost({
   snapshot,
   liveEnvironments,
+  pageRef,
   onSetPrice,
   ...dialogProps
 }: Omit<Parameters<typeof UsageModelDialog>[0], "model" | "onSetPrice" | "onClose"> & {
+  readonly pageRef: React.RefObject<HTMLElement | null>;
   readonly snapshot: UsageSnapshot | null;
   readonly liveEnvironments: readonly EnvironmentUsageStatus[];
   readonly onSetPrice: (model: string) => void;
@@ -184,8 +187,14 @@ function UsageModelDialogHost({
   const closeRevoked = saved !== null && retainedModel === undefined;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes the shared model selection when the open reading loses diagnostic access
   useEffect(() => {
-    if (closeRevoked) selectUsageModel(null);
-  }, [closeRevoked]);
+    if (!closeRevoked) return;
+    selectUsageModel(null);
+    if (document.activeElement === document.body) {
+      const page = pageRef.current;
+      const nextModel = page?.querySelector<HTMLButtonElement>("[data-usage-model]:enabled");
+      (nextModel ?? page)?.focus();
+    }
+  }, [closeRevoked, pageRef]);
   if (
     selectedKey !== null &&
     currentModel !== undefined &&
@@ -224,6 +233,7 @@ function UsageModelDialogHost({
 }
 
 export function UsagePage() {
+  const pageRef = useRef<HTMLElement>(null);
   const [preferences, setPreferences] = useState(readUsagePagePreferences);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
@@ -638,6 +648,7 @@ export function UsagePage() {
 
   return (
     <SidebarInset
+      ref={pageRef}
       {...workspaceAreaProps("usage", 1, t("Usage"))}
       role="main"
       className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
@@ -753,7 +764,7 @@ export function UsagePage() {
                   }
                   metric={metric === "tokens" ? "tokens" : "cost"}
                   selectedEnvironments={shownEnvironments}
-                  sourceMessages={sourceMessages}
+                  sourceMessages={formatUsageSourceNotices(sourceMessages, providerLabel)}
                   activeProviders={activeProviders}
                   providerRows={shown.providers}
                   refreshingProviders={refreshingUsageProviders(
@@ -788,6 +799,7 @@ export function UsagePage() {
       </div>
       {showingLimits ? null : (
         <UsageModelDialogHost
+          pageRef={pageRef}
           readOnly={showingKept}
           snapshot={shown}
           liveEnvironments={environments}
@@ -853,7 +865,7 @@ function UsageOverview({
   readonly progressLabel: string | null;
   readonly metric: "tokens" | "cost";
   readonly selectedEnvironments: readonly EnvironmentUsageStatus[];
-  readonly sourceMessages: readonly string[];
+  readonly sourceMessages: ReturnType<typeof formatUsageSourceNotices>;
   readonly activeProviders: readonly UsageProviderKind[];
   readonly providerRows: UsageSnapshot["providers"];
   readonly refreshingProviders: ReadonlySet<UsageProviderKind>;
@@ -895,9 +907,9 @@ function UsageOverview({
 
   return (
     <div aria-busy={loadingPartial} className="flex flex-col gap-6">
-      {sourceMessages.map((message) => (
-        <p key={message} role="status" className="mb-4 text-sm text-muted-foreground">
-          {message}
+      {sourceMessages.map(({ key, text }) => (
+        <p key={key} role="status" className="mb-4 text-sm text-muted-foreground">
+          {text}
         </p>
       ))}
       <section className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
@@ -1182,6 +1194,7 @@ function UsageOverview({
                         <button
                           type="button"
                           disabled={showingKept}
+                          data-usage-model
                           onClick={() => onSelectModel(key)}
                           className={cn(
                             // The ring sits on the overlay that spans the row, so focus shows on the whole row.

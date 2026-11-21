@@ -2960,7 +2960,7 @@ function ScheduledTaskEditorForm({
     draft,
   });
   const promptFileRead = promptFileReadFor(draft);
-  const offersGroups = supportsScheduledTaskGroups(environment);
+  const offersGroups = supportsScheduledTaskGroups(environment) === true;
   const groupQueries = useAtomValue(
     scheduledTasksListAtom(
       environmentIdsKey(connectedEnvironments.map((entry) => entry.environmentId)),

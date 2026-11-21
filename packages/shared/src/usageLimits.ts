@@ -1142,7 +1142,7 @@ export function poolResetSummary(
     const text = window ? formatResetsIn(window, now, "sentence") : null;
     return window?.resetsAt && text ? { text, resetsAt: window.resetsAt } : null;
   }
-  const next = pool.resets.find((reset) => reset.restoresPercent > 0);
+  const next = pool.resets.find((reset) => reset.at > now && reset.restoresPercent > 0);
   const when = next ? formatResetsIn(next.member.window, now, "after") : null;
   return next && when
     ? {

@@ -1250,6 +1250,7 @@ const catalog: MessageCatalog = {
   "{duration} lost": "втрачено {duration}",
   "{enabled} of {total} on": "увімкнено {enabled} із {total}",
   "{environment} · {provider}": "{environment} · {provider}",
+  "{environment} · {provider}: {message}": "{environment} · {provider}: {message}",
   "{environment} (Local)": "{environment} (локальне)",
   "{environment} {preference}": "{environment} {preference}",
   "{environment} can now be reached over SSH {alias}.":
@@ -3260,6 +3261,8 @@ const catalog: MessageCatalog = {
   "Checking releases…": "Перевірка випусків…",
   "Checking saved environments on this device.":
     "Перевірка збережених середовищ на цьому пристрої.",
+  "Checking scheduled task support on {environment}…":
+    "Перевіряємо підтримку запланованих завдань у середовищі {environment}…",
   "Checking shortcut…": "Перевірка скорочення…",
   "Checking snapshots…": "Перевірка знімків…",
   "Checking stack membership…": "Перевірка належності до стека…",

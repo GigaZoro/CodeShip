@@ -9,6 +9,7 @@ import {
   retainedUsageLabel,
   refreshingUsageProviders,
   usageNotices,
+  formatUsageSourceNotices,
   waitingForFirstUsage,
   usageWindowKey,
   type UsageProviderRow,
@@ -471,9 +472,11 @@ function UsageScreen(props: {
                         {retainedUsageLabel(shown)}
                       </Text>
                     ) : null}
-                    {sourceMessages.map((message) => (
-                      <Notice key={message} message={message} />
-                    ))}
+                    {formatUsageSourceNotices(sourceMessages, providerLabel).map(
+                      ({ key, text }) => (
+                        <Notice key={key} message={text} />
+                      ),
+                    )}
                     <UsageUpdating
                       dimmed={showingKept}
                       announce={progress.announcement !== null}

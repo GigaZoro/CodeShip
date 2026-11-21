@@ -17,13 +17,19 @@ const data = vi.hoisted(() => ({
   errors: new Map<string, string>(),
   denied: new Set<string>(),
   checking: new Set<string>(),
+  configPending: false,
   grantFailures: new Set<string>(),
   recovering: null as null | ReturnType<typeof recoveryGrant>,
   requests: new Set<string>(),
 }));
 vi.mock("../../state/environments", () => ({
   useEnvironments: () => ({
-    environments: [{ environmentId: "desk" }, { environmentId: "laptop" }],
+    environments: ["desk", "laptop"].map((environmentId) => ({
+      environmentId,
+      serverConfig: data.configPending
+        ? null
+        : { environment: { capabilities: { scheduledTaskGroups: true } } },
+    })),
   }),
 }));
 vi.mock("../../state/session", async (importOriginal) => {
@@ -52,8 +58,8 @@ vi.mock("../../state/session", async (importOriginal) => {
       ),
   };
 });
-vi.mock("../../state/scheduledTaskStats", () => ({
-  supportsScheduledTaskGroups: () => true,
+vi.mock("../../state/scheduledTaskStats", async (original) => ({
+  ...(await original<typeof import("../../state/scheduledTaskStats")>()),
   useScheduledTaskStats: (ids: readonly EnvironmentId[]) =>
     ids.map((environmentId) => {
       data.requests.add(environmentId);
@@ -94,6 +100,7 @@ function groups(minutes: number, changed = false, withLaptop = false) {
 }
 
 function readyStats() {
+  data.configPending = false;
   data.stats.clear();
   data.errors.clear();
   data.denied.clear();
@@ -202,4 +209,16 @@ it("restores scheduled rows and focus by retrying the observed session grant", a
   expect(document.activeElement).toBe(
     screen.getByRole("heading", { name: "Scheduled task groups" }).element(),
   );
+});
+
+it("checks scheduled task support while the connected server config is missing", async () => {
+  readyStats();
+  data.configPending = true;
+  await using screen = await render(groups(0));
+  expect(screen.container.textContent).toContain("Checking scheduled task support on Desk…");
+  expect(screen.container.textContent).not.toContain("older T3.CodeShip");
+  expect(data.requests.size).toBe(0);
+  data.configPending = false;
+  await screen.rerender(groups(0));
+  await expect.element(screen.getByRole("row", { name: /Nightly/ })).toBeVisible();
 });

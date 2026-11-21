@@ -343,7 +343,11 @@ function otherReading(
             buckets: summary.buckets.map((bucket) => ({ ...bucket, model: "laptop-model" })),
             sources: summary.sources.map((source) => ({
               ...source,
-              fingerprint: { ...source.fingerprint, hostId: "laptop" },
+              fingerprint: {
+                ...source.fingerprint,
+                hostId: "laptop",
+                provider: response === "sourceFailure" ? "cursor" : source.fingerprint.provider,
+              },
               ...(response === "sourceFailure"
                 ? { status: "partial" as const, message: "Cursor fetch failed" }
                 : {}),
@@ -710,7 +714,7 @@ it("reports live compatibility and source failures beside the saved total", asyn
 
   state.secondEnvironment = "sourceFailure";
   await update();
-  await expect.element(screen.getByText("Cursor fetch failed")).toBeVisible();
+  await expect.element(screen.getByText("Laptop · Cursor: Cursor fetch failed")).toBeVisible();
   await expect.element(figures).toBeVisible();
 });
 
@@ -721,10 +725,14 @@ it("closes the open model and removes its figures when diagnostics access is rev
   await screen.getByRole("button", { name: "usage-test-model" }).click();
   const dialog = page.getByRole("dialog");
   await expect.element(dialog.getByRole("button", { name: "Set price" })).toBeEnabled();
+  (dialog.getByRole("button", { name: "Close", exact: true }).element() as HTMLElement).focus();
   state.response = "revoked";
   await update();
   await expect.element(dialog).not.toBeInTheDocument();
   await expect.element(screen.getByRole("button", { name: "laptop-model" })).toBeVisible();
+  expect(document.activeElement).toBe(
+    screen.getByRole("button", { name: "laptop-model" }).element(),
+  );
 });
 
 it("shows an incompatible environment notice while the first scan is pending", async () => {
