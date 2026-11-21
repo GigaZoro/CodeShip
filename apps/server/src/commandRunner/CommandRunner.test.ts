@@ -23,7 +23,6 @@ import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import {
-  holdProcessGroup,
   isFifoHolderHeld,
   layerHeldProcessGroups,
   releaseFifoHolder,
@@ -32,7 +31,10 @@ import {
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
-import { watchFreedGroupSignals } from "@t3tools/shared/testing/freedProcessGroups";
+import {
+  hostHoldsProcessGroups,
+  watchFreedGroupSignals,
+} from "@t3tools/shared/testing/freedProcessGroups";
 import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { windowsStopTreeArgs } from "@t3tools/shared/windowsProcessTree";
 import * as Clock from "effect/Clock";
@@ -506,8 +508,8 @@ const leavePidFile = (taskId: string, pid: number) =>
     nameWrapper(row.directory, pid, Date.parse(row.started_at));
   });
 
-/** Whether this host holds a command's group: not under an init that leaves orphans unreaped. */
-const holdsGroups = holdProcessGroup({ command: "/bin/sh", args: [] }, { fd: 3 }) !== undefined;
+// The runner launches without the shell configuration the environment may give, as this probe does.
+const holdsGroups = hostHoldsProcessGroups();
 
 /** Out of the runner's sight, the command's holder still keeps the number, for the cleanup to use. */
 const hideHolder = (directory: string) =>
@@ -1335,56 +1337,61 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
   );
 
   describe.skipIf(isWindowsHost)("POSIX shell and process groups", () => {
-    it.effect.each([
-      ["while no server runs", "command-lost", false, false],
-      [
-        "before its server recorded the pid, while no server runs",
-        "command-lost-pid-unrecorded",
-        false,
-        true,
-      ],
-      ["while a server watches it", "command-lost-watched", true, false],
-    ] as const)(
-      "reports a command whose wrapper was killed %s as lost, and stops what it started",
-      ([, name, watching, pidUnrecorded]) =>
-        Effect.gen(function* () {
-          const chat = yield* liveChat(name);
-          // As a reboot would; what it started lives on.
-          const request = { command: ORPHANING_COMMAND };
-          const ready = awaitFile(NodePath.join(chat.workspace, "ready"));
-          const orphaned = awaitFile(NodePath.join(chat.workspace, "orphaned"));
-          const go = ready.pipe(
-            Effect.andThen(
-              Effect.sync(() => NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "")),
-            ),
-          );
-          const started = watching
-            ? yield* withServer((runner) =>
-                runner
-                  .run(callerOf(chat.threadId), request)
-                  .pipe(Effect.tap(() => go.pipe(Effect.andThen(nextWake(chat.threadId))))),
-              )
-            : yield* withServer((runner) => runner.run(callerOf(chat.threadId), request)).pipe(
-                Effect.tap(({ taskId }) =>
-                  go.pipe(
-                    Effect.andThen(orphaned),
-                    Effect.andThen(pidUnrecorded ? forgetPid(taskId) : Effect.void),
-                    Effect.andThen(withServer(() => nextWake(chat.threadId))),
-                  ),
+    describe.skipIf(!holdsGroups)(
+      "where a holder keeps the number of a group its wrapper left",
+      () => {
+        it.effect.each([
+          ["while no server runs", "command-lost", false, false],
+          [
+            "before its server recorded the pid, while no server runs",
+            "command-lost-pid-unrecorded",
+            false,
+            true,
+          ],
+          ["while a server watches it", "command-lost-watched", true, false],
+        ] as const)(
+          "reports a command whose wrapper was killed %s as lost, and stops what it started",
+          ([, name, watching, pidUnrecorded]) =>
+            Effect.gen(function* () {
+              const chat = yield* liveChat(name);
+              // As a reboot would; what it started lives on.
+              const request = { command: ORPHANING_COMMAND };
+              const ready = awaitFile(NodePath.join(chat.workspace, "ready"));
+              const orphaned = awaitFile(NodePath.join(chat.workspace, "orphaned"));
+              const go = ready.pipe(
+                Effect.andThen(
+                  Effect.sync(() => NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "")),
                 ),
               );
-          const task = yield* taskOf(chat.threadId, started.taskId);
-          assert.equal(task?.status, "failed");
-          assert.match(task?.result ?? "", /without an exit status/);
-          const row = yield* commandRow(started.taskId);
-          assert.equal(row?.status, "lost");
-          // How it ended stays on its record.
-          assert.equal(row?.lost_reason, "gone");
-          assert.equal(row?.probe_error, "ESRCH");
-          assert.equal(row?.last_alive_at === null, pidUnrecorded);
-          assert.include(row?.lost_output ?? "", "orphaning");
-          assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
-        }),
+              const started = watching
+                ? yield* withServer((runner) =>
+                    runner
+                      .run(callerOf(chat.threadId), request)
+                      .pipe(Effect.tap(() => go.pipe(Effect.andThen(nextWake(chat.threadId))))),
+                  )
+                : yield* withServer((runner) => runner.run(callerOf(chat.threadId), request)).pipe(
+                    Effect.tap(({ taskId }) =>
+                      go.pipe(
+                        Effect.andThen(orphaned),
+                        Effect.andThen(pidUnrecorded ? forgetPid(taskId) : Effect.void),
+                        Effect.andThen(withServer(() => nextWake(chat.threadId))),
+                      ),
+                    ),
+                  );
+              const task = yield* taskOf(chat.threadId, started.taskId);
+              assert.equal(task?.status, "failed");
+              assert.match(task?.result ?? "", /without an exit status/);
+              const row = yield* commandRow(started.taskId);
+              assert.equal(row?.status, "lost");
+              // How it ended stays on its record.
+              assert.equal(row?.lost_reason, "gone");
+              assert.equal(row?.probe_error, "ESRCH");
+              assert.equal(row?.last_alive_at === null, pidUnrecorded);
+              assert.include(row?.lost_output ?? "", "orphaning");
+              assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+            }),
+        );
+      },
     );
 
     // As if an unrelated group took the number of the command's once that ended, and left members.
@@ -1406,7 +1413,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
       }),
     );
 
-    it.effect(
+    it.effect.skipIf(!holdsGroups)(
       "waits while a probe cannot tell whether its wrapper runs, stopping nothing and still trimming its log",
       () =>
         Effect.gen(function* () {
@@ -1654,16 +1661,12 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
   );
 
   describe.skipIf(isWindowsHost)("POSIX shell and process groups", () => {
-    it.effect.each([
-      ["its task is cancelled while no server runs", "command-cancelled-down", false, false],
-      ["its server stopped before it finished stopping it", "command-stop-cut", true, false],
-      [
-        "its server stopped while stopping it, after its wrapper ended",
-        "command-stop-orphaned",
-        true,
-        true,
-      ],
-    ] as const)("stops a command when %s, once a server starts", ([, name, cutStop, wrapperGone]) =>
+    const stopsOnceAServerStarts = ([, name, cutStop, wrapperGone]: readonly [
+      string,
+      string,
+      boolean,
+      boolean,
+    ]) =>
       Effect.gen(function* () {
         const chat = yield* liveChat(name);
         const ready = awaitFile(NodePath.join(chat.workspace, "ready"));
@@ -1694,7 +1697,25 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         const row = yield* commandRow(started.taskId);
         assert.equal(row?.status, "stopped");
         assert.isNotNull(row?.delivered_at);
-      }),
+      });
+
+    it.effect.each([
+      ["its task is cancelled while no server runs", "command-cancelled-down", false, false],
+      ["its server stopped before it finished stopping it", "command-stop-cut", true, false],
+    ] as const)("stops a command when %s, once a server starts", stopsOnceAServerStarts);
+
+    describe.skipIf(!holdsGroups)(
+      "where a holder keeps the number of a group its wrapper left",
+      () => {
+        it.effect.each([
+          [
+            "its server stopped while stopping it, after its wrapper ended",
+            "command-stop-orphaned",
+            true,
+            true,
+          ],
+        ] as const)("stops a command when %s, once a server starts", stopsOnceAServerStarts);
+      },
     );
 
     it.effect(
@@ -1722,7 +1743,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         }),
     );
 
-    it.effect(
+    it.effect.skipIf(!holdsGroups)(
       "stops a command whose pid its server never recorded while its holder keeps the number",
       () =>
         Effect.gen(function* () {

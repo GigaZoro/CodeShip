@@ -6,13 +6,17 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
+  type FifoHold,
   holdProcessGroup,
   isFifoHolderHeld,
   layerHeldProcessGroups,
   releaseFifoHolder,
   signalProcessGroup,
 } from "@t3tools/shared/processGroup";
-import { watchFreedGroupSignals } from "@t3tools/shared/testing/freedProcessGroups";
+import {
+  hostHoldsProcessGroups,
+  watchFreedGroupSignals,
+} from "@t3tools/shared/testing/freedProcessGroups";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -20,8 +24,10 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Scope from "effect/Scope";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import { vi } from "vite-plus/test";
 
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import * as OpenCodeServerLedger from "./OpenCodeServerLedger.ts";
@@ -59,12 +65,12 @@ const killGroup = (group: { readonly pid: number; readonly owned: () => boolean 
 // with 97 before starting anything if it does not.
 const groupLeaderGuard = `pgid="$(ps -o pgid= -p $$ 2>&1 | tr -d ' ')"; [ "$pgid" = "$$" ] || { echo "ungrouped:$pgid"; exit 97; }; echo grouped; `;
 
-// Yields the group, or a description of why this shell cannot be used as one. With `holder`, a
-// FIFO hold keeps its number, as a T3 server that crashed leaves it.
-const spawnGroupLeader = (args: ReadonlyArray<string>, script: string, holder?: string) =>
+// Yields the group, or a description of why this shell cannot be used as one. With `hold`, a FIFO
+// hold keeps its number, as a T3 server that crashed leaves it.
+const spawnGroupLeader = (args: ReadonlyArray<string>, script: string, hold?: FifoHold) =>
   Effect.gen(function* () {
     const launch = { command: "/bin/sh", args: ["-c", groupLeaderGuard + script, ...args] };
-    const held = holder === undefined ? launch : holdProcessGroup(launch, { fd: 3, fifo: holder });
+    const held = hold === undefined ? launch : holdProcessGroup(launch, { fd: 3, ...hold });
     if (held === undefined) return yield* Effect.die("this host cannot hold a process group");
     const child = NodeChildProcess.spawn(held.command, held.args, {
       detached: true,
@@ -108,7 +114,7 @@ const spawnGroupLeader = (args: ReadonlyArray<string>, script: string, holder?: 
           /** Whether the number is still the group's: its leader runs, or its holder keeps it. */
           owned: () =>
             (child.exitCode === null && child.signalCode === null) ||
-            (holder !== undefined && isFifoHolderHeld(holder)),
+            (hold !== undefined && isFifoHolderHeld(hold.fifo)),
           exited: Deferred.await(exited),
           printed: Deferred.await(printed),
           /** What it printed, once it and every process that kept its stdout ended. */
@@ -121,12 +127,12 @@ const spawnGroupLeader = (args: ReadonlyArray<string>, script: string, holder?: 
 // mean the guard itself is broken (for example a missing or BusyBox `ps`).
 const GROUP_LEADER_ATTEMPTS = 5;
 
-const spawnGroup = (args: ReadonlyArray<string>, script = "sleep 600 & wait", holder?: string) =>
+const spawnGroup = (args: ReadonlyArray<string>, script = "sleep 600 & wait", hold?: FifoHold) =>
   Effect.acquireRelease(
     Effect.gen(function* () {
       let failure = "";
       for (let attempt = 0; attempt < GROUP_LEADER_ATTEMPTS; attempt++) {
-        const group = yield* spawnGroupLeader(args, script, holder);
+        const group = yield* spawnGroupLeader(args, script, hold);
         if (typeof group !== "string") return group;
         failure = group;
       }
@@ -155,10 +161,31 @@ const recordFromDeadServer = (
     yield* previousServer.exited;
   });
 
+// Without it, each server starts unheld, as `holdProcessGroup` declines.
+const holds = hostHoldsProcessGroups();
 const hostPlatform = HostProcess.Platform.defaultValue();
-// procps accepts the same `ps` flags as macOS, so Linux also covers the macOS path.
+// procps accepts the same `ps` flags as macOS, so Linux also covers the macOS path. macOS reaps
+// orphans, so only a Linux host that can hold a group, and so each `ps`, stands in for it.
 const observedPlatforms: ReadonlyArray<NodeJS.Platform> =
-  hostPlatform === "linux" ? ["linux", "darwin"] : hostPlatform === "darwin" ? ["darwin"] : [];
+  hostPlatform === "linux"
+    ? holds
+      ? ["linux", "darwin"]
+      : ["linux"]
+    : hostPlatform === "darwin"
+      ? ["darwin"]
+      : [];
+
+// As a `ps` that cannot run or times out leaves the macOS ledger.
+const blindSpawner = ChildProcessSpawner.make(() =>
+  Effect.fail(
+    PlatformError.systemError({
+      _tag: "Unknown",
+      module: "ChildProcess",
+      method: "spawn",
+      description: "no process can be looked up",
+    }),
+  ),
+);
 
 describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platform) => {
   const provideHost = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -196,7 +223,7 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
       }).pipe(provideHost),
   );
 
-  it.live("stops a held OpenCode server group with what it started on SIGTERM", () =>
+  it.live.skipIf(!holds)("stops a held OpenCode server group with what it started on SIGTERM", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -210,65 +237,170 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
       const orphan = yield* spawnGroup(
         SERVE_ARGS,
         `trap '(trap "" TERM; sleep 600) & exit 0' TERM; echo ready; sleep 600 & wait`,
-        holder,
+        { fifo: holder },
       );
       yield* orphan.printed;
       yield* recordFromDeadServer(stateDir, orphan, holder);
 
       const restarted = yield* OpenCodeServerLedger.make({ stateDir });
-      const freedGroupSignals = yield* Effect.scoped(
-        watchFreedGroupSignals.pipe(
-          Effect.tap(() => restarted.reapOrphans),
-          Effect.map((freed) => freed.signals()),
-        ),
+      const kill = yield* Effect.acquireRelease(
+        Effect.sync(() => vi.spyOn(process, "kill")),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      yield* restarted.reapOrphans;
+      const serverGroupSignals = kill.mock.calls.filter(
+        ([pid, signal]) => pid === -orphan.pid && signal !== 0,
       );
 
       yield* orphan.closed;
-      expect(freedGroupSignals).toEqual([]);
+      // The holder sends both, so no signal of this server can outlive the number.
+      expect(serverGroupSignals).toEqual([]);
       expect(yield* fs.readDirectory(directory)).toEqual([]);
     }).pipe(provideHost),
   );
 
-  it.live("stops the group of a held launch that a server which died never recorded", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-" });
-      const previousServer = yield* spawnGroup([]);
-      const previousLedger = yield* OpenCodeServerLedger.make({
-        stateDir,
-        ownerPid: previousServer.pid,
-      });
-      // Its scope stays open, as when the server crashes before `track` records the group.
-      const holder = yield* previousLedger.holderFifo.pipe(
-        Effect.provideService(Scope.Scope, yield* Scope.make()),
-      );
-      if (holder === undefined) return yield* Effect.die("the ledger made no holder FIFO");
-      yield* Effect.addFinalizer(() => Effect.sync(() => releaseFifoHolder(holder)));
-      const orphan = yield* spawnGroup(
-        SERVE_ARGS,
-        `trap '(trap "" TERM; sleep 600) & exit 0' TERM; echo ready; sleep 600 & wait`,
-        holder,
-      );
-      yield* orphan.printed;
-      yield* killGroup(previousServer);
-      yield* previousServer.exited;
+  it.live.skipIf(!holds)(
+    "stops the group of a held launch that a server which died never recorded",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-" });
+        const previousServer = yield* spawnGroup([]);
+        const previousLedger = yield* OpenCodeServerLedger.make({
+          stateDir,
+          ownerPid: previousServer.pid,
+        });
+        // Its scope stays open, as when the server crashes before `track` records the group.
+        const holder = yield* previousLedger.holderFifo.pipe(
+          Effect.provideService(Scope.Scope, yield* Scope.make()),
+        );
+        if (holder === undefined) return yield* Effect.die("the ledger made no holder FIFO");
+        yield* Effect.addFinalizer(() => Effect.sync(() => releaseFifoHolder(holder.fifo)));
+        const orphan = yield* spawnGroup(
+          SERVE_ARGS,
+          `trap '(trap "" TERM; sleep 600) & exit 0' TERM; echo ready; sleep 600 & wait`,
+          holder,
+        );
+        yield* orphan.printed;
+        yield* killGroup(previousServer);
+        yield* previousServer.exited;
 
-      const restarted = yield* OpenCodeServerLedger.make({ stateDir });
-      const freedGroupSignals = yield* Effect.scoped(
-        watchFreedGroupSignals.pipe(
-          Effect.tap(() => restarted.reapOrphans),
-          Effect.map((freed) => freed.signals()),
-        ),
-      );
+        const restarted = yield* OpenCodeServerLedger.make({ stateDir });
+        const freedGroupSignals = yield* Effect.scoped(
+          watchFreedGroupSignals.pipe(
+            Effect.tap(() => restarted.reapOrphans),
+            Effect.map((freed) => freed.signals()),
+          ),
+        );
 
-      yield* orphan.closed;
-      expect(freedGroupSignals).toEqual([]);
-      expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toEqual([]);
-    }).pipe(provideHost),
+        yield* orphan.closed;
+        expect(freedGroupSignals).toEqual([]);
+        expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toEqual([]);
+      }).pipe(provideHost),
   );
 
-  it.live("records a group whose spawned wrapper already exited", () =>
+  it.live.skipIf(!holds)(
+    "never runs a held launch whose record a later server reaped before it started",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-" });
+        const previousServer = yield* spawnGroup([]);
+        const previousLedger = yield* OpenCodeServerLedger.make({
+          stateDir,
+          ownerPid: previousServer.pid,
+        });
+        const holder = yield* previousLedger.holderFifo.pipe(
+          Effect.provideService(Scope.Scope, yield* Scope.make()),
+        );
+        if (holder === undefined) return yield* Effect.die("the ledger made no holder FIFO");
+        yield* Effect.addFinalizer(() => Effect.sync(() => releaseFifoHolder(holder.fifo)));
+        yield* killGroup(previousServer);
+        yield* previousServer.exited;
+        const restarted = yield* OpenCodeServerLedger.make({ stateDir });
+        yield* restarted.reapOrphans;
+
+        const launch = holdProcessGroup(
+          { command: "/bin/sh", args: ["-c", "echo ran"] },
+          { fd: 3, ...holder },
+        );
+        if (launch === undefined) return yield* Effect.die("this host cannot hold a process group");
+        const output = yield* Effect.callback<string>((resume) => {
+          const child = NodeChildProcess.spawn(launch.command, launch.args, {
+            detached: true,
+            stdio: ["ignore", "pipe", "ignore"],
+          });
+          let text = "";
+          child.stdout.on("data", (chunk: Buffer) => {
+            text += chunk.toString();
+          });
+          child.once("close", () => resume(Effect.succeed(text)));
+        });
+        // The FIFO it made goes with the next reap.
+        yield* restarted.reapOrphans;
+
+        expect(output).toBe("");
+        expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toEqual([]);
+      }).pipe(provideHost),
+  );
+
+  it.live.skipIf(!holds)(
+    "stops a held launch that passed its claim while a later server reaped its record",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-" });
+        const previousServer = yield* spawnGroup([]);
+        const previousLedger = yield* OpenCodeServerLedger.make({
+          stateDir,
+          ownerPid: previousServer.pid,
+        });
+        const holder = yield* previousLedger.holderFifo.pipe(
+          Effect.provideService(Scope.Scope, yield* Scope.make()),
+        );
+        if (holder === undefined) return yield* Effect.die("the ledger made no holder FIFO");
+        yield* Effect.addFinalizer(() => Effect.sync(() => releaseFifoHolder(holder.fifo)));
+        yield* killGroup(previousServer);
+        yield* previousServer.exited;
+        // The launch passes its claim and runs just before the reaper removes that claim.
+        const removing = yield* Deferred.make<void>();
+        const running = yield* Deferred.make<void>();
+        const launching = yield* Deferred.await(removing).pipe(
+          Effect.andThen(
+            spawnGroup(
+              SERVE_ARGS,
+              `trap '(trap "" TERM; sleep 600) & exit 0' TERM; echo ready; sleep 600 & wait`,
+              holder,
+            ),
+          ),
+          Effect.tap((orphan) => orphan.printed),
+          Effect.tap(() => Deferred.succeed(running, undefined)),
+          Effect.forkScoped,
+        );
+        const restarted = yield* OpenCodeServerLedger.make({ stateDir }).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            remove: (target, options) =>
+              target === holder.claim
+                ? Deferred.succeed(removing, undefined).pipe(
+                    Effect.andThen(Deferred.await(running)),
+                    Effect.andThen(fs.remove(target, options)),
+                  )
+                : fs.remove(target, options),
+          }),
+        );
+        yield* restarted.reapOrphans;
+        const orphan = yield* Fiber.join(launching);
+
+        yield* orphan.closed;
+        expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toEqual([]);
+      }).pipe(provideHost),
+  );
+
+  it.live.skipIf(!holds)("records a group whose spawned wrapper already exited", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -281,7 +413,7 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
       const wrapper = yield* spawnGroup(
         SERVE_ARGS,
         '/bin/sh -c "echo ready; sleep 600 & wait" "$0" "$@" & exit 0',
-        holder,
+        { fifo: holder },
       );
       yield* wrapper.exited;
       yield* wrapper.printed;
@@ -336,7 +468,7 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
     }).pipe(provideHost),
   );
 
-  it.live("leaves the servers of a running T3 server alone", () =>
+  it.live.skipIf(!holds)("leaves the servers of a running T3 server alone", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -353,13 +485,18 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
       // And one it launched but has not recorded yet.
       const holder = yield* running.holderFifo;
       if (holder === undefined) return yield* Effect.die("the ledger made no holder FIFO");
-      yield* Effect.addFinalizer(() => Effect.sync(() => releaseFifoHolder(holder)));
+      yield* Effect.addFinalizer(() => Effect.sync(() => releaseFifoHolder(holder.fifo)));
       const launched = yield* spawnGroup(SERVE_ARGS, undefined, holder);
 
       const other = yield* OpenCodeServerLedger.make({ stateDir });
       yield* other.reapOrphans;
+      const blind = yield* OpenCodeServerLedger.make({ stateDir }).pipe(
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, blindSpawner),
+      );
+      yield* blind.reapOrphans;
       expect([groupExists(server.pid), groupExists(launched.pid)]).toEqual([true, true]);
-      expect(isFifoHolderHeld(holder)).toBe(true);
+      expect(isFifoHolderHeld(holder.fifo)).toBe(true);
 
       yield* forget;
       expect(yield* fs.exists(path.join(directory, `${server.pid}.json`))).toBe(false);
@@ -367,7 +504,7 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
   );
 });
 
-describe.skipIf(observedPlatforms.length === 0)("OpenCode server startup", () => {
+describe.skipIf(observedPlatforms.length === 0 || !holds)("OpenCode server startup", () => {
   it.live("holds the group and stops it when interrupted while the server is being recorded", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

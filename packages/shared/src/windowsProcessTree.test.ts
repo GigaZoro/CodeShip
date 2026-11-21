@@ -886,6 +886,30 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     );
   });
 
+  it("ends a running root whose window a clock set back between its reads left reversed", async () => {
+    const rootOf = windowsTreeRootFromNow();
+    // Exits 7 once its input ends, so any other exit is the stop's.
+    const child = NodeChildProcess.spawn(
+      process.execPath,
+      ["-e", "process.stdin.on('end', () => process.exit(7)).resume()"],
+      { stdio: ["pipe", "ignore", "ignore"], windowsHide: true },
+    );
+    const exited = exitCodeOf(child);
+    try {
+      if (child.pid === undefined) throw new Error("The root did not spawn");
+      const { pid, since, created } = rootOf(child.pid);
+      if (created === undefined) throw new Error("The root has no window");
+      // A record stamped before the clock was set back, so later than the pid file written after.
+      const recorded = created.to + 5_000;
+      runPowerShell(
+        ["Stop-T3ProcessTree", pid, since, recorded, created.from, "-running"].join(" "),
+      );
+    } finally {
+      child.stdin?.destroy();
+    }
+    assert.notStrictEqual(await exited, 7);
+  });
+
   // The walk reads start times from CIM and the stop from a handle, which counts 100 ns ticks.
   // Only processes it could open are compared, so no pid among them can change hands meanwhile.
   it("reads each start time from CIM cut to its microsecond", () => {

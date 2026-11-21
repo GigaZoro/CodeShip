@@ -24,7 +24,6 @@ import { vi } from "vite-plus/test";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AGENT_NICE_INCREMENT, AgentScope } from "@t3tools/shared/AgentScope";
-import { watchFreedGroupSignals } from "@t3tools/shared/testing/freedProcessGroups";
 import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { leaderLeavingChild } from "@t3tools/shared/testing/leftoverChild";
 import { probeProcess } from "@t3tools/shared/processProbe";
@@ -672,9 +671,15 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
     ["held where it can be", process.env],
     // Bash cannot pass an exported SHELLOPTS on as given, so nothing holds the group.
     ["unheld", { ...process.env, SHELLOPTS: UNHOLDABLE_SHELLOPTS }],
+    // Where `sh` is bash, its watcher would take these options too.
+    ["unheld, with errexit", { ...process.env, SHELLOPTS: `${UNHOLDABLE_SHELLOPTS}:errexit` }],
+    ["unheld, with job control", { ...process.env, SHELLOPTS: `${UNHOLDABLE_SHELLOPTS}:monitor` }],
   ] as const)("stops the CLI when the server that started it goes away, %s", ([, env]) =>
     Effect.gen(function* () {
-      const cli = fakeClaudeCli(['dir=$(dirname "$0")', 'sleep 600 > "$dir/alive"'].join("\n"));
+      // As one process, as the CLI's own job control would start a child in another group.
+      const cli = fakeClaudeCli(
+        ['dir=$(dirname "$0")', 'exec sleep 600 > "$dir/alive"'].join("\n"),
+      );
       const dir = NodePath.dirname(cli);
       NodeChildProcess.execFileSync("mkfifo", [NodePath.join(dir, "alive")]);
       const child = spawnClaudeProcessGroup({
@@ -705,9 +710,12 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
     }),
   );
 
-  it.effect("sends no signal at the CLI's exit to a group number nothing keeps", () =>
+  it.effect.each([
+    ["held where it can be", process.env],
+    // The group's other member is then the CLI's child.
+    ["unheld", { ...process.env, SHELLOPTS: UNHOLDABLE_SHELLOPTS }],
+  ] as const)("leaves the CLI's group to what keeps its number at the CLI's exit, %s", ([, env]) =>
     Effect.gen(function* () {
-      const freed = yield* watchFreedGroupSignals;
       // Exits once SIGUSR1 ended the rest of its group and it reaped them, freeing the number.
       const cli = fakeClaudeCli(
         [
@@ -716,7 +724,8 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
           "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})",
           'print("started", flush=True)',
           "signal.sigwait({signal.SIGUSR1})",
-          "os.waitpid(-1, 0)",
+          "try: os.waitpid(-1, 0)",
+          "except ChildProcessError: pass",
           "'",
         ].join("\n"),
       );
@@ -730,8 +739,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
           command: cli,
           args: [],
           cwd: dir,
-          // Unheld, so the group's other member is the CLI's child.
-          env: { ...process.env, SHELLOPTS: UNHOLDABLE_SHELLOPTS },
+          env,
           // @effect-diagnostics-next-line abortControllerInEffect:off - The CLI exits by itself, not by an abort.
           signal: new AbortController().signal,
         },
@@ -741,9 +749,27 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
       yield* Effect.promise(() => started);
 
       ownProcessGroup(child, undefined).signal("SIGUSR1");
+      const group = -child.pid!;
+      const signalsToGroup = (pid: number, signal: string | number | undefined) =>
+        pid === group && signal !== 0;
+      // Recorded and not sent, as the number may be free once the CLI exits.
+      const send = process.kill.bind(process);
+      const kill = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi
+            .spyOn(process, "kill")
+            .mockImplementation((pid, signal) =>
+              signalsToGroup(pid, signal) ? true : send(pid, signal),
+            ),
+        ),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
       yield* Effect.promise(() => exitHandled.promise);
 
-      assert.deepEqual(freed.signals(), []);
+      assert.deepEqual(
+        kill.mock.calls.filter(([pid, signal]) => signalsToGroup(pid, signal)),
+        [],
+      );
     }),
   );
 

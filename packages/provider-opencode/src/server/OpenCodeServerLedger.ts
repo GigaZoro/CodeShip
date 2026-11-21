@@ -12,7 +12,12 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
-import { signalProcessGroup, stopFifoHolderGroup } from "@t3tools/shared/processGroup";
+import {
+  type FifoHold,
+  signalProcessGroup,
+  stopFifoHolderGroup,
+} from "@t3tools/shared/processGroup";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 
 const ProcessIdentity = Schema.Struct({ pid: Schema.Int, startTime: Schema.String });
 type ProcessIdentity = typeof ProcessIdentity.Type;
@@ -35,8 +40,9 @@ const decodeEntry = Schema.decodeUnknownOption(OpenCodeServerEntryJson);
 const encodeEntry = Schema.encodeEffect(OpenCodeServerEntryJson);
 
 /**
- * Written before a held server spawns, so its group can be stopped before it is recorded. Its
- * holder's FIFO has the same name with `HOLDER_SUFFIX`.
+ * Written before a held server spawns, so its group can be stopped before it is recorded, and the
+ * launch's claim: without it, the launch exits before the server runs. Its holder's FIFO has the
+ * same name with `HOLDER_SUFFIX`.
  */
 const OpenCodeServerLaunch = Schema.Struct({
   version: Schema.Literal(1),
@@ -51,10 +57,10 @@ export class OpenCodeServerLedger extends Context.Service<
   OpenCodeServerLedger,
   {
     /**
-     * A FIFO path for `HoldThroughFifo`, removed when the scope closes, so that a later server can
-     * stop the group if this one crashes, also before `track` recorded it.
+     * A hold for `HoldThroughFifo`, removed when the scope closes, so that a later server can stop
+     * the group if this one crashes, also before `track` recorded it.
      */
-    readonly holderFifo: Effect.Effect<string | undefined, never, Scope.Scope>;
+    readonly holderFifo: Effect.Effect<FifoHold | undefined, never, Scope.Scope>;
     readonly track: (server: {
       readonly pid: number;
       readonly port: number;
@@ -211,11 +217,14 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
     return Effect.succeed([]);
   };
 
+  // A lookup that fails, such as a `ps` that timed out, counts the process as running unless the
+  // kernel says it is gone, so a live server's groups wait for a later look.
   const isRunning = (identity: ProcessIdentity) =>
     observe(identity.pid).pipe(
-      Effect.map(
-        (observed) =>
-          observed !== undefined && !observed.zombie && observed.startTime === identity.startTime,
+      Effect.map((observed) =>
+        observed === undefined
+          ? isProcessAlive(identity.pid)
+          : !observed.zombie && observed.startTime === identity.startTime,
       ),
     );
 
@@ -251,7 +260,7 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
               ),
             ),
         ).pipe(
-          Effect.map((id) => `${id}${HOLDER_SUFFIX}`),
+          Effect.map((id) => ({ fifo: `${id}${HOLDER_SUFFIX}`, claim: `${id}${LAUNCH_SUFFIX}` })),
           Effect.catchCause((cause) =>
             Effect.logWarning("Could not prepare to hold an OpenCode server's process group", {
               cause,
@@ -386,22 +395,27 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
       ),
   );
 
+  // The FIFO of a launch whose claim is gone. A holder that reads it started before the claim went.
+  const stopUnclaimed = Effect.fn("OpenCodeServerLedger.stopUnclaimed")(function* (holder: string) {
+    if (stopFifoHolderGroup(holder)) {
+      yield* Effect.logInfo(
+        "Stopping an OpenCode server a previous T3.CodeShip server left unrecorded",
+      );
+    }
+    yield* removeHolder(holder);
+  });
+
   // A launch its server never recorded, or whose record went with the server: only its holder
-  // knows the group, and stops it.
+  // knows the group, and stops it. Its record goes first, so a launch still starting never runs.
   const reapLaunch = Effect.fn("OpenCodeServerLedger.reapLaunch")(
     function* (launchPath: string) {
       const launch = decodeLaunch(yield* fs.readFileString(launchPath));
-      if (Option.isSome(launch) && launch.value.stateDir === input.stateDir) {
-        if (yield* isRunning(launch.value.owner)) return;
-        const holder = `${launchPath.slice(0, -LAUNCH_SUFFIX.length)}${HOLDER_SUFFIX}`;
-        if (stopFifoHolderGroup(holder)) {
-          yield* Effect.logInfo(
-            "Stopping an OpenCode server a previous T3.CodeShip server left unrecorded",
-          );
-        }
-        yield* removeHolder(holder);
+      if (Option.isNone(launch) || launch.value.stateDir !== input.stateDir) {
+        return yield* fs.remove(launchPath, { force: true });
       }
+      if (yield* isRunning(launch.value.owner)) return;
       yield* fs.remove(launchPath, { force: true });
+      yield* stopUnclaimed(`${launchPath.slice(0, -LAUNCH_SUFFIX.length)}${HOLDER_SUFFIX}`);
     },
     (effect, launchPath) =>
       effect.pipe(
@@ -421,6 +435,24 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
     yield* Effect.forEach(
       names.filter((name) => name.endsWith(LAUNCH_SUFFIX)),
       (name) => reapLaunch(path.join(directory, name)),
+      { concurrency: "unbounded", discard: true },
+    );
+    // A launch that started after its claim was reaped made its FIFO and exited before it ran.
+    yield* Effect.forEach(
+      names.filter((name) => name.endsWith(HOLDER_SUFFIX)),
+      (name) =>
+        Effect.gen(function* () {
+          const holder = path.join(directory, name);
+          const claim = `${holder.slice(0, -HOLDER_SUFFIX.length)}${LAUNCH_SUFFIX}`;
+          if (!(yield* fs.exists(claim))) yield* stopUnclaimed(holder);
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not clean up an OpenCode server's holder FIFO", {
+              name,
+              cause,
+            }),
+          ),
+        ),
       { concurrency: "unbounded", discard: true },
     );
   });

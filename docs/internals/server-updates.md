@@ -340,8 +340,9 @@ rather than risk another program's. The stop's later passes take what a process 
 after its own start. A wrapper recorded as ended, or already gone when a later server recovers it
 from its pid file, is stopped with a start no process has, so a holder of its pid is never the root
 and bounds the wrapper's children by its own start, not by a clock reading. One recovered while
-running whose start cannot be read has no identity, and its stop takes any holder that started from
-the record on; that bound also places the root, which started before it named itself. Startup
+running whose start cannot be read gets the window from its record to when it named itself in its
+pid file (to the recovery when that file's time cannot be read), whichever order a clock step left
+those ends in, so its stop takes as root only a holder of the pid made inside it. Startup
 adopts every row not yet delivered: a status file means it ended; a live pid with the same identity
 is watched again, one whose identity cannot be read is watched and read again on each pass, and a
 pid whose check fails for a reason other than "no such process" is checked again on the next pass.
@@ -351,11 +352,13 @@ reported and its last output. Its end completes the task through `delegated_task
 which wakes the chat through the durable delivery a child's result uses and refuses a second
 result, so a restart between the end and its delivery cannot wake the chat twice. task_cancel,
 Stop, archiving and deleting the thread also give the task its result, and the runner then kills
-the command's process group (its tree on Windows). On POSIX a holder outside that group, reading a
-FIFO in the command's state folder, keeps the group's number from launch until the end is delivered,
-across restarts too. The runner signals the group only while that holder runs, or the wrapper under
-the identity recorded for it, and asks again before each signal; once neither runs it signals no
-group and leaves what the command started running, since the number may be another's. A running
+the command's process group (its tree on Windows). On POSIX hosts that can hold a group (with
+bash, and a first process that is an init known to reap orphans), a holder outside that group,
+reading a FIFO in the command's state folder, keeps the group's number from launch until the end is
+delivered, across restarts too. Before each signal the runner checks that the holder runs, or the
+wrapper under the identity recorded for it; once neither does it signals no group, since the number
+may be another's, and what the command started runs on unless it ran in an agent scope unit, whose
+stop ends it without a group signal. A running
 holder also proves the machine did not restart since launch, whatever step the wall clock took. The hold leaves these tasks out like every app-owned task, and the continuation of a cut turn tells the agent the commands it started still
 run and will wake it.
 

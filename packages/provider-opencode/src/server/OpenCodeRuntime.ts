@@ -577,7 +577,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       pid: Number(child.pid),
       port,
       args,
-      holder,
+      holder: holder?.fifo,
     });
     yield* Scope.addFinalizer(ledgerScope, forgetServer);
 

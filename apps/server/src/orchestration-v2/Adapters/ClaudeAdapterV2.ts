@@ -377,8 +377,11 @@ const CLAUDE_STOP_FD = 3;
 // How long the CLI's group has after SIGTERM to end before SIGKILL.
 const CLAUDE_GROUP_STOP_SECONDS = 5;
 // Where nothing can hold the number, a member of the group stops it, which keeps the number its own.
+// It takes none of the options or TMOUT the environment may give a bash `sh`, which the CLI keeps.
+const CLAUDE_GROUP_WATCHER = `{ set +e; unset TMOUT; trap '' TERM; command read -r _ <&${CLAUDE_STOP_FD}; command kill -TERM 0; command -p sleep ${CLAUDE_GROUP_STOP_SECONDS}; command kill -KILL 0; } </dev/null >/dev/null 2>&1 &`;
 const CLAUDE_GROUP_WATCH_SCRIPT = [
-  `{ trap '' TERM; read -r _ <&${CLAUDE_STOP_FD}; kill -TERM 0; command -p sleep ${CLAUDE_GROUP_STOP_SECONDS}; kill -KILL 0; } </dev/null >/dev/null 2>&1 &`,
+  // Job control would start the watcher in a group of its own.
+  `case $- in *m*) set +m; ${CLAUDE_GROUP_WATCHER} set -m;; *) ${CLAUDE_GROUP_WATCHER} esac`,
   `exec "$@" ${CLAUDE_STOP_FD}<&-`,
 ].join("\n");
 
