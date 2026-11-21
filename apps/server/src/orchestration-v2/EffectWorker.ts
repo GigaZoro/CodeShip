@@ -245,6 +245,9 @@ export const layerExecutor: Layer.Layer<
                           ...(request.stopRunIds === undefined
                             ? {}
                             : { stopRunIds: request.stopRunIds }),
+                          ...(request.ownedBackgroundTaskIds === undefined
+                            ? {}
+                            : { ownedBackgroundTaskIds: request.ownedBackgroundTaskIds }),
                           commandId: CommandId.make(`${effect.id}:background-work-settled`),
                           ...(request.subagent === undefined || outcome === undefined
                             ? {}

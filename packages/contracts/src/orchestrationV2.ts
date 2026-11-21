@@ -3846,6 +3846,8 @@ const OrchestrationV2InternalCommand = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("thread.background-work.settle"),
     stopRunIds: Schema.optional(Schema.Array(RunId)),
+    /** The stopped provider thread's background tasks the Stop owned when it was requested. */
+    ownedBackgroundTaskIds: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
     commandId: CommandId,
     threadId: ThreadId,
     providerThreadId: ProviderThreadId,

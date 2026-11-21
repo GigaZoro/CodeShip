@@ -265,7 +265,10 @@ turns and stops delegated work owned by that chain. Children and completions fro
 independent runs keep working. An independent run that is active, or that starts after
 the interrupt, neither blocks it nor loses its own work: each provider interrupt names
 the chain's turns, and an adapter that restarts its runtime to end background commands
-ends only theirs. When a session lookup fails, the interrupt is still sent and the work
+ends only theirs. Each provider interrupt also names the background tasks the chain owned
+on that provider thread when Stop was requested, so when the next message takes the
+provider thread first, settling removes exactly those tasks and keeps the new run's.
+When a session lookup fails, the interrupt is still sent and the work
 stays for the worker to settle. A queued message that has not started is refused;
 `queued-run.cancel` ends it.
 

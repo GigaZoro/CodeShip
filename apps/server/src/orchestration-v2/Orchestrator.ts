@@ -810,6 +810,21 @@ function stopOwnedRuns<R extends { readonly id: RunId }>(
   return runIds === undefined ? runs : runs.filter((run) => runIds.includes(run.id));
 }
 
+/**
+ * The roster tasks a Stop owns on a provider thread. A roster belongs to the provider thread's
+ * latest run, so a run Stop owns it only while that run is in the stopped chain.
+ */
+function stopOwnedBackgroundTaskIds(
+  providerThread: Pick<OrchestrationV2ProviderThread, "lastRunOrdinal" | "pendingBackgroundTasks">,
+  runs: ReadonlyArray<{ readonly id: RunId; readonly ordinal: number }>,
+  runIds?: ReadonlyArray<RunId>,
+): ReadonlyArray<string> {
+  const owner = runs.find((run) => run.ordinal === providerThread.lastRunOrdinal);
+  return runIds === undefined || owner === undefined || runIds.includes(owner.id)
+    ? (providerThread.pendingBackgroundTasks ?? []).map((task) => task.taskId)
+    : [];
+}
+
 function delegatedTasksStopEffect(
   command: {
     readonly commandId: CommandId;
@@ -11861,6 +11876,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly stoppedProviderThreadId: OrchestrationV2ProviderThread["id"] | null;
     readonly throughRunOrdinal: number;
     readonly stopRunIds?: ReadonlyArray<RunId> | undefined;
+    /** The stopped provider thread's roster tasks the Stop owned when it was requested. */
+    readonly ownedBackgroundTaskIds?: ReadonlyArray<string> | undefined;
     readonly now: DateTime.Utc;
   }) {
     const emitEvent = emit(input.events, input.command);
@@ -11965,16 +11982,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       yield* Ref.update(input.events, (events) => [...events, ...ended]);
     }
     for (const providerThread of input.projection.providerThreads) {
-      if ((providerThread.pendingBackgroundTasks?.length ?? 0) === 0) continue;
-      const rosterOwner = input.projection.runs.find(
-        (candidate) => candidate.ordinal === providerThread.lastRunOrdinal,
-      );
-      if (
-        input.stopRunIds !== undefined &&
-        rosterOwner !== undefined &&
-        !input.stopRunIds.includes(rosterOwner.id)
-      )
-        continue;
+      const roster = providerThread.pendingBackgroundTasks ?? [];
+      if (roster.length === 0) continue;
+      // The next run can take the provider thread before this settles and carry the roster
+      // forward, so the tasks the Stop owned when it was requested stay its own.
+      const owned = new Set([
+        ...stopOwnedBackgroundTaskIds(providerThread, input.projection.runs, input.stopRunIds),
+        ...(providerThread.id === input.stoppedProviderThreadId
+          ? (input.ownedBackgroundTaskIds ?? [])
+          : []),
+      ]);
+      const remaining = roster.filter((task) => !owned.has(task.taskId));
+      if (remaining.length === roster.length) continue;
       if (providerThread.id === input.stoppedProviderThreadId) {
         // A refused newer start can take ownership and reject the stopped
         // turn's roster clear. Reconcile it without hiding surviving work.
@@ -11996,7 +12015,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             providerThread.lastRunOrdinal <= input.throughRunOrdinal
               ? "idle"
               : providerThread.status,
-          pendingBackgroundTasks: [],
+          pendingBackgroundTasks: remaining,
           updatedAt: input.now,
         },
       });
@@ -12644,6 +12663,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         stoppedProviderThreadId: command.providerThreadId,
         throughRunOrdinal: stoppedRun.ordinal,
         stopRunIds: command.stopRunIds,
+        ownedBackgroundTaskIds: command.ownedBackgroundTaskIds,
         now,
       });
     },
@@ -12885,8 +12905,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       readonly providerSessionId: ProviderSessionId;
       readonly providerThreadId: OrchestrationV2ProviderThread["id"];
       readonly providerTurnId: ProviderTurnId;
-    }) =>
-      ({
+    }) => {
+      const providerThread = work.providerThreads.find(
+        (candidate) => candidate.id === owner.providerThreadId,
+      );
+      const ownedBackgroundTaskIds =
+        stopRunIds === undefined || providerThread === undefined
+          ? []
+          : stopOwnedBackgroundTaskIds(providerThread, work.runs, stopRunIds);
+      return {
         type: "provider-turn.interrupt",
         ...(stopRunIds === undefined
           ? {}
@@ -12896,9 +12923,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ownedProviderTurnIds: work.providerTurns
                 .filter((turn) => turn.providerThreadId === owner.providerThreadId)
                 .map((turn) => turn.id),
+              // The next run can take the provider thread before the worker settles this Stop.
+              ...(ownedBackgroundTaskIds.length === 0 ? {} : { ownedBackgroundTaskIds }),
             }),
         ...owner,
-      }) as const;
+      } as const;
+    };
     if (pendingContinuation || hasBackgroundWork) {
       const backgroundTarget = run;
       // Before preparation, a failed restart has no provider of its own. Its source still owns the work.
