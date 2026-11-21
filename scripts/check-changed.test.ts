@@ -570,10 +570,12 @@ function launcherFixture() {
   write(
     "node_modules/vite-plus/cli.js",
     `
+    import { randomUUID } from 'node:crypto';
     import fs from 'node:fs';
     import path from 'node:path';
     const args = process.argv.slice(2);
-    fs.writeFileSync(path.join(process.env.RECORDS, process.pid + '.json'), JSON.stringify({ args, cwd: process.cwd() }));
+    // Windows gives a finished step's pid to the next process at once, so a pid-named record could be replaced.
+    fs.writeFileSync(path.join(process.env.RECORDS, randomUUID() + '.json'), JSON.stringify({ args, cwd: process.cwd() }), { flag: 'wx' });
     console.log('fixture stdout: ' + args[0]);
     console.error('fixture stderr: ' + args[0]);
     if (args[0] === process.env.EDIT_STEP) fs.appendFileSync(process.env.EDIT_FILE, "// edited\\n");
