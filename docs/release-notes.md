@@ -12,6 +12,7 @@
 ## 2026-11-21 — Commands wait for memory before they start
 
 - `t3_command_run` now waits until the machine has memory for a command before it starts it, as scheduled runs, delegated tasks and emulators already do. Before, every command started at once, so when many resumed chats started commands together after a restart, their shell wrappers alone could use up the free memory. A waiting command is never refused: commands start in the order they were asked for, `task_status` reports them as queued with the reason, each time limit counts from when the command starts, and a waiting command keeps its place through a restart. The **Wait for memory before automated starts** setting in **Settings → Maintenance & about → Background activity** covers them too.
+- The update prompts no longer call every open command "running": a queued command carries on through the update just as a running one does.
 
 ## 2026-11-21 — Claude uses fewer tokens for one-off text generation
 

@@ -271,6 +271,12 @@ const catalog: MessageCatalog = {
     many: "{count} команд",
     other: "{count} команди",
   },
+  "{count} commands carry on through the update.": {
+    one: "{count} команда не зупиниться під час оновлення.",
+    few: "{count} команди не зупиняться під час оновлення.",
+    many: "{count} команд не зупиняться під час оновлення.",
+    other: "{count} команди не зупиняться під час оновлення.",
+  },
   "{count} commented": "Прокоментували: {count}",
   "{count} comments": {
     one: "{count} коментар",
@@ -850,12 +856,6 @@ const catalog: MessageCatalog = {
     other: "{count} рядка",
   },
   "{count} running": "запущено: {count}",
-  "{count} running commands carry on through the update.": {
-    one: "{count} запущена команда працюватиме й під час оновлення.",
-    few: "{count} запущені команди працюватимуть і під час оновлення.",
-    many: "{count} запущених команд працюватимуть і під час оновлення.",
-    other: "{count} запущеної команди працюватимуть і під час оновлення.",
-  },
   "{count} running threads will be interrupted.": {
     one: "{count} запущений чат буде перервано.",
     few: "{count} запущені чати буде перервано.",

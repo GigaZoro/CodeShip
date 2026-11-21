@@ -202,6 +202,13 @@ interface CommandRunRow {
   readonly lost_output: string | null;
 }
 
+/** Why a queued command could not start, for its task. */
+interface UnstartedEnd {
+  readonly row: CommandRunRow;
+  readonly status: "failed" | "interrupted";
+  readonly result: string;
+}
+
 /**
  * Why a command counts as lost: its record names no process, its process is gone, the machine
  * restarted since it started, or its pid now names a later process.
@@ -710,27 +717,34 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Hands a command's end to its task, which wakes the thread. A task that already has its result
-   * (a cancel or Stop landed first) or no longer exists keeps nothing waiting, so it is delivered.
+   * Hands a command's end to its task, which wakes the thread. True once nothing waits on it: the
+   * task has this result, or one that landed first (a cancel or Stop), or its chat or it is gone.
    */
-  const deliver = Effect.fn("CommandRunner.deliver")(function* (row: CommandRunRow) {
+  const completeTask = Effect.fn("CommandRunner.completeTask")(function* (
+    row: CommandRunRow,
+    status: "completed" | "failed" | "interrupted",
+    result: string,
+  ) {
     const attempt = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
     const parentThreadId = ThreadId.make(row.thread_id);
     const taskId = NodeId.make(row.task_id);
-    const delivered = yield* threads
+    return yield* threads
       .dispatch({
         type: "delegated_task.command.complete",
         commandId: CommandId.make(`command:command-task-complete:${row.task_id}:${attempt}`),
         parentThreadId,
         taskId,
-        status: row.status === "exited" && row.exit_code === 0 ? "completed" : "failed",
-        result: yield* resultText(row),
+        status,
+        result,
       })
       .pipe(
         Effect.as(true),
         Effect.catch((cause) =>
           threads.getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [taskId] }).pipe(
-            Effect.map(({ subagents }) => subagents[0]?.result != null || subagents.length === 0),
+            Effect.map(
+              ({ thread, subagents }) =>
+                thread.deletedAt !== null || subagents[0]?.result != null || subagents.length === 0,
+            ),
             Effect.orElseSucceed(() => false),
             Effect.tap((settled) =>
               settled
@@ -740,7 +754,13 @@ const make = Effect.gen(function* () {
           ),
         ),
       );
-    if (delivered) yield* settle({ ...row, delivered_at: yield* nowIso });
+  });
+
+  const deliver = Effect.fn("CommandRunner.deliver")(function* (row: CommandRunRow) {
+    const status = row.status === "exited" && row.exit_code === 0 ? "completed" : "failed";
+    if (yield* completeTask(row, status, yield* resultText(row))) {
+      yield* settle({ ...row, delivered_at: yield* nowIso });
+    }
   });
 
   /**
@@ -1090,18 +1110,27 @@ const make = Effect.gen(function* () {
   /**
    * A thread that is archived or deleted keeps nothing running. It looks under the lock, so a
    * command still starting is watched by then, and run() starts none for a closed thread after.
+   * A queued command has nothing to stop: its task is told, again each pass until it records it.
    */
   const stopForThread = Effect.fn("CommandRunner.stopForThread")(function* (
     threadId: ThreadId,
     why: "archived" | "deleted",
   ) {
     const running = yield* lock.withPermits(1)(
-      Effect.sync(() => [
-        ...queue.filter((row) => row.thread_id === threadId),
-        ...[...watched.values()].filter(
+      Effect.gen(function* () {
+        const waiting = queue.filter((row) => row.thread_id === threadId);
+        for (const row of waiting) queue.splice(queue.indexOf(row), 1);
+        yield* Effect.forEach(waiting, (row) =>
+          endUnstarted({
+            row,
+            status: "interrupted",
+            result: `Stopped: the chat was ${why}.`,
+          }).pipe(Effect.ignore({ log: true })),
+        );
+        return [...watched.values()].filter(
           (row) => row.thread_id === threadId && row.status === "running",
-        ),
-      ]),
+        );
+      }),
     );
     yield* Effect.forEach(running, (row) =>
       threads
@@ -1445,27 +1474,33 @@ const make = Effect.gen(function* () {
     );
   });
 
-  /** Ends the task of a queued command that could not start; its agent is woken with why. */
-  const endUnstarted = (row: CommandRunRow, status: "failed" | "interrupted", result: string) =>
-    threads
-      .dispatch({
-        type: "delegated_task.command.complete",
-        commandId: CommandId.make(`command:command-task-unstarted:${row.task_id}`),
-        parentThreadId: ThreadId.make(row.thread_id),
-        taskId: NodeId.make(row.task_id),
-        status,
-        result,
-      })
-      .pipe(Effect.ignore({ log: true }));
+  /** Queued commands that could not start, until their task records why. */
+  const unstartedEnds = new Map<string, UnstartedEnd>();
 
-  /** Takes the oldest queued command off for good, ending its task with `outcome` when given. */
+  /**
+   * Hands why a queued command could not start to its task, which wakes its agent, and forgets the
+   * command once nothing waits on it. Until then each pass tries again.
+   */
+  const endUnstarted = Effect.fn("CommandRunner.endUnstarted")(function* (end: UnstartedEnd) {
+    unstartedEnds.set(end.row.task_id, end);
+    if (!(yield* completeTask(end.row, end.status, end.result))) return;
+    unstartedEnds.delete(end.row.task_id);
+    yield* sql`DELETE FROM command_runs WHERE task_id = ${end.row.task_id}`;
+  });
+
+  /** Takes the oldest queued command off for good, ending its task with `end` when given. */
   const dropQueued = Effect.fn("CommandRunner.dropQueued")(function* (
     row: CommandRunRow,
-    outcome?: { readonly status: "failed" | "interrupted"; readonly result: string },
+    end?: Omit<UnstartedEnd, "row">,
   ) {
     queue.shift();
-    if (outcome !== undefined) yield* endUnstarted(row, outcome.status, outcome.result);
+    if (end !== undefined) return yield* endUnstarted({ row, ...end });
     yield* sql`DELETE FROM command_runs WHERE task_id = ${row.task_id}`;
+  });
+
+  const couldNotStart = (message: string) => ({
+    status: "failed" as const,
+    result: `Could not start the command: ${message}`,
   });
 
   /**
@@ -1473,6 +1508,7 @@ const make = Effect.gen(function* () {
    * start reads memory after the one before it took its share. Its time limit counts from here.
    */
   const startQueued = Effect.fn("CommandRunner.startQueued")(function* () {
+    yield* lock.withPermits(1)(Effect.forEach([...unstartedEnds.values()], endUnstarted));
     const next = queue[0];
     if (next === undefined || (yield* memoryAdmission.shortage) !== null) return;
     // Outside the lock, which a slow read of the agent's environment would hold.
@@ -1481,21 +1517,21 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         // A cancel, Stop or close took it off meanwhile; the next pass looks again.
         if (queue[0] !== next) return;
+        // The read took a while, and may have started a process of its own.
+        if ((yield* memoryAdmission.shortage) !== null) return;
         const parentThreadId = ThreadId.make(next.thread_id);
         const taskId = NodeId.make(next.task_id);
         const records = yield* threads
           .getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [taskId] })
           .pipe(Effect.result);
         if (records._tag === "Failure") {
-          return yield* dropQueued(next, {
-            status: "failed",
-            result: `Could not start the command: ${records.failure.message}`,
-          });
+          return yield* dropQueued(next, couldNotStart(records.failure.message));
         }
         const { thread, subagents } = records.success;
         // Its task got its result while it waited, or is gone: nothing is left to start.
-        if (subagents[0] === undefined || subagents[0].result !== null)
+        if (subagents[0] === undefined || subagents[0].result !== null) {
           return yield* dropQueued(next);
+        }
         const closed = closedOf(thread);
         if (closed !== undefined) {
           return yield* dropQueued(next, {
@@ -1504,10 +1540,19 @@ const make = Effect.gen(function* () {
           });
         }
         if (environment._tag === "Failure") {
-          return yield* dropQueued(next, {
-            status: "failed",
-            result: `Could not start the command: ${environment.failure.message}`,
-          });
+          return yield* dropQueued(next, couldNotStart(environment.failure.message));
+        }
+        // Its task runs before its command does, so a cancel that lands first keeps it unstarted.
+        const startedTask = yield* threads
+          .dispatch({
+            type: "delegated_task.command.start",
+            commandId: CommandId.make(`command:command-task-start:${taskId}`),
+            parentThreadId,
+            taskId,
+          })
+          .pipe(Effect.result);
+        if (startedTask._tag === "Failure") {
+          return yield* dropQueued(next, couldNotStart(startedTask.failure.message));
         }
         const recorded = yield* recordedClocks;
         const now = DateTime.makeUnsafe(recorded.wall);
@@ -1524,18 +1569,8 @@ const make = Effect.gen(function* () {
           WHERE task_id = ${row.task_id}
         `;
         queue.shift();
-        yield* threads
-          .dispatch({
-            type: "delegated_task.command.start",
-            commandId: CommandId.make(`command:command-task-start:${taskId}`),
-            parentThreadId,
-            taskId,
-          })
-          .pipe(Effect.ignore({ log: true }));
         const notStarted = yield* startRecorded(row, recorded, environment.success);
-        if (notStarted !== undefined) {
-          yield* endUnstarted(row, "failed", `Could not start the command: ${notStarted}`);
-        }
+        if (notStarted !== undefined) yield* endUnstarted({ row, ...couldNotStart(notStarted) });
       }),
     );
   });
@@ -1579,12 +1614,17 @@ const make = Effect.gen(function* () {
         Effect.orElseSucceed(() => false),
       );
       if (!isFolder) return yield* failure("invalid_request", `No folder at ${cwd}.`);
-      const commandEnv = yield* commandEnvironment(
-        scope.thread.threadId,
-        scope.thread.providerInstanceId,
-        base ?? cwd,
-        parentRun.modelSelection,
-      );
+      // Before the environment read, which can start a process of the provider's own.
+      const early = yield* waitingReason;
+      const commandEnv =
+        early === undefined
+          ? yield* commandEnvironment(
+              scope.thread.threadId,
+              scope.thread.providerInstanceId,
+              base ?? cwd,
+              parentRun.modelSelection,
+            )
+          : undefined;
       const timeoutMinutes =
         input.timeoutMinutes ?? ORCHESTRATOR_MCP_COMMAND_DEFAULT_TIMEOUT_MINUTES;
       const key = input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
@@ -1599,160 +1639,157 @@ const make = Effect.gen(function* () {
       const logPath = path.join(directory, LOG_FILE);
       const result = (taskId: NodeId): OrchestratorMcpRunCommandResult => ({
         taskId,
+        // A queued command reads its agent's environment as it starts; the host's names it till then.
         shell: resolveCommandShell(
           platform,
-          windows ? {} : posixLaunchEnvironment(hostCommandEnv, commandEnv).env,
+          windows ? {} : posixLaunchEnvironment(hostCommandEnv, commandEnv ?? {}).env,
           input.shell,
         ).name,
         logPath,
         timeoutMinutes,
         next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
       });
-      // Read before the task is recorded, so a command that waits is recorded waiting.
-      const waiting = yield* waitingReason;
-      // A request cancelled in here would leave a task, or a command, that nothing watches.
+      // A request cancelled in here would leave a task, or a command, that nothing watches. The
+      // lock keeps it from overtaking a command queued meanwhile, or starting as memory runs short.
       return yield* Effect.uninterruptible(
-        Effect.gen(function* () {
-          const recorded = yield* threads
-            .dispatch({
-              type: "delegated_task.command.request",
-              commandId,
-              parentThreadId: scope.thread.threadId,
-              parentRunId: parentRun.id,
-              parentNodeId,
-              ...(input.label === undefined ? {} : { title: input.label }),
-              driver: COMMAND_DRIVER,
-              providerInstanceId: scope.thread.providerInstanceId,
-              command: { command: input.command, cwd, logPath, timeoutMinutes },
-              ...(waiting === undefined ? {} : { waiting }),
-            })
-            .pipe(
-              Effect.tapError((cause) =>
-                Effect.logWarning("command-runner.record-failed", {
-                  parentThreadId: scope.thread.threadId,
-                  cause,
-                }),
-              ),
-              Effect.mapError(() =>
-                failure("orchestration_error", "Unable to record the command."),
-              ),
-            );
-          const taskEvent = recorded.storedEvents.find(
-            (stored) => stored.event.type === "subagent.updated",
-          );
-          // A retried request recorded the task the first time.
-          const prior = parent.subagents.find((task) => task.command?.logPath === logPath);
-          const taskId =
-            taskEvent?.event.type === "subagent.updated" ? taskEvent.event.payload.id : prior?.id;
-          if (taskId === undefined) {
-            return yield* failure("orchestration_error", "The command was not recorded.");
-          }
-          /** Ends a task whose command never started, with nothing left to wake its thread for. */
-          const unstarted = (message: string, status: "failed" | "interrupted" = "failed") =>
-            threads
+        lock.withPermits(1)(
+          Effect.gen(function* () {
+            // One already waiting takes no second reading here, under the lock that watching needs.
+            const waiting = early ?? (yield* waitingReason);
+            // Set exactly when it starts now: one that waited before has no environment yet.
+            const startEnv = waiting === undefined ? commandEnv : undefined;
+            const recorded = yield* threads
               .dispatch({
-                type: "delegated_task.command.complete",
-                commandId: CommandId.make(`command:command-task-unstarted:${taskId}`),
+                type: "delegated_task.command.request",
+                commandId,
                 parentThreadId: scope.thread.threadId,
-                taskId,
-                status,
-                result: message,
+                parentRunId: parentRun.id,
+                parentNodeId,
+                ...(input.label === undefined ? {} : { title: input.label }),
+                driver: COMMAND_DRIVER,
+                providerInstanceId: scope.thread.providerInstanceId,
+                command: { command: input.command, cwd, logPath, timeoutMinutes },
+                ...(waiting === undefined ? {} : { waiting }),
               })
               .pipe(
-                Effect.andThen(
-                  threads.dispatch({
-                    type: "delegated_task.completion-delivery.dispose",
-                    commandId: CommandId.make(`command:command-task-unstarted-dispose:${taskId}`),
+                Effect.tapError((cause) =>
+                  Effect.logWarning("command-runner.record-failed", {
                     parentThreadId: scope.thread.threadId,
-                    taskId,
+                    cause,
                   }),
                 ),
-                Effect.ignore({ log: true }),
-                Effect.andThen(Effect.fail(failure("orchestration_error", message))),
+                Effect.mapError(() =>
+                  failure("orchestration_error", "Unable to record the command."),
+                ),
               );
-          return yield* lock
-            .withPermits(1)(
-              Effect.gen(function* () {
-                const existing = yield* sql<{ readonly task_id: string }>`
-            SELECT task_id FROM command_runs WHERE task_id = ${taskId}
-          `;
-                if (existing.length > 0) return result(taskId);
-                // Read again here: stopForTask or stopForThread may already have looked for a task
-                // cancelled, or a thread closed, since the request began.
-                const records = yield* threads
-                  .getThreadRecords(scope.thread.threadId, ["subagents"], {
-                    subagentIds: [taskId],
-                  })
-                  .pipe(Effect.result);
-                if (records._tag === "Failure") {
-                  return yield* unstarted(
-                    `Could not start the command: ${records.failure.message}`,
-                  );
-                }
-                const { thread, subagents } = records.success;
-                // Cancelled, or its first request could not start it: the task already says why.
-                const endedWith = subagents[0]?.result;
-                if (endedWith != null) return yield* failure("orchestration_error", endedWith);
-                const closed = closedOf(thread);
-                if (closed !== undefined) {
-                  return yield* unstarted(`Stopped: the chat was ${closed}.`, "interrupted");
-                }
-                const clocks = yield* recordedClocks;
-                const now = DateTime.makeUnsafe(clocks.wall);
-                const row: CommandRunRow = {
-                  task_id: taskId,
-                  thread_id: scope.thread.threadId,
-                  run_id: parentRun.id,
-                  label: input.label ?? null,
-                  command: input.command,
-                  shell: input.shell ?? null,
-                  cwd,
-                  directory,
-                  pid: null,
-                  process_identity: null,
-                  unit: null,
-                  status: waiting === undefined ? "running" : "queued",
-                  exit_code: null,
-                  started_at: DateTime.formatIso(now),
-                  deadline_at: DateTime.formatIso(DateTime.add(now, { minutes: timeoutMinutes })),
-                  ended_at: null,
-                  delivered_at: null,
-                  last_alive_at: null,
-                  probe_error: null,
-                  lost_reason: null,
-                  lost_output: null,
-                };
-                // Recorded before it starts, so a server that stops in between leaves the next one
-                // a record to adopt it by, never a command nothing watches.
-                const inserted = yield* sql`
-                  INSERT INTO command_runs (
-                    task_id, thread_id, run_id, label, command, shell, cwd, directory, pid,
-                    process_identity, unit, status, exit_code, started_at, deadline_at, ended_at,
-                    delivered_at
-                  ) VALUES (
-                    ${row.task_id}, ${row.thread_id}, ${row.run_id}, ${row.label}, ${row.command},
-                    ${row.shell}, ${row.cwd}, ${row.directory}, ${row.pid}, ${row.process_identity},
-                    ${row.unit}, ${row.status}, ${row.exit_code}, ${row.started_at},
-                    ${row.deadline_at}, ${row.ended_at}, ${row.delivered_at}
-                  )
-                `.pipe(Effect.result);
-                if (inserted._tag === "Failure") {
-                  return yield* unstarted(
-                    `Could not start the command: ${inserted.failure.message}`,
-                  );
-                }
-                if (row.status === "queued") {
-                  queue.push(row);
-                  return result(taskId);
-                }
-                const notStarted = yield* startRecorded(row, clocks, commandEnv);
-                if (notStarted !== undefined) {
-                  return yield* unstarted(`Could not start the command: ${notStarted}`);
-                }
+            const taskEvent = recorded.storedEvents.find(
+              (stored) => stored.event.type === "subagent.updated",
+            );
+            // A retried request recorded the task the first time.
+            const prior = parent.subagents.find((task) => task.command?.logPath === logPath);
+            const taskId =
+              taskEvent?.event.type === "subagent.updated" ? taskEvent.event.payload.id : prior?.id;
+            if (taskId === undefined) {
+              return yield* failure("orchestration_error", "The command was not recorded.");
+            }
+            /** Ends a task whose command never started, with nothing left to wake its thread for. */
+            const unstarted = (message: string, status: "failed" | "interrupted" = "failed") =>
+              threads
+                .dispatch({
+                  type: "delegated_task.command.complete",
+                  commandId: CommandId.make(`command:command-task-unstarted:${taskId}`),
+                  parentThreadId: scope.thread.threadId,
+                  taskId,
+                  status,
+                  result: message,
+                })
+                .pipe(
+                  Effect.andThen(
+                    threads.dispatch({
+                      type: "delegated_task.completion-delivery.dispose",
+                      commandId: CommandId.make(`command:command-task-unstarted-dispose:${taskId}`),
+                      parentThreadId: scope.thread.threadId,
+                      taskId,
+                    }),
+                  ),
+                  Effect.ignore({ log: true }),
+                  Effect.andThen(Effect.fail(failure("orchestration_error", message))),
+                );
+            return yield* Effect.gen(function* () {
+              const existing = yield* sql<{ readonly task_id: string }>`
+                SELECT task_id FROM command_runs WHERE task_id = ${taskId}
+              `;
+              if (existing.length > 0) return result(taskId);
+              // Read again here: stopForTask or stopForThread may already have looked for a task
+              // cancelled, or a thread closed, since the request began.
+              const records = yield* threads
+                .getThreadRecords(scope.thread.threadId, ["subagents"], {
+                  subagentIds: [taskId],
+                })
+                .pipe(Effect.result);
+              if (records._tag === "Failure") {
+                return yield* unstarted(`Could not start the command: ${records.failure.message}`);
+              }
+              const { thread, subagents } = records.success;
+              // Cancelled, or its first request could not start it: the task already says why.
+              const endedWith = subagents[0]?.result;
+              if (endedWith != null) return yield* failure("orchestration_error", endedWith);
+              const closed = closedOf(thread);
+              if (closed !== undefined) {
+                return yield* unstarted(`Stopped: the chat was ${closed}.`, "interrupted");
+              }
+              const clocks = yield* recordedClocks;
+              const now = DateTime.makeUnsafe(clocks.wall);
+              const row: CommandRunRow = {
+                task_id: taskId,
+                thread_id: scope.thread.threadId,
+                run_id: parentRun.id,
+                label: input.label ?? null,
+                command: input.command,
+                shell: input.shell ?? null,
+                cwd,
+                directory,
+                pid: null,
+                process_identity: null,
+                unit: null,
+                status: startEnv === undefined ? "queued" : "running",
+                exit_code: null,
+                started_at: DateTime.formatIso(now),
+                deadline_at: DateTime.formatIso(DateTime.add(now, { minutes: timeoutMinutes })),
+                ended_at: null,
+                delivered_at: null,
+                last_alive_at: null,
+                probe_error: null,
+                lost_reason: null,
+                lost_output: null,
+              };
+              // Recorded before it starts, so a server that stops in between leaves the next one
+              // a record to adopt it by, never a command nothing watches.
+              const inserted = yield* sql`
+                INSERT INTO command_runs (
+                  task_id, thread_id, run_id, label, command, shell, cwd, directory, pid,
+                  process_identity, unit, status, exit_code, started_at, deadline_at, ended_at,
+                  delivered_at
+                ) VALUES (
+                  ${row.task_id}, ${row.thread_id}, ${row.run_id}, ${row.label}, ${row.command},
+                  ${row.shell}, ${row.cwd}, ${row.directory}, ${row.pid}, ${row.process_identity},
+                  ${row.unit}, ${row.status}, ${row.exit_code}, ${row.started_at},
+                  ${row.deadline_at}, ${row.ended_at}, ${row.delivered_at}
+                )
+              `.pipe(Effect.result);
+              if (inserted._tag === "Failure") {
+                return yield* unstarted(`Could not start the command: ${inserted.failure.message}`);
+              }
+              if (startEnv === undefined) {
+                queue.push(row);
                 return result(taskId);
-              }),
-            )
-            .pipe(
+              }
+              const notStarted = yield* startRecorded(row, clocks, startEnv);
+              if (notStarted !== undefined) {
+                return yield* unstarted(`Could not start the command: ${notStarted}`);
+              }
+              return result(taskId);
+            }).pipe(
               Effect.catchTags({
                 SqlError: (cause) =>
                   Effect.logWarning("command-runner.insert-failed", { taskId, cause }).pipe(
@@ -1762,7 +1799,8 @@ const make = Effect.gen(function* () {
                   ),
               }),
             );
-        }),
+          }),
+        ),
       );
     },
   );
@@ -2007,9 +2045,16 @@ const make = Effect.gen(function* () {
         const pruned = prune.pipe(Effect.ignoreCause({ log: true }));
         yield* pruned;
         yield* Effect.forkScoped(pruned.pipe(Effect.delay(RETENTION_INTERVAL), Effect.forever));
+        // Apart from the watch, whose deadlines a slow read of a queued command's environment
+        // would hold back; one fiber, so queued commands start one at a time, in order.
+        yield* Effect.forkScoped(
+          startQueued().pipe(
+            Effect.ignoreCause({ log: true }),
+            Effect.repeat(Schedule.spaced(watchInterval)),
+          ),
+        );
         yield* watchOnce.pipe(
           Effect.ignoreCause({ log: true }),
-          Effect.andThen(startQueued().pipe(Effect.ignoreCause({ log: true }))),
           Effect.repeat(Schedule.spaced(watchInterval)),
         );
       }).pipe(Effect.ignoreCause({ log: true })),

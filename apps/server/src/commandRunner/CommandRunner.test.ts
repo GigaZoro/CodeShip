@@ -11,6 +11,7 @@ import { vi } from "vite-plus/test";
 import {
   CommandId,
   EnvironmentId,
+  EventId,
   NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -44,6 +45,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerConfig from "../config.ts";
 import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -2460,20 +2462,25 @@ describe.runIf(isWindowsHost)("Windows only", () => {
   );
 });
 
-/** A machine short of memory until `clear`; each read of it is offered to `reads`. */
+const SHORTAGE: MemoryShortage = {
+  kind: "available",
+  totalBytes: 8 * 1024 ** 3,
+  availableBytes: 1024 ** 3,
+  reserveBytes: 2 * 1024 ** 3,
+};
+
+/** A machine short of memory until `clear`, and again after `runShort`; each read is offered to `reads`. */
 const shortMemory = Effect.gen(function* () {
-  let shortage: MemoryShortage | null = {
-    kind: "available",
-    totalBytes: 8 * 1024 ** 3,
-    availableBytes: 1024 ** 3,
-    reserveBytes: 2 * 1024 ** 3,
-  };
+  let shortage: MemoryShortage | null = SHORTAGE;
   const reads = yield* Queue.unbounded<MemoryShortage | null>();
   const read = Effect.sync(() => shortage).pipe(Effect.tap((seen) => Queue.offer(reads, seen)));
   return {
     reads,
     clear: Effect.sync(() => {
       shortage = null;
+    }),
+    runShort: Effect.sync(() => {
+      shortage = SHORTAGE;
     }),
     on: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
@@ -2488,14 +2495,57 @@ const shortMemory = Effect.gen(function* () {
 const MEMORY_WAIT =
   /^Queued until this machine has memory for it: 1 GiB of 8 GiB is available, under the 2 GiB reserve\. Its time limit counts from when it starts\.$/;
 
+const HOUR_MS = 60 * 60_000;
+
+/**
+ * The real clock an hour behind until `catchUp`, so a start dated after a queueing shows apart
+ * from it. Never ahead: a wrapper dates the end it records by the real clock.
+ */
+const clockBehind = Effect.gen(function* () {
+  const real = yield* Clock.Clock;
+  let behindMs = HOUR_MS;
+  const millis = () => real.currentTimeMillisUnsafe() - behindMs;
+  const clock: Clock.Clock = {
+    currentTimeMillisUnsafe: millis,
+    currentTimeMillis: Effect.sync(millis),
+    currentTimeNanosUnsafe: () => BigInt(millis()) * 1_000_000n,
+    currentTimeNanos: Effect.sync(() => BigInt(millis()) * 1_000_000n),
+    monotonicTimeNanosUnsafe: () => real.monotonicTimeNanosUnsafe(),
+    monotonicTimeNanos: real.monotonicTimeNanos,
+    sleep: (duration) => real.sleep(duration),
+  };
+  return {
+    catchUp: Effect.sync(() => {
+      behindMs = 0;
+    }),
+    on: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(Effect.provideService(Clock.Clock, clock)),
+  };
+});
+
+const START_COMMAND = "command:command-task-start:";
+
+/** Which of `taskIds` started off the queue, in the order they started. */
+const startOrder = (taskIds: ReadonlyArray<string>) =>
+  Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql<{ readonly command_id: string }>`
+      SELECT command_id FROM orchestration_events
+      WHERE command_id IN ${sql.in(taskIds.map((taskId) => `${START_COMMAND}${taskId}`))}
+      GROUP BY command_id ORDER BY MIN(sequence)
+    `,
+  ).pipe(Effect.map((rows) => rows.map((row) => row.command_id.slice(START_COMMAND.length))));
+
 it.layer(layerTest, { excludeTestServices: true })("a command waiting for memory", (it) => {
   it.effect.skipIf(isWindowsHost)(
-    "starts nothing while memory is short, says so in its task, then starts the waiting commands in order, each time limit counted from its start",
+    "starts nothing and reads no agent's environment while memory is short, says so in its task, then starts the waiting commands in order, each time limit counted from its start",
     () =>
       Effect.gen(function* () {
         const first = yield* liveChat("command-memory-first");
         const second = yield* liveChat("command-memory-second");
         const memory = yield* shortMemory;
+        const clock = yield* clockBehind;
+        let environmentReads = 0;
         const [one, two, queued] = yield* withServer((runner) =>
           Effect.gen(function* () {
             const one = yield* runner.run(callerOf(first.threadId), {
@@ -2514,15 +2564,31 @@ it.layer(layerTest, { excludeTestServices: true })("a command waiting for memory
             const waiting = yield* taskOf(first.threadId, one.taskId);
             assert.equal(waiting?.status, "pending");
             assert.match(waiting?.progress ?? "", MEMORY_WAIT);
+            assert.equal(environmentReads, 0);
+            yield* clock.catchUp;
             yield* memory.clear;
             yield* wakesOf([first.threadId, second.threadId]);
             return [one, two, queued] as const;
           }),
-        ).pipe(memory.on);
+        ).pipe(
+          memory.on,
+          clock.on,
+          Effect.provide(
+            providerShell((_cwd, inherited) =>
+              Effect.sync(() => {
+                environmentReads += 1;
+                return inherited;
+              }),
+            ),
+          ),
+        );
+        assert.deepStrictEqual(yield* startOrder([one.taskId, two.taskId]), [
+          one.taskId,
+          two.taskId,
+        ]);
+        assert.equal(environmentReads, 2);
         const ran = (yield* commandRow(one.taskId))!;
-        const ranAfter = (yield* commandRow(two.taskId))!;
-        assert.isAbove(Date.parse(ran.started_at), Date.parse(queued.started_at));
-        assert.isAbove(Date.parse(ranAfter.started_at), Date.parse(ran.started_at));
+        assert.isAtLeast(Date.parse(ran.started_at) - Date.parse(queued.started_at), HOUR_MS);
         assert.equal(Date.parse(ran.deadline_at) - Date.parse(ran.started_at), 5 * 60_000);
         const task = yield* taskOf(first.threadId, one.taskId);
         assert.equal(task?.status, "completed");
@@ -2551,11 +2617,10 @@ it.layer(layerTest, { excludeTestServices: true })("a command waiting for memory
             return two;
           }),
         ).pipe(memory.on);
-        const ran = (yield* commandRow(one.taskId))!;
-        assert.isAbove(
-          Date.parse((yield* commandRow(two.taskId))!.started_at),
-          Date.parse(ran.started_at),
-        );
+        assert.deepStrictEqual(yield* startOrder([one.taskId, two.taskId]), [
+          one.taskId,
+          two.taskId,
+        ]);
         assert.match(
           (yield* taskOf(first.threadId, one.taskId))?.result ?? "",
           /Last output:\nfirst\n/,
@@ -2586,5 +2651,239 @@ it.layer(layerTest, { excludeTestServices: true })("a command waiting for memory
       assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "started")));
       assert.equal((yield* taskOf(chat.threadId, cancelled.taskId))?.status, "cancelled");
     }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "never starts a waiting command whose task was cancelled as its start was decided",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-memory-cancelled-late");
+        const other = yield* liveChat("command-memory-cancelled-late-other");
+        const memory = yield* shortMemory;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        let cancelAfterRead: string | undefined;
+        const cancelled = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const cancelled = yield* runner.run(callerOf(chat.threadId), {
+              command: "echo > started",
+            });
+            cancelAfterRead = cancelled.taskId;
+            yield* memory.clear;
+            // It starts after the cancelled one would have.
+            yield* runner.run(callerOf(other.threadId), { command: "echo other" });
+            yield* nextWake(other.threadId);
+            return cancelled;
+          }),
+        ).pipe(
+          memory.on,
+          Effect.provideService(ThreadManagement.ThreadManagementService, {
+            ...threads,
+            // Its start reads its task still waiting, and the cancel lands right after.
+            getThreadRecords: (threadId, fields, filter) =>
+              threads.getThreadRecords(threadId, fields, filter).pipe(
+                Effect.tap(() => {
+                  const taskId = cancelAfterRead;
+                  if (taskId === undefined || filter?.subagentIds?.[0] !== taskId) {
+                    return Effect.void;
+                  }
+                  cancelAfterRead = undefined;
+                  return threads.dispatch(cancellationOf(threadId, taskId));
+                }),
+              ),
+          }),
+        );
+        assert.isUndefined(cancelAfterRead);
+        assert.isUndefined(yield* commandRow(cancelled.taskId));
+        assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "started")));
+        assert.equal((yield* taskOf(chat.threadId, cancelled.taskId))?.status, "cancelled");
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "keeps a waiting command queued when memory runs short again while it reads its agent's environment",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-memory-short-again");
+        const memory = yield* shortMemory;
+        const environmentRead = yield* Deferred.make<void>();
+        const started = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const started = yield* runner.run(callerOf(chat.threadId), { command: "echo ran" });
+            yield* memory.clear;
+            yield* Deferred.await(environmentRead);
+            // The check after the read, then the next pass's: the pass that read ended unstarted.
+            yield* Queue.take(memory.reads);
+            yield* Queue.take(memory.reads);
+            const waiting = (yield* commandRow(started.taskId))!;
+            assert.equal(waiting.status, "queued");
+            assert.isNull(waiting.pid);
+            yield* memory.clear;
+            yield* nextWake(chat.threadId);
+            return started;
+          }),
+        ).pipe(
+          memory.on,
+          Effect.provide(
+            providerShell((_cwd, inherited) =>
+              Effect.gen(function* () {
+                if (yield* Deferred.isDone(environmentRead)) return inherited;
+                // Another process took the memory while the provider read its settings.
+                yield* memory.runShort;
+                yield* Queue.clear(memory.reads);
+                yield* Deferred.succeed(environmentRead, undefined);
+                return inherited;
+              }),
+            ),
+          ),
+        );
+        const task = yield* taskOf(chat.threadId, started.taskId);
+        assert.equal(task?.status, "completed");
+        assert.match(task?.result ?? "", /Last output:\nran\n/);
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "hands a waiting command that cannot start its failure until its task takes it",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-memory-end-retried");
+        const memory = yield* shortMemory;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        let starting = false;
+        let endAttempts = 0;
+        const failed = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const failed = yield* runner.run(callerOf(chat.threadId), { command: "echo ran" });
+            starting = true;
+            yield* memory.clear;
+            yield* nextWake(chat.threadId);
+            return failed;
+          }),
+        ).pipe(
+          memory.on,
+          Effect.provide(
+            // Only its start's read fails: one with its request would refuse the request instead.
+            providerShell((_cwd, inherited) =>
+              starting
+                ? Effect.fail(
+                    new ProviderDriverError({
+                      driver,
+                      instanceId,
+                      detail: "settings.json is not JSON",
+                    }),
+                  )
+                : Effect.succeed(inherited),
+            ),
+          ),
+          Effect.provideService(ThreadManagement.ThreadManagementService, {
+            ...threads,
+            // The first hand-over of its end is lost, as a dispatch that fails is.
+            dispatch: (command) => {
+              if (command.type !== "delegated_task.command.complete")
+                return threads.dispatch(command);
+              endAttempts += 1;
+              return endAttempts > 1
+                ? threads.dispatch(command)
+                : Effect.fail(
+                    new Orchestrator.OrchestratorDispatchError({
+                      commandId: command.commandId,
+                      commandType: command.type,
+                    }),
+                  );
+            },
+          }),
+        );
+        assert.equal(endAttempts, 2);
+        assert.isUndefined(yield* commandRow(failed.taskId));
+        const task = yield* taskOf(chat.threadId, failed.taskId);
+        assert.equal(task?.status, "failed");
+        assert.match(
+          task?.result ?? "",
+          /^Could not start the command: .*settings\.json is not JSON/,
+        );
+      }),
+  );
+
+  it.effect.each([
+    // Its first telling is lost, as a dispatch that fails is, and the next pass tells it again.
+    ["archived", "command-memory-archived", 2],
+    // A deleted chat records nothing, so its task needs no telling once it is gone.
+    ["deleted", "command-memory-deleted", 1],
+  ] as const)(
+    "tells a waiting command's task that its chat was %s, until nothing waits on it",
+    ([why, name, attempts]) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(name);
+        const other = yield* liveChat(`${name}-other`);
+        const memory = yield* shortMemory;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const sink = yield* EventSink.EventSinkV2;
+        const told = yield* Deferred.make<void>();
+        let endAttempts = 0;
+        const waiting = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const waiting = yield* runner.run(callerOf(chat.threadId), { command: "echo started" });
+            // Its turn ends, as an agent's does after it asks, so the chat can be archived.
+            const [turn] = (yield* threads.getThreadRecords(chat.threadId, ["runs"])).runs;
+            const now = yield* DateTime.now;
+            yield* sink.write({
+              commandId: CommandId.make(`command:end-turn:${chat.threadId}`),
+              events: [
+                {
+                  id: EventId.make(`event:end-turn:${chat.threadId}`),
+                  type: "run.updated",
+                  threadId: chat.threadId,
+                  runId: turn!.id,
+                  nodeId: turn!.rootNodeId!,
+                  providerInstanceId: turn!.providerInstanceId,
+                  occurredAt: now,
+                  payload: { ...turn!, status: "completed", completedAt: now },
+                },
+              ],
+            });
+            yield* threads.dispatch(
+              why === "deleted"
+                ? deletionOf(chat.threadId)
+                : {
+                    type: "thread.archive",
+                    commandId: CommandId.make(`command:archive:${chat.threadId}`),
+                    threadId: chat.threadId,
+                  },
+            );
+            yield* Deferred.await(told);
+            // Its request takes the lock the task was told under.
+            yield* runner.run(callerOf(other.threadId), { command: "echo other" });
+            return waiting;
+          }),
+        ).pipe(
+          memory.on,
+          Effect.provideService(ThreadManagement.ThreadManagementService, {
+            ...threads,
+            dispatch: (command) => {
+              if (command.type !== "delegated_task.command.complete")
+                return threads.dispatch(command);
+              endAttempts += 1;
+              return endAttempts < attempts
+                ? Effect.fail(
+                    new Orchestrator.OrchestratorDispatchError({
+                      commandId: command.commandId,
+                      commandType: command.type,
+                    }),
+                  )
+                : threads
+                    .dispatch(command)
+                    .pipe(Effect.ensuring(Deferred.succeed(told, undefined)));
+            },
+          }),
+        );
+        assert.equal(endAttempts, attempts);
+        assert.isUndefined(yield* commandRow(waiting.taskId));
+        if (why === "archived") {
+          assert.equal(
+            (yield* taskOf(chat.threadId, waiting.taskId))?.result,
+            "Stopped: the chat was archived.",
+          );
+        }
+      }),
   );
 });
