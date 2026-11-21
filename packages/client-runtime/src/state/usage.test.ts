@@ -21,6 +21,7 @@ import {
   needsCursorKeychainAccess,
   refreshUsage,
   refreshUsageLimits,
+  usageRefreshingEnvironmentIdsAtom,
 } from "./usage.ts";
 
 const input = {
@@ -137,6 +138,32 @@ describe("manual usage refresh", () => {
       { environmentId: "filtered", input: { ...input, modelFilter } },
       { environmentId: "plain", input },
     ]);
+  });
+
+  it("tracks each manual Usage refresh through its own rescan", async () => {
+    const { registry, environments, refresh } = harness(["desk", "laptop"]);
+    const [desk, laptop] = environments;
+    const onlyLaptop = Promise.withResolvers<void>();
+    const unmount = registry.mount(usageRefreshingEnvironmentIdsAtom);
+    const unsubscribe = registry.subscribe(usageRefreshingEnvironmentIdsAtom, (ids) => {
+      if (ids.size === 1 && ids.has(laptop!.environmentId)) onlyLaptop.resolve();
+    });
+    const refreshing = refresh();
+    expect(registry.get(usageRefreshingEnvironmentIdsAtom)).toEqual(
+      new Set(environments.map((env) => env.environmentId)),
+    );
+    for (const entry of environments) entry.rates.resolve(AsyncResult.success(pricing));
+    await Promise.all(environments.map((env) => env.scanStarted.promise));
+    desk!.scan.resolve(summary);
+    await onlyLaptop.promise;
+    expect(registry.get(usageRefreshingEnvironmentIdsAtom)).toEqual(
+      new Set([laptop!.environmentId]),
+    );
+    laptop!.scan.resolve(summary);
+    await refreshing;
+    expect(registry.get(usageRefreshingEnvironmentIdsAtom).size).toBe(0);
+    unsubscribe();
+    unmount();
   });
 
   it("settles when an environment disconnects during the rescan", async () => {

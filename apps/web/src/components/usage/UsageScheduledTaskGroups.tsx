@@ -141,18 +141,46 @@ export function UsageScheduledTaskGroups({
           ({ environmentId }) =>
             supportedIds.includes(environmentId) && !readableIds.includes(environmentId),
         )
-        .map(({ environmentId, label }) => (
-          <p key={environmentId} role="status" className="text-xs text-muted-foreground">
-            {pendingGrants.has(environmentId)
-              ? t("Checking access to scheduled task runs on {environment}…", {
-                  environment: label,
-                })
-              : t(
-                  "This connection lacks permission to read scheduled task runs on {environment}.",
-                  { environment: label },
-                )}
-          </p>
-        ))}
+        .map(({ environmentId, label }) => {
+          const grant = grants[supportedIds.indexOf(environmentId)]!;
+          if (grant._tag === "Failure") {
+            return (
+              <div
+                key={environmentId}
+                role="status"
+                className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground"
+              >
+                <p className="min-w-0 break-words">
+                  {t("Could not check access to scheduled task runs on {environment}.", {
+                    environment: label,
+                  })}
+                </p>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={grant.waiting}
+                  onClick={() =>
+                    registry.refresh(environmentSession.sessionStateAtom(environmentId))
+                  }
+                >
+                  {t("Retry")}
+                </Button>
+              </div>
+            );
+          }
+          return (
+            <p key={environmentId} role="status" className="text-xs text-muted-foreground">
+              {grant._tag === "Initial"
+                ? t("Checking access to scheduled task runs on {environment}…", {
+                    environment: label,
+                  })
+                : t(
+                    "This connection lacks permission to read scheduled task runs on {environment}.",
+                    { environment: label },
+                  )}
+            </p>
+          );
+        })}
 
       {failures.map((failure) => (
         <div

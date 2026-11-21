@@ -23,6 +23,11 @@ const { Contents, state } = vi.hoisted(() => ({
     requestedWindow: null as UsageSummaryInput | null,
     readsEnabled: [] as (boolean | undefined)[],
     failedLimits: new Set<EnvironmentId>(),
+    refreshingLimits: false,
+    limitsRefreshingEnvironmentIds: new Set<EnvironmentId>(),
+    refreshLimits: async () => {},
+    refreshUsage: async () => {},
+    usageRefreshingEnvironmentIds: new Set<EnvironmentId>(),
     revision: 0,
     listeners: new Set<() => void>(),
   },
@@ -32,7 +37,11 @@ vi.mock("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: vi.fn() },
   Platform: { OS: "android" },
   Pressable: Contents,
-  RefreshControl: () => null,
+  RefreshControl: ({ onRefresh }: { onRefresh: () => void }) => (
+    <button type="button" onClick={onRefresh}>
+      Pull to refresh
+    </button>
+  ),
   View: Contents,
 }));
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }));
@@ -57,7 +66,20 @@ vi.mock("../../components/ui/Button", () => ({
 vi.mock("../../components/ui/AppActivityIndicator", () => ({ AppActivityIndicator: () => null }));
 vi.mock("../../components/ui/AppText", () => ({ AppText: Contents }));
 vi.mock("../../components/ui/AppSymbol", () => ({ SymbolView: () => null }));
-vi.mock("../../components/ui/ScreenScrollView", () => ({ ScreenScrollView: Contents }));
+vi.mock("../../components/ui/ScreenScrollView", () => ({
+  ScreenScrollView: ({
+    children,
+    refreshControl,
+  }: {
+    children: ReactNode;
+    refreshControl?: ReactNode;
+  }) => (
+    <div>
+      {refreshControl}
+      {children}
+    </div>
+  ),
+}));
 vi.mock("../../components/ui/SegmentedControl", () => ({ SegmentedControl: () => null }));
 vi.mock("../../components/ui/Menu", () => ({
   Menu: ({
@@ -142,7 +164,8 @@ vi.mock("../../state/usage", async () => {
         showingKept: false,
         environments: state.live,
         selectedEnvironments,
-        refresh: vi.fn(),
+        refreshingEnvironmentIds: state.usageRefreshingEnvironmentIds,
+        refresh: state.refreshUsage,
       };
     },
   };
@@ -157,7 +180,13 @@ vi.mock("../../lib/i18n", () => ({
 vi.mock("./ChatGptUsageSummary", () => ({ ChatGptUsageSummary: () => null }));
 vi.mock("./UsageDailyChart", () => ({ UsageDailyChart: () => null }));
 vi.mock("./UsageLimitsSection", () => ({
-  useRefreshLimits: () => ({ failedLabels: [], failedIds: state.failedLimits, refreshing: false }),
+  useRefreshLimits: () => ({
+    failedLabels: [],
+    failedIds: state.failedLimits,
+    refreshing: state.refreshingLimits,
+    refreshingEnvironmentIds: state.limitsRefreshingEnvironmentIds,
+    refresh: state.refreshLimits,
+  }),
 }));
 vi.mock("./UsageLimitsPooled", () => ({ UsageLimitsSection: () => <p>Limits overview</p> }));
 
@@ -173,6 +202,11 @@ function setup(tab: string | undefined = "usage") {
   state.requestedWindow = null;
   state.readsEnabled.length = 0;
   state.failedLimits.clear();
+  state.refreshingLimits = false;
+  state.limitsRefreshingEnvironmentIds.clear();
+  state.refreshLimits = async () => {};
+  state.refreshUsage = async () => {};
+  state.usageRefreshingEnvironmentIds.clear();
   const container = document.createElement("div");
   const root = createRoot(container);
   return {
@@ -306,4 +340,105 @@ it("keeps the mobile failure layout while the next clock tick retries a cold sca
   await screen.render();
   expect(screen.container.textContent).toContain("Read failed");
   expect(screen.container.textContent).not.toContain("Scanning provider transcripts…");
+});
+
+function observedSummary(contractVersion: number = USAGE_CONTRACT_VERSION) {
+  return {
+    ...makeWindow(30, new Date("2026-11-21T18:56:00Z")),
+    contractVersion,
+    readAt: "2026-11-21T18:56:00Z",
+    buckets: [],
+    sources: [],
+    pricing: { status: "cached" as const, source: "test", fetchedAt: null, knownModels: 0 },
+    scanDurationMs: 0,
+  };
+}
+
+function menuEnvironment(container: HTMLElement, id: string): HTMLButtonElement {
+  return container.querySelector<HTMLButtonElement>(`[data-environment="${id}"]`)!;
+}
+
+it("labels each mobile Limits refresh only until that environment settles", async () => {
+  await using screen = setup("limits");
+  const desk = liveEnvironment("desk", "Desk");
+  const laptop = liveEnvironment("laptop", "Laptop");
+  state.live = [desk, laptop];
+  const deskRequest = Promise.withResolvers<void>();
+  const laptopRequest = Promise.withResolvers<void>();
+  state.refreshLimits = async () => {
+    state.refreshingLimits = true;
+    const refresh = async (id: EnvironmentId, request: Promise<void>) => {
+      state.limitsRefreshingEnvironmentIds.add(id);
+      await request;
+      state.limitsRefreshingEnvironmentIds.delete(id);
+    };
+    await Promise.all([
+      refresh(desk.environmentId, deskRequest.promise),
+      refresh(laptop.environmentId, laptopRequest.promise),
+    ]);
+    state.refreshingLimits = false;
+  };
+  await screen.render();
+  await act(() =>
+    [...screen.container.querySelectorAll("button")]
+      .find((button) => button.textContent === "Pull to refresh")
+      ?.click(),
+  );
+  await screen.render();
+  try {
+    expect(menuEnvironment(screen.container, "desk").textContent).toContain("Updating limits…");
+    expect(menuEnvironment(screen.container, "laptop").textContent).toContain("Updating limits…");
+    await act(() => deskRequest.resolve());
+    await screen.render();
+    expect(menuEnvironment(screen.container, "desk").querySelector("span")?.textContent).toBe(
+      "Connected",
+    );
+    expect(menuEnvironment(screen.container, "laptop").textContent).toContain("Updating limits…");
+  } finally {
+    await act(() => laptopRequest.resolve());
+  }
+});
+
+it("shows a mobile Usage refresh only for the selected environment", async () => {
+  await using screen = setup();
+  const desk = liveEnvironment("desk", "Desk");
+  const laptop = liveEnvironment("laptop", "Laptop");
+  state.live = [desk, laptop].map((environment) => ({
+    ...environment,
+    summary: observedSummary(),
+  }));
+  const request = Promise.withResolvers<void>();
+  state.refreshUsage = async () => {
+    state.usageRefreshingEnvironmentIds.add(laptop.environmentId);
+    await request.promise;
+    state.usageRefreshingEnvironmentIds.clear();
+  };
+  await screen.render();
+  await act(() => menuEnvironment(screen.container, "desk").click());
+  await act(() =>
+    [...screen.container.querySelectorAll("button")]
+      .find((button) => button.textContent === "Pull to refresh")
+      ?.click(),
+  );
+  try {
+    expect(menuEnvironment(screen.container, "desk").querySelector("span")?.textContent).toBe(
+      "Usage up to date",
+    );
+    expect(menuEnvironment(screen.container, "laptop").textContent).toContain("Updating usage…");
+  } finally {
+    await act(() => request.resolve());
+  }
+});
+
+it("shows Update required for an unselected incompatible environment on mobile", async () => {
+  await using screen = setup();
+  state.live = [
+    { ...liveEnvironment("desk", "Desk"), summary: observedSummary() },
+    { ...liveEnvironment("laptop", "Laptop"), summary: observedSummary(0) },
+  ];
+  await screen.render();
+  await act(() => menuEnvironment(screen.container, "laptop").click());
+  expect(menuEnvironment(screen.container, "laptop").querySelector("span")?.textContent).toBe(
+    "Update required.",
+  );
 });

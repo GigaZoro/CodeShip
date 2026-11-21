@@ -7,6 +7,7 @@ import {
 import {
   needsCursorKeychainAccess,
   refreshUsage,
+  usageRefreshingEnvironmentIdsAtom,
   usageSummaryInput,
 } from "@t3tools/client-runtime/state/usage";
 import { resolveUsageAccess } from "@t3tools/client-runtime/state/usage-access";
@@ -107,6 +108,7 @@ export function useUsage(
   const environments = useAtomValue(
     usageByWindowAtom(enabled ? usageWindowKey(requestedWindow) : null),
   );
+  const refreshingEnvironmentIds = useAtomValue(usageRefreshingEnvironmentIdsAtom);
   const selectedEnvironments =
     selectedEnvironmentIds === null
       ? environments
@@ -143,6 +145,7 @@ export function useUsage(
 
   return {
     requestedWindow,
+    refreshingEnvironmentIds,
     failures,
     environments,
     selectedEnvironments,

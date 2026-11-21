@@ -15,6 +15,8 @@ const data = vi.hoisted(() => ({
   errors: new Map<string, string>(),
   denied: new Set<string>(),
   checking: new Set<string>(),
+  grantFailures: new Set<string>(),
+  sessionRetries: new Set<string>(),
   requests: new Set<string>(),
 }));
 vi.mock("../../state/environments", () => ({
@@ -26,6 +28,12 @@ vi.mock("../../state/session", async (importOriginal) => {
   const { AsyncResult, Atom } = await import("effect/reactivity");
   return {
     ...(await importOriginal<typeof import("../../state/session")>()),
+    environmentSession: {
+      sessionStateAtom: (id: EnvironmentId) => {
+        data.sessionRetries.add(id);
+        return Atom.make(AsyncResult.initial());
+      },
+    },
     environmentSessionStatesAtom: (key: string) =>
       Atom.make(
         key === ""
@@ -33,10 +41,12 @@ vi.mock("../../state/session", async (importOriginal) => {
           : key.split("\n").map((id) =>
               data.checking.has(id)
                 ? AsyncResult.initial(true)
-                : AsyncResult.success({
-                    authenticated: true,
-                    scopes: data.denied.has(id) ? [] : [AuthOrchestrationReadScope],
-                  }),
+                : data.grantFailures.has(id)
+                  ? AsyncResult.fail(new Error("Session request failed"))
+                  : AsyncResult.success({
+                      authenticated: true,
+                      scopes: data.denied.has(id) ? [] : [AuthOrchestrationReadScope],
+                    }),
             ),
       ),
   };
@@ -88,6 +98,8 @@ function readyStats() {
   data.errors.clear();
   data.denied.clear();
   data.checking.clear();
+  data.grantFailures.clear();
+  data.sessionRetries.clear();
   data.requests.clear();
   data.stats.set("desk", [
     {
@@ -155,6 +167,23 @@ it("waits for the scheduled-task grant before requesting stats or reporting a de
   await expect.element(screen.getByText(/lacks permission/)).not.toBeInTheDocument();
   expect(data.requests.size).toBe(0);
   data.checking.clear();
+  await screen.rerender(groups(0));
+  await expect.element(screen.getByRole("row", { name: /Nightly/ })).toBeVisible();
+  expect(data.requests).toEqual(new Set(["desk"]));
+});
+
+it("reports a failed scheduled-task access check with Retry and fetches stats after recovery", async () => {
+  readyStats();
+  data.grantFailures.add("desk");
+  await using screen = await render(groups(0));
+  expect(data.requests.size).toBe(0);
+  expect(screen.container.textContent).toContain(
+    "Could not check access to scheduled task runs on Desk.",
+  );
+  await screen.getByRole("button", { name: "Retry" }).click();
+  expect(data.sessionRetries).toEqual(new Set(["desk"]));
+  await expect.element(screen.getByText(/lacks permission/)).not.toBeInTheDocument();
+  data.grantFailures.clear();
   await screen.rerender(groups(0));
   await expect.element(screen.getByRole("row", { name: /Nightly/ })).toBeVisible();
   expect(data.requests).toEqual(new Set(["desk"]));

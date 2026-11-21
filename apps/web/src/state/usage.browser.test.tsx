@@ -12,7 +12,10 @@ import {
   usageEnvironmentError,
   usageNotices,
 } from "@t3tools/client-runtime/state/usage-progress";
-import { cursorKeychainAccessEnvironments } from "@t3tools/client-runtime/state/usage";
+import {
+  cursorKeychainAccessEnvironments,
+  usageRefreshingEnvironmentIdsAtom,
+} from "@t3tools/client-runtime/state/usage";
 import { UsageShareBar } from "../components/usage/UsageShareBar";
 import { UsageGapsNotice } from "../components/usage/UsageGapsNotice";
 import { makeWindow } from "@t3tools/shared/usageFormat";
@@ -30,7 +33,10 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("@effect/atom-react", () => ({
-  useAtomValue: (atom: object) => state.query?.(atom) ?? state.environments,
+  useAtomValue: (atom: object) =>
+    atom === usageRefreshingEnvironmentIdsAtom
+      ? new Set()
+      : (state.query?.(atom) ?? state.environments),
 }));
 vi.mock("@t3tools/client-runtime/state/usage", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@t3tools/client-runtime/state/usage")>()),

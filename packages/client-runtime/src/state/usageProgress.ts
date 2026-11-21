@@ -31,6 +31,7 @@ import {
 import { t } from "@t3tools/shared/i18n";
 
 interface UsageProgressEnvironment {
+  readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly isConnected: boolean;
   readonly isPending: boolean;
@@ -69,23 +70,27 @@ export function updatingProvidersLabel(
 export function usageProgress(
   environments: readonly UsageProgressEnvironment[],
   {
-    refreshing = false,
+    refreshingEnvironmentIds,
     providerLabel,
   }: {
-    readonly refreshing?: boolean;
+    readonly refreshingEnvironmentIds?: ReadonlySet<EnvironmentId>;
     readonly providerLabel: (provider: UsageProviderKind) => string;
   },
 ) {
   const progress = environments.map((environment) => ({
     label: environment.label,
-    ...usageEnvironmentProgress(environment, refreshing),
+    ...usageEnvironmentProgress(
+      environment,
+      refreshingEnvironmentIds?.has(environment.environmentId),
+    ),
   }));
   const waiting = progress.filter(({ phase }) => phase === "loading" || phase === "stale");
   const providers = [
     ...new Set(progress.flatMap((entry) => (entry.phase === "partway" ? entry.providers : []))),
   ];
   return {
-    announcement: refreshing ? t("Updating…") : null,
+    announcement:
+      refreshingEnvironmentIds && refreshingEnvironmentIds.size > 0 ? t("Updating…") : null,
     label:
       waiting.length === 0
         ? providers.length === 0
@@ -100,7 +105,6 @@ export function usageProgress(
 }
 
 export interface EnvironmentUsageStatus extends UsageProgressEnvironment {
-  readonly environmentId: EnvironmentId;
   readonly canReadDiagnostics: boolean;
   readonly needsCursorKeychainAccess: boolean;
   readonly readsCursorAccount?: boolean;

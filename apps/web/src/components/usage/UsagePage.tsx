@@ -255,6 +255,7 @@ export function UsagePage() {
   const chartType = preferences.chartType ?? "area";
   const {
     requestedWindow,
+    refreshingEnvironmentIds,
     failures,
     environments,
     selectedEnvironments,
@@ -275,7 +276,7 @@ export function UsagePage() {
     !showingKept &&
     usageWindowKey(shownWindow) !== usageWindowKey(requestedWindow);
   const progress = usageProgress(selectedEnvironments, {
-    refreshing: refreshingUsage,
+    refreshingEnvironmentIds,
     providerLabel,
   });
   const activeProviders = PROVIDER_ORDER.filter((provider) =>
@@ -504,7 +505,7 @@ export function UsagePage() {
             selectedEnvironmentIds={selectedEnvironmentIds}
             onSelectionChange={setSelectedEnvironmentIds}
             showUsageStatus={!showingLimits}
-            refreshing={refreshingUsage}
+            refreshingEnvironmentIds={refreshingEnvironmentIds}
             duplicateSources={showingKept ? [] : merged.duplicateSources}
             coverage={coverage}
             onOpenModelPrices={() => setPriceDialog({})}
@@ -1524,7 +1525,7 @@ function UsageEnvironmentFilter({
   selectedEnvironmentIds,
   onSelectionChange,
   showUsageStatus,
-  refreshing,
+  refreshingEnvironmentIds,
   duplicateSources,
   coverage,
   onOpenModelPrices,
@@ -1534,7 +1535,7 @@ function UsageEnvironmentFilter({
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly onSelectionChange: (ids: ReadonlySet<EnvironmentId> | null) => void;
   readonly showUsageStatus: boolean;
-  readonly refreshing: boolean;
+  readonly refreshingEnvironmentIds: ReadonlySet<EnvironmentId>;
   readonly duplicateSources: readonly string[];
   readonly coverage: ReturnType<typeof usageNotices>["coverage"];
   readonly onOpenModelPrices: () => void;
@@ -1578,7 +1579,10 @@ function UsageEnvironmentFilter({
           const checked =
             selectedEnvironmentIds === null ||
             selectedEnvironmentIds.has(environment.environmentId);
-          const progress = usageEnvironmentProgress(environment, refreshing);
+          const progress = usageEnvironmentProgress(
+            environment,
+            refreshingEnvironmentIds.has(environment.environmentId),
+          );
           const hasGap = coverage?.gaps.some(
             (gap) => gap.environment.environmentId === environment.environmentId,
           );

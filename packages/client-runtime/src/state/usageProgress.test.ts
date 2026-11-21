@@ -55,6 +55,7 @@ function environment(
 ) {
   return {
     label,
+    environmentId: EnvironmentId.make(label),
     isConnected: true,
     isPending: false,
     error: null as string | null,
@@ -290,9 +291,12 @@ it("keeps two consecutive background refetches quiet and announces a manual refr
 
   expect(progress.map(({ label }) => label)).toEqual([null, "Updating…", null, "Updating…", null]);
   expect(progress.map(({ announcement }) => announcement)).toEqual([null, null, null, null, null]);
-  expect(usageProgress([refetching], { ...options, refreshing: true }).announcement).toBe(
-    "Updating…",
-  );
+  expect(
+    usageProgress([refetching], {
+      ...options,
+      refreshingEnvironmentIds: new Set([refetching.environmentId]),
+    }).announcement,
+  ).toBe("Updating…");
 });
 
 it("never retains an incompatible answer as figures for another selection", () => {

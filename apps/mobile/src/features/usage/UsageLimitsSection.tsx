@@ -32,6 +32,7 @@ import {
   environmentIdsKey,
   limitsAutoRefreshSetAtom,
   limitsRefreshFailuresAtom,
+  limitsRefreshingEnvironmentIdsAtom,
   refreshEnvironmentLimits,
 } from "./usageLimitsRefresh";
 import { usageProviderKind, useProviderColors } from "./usageProviders";
@@ -353,10 +354,10 @@ export function useRefreshLimits(
     .filter(([, presentation]) => presentation.connection.phase === "connected")
     .map(([environmentId]) => environmentId);
   const connectedKey = environmentIdsKey(connectedIds);
+  const idsKey = environmentIdsKey(presentations.keys());
   useAtomMount(active && connectedKey !== "" ? limitsAutoRefreshSetAtom(connectedKey) : IDLE_ATOM);
-  const failedIds = new Set(
-    useAtomValue(limitsRefreshFailuresAtom(environmentIdsKey(presentations.keys()))),
-  );
+  const failedIds = new Set(useAtomValue(limitsRefreshFailuresAtom(idsKey)));
+  const refreshingEnvironmentIds = useAtomValue(limitsRefreshingEnvironmentIdsAtom(idsKey));
   const failedLabels = selected
     .filter(([environmentId]) => failedIds.has(environmentId))
     .map(([, presentation]) => presentation.entry.target.label);
@@ -379,6 +380,7 @@ export function useRefreshLimits(
   };
   return {
     refreshing,
+    refreshingEnvironmentIds,
     failedIds,
     failedLabels,
     refresh: refreshManually,

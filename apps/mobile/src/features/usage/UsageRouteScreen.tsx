@@ -13,7 +13,7 @@ import { Button } from "../../components/ui/Button";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { ChatGptUsageSummary } from "./ChatGptUsageSummary";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
-import { EnvironmentId, type UsageProviderKind } from "@t3tools/contracts";
+import { EnvironmentId, USAGE_CONTRACT_VERSION, type UsageProviderKind } from "@t3tools/contracts";
 import { type RouteProp, useIsFocused, useRoute } from "@react-navigation/native";
 import { cursorKeychainAccessEnvironments } from "@t3tools/client-runtime/state/usage";
 import {
@@ -21,7 +21,12 @@ import {
   usageEnvironmentProgress,
   usageProgress,
 } from "@t3tools/client-runtime/state/usage-progress";
-import { isModelCostUnknown, type DailyTotals, type MergedUsage } from "@t3tools/shared/usageMerge";
+import {
+  isCompatibleUsageContractVersion,
+  isModelCostUnknown,
+  type DailyTotals,
+  type MergedUsage,
+} from "@t3tools/shared/usageMerge";
 import {
   enumerateDays,
   enumerateHourStarts,
@@ -136,6 +141,7 @@ function UsageScreen(props: {
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const {
     requestedWindow,
+    refreshingEnvironmentIds,
     failures,
     shown,
     showingKept,
@@ -181,7 +187,7 @@ function UsageScreen(props: {
   }, [loading]);
   const metric: UsageChartMetric = view === "tokens" ? "tokens" : "cost";
   const progress = usageProgress(selectedEnvironments, {
-    refreshing: refreshingUsage,
+    refreshingEnvironmentIds,
     providerLabel,
   });
   const rollingRefresh =
@@ -240,17 +246,18 @@ function UsageScreen(props: {
       subtitle: showingLimits
         ? !environment.isConnected
           ? t("Waiting for connection…")
-          : limits.failedIds.has(environment.environmentId)
-            ? t("Could not refresh limits.")
-            : limits.refreshing &&
-                (selectedEnvironmentIds === null ||
-                  selectedEnvironmentIds.has(environment.environmentId))
-              ? t("Updating limits…")
+          : limits.refreshingEnvironmentIds.has(environment.environmentId)
+            ? t("Updating limits…")
+            : limits.failedIds.has(environment.environmentId)
+              ? t("Could not refresh limits.")
               : t("Connected")
         : (coverage?.gaps.find((gap) => gap.environment.environmentId === environment.environmentId)
             ?.message ??
           environment.error ??
-          usageEnvironmentStatus(environment, refreshingUsage)),
+          usageEnvironmentStatus(
+            environment,
+            refreshingEnvironmentIds.has(environment.environmentId),
+          )),
       state:
         selectedEnvironmentIds === null || selectedEnvironmentIds.has(environment.environmentId)
           ? ("on" as const)
@@ -1140,6 +1147,11 @@ function ModelsSection(props: {
 
 function usageEnvironmentStatus(environment: EnvironmentUsageStatus, refreshing: boolean): string {
   if (!environment.isConnected) return t("Waiting for connection…");
+  if (
+    environment.summary !== null &&
+    !isCompatibleUsageContractVersion(environment.summary.contractVersion, USAGE_CONTRACT_VERSION)
+  )
+    return t("Update required.");
   const progress = usageEnvironmentProgress(environment, refreshing);
   if (progress.phase === "loading") return t("Loading usage…");
   if (progress.phase === "stale") return t("Updating usage…");

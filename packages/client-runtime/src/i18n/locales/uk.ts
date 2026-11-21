@@ -4187,6 +4187,8 @@ const catalog: MessageCatalog = {
   "Could not change this browser tab": "Не вдалося змінити цю вкладку браузера",
   "Could not change WSL backend": "Не вдалося змінити бекенд WSL",
   "Could not check {provider}'s MCP servers": "Не вдалося перевірити MCP-сервери {provider}",
+  "Could not check access to scheduled task runs on {environment}.":
+    "Не вдалося перевірити доступ до запусків запланованих завдань у середовищі {environment}.",
   "Could not check desktop capture support. Check your desktop session and try again.":
     "Не вдалося перевірити підтримку захоплення екрана. Перевірте сеанс стільниці та повторіть спробу.",
   "Could not check for updates.": "Не вдалося перевірити оновлення.",
@@ -13842,6 +13844,7 @@ const catalog: MessageCatalog = {
   "Update ready to download": "Оновлення готове до завантаження",
   "Update release notes": "Примітки до випуску оновлення",
   "Update required": "Потрібне оновлення",
+  "Update required.": "Потрібне оновлення.",
   "Update server to map models": "Оновіть сервер, щоб зіставляти моделі",
   "Update T3.CodeShip on {environment} to manage its secret providers.":
     "Оновіть T3.CodeShip на {environment}, щоб керувати його провайдерами секретів.",

@@ -10,7 +10,10 @@ import {
   usageNotices,
   type EnvironmentUsageStatus,
 } from "@t3tools/client-runtime/state/usage-progress";
-import { cursorKeychainAccessEnvironments } from "@t3tools/client-runtime/state/usage";
+import {
+  cursorKeychainAccessEnvironments,
+  usageRefreshingEnvironmentIdsAtom,
+} from "@t3tools/client-runtime/state/usage";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
@@ -26,7 +29,10 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("@effect/atom-react", () => ({
-  useAtomValue: (atom: object) => state.query?.(atom) ?? state.environments,
+  useAtomValue: (atom: object) =>
+    atom === usageRefreshingEnvironmentIdsAtom
+      ? new Set()
+      : (state.query?.(atom) ?? state.environments),
 }));
 vi.mock("./atom-registry", () => ({ appAtomRegistry: {} }));
 vi.mock("./presentation", async () => {

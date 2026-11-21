@@ -45,6 +45,8 @@ const state = vi.hoisted(() => ({
   previous: null as UsageSnapshot | null,
   failures: null as UsageScanFailures | null,
   revision: 0,
+  manualRefresh: null as Promise<void> | null,
+  refreshingEnvironmentIds: new Set<EnvironmentId>(),
   listeners: new Set<() => void>(),
 }));
 
@@ -104,7 +106,14 @@ vi.mock("../../state/usage", async () => {
         selectedEnvironments: selected,
         shown,
         showingKept: isKeptUsage(shown, window, selected),
-        refresh: async () => {},
+        refreshingEnvironmentIds: state.refreshingEnvironmentIds,
+        refresh: async () => {
+          if (state.manualRefresh === null) return;
+          for (const { environmentId } of selected)
+            state.refreshingEnvironmentIds.add(environmentId);
+          await state.manualRefresh;
+          state.refreshingEnvironmentIds.clear();
+        },
       };
     },
   };
@@ -245,6 +254,8 @@ function setup(windowDays: 1 | 7 = 1) {
   state.costSource = "unpriced";
   state.previous = null;
   state.failures = null;
+  state.manualRefresh = null;
+  state.refreshingEnvironmentIds.clear();
 }
 
 async function update() {
@@ -410,6 +421,32 @@ it("keeps the web failure layout while the next clock tick retries a cold scan",
   await update();
   await expect.element(screen.getByRole("button", { name: "Retry" })).toBeVisible();
   await expect.element(screen.getByText("Loading usage…")).not.toBeInTheDocument();
+});
+
+it("shows manual Usage refresh progress only for the selected environment on web", async () => {
+  setup();
+  state.secondEnvironment = "ready";
+  let finishRefresh!: () => void;
+  state.manualRefresh = new Promise<void>((resolve) => {
+    finishRefresh = resolve;
+  });
+  await using screen = await render(<Screen />);
+  await screen.getByRole("button", { name: /All environments/ }).click();
+  await page.getByRole("menuitemcheckbox", { name: /Desk/ }).click();
+  await userEvent.keyboard("{Escape}");
+  await screen.getByRole("button", { name: "Refresh usage" }).first().click();
+  try {
+    await screen.getByRole("button", { name: "Laptop" }).click();
+    const menu = page.getByRole("menu");
+    expect(menu.getByRole("menuitemcheckbox", { name: /Desk/ }).element().textContent).toContain(
+      "Ready",
+    );
+    await expect
+      .element(menu.getByRole("menuitemcheckbox", { name: /Laptop.*Refreshing/ }))
+      .toBeVisible();
+  } finally {
+    await act(finishRefresh);
+  }
 });
 
 it("reports live compatibility and source failures beside the saved total", async () => {
