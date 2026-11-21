@@ -564,7 +564,11 @@ follow-up admitted under another owner survives, even when it reuses the same
 child thread.
 Force stop uses the same cascade when it dispatches a run interrupt.
 Pass `stop: true` to stop the whole thread and its delegated work across runs,
-including background work a completed run still awaits.
+including background work a completed run still awaits. Pass `withWork: true`
+with a `runId` to stop the work that run started even after it ended: the runs
+its delegated tasks' results woke, which are interrupted with it, and every task
+those runs delegated. A run someone else asked for keeps running. Servers from
+before this field ignore it and interrupt the run alone.
 
 The result names the run the interrupt reached in `runId`, and the requested
 ID in `requestedRunId` when they differ. `outcome` says what the call did:

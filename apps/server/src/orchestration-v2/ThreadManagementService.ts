@@ -206,6 +206,8 @@ export interface ThreadManagementInterruptInput {
   readonly threadId: ThreadId;
   readonly runId?: RunId;
   readonly reason?: string;
+  /** An ended run still reaches the work it started; see `run.interrupt`'s `withWork`. */
+  readonly withWork?: boolean;
 }
 
 /** The run and outcome the interrupt resolved under its command lock; a replay reports the same. */
@@ -1342,6 +1344,7 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       runId,
       onlyIfActive: true,
+      ...(input.withWork === true ? { withWork: true } : {}),
       ...(input.reason === undefined ? {} : { reason: input.reason }),
     });
     const result = dispatch.result;
@@ -1627,8 +1630,10 @@ const make = Effect.gen(function* () {
         continue;
       }
       if (task.childThreadId === null) {
-        // A task in a linked environment ends here; its follower then stops it there.
-        // One with its result keeps it, but its thread there may run follow-up work.
+        // A task in a linked environment ends here; its follower then stops it there: the
+        // whole thread for a thread Stop, and for a run's, only the task's run with its work.
+        // One with its result keeps it; its thread there settled before reporting it, but may
+        // run follow-up work since, which only a thread Stop reaches.
         if (task.remoteChild === undefined) continue;
         if (input.parentRunId !== undefined && task.result !== null) continue;
         const commandId = CommandId.make(`${input.commandId}:stop:${task.id}`);
@@ -1644,6 +1649,7 @@ const make = Effect.gen(function* () {
                   input.reason === undefined
                     ? "Stopped with its parent."
                     : `Stopped with its parent: ${input.reason}`,
+                ...(input.parentRunId === undefined ? {} : { stopScope: "run" as const }),
               }
             : {
                 type: "delegated_task.remote.stop",

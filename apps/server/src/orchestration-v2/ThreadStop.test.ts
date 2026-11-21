@@ -774,6 +774,85 @@ it.effect("a scoped Stop reaches a grandchild a completed follow-up left, not a 
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect.each(["ended", "still runs"] as const)(
+  "a Stop of an ended run with its work reaches the run its result woke that %s, not a later run",
+  (woken) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make(`thread:stop-with-work-${woken.replace(" ", "-")}`);
+      yield* createWatchingThread(threadId, 11);
+      const now = yield* DateTime.now;
+      const latest = (id: ThreadId) =>
+        orchestrator
+          .getThreadProjection(id)
+          .pipe(Effect.map((projection) => projection.runs.at(-1)!));
+      const complete = (run: OrchestrationV2Run) =>
+        projections.apply({
+          type: "run.updated",
+          threadId: run.threadId,
+          id: EventId.make(`completed:${run.id}`),
+          occurredAt: now,
+          payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+        });
+
+      // The run a peer's task started ends while the task it delegated still works.
+      yield* send(threadId, "the delegated task", "start_immediately");
+      const launch = yield* latest(threadId);
+      const launchChild = yield* delegate(threadId, `launch work ${woken}`);
+      yield* complete(launch);
+      // A result of its task woke a run, which delegated work of its own.
+      yield* send(threadId, "woken by a result", "start_immediately");
+      const wake = yield* latest(threadId);
+      const message = (yield* orchestrator.getThreadProjection(threadId)).messages.find(
+        (candidate) => candidate.id === wake.userMessageId,
+      )!;
+      yield* projections.apply({
+        type: "message.updated",
+        threadId,
+        id: EventId.make(`woken:${message.id}`),
+        occurredAt: now,
+        payload: {
+          ...message,
+          delegatedCompletion: { parentRunId: launch.id, generation: 1, taskIds: [] },
+        },
+      });
+      const wakeChild = yield* delegate(threadId, `wake work ${woken}`);
+      // Someone there asked for a run of their own since, with its own delegated work.
+      let laterChild: ThreadId | undefined;
+      if (woken === "ended") {
+        yield* complete(wake);
+        yield* send(threadId, "asked for there", "start_immediately");
+        laterChild = yield* delegate(threadId, `later work ${woken}`);
+      }
+
+      yield* sql`DELETE FROM orchestration_v2_effect_outbox`;
+      yield* threads.interruptThread({
+        projectId: ProjectId.make("project:thread-stop"),
+        commandId: CommandId.make(`stop-with-work-${woken}`),
+        threadId,
+        runId: launch.id,
+        withWork: true,
+      });
+      yield* worker.drain();
+      assert.deepEqual((yield* threadState(launchChild)).runs, ["interrupted"]);
+      assert.deepEqual((yield* threadState(wakeChild)).runs, ["interrupted"]);
+      if (laterChild === undefined) {
+        assert.deepEqual((yield* threadState(threadId)).runs, ["completed", "interrupted"]);
+      } else {
+        assert.deepEqual((yield* threadState(laterChild)).runs, ["starting"]);
+        assert.deepEqual((yield* threadState(threadId)).runs, [
+          "completed",
+          "completed",
+          "starting",
+        ]);
+      }
+    }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("interrupting the restart source stops children owned by every run in its chain", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

@@ -4444,6 +4444,7 @@ const make = Effect.gen(function* () {
           }),
           threadId: input.threadId,
           ...(input.runId === undefined ? {} : { runId: input.runId }),
+          ...(input.withWork === true ? { withWork: true } : {}),
           reason: agentStopReason(input.reason),
         })
         .pipe(

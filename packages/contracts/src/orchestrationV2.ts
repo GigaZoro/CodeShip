@@ -1022,6 +1022,12 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
    * one owed, so each reaches the thread there once however often it is sent.
    */
   stopCount: Schema.optional(NonNegativeInt),
+  /**
+   * `run`: the stop owed there is the Stop of the run here that delegated the task, so it
+   * reaches only the task's own run there and the work that run started; a run someone asked
+   * for there since keeps running. Absent: it stops the whole thread there, as its Stop button does.
+   */
+  stopScope: Schema.optional(Schema.Literal("run")),
 });
 export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChild.Type;
 
@@ -3519,6 +3525,12 @@ export const OrchestrationV2Command = Schema.Union([
     holdQueue: Schema.optional(Schema.Boolean),
     /** Interrupt active runs and pending restarts, including work owned by their restart chain. Other terminal runs are a no-op. */
     onlyIfActive: Schema.optional(Schema.Boolean),
+    /**
+     * With `onlyIfActive`, an ended run still reaches the work it started: the runs its delegated
+     * tasks' results woke, which are interrupted with theirs, and the delegated tasks and pending
+     * results of all of them. A run someone else asked for keeps its own work.
+     */
+    withWork: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     type: Schema.Literal("queued-message.promote-to-steer"),
@@ -3762,6 +3774,11 @@ const OrchestrationV2InternalCommand = Schema.Union([
     stoppedThere: Schema.optional(Schema.Literals(["ran-out", "stopped"])),
     /** The stop generation this report acknowledges; absent for the original unnumbered stop. */
     stopCount: Schema.optional(NonNegativeInt),
+    /**
+     * `run`: a Stop of the run here that delegated the task, so the stop it owes there is
+     * `remoteChild.stopScope: "run"`, unless the task already owes its whole thread there one.
+     */
+    stopScope: Schema.optional(Schema.Literal("run")),
   }),
   /**
    * Owes a stop to the thread there of a remote task that already has its result, as Stop on
@@ -3777,7 +3794,8 @@ const OrchestrationV2InternalCommand = Schema.Union([
   /**
    * Records the run there that carries a remote task, once its launch returned it. The task is
    * recorded before the launch, so this is the only way its follower learns which run is its
-   * own. A task that has its result, or already names a run, keeps it.
+   * own; a task stopped during its launch still needs it for the stop it owes that run. A task
+   * that already names a run keeps it.
    */
   Schema.Struct({
     type: Schema.Literal("delegated_task.remote.attach-run"),
