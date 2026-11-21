@@ -2,9 +2,15 @@ import { formatAppWindowTitle } from "@t3tools/shared/windowTitle";
 
 let appName: string | null = null;
 let context: ReadonlyArray<string | null | undefined> = [];
+let needsYouCount = 0;
 
 function apply(): void {
-  if (appName !== null) document.title = formatAppWindowTitle(context, appName);
+  if (appName !== null) document.title = formatAppWindowTitle(context, appName, needsYouCount);
+}
+
+export function setDocumentTitleNeedsYouCount(count: number): void {
+  needsYouCount = count;
+  apply();
 }
 
 export function setDocumentAppName(name: string): void {
