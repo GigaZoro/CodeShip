@@ -50,9 +50,9 @@ const CLAUDE_INVESTIGATION_ALLOWED = [
 // Denies override allows; block git --output/-o because allowed trailing args can otherwise write anywhere.
 const CLAUDE_INVESTIGATION_DENIED = ["Bash(git * --output*)", "Bash(git * -o *)"].join(",");
 
-const NO_SESSION_PERSISTENCE = "--no-session-persistence";
-// Claude Code before 2.0.63 exits with this on stderr; those runs retry without the flag.
-const NO_SESSION_PERSISTENCE_REJECTED = `error: unknown option '${NO_SESSION_PERSISTENCE}'`;
+// --safe-mode keeps the account's CLAUDE.md, skills and plugins (about 23k tokens) out of one-shot calls.
+// Claude versions that predate a flag exit with the stderr line "error: unknown option '<flag>'"; those runs retry without it.
+const OPTIONAL_CLAUDE_FLAGS = ["--safe-mode", "--no-session-persistence"];
 
 const ClaudeOutputEnvelope = Schema.Struct({
   structured_output: Schema.Unknown,
@@ -220,7 +220,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     );
 
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* (
-      noSessionPersistence: boolean,
+      optionalFlags: ReadonlyArray<string>,
     ) {
       const workingDirectory =
         operation === "generateThreadTitle"
@@ -257,7 +257,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
               ]
             : ["--tools", ""]),
           "--disable-slash-commands",
-          ...(noSessionPersistence ? [NO_SESSION_PERSISTENCE] : []),
+          ...optionalFlags,
           // managed-mcp.json already isolates servers and makes Claude reject this flag.
           ...(managedMcpConfig ? [] : ["--strict-mcp-config"]),
           "--permission-mode",
@@ -299,12 +299,21 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       return { stdout, stderr, exitCode };
     });
 
-    const rawStdout = yield* runClaudeCommand(true).pipe(
-      Effect.filterOrElse(
-        (result) =>
-          result.exitCode === 0 || !result.stderr.includes(NO_SESSION_PERSISTENCE_REJECTED),
-        () => runClaudeCommand(false),
-      ),
+    const rawStdout = yield* Effect.gen(function* () {
+      let optionalFlags = OPTIONAL_CLAUDE_FLAGS;
+      let result = yield* runClaudeCommand(optionalFlags);
+      // A structured Claude result means Claude started, so no flag was rejected; wrapper text must not drop safe mode.
+      while (result.exitCode !== 0 && claudeErrorResult(result.stdout.trim()) === undefined) {
+        const stderrLines = new Set(result.stderr.split(/\r?\n/).map((line) => line.trim()));
+        const supportedFlags = optionalFlags.filter(
+          (flag) => !stderrLines.has(`error: unknown option '${flag}'`),
+        );
+        if (supportedFlags.length === optionalFlags.length) break;
+        optionalFlags = supportedFlags;
+        result = yield* runClaudeCommand(optionalFlags);
+      }
+      return result;
+    }).pipe(
       Effect.flatMap(({ stdout, stderr, exitCode }) => {
         if (exitCode === 0) return Effect.succeed(stdout);
         const stderrDetail = stderr.trim();

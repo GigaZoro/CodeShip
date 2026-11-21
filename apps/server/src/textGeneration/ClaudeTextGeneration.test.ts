@@ -57,7 +57,9 @@ function makeFakeClaudeBinary(dir: string, lifecyclePort?: number) {
 function withFakeClaudeEnv<A, E, R>(
   input: {
     output: string;
-    rejectsNoSessionPersistence?: boolean;
+    unsupportedOptions?: ReadonlyArray<string>;
+    investigation?: boolean;
+    schemaProperty?: string;
     lifecyclePort?: number;
     exitCode?: number;
     stderr?: string;
@@ -76,149 +78,26 @@ function withFakeClaudeEnv<A, E, R>(
     const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-claude-text-" });
     const binDir = yield* makeFakeClaudeBinary(tempDir, input.lifecyclePort);
     const pathDelimiter = (yield* HostProcess.isWindows) ? ";" : ":";
-    const previousPath = process.env.PATH;
-    const previousRejectsNoSessionPersistence =
-      process.env.T3_FAKE_CLAUDE_REJECTS_NO_SESSION_PERSISTENCE;
-    const previousOutput = process.env.T3_FAKE_CLAUDE_OUTPUT;
-    const previousExitCode = process.env.T3_FAKE_CLAUDE_EXIT_CODE;
-    const previousStderr = process.env.T3_FAKE_CLAUDE_STDERR;
-    const previousArgsMustContain = process.env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN;
-    const previousArgsMustNotContain = process.env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN;
-    const previousStdinMustContain = process.env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN;
-    const previousConfigDirMustBe = process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;
-    const previousCwdMustNotBe = process.env.T3_FAKE_CLAUDE_CWD_MUST_NOT_BE;
-    const previousSettingsMustEqual = process.env.T3_FAKE_CLAUDE_SETTINGS_MUST_EQUAL;
-
-    yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        process.env.PATH = `${binDir}${pathDelimiter}${previousPath ?? ""}`;
-        process.env.T3_FAKE_CLAUDE_OUTPUT = input.output;
-
-        if (input.rejectsNoSessionPersistence) {
-          process.env.T3_FAKE_CLAUDE_REJECTS_NO_SESSION_PERSISTENCE = "1";
-        } else {
-          delete process.env.T3_FAKE_CLAUDE_REJECTS_NO_SESSION_PERSISTENCE;
-        }
-
-        if (input.exitCode !== undefined) {
-          process.env.T3_FAKE_CLAUDE_EXIT_CODE = String(input.exitCode);
-        } else {
-          delete process.env.T3_FAKE_CLAUDE_EXIT_CODE;
-        }
-
-        if (input.stderr !== undefined) {
-          process.env.T3_FAKE_CLAUDE_STDERR = input.stderr;
-        } else {
-          delete process.env.T3_FAKE_CLAUDE_STDERR;
-        }
-
-        if (input.argsMustContain !== undefined) {
-          process.env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN = input.argsMustContain;
-        } else {
-          delete process.env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN;
-        }
-
-        if (input.argsMustNotContain !== undefined) {
-          process.env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN = input.argsMustNotContain;
-        } else {
-          delete process.env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN;
-        }
-
-        if (input.stdinMustContain !== undefined) {
-          process.env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN = input.stdinMustContain;
-        } else {
-          delete process.env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN;
-        }
-
-        if (input.cwdMustNotBe !== undefined) {
-          process.env.T3_FAKE_CLAUDE_CWD_MUST_NOT_BE = input.cwdMustNotBe;
-        } else {
-          delete process.env.T3_FAKE_CLAUDE_CWD_MUST_NOT_BE;
-        }
-
-        if (input.configDirMustBe !== undefined) {
-          process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE = input.configDirMustBe;
-        } else {
-          delete process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;
-        }
-
-        if (input.settingsMustEqual !== undefined) {
-          process.env.T3_FAKE_CLAUDE_SETTINGS_MUST_EQUAL = JSON.stringify(input.settingsMustEqual);
-        } else {
-          delete process.env.T3_FAKE_CLAUDE_SETTINGS_MUST_EQUAL;
-        }
-      }),
-      () =>
-        Effect.sync(() => {
-          process.env.PATH = previousPath;
-
-          if (previousRejectsNoSessionPersistence === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_REJECTS_NO_SESSION_PERSISTENCE;
-          } else {
-            process.env.T3_FAKE_CLAUDE_REJECTS_NO_SESSION_PERSISTENCE =
-              previousRejectsNoSessionPersistence;
-          }
-
-          if (previousOutput === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_OUTPUT;
-          } else {
-            process.env.T3_FAKE_CLAUDE_OUTPUT = previousOutput;
-          }
-
-          if (previousExitCode === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_EXIT_CODE;
-          } else {
-            process.env.T3_FAKE_CLAUDE_EXIT_CODE = previousExitCode;
-          }
-
-          if (previousStderr === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_STDERR;
-          } else {
-            process.env.T3_FAKE_CLAUDE_STDERR = previousStderr;
-          }
-
-          if (previousArgsMustContain === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN;
-          } else {
-            process.env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN = previousArgsMustContain;
-          }
-
-          if (previousArgsMustNotContain === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN;
-          } else {
-            process.env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN = previousArgsMustNotContain;
-          }
-
-          if (previousStdinMustContain === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN;
-          } else {
-            process.env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN = previousStdinMustContain;
-          }
-
-          if (previousCwdMustNotBe === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_CWD_MUST_NOT_BE;
-          } else {
-            process.env.T3_FAKE_CLAUDE_CWD_MUST_NOT_BE = previousCwdMustNotBe;
-          }
-
-          if (previousConfigDirMustBe === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;
-          } else {
-            process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE = previousConfigDirMustBe;
-          }
-
-          if (previousSettingsMustEqual === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_SETTINGS_MUST_EQUAL;
-          } else {
-            process.env.T3_FAKE_CLAUDE_SETTINGS_MUST_EQUAL = previousSettingsMustEqual;
-          }
-        }),
-    );
-
+    const environment = {
+      ...process.env,
+      PATH: `${binDir}${pathDelimiter}${process.env.PATH ?? ""}`,
+      T3_FAKE_CLAUDE_OUTPUT: input.output,
+      T3_FAKE_CLAUDE_UNSUPPORTED_OPTIONS: JSON.stringify(input.unsupportedOptions ?? []),
+      T3_FAKE_CLAUDE_INVESTIGATION: input.investigation ? "1" : "",
+      T3_FAKE_CLAUDE_SCHEMA_PROPERTY: input.schemaProperty ?? "",
+      T3_FAKE_CLAUDE_EXIT_CODE: String(input.exitCode ?? 0),
+      T3_FAKE_CLAUDE_STDERR: input.stderr ?? "",
+      T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN: input.argsMustContain ?? "",
+      T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN: input.argsMustNotContain ?? "",
+      T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN: input.stdinMustContain ?? "",
+      T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE: input.configDirMustBe ?? "",
+      T3_FAKE_CLAUDE_CWD_MUST_NOT_BE: input.cwdMustNotBe ?? "",
+      T3_FAKE_CLAUDE_SETTINGS_MUST_EQUAL: JSON.stringify(input.settingsMustEqual) ?? "",
+    };
     const config = decodeClaudeSettings(input.claudeConfig ?? {});
     const textGeneration = yield* makeClaudeTextGeneration(
       config,
-      undefined,
+      environment,
       Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
     );
     return yield* effectFn(textGeneration);
@@ -420,11 +299,15 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
     }),
   );
 
-  it.effect("retries without --no-session-persistence when the Claude CLI rejects it", () =>
+  it.effect.each([
+    { unsupportedOptions: ["--no-session-persistence"] },
+    { unsupportedOptions: ["--safe-mode"] },
+    { unsupportedOptions: ["--safe-mode", "--no-session-persistence"] },
+  ])("retries without unsupported CLI options $unsupportedOptions", ({ unsupportedOptions }) =>
     withFakeClaudeEnv(
       {
         output: JSON.stringify({ structured_output: { title: "Reconnect failures" } }),
-        rejectsNoSessionPersistence: true,
+        unsupportedOptions,
       },
       (textGeneration) =>
         Effect.gen(function* () {
@@ -440,6 +323,77 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
           expect(generated.title).toBe("Reconnect failures");
         }),
     ),
+  );
+
+  it.effect(
+    "passes safe mode to the other generation operations and keeps investigation tools",
+    () => {
+      const input = {
+        cwd: process.cwd(),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          SYNTHETIC_CLAUDE_STANDARD_MODEL,
+        ),
+      };
+      return Effect.gen(function* () {
+        yield* withFakeClaudeEnv(
+          {
+            output: JSON.stringify({
+              structured_output: {
+                subject: "Add sorting tests",
+                body: "Cover the default sort order.",
+                branch: "add-sorting-tests",
+                summary: "A sign-in is needed.",
+                needsPerson: true,
+                solutions: [
+                  { title: "Sign in", detail: "Use the browser.", command: "", agentCanDo: false },
+                ],
+                translation: { title: "Sign in", step: "Open the browser." },
+              },
+            }),
+          },
+          (textGeneration) =>
+            Effect.gen(function* () {
+              yield* textGeneration.generateCommitMessage({
+                ...input,
+                branch: "main",
+                stagedSummary: "1 file changed",
+                stagedPatch: "diff --git a/sort.test.ts b/sort.test.ts",
+              });
+              yield* textGeneration.generateBranchName({ ...input, message: "Add sorting tests" });
+              yield* textGeneration.generateManualStepReview({
+                ...input,
+                step: {
+                  title: "Sign in",
+                  step: "Open the browser.",
+                  machine: "test",
+                  kind: "hands-on",
+                },
+                notes: [],
+                language: "en",
+              });
+            }),
+        );
+        yield* withFakeClaudeEnv(
+          {
+            output: JSON.stringify({ structured_output: { stops: [] } }),
+            investigation: true,
+            schemaProperty: "stops",
+          },
+          (textGeneration) =>
+            textGeneration.generateReviewGuide({
+              ...input,
+              number: 1,
+              title: "Add sorting tests",
+              description: "",
+              baseBranch: "main",
+              baseCommit: "abc123",
+              settledReview: "",
+              language: "en",
+            }),
+        );
+      });
+    },
   );
 
   it.effect.each([
@@ -562,6 +516,39 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
     ],
   ] as const)("reports %s when the Claude CLI fails", ([, output, expected]) =>
     withFakeClaudeEnv({ output, stderr: wrapperNotice, exitCode: 1 }, (textGeneration) =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(
+          textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Name this thread",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+            },
+          }),
+        );
+
+        expect(error.detail).toBe(`Claude CLI command failed: ${expected}`);
+      }),
+    ),
+  );
+
+  // A retry here would drop --safe-mode, which the fake binary rejects with a different error.
+  it.effect.each([
+    [
+      "a structured Claude error when stderr also shows a flag diagnostic",
+      JSON.stringify({ is_error: true, result: "API Error: 429 rate limited" }),
+      "error: unknown option '--safe-mode'",
+      "API Error: 429 rate limited",
+    ],
+    [
+      "stderr that only quotes a flag diagnostic",
+      "not json",
+      "wrapper: previously saw error: unknown option '--safe-mode'",
+      "wrapper: previously saw error: unknown option '--safe-mode'",
+    ],
+  ] as const)("reports %s without retrying", ([, output, stderr, expected]) =>
+    withFakeClaudeEnv({ output, stderr, exitCode: 1 }, (textGeneration) =>
       Effect.gen(function* () {
         const error = yield* Effect.flip(
           textGeneration.generateThreadTitle({

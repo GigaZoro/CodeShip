@@ -9,13 +9,36 @@ function fail(message, code) {
   process.exit(code);
 }
 
-const permissionIndex = argv.indexOf("--permission-mode");
-if (permissionIndex === -1 || argv[permissionIndex + 1] !== "dontAsk") {
+function valueOf(flag) {
+  const index = argv.indexOf(flag);
+  return index === -1 ? undefined : argv[index + 1];
+}
+
+if (valueOf("--permission-mode") !== "dontAsk") {
   fail("text generation must deny permission prompts", 12);
 }
-const toolsIndex = argv.indexOf("--tools");
-if (toolsIndex === -1 || argv[toolsIndex + 1] !== "") {
-  fail("text generation must receive an explicit empty tool set", 6);
+const investigation = process.env.T3_FAKE_CLAUDE_INVESTIGATION === "1";
+const expectedTools = investigation ? "Read,Grep,Glob,Bash" : "";
+if (valueOf("--tools") !== expectedTools) {
+  fail("text generation received an unexpected tool set", 6);
+}
+if (
+  investigation &&
+  valueOf("--allowedTools") !== "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
+) {
+  fail("investigation tools must be limited to read-only operations", 17);
+}
+if (investigation && valueOf("--disallowedTools") !== "Bash(git * --output*),Bash(git * -o *)") {
+  fail("investigation must deny git options that write files", 15);
+}
+const schemaJson = valueOf("--json-schema");
+const schema = schemaJson === undefined ? undefined : JSON.parse(schemaJson);
+if (schema?.type !== "object") {
+  fail("text generation must request structured output", 14);
+}
+const schemaProperty = process.env.T3_FAKE_CLAUDE_SCHEMA_PROPERTY;
+if (schemaProperty && !Object.hasOwn(schema.properties ?? {}, schemaProperty)) {
+  fail(`the output schema lacks '${schemaProperty}'`, 18);
 }
 if (argv.includes("--dangerously-skip-permissions")) {
   fail("text generation must not bypass permissions", 7);
@@ -26,15 +49,19 @@ if (!argv.includes("--disable-slash-commands")) {
 if (!argv.includes("--strict-mcp-config")) {
   fail("text generation must not load configured MCP servers", 9);
 }
-if (process.env.T3_FAKE_CLAUDE_REJECTS_NO_SESSION_PERSISTENCE === "1") {
-  if (argv.includes("--no-session-persistence")) {
-    fail("error: unknown option '--no-session-persistence'", 1);
+const unsupportedOptions = JSON.parse(process.env.T3_FAKE_CLAUDE_UNSUPPORTED_OPTIONS ?? "[]");
+for (const option of unsupportedOptions) {
+  if (argv.includes(option)) {
+    fail(`error: unknown option '${option}'`, 1);
   }
-} else if (!argv.includes("--no-session-persistence")) {
-  fail("text generation must not save a resumable session", 16);
 }
-const settingsIndex = argv.indexOf("--settings");
-if (settingsIndex === -1 || JSON.parse(argv[settingsIndex + 1]).disableAllHooks !== true) {
+for (const option of ["--safe-mode", "--no-session-persistence"]) {
+  if (!unsupportedOptions.includes(option) && !argv.includes(option)) {
+    fail(`text generation must pass '${option}' when supported`, 16);
+  }
+}
+const settingsJson = valueOf("--settings");
+if (settingsJson === undefined || JSON.parse(settingsJson).disableAllHooks !== true) {
   fail("text generation must disable hooks", 10);
 }
 const settingsMustEqual = process.env.T3_FAKE_CLAUDE_SETTINGS_MUST_EQUAL;
