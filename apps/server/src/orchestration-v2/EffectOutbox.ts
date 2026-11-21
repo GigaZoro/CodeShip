@@ -13,6 +13,7 @@ import {
   RunId,
   RuntimeRequestId,
   ThreadId,
+  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -49,6 +50,11 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     stopRunIds: Schema.optional(Schema.Array(RunId)),
     /** A run-scoped Stop reaches only these turns of the provider thread. */
     ownedProviderTurnIds: Schema.optional(Schema.Array(ProviderTurnId)),
+    /**
+     * The provider thread's background tasks a run-scoped Stop owned when it was requested; the
+     * next run can take the provider thread and carry them forward before the Stop settles.
+     */
+    ownedBackgroundTaskIds: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,

@@ -1429,6 +1429,7 @@ it.effect.each([
   "unprepared restart with live session",
   "missing session",
   "live session",
+  "next message admitted with live session",
   "only if active",
   "MCP queued restart",
   "MCP delayed restart with live session",
@@ -1781,6 +1782,25 @@ it.effect.each([
       // These turns were seeded directly. Run only the effects produced by Stop.
       const sql = yield* SqlClient.SqlClient;
       yield* sql`DELETE FROM orchestration_v2_effect_outbox WHERE command_id != ${commandId}`;
+      const nextAdmitted = scenario.startsWith("next message admitted");
+      const laterTask = { taskId: "later-task", kind: "background_task" as const };
+      if (nextAdmitted) {
+        // The next queued message can take the provider thread before the worker settles Stop,
+        // carrying the stopped chain's roster forward beside a task of its own.
+        const current = (yield* orchestrator.getThreadProjection(threadId)).providerThreads.find(
+          (candidate) => candidate.id === owner.id,
+        )!;
+        yield* projections.apply({
+          ...event,
+          id: EventId.make("next-admitted"),
+          type: "provider-thread.updated",
+          payload: {
+            ...current,
+            lastRunOrdinal: later.ordinal,
+            pendingBackgroundTasks: [...roster, laterTask],
+          },
+        });
+      }
       const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
       yield* worker.drain();
       assert.sameMembers(
@@ -1811,7 +1831,7 @@ it.effect.each([
       }
       assert.deepEqual(
         stopped.providerThreads.find((p) => p.id === owner.id)!.pendingBackgroundTasks,
-        [],
+        nextAdmitted ? [laterTask] : [],
       );
       assert.equal(
         stopped.turnItems.find((item) => item.id === itemId)?.status,
