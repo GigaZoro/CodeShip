@@ -254,7 +254,9 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
   | EffectWorker.OrchestrationEffectWorkerV2
   | EventSink.EventSinkV2
   | CommandOutputRecorder.CommandOutputRecorder
-  | ProviderSessionManager.ProviderSessionManagerV2,
+  | ProviderSessionManager.ProviderSessionManagerV2
+  | ThreadManagementService.ThreadManagementService
+  | ServerSettings.ServerSettingsService,
   Error | MigrationError | PlatformError.PlatformError | SqlError
 > {
   const layerRegistry = harness.makeProviderAdapterRegistryLayer(
@@ -289,7 +291,9 @@ export function layerWithRegistry<Error, SettingsError = never>(
   | EventSink.EventSinkV2
   | ProjectionStore.ProjectionStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
-  | CommandOutputRecorder.CommandOutputRecorder,
+  | CommandOutputRecorder.CommandOutputRecorder
+  | ThreadManagementService.ThreadManagementService
+  | ServerSettings.ServerSettingsService,
   Error | SettingsError | MigrationError | PlatformError.PlatformError | SqlError
 > {
   const layerServerConfig = Layer.effect(
@@ -573,6 +577,11 @@ export function layerWithRegistry<Error, SettingsError = never>(
     layerStores,
     layerContinuationWorkerProvided,
     layerCommandOutputHubProvided,
+    // Effect memoizes ThreadManagementService.layer by reference, so a test that builds its own
+    // over this harness silently gets this instance, wired to these settings. Use this one and
+    // pass custom settings as serverSettingsLayer.
+    layerThreadManagementProvided,
+    layerServerSettings,
   ).pipe(Layer.provide(ProviderTurnStartServiceTestkit.layer), Layer.provide(NodeServices.layer));
 
   if (options.runEffectWorker === false && options.recoverOnStartup !== true) {

@@ -37,8 +37,6 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
-import * as ServerSettings from "../serverSettings.ts";
-import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as CommandRunner from "../commandRunner/CommandRunner.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
@@ -76,12 +74,7 @@ const layerOrchestrator = Layer.mergeAll(
     { databaseLayer: layerDatabase, runEffectWorker: false },
   ),
 );
-const layerOrchestration = ThreadManagement.layer.pipe(
-  Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
-  Layer.provideMerge(
-    Layer.mergeAll(layerOrchestrator, ServerSettings.layerTest(), MemoryAdmission.layerTest()),
-  ),
-);
+const layerOrchestration = Layer.mergeAll(layerOrchestrator, MemoryAdmission.layerTest());
 
 /** Launches dispatch the real thread.create, and nothing more: no workspace, no run. */
 const layerLaunches = Layer.effect(

@@ -23,7 +23,6 @@ import * as ProjectStore from "./ProjectStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
-import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -53,16 +52,15 @@ function makeHarness(
 ) {
   const layerDatabase = SqlitePersistence.layerMemory;
   const layerRegistry = ProviderAdapterRegistry.layerFromAdapters([adapter]);
-  const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
+  const layerServerSettings = ServerSettings.layerTest({});
+  const layerThreadManagement = ProviderReplayHarness.layerWithRegistry(
     { name: "thread-title-regeneration" },
     layerRegistry,
-    { databaseLayer: layerDatabase, runEffectWorker: false },
-  );
-  const layerServerSettings = ServerSettings.layerTest({});
-  const layerThreadManagement = ThreadManagement.layer.pipe(
-    Layer.provide(layerOrchestrator),
-    Layer.provide(layerServerSettings),
-    Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
+    {
+      databaseLayer: layerDatabase,
+      serverSettingsLayer: layerServerSettings,
+      runEffectWorker: false,
+    },
   );
   const layerOutbox = EffectOutbox.layer.pipe(Layer.provide(layerDatabase));
   const generateThreadTitle = vi.fn(
@@ -105,7 +103,6 @@ function makeHarness(
   );
   return {
     layer: Layer.mergeAll(
-      layerOrchestrator,
       layerThreadManagement,
       layerTitleRegeneration,
       layerOutbox,

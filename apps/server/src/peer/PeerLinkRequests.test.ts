@@ -48,7 +48,6 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
-import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -57,8 +56,6 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
-import * as ServerSettings from "../serverSettings.ts";
-import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
@@ -159,12 +156,7 @@ const makeLaptop = Effect.gen(function* () {
       }),
     ),
   );
-  const layerThreads = ThreadManagement.layer.pipe(
-    Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
-    Layer.provideMerge(
-      Layer.mergeAll(layerOrchestrator, ServerSettings.layerTest(), MemoryAdmission.layerTest()),
-    ),
-  );
+  const layerThreads = Layer.mergeAll(layerOrchestrator, MemoryAdmission.layerTest());
   // Linking back itself is PeerLinkBack's own test; here it records what the answer asked it for
   // and answers as the box would.
   const linkAsked = yield* Ref.make<ReadonlyArray<PeerLinkCreateInput>>([]);

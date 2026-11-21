@@ -62,7 +62,6 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
@@ -724,12 +723,7 @@ const makeLaptop = (
         }),
       ),
     );
-    const layerThreads = ThreadManagement.layer.pipe(
-      Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
-      Layer.provideMerge(
-        Layer.mergeAll(layerOrchestrator, ServerSettings.layerTest(), MemoryAdmission.layerTest()),
-      ),
-    );
+    const layerThreads = Layer.mergeAll(layerOrchestrator, MemoryAdmission.layerTest());
     const layerHere = McpHttpServer.layerOrchestratorToolkit.pipe(
       Layer.provideMerge(McpServer.McpServer.layer),
       Layer.provide(Layer.mock(CommandRunner.CommandRunner)({})),

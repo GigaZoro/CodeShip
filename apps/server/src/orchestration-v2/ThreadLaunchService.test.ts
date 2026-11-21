@@ -143,18 +143,17 @@ interface HarnessOptions {
 function makeHarness(options: HarnessOptions = {}) {
   const layerDatabase = SqlitePersistence.layerMemory;
   const layerRegistry = ProviderAdapterRegistry.layerFromAdapters(options.adapters ?? [adapter]);
-  const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
+  const layerServerSettings = ServerSettings.layerTest(options.serverSettings);
+  const layerThreadManagement = ProviderReplayHarness.layerWithRegistry(
     { name: "thread-launch" },
     layerRegistry,
-    { databaseLayer: layerDatabase, runEffectWorker: false },
+    {
+      databaseLayer: layerDatabase,
+      serverSettingsLayer: layerServerSettings,
+      runEffectWorker: false,
+    },
   );
-  const layerServerSettings = ServerSettings.layerTest(options.serverSettings);
   const layerReceipts = CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase));
-  const layerThreadManagement = ThreadManagement.layer.pipe(
-    Layer.provide(layerOrchestrator),
-    Layer.provide(layerServerSettings),
-    Layer.provide(layerReceipts),
-  );
   const layerOutbox = EffectOutbox.layer.pipe(Layer.provide(layerDatabase));
   const createWorktree = vi.fn(
     options.createWorktree ??
