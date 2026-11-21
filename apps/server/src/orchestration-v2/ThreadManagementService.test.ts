@@ -122,12 +122,10 @@ it.effect.each([
         ]),
         { databaseLayer: database, runEffectWorker: false },
       );
-      const layer = ThreadManagementService.layer.pipe(
-        Layer.provideMerge(runtime),
-        Layer.provideMerge(ProjectionStore.layer.pipe(Layer.provide(database))),
-        Layer.provideMerge(EffectOutbox.layer.pipe(Layer.provide(database))),
-        Layer.provide(ServerSettings.layerTest()),
-        Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(database))),
+      const layer = Layer.mergeAll(
+        runtime,
+        ProjectionStore.layer.pipe(Layer.provide(database)),
+        EffectOutbox.layer.pipe(Layer.provide(database)),
       );
       yield* Effect.gen(function* () {
         const service = yield* ThreadManagementService.ThreadManagementService;
@@ -303,7 +301,8 @@ it.effect.each([
           scenario === "racing"
             ? yield* ThreadManagementService.ThreadManagementService.pipe(
                 Effect.provide(
-                  ThreadManagementService.layer.pipe(
+                  // Memoized by reference, the plain layer would reuse the runtime's service and skip the mock.
+                  Layer.fresh(ThreadManagementService.layer).pipe(
                     Layer.provide(
                       Layer.mock(Orchestrator.OrchestratorV2)({
                         ...orchestrator,
@@ -321,7 +320,6 @@ it.effect.each([
                       }),
                     ),
                     Layer.provide(runtime),
-                    Layer.provide(ServerSettings.layerTest()),
                     Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(database))),
                   ),
                 ),
@@ -371,6 +369,7 @@ it.effect.each([
                 commandId: CommandId.make("interrupt-source"),
               })
               .pipe(Effect.result);
+        if (scenario === "racing") expect(reads).toBeGreaterThan(0);
         if (scenario === "manual" || scenario === "unrelated") {
           expect(Result.isSuccess(result) && result.success).toMatchObject({
             type: "already_terminal",

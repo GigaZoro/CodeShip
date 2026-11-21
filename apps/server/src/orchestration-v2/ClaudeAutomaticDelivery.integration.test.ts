@@ -41,9 +41,7 @@ import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunchService from "./ThreadLaunchService.ts";
-import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
-import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { delegatedCompletionUpdated } from "./testkit/DelegatedCompletionCohort.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
@@ -323,8 +321,6 @@ it.effect.each(deliveries)(
             }).pipe(
               Effect.provide(
                 ScheduledTaskService.layer.pipe(
-                  Layer.provide(ThreadManagementService.layer),
-                  Layer.provide(ServerSettings.layerTest()),
                   Layer.provide(MemoryAdmission.layerTest()),
                   Layer.provide(
                     Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({

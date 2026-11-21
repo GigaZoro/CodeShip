@@ -27,14 +27,11 @@ import * as Tracer from "effect/Tracer";
 import { McpSchema, McpServer } from "effect/ai";
 
 import { CodexOrchestratorReplayHarness } from "../orchestration-v2/Adapters/CodexAdapterV2.testkit.ts";
-import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
@@ -229,16 +226,6 @@ describe("orchestrator MCP toolkit", () => {
           },
           CodexOrchestratorReplayHarness,
         );
-        const layerOrchestration = Layer.merge(
-          layerOrchestrator,
-          ThreadManagementService.layer.pipe(
-            Layer.provide(layerOrchestrator),
-            Layer.provide(ServerSettings.layerTest()),
-            Layer.provide(
-              CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
-            ),
-          ),
-        );
         const layerProviderRegistry = ProviderRegistryMock.layer([
           makeProviderSnapshot({
             instanceId: codexInstanceId,
@@ -248,7 +235,7 @@ describe("orchestrator MCP toolkit", () => {
         ]);
         const layerTest = layerOrchestratorToolkit.pipe(
           Layer.provideMerge(McpServer.McpServer.layer),
-          Layer.provideMerge(layerOrchestration),
+          Layer.provideMerge(layerOrchestrator),
           Layer.provide(
             CodexOrchestratorReplayHarness.makeProviderAdapterRegistryLayer(transcript).pipe(
               Layer.provide(McpProviderSessions.layer),
@@ -271,7 +258,7 @@ describe("orchestrator MCP toolkit", () => {
           Layer.provideMerge(
             SecretRequests.layer.pipe(
               Layer.provide(layerMemorySecretStore),
-              Layer.provide(layerOrchestration),
+              Layer.provide(layerOrchestrator),
             ),
           ),
           Layer.provide(
