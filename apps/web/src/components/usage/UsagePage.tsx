@@ -30,6 +30,7 @@ import {
   retainUsageSnapshot,
   usageWindowKey,
   usageNotices,
+  waitingForFirstUsage,
   usageProgress,
   type UsageSnapshot,
 } from "@t3tools/client-runtime/state/usage-progress";
@@ -725,7 +726,7 @@ export function UsagePage() {
                 />
               </>
             ) : shown === null ? (
-              (failures?.errors.size ?? 0) === 0 ? (
+              waitingForFirstUsage(selectedEnvironments, failures) ? (
                 <UsageSkeleton hiddenProviders={hiddenProviders} />
               ) : null
             ) : !shown.hasAnswer ? null : (

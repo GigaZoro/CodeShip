@@ -266,8 +266,14 @@ it("keeps two slow hourly scan failures visible until a later response", async (
   await expect.element(screen.getByRole("button", { name: "Retry" })).not.toBeInTheDocument();
 });
 
-function ScopedUsage({ window }: { readonly window: UsageSummaryInput }) {
-  const usage = useUsage(window);
+function ScopedUsage({
+  window,
+  selection,
+}: {
+  readonly window: UsageSummaryInput;
+  readonly selection?: ReadonlySet<EnvironmentId>;
+}) {
+  const usage = useUsage(window, selection);
   const { coverage } = usageNotices(
     usage.selectedEnvironments,
     usage.shown?.environments ?? [],
@@ -341,6 +347,9 @@ it("reports only the new period's failures on web while retaining the previous f
   await screen.rerender(<ScopedUsage window={month} />);
   await expect.element(screen.getByText(/Monthly scan failed/)).toBeVisible();
   await expect.element(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+  await screen.rerender(<ScopedUsage window={month} selection={new Set([desk.environmentId])} />);
+  await expect.element(screen.getByText(/Monthly scan failed/)).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
 });
 
 it("keeps the previous resolution until both environments settle", async () => {
@@ -360,7 +369,7 @@ it("keeps the previous resolution until both environments settle", async () => {
   await expect.element(screen.getByText("hour usage: ready")).toBeVisible();
 });
 
-it("labels whose figures are retained when switching environments and never keeps an empty selection", async () => {
+it("shows only the selected environment's figures when switching environments", async () => {
   const { window, answered, summary } = setup();
   const other = {
     ...answered,
@@ -376,10 +385,8 @@ it("labels whose figures are retained when switching environments and never keep
   await expect.element(screen.getByText("100 tokens")).toBeVisible();
 
   await screen.rerender(<UsageProbe window={window} selection={otherSelection} />);
-  await expect
-    .element(screen.getByText(/Showing previous usage for Test · Oct 16 to Oct 23/))
-    .toBeVisible();
-  await expect.element(screen.getByText("100 tokens")).toBeVisible();
+  await expect.element(screen.getByText("Loading usage")).toBeVisible();
+  await expect.element(screen.getByText("100 tokens")).not.toBeInTheDocument();
 
   await screen.rerender(<UsageProbe window={window} selection={new Set()} />);
   await screen.rerender(<UsageProbe window={window} selection={otherSelection} />);

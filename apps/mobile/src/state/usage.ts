@@ -26,7 +26,10 @@ import {
   isKeptUsage,
   nextUsageRequest,
   settleUsageScanFailures,
+  retainUsageSnapshot,
   settleUsageSnapshot,
+  settleUsageReadings,
+  type UsageReadings,
   usageWindowKey,
   type EnvironmentUsageStatus,
   type UsageScanFailures,
@@ -118,14 +121,25 @@ export function useUsage(
       : environments.filter(({ environmentId }) => selectedEnvironmentIds.has(environmentId));
   const [savedFailures, setSavedFailures] = useState<UsageScanFailures | null>(null);
   const failures = enabled
-    ? settleUsageScanFailures(savedFailures, requestedWindow, selectedEnvironments)
+    ? settleUsageScanFailures(savedFailures, requestedWindow, environments)
     : null;
   if (failures !== savedFailures) setSavedFailures(failures);
+  const [savedReadings, setSavedReadings] = useState<UsageReadings>();
+  const readings = settleUsageReadings(savedReadings, requestedWindow, environments, undefined);
+  if (readings !== savedReadings) setSavedReadings(readings);
   const [previous, setPrevious] = useState<UsageSnapshot | null>(null);
   const shown = enabled
-    ? settleUsageSnapshot(previous, requestedWindow, environments, selectedEnvironments)
+    ? settleUsageSnapshot(
+        previous,
+        requestedWindow,
+        environments,
+        selectedEnvironments,
+        undefined,
+        readings,
+      )
     : null;
-  if (enabled && shown !== previous) setPrevious(shown);
+  const retained = enabled || !previous ? shown : retainUsageSnapshot(previous, environments);
+  if (retained !== previous) setPrevious(retained);
   const next = nextUsageRequest(request, input, selectedEnvironments, advanceWindow, enabled);
   if (next !== request) setRequest(next);
 

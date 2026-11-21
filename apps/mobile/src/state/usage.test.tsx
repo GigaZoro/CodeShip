@@ -302,3 +302,19 @@ it("reports only the new period's failures on mobile while retaining the previou
   expect(screen.container.textContent).toContain("Monthly scan failed");
   expect(screen.container.querySelector("button")?.textContent).toBe("Retry");
 });
+
+it("keeps 100 mobile tokens after the following minute's scan fails", async () => {
+  await using screen = mountUsageProbe();
+  const before = makeWindow(1, new Date("2026-10-23T12:00:00Z"), "hour");
+  const after = makeWindow(1, new Date("2026-10-23T12:01:00Z"), "hour");
+  const ready = statusWithTokens("Desk", 100);
+  state.environments = [ready];
+  await act(() => screen.root.render(<ScopedUsage period={before} />));
+  expect(screen.container.textContent).toContain("100 tokens");
+  state.environments = [{ ...ready, isPending: true, summary: null }];
+  await act(() => screen.root.render(<ScopedUsage period={after} />));
+  state.environments = [failedScan("Read failed")];
+  await act(() => screen.root.render(<ScopedUsage period={after} />));
+  expect(screen.container.textContent).toContain("100 tokens");
+  expect(screen.container.textContent).toContain("Showing its last values");
+});

@@ -610,3 +610,68 @@ it("shows Update required for an unselected incompatible environment on mobile",
     "Update required.",
   );
 });
+
+it("announces a first pending read alongside a different environment's failure on mobile", async () => {
+  await using screen = setup();
+  state.simulateRequests = true;
+  state.live = [
+    { ...liveEnvironment("desk", "Desk"), error: "Desk failed" },
+    { ...liveEnvironment("laptop", "Laptop"), isPending: true },
+  ];
+  await screen.render();
+  expect(screen.container.textContent).toContain("Retry");
+  expect(screen.container.textContent).toContain("Scanning provider transcripts…");
+  state.live = [{ ...liveEnvironment("desk", "Desk"), isPending: true }, state.live[1]!];
+  await screen.render();
+  await act(() => menuEnvironment(screen.container, "laptop").click());
+  expect(screen.container.textContent).toContain("Desk failed");
+  expect(screen.container.textContent).toContain("Retry");
+  expect(screen.container.textContent).not.toContain("Scanning provider transcripts…");
+});
+
+it("removes Laptop's reserved row from mobile Providers when its grant is revoked again", async () => {
+  await using screen = setup();
+  state.simulateRequests = true;
+  const desk = { ...liveEnvironment("desk", "Desk"), summary: observedSummary() };
+  const laptop = { ...liveEnvironment("laptop", "Laptop"), summary: observedSummary() };
+  const denied = { ...laptop, canReadDiagnostics: false, summary: null, error: "Access revoked" };
+  const pending = { ...desk, isPending: true, summary: null };
+  state.live = [desk, laptop];
+  await screen.render();
+  state.live = [pending, denied];
+  await screen.render();
+  state.live = [
+    pending,
+    {
+      ...laptop,
+      isPending: true,
+      summary: {
+        ...laptop.summary,
+        sources: [
+          {
+            fingerprint: {
+              provider: "cursor",
+              hostId: "Laptop",
+              resolvedHomePath: "/test",
+              volumeId: "1",
+            },
+            status: "ok",
+            refreshing: true,
+            scannedFiles: 0,
+            skippedFiles: 0,
+            malformedRecords: 0,
+            distinctSessions: 0,
+            message: null,
+          },
+        ],
+      },
+    },
+  ];
+  await screen.render();
+  const providers = () =>
+    screen.container.querySelector('[aria-label="Providers"]')?.textContent ?? "";
+  expect(providers()).toContain("Cursor");
+  state.live = [pending, denied];
+  await screen.render();
+  expect(providers()).not.toContain("Cursor");
+});

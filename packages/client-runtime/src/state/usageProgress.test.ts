@@ -529,3 +529,51 @@ it("keeps a reserved provider owned by an authorized environment across the next
   const retained = settleUsageSnapshot(settled, next, [desk, waiting], [desk, waiting]);
   expect(retained?.providers).toContainEqual({ provider: "cursor", totals: null });
 });
+
+it("keeps Desk's authorized reading and its own window after the next scan fails", () => {
+  const before = makeWindow(
+    1,
+    DateTime.toDate(DateTime.makeUnsafe("2026-09-05T12:00:00Z")),
+    "hour",
+  );
+  const after = makeWindow(1, DateTime.toDate(DateTime.makeUnsafe("2026-09-05T12:01:00Z")), "hour");
+  const ready = reading("Desk", 100);
+  const pending = { ...ready, summary: null, isPending: true };
+  const failed = { ...pending, error: "Read failed", isPending: false };
+  const first = settleUsageSnapshot(null, before, [ready], [ready]);
+  const waiting = settleUsageSnapshot(first, after, [pending], [pending]);
+  const shown = settleUsageSnapshot(waiting, after, [failed], [failed]);
+  expect(shown?.merged.totalTokens).toBe(100);
+  expect(shown?.window).toBe(before);
+  expect(shown?.hasAnswer).toBe(true);
+  expect(settleUsageSnapshot(shown, after, [failed], [failed])).toBe(shown);
+});
+
+it("keeps Desk's retry when another environment is deselected", () => {
+  const week = makeWindow(7, DateTime.toDate(DateTime.makeUnsafe("2026-09-05T12:00:00Z")));
+  const failed = status("Desk", { summary: null, error: "Read failed" });
+  const laptop = status("Laptop");
+  const pending = { ...failed, isPending: true, error: null };
+  const failure = settleUsageScanFailures(null, week, [failed, laptop]);
+  const waiting = settleUsageScanFailures(failure, week, [pending, laptop]);
+  const alone = settleUsageScanFailures(waiting, week, [pending]);
+  expect(usageNotices([pending], [], alone).coverage?.gaps[0]).toMatchObject({
+    message: "Desk: Read failed",
+    retryable: true,
+  });
+});
+
+it("removes reservations on a second revocation while another read is pending", () => {
+  const window = summary();
+  const desk = reading("Desk", 100);
+  const laptop = reading("Laptop", 200);
+  const denied = { ...laptop, canReadDiagnostics: false, summary: null };
+  const pending = { ...desk, isPending: true, summary: null };
+  const provisional = { ...laptop, isPending: true, summary: summary(["cursor"]) };
+  let shown = settleUsageSnapshot(null, window, [desk, laptop], [desk, laptop]);
+  for (const env of [denied, provisional, denied]) {
+    shown = settleUsageSnapshot(shown, window, [pending, env], [pending, env]);
+  }
+  expect(shown?.merged.totalTokens).toBe(100);
+  expect(shown?.providers.map(({ provider }) => provider)).toEqual(["codex"]);
+});

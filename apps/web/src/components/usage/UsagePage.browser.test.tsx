@@ -50,6 +50,7 @@ const state = vi.hoisted(() => ({
     | "incompatible"
     | "sourceFailure"
     | "scanFailure"
+    | "cursorPending"
     | "revoked"
     | null,
   costUsd: 0,
@@ -290,7 +291,7 @@ function otherReading(
       label: "Laptop",
     };
   }
-  const other = reading(window, "ready");
+  const other = reading(window, response === "cursorPending" ? response : "ready");
   const summary = other.summary!;
   return {
     ...other,
@@ -825,3 +826,42 @@ it.each([
     await expect.element(dialog.getByText(label, { exact: true })).toBeVisible();
   },
 );
+
+it("keeps the model figures and Retry together after a rolling request fails", async () => {
+  setup();
+  await using screen = await render(<Screen />);
+  const model = screen.getByRole("button", { name: "usage-test-model" });
+  await expect.element(model).toBeVisible();
+  state.now += 60_000;
+  state.response = "waiting";
+  await update();
+  state.response = "failed";
+  await update();
+  await expect.element(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+  expect(model.query()).not.toBeNull();
+});
+
+it("announces a first pending read alongside a different environment's failure on web", async () => {
+  setup();
+  state.response = "waiting";
+  state.secondEnvironment = "scanFailure";
+  await using screen = await render(<Screen />);
+  await expect.element(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+  expect(screen.getByText("Loading usage…").query()).not.toBeNull();
+});
+
+it("removes Laptop's reserved row from the web overview when its grant is revoked again", async () => {
+  setup();
+  state.secondEnvironment = "ready";
+  await using screen = await render(<Screen />);
+  state.response = "waiting";
+  state.secondEnvironment = "revoked";
+  await update();
+  state.secondEnvironment = "cursorPending";
+  await update();
+  const cursor = screen.getByText("Cursor", { exact: true }).first();
+  await expect.element(cursor).toBeVisible();
+  state.secondEnvironment = "revoked";
+  await update();
+  expect(cursor.query()).toBeNull();
+});

@@ -6,6 +6,7 @@ import {
   retainedUsageLabel,
   refreshingUsageProviders,
   usageNotices,
+  waitingForFirstUsage,
   usageWindowKey,
   type UsageProviderRow,
 } from "@t3tools/client-runtime/state/usage-progress";
@@ -177,7 +178,7 @@ function UsageScreen(props: {
 
   const [refreshingUsage, setRefreshingUsage] = useState(false);
   const refreshingRef = useRef(false);
-  const initialLoading = shown === null && (failures?.errors.size ?? 0) === 0;
+  const initialLoading = shown === null && waitingForFirstUsage(selectedEnvironments, failures);
   const loading = isFocused && !showingLimits && initialLoading && selectedEnvironments.length > 0;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Android uses a live region, while VoiceOver needs an explicit initial announcement
   useEffect(() => {
