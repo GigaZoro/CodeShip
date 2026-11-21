@@ -1,4 +1,8 @@
 import {
+  THREAD_LIST_SORT_LABELS,
+  type ThreadListSort,
+} from "@t3tools/client-runtime/state/thread-sort";
+import {
   THREAD_LIST_STATUS_LABELS,
   type ThreadListStatusFilter,
 } from "@t3tools/client-runtime/state/thread-status";
@@ -16,6 +20,7 @@ import {
   machineGroupingMenuItem,
   projectGroupingMenuItems,
   statusFilterMenuItems,
+  sortMenuItems,
   applyTagFilterMenuEvent,
   tagFilterMenuItems,
   threadListGroupingLabel,
@@ -40,6 +45,8 @@ export function ThreadListFilters(
     /** List padding the scroller bleeds through so pills start where row content does. */
     readonly gutter: number;
     readonly statusFilter: ThreadListStatusFilter;
+    readonly sort: ThreadListSort;
+    readonly onSortChange: (sort: ThreadListSort) => void;
     readonly selectedTags: readonly string[];
     readonly onTagsChange: (tags: readonly string[]) => void;
     readonly onStatusChange: (status: ThreadListStatusFilter) => void;
@@ -54,6 +61,7 @@ export function ThreadListFilters(
   const selectedProject = props.projects.find(
     (project) => project.key === props.selectedProjectKey,
   );
+  const sortItems = sortMenuItems(props.sort);
   const statusItems = statusFilterMenuItems(props.statusFilter);
   const availableTags = useAtomValue(availableThreadTagsAtom);
   return (
@@ -148,6 +156,16 @@ export function ThreadListFilters(
           }}
         />
       ) : null}
+      <ListFilterMenu
+        label={props.sort === "default" ? t("Sort by") : t(THREAD_LIST_SORT_LABELS[props.sort])}
+        accessibilityLabel={t("Sort by")}
+        active={props.sort !== "default"}
+        actions={sortItems}
+        onSelect={(id) => {
+          const item = sortItems.find((candidate) => candidate.id === id);
+          if (item) props.onSortChange(item.value);
+        }}
+      />
       <ListFilterMenu
         label={threadListGroupingLabel(props.grouping)}
         accessibilityLabel={t("Group threads")}

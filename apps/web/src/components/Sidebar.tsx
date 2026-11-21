@@ -9,6 +9,11 @@ import {
   matchesAnyThreadTag,
   toggleThreadTagSelection,
 } from "@t3tools/client-runtime/state/thread-tag-filter";
+import {
+  sortThreadList,
+  THREAD_LIST_SORT_LABELS,
+  ThreadListSort,
+} from "@t3tools/client-runtime/state/thread-sort";
 import { Checkbox } from "./ui/checkbox";
 import { readThreadTagsMenuState, useThreadTagActions } from "../hooks/useThreadTagActions";
 import { t, tn } from "~/i18n";
@@ -427,9 +432,12 @@ type SidebarOptimisticDrop = {
   readonly assignedKeys: ReadonlyMap<string, string>;
 };
 
+const SidebarTagFilter = Schema.Array(Schema.String);
+
 interface SidebarThreadPartitionInput {
   readonly statusFilter: ThreadListStatusFilter;
   readonly tagFilter: ReadonlySet<string>;
+  readonly sort: ThreadListSort;
   readonly locallyUnreadKeys: ReadonlySet<string>;
   readonly threads: readonly EnvironmentThreadShell[];
   readonly scopedProjectKeys: ReadonlySet<string> | null;
@@ -471,23 +479,32 @@ function resolveDraggedOrders(input: {
   readonly settledThreads: readonly EnvironmentThreadShell[];
   readonly activeThreads: readonly EnvironmentThreadShell[];
   readonly workingShelfEnabled: boolean;
+  readonly sort: ThreadListSort;
 }): typeof NO_DRAGGED_ORDERS {
   const { drag, threadByKey, settledThreads, activeThreads, workingShelfEnabled } = input;
   const thread = threadByKey.get(drag.activeKey);
   if (thread === undefined) return NO_DRAGGED_ORDERS;
   const others = (list: readonly EnvironmentThreadShell[]) =>
     list.filter((candidate) => threadShellKey(candidate) !== drag.activeKey);
+  const settled = [
+    ...others(settledThreads),
+    applySidebarThreadDrop(thread, "settled", drag.occurredAt),
+  ];
+  const active = [
+    ...others(activeThreads),
+    applySidebarThreadDrop(thread, "active", drag.occurredAt),
+  ];
   return {
-    settledOrder: sortSettledThreads([
-      ...others(settledThreads),
-      applySidebarThreadDrop(thread, "settled", drag.occurredAt),
-    ]).map(threadShellKey),
-    activeOrder: workingShelfEnabled
-      ? sortInboxThreadsByReturn(
-          [...others(activeThreads), applySidebarThreadDrop(thread, "active", drag.occurredAt)],
-          inboxReturns.returnedAt,
-        ).map(threadShellKey)
-      : undefined,
+    settledOrder: (input.sort === "default"
+      ? sortSettledThreads(settled)
+      : sortThreadList(settled, input.sort)
+    ).map(threadShellKey),
+    activeOrder:
+      input.sort !== "default"
+        ? sortThreadList(active, input.sort).map(threadShellKey)
+        : workingShelfEnabled
+          ? sortInboxThreadsByReturn(active, inboxReturns.returnedAt).map(threadShellKey)
+          : undefined,
   };
 }
 
@@ -563,6 +580,7 @@ function isSidebarFolderSibling(candidate: SidebarFolder, folder: SidebarFolder)
 function useSidebarThreads(input: {
   readonly statusFilter: ThreadListStatusFilter;
   readonly tagFilter: ReadonlySet<string>;
+  readonly sort: ThreadListSort;
   readonly locallyUnreadKeys: ReadonlySet<string>;
   readonly projectScopeKey: string | null;
   readonly scopedProjectKeys: ReadonlySet<string> | null;
@@ -647,6 +665,7 @@ function useSidebarThreads(input: {
   const partition = partitionSidebarThreads({
     statusFilter: input.statusFilter,
     tagFilter: input.tagFilter,
+    sort: input.sort,
     locallyUnreadKeys: input.locallyUnreadKeys,
     threads,
     scopedProjectKeys,
@@ -682,7 +701,9 @@ function useSidebarThreads(input: {
   const folderCandidates =
     workingThreads.length === 0
       ? allActiveThreads
-      : sortWorkingThreadsBySend([...allActiveThreads, ...workingThreads]);
+      : input.sort === "default"
+        ? sortWorkingThreadsBySend([...allActiveThreads, ...workingThreads])
+        : sortThreadList([...allActiveThreads, ...workingThreads], input.sort);
   const userFolderSplit = partitionSidebarUserFolders({
     saved: savedFolders,
     older: olderSettledShelf.folderNames,
@@ -1176,11 +1197,14 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   }
   // Availability gates dragging only; sorting must stay consistent across clients.
   const sortedPinned = sortPinnedThreadsForSidebar(pinned);
-  const sortedActive = sortActiveBySend
-    ? sortWorkingThreadsBySend(active)
-    : workingShelfEnabled
-      ? sortInboxThreadsByReturn(active, inboxObservation.returnedAt)
-      : sortThreadsForSidebar(active);
+  const sortedActive =
+    input.sort !== "default"
+      ? sortThreadList(active, input.sort)
+      : sortActiveBySend
+        ? sortWorkingThreadsBySend(active)
+        : workingShelfEnabled
+          ? sortInboxThreadsByReturn(active, inboxObservation.returnedAt)
+          : sortThreadsForSidebar(active);
   return {
     needsYouThreads,
     needsYouNowThreads: needsYou.threads,
@@ -1204,13 +1228,20 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
             preferredIds: optimisticDrop.order,
             getId: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
           }),
-    workingThreads: sortWorkingThreadsBySend(working),
-    snoozedThreads: snoozed.toSorted(
-      (left, right) =>
-        firstValidTimestampMs(left.snoozedUntil ?? null) -
-        firstValidTimestampMs(right.snoozedUntil ?? null),
-    ),
-    settledThreads: sortSettledThreads(settled),
+    workingThreads:
+      input.sort === "default"
+        ? sortWorkingThreadsBySend(working)
+        : sortThreadList(working, input.sort),
+    snoozedThreads:
+      input.sort !== "default"
+        ? sortThreadList(snoozed, input.sort)
+        : snoozed.toSorted(
+            (left, right) =>
+              firstValidTimestampMs(left.snoozedUntil ?? null) -
+              firstValidTimestampMs(right.snoozedUntil ?? null),
+          ),
+    settledThreads:
+      input.sort === "default" ? sortSettledThreads(settled) : sortThreadList(settled, input.sort),
     visibleThreads: visible,
     snoozeNow: preciseNow,
   };
@@ -1543,15 +1574,18 @@ export default function Sidebar({
     "all",
     ThreadListStatusFilter,
   );
+  const [threadSort, setThreadSort] = useLocalStorage(
+    "t3code:sidebar-thread-sort",
+    "default",
+    ThreadListSort,
+  );
   const [selectedTags, setSelectedTags] = useLocalStorage(
     "t3code:sidebar-tag-filter",
     [],
-    Schema.Array(Schema.String),
+    SidebarTagFilter,
   );
   const tagFilter = new Set(selectedTags);
-  const availableTags = collectThreadTags(threads);
   const hasThreadFilters = statusFilter !== "all" || tagFilter.size > 0;
-  const locallyUnreadKeys = useLocallyUnreadThreadKeys(threads);
   const persistedProjectScopeKeys = useUiStateStore((store) => store.sidebarProjectScopeKeys);
   const setPersistedProjectScopeKeys = useUiStateStore((store) => store.setSidebarProjectScopeKeys);
   const persistedMachineScopeIds = useUiStateStore((store) => store.sidebarMachineScopeIds);
@@ -1658,6 +1692,10 @@ export default function Sidebar({
     chosenEnvironmentIds: new Set(chosenMachines.map((machine) => machine.environmentId)),
   });
   const threads = useQuietThreadShells();
+  const locallyUnreadKeys = useLocallyUnreadThreadKeys(threads);
+  const availableTags = collectThreadTags(
+    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent),
+  );
   const routeRowThreadKey =
     routeThreadRef === null
       ? null
@@ -1902,6 +1940,7 @@ export default function Sidebar({
   } = useSidebarThreads({
     statusFilter,
     tagFilter,
+    sort: threadSort,
     locallyUnreadKeys,
     projectScopeKey,
     scopedProjectKeys,
@@ -2326,6 +2365,7 @@ export default function Sidebar({
             return thread ? threadSearchSubject(thread, null) : undefined;
           },
           foldSearchQuery(threadSearchQuery),
+          // oxlint-disable-next-line react/purity -- Recency ranking samples the clock when the search matches change; the compiler recomputes it only then.
           Date.now(),
           // A list filter, as on mobile: a pick would move rows unexplained.
           { picks: false },
@@ -3028,7 +3068,9 @@ export default function Sidebar({
           settledThreads,
           activeThreads,
           workingShelfEnabled,
+          sort: threadSort,
         });
+  const activeTimeOrdered = workingShelfEnabled || threadSort !== "default";
   const sidebarSortingStrategy = createSidebarSortingStrategy({
     items: sidebarListItems,
     enabled: !isContextDrag,
@@ -3067,7 +3109,7 @@ export default function Sidebar({
             activeOrder: activeKeys,
             activeKeysById,
             activeReorderableKeys: activeReorderableThreadKeys,
-            activeTimeOrdered: workingShelfEnabled,
+            activeTimeOrdered,
           }).kind !== "none"
         );
       },
@@ -3098,7 +3140,7 @@ export default function Sidebar({
       activeOrder: activeKeys,
       activeKeysById,
       activeReorderableKeys: activeReorderableThreadKeys,
-      activeTimeOrdered: workingShelfEnabled,
+      activeTimeOrdered,
     });
     if (plan.kind === "none") return;
     if (plan.kind === "settle" && settlingThreadKeysRef.current.has(activeKey)) return;
@@ -3239,6 +3281,7 @@ export default function Sidebar({
         threadKey,
         currentThreadKey: readRouteThreadKey(router),
         action: "snooze",
+        // oxlint-disable-next-line react/purity -- runs in an event handler (oxc#27309)
         now: new Date().toISOString(),
         thread: readThreadShell(threadRef),
       })
@@ -3278,6 +3321,7 @@ export default function Sidebar({
       );
       if (threadKeys.length === 0) return;
       const count = threadKeys.length;
+      // oxlint-disable-next-line react/purity -- runs in an event handler (oxc#27309)
       const selectionNow = new Date();
       const selectedThreads = threadKeys.flatMap((threadKey) => {
         const thread = threadByKeyRef.current.get(threadKey);
@@ -3316,6 +3360,7 @@ export default function Sidebar({
       );
       const selectionFolderState = readThreadFolderMenuState(selectedThreadRefs);
       // Presets sync across environments, so the first selected thread's stand for all.
+      // oxlint-disable-next-line react/purity -- runs in an event handler (oxc#27309)
       const menuOpenedAt = new Date();
       const snoozePresets = resolveSnoozePresets(
         menuOpenedAt,
@@ -4209,6 +4254,31 @@ export default function Sidebar({
                         </SelectPopup>
                       </Select>
                     </div>
+                    <div className="flex items-center justify-between gap-2 px-2.5 pt-2 text-xs text-muted-foreground">
+                      <span>{t("Sort by")}</span>
+                      <Select
+                        value={threadSort}
+                        onValueChange={(value) => {
+                          if (value !== null) setThreadSort(value);
+                        }}
+                      >
+                        <SelectTrigger aria-label={t("Sort by")} size="xs">
+                          <SelectValue>{t(THREAD_LIST_SORT_LABELS[threadSort])}</SelectValue>
+                        </SelectTrigger>
+                        <SelectPopup>
+                          {ThreadListSort.literals.map((sort) => (
+                            <SelectItem key={sort} value={sort}>
+                              {t(THREAD_LIST_SORT_LABELS[sort])}
+                            </SelectItem>
+                          ))}
+                        </SelectPopup>
+                      </Select>
+                    </div>
+                    {threadSort === "default" ? null : (
+                      <p className="px-2.5 pt-1 text-xs text-muted-foreground">
+                        {t("Choose Default sorting to manually arrange active threads.")}
+                      </p>
+                    )}
                     {availableTags.length > 0 ? (
                       <fieldset className="px-2.5 pt-2 text-xs text-muted-foreground">
                         <legend>{t("Filter by tags")}</legend>

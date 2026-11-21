@@ -26,7 +26,7 @@ export function readThreadTagsMenuState(
   refs: readonly ScopedThreadRef[],
 ): Parameters<typeof buildThreadTagsMenuItem>[0] {
   const available = collectThreadTags(
-    appAtomRegistry.get(environmentThreadShells.quietThreadShellsAtom),
+    appAtomRegistry.get(environmentThreadShells.navigationThreadShellsAtom),
   );
   const tagsByTarget = refs.map((ref) => new Set(readThreadShell(ref)?.source.tags));
   return {

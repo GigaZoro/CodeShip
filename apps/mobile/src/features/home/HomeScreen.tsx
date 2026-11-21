@@ -87,6 +87,7 @@ import {
   useScheduledTaskHiddenThreadKeys,
 } from "../threads/ThreadListPinnedTasks";
 import { ThreadListManualSteps } from "../threads/ThreadListManualSteps";
+import type { ThreadListSort } from "@t3tools/client-runtime/state/thread-sort";
 import type { ThreadListStatusFilter } from "@t3tools/client-runtime/state/thread-status";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
@@ -118,6 +119,8 @@ interface HomeScreenProps {
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
   readonly statusFilter: ThreadListStatusFilter;
+  readonly sort: ThreadListSort;
+  readonly onSortChange: (sort: ThreadListSort) => void;
   readonly selectedTags: readonly string[];
   readonly onTagsChange: (tags: readonly string[]) => void;
   readonly onStatusChange: (status: ThreadListStatusFilter) => void;
@@ -455,6 +458,7 @@ export function HomeScreen(props: HomeScreenProps) {
     projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
     searchQuery: props.searchQuery,
     statusFilter: props.statusFilter,
+    sort: props.sort,
     selectedTags: props.selectedTags,
     searchMatches: threadSearchMatchByKey,
     settlementEnvironmentIds,
@@ -658,7 +662,8 @@ export function HomeScreen(props: HomeScreenProps) {
           item.item.needsYou !== true &&
           (item.item.pinned
             ? pinReorderEnvironmentIds.has(thread.environmentId)
-            : !workingShelfEnabled &&
+            : props.sort === "default" &&
+              !workingShelfEnabled &&
               grouping === null &&
               activeReorderEnvironmentIds.has(thread.environmentId))
         }
@@ -743,6 +748,8 @@ export function HomeScreen(props: HomeScreenProps) {
           selectedProjectKey={props.selectedProjectKey}
           grouping={groupBy}
           statusFilter={props.statusFilter}
+          sort={props.sort}
+          onSortChange={props.onSortChange}
           selectedTags={props.selectedTags}
           onTagsChange={props.onTagsChange}
           onStatusChange={props.onStatusChange}

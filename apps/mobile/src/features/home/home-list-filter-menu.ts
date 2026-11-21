@@ -2,6 +2,7 @@ import {
   THREAD_LIST_STATUS_LABELS,
   ThreadListStatusFilter,
 } from "@t3tools/client-runtime/state/thread-status";
+import { THREAD_LIST_SORT_LABELS, ThreadListSort } from "@t3tools/client-runtime/state/thread-sort";
 import { toggleThreadTagSelection } from "@t3tools/client-runtime/state/thread-tag-filter";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { offersSidebarMachineGrouping, type SidebarGrouping } from "@t3tools/contracts/settings";
@@ -28,6 +29,15 @@ export function statusFilterMenuItems(selected: ThreadListStatusFilter) {
     id: `status:${value}`,
     title: t(THREAD_LIST_STATUS_LABELS[value]),
     state: selected === value ? ("on" as const) : ("off" as const),
+    value,
+  }));
+}
+
+export function sortMenuItems(selected: ThreadListSort) {
+  return ThreadListSort.literals.map((value) => ({
+    id: `sort:${value}`,
+    title: t(THREAD_LIST_SORT_LABELS[value]),
+    state: value === selected ? ("on" as const) : ("off" as const),
     value,
   }));
 }
@@ -172,6 +182,8 @@ export function buildHomeListFilterMenu(
     readonly selectedProjectKey: string | null;
     readonly grouping: SidebarGrouping;
     readonly statusFilter: ThreadListStatusFilter;
+    readonly sort: ThreadListSort;
+    readonly onSortChange: (sort: ThreadListSort) => void;
     readonly selectedTags: readonly string[];
     readonly availableTags: readonly string[];
     readonly onTagsChange: (tags: readonly string[]) => void;
@@ -255,6 +267,17 @@ export function buildHomeListFilterMenu(
       title,
       state,
       onPress: () => props.onStatusChange(value),
+    })),
+  });
+
+  items.push({
+    type: "submenu",
+    title: t("Sort by"),
+    items: sortMenuItems(props.sort).map(({ title, state, value }) => ({
+      type: "action",
+      title,
+      state,
+      onPress: () => props.onSortChange(value),
     })),
   });
 

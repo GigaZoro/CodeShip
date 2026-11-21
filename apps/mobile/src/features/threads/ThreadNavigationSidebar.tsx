@@ -71,6 +71,7 @@ import {
   handleGroupByMenuEvent,
   showAllThreadsMenuItems,
   statusFilterMenuItems,
+  sortMenuItems,
   applyTagFilterMenuEvent,
   tagFilterMenuItems,
   threadListFilterButtonLabel,
@@ -401,6 +402,7 @@ function ThreadNavigationSidebarPane(
     projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
     searchQuery: props.searchQuery,
     statusFilter: options.statusFilter,
+    sort: options.sort,
     selectedTags: options.selectedTags,
     searchMatches: threadSearchMatchByKey,
     settlementEnvironmentIds,
@@ -443,6 +445,7 @@ function ThreadNavigationSidebarPane(
     options.statusFilter !== "all" ||
     options.selectedTags.length > 0;
   const statusItems = statusFilterMenuItems(options.statusFilter);
+  const sortItems = sortMenuItems(options.sort);
   const availableTags = useAtomValue(availableThreadTagsAtom);
   const listMenuActions = [
     ...showAllThreadsMenuItems(filterCustomized),
@@ -488,6 +491,7 @@ function ThreadNavigationSidebarPane(
           },
         ] satisfies MenuAction[])),
     { id: "status", title: t("Status"), subactions: statusItems },
+    { id: "sort", title: t("Sort by"), subactions: sortItems },
     ...(availableTags.length > 0 || options.selectedTags.length > 0
       ? [
           {
@@ -514,6 +518,11 @@ function ThreadNavigationSidebarPane(
         statusFilter: "all",
         selectedTags: [],
       });
+      return;
+    }
+    const sort = sortItems.find((item) => item.id === event);
+    if (sort) {
+      updateOptions({ sort: sort.value });
       return;
     }
     const status = statusItems.find((item) => item.id === event);
@@ -774,7 +783,8 @@ function ThreadNavigationSidebarPane(
               item.item.needsYou !== true &&
               (item.item.pinned
                 ? pinReorderEnvironmentIds.has(thread.environmentId)
-                : !workingShelfEnabled &&
+                : options.sort === "default" &&
+                  !workingShelfEnabled &&
                   grouping === null &&
                   activeReorderEnvironmentIds.has(thread.environmentId))
             }
@@ -881,6 +891,8 @@ function ThreadNavigationSidebarPane(
     grouping: groupBy,
     statusFilter: options.statusFilter,
     onStatusChange: (statusFilter) => updateOptions({ statusFilter }),
+    sort: options.sort,
+    onSortChange: (sort) => updateOptions({ sort }),
     selectedTags: options.selectedTags,
     availableTags,
     onTagsChange: (selectedTags) => updateOptions({ selectedTags }),

@@ -18,6 +18,7 @@ import { scopedThreadKey } from "../../lib/scopedEntities";
 import { refreshArchivedThreadsForEnvironment } from "../archive/useArchivedThreadSnapshots";
 import { pinOrderKeyBetween } from "@t3tools/client-runtime/state/thread-sort";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { mobilePreferencesAtom } from "../../state/preferences";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { connectedEnvironmentIdsAtom } from "../../state/presentation";
 import { readEnvironmentScope } from "../../state/session";
@@ -689,6 +690,13 @@ export function useThreadListActions(): {
         : thread.pinnedAt != null
           ? "pinned"
           : "active";
+    const preferences = appAtomRegistry.get(mobilePreferencesAtom);
+    if (
+      section === "active" &&
+      preferences._tag === "Success" &&
+      (preferences.value.threadListFilters?.sort ?? "default") !== "default"
+    )
+      return false;
     if (section === "settled") {
       if (!environmentConfigLoaded(thread.environmentId)) return false;
       appAtomRegistry.set(threadDropBusyAtom, true);

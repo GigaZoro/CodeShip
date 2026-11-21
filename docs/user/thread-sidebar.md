@@ -189,6 +189,16 @@ Tags follow the thread across devices. When an environment is set to hide tagged
 threads, its hidden threads stay out of the list and the app prevents applying
 its hidden tags there while hiding is on.
 
+## Sort threads
+
+Open the thread list filters and choose **Sort by**. **Last activity** puts the
+most recently updated threads first, **Created** puts the newest first, and
+**Name** sorts alphabetically. Sorting works within the existing shelves and
+folders. Pinned threads keep their manual order, and **Needs you** still lists
+the longest waits first. Select **Default** to return to the usual order and
+drag to reorder active threads where manual ordering is available. The sort
+choice is saved on each device.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work. The command palette offers the same

@@ -37,6 +37,8 @@ import {
   resolveSettledThreadTimestamp,
   sortPinnedThreadsByOrderKey,
   sortSettledThreads,
+  sortThreadList,
+  type ThreadListSort,
 } from "@t3tools/client-runtime/state/thread-sort";
 import { isListedThreadLineage, type EnvironmentId, type ProjectId } from "@t3tools/contracts";
 import type { SnoozePresetSetting } from "@t3tools/contracts/settings";
@@ -821,6 +823,7 @@ export function buildThreadListV2Items(input: {
   readonly searchQuery: string;
   readonly matchedThreadKeys?: ReadonlySet<string>;
   readonly statusFilter?: ThreadListStatusFilter | undefined;
+  readonly sort?: ThreadListSort | undefined;
   readonly selectedTags?: readonly string[] | undefined;
   readonly settlementEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly snoozeEnvironmentIds?: ReadonlySet<EnvironmentId>;
@@ -1002,22 +1005,30 @@ export function buildThreadListV2Items(input: {
   }
 
   const grouping = input.grouping ?? null;
+  const sort = input.sort ?? "default";
+  const groupedActive =
+    grouping === null
+      ? active
+      : [...active, ...working.filter((thread) => !chatActive.includes(thread))];
   // Folders order by the latest message, as on web; one manual order cannot span folders.
   // They hold working threads too, which the Working shelf also lists.
   const orderedActive =
-    grouping !== null
-      ? sortWorkingThreadsBySend([
-          ...active,
-          ...working.filter((thread) => !chatActive.includes(thread)),
-        ])
-      : workingShelfEnabled
-        ? sortInboxThreadsByReturn(active, input.inboxReturnAt)
-        : applyPendingThreadOrder(sortThreadsForListV2(active), "active", pending);
-  const orderedWorking = sortWorkingThreadsBySend(working);
-  const orderedSnoozed = [...snoozed].sort(
-    (left, right) =>
-      parseTimestampMs(left.snoozedUntil ?? "") - parseTimestampMs(right.snoozedUntil ?? ""),
-  );
+    sort !== "default"
+      ? sortThreadList(groupedActive, sort)
+      : grouping !== null
+        ? sortWorkingThreadsBySend(groupedActive)
+        : workingShelfEnabled
+          ? sortInboxThreadsByReturn(active, input.inboxReturnAt)
+          : applyPendingThreadOrder(sortThreadsForListV2(active), "active", pending);
+  const orderedWorking =
+    sort === "default" ? sortWorkingThreadsBySend(working) : sortThreadList(working, sort);
+  const orderedSnoozed =
+    sort !== "default"
+      ? sortThreadList(snoozed, sort)
+      : [...snoozed].sort(
+          (left, right) =>
+            parseTimestampMs(left.snoozedUntil ?? "") - parseTimestampMs(right.snoozedUntil ?? ""),
+        );
   const selectedThreadKey = input.selectedThreadKey ?? null;
   const visibleWorking =
     input.workingShelfExpanded === true
@@ -1031,7 +1042,8 @@ export function buildThreadListV2Items(input: {
       : orderedSnoozed.filter(
           (thread) => `${thread.environmentId}:${thread.id}` === selectedThreadKey,
         );
-  const orderedSettled = sortSettledThreadsReusingLast(settled);
+  const orderedSettled =
+    sort === "default" ? sortSettledThreadsReusingLast(settled) : sortThreadList(settled, sort);
   const listedSettled =
     input.isListedSettled === undefined
       ? orderedSettled
@@ -1136,7 +1148,9 @@ export function buildThreadListV2Items(input: {
   if (chatFolders !== null) {
     // Active chats first, then settled ones, each in the list's own order.
     const filedByFolder = groupThreads(
-      [...sortWorkingThreadsBySend(chatActive), ...sortSettledThreads(chatSettled)],
+      sort === "default"
+        ? [...sortWorkingThreadsBySend(chatActive), ...sortSettledThreads(chatSettled)]
+        : [...sortThreadList(chatActive, sort), ...sortThreadList(chatSettled, sort)],
       (thread) => chatFolders.folderKeyOf(thread) ?? "",
     );
     const settledChats = new Set(chatSettled);

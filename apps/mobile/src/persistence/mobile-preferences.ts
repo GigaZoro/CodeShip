@@ -14,6 +14,7 @@ import {
   type PullRequestMergeMethod,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
+import { ThreadListSort } from "@t3tools/client-runtime/state/thread-sort";
 import { ThreadListStatusFilter } from "@t3tools/client-runtime/state/thread-status";
 import type { AndroidNavigationStyle } from "../lib/androidNavigationStyle";
 import type { ComposerEnterBehavior } from "../lib/composerEnterBehavior";
@@ -42,6 +43,7 @@ const ThreadListFilters = Schema.Struct({
   projectKey: Schema.NullOr(Schema.String),
   status: Schema.optionalKey(ThreadListStatusFilter),
   tags: Schema.optionalKey(Schema.Array(Schema.String)),
+  sort: Schema.optionalKey(ThreadListSort),
 });
 export type ThreadListFilters = typeof ThreadListFilters.Type;
 

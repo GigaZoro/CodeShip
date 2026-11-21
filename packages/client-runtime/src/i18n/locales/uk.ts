@@ -3387,6 +3387,8 @@ const catalog: MessageCatalog = {
     "Виберіть темний варіант, варіантів: {count}, зараз {name}",
   "Choose date": "Виберіть дату",
   "Choose days": "Виберіть дні",
+  "Choose Default sorting to manually arrange active threads.":
+    "Виберіть сортування за замовчуванням, щоб упорядкувати активні чати вручну.",
   "Choose editor": "Вибрати редактор",
   "Choose environment, {label}, {status}": "Виберіть середовище, {label}, {status}",
   "Choose environments you trust to share PR data and use each other's source control access. Enable both environments. This applies only to this client.":
@@ -4841,6 +4843,7 @@ const catalog: MessageCatalog = {
     "Створення терміналів і надсилання введення в запущені оболонки.",
   "Create theme": "Створити тему",
   "Create worktree": "Створити worktree",
+  Created: "Дата створення",
   "Created {count} threads": {
     one: "Створено {count} чат",
     few: "Створено {count} чати",
@@ -6938,6 +6941,7 @@ const catalog: MessageCatalog = {
   "Large diffs are not rendered by default.": "Великі зміни за замовчуванням не відображаються.",
   "Large paste attached as {name}": "Великий фрагмент додано як {name}",
   "Largest shown": "Спочатку більші",
+  "Last activity": "Остання активність",
   "Last connected at {time}": "Востаннє підключено {time}",
   "last project": "останній проєкт",
   "Last run": "Останній запуск",

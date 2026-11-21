@@ -62,6 +62,7 @@ export function useThreadListV2(input: {
   readonly projectRefs: LayoutInput["projectRefs"];
   readonly searchQuery: string;
   readonly statusFilter?: LayoutInput["statusFilter"];
+  readonly sort?: LayoutInput["sort"];
   readonly selectedTags?: LayoutInput["selectedTags"];
   /** Threads that match the search by content, keyed like `threadSearchMatchKey`. */
   readonly searchMatches: ReadonlyMap<string, unknown>;
@@ -124,13 +125,16 @@ export function useThreadListV2(input: {
       });
     return new Map([
       ...sectionAvailability("pinned"),
-      ...(workingShelfEnabled || grouping !== null ? [] : sectionAvailability("active")),
+      ...(workingShelfEnabled || grouping !== null || (input.sort ?? "default") !== "default"
+        ? []
+        : sectionAvailability("active")),
     ]);
   }, [
     threads,
     input.pendingOrder,
     input.pinReorderEnvironmentIds,
     input.activeReorderEnvironmentIds,
+    input.sort,
     layoutTime,
     input.settlementEnvironmentIds,
     input.snoozeEnvironmentIds,
@@ -214,6 +218,7 @@ export function useThreadListV2(input: {
         projectRefs: input.projectRefs,
         searchQuery: input.searchQuery,
         statusFilter: input.statusFilter,
+        sort: input.sort,
         selectedTags: input.selectedTags,
         matchedThreadKeys: new Set(input.searchMatches.keys()),
         settlementEnvironmentIds: input.settlementEnvironmentIds,
@@ -242,6 +247,7 @@ export function useThreadListV2(input: {
       input.projectRefs,
       input.searchQuery,
       input.statusFilter,
+      input.sort,
       input.selectedTags,
       input.searchMatches,
       input.settlementEnvironmentIds,

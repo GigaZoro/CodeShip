@@ -1,3 +1,4 @@
+import type { ThreadListSort } from "@t3tools/client-runtime/state/thread-sort";
 import type { ThreadListStatusFilter } from "@t3tools/client-runtime/state/thread-status";
 import type { EnvironmentId, SidebarProjectGroupingMode } from "@t3tools/contracts";
 import { RegistryContext, useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -12,6 +13,7 @@ export interface HomeListOptions {
   readonly selectedProjectKey: string | null;
   readonly statusFilter: ThreadListStatusFilter;
   readonly selectedTags: readonly string[];
+  readonly sort: ThreadListSort;
 }
 
 export interface ResolvedHomeListOptions extends HomeListOptions {
@@ -24,6 +26,7 @@ function defaultHomeListOptions(filters?: ThreadListFilters): HomeListOptions {
     selectedProjectKey: filters?.projectKey ?? null,
     statusFilter: filters?.status ?? "all",
     selectedTags: filters?.tags ?? [],
+    sort: filters?.sort ?? "default",
   };
 }
 
@@ -56,7 +59,8 @@ export function HomeListOptionsProvider({
       next.selectedEnvironmentId !== current.selectedEnvironmentId ||
       next.selectedProjectKey !== current.selectedProjectKey ||
       next.statusFilter !== current.statusFilter ||
-      next.selectedTags !== current.selectedTags
+      next.selectedTags !== current.selectedTags ||
+      next.sort !== current.sort
     ) {
       savePreferences({
         threadListFilters: {
@@ -64,6 +68,7 @@ export function HomeListOptionsProvider({
           projectKey: next.selectedProjectKey,
           ...(next.statusFilter === "all" ? {} : { status: next.statusFilter }),
           ...(next.selectedTags.length === 0 ? {} : { tags: next.selectedTags }),
+          ...(next.sort === "default" ? {} : { sort: next.sort }),
         },
       });
     }

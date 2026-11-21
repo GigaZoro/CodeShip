@@ -2,6 +2,7 @@
 
 - Filter the thread list by status on web, desktop, and mobile. The list shows when a filter is active and gives you a quick way to clear it.
 - Add, remove, and filter by thread tags on web, desktop, and mobile. On web and desktop you can tag several selected threads together.
+- Sort threads by last activity, creation, or name on web, desktop, and mobile. Pinned threads keep their manual order.
 
 ## 2026-11-21 — A landing reads real git history and refuses marked files
 

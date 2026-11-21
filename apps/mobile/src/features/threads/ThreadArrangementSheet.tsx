@@ -18,10 +18,11 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { deriveThreadArrangementSizing } from "../../lib/layout";
+import { mobilePreferencesAtom } from "../../state/preferences";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { threadListEnvironmentsAtom } from "../../state/presentation";
 import { environmentThreadShells } from "../../state/threads";
-import { sortSettledThreads } from "@t3tools/client-runtime/state/thread-sort";
+import { sortSettledThreads, sortThreadList } from "@t3tools/client-runtime/state/thread-sort";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../../state/olderSettledShelf";
 import {
   pendingThreadOrderAtom,
@@ -188,6 +189,11 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
   const pendingOrder = useAtomValue(pendingThreadOrderAtom);
   const dropBusy = useAtomValue(threadDropBusyAtom);
   const { moveThread } = useThreadListActions();
+  const preferences = useAtomValue(mobilePreferencesAtom);
+  const sort =
+    preferences._tag === "Success"
+      ? (preferences.value.threadListFilters?.sort ?? "default")
+      : "default";
   const { workingShelfEnabled, grouping } = useThreadListV2ShelfPreferences();
   // Folders order active threads by their latest message, so the list has no manual order.
   const grouped = grouping.project || grouping.machine;
@@ -217,17 +223,22 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
     const parked = threads.filter(
       (thread) => thread.archivedAt === null && !visible.has(keyOf(thread)),
     );
+    const snoozed = parked.filter((thread) => effectiveSnoozed(thread, { now }));
+    const settled = parked.filter((thread) => !effectiveSnoozed(thread, { now }));
     return {
       pinned,
-      active: grouped
-        ? sortWorkingThreadsBySend(active)
-        : workingShelfEnabled
-          ? sortInboxThreadsByReturn(active, threadListInboxReturns.returnedAt)
-          : active,
-      snoozed: parked.filter((thread) => effectiveSnoozed(thread, { now })),
-      settled: sortSettledThreads(parked.filter((thread) => !effectiveSnoozed(thread, { now }))),
+      active:
+        sort !== "default"
+          ? sortThreadList(active, sort)
+          : grouped
+            ? sortWorkingThreadsBySend(active)
+            : workingShelfEnabled
+              ? sortInboxThreadsByReturn(active, threadListInboxReturns.returnedAt)
+              : active,
+      snoozed: sort === "default" ? snoozed : sortThreadList(snoozed, sort),
+      settled: sort === "default" ? sortSettledThreads(settled) : sortThreadList(settled, sort),
     };
-  }, [threads, configs, now, queuedThreadKeys, pendingOrder, workingShelfEnabled, grouped]);
+  }, [threads, configs, now, queuedThreadKeys, pendingOrder, workingShelfEnabled, grouped, sort]);
   const listedSettled = sections.settled.filter(olderSettledShelf.isListed);
   useOlderSettledShelfGrowth([{ shelf: olderSettledShelf, listedCount: listedSettled.length }]);
   const visibleSettled = listedSettled.slice(0, settledVisibleCount);
@@ -241,12 +252,12 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
         reorderableEnvironmentIds:
           section === "pinned"
             ? listEnvironments.pinReorderEnvironmentIds
-            : workingShelfEnabled || grouped
+            : workingShelfEnabled || grouped || sort !== "default"
               ? new Set()
               : listEnvironments.activeReorderEnvironmentIds,
       });
     return { pinned: planner("pinned"), active: planner("active") };
-  }, [sections, threads, listEnvironments, workingShelfEnabled, grouped]);
+  }, [sections, threads, listEnvironments, workingShelfEnabled, grouped, sort]);
   const rows = useMemo(() => {
     const result: Row[] = [];
     let offset = 0;
@@ -415,7 +426,9 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
                 accessibilityLabel={t("Close arrange threads")}
               />
               <Text className="px-5 pb-3 text-sm text-foreground-muted">
-                {t("Drag to reorder, pin, or settle. Changes save when you drop.")}
+                {sort === "default"
+                  ? t("Drag to reorder, pin, or settle. Changes save when you drop.")
+                  : t("Choose Default sorting to manually arrange active threads.")}
               </Text>
               <View
                 onLayout={(event) => {
