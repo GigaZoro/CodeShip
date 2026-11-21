@@ -341,8 +341,9 @@ after its own start. A wrapper recorded as ended, or already gone when a later s
 from its pid file, is stopped with a start no process has, so a holder of its pid is never the root
 and bounds the wrapper's children by its own start, not by a clock reading. One recovered while
 running whose start cannot be read gets the window from its record to when it named itself in its
-pid file (to the recovery when that file's time cannot be read), whichever order a clock step left
-those ends in, so its stop takes as root only a holder of the pid made inside it. Startup
+pid file (to the recovery when that file's time cannot be read), so its stop takes as root only a
+holder of the pid made inside it. A clock set back between those reads leaves no time inside, so
+that stop takes no root and leaves the command running rather than risk another program's. Startup
 adopts every row not yet delivered: a status file means it ended; a live pid with the same identity
 is watched again, one whose identity cannot be read is watched and read again on each pass, and a
 pid whose check fails for a reason other than "no such process" is checked again on the next pass.

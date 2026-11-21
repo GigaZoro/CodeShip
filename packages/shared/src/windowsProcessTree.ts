@@ -113,8 +113,6 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   // looked: the stop ends it but fails as unfinished, as on a target it may not open or end. Outputs
   // ended <ms> when -running finds the root gone, and left <pid> <ticks> once a target will not end.
   "function Stop-T3ProcessTree($root, $since, $from = $since, $to = [double]::PositiveInfinity, $ended = [double]::PositiveInfinity, [long[]]$left = @(), [switch]$running) {",
-  // Both ends are wall-clock reads, which a clock set back between them leaves in either order.
-  "  if ($from -gt $to) { $from, $to = $to, $from }",
   `  $since -= ${CLOCK_SKEW_MS}; $from -= ${CLOCK_SKEW_MS}; $to += ${CLOCK_SKEW_MS}; $ended += ${CLOCK_SKEW_MS}`,
   "  $open = @{}; $ticksOf = @{}; $starts = New-Object System.Collections.ArrayList; $failed = $null",
   "  try {",

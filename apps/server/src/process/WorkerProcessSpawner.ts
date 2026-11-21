@@ -211,8 +211,11 @@ const start = ({ id, command, args, options, holderFd, outputs, inputs, encoding
   };
   children.set(id, entry);
   if (entry.held) {
+    // The parent ends a stopped worker's referenced children itself once their holder is gone.
     const lost = () => {
+      if (!entry.held) return;
       entry.held = false;
+      if (children.has(id)) post({ type: "unheld", id });
     };
     // Read only to learn of the holder's end.
     holder.on("end", lost).on("close", lost).on("error", lost).resume();
@@ -396,6 +399,7 @@ type WorkerEvent =
       readonly code: number | null;
       readonly signal: string | null;
     }
+  | { readonly type: "unheld"; readonly id: number }
   | {
       readonly type: "done";
       readonly id: number;
@@ -439,8 +443,9 @@ interface RemoteChild {
   readonly connection: Connection;
   readonly command: ChildProcess.StandardCommand;
   readonly kills: Kills;
-  // A holder keeps the group's number past the leader's exit and ends the group if the worker stops.
-  readonly held: boolean;
+  // A holder keeps the group's number past the leader's exit and ends the group if the worker stops,
+  // until the worker reports that it ended.
+  held: boolean;
   // Logs through the spawning fiber's logger a failure no fiber awaits, as after its worker stopped.
   readonly report: (error: PlatformError.PlatformError) => void;
   readonly exit: Deferred.Deferred<ExitStatus, PlatformError.PlatformError>;
@@ -670,14 +675,14 @@ const killOrphans = (children: Iterable<RemoteChild>) => {
   const trees: Array<Orphan> = [];
   for (const child of children) {
     const root = child.root;
-    if (!child.referenced || root === undefined) continue;
+    // A held group ends through its holder, which reads EOF once the stopped worker's pipes closed.
+    if (!child.referenced || root === undefined || child.held) continue;
     if (child.kills === "tree") {
       trees.push({ child, root });
       continue;
     }
-    // An unreaped leader, or a live holder, keeps the number ours. A leader the stopping worker
-    // reaped without relaying its exit gets the signal too, though with its holder gone the number
-    // may be another's.
+    // The worker relays every exit it ran a callback for, so an unrelayed leader is unreaped unless
+    // the worker stopped between libuv's reap and that callback.
     if (!Deferred.isDoneUnsafe(child.exit)) sigkill(child.kills === "group" ? -root.pid : root.pid);
   }
   if (trees.length > 0) killTrees(trees);
@@ -762,6 +767,9 @@ const receive = (connection: Connection, event: WorkerEvent) => {
         unhold(connection);
       }
       retire(child);
+      return;
+    case "unheld":
+      child.held = false;
       return;
   }
 };
