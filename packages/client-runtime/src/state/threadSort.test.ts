@@ -5,6 +5,7 @@ import {
   generateSpreadPinOrderKeys,
   pinOrderKeyBetween,
   planPinnedReorder,
+  planPinsAtTop,
   resolveSettledThreadTimestamp,
   sortActiveThreadsByOrderKey,
   sortSettledThreads,
@@ -209,6 +210,34 @@ describe("planPinnedReorder with hidden rows", () => {
     expect(keys).toEqual([...keys].sort());
     expect(new Set(keys).size).toBe(3);
     expect(keys.every((key) => !reserved.includes(key))).toBe(true);
+  });
+});
+
+describe("planPinsAtTop", () => {
+  const shelfOrder = (
+    shelf: ReadonlyArray<{ readonly id: string; readonly pinOrderKey: string | null }>,
+    plan: ReturnType<
+      typeof planPinsAtTop<{ readonly id: string; readonly pinOrderKey: string | null }>
+    >,
+  ) => {
+    const keys = new Map(shelf.map((thread) => [thread.id, thread.pinOrderKey]));
+    for (const { thread, orderKey } of plan.rekeyed) keys.set(thread.id, orderKey);
+    plan.pinKeys.forEach((key, index) => keys.set(`new-${index}`, key));
+    return [...keys].toSorted(([, left], [, right]) => (left! < right! ? -1 : 1)).map(([id]) => id);
+  };
+
+  it.each([
+    { name: "a usable head", head: "n", rekeys: 0 },
+    // The V1 cutover keeps `a0`, which leaves no key above it.
+    { name: "an imported head", head: "a0", rekeys: 2 },
+  ])("puts new pins on top in order with $name", ({ head, rekeys }) => {
+    const shelf = [
+      { id: "head", pinOrderKey: head },
+      { id: "next", pinOrderKey: "t" },
+    ];
+    const plan = planPinsAtTop({ shelf, count: 2 });
+    expect(plan.rekeyed).toHaveLength(rekeys);
+    expect(shelfOrder(shelf, plan)).toEqual(["new-0", "new-1", "head", "next"]);
   });
 });
 

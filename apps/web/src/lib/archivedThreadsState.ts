@@ -3,8 +3,8 @@ import {
   type ArchivedThreadSnapshotsState,
   type ArchivedThreadsView,
   createArchivedThreadSnapshotsAtomFamily,
-  latestArchivedThread,
   makeArchivedThreadsViewKey,
+  resolveLatestArchivedThread,
 } from "@t3tools/client-runtime/state/threads";
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 
@@ -58,23 +58,38 @@ export async function loadLatestArchivedThread(
 ): Promise<LatestArchivedThreadResult> {
   if (environmentIds.length === 0) return { _tag: "Empty" };
   for (const environmentId of environmentIds) refreshArchivedThreadsForEnvironment(environmentId);
-  const atom = archivedSnapshotsAtom(makeArchivedThreadsViewKey({ environmentIds }));
-  const settled = await waitForAtomValue({
-    registry: appAtomRegistry,
-    atom,
-    predicate: (state) => !state.isLoading,
-    timeoutMs: LATEST_ARCHIVED_TIMEOUT_MS,
-  });
-  const state = appAtomRegistry.get(atom);
-  const latest = latestArchivedThread(state.snapshots);
-  if (latest !== null) {
-    return {
-      _tag: "Found",
-      threadRef: { environmentId: latest.environmentId, threadId: latest.thread.id },
-    };
+  let release = () => {};
+  try {
+    // Ends when the archive runs out of pages, so each read is bounded by the archive itself.
+    for (let pages = 1; ; pages++) {
+      const atom = archivedSnapshotsAtom(makeArchivedThreadsViewKey({ environmentIds, pages }));
+      // The registry drops unobserved atoms, and the earlier view keeps its pages cached.
+      const releasePrevious = release;
+      release = appAtomRegistry.mount(atom);
+      releasePrevious();
+      await waitForAtomValue({
+        registry: appAtomRegistry,
+        atom,
+        predicate: (state) => !state.isLoading,
+        timeoutMs: LATEST_ARCHIVED_TIMEOUT_MS,
+      });
+      const latest = resolveLatestArchivedThread(appAtomRegistry.get(atom));
+      switch (latest._tag) {
+        case "Found":
+          return {
+            _tag: "Found",
+            threadRef: { environmentId: latest.environmentId, threadId: latest.thread.id },
+          };
+        case "Empty":
+        case "Failed":
+          return latest;
+        case "Pending":
+          return { _tag: "Failed", message: t("Timed out loading archived threads.") };
+        case "LoadMore":
+          continue;
+      }
+    }
+  } finally {
+    release();
   }
-  if (!settled || state.error !== null) {
-    return { _tag: "Failed", message: state.error ?? t("Timed out loading archived threads.") };
-  }
-  return { _tag: "Empty" };
 }

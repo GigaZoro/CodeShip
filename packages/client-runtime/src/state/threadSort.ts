@@ -227,6 +227,37 @@ export function generateSpreadPinOrderKeys(count: number): string[] {
   return keys;
 }
 
+/** Keys that put `count` new pins at the top of the shelf, first to last. A head key with no
+    room above it, such as an imported `a0`, rekeys the whole shelf in its current order. */
+export function planPinsAtTop<
+  T extends { readonly pinOrderKey?: string | null | undefined },
+>(input: {
+  /** Every pinned thread, in shelf order. */
+  readonly shelf: ReadonlyArray<T>;
+  readonly count: number;
+}): {
+  readonly pinKeys: ReadonlyArray<string>;
+  readonly rekeyed: ReadonlyArray<{ readonly thread: T; readonly orderKey: string }>;
+} {
+  const pinKeys: string[] = [];
+  let bound = input.shelf[0]?.pinOrderKey ?? null;
+  while (pinKeys.length < input.count) {
+    const key = pinOrderKeyBetween(null, bound);
+    if (key === null) break;
+    pinKeys.unshift(key);
+    bound = key;
+  }
+  if (pinKeys.length === input.count) return { pinKeys, rekeyed: [] };
+  const keys = generateSpreadPinOrderKeys(input.count + input.shelf.length);
+  return {
+    pinKeys: keys.slice(0, input.count),
+    rekeyed: input.shelf.flatMap((thread, index) => {
+      const orderKey = keys[input.count + index]!;
+      return thread.pinOrderKey === orderKey ? [] : [{ thread, orderKey }];
+    }),
+  };
+}
+
 export function planPinnedReorder(input: {
   readonly orderedIds: readonly string[];
   /** Include retained keys from hidden rows; only orderedIds receive writes. */
