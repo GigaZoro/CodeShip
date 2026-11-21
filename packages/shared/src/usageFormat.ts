@@ -110,7 +110,20 @@ export function formatPercent(share: number, digits = 1): string {
 export function formatUsageContractMismatch(
   environmentLabel: string,
   mismatch: Pick<UsageContractMismatch, "direction">,
+  showingLastValues = false,
 ): string {
+  if (showingLastValues) {
+    return mismatch.direction === "serverBehind"
+      ? t("{environment} runs an older server version. Showing its last compatible values.", {
+          environment: environmentLabel,
+        })
+      : t(
+          "This client is older than the server on {environment}. Showing its last compatible values.",
+          {
+            environment: environmentLabel,
+          },
+        );
+  }
   return mismatch.direction === "serverBehind"
     ? t("{environment} runs an older server version and is excluded from totals.", {
         environment: environmentLabel,
@@ -145,7 +158,7 @@ export function enumerateDays(sinceDay: string, untilDay: string): readonly stri
   return days;
 }
 
-const HOUR_MS = 60 * 60 * 1000;
+export const USAGE_HOUR_MS = 60 * 60 * 1000;
 
 function displayLocale(): string {
   return getFormattingLocale() ?? "en-US";
@@ -168,30 +181,27 @@ function dateTimeFormatter(
   return formatter;
 }
 
+export function usageHourStart(sinceTimeMs: number, index: number): string {
+  return new Date(sinceTimeMs + index * USAGE_HOUR_MS).toISOString();
+}
+
 export function enumerateHourStarts(sinceTime: string, untilTime: string): readonly string[] {
   const starts: string[] = [];
   const start = Date.parse(sinceTime);
   const end = Date.parse(untilTime);
   if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return starts;
 
-  for (let cursor = Math.floor(start / HOUR_MS) * HOUR_MS; cursor < end; cursor += HOUR_MS) {
-    starts.push(new Date(cursor).toISOString());
+  const count = Math.ceil((end - start) / USAGE_HOUR_MS);
+  for (let index = 0; index < count; index++) {
+    starts.push(usageHourStart(start, index));
   }
   return starts;
 }
 
 function hourOptions(hour12: boolean): Intl.DateTimeFormatOptions {
-  // ICU 78+ writes a bare 24-hour hour with a zone as "01h EDT"; with minutes it is "01:37 EDT".
-  return hour12 ? { hour: "numeric" } : { hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
-}
-
-function formatHour(formatter: Intl.DateTimeFormat, date: Date, hour12: boolean): string {
-  if (hour12) return formatter.format(date);
-  // Rolling buckets can start between whole hours, but their labels always name the hour.
-  return formatter
-    .formatToParts(date)
-    .map((part) => (part.type === "minute" ? "00" : part.value))
-    .join("");
+  return hour12
+    ? { hour: "numeric", minute: "2-digit" }
+    : { hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
 }
 
 /**
@@ -215,17 +225,17 @@ export function formatHourShort(hourStart: string, timeZone?: string, hour12 = t
     hourCycle: "h23",
   });
   const wallHour = wallHourFormat.format(instant);
-  const isRepeatedHour = [-HOUR_MS, HOUR_MS].some(
+  const isRepeatedHour = [-USAGE_HOUR_MS, USAGE_HOUR_MS].some(
     (offset) => wallHourFormat.format(new Date(instant.getTime() + offset)) === wallHour,
   );
 
-  if (!isRepeatedHour) return formatHour(hourFormat, instant, hour12);
+  if (!isRepeatedHour) return hourFormat.format(instant);
   const zonedHourFormat = dateTimeFormatter(displayLocale(), {
     ...options,
     ...hourOptions(hour12),
     timeZoneName: "short",
   });
-  return formatHour(zonedHourFormat, instant, hour12);
+  return zonedHourFormat.format(instant);
 }
 
 export function formatDateTimeShort(instant: string, timeZone?: string, hour12 = true): string {
@@ -259,7 +269,7 @@ export function formatRelativeHourShort(
   });
   const instantDay = Date.parse(`${dayFormat.format(instant)}T00:00:00Z`);
   const referenceDay = Date.parse(`${dayFormat.format(reference)}T00:00:00Z`);
-  const calendarDaysAgo = Math.round((referenceDay - instantDay) / (24 * HOUR_MS));
+  const calendarDaysAgo = Math.round((referenceDay - instantDay) / (24 * USAGE_HOUR_MS));
   const hour = formatHourShort(hourStart, timeZone, hour12);
 
   if (calendarDaysAgo === 0) return t("{hour} today", { hour });
@@ -316,7 +326,7 @@ export function makeWindow(
   if (resolution === "hour") {
     const minuteMs = 60_000;
     const untilTimeMs = Math.floor(now.getTime() / minuteMs) * minuteMs;
-    const sinceTimeMs = untilTimeMs - days * 24 * HOUR_MS;
+    const sinceTimeMs = untilTimeMs - days * 24 * USAGE_HOUR_MS;
     const sinceTime = new Date(sinceTimeMs);
     const untilTime = new Date(untilTimeMs);
     return {

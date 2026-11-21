@@ -1,20 +1,31 @@
 import { useAtomValue } from "@effect/atom-react";
 import { usageClock } from "@t3tools/client-runtime/clock";
-import { usageLimitClockAtom } from "@t3tools/client-runtime/state/usage-progress";
+import {
+  usageLimitAccountWorkspacesAtom,
+  usageLimitClockAtom,
+} from "@t3tools/client-runtime/state/usage-progress";
 import type { LimitPresentations } from "@t3tools/shared/usageLimits";
 import type { Atom } from "effect/reactivity";
-import { useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 
 import { environmentPresentations } from "../state/presentation";
 
 const minuteClock = usageClock();
+const subscribeIdle = () => () => {};
+const accountWorkspacesAtom = usageLimitAccountWorkspacesAtom(
+  environmentPresentations.presentationsWithProvidersAtom,
+);
 
-export function useUsageNow(): number {
-  return useSyncExternalStore(
-    minuteClock.subscribe,
-    minuteClock.getSnapshot,
-    minuteClock.getSnapshot,
-  );
+export function useUsageLimitWorkspaces() {
+  return useAtomValue(accountWorkspacesAtom);
+}
+
+export function useUsageNow(active: boolean): number {
+  const [last, setLast] = useState(minuteClock.getSnapshot);
+  const read = active ? minuteClock.getSnapshot : () => last;
+  const now = useSyncExternalStore(active ? minuteClock.subscribe : subscribeIdle, read, read);
+  if (now !== last) setLast(now);
+  return now;
 }
 
 export function useUsageLimitNow(

@@ -1267,6 +1267,8 @@ const catalog: MessageCatalog = {
     "{environment} тепер має ще один спосіб підключення.",
   "{environment} runs an older server version and is excluded from totals.":
     "{environment} працює на старішій версії сервера, тому не враховується в підсумках.",
+  "{environment} runs an older server version. Showing its last compatible values.":
+    "У середовищі {environment} працює старіша версія сервера. Показано останні сумісні дані.",
   "{environment} server": "Сервер {environment}",
   "{environment}: ": "{environment}: ",
   "{environment}: {count} more results.": "{environment}: ще {count} результатів.",
@@ -7894,6 +7896,7 @@ const catalog: MessageCatalog = {
   "no cookies": "без cookie",
   "No cookies found": "Cookie не знайдено",
   "No cookies were imported for {environment}.": "Для {environment} не імпортовано жодного cookie.",
+  "No cost breakdown available": "Розподіл витрат недоступний",
   "No custom options. The composer uses the provider's default options.":
     "Власних опцій немає. Поле повідомлення використовує типові опції провайдера.",
   "No custom prices or mappings. Add a row to set one.":
@@ -8133,9 +8136,11 @@ const catalog: MessageCatalog = {
   "No threads yet": "Чатів ще немає",
   "No time counted": "Час не враховано",
   "No time recorded yet.": "Час ще не записано.",
+  "No token breakdown available": "Розподіл токенів недоступний",
   "No token saved; the server uses {envVar} or the {cli} login.":
     "Токен не збережено; сервер використовує {envVar} або вхід {cli}.",
   "No token saved.": "Токен не збережено.",
+  "No tokens recorded": "Токенів не зафіксовано",
   "No transcript yet.": "Запису ще немає.",
   "No video received from the device. Reconnect to try again.":
     "Від пристрою не надійшло відео. Перепідключіться й спробуйте ще раз.",
@@ -12744,6 +12749,8 @@ const catalog: MessageCatalog = {
     "Цей клієнт не підтримується цим сервером. Оновіть застосунок або скористайтеся сумісним випуском, щоб підключитися до {label}.",
   "This client is older than the server on {environment}; its usage is excluded from totals.":
     "Цей клієнт старіший за сервер на {environment}; його використання не враховується в підсумках.",
+  "This client is older than the server on {environment}. Showing its last compatible values.":
+    "Цей клієнт старіший за сервер у середовищі {environment}. Показано останні сумісні дані.",
   "This client requires a newer server. Update T3.CodeShip on {label} to connect.":
     "Цей клієнт потребує новішого сервера. Оновіть T3.CodeShip на {label}, щоб підключитися.",
   "This command is too long.": "Ця команда задовга.",

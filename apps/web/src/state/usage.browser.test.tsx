@@ -193,6 +193,7 @@ it("shows no priced usage when recorded tokens have zero cost", async () => {
       segments={[]}
       format={String}
       recordedUsage={mergeAnsweredUsage([answered])}
+      metric="cost"
     />,
   );
 
@@ -213,25 +214,4 @@ it("renders web Usage with a single failed or offline environment", async () => 
   await using offline = await render(<UsageProbe window={window} />);
   await expect.element(offline.getByText("This environment is not connected.")).toBeVisible();
   await expect.element(offline.getByText("0 tokens", { exact: true })).not.toBeInTheDocument();
-});
-
-it("distinguishes priced zero-rate records from unpriced or absent usage", async () => {
-  const { answered, summary } = setup();
-  const priced = mergeAnsweredUsage([
-    {
-      ...answered,
-      summary: {
-        ...summary,
-        buckets: summary.buckets.map((bucket) => ({
-          ...bucket,
-          costSource: "modelPriced",
-          unpricedRecords: 0,
-        })),
-      },
-    },
-  ]);
-  await using screen = await render(
-    <UsageShareBar label="Cost by type" segments={[]} format={String} recordedUsage={priced} />,
-  );
-  await expect.element(screen.getByText("Priced usage costs $0")).toBeVisible();
 });

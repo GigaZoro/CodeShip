@@ -17,19 +17,27 @@ export function UsageShareBar({
   format,
   aside,
   recordedUsage,
+  metric,
 }: {
   readonly label: string;
   readonly segments: readonly ShareSegment[];
   readonly format: (value: number) => string;
   readonly aside?: ReactNode;
-  readonly recordedUsage?: Pick<MergedUsage, "records" | "costQuality">;
+  readonly recordedUsage: Pick<MergedUsage, "records" | "costQuality" | "totalTokens" | "costUsd">;
+  readonly metric: "tokens" | "cost";
 }) {
   const emptyMessage =
-    recordedUsage === undefined || recordedUsage.records === 0
+    recordedUsage.records === 0
       ? t("No activity in this window.")
-      : recordedUsage.costQuality.unpricedShare === 1
-        ? t("No priced usage")
-        : t("Priced usage costs $0");
+      : metric === "tokens"
+        ? recordedUsage.totalTokens === 0
+          ? t("No tokens recorded")
+          : t("No token breakdown available")
+        : recordedUsage.costUsd > 0
+          ? t("No cost breakdown available")
+          : recordedUsage.costQuality.unpricedShare === 1
+            ? t("No priced usage")
+            : t("Priced usage costs $0");
   const visible = segments.filter((segment) => segment.value > 0);
   const total = visible.reduce((sum, segment) => sum + segment.value, 0);
 

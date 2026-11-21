@@ -1,4 +1,4 @@
-import { deadlineStore, minuteTick } from "@t3tools/client-runtime/clock";
+import { deadlineStore, minuteTick, usageClock } from "@t3tools/client-runtime/clock";
 import { useState, useSyncExternalStore } from "react";
 
 /** Re-renders once when `deadlineMs` (epoch ms) is reached; `null` never passes. */
@@ -35,4 +35,15 @@ export function useNowMinuteMs(): number {
   return minuteTickToEpochMs(
     useSyncExternalStore(minuteTick.subscribe, minuteTick.getSnapshot, minuteTick.getSnapshot),
   );
+}
+
+const usageMinuteClock = usageClock();
+const subscribeIdle = () => () => {};
+
+export function useUsageNow(active: boolean): number {
+  const [last, setLast] = useState(usageMinuteClock.getSnapshot);
+  const read = active ? usageMinuteClock.getSnapshot : () => last;
+  const now = useSyncExternalStore(active ? usageMinuteClock.subscribe : subscribeIdle, read, read);
+  if (now !== last) setLast(now);
+  return now;
 }

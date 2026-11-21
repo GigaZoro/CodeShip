@@ -11,26 +11,40 @@ import type {
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
-import { act, render } from "../../../test/render";
+import { act, fakeTimers, render } from "../../../test/render";
 import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 import "../../index.css";
 import { UsagePage } from "./UsagePage";
 
 const state = vi.hoisted(() => ({
   now: 0,
-  response: "ready" as "ready" | "waiting" | "empty",
+  windowDays: 1 as 1 | 7,
+  realClock: false,
+  requests: new Set<string>(),
+  response: "ready" as "ready" | "waiting" | "provisional" | "empty",
+  secondEnvironment: null as "ready" | "incompatible" | "sourceFailure" | null,
+  costUsd: 0,
+  totalTokens: 100,
+  costSource: "unpriced" as "unpriced" | "modelPriced" | "providerReported",
   previous: null as UsageSnapshot | null,
   revision: 0,
   listeners: new Set<() => void>(),
 }));
 
-vi.mock("../../hooks/useUsageNow", () => ({
-  useUsageNow: () => state.now,
-  useUsageLimitNow: () => state.now,
-}));
+vi.mock("../../hooks/useUsageNow", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../hooks/useUsageNow")>();
+  return {
+    ...actual,
+    useUsageNow: (active: boolean) => {
+      const now = actual.useUsageNow(active && state.realClock);
+      return state.realClock ? now : state.now;
+    },
+    useUsageLimitNow: () => state.now,
+  };
+});
 vi.mock("./usagePagePreferences", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./usagePagePreferences")>()),
-  readUsagePagePreferences: () => ({ metric: "tokens", windowDays: 1 }),
+  readUsagePagePreferences: () => ({ metric: "tokens", windowDays: state.windowDays }),
 }));
 vi.mock("../../state/usage", async () => {
   const { useSyncExternalStore } = await import("react");
@@ -41,13 +55,16 @@ vi.mock("../../state/usage", async () => {
     };
   };
   const revision = () => state.revision;
-  const { isKeptUsage, mergeAnsweredUsage, settleUsageSnapshot } =
+  const { isKeptUsage, mergeAnsweredUsage, settleUsageSnapshot, usageWindowKey } =
     await import("@t3tools/client-runtime/state/usage-progress");
   return {
     mergeAnsweredUsage,
     useUsage: (window: UsageSummaryInput) => {
       useSyncExternalStore(subscribe, revision);
-      const environments = [reading(window)];
+      state.requests.add(usageWindowKey(window));
+      const other =
+        state.secondEnvironment === null ? [] : [otherReading(window, state.secondEnvironment)];
+      const environments = [reading(window), ...other];
       const shown = settleUsageSnapshot(state.previous, window, environments, environments);
       state.previous = shown;
       return {
@@ -61,39 +78,40 @@ vi.mock("../../state/usage", async () => {
   };
 });
 
-function reading(window: UsageSummaryInput): EnvironmentUsageStatus {
+function reading(window: UsageSummaryInput, response = state.response): EnvironmentUsageStatus {
   const summary: UsageSummary | null =
-    state.response === "waiting"
+    response === "waiting"
       ? null
       : {
           ...window,
           contractVersion: USAGE_CONTRACT_VERSION,
           readAt: "2026-11-21T23:59:00.000Z",
           buckets:
-            state.response === "empty"
+            response === "empty"
               ? []
               : [
                   {
                     day: window.sinceDay,
+                    ...(window.sinceTime === undefined ? {} : { hourStart: window.sinceTime }),
                     provider: "codex",
-                    model: "usage-test-model",
+                    model: response === "provisional" ? "other-model" : "usage-test-model",
                     totals: {
-                      uncachedInputTokens: 100,
+                      uncachedInputTokens: state.totalTokens,
                       cachedInputTokens: 0,
                       cacheCreationTokens: 0,
                       outputTokens: 0,
                       reasoningTokens: 0,
                     },
-                    costUsd: 0,
+                    costUsd: state.costUsd,
                     cacheSavingsUsd: 0,
-                    costSource: "unpriced",
+                    costSource: state.costSource,
                     records: 1,
-                    unpricedRecords: 1,
+                    unpricedRecords: state.costSource === "unpriced" ? 1 : 0,
                     sessions: 1,
                   },
                 ],
           sources:
-            state.response === "empty"
+            response === "empty"
               ? []
               : [
                   {
@@ -121,14 +139,45 @@ function reading(window: UsageSummaryInput): EnvironmentUsageStatus {
     canReadDiagnostics: true,
     needsCursorKeychainAccess: false,
     error: null,
-    isPending: state.response === "waiting",
+    isPending: response === "waiting" || response === "provisional",
     summary,
   };
 }
 
-function setup() {
-  state.now = Date.parse("2026-11-21T23:59:00.000Z");
+function otherReading(
+  window: UsageSummaryInput,
+  response: NonNullable<typeof state.secondEnvironment>,
+): EnvironmentUsageStatus {
+  const other = reading(window, "ready");
+  const summary = other.summary!;
+  return {
+    ...other,
+    environmentId: EnvironmentId.make("laptop"),
+    label: "Laptop",
+    summary: {
+      ...summary,
+      contractVersion: response === "incompatible" ? 0 : summary.contractVersion,
+      sources: summary.sources.map((source) => ({
+        ...source,
+        fingerprint: { ...source.fingerprint, hostId: "laptop" },
+        ...(response === "sourceFailure"
+          ? { status: "partial" as const, message: "Cursor fetch failed" }
+          : {}),
+      })),
+    },
+  };
+}
+
+function setup(windowDays: 1 | 7 = 1) {
+  state.now = new Date(2026, 10, 21, 23, windowDays === 1 ? 56 : 59).getTime();
+  state.windowDays = windowDays;
+  state.realClock = false;
+  state.requests.clear();
   state.response = "ready";
+  state.secondEnvironment = null;
+  state.costUsd = 0;
+  state.totalTokens = 100;
+  state.costSource = "unpriced";
   state.previous = null;
 }
 
@@ -147,13 +196,18 @@ function Screen() {
   );
 }
 
-it("keeps model details and their focus when the clock advances into an uncached window", async () => {
-  setup();
+it.each([
+  ["minute rolls over on Past 24h", 1],
+  ["date rolls over on 7 days", 7],
+] as const)("keeps model details interactive when the %s", async (_label, days) => {
+  setup(days);
   await using screen = await render(<Screen />);
   await screen.getByRole("button", { name: "usage-test-model" }).click();
   const dialog = page.getByRole("dialog");
   const close = dialog.getByRole("button", { name: "Close" });
+  const setPrice = dialog.getByRole("button", { name: "Set price" });
   await expect.element(dialog.getByRole("heading", { name: "usage-test-model" })).toBeVisible();
+  await expect.element(setPrice).toBeEnabled();
   (close.element() as HTMLElement).focus();
 
   state.now += 60_000;
@@ -162,6 +216,13 @@ it("keeps model details and their focus when the clock advances into an uncached
 
   await expect.element(dialog.getByRole("heading", { name: "usage-test-model" })).toBeVisible();
   await expect.element(close).toHaveFocus();
+  await expect.element(setPrice).toBeEnabled();
+  await expect.element(screen.getByText(/Showing previous usage/)).not.toBeInTheDocument();
+  state.response = "provisional";
+  await update();
+  await expect.element(setPrice).toBeEnabled();
+  await expect.element(close).toHaveFocus();
+  await expect.element(screen.getByText("other-model", { exact: true })).not.toBeInTheDocument();
   await userEvent.keyboard("{Escape}");
   await expect.element(dialog).not.toBeInTheDocument();
 });
@@ -200,16 +261,36 @@ function colorLuminance(color: string): number {
     .reduce((total, value, index) => total + value * [0.2126, 0.7152, 0.0722][index]!, 0);
 }
 
-it("keeps retained usage figures readable in the light and dark themes", async () => {
+async function selectWeekFromShortcut() {
+  await act(() => {
+    const mac = navigator.platform.startsWith("Mac");
+    globalThis.window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "@",
+        code: "Digit2",
+        shiftKey: true,
+        ctrlKey: !mac,
+        metaKey: mac,
+        cancelable: true,
+      }),
+    );
+  });
+}
+
+it("keeps retained figures readable and disables price edits when the period changes", async () => {
   setup();
   const wasDark = document.documentElement.classList.contains("dark");
   using _theme = {
     [Symbol.dispose]: () => document.documentElement.classList.toggle("dark", wasDark),
   };
   await using screen = await render(<Screen />);
-  state.now += 60_000;
+  await screen.getByRole("button", { name: "usage-test-model" }).click();
+  const dialog = page.getByRole("dialog");
   state.response = "waiting";
-  await update();
+  await selectWeekFromShortcut();
+  await expect.element(dialog.getByRole("button", { name: "Set price" })).toBeDisabled();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(dialog).not.toBeInTheDocument();
   await expect.element(screen.getByText(/Showing previous usage for Desk/)).toBeVisible();
   const figure = screen.getByText("100", { exact: true }).first();
   await expect.element(figure).toBeVisible();
@@ -226,3 +307,86 @@ it("keeps retained usage figures readable in the light and dark themes", async (
     ).toBeGreaterThanOrEqual(4.5);
   }
 });
+
+it("keeps a model dialog open when the newly selected period has no records for it", async () => {
+  setup();
+  await using screen = await render(<Screen />);
+  await screen.getByRole("button", { name: "usage-test-model" }).click();
+  const dialog = page.getByRole("dialog");
+  const close = dialog.getByRole("button", { name: "Close" });
+  (close.element() as HTMLElement).focus();
+  state.response = "empty";
+  await selectWeekFromShortcut();
+  await expect.element(dialog.getByRole("heading", { name: "usage-test-model" })).toBeVisible();
+  await expect.element(close).toHaveFocus();
+  await expect.element(dialog.getByText(/Showing previous usage for Desk/)).toBeVisible();
+});
+
+it("reports live compatibility and source failures beside the saved total", async () => {
+  setup();
+  state.secondEnvironment = "ready";
+  await using screen = await render(<Screen />);
+  const figures = screen.getByText("200", { exact: true }).first();
+  await expect.element(figures).toBeVisible();
+
+  state.response = "waiting";
+  state.secondEnvironment = "incompatible";
+  await update();
+  await expect
+    .element(
+      screen.getByText("Laptop runs an older server version. Showing its last compatible values."),
+    )
+    .toBeVisible();
+  await expect.element(figures).toBeVisible();
+
+  state.secondEnvironment = "sourceFailure";
+  await update();
+  await expect.element(screen.getByText("Cursor fetch failed")).toBeVisible();
+  await expect.element(figures).toBeVisible();
+});
+
+it("stops advancing the requested period on Limits and catches up on Usage", async () => {
+  setup();
+  state.realClock = true;
+  using _clock = fakeTimers();
+  vi.setSystemTime(state.now);
+  await using screen = await render(<Screen />);
+  await expect.element(screen.getByRole("button", { name: "usage-test-model" })).toBeVisible();
+
+  const selectMetric = (key: "t" | "l") =>
+    act(() => {
+      globalThis.window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key,
+          code: key === "t" ? "KeyT" : "KeyL",
+          cancelable: true,
+        }),
+      );
+    });
+  await selectMetric("l");
+  await expect.element(screen.getByRole("button", { name: "Refresh limits" })).toBeVisible();
+  const initialRequests = state.requests.size;
+  await act(() => vi.advanceTimersByTimeAsync(3 * 60_000));
+  expect(state.requests.size).toBe(initialRequests);
+  await selectMetric("t");
+  await expect.element(screen.getByRole("button", { name: "usage-test-model" })).toBeVisible();
+  expect(state.requests.size).toBe(initialRequests + 1);
+});
+
+it.each([
+  ["modelPriced", 0, 100, "Priced usage costs $0"],
+  ["providerReported", 1, 0, "No tokens recorded"],
+  ["providerReported", 0.003, 100, "No cost breakdown available"],
+] as const)(
+  "describes the model's %s usage with cost %d and %d tokens",
+  async (source, cost, tokens, label) => {
+    setup();
+    state.costSource = source;
+    state.costUsd = cost;
+    state.totalTokens = tokens;
+    await using screen = await render(<Screen />);
+    await screen.getByRole("button", { name: "usage-test-model" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect.element(dialog.getByText(label, { exact: true })).toBeVisible();
+  },
+);

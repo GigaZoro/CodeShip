@@ -27,9 +27,10 @@ import {
   mergeAnsweredUsage,
   retainedUsageLabel,
   refreshingUsageProviders,
-  usageCoverageEnvironments,
   usageEnvironmentError,
+  usageNotices,
   usageProgress,
+  type UsageSnapshot,
 } from "@t3tools/client-runtime/state/usage-progress";
 
 import {
@@ -64,7 +65,6 @@ import {
   formatUsageContractMismatch,
   formatUsd,
   makeWindow,
-  usageSourceMessages,
   usageWindowLabel,
 } from "@t3tools/shared/usageFormat";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
@@ -154,25 +154,60 @@ function selectUsageModel(key: string | null): void {
 }
 
 function UsageModelDialogHost({
-  models,
+  snapshot,
   onSetPrice,
   ...dialogProps
 }: Omit<Parameters<typeof UsageModelDialog>[0], "model" | "onSetPrice" | "onClose"> & {
-  readonly models: MergedUsage["models"];
+  readonly snapshot: UsageSnapshot | null;
   readonly onSetPrice: (model: string) => void;
 }) {
   const selectedKey = useAtomValue(selectedUsageModelKeyAtom);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clears the shared selected-model atom on unmount
   useEffect(() => () => selectUsageModel(null), []);
-  const model =
+  const currentModel =
     selectedKey === null
       ? undefined
-      : models.find((candidate) => `${candidate.provider}:${candidate.model}` === selectedKey);
+      : snapshot?.merged.models.find(
+          (candidate) => `${candidate.provider}:${candidate.model}` === selectedKey,
+        );
+  const [last, setLast] = useState<{
+    readonly key: string;
+    readonly snapshot: UsageSnapshot;
+    readonly model: MergedUsage["models"][number];
+    readonly chartWindow: typeof dialogProps.chartWindow;
+  } | null>(null);
+  if (
+    selectedKey !== null &&
+    currentModel !== undefined &&
+    snapshot !== null &&
+    (last?.key !== selectedKey || last.snapshot !== snapshot)
+  ) {
+    setLast({
+      key: selectedKey,
+      snapshot,
+      model: currentModel,
+      chartWindow: dialogProps.chartWindow,
+    });
+  } else if (selectedKey === null && last !== null) {
+    setLast(null);
+  }
+  const retained = last?.key === selectedKey && currentModel === undefined ? last : null;
+  const model = currentModel ?? retained?.model;
   if (model === undefined) return null;
   return (
     <UsageModelDialog
       {...dialogProps}
       model={model}
+      environments={retained?.snapshot.environments ?? dialogProps.environments}
+      chartWindow={retained?.chartWindow ?? dialogProps.chartWindow}
+      readOnly={
+        dialogProps.readOnly || (retained !== null && retained.snapshot.key !== snapshot?.key)
+      }
+      status={
+        retained === null
+          ? undefined
+          : retainedUsageLabel(retained.snapshot, retained.chartWindow.hour12)
+      }
       onSetPrice={() => {
         selectUsageModel(null);
         onSetPrice(model.model);
@@ -209,7 +244,7 @@ export function UsagePage() {
   const hiddenProviders = new Set(preferences.hiddenProviders);
   const windowDays = preferences.windowDays;
   const resolution = usageResolution(windowDays, preferences.weekResolution);
-  const now = useUsageNow();
+  const now = useUsageNow(!showingLimits);
   const window = makeWindow(windowDays, new Date(now), resolution);
   const chartType = preferences.chartType ?? "area";
   const { environments, selectedEnvironments, shown, showingKept, refresh } = useUsage(
@@ -234,7 +269,11 @@ export function UsagePage() {
     shown?.hasAnswer === true &&
     !showingKept &&
     !selectedEnvironments.some(({ isConnected, isPending }) => isConnected && isPending);
-  const coverageEnvironments = usageCoverageEnvironments(shownEnvironments, environments);
+  const { contractMismatches, coverage, sourceMessages } = usageNotices(
+    selectedEnvironments,
+    shownEnvironments,
+    hiddenProviders,
+  );
   const shownHiddenProviders = shown?.hiddenProviders ?? hiddenProviders;
   const shownCursorAccess = shownHiddenProviders.has("cursor")
     ? []
@@ -435,7 +474,7 @@ export function UsagePage() {
         (presentation.serverConfig?.providers ?? []).some(usesChatGptSharing),
     );
 
-  const windowLabel = usageWindowLabel(window, hour12);
+  const windowLabel = usageWindowLabel(shownWindow, hour12);
   const topbarContent = (
     <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 @4xl/usage-header:flex">
       <WorkspaceBreadcrumb ariaLabel={t("Usage breadcrumb")} className="min-w-0">
@@ -452,7 +491,7 @@ export function UsagePage() {
             showUsageStatus={!showingLimits}
             refreshing={refreshingUsage}
             duplicateSources={showingKept ? [] : merged.duplicateSources}
-            contractMismatches={showingKept ? [] : merged.contractMismatches}
+            contractMismatches={contractMismatches}
             onOpenModelPrices={() => setPriceDialog({})}
           />
         </WorkspaceBreadcrumbItem>
@@ -671,7 +710,7 @@ export function UsagePage() {
                 className="space-y-2 py-12 text-center text-sm text-muted-foreground"
               >
                 {selectedEnvironments.map((environment) => {
-                  const mismatch = merged.contractMismatches.find(
+                  const mismatch = contractMismatches.find(
                     ({ environmentId }) => environmentId === environment.environmentId,
                   );
                   return (
@@ -708,8 +747,7 @@ export function UsagePage() {
                   </p>
                 ) : null}
                 <UsageGapsNotice
-                  environments={coverageEnvironments}
-                  contractMismatches={merged.contractMismatches}
+                  notice={coverage}
                   retrying={refreshingUsage || showingKept}
                   onRetry={refreshWindow}
                 />
@@ -725,7 +763,7 @@ export function UsagePage() {
                   progressLabel={progress.label ?? (showingKept ? t("Updating…") : null)}
                   metric={metric === "tokens" ? "tokens" : "cost"}
                   selectedEnvironments={shownEnvironments}
-                  hiddenProviders={shownHiddenProviders}
+                  sourceMessages={sourceMessages}
                   activeProviders={activeProviders}
                   refreshingProviders={refreshingUsageProviders(
                     selectedEnvironments,
@@ -749,7 +787,7 @@ export function UsagePage() {
       {showingLimits ? null : (
         <UsageModelDialogHost
           readOnly={showingKept}
-          models={merged.models}
+          snapshot={shown}
           environments={shownEnvironments}
           metric={metric === "tokens" ? "tokens" : "cost"}
           chartWindow={{
@@ -790,7 +828,7 @@ function UsageOverview({
   chartControls,
   metric,
   selectedEnvironments,
-  hiddenProviders,
+  sourceMessages,
   activeProviders,
   refreshingProviders,
   cursorAccessEnvironments,
@@ -811,7 +849,7 @@ function UsageOverview({
   readonly progressLabel: string | null;
   readonly metric: "tokens" | "cost";
   readonly selectedEnvironments: readonly EnvironmentUsageStatus[];
-  readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
+  readonly sourceMessages: readonly string[];
   readonly activeProviders: readonly UsageProviderKind[];
   readonly refreshingProviders: ReadonlySet<UsageProviderKind>;
   readonly cursorAccessEnvironments: readonly EnvironmentUsageStatus[];
@@ -824,14 +862,6 @@ function UsageOverview({
   const shownHourly = shownWindow.resolution === "hour";
   const loadingPartial = showingKept;
   const loadingProviders = showingKept ? new Set(activeProviders) : refreshingProviders;
-  const sourceMessages = usageSourceMessages(
-    selectedEnvironments.flatMap(
-      (environment) =>
-        environment.summary?.sources.filter(
-          (source) => !hiddenProviders.has(source.fingerprint.provider),
-        ) ?? [],
-    ),
-  );
   const breakdownPeriods: readonly (DailyTotals | HourlyTotals)[] = (
     shownHourly ? merged.hourly : merged.daily
   ).toReversed();
@@ -1051,6 +1081,8 @@ function UsageOverview({
             label={t("Tokens by type")}
             segments={tokenTypeSegments(merged)}
             format={formatTokens}
+            recordedUsage={merged}
+            metric="tokens"
           />
         ) : (
           <>
@@ -1059,12 +1091,15 @@ function UsageOverview({
               segments={costTypeSegments(merged.categoryCost)}
               format={formatUsd}
               recordedUsage={merged}
+              metric="cost"
             />
             {merged.speedCost.fast + merged.speedCost.ultrafast > 0 ? (
               <UsageShareBar
                 label={t("Cost by speed")}
                 segments={speedCostSegments(merged.speedCost)}
                 format={formatUsd}
+                recordedUsage={merged}
+                metric="cost"
                 aside={<SpeedPremium premiumUsd={merged.speedCost.premium} />}
               />
             ) : null}

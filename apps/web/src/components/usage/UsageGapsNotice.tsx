@@ -1,24 +1,19 @@
-import { usageGaps } from "@t3tools/client-runtime/state/usage-progress";
-import type { MergedUsage } from "@t3tools/shared/usageMerge";
+import type { usageNotices } from "@t3tools/client-runtime/state/usage-progress";
 import { CircleAlertIcon } from "lucide-react";
 
-import type { EnvironmentUsageStatus } from "../../state/usage";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
 import { t } from "~/i18n";
 
 export function UsageGapsNotice({
-  environments,
-  contractMismatches,
+  notice,
   retrying,
   onRetry,
 }: {
-  readonly environments: readonly EnvironmentUsageStatus[];
-  readonly contractMismatches: MergedUsage["contractMismatches"];
+  readonly notice: ReturnType<typeof usageNotices>["coverage"];
   readonly retrying: boolean;
   readonly onRetry: () => void;
 }) {
-  const notice = usageGaps(environments, contractMismatches);
   if (notice === null) return null;
   const { title, gaps } = notice;
   return (

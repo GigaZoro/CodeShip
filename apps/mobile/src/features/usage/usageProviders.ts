@@ -1,16 +1,7 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 
-export const PROVIDER_ORDER: readonly UsageProviderKind[] = [
-  "codex",
-  "claude",
-  "grok",
-  "cursor",
-  "opencode",
-  "antigravity",
-  "pi",
-  "muse",
-];
+import { PROVIDER_ORDER } from "./usageChartData";
 
 export function usageProviderKind(driver: string): UsageProviderKind | null {
   if (driver === "claudeAgent") return "claude";

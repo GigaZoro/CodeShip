@@ -1,5 +1,11 @@
 import { Atom } from "effect/reactivity";
-import { limitResetTimes, type LimitPresentations } from "@t3tools/shared/usageLimits";
+import * as Option from "effect/Option";
+import {
+  limitAccountWorkspaces,
+  limitResetTimes,
+  type LimitAccountWorkspaces,
+  type LimitPresentations,
+} from "@t3tools/shared/usageLimits";
 import { usageClock } from "../clock.ts";
 import {
   USAGE_CONTRACT_VERSION,
@@ -10,7 +16,12 @@ import {
   type UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
-import { formatUsageContractMismatch, usageWindowLabel } from "@t3tools/shared/usageFormat";
+import {
+  USAGE_HOUR_MS,
+  formatUsageContractMismatch,
+  usageSourceMessages,
+  usageWindowLabel,
+} from "@t3tools/shared/usageFormat";
 import {
   isCompatibleUsageContractVersion,
   mergeUsage,
@@ -184,6 +195,32 @@ export interface UsageSnapshot {
   readonly hasAnswer: boolean;
   readonly providers: readonly ProviderTotals[];
   readonly reservedProviders: ReadonlySet<UsageProviderKind>;
+  readonly settled: boolean;
+}
+
+function providersWithReservations(
+  active: readonly ProviderTotals[],
+  reserved: ReadonlySet<UsageProviderKind>,
+): readonly ProviderTotals[] {
+  const represented = new Set(active.map(({ provider }) => provider));
+  return [
+    ...active,
+    ...[...reserved].flatMap((provider) =>
+      represented.has(provider)
+        ? []
+        : [
+            {
+              provider,
+              costUsd: 0,
+              totalTokens: 0,
+              records: 0,
+              sessions: 0,
+              costShare: 0,
+              tokenShare: 0,
+            },
+          ],
+    ),
+  ];
 }
 
 export function settleUsageSnapshot(
@@ -195,7 +232,9 @@ export function settleUsageSnapshot(
 ): UsageSnapshot | null {
   if (selected.length === 0) return null;
   const key = usageSelectionKey(window, selected, hidden);
-  if (previous?.key === key && equalUsageStatuses(previous.environments, selected)) return previous;
+  const sameWindow =
+    previous?.key === key && usageWindowKey(previous.window) === usageWindowKey(window);
+  if (sameWindow && equalUsageStatuses(previous.environments, selected)) return previous;
 
   const kept =
     previous?.hasAnswer &&
@@ -209,17 +248,37 @@ export function settleUsageSnapshot(
     )
       ? previous
       : null;
-  const keepDuringRefresh =
-    kept?.key === key && refreshingUsageProviders(kept.environments).size === 0;
-  if (
-    selected.some(
-      ({ summary, isConnected, isPending, error }) =>
-        error === null && isConnected && isPending && (summary === null || keepDuringRefresh),
-    )
-  )
-    return kept;
-
+  const pending = selected.filter(
+    ({ isConnected, isPending, error }) => error === null && isConnected && isPending,
+  );
+  const waitingForAnswers = pending.some(({ summary }) => summary === null);
+  const hasAnswer = selected.some(hasCompatibleUsage);
   const hiddenProviders = new Set(hidden);
+  const refreshing = refreshingUsageProviders(pending, hiddenProviders);
+  const reservedProviders = new Set([
+    ...(sameWindow ? previous.reservedProviders : []),
+    ...refreshing,
+  ]);
+  if (
+    kept !== null &&
+    ((pending.length > 0 && kept.key === key && (kept.settled || !sameWindow)) ||
+      (waitingForAnswers && (kept.key !== key || !hasAnswer)))
+  ) {
+    if (
+      kept.key !== key ||
+      [...refreshing].every((provider) => kept.reservedProviders.has(provider))
+    ) {
+      return kept;
+    }
+    const reserved = new Set([...kept.reservedProviders, ...refreshing]);
+    return {
+      ...kept,
+      providers: providersWithReservations(kept.providers, reserved),
+      reservedProviders: reserved,
+    };
+  }
+  if (waitingForAnswers && !hasAnswer) return null;
+
   const merged = mergeAnsweredUsage(
     hiddenProviders.size === 0
       ? selected
@@ -240,54 +299,61 @@ export function settleUsageSnapshot(
               },
         ),
   );
-  const reservedProviders = new Set([
-    ...(kept?.key === key ? kept.reservedProviders : []),
-    ...refreshingUsageProviders(selected, hiddenProviders),
-  ]);
+  if (!sameWindow && kept?.key === key && kept.settled) {
+    for (const provider of kept.reservedProviders) reservedProviders.add(provider);
+  }
   const active = merged.providers.filter(
     ({ costUsd, totalTokens, sessions }) => costUsd > 0 || totalTokens > 0 || sessions > 0,
   );
-  const represented = new Set(active.map(({ provider }) => provider));
-  const providers = [
-    ...active,
-    ...[...reservedProviders].flatMap((provider) =>
-      represented.has(provider)
-        ? []
-        : [
-            {
-              provider,
-              costUsd: 0,
-              totalTokens: 0,
-              records: 0,
-              sessions: 0,
-              costShare: 0,
-              tokenShare: 0,
-            },
-          ],
-    ),
-  ];
   return {
     key,
     window,
     hiddenProviders,
     environments: selected,
     merged,
-    hasAnswer: selected.some(hasCompatibleUsage),
-    providers,
+    hasAnswer,
+    providers: providersWithReservations(active, reservedProviders),
     reservedProviders,
+    settled: pending.length === 0,
   };
 }
 
-export function usageCoverageEnvironments(
-  represented: readonly EnvironmentUsageStatus[],
+export function usageNotices(
   live: readonly EnvironmentUsageStatus[],
-): readonly EnvironmentUsageStatus[] {
-  return represented.map((environment) => {
-    const current = live.find(({ environmentId }) => environmentId === environment.environmentId);
-    return current === undefined || current === environment
-      ? environment
-      : { ...current, summary: environment.summary };
+  represented: readonly EnvironmentUsageStatus[],
+  hidden: ReadonlySet<UsageProviderKind> = new Set(),
+) {
+  const contractMismatches = live.flatMap(({ environmentId, summary }) => {
+    if (
+      summary === null ||
+      isCompatibleUsageContractVersion(summary.contractVersion, USAGE_CONTRACT_VERSION)
+    )
+      return [];
+    return [
+      {
+        environmentId,
+        direction:
+          summary.contractVersion < USAGE_CONTRACT_VERSION
+            ? ("serverBehind" as const)
+            : ("clientBehind" as const),
+        contractVersion: summary.contractVersion,
+      },
+    ];
   });
+  const sourceMessages = usageSourceMessages(
+    live.flatMap((environment) =>
+      hasCompatibleUsage(environment)
+        ? (environment.summary?.sources ?? []).filter(
+            ({ fingerprint }) => !hidden.has(fingerprint.provider),
+          )
+        : [],
+    ),
+  );
+  return {
+    contractMismatches,
+    sourceMessages,
+    coverage: usageGaps(live, contractMismatches, represented),
+  };
 }
 
 export function isKeptUsage(
@@ -304,8 +370,16 @@ function usageSelectionKey(
   selected: readonly EnvironmentUsageStatus[],
   hidden: readonly UsageProviderKind[],
 ): string {
+  const resolution = window.resolution ?? "day";
+  const dayMs = 24 * USAGE_HOUR_MS;
+  const days =
+    resolution === "hour" && window.sinceTime !== undefined && window.untilTime !== undefined
+      ? (Date.parse(window.untilTime) - Date.parse(window.sinceTime)) / dayMs
+      : (Date.parse(window.untilDay) - Date.parse(window.sinceDay)) / dayMs + 1;
   return JSON.stringify([
-    usageWindowKey(window),
+    days,
+    resolution,
+    window.timeZone,
     selected
       .map(({ environmentId, modelFilter }) => [environmentId, modelFilter] as const)
       .sort(([left], [right]) => left.localeCompare(right)),
@@ -332,36 +406,36 @@ export function usageEnvironmentError(environment: EnvironmentUsageStatus): stri
 export function usageGaps(
   environments: readonly EnvironmentUsageStatus[],
   contractMismatches: MergedUsage["contractMismatches"],
+  represented = environments,
 ) {
   const mismatchById = new Map(
     contractMismatches.map((mismatch) => [mismatch.environmentId, mismatch]),
   );
   const gaps = environments.flatMap((environment) => {
     const mismatch = mismatchById.get(environment.environmentId);
-    if (mismatch !== undefined) {
-      return [
-        {
-          environment,
-          message: formatUsageContractMismatch(environment.label, mismatch),
-          excluded: true,
-          retryable: false,
-        },
-      ];
-    }
-    const error = usageEnvironmentError(environment);
+    const stale = represented.some(
+      (entry) => entry.environmentId === environment.environmentId && hasCompatibleUsage(entry),
+    );
+    const error =
+      mismatch === undefined
+        ? usageEnvironmentError(environment)
+        : formatUsageContractMismatch(environment.label, mismatch, stale);
     if (error === null) return [];
-    const stale = environment.summary !== null;
     return [
       {
         environment,
-        message: stale
-          ? t("{environment}: {error} Showing its last values.", {
-              environment: environment.label,
-              error,
-            })
-          : t("{environment}: {error}", { environment: environment.label, error }),
+        message:
+          mismatch !== undefined
+            ? error
+            : stale
+              ? t("{environment}: {error} Showing its last values.", {
+                  environment: environment.label,
+                  error,
+                })
+              : t("{environment}: {error}", { environment: environment.label, error }),
         excluded: !stale,
-        retryable: environment.canReadDiagnostics && environment.isConnected,
+        retryable:
+          mismatch === undefined && environment.canReadDiagnostics && environment.isConnected,
       },
     ];
   });
@@ -383,4 +457,14 @@ export const usageLimitClockAtom = Atom.family((presentations: Atom.Atom<LimitPr
     Atom.map((resetTimes) => usageClock(JSON.parse(resetTimes) as number[])),
     Atom.withLabel("usage-limit-clock"),
   ),
+);
+
+export const usageLimitAccountWorkspacesAtom = Atom.family(
+  (presentations: Atom.Atom<LimitPresentations>) =>
+    Atom.make((get) =>
+      limitAccountWorkspaces(
+        get(presentations),
+        Option.getOrUndefined(get.self<LimitAccountWorkspaces>()),
+      ),
+    ).pipe(Atom.withLabel("usage-limit-account-workspaces")),
 );

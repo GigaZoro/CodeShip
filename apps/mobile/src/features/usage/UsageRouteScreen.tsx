@@ -1,12 +1,11 @@
 import { Notice } from "../../components/ui/Notice";
-import { useNowMinuteMs } from "../../lib/clock";
+import { useUsageNow } from "../../lib/clock";
 import {
   mergeAnsweredUsage,
   retainedUsageLabel,
   refreshingUsageProviders,
-  usageCoverageEnvironments,
   usageEnvironmentError,
-  usageGaps,
+  usageNotices,
 } from "@t3tools/client-runtime/state/usage-progress";
 import { Button } from "../../components/ui/Button";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -37,7 +36,6 @@ import {
   formatUsageContractMismatch,
   formatUsd,
   makeWindow,
-  usageSourceMessages,
 } from "@t3tools/shared/usageFormat";
 import {
   createContext,
@@ -126,12 +124,14 @@ function UsageScreen(props: {
     });
   }
   const { view } = selection;
+  const isFocused = useIsFocused();
+  const showingLimits = view === "limits";
   const setView = (view: UsageView) => setSelection({ params: props.tabParam, view });
   const [width, setWidth] = useState(0);
   const wide = width >= WIDE_WIDTH;
   const [windowDays, selectWindow] = useState(30);
   const resolution = windowDays === 1 ? "hour" : "day";
-  const now = useNowMinuteMs();
+  const now = useUsageNow(isFocused && !showingLimits);
   const window = makeWindow(windowDays, new Date(now), resolution);
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
@@ -143,20 +143,13 @@ function UsageScreen(props: {
   const shownWindow = shown?.window ?? window;
   const shownEnvironments = shown?.environments ?? selectedEnvironments;
   const isPast24Hours = shownWindow.resolution === "hour";
-  const isFocused = useIsFocused();
-  const limits = useRefreshLimits(selectedEnvironmentIds, isFocused && view === "limits");
+  const limits = useRefreshLimits(selectedEnvironmentIds, isFocused && showingLimits);
   const cursorAccessEnvironments = cursorKeychainAccessEnvironments(selectedEnvironments);
   const refreshAfterCursorEnable = () => {
     void refresh();
     void limits.refreshAfterEnable();
   };
-  const coverage = usageGaps(
-    usageCoverageEnvironments(shownEnvironments, environments),
-    merged.contractMismatches,
-  );
-  const sourceMessages = usageSourceMessages(
-    shownEnvironments.flatMap((environment) => environment.summary?.sources ?? []),
-  );
+  const { coverage, sourceMessages } = usageNotices(selectedEnvironments, shownEnvironments);
   const canReadDiagnostics = selectedEnvironments.some(
     (environment) => environment.canReadDiagnostics,
   );
@@ -177,7 +170,6 @@ function UsageScreen(props: {
 
   const [refreshingUsage, setRefreshingUsage] = useState(false);
   const refreshingRef = useRef(false);
-  const showingLimits = view === "limits";
   const loading = isFocused && !showingLimits && shown === null && selectedEnvironments.length > 0;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Android uses a live region, while VoiceOver needs an explicit initial announcement
   useEffect(() => {

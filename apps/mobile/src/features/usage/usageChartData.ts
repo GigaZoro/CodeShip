@@ -1,7 +1,16 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 import type { DailyTotals } from "@t3tools/shared/usageMerge";
 
-import { PROVIDER_ORDER } from "./usageProviders";
+export const PROVIDER_ORDER: readonly UsageProviderKind[] = [
+  "codex",
+  "claude",
+  "grok",
+  "cursor",
+  "opencode",
+  "antigravity",
+  "pi",
+  "muse",
+];
 
 export type UsageChartMetric = "cost" | "tokens";
 

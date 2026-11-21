@@ -1,4 +1,7 @@
-import { usageLimitClockAtom } from "@t3tools/client-runtime/state/usage-progress";
+import {
+  usageLimitAccountWorkspacesAtom,
+  usageLimitClockAtom,
+} from "@t3tools/client-runtime/state/usage-progress";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -609,6 +612,9 @@ function PoolWindowCard({
 }
 
 const limitClockAtom = usageLimitClockAtom(environmentPresentations.presentationsWithProvidersAtom);
+const accountWorkspacesAtom = usageLimitAccountWorkspacesAtom(
+  environmentPresentations.presentationsWithProvidersAtom,
+);
 
 function useUsageLimitNow() {
   const clock = useAtomValue(limitClockAtom);
@@ -631,7 +637,8 @@ export function UsageLimitsSection({
     selectedEnvironmentIds === null
       ? presentations
       : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
-  const accounts = collectLimitAccounts(selected);
+  const workspaces = useAtomValue(accountWorkspacesAtom);
+  const accounts = collectLimitAccounts(selected, workspaces);
   const now = useUsageLimitNow();
   const pools = collectLimitPools(accounts, now);
   const failover = collectAccountFailover(selected, now);
@@ -778,7 +785,8 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
     selectedIds === null
       ? presentations
       : new Map([...presentations].filter(([id]) => selectedIds.has(id)));
-  const accounts = collectLimitAccounts(selected);
+  const workspaces = useAtomValue(accountWorkspacesAtom);
+  const accounts = collectLimitAccounts(selected, workspaces);
   const now = useUsageLimitNow();
   const account = accounts.find((candidate) => candidate.key === accountKey);
   const pool = collectLimitPools(accounts, now)

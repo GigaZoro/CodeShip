@@ -857,12 +857,14 @@ function ProviderSection({
 
 export function UsageLimitsPooled({
   presentations,
+  workspaces,
   now,
   getFailover,
   cursorPrompt,
   emptyMessage = t("No provider on the selected environments reports subscription limits."),
 }: {
   readonly presentations: Parameters<typeof collectLimitAccounts>[0];
+  readonly workspaces?: Parameters<typeof collectLimitAccounts>[1];
   readonly now: number;
   readonly getFailover?: (now: number) => readonly AccountFailoverEntry[];
   readonly cursorPrompt?: ReactNode;
@@ -870,7 +872,7 @@ export function UsageLimitsPooled({
 }) {
   const [segmentPopover] = useState(() => PopoverCreateHandle<SegmentPayload>());
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
-  const accounts = collectLimitAccounts(presentations);
+  const accounts = collectLimitAccounts(presentations, workspaces);
   const pools = collectLimitPools(accounts, now);
   const failover = getFailover?.(now) ?? [];
   const notices = collectLimitNotices(presentations);

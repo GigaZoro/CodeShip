@@ -15,6 +15,7 @@ import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
   collectLimitAccounts,
+  limitAccountWorkspaces,
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
@@ -899,8 +900,60 @@ describe("pools", () => {
       }),
     );
 
-    expect(healthy).toEqual(["codex:a@example.com:work", "codex:b@example.com:work"]);
+    expect(healthy).toEqual(["codex:a@example.com", "codex:b@example.com"]);
     expect(failed).toEqual(healthy);
+  });
+
+  it("keeps the same account lookup key when either native or hub loses its reading", () => {
+    const native = provider({
+      auth: { status: "authenticated", email: "a@example.com" },
+      usageLimits: { checkedAt, windows: [window] },
+    });
+    const hub = {
+      id: "a.json",
+      email: "A@example.com",
+      workspaceId: "work",
+      driver: native.driver,
+      usageLimits: native.usageLimits!,
+    };
+    const reports = (providers: ServerProvider[], accounts: (typeof hub)[]) =>
+      collectLimitAccounts(
+        new Map([
+          [
+            EnvironmentId.make("desk"),
+            {
+              ...laptop,
+              serverConfig: { providers, usageLimitSources: [{ ...source, accounts }] },
+            },
+          ],
+        ]),
+      );
+    const both = reports([native], [hub]);
+    const nativeOnly = reports([native], []);
+    const hubOnly = reports([], [hub]);
+    expect(both.map(({ key }) => key)).toEqual(["codex:a@example.com"]);
+    expect(nativeOnly.map(({ key }) => key)).toEqual(both.map(({ key }) => key));
+    expect(hubOnly.map(({ key }) => key)).toEqual(both.map(({ key }) => key));
+  });
+
+  it("keeps workspace keys when one workspace stops reporting for a shared email", () => {
+    const login = (workspaceId: string) =>
+      provider({
+        instanceId: ProviderInstanceId.make(workspaceId),
+        auth: { status: "authenticated", email: "a@example.com", workspaceId },
+        usageLimits: { checkedAt, windows: [window] },
+      });
+    const presentations = (providers: ServerProvider[]) =>
+      new Map([[EnvironmentId.make("desk"), { ...laptop, serverConfig: { providers } }]]);
+    const work = login("work");
+    const personal = login("personal");
+    const known = limitAccountWorkspaces(presentations([work, personal]));
+    for (const active of [work, personal]) {
+      const live = presentations([active]);
+      expect(
+        collectLimitAccounts(live, limitAccountWorkspaces(live, known)).map(({ key }) => key),
+      ).toEqual([`codex:a@example.com:${active.auth.workspaceId}`]);
+    }
   });
 
   it("keeps one email in two workspaces apart while merging each workspace's duplicates", () => {
@@ -1008,7 +1061,7 @@ describe("pools", () => {
       ]);
     const unrelated = provider({ instanceId: ProviderInstanceId.make("codex-2") });
     expect(collectLimitAccounts(withOther(unrelated)).map((account) => account.key)).toEqual([
-      "claudeAgent:same@example.com:org-a",
+      "claudeAgent:same@example.com",
     ]);
     const unreadable = provider({
       ...native,

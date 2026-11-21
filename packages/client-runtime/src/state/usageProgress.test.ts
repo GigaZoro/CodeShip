@@ -12,8 +12,8 @@ import {
   isKeptUsage,
   settleUsageSnapshot,
   usageEnvironmentProgress,
-  usageCoverageEnvironments,
   usageGaps,
+  usageNotices,
   usageProgress,
   type EnvironmentUsageStatus,
 } from "./usageProgress.ts";
@@ -151,6 +151,34 @@ describe("settleUsageSnapshot", () => {
 
     expect(shown?.window.sinceDay).toBe(cachedSummary.sinceDay);
     expect(settleUsageSnapshot(shown, cachedSummary, [cached], [cached])).toBe(shown);
+  });
+
+  it("keeps the current week's figures across midnight until the new request settles", () => {
+    const previousWindow = {
+      ...summary(),
+      sinceDay: UsageDay.make("2026-08-30"),
+      resolution: "day",
+    } as const;
+    const nextWindow = {
+      ...previousWindow,
+      sinceDay: UsageDay.make("2026-08-31"),
+      untilDay: UsageDay.make("2026-09-06"),
+    };
+    const previous = status("Desk", { summary: previousWindow });
+    const shown = settleUsageSnapshot(null, previousWindow, [previous], [previous]);
+    const partial = status("Desk", {
+      summary: { ...nextWindow, sources: summary(["cursor"]).sources },
+      isPending: true,
+    });
+    const waiting = settleUsageSnapshot(shown, nextWindow, [partial], [partial]);
+    expect(waiting?.merged).toBe(shown?.merged);
+    expect(isKeptUsage(waiting, nextWindow, [partial])).toBe(false);
+    expect(waiting?.window.untilDay).toBe(previousWindow.untilDay);
+
+    const settled = status("Desk", { summary: nextWindow });
+    const updated = settleUsageSnapshot(waiting, nextWindow, [settled], [settled]);
+    expect(updated?.window.untilDay).toBe(nextWindow.untilDay);
+    expect(isKeptUsage(updated, nextWindow, [settled])).toBe(false);
   });
 });
 
@@ -304,9 +332,66 @@ it("reports a live partial failure while keeping same-window figures", () => {
   ];
   const shown = settleUsageSnapshot(previous, window, live, live);
   expect(shown).toBe(previous);
-  const notices = usageGaps(usageCoverageEnvironments(shown!.environments, live), []);
+  const notices = usageNotices(live, shown!.environments).coverage;
   expect(notices?.title).toBe("Some totals may be out of date");
   expect(notices?.gaps.map(({ message }) => message)).toEqual([
     "Laptop: Read failed. Showing its last values.",
   ]);
+});
+
+it("publishes the first compatible environment on a cold load and names the one still scanning", () => {
+  const window = summary();
+  const desk = status("Desk");
+  const laptop = status("Laptop", { summary: null, isPending: true });
+  const selected = [desk, laptop];
+  const shown = settleUsageSnapshot(null, window, selected, selected);
+  expect(shown?.hasAnswer).toBe(true);
+  expect(shown?.settled).toBe(false);
+  expect(usageProgress(selected, options).label).toBe("Updating Laptop…");
+});
+
+it("reserves a slow provider's row through a settled snapshot's background refresh", () => {
+  const window = summary();
+  const ready = status("Desk", { summary: summary(["cursor"]) });
+  const previous = settleUsageSnapshot(null, window, [ready], [ready]);
+  const fetching = { ...ready, isPending: true };
+  const kept = settleUsageSnapshot(previous, window, [fetching], [fetching]);
+  expect(kept?.merged).toBe(previous?.merged);
+  expect(kept?.providers.map(({ provider }) => provider)).toEqual(["codex", "cursor"]);
+  const finished = status("Desk");
+  const shown = settleUsageSnapshot(kept, window, [finished], [finished]);
+  expect(shown?.providers.map(({ provider }) => provider)).toEqual(["codex", "cursor"]);
+});
+
+it("uses live compatibility and source notices while keeping saved figures", () => {
+  const window = summary();
+  const desk = status("Desk");
+  const laptop = status("Laptop");
+  const prior = settleUsageSnapshot(null, window, [desk, laptop], [desk, laptop]);
+  const pending = { ...desk, isPending: true };
+  const incompatible = { ...laptop, summary: { ...window, contractVersion: 0 } };
+  const selected = [pending, incompatible];
+  const shown = settleUsageSnapshot(prior, window, selected, selected);
+  expect(shown).toBe(prior);
+  const notices = usageNotices(selected, shown!.environments);
+  expect(notices.contractMismatches.map(({ environmentId }) => environmentId)).toEqual([
+    laptop.environmentId,
+  ]);
+  expect(notices.coverage?.gaps[0]).toMatchObject({
+    excluded: false,
+    message: "Laptop runs an older server version. Showing its last compatible values.",
+  });
+
+  const source = {
+    ...summary(["cursor"]).sources[1]!,
+    status: "partial" as const,
+    message: "Cursor fetch failed",
+  };
+  const duringTrouble = [pending, { ...laptop, summary: { ...window, sources: [source] } }];
+  expect(usageNotices(duringTrouble, shown!.environments).sourceMessages).toEqual([
+    "Cursor fetch failed",
+  ]);
+  expect(
+    usageNotices(duringTrouble, shown!.environments, new Set(["cursor"])).sourceMessages,
+  ).toEqual([]);
 });

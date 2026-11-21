@@ -1,4 +1,4 @@
-import { useUsageLimitNow } from "../../hooks/useUsageNow";
+import { useUsageLimitNow, useUsageLimitWorkspaces } from "../../hooks/useUsageNow";
 import { connectionMayStillAnswer } from "@t3tools/client-runtime/connection";
 import {
   AuthProvidersManageScope,
@@ -413,6 +413,7 @@ export function UsageLimitsSection({
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
   const now = useUsageLimitNow();
+  const workspaces = useUsageLimitWorkspaces();
   const hiddenDrivers = new Set<ServerProvider["driver"]>(
     [...hiddenProviders].map((provider) => PROVIDER_PRESENTATION[provider].driverKind),
   );
@@ -457,6 +458,7 @@ export function UsageLimitsSection({
       : undefined;
   return (
     <UsageLimitsPooled
+      workspaces={workspaces}
       presentations={selected}
       now={now}
       getFailover={(now) => collectAccountFailover(selected, now)}

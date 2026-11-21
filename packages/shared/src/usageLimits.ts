@@ -488,21 +488,46 @@ const nativeReport = (provider: ServerProvider): AccountReport => ({
   usageLimits: provider.usageLimits,
 });
 
-// Include every enabled login, even unreadable workspaces.
-function accountKeyResolver(reports: Iterable<AccountReport>) {
+export type LimitAccountWorkspaces = ReadonlyMap<string, ReadonlySet<string>>;
+
+function accountWorkspaces(reports: Iterable<AccountReport>, previous?: LimitAccountWorkspaces) {
   const workspaces = new Map<string, Set<string>>();
   for (const report of reports) {
     const key = accountKey(report.driver, report.email, report.usageLimits);
-    if (key && report.workspaceId) {
-      workspaces.set(key, (workspaces.get(key) ?? new Set()).add(report.workspaceId));
+    if (key === null) continue;
+    let known = workspaces.get(key);
+    if (known === undefined) {
+      // A failed reporter must not erase known workspace ambiguity for this login.
+      const remembered = previous?.get(key);
+      known = new Set(remembered && remembered.size > 1 ? remembered : []);
+      workspaces.set(key, known);
     }
+    if (report.workspaceId) known.add(report.workspaceId);
   }
+  return workspaces;
+}
+
+export function limitAccountWorkspaces(
+  presentations: LimitPresentations,
+  previous?: LimitAccountWorkspaces,
+): LimitAccountWorkspaces {
+  return accountWorkspaces(
+    [...presentations.values()].flatMap(({ serverConfig }) => [
+      ...(serverConfig?.providers ?? []).filter(({ enabled }) => enabled).map(nativeReport),
+      ...(serverConfig?.usageLimitSources ?? []).flatMap(({ accounts }) => accounts),
+    ]),
+    previous,
+  );
+}
+
+function accountKeyResolver(workspaces: LimitAccountWorkspaces, keyByLogin = false) {
   return (report: AccountReport): string | null => {
     const key = accountKey(report.driver, report.email, report.usageLimits);
     if (!key) return null;
-    if (report.workspaceId) return `${key}:${report.workspaceId}`;
     const known = workspaces.get(key);
-    if (!known) return key;
+    if (keyByLogin && (known?.size ?? 0) < 2) return key;
+    if (report.workspaceId) return `${key}:${report.workspaceId}`;
+    if (!known || known.size === 0) return key;
     return known.size === 1 ? `${key}:${[...known][0]}` : null;
   };
 }
@@ -529,7 +554,10 @@ export interface LimitAccount {
   readonly limits: ServerProviderUsageLimits;
 }
 
-export function collectLimitAccounts(presentations: LimitPresentations): readonly LimitAccount[] {
+export function collectLimitAccounts(
+  presentations: LimitPresentations,
+  workspaces = limitAccountWorkspaces(presentations),
+): readonly LimitAccount[] {
   const accounts = new Map<string, LimitAccount>();
   const creditSources = new Map<string, LimitAccount>();
   const hubRedeems = new Map<string, LimitAccount>();
@@ -594,14 +622,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
       },
     });
   };
-  const resolveKey = accountKeyResolver(
-    [...presentations.values()].flatMap((presentation) => [
-      ...(presentation.serverConfig?.providers ?? [])
-        .filter((provider) => provider.enabled)
-        .map(nativeReport),
-      ...(presentation.serverConfig?.usageLimitSources ?? []).flatMap((source) => source.accounts),
-    ]),
-  );
+  const resolveKey = accountKeyResolver(workspaces, true);
   for (const [environmentId, presentation] of presentations) {
     const label = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
@@ -1146,10 +1167,12 @@ export function collectProviderUsageLimits(
 ): UsageLimitsReport | null {
   const selected = providers.find((provider) => provider.instanceId === instanceId);
   if (!selected || !hasProviderUsageLimits(selected.driver, providers, sources)) return null;
-  const resolveKey = accountKeyResolver([
-    ...providers.filter((provider) => provider.enabled).map(nativeReport),
-    ...sources.flatMap((source) => source.accounts),
-  ]);
+  const resolveKey = accountKeyResolver(
+    accountWorkspaces([
+      ...providers.filter((provider) => provider.enabled).map(nativeReport),
+      ...sources.flatMap((source) => source.accounts),
+    ]),
+  );
   type NativeSnapshot = { provider: ServerProvider; limits: ServerProviderUsageLimits };
   const nativeByAccount = new Map<
     string,
