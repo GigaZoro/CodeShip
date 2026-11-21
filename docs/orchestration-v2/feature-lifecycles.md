@@ -258,7 +258,9 @@ across the thread. After commit, a worker stops its delegated commands and child
 including descendants. A delegated child that cannot be read does not keep Stop from
 committing. Older servers receive `run.interrupt` with `holdQueue`; the server treats
 that command as `thread.stop`, so a client without the capability stops the whole
-thread too.
+thread too. A Stop from an earlier server version held restart continuations in the
+queue instead of cancelling them; startup cancels those before any queued message
+starts, archived threads included.
 
 A per-run interrupt follows the selected run's restart chain. It interrupts provider
 turns and stops delegated work owned by that chain. Children and completions from

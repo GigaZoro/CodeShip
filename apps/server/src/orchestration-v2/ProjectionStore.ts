@@ -199,6 +199,7 @@ export type ProjectionSignedOutCandidate = Pick<
 
 export type ProjectionRecoveryKind =
   | "queued-runs"
+  | "stopped-restarts"
   | "runtime"
   | "restart-hold"
   | "subagent-results"
@@ -4774,6 +4775,25 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       function* (kind: ProjectionRecoveryKind) {
         const candidates = (() => {
           switch (kind) {
+            case "stopped-restarts":
+              // A queued restart continuation beside a Stop marker on it or its source.
+              return sql`
+                SELECT run.thread_id FROM orchestration_v2_projection_runs AS run
+                WHERE run.status = 'queued'
+                  AND CASE WHEN json_valid(run.payload_json)
+                    THEN json_type(run.payload_json, '$.restartContinuationOfRunId') = 'text'
+                    ELSE 0 END
+                  AND EXISTS (
+                    SELECT 1 FROM orchestration_v2_projection_turn_items AS stop
+                    WHERE stop.thread_id = run.thread_id
+                      AND stop.type = 'run_interrupt_request'
+                      AND (
+                        stop.run_id = run.run_id
+                        OR stop.run_id = CASE WHEN json_valid(run.payload_json)
+                          THEN json_extract(run.payload_json, '$.restartContinuationOfRunId') END
+                      )
+                  )
+              `;
             case "queued-runs":
               return sql`
                 SELECT thread_id FROM orchestration_v2_projection_runs
