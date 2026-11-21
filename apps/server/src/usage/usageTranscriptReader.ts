@@ -46,6 +46,13 @@ const NEWLINE = 0x0a;
 const STAT_CONCURRENCY = 32;
 const CARRIAGE_RETURN = 0x0d;
 
+interface TranscriptIoOptions {
+  readonly signal?: AbortSignal;
+  readonly onProgress?: () => void;
+}
+
+const activeReads = new Map<string, Set<() => void>>();
+
 function selectUsageFields(fields: SelectedFields) {
   return (path: ReadonlyArray<string | number | null>): boolean => {
     let selected: true | SelectedFields = fields;
@@ -67,11 +74,11 @@ function fnv1a(buffer: Buffer): number {
   return hash >>> 0;
 }
 
-/** Skips Grok logs without usage; preserves readdir order for first-seen deduplication. */
+/** Skips Grok logs without usage. */
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
-  options?: { readonly fileName?: string | undefined; readonly signal?: AbortSignal },
+  options?: TranscriptIoOptions & { readonly fileName?: string | undefined },
 ): Promise<{ readonly files: readonly TranscriptFile[]; readonly failedPaths: number }> {
   const fileName = options?.fileName;
   const candidates: string[] = [];
@@ -84,6 +91,8 @@ export async function listTranscriptFiles(
     } catch {
       failedPaths += 1;
       return;
+    } finally {
+      options?.onProgress?.();
     }
     for (const entry of entries) {
       const child = NodePath.join(dir, entry.name);
@@ -98,21 +107,21 @@ export async function listTranscriptFiles(
     }
   };
   await walk(root);
-  const result = await statTranscriptFiles(candidates, sinceMs, options?.signal);
+  const result = await statTranscriptFiles(candidates, sinceMs, options);
   return { files: result.files, failedPaths: failedPaths + result.failedPaths };
 }
 
 export async function statTranscriptFiles(
   candidates: readonly string[],
   sinceMs: number,
-  signal?: AbortSignal,
+  options?: TranscriptIoOptions,
 ) {
   const found: Array<TranscriptFile | undefined> = Array.from({ length: candidates.length });
   const queue = candidates.entries();
   let failedPaths = 0;
   const statQueued = async (): Promise<void> => {
     for (const [index, path] of queue) {
-      signal?.throwIfAborted();
+      options?.signal?.throwIfAborted();
       try {
         const stats = await NodeFSP.stat(path);
         if (stats.isFile() && stats.mtimeMs >= sinceMs) {
@@ -122,6 +131,8 @@ export async function statTranscriptFiles(
         if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
           failedPaths += 1;
         }
+      } finally {
+        options?.onProgress?.();
       }
     }
   };
@@ -176,24 +187,37 @@ export async function readTranscriptRecords<State>(
   filePath: string,
   format: TranscriptUsageFormat<State>,
   resumeFrom?: TranscriptParsePosition,
-  options?: {
+  options?: TranscriptIoOptions & {
     readonly streamingThresholdBytes?: number;
-    readonly signal?: AbortSignal;
-    readonly onProgress?: () => void;
   },
 ): Promise<TranscriptParseResult | null> {
+  const signal = options?.signal;
+  for (let read = activeReads.get(filePath); read !== undefined; read = activeReads.get(filePath)) {
+    if (signal?.aborted) return null;
+    const outstanding = read;
+    await new Promise<void>((resolve) => {
+      const resume = () => {
+        outstanding.delete(resume);
+        signal?.removeEventListener("abort", resume);
+        resolve();
+      };
+      outstanding.add(resume);
+      signal?.addEventListener("abort", resume, { once: true });
+    });
+  }
+  if (signal?.aborted) return null;
+
+  // An interrupted stat or open can still hold the descriptor until its native call returns.
+  const waiters = new Set<() => void>();
+  activeReads.set(filePath, waiters);
   const streamingThresholdBytes = options?.streamingThresholdBytes ?? STREAMING_THRESHOLD_BYTES;
   const compressed = filePath.endsWith(".jsonl.zst");
-  let handle: NodeFSP.FileHandle;
+  let handle: NodeFSP.FileHandle | undefined;
   try {
     handle = await NodeFSP.open(filePath, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NONBLOCK);
-  } catch {
-    return null;
-  }
-
-  try {
+    signal?.throwIfAborted();
     if (!(await handle.stat()).isFile()) return null;
-    options?.signal?.throwIfAborted();
+    signal?.throwIfAborted();
     const codec = format.state;
     const decodeState = codec === undefined ? undefined : Schema.decodeUnknownOption(codec.schema);
     const encodeState = codec === undefined ? undefined : Schema.encodeSync(codec.schema);
@@ -332,6 +356,8 @@ export async function readTranscriptRecords<State>(
   } catch {
     return null;
   } finally {
-    await handle.close().catch(() => undefined);
+    await handle?.close().catch(() => undefined);
+    activeReads.delete(filePath);
+    for (const resume of waiters) resume();
   }
 }

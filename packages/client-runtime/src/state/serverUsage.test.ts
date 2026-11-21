@@ -383,6 +383,36 @@ it.effect("fails the Usage query when every follow-up stays pending", () =>
   ),
 );
 
+it.effect("keeps five partial tokens when the Usage follow-up budget runs out", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const harness = yield* makeHarness(
+        () => Deferred.succeed(started, undefined),
+        () => [
+          { ...cursorSource(false), status: "partial", message: "Usage is still refreshing." },
+        ],
+        () => ({ output: 5, partialReason: "scanTimedOut" }),
+      );
+      const summary = harness.summary();
+      const unmount = harness.registry.mount(summary);
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("20 seconds");
+      const settled = yield* AtomRegistry.toStream(harness.registry, summary).pipe(
+        Stream.filter((result) => !result.waiting && !AsyncResult.isInitial(result)),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      expect(AsyncResult.isSuccess(settled) && settled.value.buckets[0]?.totals.outputTokens).toBe(
+        5,
+      );
+      expect(AsyncResult.isSuccess(settled) && settled.value.partialReason).toBe("scanTimedOut");
+      expect(harness.requests()).toBe(21);
+      unmount();
+    }),
+  ),
+);
+
 it.effect("keeps the cached usage summary when the awaited refresh fails", () =>
   Effect.scoped(
     Effect.gen(function* () {

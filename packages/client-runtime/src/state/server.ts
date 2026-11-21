@@ -1916,6 +1916,7 @@ export function createServerEnvironmentAtoms<R, E>(
           previous = summary;
           yield* emit(summary);
         }
+        if (previous !== undefined) return previous;
         return yield* new UsageReadError({
           reason: "scanFailed",
           detail: "The usage scan timed out.",

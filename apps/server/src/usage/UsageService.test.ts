@@ -3759,6 +3759,171 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
+  it.live.each(["progressing", "hung"] as const)(
+    "keeps a %s directory walk under the stall watchdog",
+    (scenario) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        const root = NodePath.join(home, "claude", "projects");
+        const parent = NodePath.dirname(transcript);
+        const leaf = NodePath.join(parent, "nested");
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(leaf);
+          await NodeFSP.writeFile(NodePath.join(leaf, "session.jsonl"), claudeLine(1, 5));
+        });
+        const directories = [root, parent, leaf];
+        const gates = directories.map(() => ({
+          entered: Promise.withResolvers<void>(),
+          release: Promise.withResolvers<void>(),
+        }));
+        const actual = yield* Effect.promise(() =>
+          vi.importActual<typeof NodeFSP>("node:fs/promises"),
+        );
+        using walk = vi.spyOn(NodeFSP, "readdir").mockImplementation(async (...args) => {
+          const index = typeof args[0] === "string" ? directories.indexOf(args[0]) : -1;
+          const gate = gates[index];
+          if (gate !== undefined) {
+            gate.entered.resolve();
+            await gate.release.promise;
+          }
+          return actual.readdir(...args);
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            for (const gate of gates) gate.release.resolve();
+          }),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* UsageService.make;
+          const caller = yield* service.readSummary(WINDOW).pipe(Effect.result, Effect.forkChild);
+          yield* Effect.promise(() => gates[0]!.entered.promise);
+          for (let index = 0; index < 2; index++) {
+            yield* TestClock.adjust("2 minutes");
+            gates[index]!.release.resolve();
+            yield* Effect.promise(() => gates[index + 1]!.entered.promise);
+          }
+          const initial = yield* Fiber.join(caller);
+          assert.strictEqual(initial._tag === "Failure" && initial.failure.reason, "scanPending");
+
+          if (scenario === "hung") {
+            yield* TestClock.adjust("299 seconds");
+            const atCutoff = yield* service
+              .readSummary({ ...WINDOW, awaitRefresh: true })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* TestClock.adjust("1 second");
+            const stopped = yield* Fiber.join(atCutoff);
+            assert.strictEqual(stopped._tag === "Failure" && stopped.failure.reason, "scanPending");
+            assert.lengthOf(
+              walk.mock.calls.filter(([directory]) => directory === root),
+              1,
+            );
+            gates[2]!.release.resolve();
+            assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
+            assert.lengthOf(
+              walk.mock.calls.filter(([directory]) => directory === root),
+              2,
+            );
+          } else {
+            yield* TestClock.adjust("2 minutes");
+            const followUp = yield* service
+              .readSummary({ ...WINDOW, awaitRefresh: true })
+              .pipe(Effect.forkChild);
+            gates[2]!.release.resolve();
+            assert.strictEqual(totalOutputTokens(yield* Fiber.join(followUp)), 5);
+            for (const directory of directories) {
+              assert.lengthOf(
+                walk.mock.calls.filter(([name]) => name === directory),
+                1,
+              );
+            }
+          }
+        }).pipe(Effect.provide(layerService({ prefix: "usage-discovery-stall", home, settings })));
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live("waits for a stuck transcript stat and close before opening its path again", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      const actual = yield* Effect.promise(() =>
+        vi.importActual<typeof NodeFSP>("node:fs/promises"),
+      );
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const closed = Promise.withResolvers<void>();
+      let opens = 0;
+      let active = 0;
+      let peak = 0;
+      using _open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+        const handle = await actual.open(...args);
+        if (args[0] !== transcript) return handle;
+        peak = Math.max(peak, ++active);
+        const close = handle.close.bind(handle);
+        const first = ++opens === 1;
+        handle.close = async () => {
+          await close();
+          active--;
+          if (first) closed.resolve();
+        };
+        if (first) {
+          const stat = handle.stat.bind(handle);
+          Object.defineProperty(handle, "stat", {
+            value: async () => {
+              entered.resolve();
+              await release.promise;
+              return stat();
+            },
+          });
+        }
+        return handle;
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()));
+      yield* Effect.gen(function* () {
+        const service = yield* UsageService.make;
+        const base = yield* Effect.tracer;
+        const started = Promise.withResolvers<void>();
+        const tracer = Tracer.make({
+          span(options) {
+            if (options.name === "UsageService.readFileRecords") started.resolve();
+            return base.span(options);
+          },
+        });
+        const assertCutoff = Effect.gen(function* () {
+          yield* TestClock.adjust("299 seconds");
+          const atCutoff = yield* service
+            .readSummary({ ...WINDOW, awaitRefresh: true })
+            .pipe(Effect.result, Effect.forkChild);
+          yield* TestClock.adjust("1 second");
+          const stopped = yield* Fiber.join(atCutoff);
+          assert.strictEqual(stopped._tag === "Failure" && stopped.failure.reason, "scanPending");
+        });
+        const first = yield* service.readSummary(WINDOW).pipe(Effect.result, Effect.forkChild);
+        yield* Effect.promise(() => entered.promise);
+        yield* assertCutoff;
+        yield* Fiber.join(first);
+
+        const retry = yield* service
+          .readSummary(WINDOW)
+          .pipe(Effect.withTracer(tracer), Effect.result, Effect.forkChild);
+        yield* Effect.promise(() => started.promise);
+        yield* assertCutoff;
+        yield* Fiber.join(retry);
+        assert.strictEqual(opens, 1);
+        assert.strictEqual(active, 1);
+
+        release.resolve();
+        yield* Effect.promise(() => closed.promise);
+        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
+        assert.strictEqual(opens, 2);
+        assert.strictEqual(peak, 1);
+      }).pipe(
+        Effect.provide(layerService({ prefix: "usage-transcript-stuck-stat", home, settings })),
+      );
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.live("uses a completed window at the deadline only with matching pricing settings", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

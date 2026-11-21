@@ -749,11 +749,7 @@ export const make = Effect.gen(function* () {
   );
   yield* Effect.addFinalizer(() => awaitPersisted);
 
-  /**
-   * Reads run concurrently, and the caller stores updates in walk order rather
-   * than completion order: saved records of deleted transcripts aggregate in
-   * cache order, where the first copy of a duplicate wins.
-   */
+  /** Reads may finish in any order. Aggregation orders live and retained files together for duplicate credit. */
   const readFileRecords = Effect.fn("UsageService.readFileRecords")(function* (
     filePath: string,
     size: number,
@@ -880,12 +876,13 @@ export const make = Effect.gen(function* () {
     key: string,
     dir: string,
     fileName: string | undefined,
+    onProgress: () => void,
   ) {
     const now = yield* monotonicMillis;
     const cached = listings.get(key);
     if (cached === undefined || cached.expiresAt <= now) {
       const result = yield* Effect.promise((signal) =>
-        listTranscriptFiles(dir, -Infinity, { fileName, signal }),
+        listTranscriptFiles(dir, -Infinity, { fileName, signal, onProgress }),
       );
       const completedAt = yield* monotonicMillis;
       for (const [key, entry] of listings) {
@@ -900,7 +897,7 @@ export const make = Effect.gen(function* () {
       .filter((file) => file.mtimeMs >= hotSince)
       .map((file) => file.path);
     const updated = yield* Effect.promise((signal) =>
-      statTranscriptFiles(hotPaths, -Infinity, signal),
+      statTranscriptFiles(hotPaths, -Infinity, { signal, onProgress }),
     );
     const byPath = new Map(updated.files.map((file) => [file.path, file]));
     const files = cached.files.flatMap((file) => {
@@ -926,7 +923,8 @@ export const make = Effect.gen(function* () {
       listings.delete(key);
       return { provider, dir, volumeId, files: null } satisfies ScannedDir;
     }
-    const listing = scanListings.get(key) ?? (yield* transcriptListing(key, dir, fileName));
+    const listing =
+      scanListings.get(key) ?? (yield* transcriptListing(key, dir, fileName, onProgress));
     scanListings.set(key, listing);
     const candidates = listing.files.filter((file) => file.mtimeMs >= windowStartMs);
     const read = yield* Effect.forEach(
