@@ -35,7 +35,11 @@
         "options": { "effort": "xhigh" },
         "autoAccount": true
       },
-      "delegate_providers": ["claudeAgent", "codex"]
+      "delegate_providers": ["claudeAgent", "codex"],
+      "not_yet": {
+        "Zoro-VPS": "AB#6440: every push to main publishes a signed release, and until release staging installs from the reviewed lockfile outside the signing job, an unattended weekly push would sign a dependency graph no one reviewed",
+        "MacBook-Pro-Andrii": "AB#6440: every push to main publishes a signed release, and until release staging installs from the reviewed lockfile outside the signing job, an unattended weekly push would sign a dependency graph no one reviewed"
+      }
     }
   },
   "toolchain": {
