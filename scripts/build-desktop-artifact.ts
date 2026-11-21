@@ -41,7 +41,7 @@ import {
   selectCliRuntimeExternalDependencies,
 } from "./lib/cli-external-packages.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
-import { packagedProbeEnv } from "./lib/packaged-probe-env.ts";
+import { packagedProbeEnv, stageInstallEnv } from "./lib/child-env.ts";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 import {
@@ -77,11 +77,23 @@ const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
 
-// Each dependency field of an extension maps names to specs; a field of another shape fails the decode.
-const PackageExtensions = Schema.Record(
-  Schema.String,
-  Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.String)),
-);
+const DependencySpecs = Schema.Record(Schema.String, Schema.String);
+/** The dependency-spec fields of a package extension; only these may name catalog: specs. */
+const PACKAGE_EXTENSION_SPEC_FIELDS = [
+  "dependencies",
+  "optionalDependencies",
+  "peerDependencies",
+] as const;
+// pnpm's extension fields; one the stage dropped would change an edge, which the drift check fails.
+const PackageExtension = Schema.Struct({
+  dependencies: Schema.optional(DependencySpecs),
+  optionalDependencies: Schema.optional(DependencySpecs),
+  peerDependencies: Schema.optional(DependencySpecs),
+  peerDependenciesMeta: Schema.optional(
+    Schema.Record(Schema.String, Schema.Struct({ optional: Schema.optional(Schema.Boolean) })),
+  ),
+});
+const PackageExtensions = Schema.Record(Schema.String, PackageExtension);
 
 const WorkspaceConfig = Schema.Struct({
   catalog: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -323,6 +335,19 @@ export class UnsupportedDesktopBuildArchitectureError extends Schema.TaggedError
 ) {
   override get message(): string {
     return `Unsupported architecture '${this.arch}' for ${this.platform}.`;
+  }
+}
+
+// Mac App Store targets package Electron's mas build into mas* folders, which this build
+// neither stages, checks nor collects.
+const MAC_APP_STORE_TARGETS: ReadonlySet<string> = new Set(["mas", "mas-dev"]);
+
+export class UnsupportedDesktopBuildTargetError extends Schema.TaggedError<UnsupportedDesktopBuildTargetError>()(
+  "UnsupportedDesktopBuildTargetError",
+  { platform: BuildPlatform, target: Schema.String },
+) {
+  override get message(): string {
+    return `Unsupported target '${this.target}' for ${this.platform}: Mac App Store builds are not supported.`;
   }
 }
 
@@ -1644,18 +1669,28 @@ function createStageWorkspaceConfig(input: {
   const allowBuilds = workspace.allowBuilds ?? {};
   const patchedDependencies = workspace.patchedDependencies ?? {};
   const packageExtensions = Object.fromEntries(
-    Object.entries(workspace.packageExtensions ?? {}).map(([selector, fields]) => [
+    Object.entries(workspace.packageExtensions ?? {}).map(([selector, extension]) => [
       selector,
-      Object.fromEntries(
-        Object.entries(fields).map(([field, specs]) => [
-          field,
-          resolveCatalogDependencies(
-            specs,
-            catalog,
-            `pnpm-workspace.yaml packageExtensions ${selector}`,
-          ),
-        ]),
-      ),
+      {
+        ...extension,
+        ...Object.fromEntries(
+          PACKAGE_EXTENSION_SPEC_FIELDS.flatMap((field) => {
+            const specs = extension[field];
+            return specs === undefined
+              ? []
+              : [
+                  [
+                    field,
+                    resolveCatalogDependencies(
+                      specs,
+                      catalog,
+                      `pnpm-workspace.yaml packageExtensions ${selector} ${field}`,
+                    ),
+                  ],
+                ];
+          }),
+        ),
+      },
     ]),
   );
   const hostOs = platform === "mac" ? "darwin" : platform === "win" ? "win32" : "linux";
@@ -1725,10 +1760,16 @@ export const writeStageWorkspace = Effect.fn("writeStageWorkspace")(function* (i
   }
 });
 
+const EDGE_KINDS = ["dependencies", "optionalDependencies"] as const;
+/** A snapshot's dependency edges by kind; an edge that moves between kinds changes what installs. */
+type SnapshotEdges = {
+  readonly [Kind in (typeof EDGE_KINDS)[number]]: Readonly<Record<string, string>>;
+};
+
 interface PnpmLockfileGraph {
   readonly resolutions: ReadonlyMap<string, Readonly<Record<string, unknown>>>;
   /** Dependency edges per exact snapshot key; keys and references keep their peer and patch suffixes. */
-  readonly snapshots: ReadonlyMap<string, Readonly<Record<string, string>>>;
+  readonly snapshots: ReadonlyMap<string, SnapshotEdges>;
   /** Direct dependency references per importer path. */
   readonly importers: ReadonlyMap<string, Readonly<Record<string, string>>>;
   readonly patchHashes: ReadonlyMap<string, string>;
@@ -1761,7 +1802,7 @@ export const readPnpmLockfileGraph = Effect.fn("readPnpmLockfileGraph")(function
   lockfile: string,
 ) {
   const resolutions = new Map<string, Readonly<Record<string, unknown>>>();
-  const snapshots = new Map<string, Readonly<Record<string, string>>>();
+  const snapshots = new Map<string, SnapshotEdges>();
   const importers = new Map<string, Readonly<Record<string, string>>>();
   const patchHashes = new Map<string, string>();
   // pnpm writes its own install as a leading document; "---" at column 0 always starts one.
@@ -1781,7 +1822,10 @@ export const readPnpmLockfileGraph = Effect.fn("readPnpmLockfileGraph")(function
       resolutions.set(key, entry.resolution);
     }
     for (const [key, snapshot] of Object.entries(decoded.snapshots ?? {})) {
-      snapshots.set(key, { ...snapshot.dependencies, ...snapshot.optionalDependencies });
+      snapshots.set(key, {
+        dependencies: snapshot.dependencies ?? {},
+        optionalDependencies: snapshot.optionalDependencies ?? {},
+      });
     }
   }
   return { resolutions, snapshots, importers, patchHashes } satisfies PnpmLockfileGraph;
@@ -1791,7 +1835,7 @@ export const readPnpmLockfileGraph = Effect.fn("readPnpmLockfileGraph")(function
 interface StagedRootGraph {
   readonly importers: ReadonlyMap<string, Readonly<Record<string, string>>>;
   /** Every root snapshot a stage snapshot key may stand for. */
-  readonly snapshots: ReadonlyMap<string, ReadonlyArray<Readonly<Record<string, string>>>>;
+  readonly snapshots: ReadonlyMap<string, ReadonlyArray<SnapshotEdges>>;
 }
 
 /**
@@ -1809,7 +1853,7 @@ function stagedRootGraph(root: PnpmLockfileGraph): StagedRootGraph {
   for (const [key, edges] of root.snapshots) {
     const parent = snapshotPackageName(key);
     for (const peer of removedPeers.get(parent) ?? []) {
-      const reference = edges[peer];
+      const reference = edges.dependencies[peer] ?? edges.optionalDependencies[peer];
       if (reference === undefined) continue;
       const suffixes = removedSuffixes.get(parent) ?? new Set();
       removedSuffixes.set(parent, suffixes.add(`(${snapshotKeyOf(peer, reference)})`));
@@ -1820,13 +1864,17 @@ function stagedRootGraph(root: PnpmLockfileGraph): StagedRootGraph {
       (stripped, suffix) => stripped.replaceAll(suffix, ""),
       reference,
     );
-  const stagedEdges = (name: string, edges: Readonly<Record<string, string>>) =>
+  const stagedReferences = (name: string, references: Readonly<Record<string, string>>) =>
     Object.fromEntries(
-      Object.entries(edges)
+      Object.entries(references)
         .filter(([child]) => removedPeers.get(name)?.has(child) !== true)
         .map(([child, reference]) => [child, withoutRemovedPeers(child, reference)]),
     );
-  const snapshots = new Map<string, Array<Readonly<Record<string, string>>>>();
+  const stagedEdges = (name: string, edges: SnapshotEdges): SnapshotEdges => ({
+    dependencies: stagedReferences(name, edges.dependencies),
+    optionalDependencies: stagedReferences(name, edges.optionalDependencies),
+  });
+  const snapshots = new Map<string, Array<SnapshotEdges>>();
   for (const [key, edges] of root.snapshots) {
     const name = snapshotPackageName(key);
     const stagedKey = `${name}@${withoutRemovedPeers(name, key.slice(name.length + 1))}`;
@@ -1834,7 +1882,10 @@ function stagedRootGraph(root: PnpmLockfileGraph): StagedRootGraph {
   }
   return {
     importers: new Map(
-      [...root.importers].map(([importer, edges]) => [importer, stagedEdges("", edges)]),
+      [...root.importers].map(([importer, references]) => [
+        importer,
+        stagedReferences("", references),
+      ]),
     ),
     snapshots,
   };
@@ -1857,7 +1908,8 @@ function rootDirectReference(
   for (const importer of sourceImporters) {
     for (const [parent, reference] of Object.entries(root.importers.get(importer) ?? {})) {
       for (const edges of root.snapshots.get(snapshotKeyOf(parent, reference)) ?? []) {
-        if (edges[name] !== undefined) return edges[name];
+        const pinned = edges.dependencies[name] ?? edges.optionalDependencies[name];
+        if (pinned !== undefined) return pinned;
       }
     }
   }
@@ -1872,24 +1924,24 @@ const sameResolution = (
   Object.entries(left).every(([field, value]) => right[field] === value);
 
 /** Both ways: an edge the stage adds or changes, and one it drops, alter what installs. */
-const differingEdges = (
-  key: string,
-  edges: Readonly<Record<string, string>>,
-  rootEdges: Readonly<Record<string, string>>,
-) => [
-  ...Object.entries(edges)
-    .filter(([child, reference]) => rootEdges[child] !== reference)
-    .map(
-      ([child, reference]) =>
-        `${key} depends on ${child}@${reference}, which pnpm-lock.yaml does not`,
-    ),
-  ...Object.entries(rootEdges)
-    .filter(([child]) => edges[child] === undefined)
-    .map(
-      ([child, reference]) =>
-        `${key} lacks its dependency ${child}@${reference} from pnpm-lock.yaml`,
-    ),
-];
+const differingEdges = (key: string, edges: SnapshotEdges, rootEdges: SnapshotEdges) =>
+  EDGE_KINDS.flatMap((kind) => {
+    const label = kind === "optionalDependencies" ? " (optional)" : "";
+    return [
+      ...Object.entries(edges[kind])
+        .filter(([child, reference]) => rootEdges[kind][child] !== reference)
+        .map(
+          ([child, reference]) =>
+            `${key} depends on ${child}@${reference}${label}, which pnpm-lock.yaml does not`,
+        ),
+      ...Object.entries(rootEdges[kind])
+        .filter(([child]) => edges[kind][child] === undefined)
+        .map(
+          ([child, reference]) =>
+            `${key} lacks its dependency ${child}@${reference}${label} from pnpm-lock.yaml`,
+        ),
+    ];
+  });
 
 /**
  * A stage must install exactly what the root lockfile pins: its direct dependencies
@@ -1975,20 +2027,6 @@ export const installStagedDependencies = Effect.fn("installStagedDependencies")(
   yield* runStageVp(input, STAGE_INSTALL_ARGS);
 });
 
-// Dependency install scripts run in the stage; whichever step installs, they never see a signing,
-// notarization or registry credential.
-const CREDENTIAL_ENV_NAME = /^(?:CSC_|WIN_CSC_|APPLE_|AZURE_|MACOS_)|SECRET|PASSWORD|TOKEN|_KEY$/iu;
-
-export const stageInstallEnv = (
-  source: Readonly<Record<string, string | undefined>>,
-): Record<string, string> =>
-  Object.fromEntries(
-    Object.entries(source).filter(
-      (entry): entry is [string, string] =>
-        entry[1] !== undefined && !CREDENTIAL_ENV_NAME.test(entry[0]),
-    ),
-  );
-
 const runStageVp = Effect.fn("runStageVp")(function* (
   stage: { readonly stageDir: string; readonly label: string; readonly verbose: boolean },
   args: ReadonlyArray<string>,
@@ -1998,6 +2036,8 @@ const runStageVp = Effect.fn("runStageVp")(function* (
     ChildProcess.make(command.command, command.args, {
       cwd: stage.stageDir,
       shell: command.shell,
+      // Install scripts run here; whichever step installs, they see no signing, notarization or
+      // registry credential.
       env: stageInstallEnv(process.env),
       extendEnv: false,
     }),
@@ -2086,6 +2126,9 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   }
 
   const target = mergeOptions(input.target, env.target, PLATFORM_CONFIG[platform].defaultTarget);
+  if (platform === "mac" && MAC_APP_STORE_TARGETS.has(target)) {
+    return yield* new UnsupportedDesktopBuildTargetError({ platform, target });
+  }
   const defaultArch = yield* getDefaultArch(platform);
   const arch = mergeOptions(input.arch, env.arch, defaultArch);
   const supportedArchitectures = PLATFORM_CONFIG[platform].archChoices;
@@ -3453,11 +3496,6 @@ const ELECTRON_PLATFORM_NAMES = {
   linux: "linux",
   win: "win32",
 } as const satisfies Record<typeof BuildPlatform.Type, string>;
-/** Mac App Store targets unpack Electron's own mas build. */
-const electronPlatformName = (platform: typeof BuildPlatform.Type, target: string) =>
-  platform === "mac" && (target === "mas" || target === "mas-dev")
-    ? "mas"
-    : ELECTRON_PLATFORM_NAMES[platform];
 const decodeElectronPackageManifest = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
 );
@@ -3511,7 +3549,6 @@ export const stageElectronDist = Effect.fn("stageElectronDist")(function* (input
   readonly electronPackageDir: string;
   readonly version: string;
   readonly platform: typeof BuildPlatform.Type;
-  readonly target: string;
   readonly arch: typeof BuildArch.Type;
   readonly distDir: string;
   readonly download: ReturnType<typeof downloadElectronArchive>;
@@ -3532,7 +3569,7 @@ export const stageElectronDist = Effect.fn("stageElectronDist")(function* (input
   yield* fs.makeDirectory(input.distDir, { recursive: true });
   // electron-builder unpacks each architecture of a universal app from its own zip.
   for (const arch of input.arch === "universal" ? (["x64", "arm64"] as const) : [input.arch]) {
-    const archiveName = `electron-v${input.version}-${electronPlatformName(input.platform, input.target)}-${arch}.zip`;
+    const archiveName = `electron-v${input.version}-${ELECTRON_PLATFORM_NAMES[input.platform]}-${arch}.zip`;
     const expected = checksums[archiveName];
     if (expected === undefined) {
       return yield* new ElectronDistStageError({
@@ -4420,7 +4457,6 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
     electronPackageDir,
     version: electronVersion,
     platform: options.platform,
-    target: options.target,
     arch: options.arch,
     distDir: path.join(stageRoot, ELECTRON_DIST_DIR),
     download: downloadElectronArchive(options.verbose),

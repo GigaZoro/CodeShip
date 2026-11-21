@@ -3,7 +3,7 @@ const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
-const { packagedProbeEnv } = require("./lib/packaged-probe-env.ts");
+const { packagedProbeEnv } = require("./lib/child-env.ts");
 
 // afterPack runs before signing and installer creation, against the final ASAR layout.
 module.exports = async ({ appOutDir, electronPlatformName, arch, packager }) => {

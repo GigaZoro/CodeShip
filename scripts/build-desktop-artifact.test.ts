@@ -42,6 +42,7 @@ import {
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
   UnsupportedDesktopBuildArchitectureError,
+  UnsupportedDesktopBuildTargetError,
   MacPasskeySigningConfigurationResolutionError,
   MissingMacPasskeyProvisioningProfileError,
   packWindowsServerAsar,
@@ -272,6 +273,15 @@ snapshots:
 };
 
 const STAGE_SOURCE_IMPORTERS = ["apps/desktop", "apps/server"];
+
+// Signing, notarization and registry credentials, in each spelling pnpm and npm read.
+const CREDENTIAL_NAMES = [
+  "AZURE_CLIENT_SECRET",
+  "NODE_AUTH_TOKEN",
+  "pnpm_config__auth",
+  "PNPM_CONFIG__AUTH",
+  "npm_config_//registry.npmjs.org/:_authToken",
+];
 
 const makeLinuxCliArchiveFixture = Effect.fn("test.makeLinuxCliArchiveFixture")(function* (input: {
   readonly root: string;
@@ -804,6 +814,18 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       drift: ["electron-webauthn@1.3.1 lacks its dependency zod@4.6.5 from pnpm-lock.yaml"],
     },
     {
+      name: "a dependency the stage makes optional",
+      stage: {
+        webauthnSnapshot: `electron-webauthn@1.3.1:
+    optionalDependencies:
+      zod: 4.6.5`,
+      },
+      drift: [
+        "electron-webauthn@1.3.1 lacks its dependency zod@4.6.5 from pnpm-lock.yaml",
+        "electron-webauthn@1.3.1 depends on zod@4.6.5 (optional), which pnpm-lock.yaml does not",
+      ],
+    },
+    {
       name: "a patch that differs from the root lockfile",
       stage: { patchHash: "b222" },
       drift: [
@@ -868,6 +890,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             overrides: { zod: "catalog:" },
             packageExtensions: {
               "@effect/vitest@*": { dependencies: { "vite-plus": "catalog:" } },
+              "plugin-host@*": {
+                peerDependencies: { zod: "catalog:" },
+                peerDependenciesMeta: { zod: { optional: true } },
+              },
             },
             patchedDependencies: { "node-pty@1.2.0-beta.15": "patches/node-pty.patch" },
             allowBuilds: { "node-pty": true },
@@ -889,7 +915,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
               "electron-webauthn>typescript": "-",
               "@electron-webauthn/macos>typescript": "-",
             },
-            packageExtensions: { "@effect/vitest@*": { dependencies: { "vite-plus": "1.4.0" } } },
+            packageExtensions: {
+              "@effect/vitest@*": { dependencies: { "vite-plus": "1.4.0" } },
+              "plugin-host@*": {
+                peerDependencies: { zod: "4.6.5" },
+                peerDependenciesMeta: { zod: { optional: true } },
+              },
+            },
             nodeLinker: "hoisted",
           },
         );
@@ -943,8 +975,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         const path = yield* Path.Path;
         yield* Effect.acquireRelease(
           Effect.sync(() => {
-            vi.stubEnv("AZURE_CLIENT_SECRET", "fixture-secret");
-            vi.stubEnv("NODE_AUTH_TOKEN", "fixture-token");
+            for (const name of CREDENTIAL_NAMES) vi.stubEnv(name, "fixture-credential");
+            vi.stubEnv("pnpm_config_store_dir", "/fixture/store");
           }),
           () => Effect.sync(() => vi.unstubAllEnvs()),
         );
@@ -956,6 +988,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         const ran: string[] = [];
         const seeds: string[] = [];
         const credentials: string[] = [];
+        const storeDirs: Array<string | undefined> = [];
         const spawner = ChildProcessSpawner.make((command) => {
           const { args, options } = command as unknown as ChildProcess.StandardCommand;
           ran.push(args.join(" "));
@@ -966,9 +999,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
               : options.extendEnv === true
                 ? { ...process.env, ...options.env }
                 : options.env;
-          credentials.push(
-            ...["AZURE_CLIENT_SECRET", "NODE_AUTH_TOKEN"].filter((name) => name in env),
-          );
+          credentials.push(...CREDENTIAL_NAMES.filter((name) => name in env));
+          storeDirs.push(env.pnpm_config_store_dir);
           return (
             args.includes("--lockfile-only")
               ? fs.readFileString(stageLockfile).pipe(
@@ -993,6 +1025,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.deepStrictEqual(seeds, [ROOT_LOCKFILE_FIXTURE]);
         assert.deepStrictEqual(ran, commands);
         assert.deepStrictEqual(credentials, []);
+        assert.deepStrictEqual(
+          storeDirs,
+          commands.map(() => "/fixture/store"),
+        );
         if (drift === undefined) {
           assert.isTrue(Result.isSuccess(result));
         } else {
@@ -2126,14 +2162,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
   const stageElectronFixture = Effect.fn("stageElectronFixture")(function* (
     zipBytes: (archiveName: string) => Uint8Array,
-    { target, electronPlatform } = { target: "dmg", electronPlatform: "darwin" },
   ) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-electron-dist-" });
     const electronPackageDir = path.join(root, "electron");
     const archiveNames = ["x64", "arm64"].map(
-      (arch) => `electron-v${desktopElectronVersion}-${electronPlatform}-${arch}.zip`,
+      (arch) => `electron-v${desktopElectronVersion}-darwin-${arch}.zip`,
     );
     const published = (archiveName: string) => new TextEncoder().encode(archiveName);
     yield* fs.makeDirectory(electronPackageDir);
@@ -2158,7 +2193,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         electronPackageDir,
         version: desktopElectronVersion,
         platform: "mac",
-        target,
         arch: "universal",
         distDir,
         download: (_version, archiveName, destination) =>
@@ -2168,35 +2202,24 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     return { exit, distDir, archiveNames, published };
   });
 
-  it.effect("stages the Electron zip of each architecture the target unpacks", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      for (const variant of [
-        { target: "dmg", electronPlatform: "darwin" },
-        { target: "mas", electronPlatform: "mas" },
-      ]) {
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const { exit, distDir, archiveNames, published } = yield* stageElectronFixture(
-              (archiveName) => new TextEncoder().encode(archiveName),
-              variant,
-            );
-
-            assert.isTrue(Exit.isSuccess(exit), variant.target);
-            assert.deepStrictEqual(
-              (yield* fs.readDirectory(distDir)).toSorted(),
-              archiveNames.toSorted(),
-            );
-            for (const name of archiveNames) {
-              assert.deepStrictEqual(
-                yield* fs.readFile(NodePath.join(distDir, name)),
-                published(name),
-              );
-            }
-          }),
+  it.effect("stages the Electron zip of each architecture a universal app unpacks", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { exit, distDir, archiveNames, published } = yield* stageElectronFixture(
+          (archiveName) => new TextEncoder().encode(archiveName),
         );
-      }
-    }),
+
+        assert.isTrue(Exit.isSuccess(exit));
+        assert.deepStrictEqual(
+          (yield* fs.readDirectory(distDir)).toSorted(),
+          archiveNames.toSorted(),
+        );
+        for (const name of archiveNames) {
+          assert.deepStrictEqual(yield* fs.readFile(NodePath.join(distDir, name)), published(name));
+        }
+      }),
+    ),
   );
 
   it.effect("rejects an Electron zip whose SHA-256 differs from the locked electron package", () =>
@@ -2240,6 +2263,33 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
         assert.instanceOf(error, UnsupportedDesktopBuildArchitectureError);
         assert.deepStrictEqual(error.supportedArchitectures, ["x64", "arm64"]);
+      }
+    }),
+  );
+
+  it.effect("rejects Mac App Store targets before staging anything", () =>
+    Effect.gen(function* () {
+      for (const target of ["mas", "mas-dev"]) {
+        const error = yield* Effect.flip(
+          resolveBuildOptions({
+            platform: Option.some("mac"),
+            target: Option.some(target),
+            arch: Option.some("arm64"),
+            buildVersion: Option.none(),
+            outputDir: Option.none(),
+            skipBuild: Option.none(),
+            keepStage: Option.none(),
+            signed: Option.none(),
+            verbose: Option.none(),
+            mockUpdates: Option.none(),
+            mockUpdateServerPort: Option.none(),
+            wslRuntime: Option.none(),
+            phase: Option.none(),
+            stageDir: Option.none(),
+          }),
+        );
+
+        assert.instanceOf(error, UnsupportedDesktopBuildTargetError);
       }
     }),
   );
