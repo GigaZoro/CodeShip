@@ -1,3 +1,7 @@
+## 2026-11-24 — A landing's check no longer fails when another check looks at its place in line
+
+- Maintainers: on Windows, `vp run check:changed` in a landing on main could fail with EPERM as it took a free check slot, when another check:changed run was looking at the file that marks the landing's wait. That file now stays in place, like the slot files. No change to the app.
+
 ## 2026-11-24 — Finished worktrees are released again
 
 - Storage cleanup kept every finished worktree whose Git metadata had a `refs` folder, which Git 2.56 creates for each worktree, with "Worktree metadata requires its owner". Those worktrees are released again unless they hold refs of their own, and the reason now names the metadata it found.
