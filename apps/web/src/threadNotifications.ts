@@ -1,6 +1,5 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { msg } from "~/i18n";
-import { setDocumentTitleNeedsYouCount } from "./documentTitle";
 import type { ClientSettings } from "@t3tools/contracts/settings";
 
 import completionUrl from "./assets/notification-completion.mp3";
@@ -41,7 +40,6 @@ let originalFavicon: HTMLLinkElement | undefined;
 let badgeFavicon: HTMLLinkElement | undefined;
 
 export function setNotificationBadge(count: number) {
-  setDocumentTitleNeedsYouCount(count);
   const bridge = window.desktopBridge;
   let image: string | null = null;
   if (count > 0 && (!bridge || bridge.getClientPlatform() === "win32")) {

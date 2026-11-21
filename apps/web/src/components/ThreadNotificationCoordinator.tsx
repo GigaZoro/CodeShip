@@ -30,6 +30,7 @@ import {
   ShieldQuestionIcon,
 } from "lucide-react";
 
+import { setDocumentTitleNeedsYouCount } from "../documentTitle";
 import { getClientSettings, subscribeClientSettings } from "../hooks/useSettings";
 import { isWindowsPlatform } from "../lib/utils";
 import { environmentSummaries } from "../state/presentation";
@@ -462,6 +463,12 @@ export function startThreadNotifications(
       syncEnvironments();
     },
   );
+  // The title count shows whatever the notification mode, unlike the OS badge.
+  const unsubscribeTitleCount = registry.subscribe(
+    environmentThreadShells.needsYouThreadsAtom,
+    (needsYou) => setDocumentTitleNeedsYouCount(needsYou.threads.length),
+    { immediate: true },
+  );
   const unsubscribeHidden = [
     registry.subscribe(environmentThreadShells.hiddenThreadKeysAtom, closeHiddenPending),
     registry.subscribe(environmentThreadShells.anyEnvironmentHidingAtom, closeHiddenPending),
@@ -472,6 +479,8 @@ export function startThreadNotifications(
   return () => {
     unsubscribeSettings();
     unsubscribeEnvironmentIds();
+    unsubscribeTitleCount();
+    setDocumentTitleNeedsYouCount(0);
     for (const unsubscribe of unsubscribeHidden) unsubscribe();
     for (const entry of watched.values()) entry.unsubscribe();
     watched.clear();

@@ -1,7 +1,7 @@
 ## 2026-11-21 — Pin from more places, reopen archived threads, and see what needs you in the title
 
 - Pin or unpin the open thread from a button in the chat header, and pin from a sidebar row on hover or focus. Select several threads and choose **Pin (N)** to pin them in the order you selected them. On mobile, the thread screen's header has Pin and Unpin.
-- The window or tab title starts with how many threads need you, like `(3) Fix login - T3.CodeShip`, and drops the number at zero. It follows the app icon count, so it is absent when desktop notifications are off.
+- The window or tab title starts with how many threads need you, like `(3) Fix login - T3.CodeShip`, and drops the number at zero. It shows whatever your notification settings are.
 - Press `mod+alt+shift+e` or choose **Reopen last archived thread** in the command palette to unarchive the most recently archived thread on any connected machine and open it.
 
 ## 2026-11-21 — A landing reads real git history and refuses marked files

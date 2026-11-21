@@ -90,8 +90,7 @@ Press `Mod+Shift+U`, or choose **Next thread that needs you** in the command pal
 waiting thread in turn. On mobile, the **N more need you** button above the composer does the same.
 The count also shows on the **Threads** icon in the side rail, the desktop dock or taskbar icon,
 and the mobile app icon. On web and desktop the window or tab title starts with it, like
-`(3) Fix login - T3.CodeShip`, and drops it at zero. It follows the app icon count, so it is
-absent when **Desktop notifications** are off.
+`(3) Fix login - T3.CodeShip`, and drops it at zero, whatever your notification settings.
 
 On web and desktop, other rail icons carry a count too: **Pull requests** (open pull requests with
 failing checks, conflicts or requested changes), **Scheduled tasks** (latest run failed),
