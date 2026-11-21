@@ -7,6 +7,7 @@ import type { ThreadInspectorMode } from "./thread-inspector-content-stack";
 import { useThreadHeaderOptions } from "./useThreadHeaderOptions";
 import { useWorkspaceBackNavigation } from "../workspace/useAndroidWorkspaceNavigation";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
+import type { ThreadPinAction } from "./useThreadPinAction";
 import { t } from "../../lib/i18n";
 
 export function ThreadHeader(
@@ -18,6 +19,7 @@ export function ThreadHeader(
     readonly onToggleInspector: () => void;
     readonly onOpenGitInspector: () => void;
     readonly onOpenFilesInspector: () => void;
+    readonly pin?: ThreadPinAction | null;
   },
 ) {
   const goBack = useWorkspaceBackNavigation("threads");
@@ -41,6 +43,13 @@ export function ThreadHeader(
         selected: filesVisible,
         icon: "folder",
         onPress: filesVisible ? toggleAuxiliaryPane : props.onOpenFilesInspector,
+      });
+    }
+    if (props.pin) {
+      actions.push({
+        accessibilityLabel: props.pin.pinned ? t("Unpin thread") : t("Pin thread"),
+        icon: props.pin.pinned ? "pin.slash" : "pin",
+        onPress: props.pin.onToggle,
       });
     }
     if (props.hasWorkspaceRoot && props.gitControls.canOpenTerminal) {
@@ -75,6 +84,7 @@ export function ThreadHeader(
     props.onOpenGitInspector,
     toggleAuxiliaryPane,
     props.onReturnToThread,
+    props.pin,
     props.hasThreadCwd,
     props.hasWorkspaceRoot,
     props.gitControls.canOpenTerminal,
