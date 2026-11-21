@@ -34,7 +34,6 @@ import {
   cancelQueuedRun,
   createThread,
   deleteThread,
-  dispatch,
   editQueuedRun,
   interruptThreadTurn,
   forkSideChat,
@@ -222,15 +221,17 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
-    setPreferences: createEnvironmentRpcCommand(runtime, {
+    setPreferences: createEnvironmentRpcCommand<
+      R | Crypto.Crypto,
+      E,
+      typeof ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+      Extract<
+        OrchestrationV2Command,
+        { type: "thread.notification-level.set" | "thread.color.set" }
+      >
+    >(runtime, {
       label: "environment-data:commands:thread:set-preferences",
       tag: ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
-      execute: (
-        command: Extract<
-          OrchestrationV2Command,
-          { type: "thread.notification-level.set" | "thread.color.set" }
-        >,
-      ) => dispatch(command),
       scheduler,
       concurrency,
     }),

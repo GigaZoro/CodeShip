@@ -377,7 +377,7 @@ export const layer: Layer.Layer<
               row.aggregate_kind === "thread" &&
               metadataThreadEventTypes.has(row.event_type)
             ) {
-              const key = JSON.stringify([row.event_type, row.stream_id]);
+              const key = `${row.event_type}:${row.stream_id}`;
               if (retainedThreadIds.has(row.stream_id) || retainedMetadataEvents.has(key)) {
                 obsolete.push(row.sequence);
               } else retainedMetadataEvents.add(key);
