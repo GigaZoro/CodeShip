@@ -40,6 +40,7 @@ import {
   planFilteredOlderSettledPress,
   olderSettledCountKey,
   olderSettledFolderNames,
+  sameOlderSettledMembership,
   settledShelfFrontier,
   hasMoreOlderSettledPages,
   settledFooterHiddenCount,
@@ -114,6 +115,42 @@ describe("olderSettledCountKey", () => {
     expect(key([...base, row("new", { createdDay: 70 })])).toBe(start);
     expect(key([...base, row("new-settled", { createdDay: 70, settledDay: 71 })])).toBe(start);
     expect(key([...base, row("child", { createdDay: 5, subagent: true })])).toBe(start);
+  });
+});
+
+describe("sameOlderSettledMembership", () => {
+  const base = [row("kept-old", { settledDay: 10 }), row("open", { createdDay: 60 })];
+
+  it.each([
+    ["a streaming tick on an open thread", [base[0]!, { ...base[1]!, updatedAt: "tick" }], true],
+    ["a new copy of an older row", [{ ...base[0]! }, base[1]!], true],
+    [
+      "a folder spelled another way",
+      [row("kept-old", { settledDay: 10, folder: " " }), base[1]!],
+      true,
+    ],
+    ["an open row that turns older", [base[0]!, row("open", { settledDay: 20 })], false],
+    [
+      "an older row that moves project",
+      [{ ...base[0]!, projectId: otherProject }, base[1]!],
+      false,
+    ],
+    [
+      "an older row that moves folder",
+      [row("kept-old", { settledDay: 10, folder: "A" }), base[1]!],
+      false,
+    ],
+    ["an older row that unsettles", [row("kept-old", {}), base[1]!], false],
+    ["a row that arrives", [...base, row("new", { createdDay: 70 })], false],
+    ["rows in another order", [base[1]!, base[0]!], false],
+  ] as const)("%s", (_name, next, same) => {
+    expect(
+      sameOlderSettledMembership(
+        base,
+        next as ReadonlyArray<OrchestrationV2ThreadShell>,
+        older.beforeMs,
+      ),
+    ).toBe(same);
   });
 });
 

@@ -287,6 +287,30 @@ function heldOlderSettledCounts(held: ReadonlyArray<OlderSettledRow>, beforeMs: 
 }
 
 /**
+ * Whether two holds of an environment's rows file the same older settled threads in the same
+ * projects and folders. Streaming ticks replace rows in place, so most compare by reference.
+ */
+export function sameOlderSettledMembership(
+  previous: ReadonlyArray<OlderSettledRow>,
+  next: ReadonlyArray<OlderSettledRow>,
+  beforeMs: number,
+): boolean {
+  if (previous.length !== next.length) return false;
+  return next.every((row, index) => {
+    const prior = previous[index]!;
+    if (prior === row) return true;
+    if (prior.id !== row.id) return false;
+    const older = isOlderSettledThreadShell(row, beforeMs);
+    if (older !== isOlderSettledThreadShell(prior, beforeMs)) return false;
+    return (
+      !older ||
+      (prior.projectId === row.projectId &&
+        threadFolderKeyOf(prior.folder) === threadFolderKeyOf(row.folder))
+    );
+  });
+}
+
+/**
  * Older settled threads in scope that this client does not hold: the server's counts minus the
  * older rows it has. Add it to the local rows for the Settled label or a project's thread count.
  */
@@ -660,11 +684,22 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
 
   const heldCountsAtom = Atom.family((environmentId: EnvironmentId) => {
     const beforeMsAtom = Atom.map(olderSettledAtom(environmentId), (older) => older?.beforeMs);
+    let previous: {
+      readonly held: ReadonlyArray<OlderSettledRow>;
+      readonly beforeMs: number;
+      readonly counts: ReturnType<typeof heldOlderSettledCounts>;
+    } | null = null;
     return Atom.make((get) => {
       const beforeMs = get(beforeMsAtom);
-      return beforeMs === undefined
-        ? null
-        : heldOlderSettledCounts(get(heldThreadsAtom(environmentId)), beforeMs);
+      if (beforeMs === undefined) return null;
+      const held = get(heldThreadsAtom(environmentId));
+      previous =
+        previous !== null &&
+        previous.beforeMs === beforeMs &&
+        sameOlderSettledMembership(previous.held, held, beforeMs)
+          ? { ...previous, held }
+          : { held, beforeMs, counts: heldOlderSettledCounts(held, beforeMs) };
+      return previous.counts;
     }).pipe(Atom.withLabel(`environment-held-older-settled-counts:${environmentId}`));
   });
 
