@@ -18,13 +18,16 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import { HttpClient, HttpClientResponse } from "effect/http";
@@ -81,6 +84,11 @@ const MTIME_SLACK_MS = 36 * 60 * 60 * 1000;
 const MAX_HOURLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 const CACHE_RETENTION_DAYS = 92;
+const CACHE_LOCK_STALE_MS = 120_000;
+const CACHE_LOCK_UPDATE_MS = 10_000;
+const CACHE_LOCK_RETRY_MS = 500;
+const CACHE_LOCK_WAIT_MS = CACHE_LOCK_STALE_MS + CACHE_LOCK_UPDATE_MS;
+const CACHE_SHUTDOWN_LOCK_WAIT_MS = 10_000;
 
 const TRANSCRIPT_READ_CONCURRENCY = 4;
 const LISTING_TTL_MS = 5_000;
@@ -190,6 +198,7 @@ export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
 
   const fileCache: ScanCache = new Map();
+  let diskBase: ScanCache = new Map();
   const resolvedRecords = new WeakMap<UsageRecord, UsageRecord>();
   const correctedRecord = (record: UsageRecord) => resolvedRecords.get(record) ?? record;
   const correctedBatch = (records: readonly UsageRecord[]) =>
@@ -198,6 +207,7 @@ export const make = Effect.gen(function* () {
   let cacheDirty = false;
   let cacheWritable = true;
   let cacheReadIncomplete = false;
+  let retryCacheLoad = false;
   const updatedFiles = new Set<string>();
   const updatedSources = new Set<string>();
   const isWithinDirectory = (filePath: string, dir: string) => {
@@ -414,7 +424,7 @@ export const make = Effect.gen(function* () {
   });
 
   const writeScanCache = makeScanCacheWriter();
-  const listLegacyCaches = fileSystem.readDirectory(config.stateDir).pipe(
+  const listLegacyCaches = Effect.suspend(() => fileSystem.readDirectory(config.stateDir)).pipe(
     Effect.map((names) =>
       names.filter((name) =>
         LEGACY_SCAN_CACHE_FILE_NAMES.some(
@@ -433,6 +443,7 @@ export const make = Effect.gen(function* () {
     cause: unknown,
   ) {
     cacheReadIncomplete = true;
+    retryCacheLoad = true;
     yield* Effect.logError("Could not read some saved transcript usage", { path: file, cause });
   });
   const lockFailure = (cause: unknown) =>
@@ -441,7 +452,7 @@ export const make = Effect.gen(function* () {
       detail: "Saved transcript usage could not be locked.",
       cause,
     });
-  const withCacheLock = <A, E, R>(task: Effect.Effect<A, E, R>) =>
+  const withCacheLock = <A, E, R>(task: Effect.Effect<A, E, R>, waitMs = CACHE_LOCK_WAIT_MS) =>
     Effect.scoped(
       Effect.gen(function* () {
         yield* fileSystem
@@ -450,11 +461,22 @@ export const make = Effect.gen(function* () {
         const compromised = yield* Deferred.make<never, UsageReadError>();
         yield* acquireFileLock(scanCachePath, {
           realpath: false,
-          stale: 120_000,
-          update: 10_000,
-          retries: { retries: 80, factor: 1, minTimeout: 500, maxTimeout: 500 },
+          stale: CACHE_LOCK_STALE_MS,
+          update: CACHE_LOCK_UPDATE_MS,
+          retries: 0,
           onCompromised: (cause) => Deferred.fail(compromised, lockFailure(cause)),
-        }).pipe(Effect.mapError(lockFailure));
+        }).pipe(
+          Effect.retry({
+            times: Math.ceil(waitMs / CACHE_LOCK_RETRY_MS),
+            schedule: Schedule.spaced(CACHE_LOCK_RETRY_MS),
+            while: ({ cause }) =>
+              typeof cause === "object" &&
+              cause !== null &&
+              "code" in cause &&
+              cause.code === "ELOCKED",
+          }),
+          Effect.mapError(lockFailure),
+        );
         return yield* Effect.raceFirst(task, Deferred.await(compromised));
       }),
     );
@@ -525,7 +547,7 @@ export const make = Effect.gen(function* () {
       cause,
     });
 
-  const readCurrent = readDocument(scanCachePath).pipe(
+  const readCurrent = Effect.suspend(() => readDocument(scanCachePath)).pipe(
     Effect.asSome,
     Effect.catchIf(
       (error) => error.reason._tag === "NotFound",
@@ -537,13 +559,37 @@ export const make = Effect.gen(function* () {
   const isLaterFileState = (a: CachedFile, b: CachedFile) =>
     a.mtimeMs > b.mtimeMs || (a.mtimeMs === b.mtimeMs && a.size > b.size);
 
-  const ensureScanCacheLoaded = yield* Effect.cached(
+  const mergeFileViews = (disk: ScanCache): ScanCache => {
+    const merged = new Map(disk);
+    for (const [file, local] of fileCache) {
+      const persisted = disk.get(file);
+      const updated = updatedFiles.has(file);
+      // A verified read replaces its own base, even when the transcript shrank.
+      if (
+        persisted === undefined ||
+        (updated && Equal.equals(persisted, diskBase.get(file))) ||
+        isLaterFileState(local, persisted) ||
+        (sameFileState(local, persisted) &&
+          !local.needsReparse &&
+          (persisted.needsReparse || updated))
+      )
+        merged.set(file, local);
+    }
+    return merged;
+  };
+
+  const [ensureScanCacheLoaded, invalidateScanCacheLoad] = yield* Effect.cachedInvalidateWithTTL(
     withCacheLock(
       Effect.gen(function* () {
+        cacheWritable = true;
+        cacheReadIncomplete = false;
+        retryCacheLoad = false;
         const current = yield* readCurrent.pipe(Effect.result);
         let rewriteCurrent = false;
         if (current._tag === "Failure") {
           cacheWritable = false;
+          cacheReadIncomplete = true;
+          retryCacheLoad = true;
           yield* logCacheError(scanCachePath, undefined, null, null, current.failure);
           return;
         }
@@ -552,6 +598,8 @@ export const make = Effect.gen(function* () {
           const decoded = yield* decodeDocument(raw);
           if (raw === null || (decoded.version ?? 0) > USAGE_SCAN_CACHE_VERSION) {
             cacheWritable = false;
+            cacheReadIncomplete = true;
+            retryCacheLoad = raw === null;
             yield* logCacheError(
               scanCachePath,
               decoded.version,
@@ -560,9 +608,13 @@ export const make = Effect.gen(function* () {
             );
             return;
           }
-          for (const [file, entry] of decoded.entries) fileCache.set(file, entry);
-          mergeSources(decoded.sources);
+          for (const [file, entry] of mergeFileViews(decoded.entries)) fileCache.set(file, entry);
+          diskBase = decoded.entries;
+          for (const [key, value] of decoded.sources) {
+            if (!updatedSources.has(key)) sourceCache.set(key, value);
+          }
           if (!decoded.complete) {
+            cacheReadIncomplete = true;
             yield* logCacheError(
               scanCachePath,
               decoded.version,
@@ -673,6 +725,7 @@ export const make = Effect.gen(function* () {
       ),
       Effect.withSpan("UsageService.loadScanCache"),
     ),
+    (exit) => (Exit.isSuccess(exit) && !retryCacheLoad ? Duration.infinity : Duration.zero),
   );
   yield* listLegacyCaches.pipe(
     Effect.result,
@@ -684,13 +737,16 @@ export const make = Effect.gen(function* () {
 
   const persistLock = yield* Semaphore.make(1);
 
-  const persistCaches = Effect.gen(function* () {
+  const persistCaches = Effect.fn("UsageService.persistCaches")(function* (waitMs: number) {
     if (!cacheWritable || !cacheDirty) return;
     yield* withCacheLock(
       Effect.gen(function* () {
         const document = yield* readCurrent;
         const disk = Option.isSome(document) ? yield* decodeDocument(document.value) : undefined;
         if (disk !== undefined && !disk.complete) {
+          cacheReadIncomplete = true;
+          retryCacheLoad = true;
+          yield* invalidateScanCacheLoad;
           yield* logCacheError(
             scanCachePath,
             disk.version,
@@ -701,44 +757,47 @@ export const make = Effect.gen(function* () {
         }
         const cutoff =
           (yield* Clock.currentTimeMillis) - CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-        const files = disk?.entries ?? new Map<string, CachedFile>();
+        const files = mergeFileViews(disk?.entries ?? new Map());
         const sources = disk?.sources ?? new Map<string, typeof CachedSource.Type>();
-        for (const [file, local] of fileCache) {
-          const persisted = files.get(file);
-          if (
-            persisted === undefined ||
-            isLaterFileState(local, persisted) ||
-            (sameFileState(local, persisted) &&
-              !local.needsReparse &&
-              (persisted.needsReparse || updatedFiles.has(file)))
-          )
-            files.set(file, local);
-        }
         for (const [key, source] of sourceCache) {
           if (!sources.has(key) || updatedSources.has(key)) sources.set(key, source);
         }
         pruneScanCache(files, cutoff);
         const contents = writeScanCache(files, { sources: Object.fromEntries(sources) });
-        const writtenFiles = new Set(updatedFiles);
-        const writtenSources = new Set(updatedSources);
-        updatedFiles.clear();
-        updatedSources.clear();
-        cacheDirty = false;
-        yield* writeCacheFile(scanCachePath, contents).pipe(
-          Effect.onError(() =>
-            Effect.sync(() => {
-              for (const file of writtenFiles) updatedFiles.add(file);
-              for (const key of writtenSources) updatedSources.add(key);
-              cacheDirty = true;
-            }),
-          ),
+        const beforeFiles = new Map(fileCache);
+        const beforeSources = new Map(sourceCache);
+        yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            const writtenFiles = new Set(updatedFiles);
+            const writtenSources = new Set(updatedSources);
+            updatedFiles.clear();
+            updatedSources.clear();
+            cacheDirty = false;
+            yield* writeCacheFile(scanCachePath, contents).pipe(
+              Effect.onError(() =>
+                Effect.sync(() => {
+                  for (const file of writtenFiles) updatedFiles.add(file);
+                  for (const key of writtenSources) updatedSources.add(key);
+                  cacheDirty = true;
+                }),
+              ),
+            );
+            diskBase = files;
+            for (const [file, entry] of files) {
+              if (fileCache.get(file) === beforeFiles.get(file)) fileCache.set(file, entry);
+            }
+            for (const [key, source] of sources) {
+              if (sourceCache.get(key) === beforeSources.get(key)) sourceCache.set(key, source);
+            }
+          }),
         );
       }),
+      waitMs,
     ).pipe(Effect.catch((cause) => logCacheError(scanCachePath, undefined, null, null, cause)));
-  }).pipe(persistLock.withPermit, Effect.withSpan("UsageService.persistCaches"));
+  }, persistLock.withPermit);
 
   const pendingPersists = new Set<Fiber.Fiber<void>>();
-  const schedulePersist = Effect.forkDetach(persistCaches).pipe(
+  const schedulePersist = Effect.forkDetach(persistCaches(CACHE_LOCK_WAIT_MS)).pipe(
     Effect.map((fiber) => {
       pendingPersists.add(fiber);
       fiber.addObserver(() => pendingPersists.delete(fiber));
@@ -747,7 +806,18 @@ export const make = Effect.gen(function* () {
   const awaitPersisted = Effect.suspend(() => Fiber.awaitAll([...pendingPersists])).pipe(
     Effect.asVoid,
   );
-  yield* Effect.addFinalizer(() => awaitPersisted);
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function* () {
+      yield* Fiber.interruptAll([...pendingPersists]);
+      yield* persistCaches(CACHE_SHUTDOWN_LOCK_WAIT_MS);
+      if (cacheDirty) {
+        yield* Effect.logError("Could not finish saving transcript usage at shutdown", {
+          path: scanCachePath,
+          unsavedFiles: updatedFiles.size,
+        });
+      }
+    }),
+  );
 
   /** Reads may finish in any order. Aggregation orders live and retained files together for duplicate credit. */
   const readFileRecords = Effect.fn("UsageService.readFileRecords")(function* (
