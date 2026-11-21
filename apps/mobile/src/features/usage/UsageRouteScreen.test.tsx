@@ -1,8 +1,10 @@
 import { EnvironmentId, USAGE_CONTRACT_VERSION, type UsageSummaryInput } from "@t3tools/contracts";
 import {
   settleUsageSnapshot,
+  settleUsageScanFailures,
   type EnvironmentUsageStatus,
   type UsageSnapshot,
+  type UsageScanFailures,
 } from "@t3tools/client-runtime/state/usage-progress";
 import { makeWindow } from "@t3tools/shared/usageFormat";
 import { act, type ReactNode } from "react";
@@ -16,6 +18,9 @@ const { Contents, state } = vi.hoisted(() => ({
     tab: "usage" as string | undefined,
     live: [] as readonly EnvironmentUsageStatus[],
     shown: null as UsageSnapshot | null,
+    scanFailures: null as UsageScanFailures | null,
+    simulateRequests: false,
+    requestedWindow: null as UsageSummaryInput | null,
     readsEnabled: [] as (boolean | undefined)[],
     failedLimits: new Set<EnvironmentId>(),
     revision: 0,
@@ -112,16 +117,31 @@ vi.mock("../../state/usage", async () => {
     ) => {
       useSyncExternalStore(subscribe, () => state.revision);
       state.readsEnabled.push(options?.enabled);
+      const selectedEnvironments =
+        selected === null
+          ? state.live
+          : state.live.filter(({ environmentId }) => selected.has(environmentId));
+      const requestedWindow = state.requestedWindow ?? window;
+      if (state.simulateRequests) {
+        state.shown = settleUsageSnapshot(
+          state.shown,
+          requestedWindow,
+          state.live,
+          selectedEnvironments,
+        );
+        state.scanFailures = settleUsageScanFailures(
+          state.scanFailures,
+          requestedWindow,
+          selectedEnvironments,
+        );
+      }
       return {
-        requestedWindow: window,
-        failures: null,
+        requestedWindow,
+        failures: state.scanFailures,
         shown: state.shown,
         showingKept: false,
         environments: state.live,
-        selectedEnvironments:
-          selected === null
-            ? state.live
-            : state.live.filter(({ environmentId }) => selected.has(environmentId)),
+        selectedEnvironments,
         refresh: vi.fn(),
       };
     },
@@ -148,6 +168,9 @@ function setup(tab: string | undefined = "usage") {
   state.tab = tab;
   state.live = [];
   state.shown = null;
+  state.scanFailures = null;
+  state.simulateRequests = false;
+  state.requestedWindow = null;
   state.readsEnabled.length = 0;
   state.failedLimits.clear();
   const container = document.createElement("div");
@@ -267,4 +290,20 @@ it("keeps an unselected environment's own scan error in the mobile menu", async 
   await act(() => laptop.click());
   expect(laptop.querySelector("span")?.textContent).toBe("Laptop scan failed");
   expect(screen.container.querySelector('[role="status"]')).toBeNull();
+});
+
+it("keeps the mobile failure layout while the next clock tick retries a cold scan", async () => {
+  await using screen = setup();
+  state.simulateRequests = true;
+  state.requestedWindow = makeWindow(1, new Date("2026-11-21T18:56:00Z"), "hour");
+  const desk = liveEnvironment("desk", "Desk");
+  state.live = [{ ...desk, error: "Read failed" }];
+  await screen.render();
+  expect(screen.container.textContent).toContain("Read failed");
+  expect(screen.container.textContent).toContain("Retry");
+  state.requestedWindow = makeWindow(1, new Date("2026-11-21T18:57:00Z"), "hour");
+  state.live = [{ ...desk, isPending: true }];
+  await screen.render();
+  expect(screen.container.textContent).toContain("Read failed");
+  expect(screen.container.textContent).not.toContain("Scanning provider transcripts…");
 });

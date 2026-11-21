@@ -171,7 +171,8 @@ function UsageScreen(props: {
 
   const [refreshingUsage, setRefreshingUsage] = useState(false);
   const refreshingRef = useRef(false);
-  const loading = isFocused && !showingLimits && shown === null && selectedEnvironments.length > 0;
+  const initialLoading = shown === null && (failures?.errors.size ?? 0) === 0;
+  const loading = isFocused && !showingLimits && initialLoading && selectedEnvironments.length > 0;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Android uses a live region, while VoiceOver needs an explicit initial announcement
   useEffect(() => {
     if (loading && Platform.OS === "ios") {
@@ -434,14 +435,14 @@ function UsageScreen(props: {
                       ? t("Connect an environment to see usage.")
                       : t("Select an environment to see usage.")}
                   </Text>
-                ) : shown === null ? (
+                ) : initialLoading ? (
                   <Text
                     accessibilityLiveRegion="polite"
                     className="py-16 text-center text-base text-foreground-muted"
                   >
                     {t("Scanning provider transcripts…")}
                   </Text>
-                ) : !shown.hasAnswer ? null : (
+                ) : !shown?.hasAnswer ? null : (
                   <>
                     {showingKept ? (
                       <Text className="text-sm text-foreground-muted">

@@ -166,21 +166,20 @@ function UsageModelDialogHost({
   const selectedKey = useAtomValue(selectedUsageModelKeyAtom);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clears the shared selected-model atom on unmount
   useEffect(() => () => selectUsageModel(null), []);
-  const currentModel =
-    selectedKey === null
-      ? undefined
-      : snapshot?.merged.models.find(
-          (candidate) => `${candidate.provider}:${candidate.model}` === selectedKey,
-        );
+  const findModel = (reading: UsageSnapshot | null) =>
+    reading?.merged.models.find(
+      (candidate) => `${candidate.provider}:${candidate.model}` === selectedKey,
+    );
+  const currentModel = findModel(snapshot);
   const [last, setLast] = useState<{
     readonly key: string;
     readonly snapshot: UsageSnapshot;
-    readonly model: MergedUsage["models"][number];
     readonly chartWindow: typeof dialogProps.chartWindow;
   } | null>(null);
-  const revoked =
-    last !== null && retainUsageSnapshot(last.snapshot, liveEnvironments) !== last.snapshot;
-  const closeRevoked = revoked && currentModel === undefined;
+  const saved = last?.key === selectedKey && currentModel === undefined ? last : null;
+  const retained = saved === null ? null : retainUsageSnapshot(saved.snapshot, liveEnvironments);
+  const retainedModel = findModel(retained);
+  const closeRevoked = saved !== null && retainedModel === undefined;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes the shared model selection when the open reading loses diagnostic access
   useEffect(() => {
     if (closeRevoked) selectUsageModel(null);
@@ -194,29 +193,24 @@ function UsageModelDialogHost({
     setLast({
       key: selectedKey,
       snapshot,
-      model: currentModel,
       chartWindow: dialogProps.chartWindow,
     });
   } else if (selectedKey === null && last !== null) {
     setLast(null);
   }
-  const retained =
-    !revoked && last?.key === selectedKey && currentModel === undefined ? last : null;
-  const model = currentModel ?? retained?.model;
+  const model = currentModel ?? retainedModel;
   if (model === undefined) return null;
   return (
     <UsageModelDialog
       {...dialogProps}
       model={model}
-      environments={retained?.snapshot.environments ?? dialogProps.environments}
-      chartWindow={retained?.chartWindow ?? dialogProps.chartWindow}
-      readOnly={
-        dialogProps.readOnly || (retained !== null && retained.snapshot.key !== snapshot?.key)
-      }
+      environments={retained?.environments ?? dialogProps.environments}
+      chartWindow={saved?.chartWindow ?? dialogProps.chartWindow}
+      readOnly={dialogProps.readOnly || (retained !== null && retained.key !== snapshot?.key)}
       status={
-        retained === null
+        retained === null || saved === null
           ? undefined
-          : retainedUsageLabel(retained.snapshot, retained.chartWindow.hour12)
+          : retainedUsageLabel(retained, saved.chartWindow.hour12)
       }
       onSetPrice={() => {
         selectUsageModel(null);
@@ -730,7 +724,9 @@ export function UsagePage() {
                 />
               </>
             ) : shown === null ? (
-              <UsageSkeleton hiddenProviders={hiddenProviders} />
+              (failures?.errors.size ?? 0) === 0 ? (
+                <UsageSkeleton hiddenProviders={hiddenProviders} />
+              ) : null
             ) : !shown.hasAnswer ? null : (
               <>
                 {showingKept && shown !== null ? (

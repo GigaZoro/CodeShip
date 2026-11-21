@@ -177,15 +177,30 @@ export function refreshingUsageProviders(
   hidden: ReadonlySet<UsageProviderKind> = new Set(),
 ): ReadonlySet<UsageProviderKind> {
   return new Set(
-    environments.flatMap((environment) =>
-      environment.isConnected && environment.isPending && hasCompatibleUsage(environment)
-        ? (environment.summary?.sources ?? []).flatMap(
-            ({ refreshing, fingerprint: { provider } }) =>
-              refreshing && !hidden.has(provider) ? [provider] : [],
-          )
-        : [],
-    ),
+    [...usageReservations(environments, hidden).values()].flatMap((providers) => [...providers]),
   );
+}
+
+type UsageReservations = ReadonlyMap<EnvironmentId, ReadonlySet<UsageProviderKind>>;
+
+function usageReservations(
+  environments: readonly EnvironmentUsageStatus[],
+  hidden: ReadonlySet<UsageProviderKind>,
+  previous: UsageReservations = new Map(),
+): UsageReservations {
+  let updated: Map<EnvironmentId, ReadonlySet<UsageProviderKind>> | undefined;
+  for (const environment of environments) {
+    if (!usageScanPending(environment) || !hasCompatibleUsage(environment)) continue;
+    const reserved = previous.get(environment.environmentId);
+    const added = (environment.summary?.sources ?? []).flatMap(
+      ({ refreshing, fingerprint: { provider } }) =>
+        refreshing && !hidden.has(provider) && !reserved?.has(provider) ? [provider] : [],
+    );
+    if (added.length === 0) continue;
+    updated ??= new Map(previous);
+    updated.set(environment.environmentId, new Set([...(reserved ?? []), ...added]));
+  }
+  return updated ?? previous;
 }
 
 export interface UsageSnapshot {
@@ -196,7 +211,7 @@ export interface UsageSnapshot {
   readonly merged: ReturnType<typeof mergeAnsweredUsage>;
   readonly hasAnswer: boolean;
   readonly providers: readonly UsageProviderRow[];
-  readonly reservedProviders: ReadonlySet<UsageProviderKind>;
+  readonly reservations: UsageReservations;
   readonly settled: boolean;
 }
 
@@ -207,9 +222,10 @@ export interface UsageProviderRow {
 
 function providersWithReservations(
   active: readonly UsageProviderRow[],
-  reserved: ReadonlySet<UsageProviderKind>,
+  reservations: UsageReservations,
 ): readonly UsageProviderRow[] {
   const represented = new Set(active.map(({ provider }) => provider));
+  const reserved = new Set([...reservations.values()].flatMap((providers) => [...providers]));
   return [
     ...active,
     ...[...reserved].flatMap((provider) =>
@@ -231,9 +247,14 @@ function usageScanFailed(environment: EnvironmentUsageStatus): boolean {
   );
 }
 
+interface UsageScanFailure {
+  readonly message: string;
+  readonly summary: UsageSummary | null;
+}
+
 export interface UsageScanFailures {
   readonly key: string;
-  readonly errors: ReadonlyMap<EnvironmentId, string>;
+  readonly errors: ReadonlyMap<EnvironmentId, UsageScanFailure>;
 }
 
 export function settleUsageScanFailures(
@@ -244,15 +265,23 @@ export function settleUsageScanFailures(
 ): UsageScanFailures {
   const key = usageSelectionKey(window, selected, hidden);
   const previousErrors = previous?.key === key ? previous.errors : undefined;
-  const errors = new Map<EnvironmentId, string>();
+  const errors = new Map<EnvironmentId, UsageScanFailure>();
   for (const environment of selected) {
     if (!environment.canReadDiagnostics) continue;
-    const error = usageScanFailed(environment)
-      ? environment.error
-      : environment.isPending || !environment.isConnected
-        ? previousErrors?.get(environment.environmentId)
-        : undefined;
-    if (error != null) errors.set(environment.environmentId, error);
+    const saved = previousErrors?.get(environment.environmentId);
+    const { error, summary } = environment;
+    if (usageScanFailed(environment) && error !== null) {
+      errors.set(
+        environment.environmentId,
+        saved?.message === error && saved.summary === summary ? saved : { message: error, summary },
+      );
+    } else if (
+      saved !== undefined &&
+      (!environment.isConnected ||
+        (environment.isPending && (!hasCompatibleUsage(environment) || summary === saved.summary)))
+    ) {
+      errors.set(environment.environmentId, saved);
+    }
   }
   if (
     previousErrors?.size === errors.size &&
@@ -283,39 +312,31 @@ export function settleUsageSnapshot(
   const waitingForAnswers = pending.some(({ summary }) => summary === null);
   const hasAnswer = selected.some(hasCompatibleUsage);
   const hiddenProviders = new Set(hidden);
-  const refreshing = refreshingUsageProviders(pending, hiddenProviders);
-  const reservedProviders = new Set([
-    ...(sameWindow ? (kept?.reservedProviders ?? []) : []),
-    ...refreshing,
-  ]);
+  const reservations = usageReservations(
+    pending,
+    hiddenProviders,
+    kept?.key === key ? kept.reservations : undefined,
+  );
   if (
     kept !== null &&
     ((pending.length > 0 && kept.key === key && (kept.settled || !sameWindow)) ||
       (waitingForAnswers && (kept.key !== key || !hasAnswer)))
   ) {
-    if (
-      kept.key !== key ||
-      [...refreshing].every((provider) => kept.reservedProviders.has(provider))
-    ) {
-      return kept;
-    }
-    const reserved = new Set([...kept.reservedProviders, ...refreshing]);
-    return {
-      ...kept,
-      providers: providersWithReservations(kept.providers, reserved),
-      reservedProviders: reserved,
-    };
+    return kept.key !== key || reservations === kept.reservations
+      ? kept
+      : {
+          ...kept,
+          providers: providersWithReservations(kept.providers, reservations),
+          reservations,
+        };
   }
   if (waitingForAnswers && !hasAnswer) return null;
-  if (!sameWindow && kept?.key === key && kept.settled) {
-    for (const provider of kept.reservedProviders) reservedProviders.add(provider);
-  }
   return buildUsageSnapshot({
     key,
     window,
     hiddenProviders,
     environments: selected,
-    reservedProviders,
+    reservations,
     settled: pending.length === 0,
   });
 }
@@ -323,10 +344,10 @@ export function settleUsageSnapshot(
 function buildUsageSnapshot(
   snapshot: Pick<
     UsageSnapshot,
-    "key" | "window" | "hiddenProviders" | "environments" | "reservedProviders" | "settled"
+    "key" | "window" | "hiddenProviders" | "environments" | "reservations" | "settled"
   >,
 ): UsageSnapshot {
-  const { hiddenProviders, environments, reservedProviders } = snapshot;
+  const { hiddenProviders, environments, reservations } = snapshot;
   const merged = mergeAnsweredUsage(
     hiddenProviders.size === 0
       ? environments
@@ -357,7 +378,7 @@ function buildUsageSnapshot(
     ...snapshot,
     merged,
     hasAnswer: environments.some(hasCompatibleUsage),
-    providers: providersWithReservations(active, reservedProviders),
+    providers: providersWithReservations(active, reservations),
   };
 }
 
@@ -374,19 +395,10 @@ export function retainUsageSnapshot(
   const retained = snapshot.environments.filter(({ environmentId }) => readable.has(environmentId));
   if (retained.length === snapshot.environments.length) return snapshot;
   if (!retained.some(hasCompatibleUsage)) return null;
-  const providers = new Set(
-    retained
-      .filter(hasCompatibleUsage)
-      .flatMap(({ summary }) =>
-        (summary?.sources ?? []).map(({ fingerprint }) => fingerprint.provider),
-      ),
-  );
   return buildUsageSnapshot({
     ...snapshot,
     environments: retained,
-    reservedProviders: new Set(
-      [...snapshot.reservedProviders].filter((provider) => providers.has(provider)),
-    ),
+    reservations: new Map([...snapshot.reservations].filter(([id]) => readable.has(id))),
   });
 }
 
@@ -463,7 +475,7 @@ export function usageNotices(
         error:
           !status.canReadDiagnostics || !status.isConnected
             ? status.error
-            : (failures?.errors.get(status.environmentId) ?? null),
+            : (failures?.errors.get(status.environmentId)?.message ?? null),
       })),
       contractMismatches,
       represented,

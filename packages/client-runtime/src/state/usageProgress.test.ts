@@ -500,3 +500,28 @@ it("scopes failures to the requested period even while the previous period is di
   const revoked = [{ ...pending[0]!, canReadDiagnostics: false }, pending[1]!];
   expect(settleUsageScanFailures(next, month, revoked).errors.size).toBe(0);
 });
+
+it("removes the saved failure and Retry when a retry publishes new provisional figures", () => {
+  const old = summary();
+  const failed = status("Desk", { summary: old, error: "Read failed" });
+  const failures = settleUsageScanFailures(null, old, [failed]);
+  const waiting = { ...failed, error: null, isPending: true };
+  expect(settleUsageScanFailures(failures, old, [waiting])).toBe(failures);
+  const provisional = { ...waiting, summary: summary(["cursor"]) };
+  const next = settleUsageScanFailures(failures, old, [provisional]);
+  expect(usageNotices([provisional], [failed], next).coverage).toBeNull();
+});
+
+it("keeps a reserved provider owned by an authorized environment across the next refresh", () => {
+  const tick = makeWindow(1, DateTime.toDate(DateTime.makeUnsafe("2026-09-05T12:00:00Z")), "hour");
+  const next = makeWindow(1, DateTime.toDate(DateTime.makeUnsafe("2026-09-05T12:01:00Z")), "hour");
+  const desk = status("Desk", { canReadDiagnostics: false, summary: null, error: "Access denied" });
+  const laptop = status("Laptop", { isPending: true, summary: summary(["cursor"]) });
+  const starting = settleUsageSnapshot(null, tick, [desk, laptop], [desk, laptop]);
+  const ready = { ...laptop, isPending: false, summary: summary() };
+  const settled = settleUsageSnapshot(starting, tick, [desk, ready], [desk, ready]);
+  expect(settled?.providers).toContainEqual({ provider: "cursor", totals: null });
+  const waiting = { ...laptop, summary: null };
+  const retained = settleUsageSnapshot(settled, next, [desk, waiting], [desk, waiting]);
+  expect(retained?.providers).toContainEqual({ provider: "cursor", totals: null });
+});

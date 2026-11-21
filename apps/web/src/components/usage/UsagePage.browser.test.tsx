@@ -24,8 +24,21 @@ const state = vi.hoisted(() => ({
   windowDays: 1 as 1 | 7,
   realClock: false,
   requests: new Set<string>(),
-  response: "ready" as "ready" | "waiting" | "provisional" | "empty" | "revoked" | "cursorPending",
-  secondEnvironment: null as "ready" | "incompatible" | "sourceFailure" | "scanFailure" | null,
+  response: "ready" as
+    | "ready"
+    | "waiting"
+    | "provisional"
+    | "empty"
+    | "revoked"
+    | "cursorPending"
+    | "failed",
+  secondEnvironment: null as
+    | "ready"
+    | "incompatible"
+    | "sourceFailure"
+    | "scanFailure"
+    | "revoked"
+    | null,
   costUsd: 0,
   totalTokens: 100,
   costSource: "unpriced" as "unpriced" | "modelPriced" | "providerReported",
@@ -99,7 +112,7 @@ vi.mock("../../state/usage", async () => {
 
 function reading(window: UsageSummaryInput, response = state.response): EnvironmentUsageStatus {
   const summary: UsageSummary | null =
-    response === "waiting" || response === "revoked"
+    response === "waiting" || response === "revoked" || response === "failed"
       ? null
       : {
           ...window,
@@ -173,7 +186,12 @@ function reading(window: UsageSummaryInput, response = state.response): Environm
     isConnected: true,
     canReadDiagnostics: response !== "revoked",
     needsCursorKeychainAccess: false,
-    error: response === "revoked" ? "Diagnostics access was revoked." : null,
+    error:
+      response === "revoked"
+        ? "Diagnostics access was revoked."
+        : response === "failed"
+          ? "Read failed"
+          : null,
     isPending: response === "waiting" || response === "provisional" || response === "cursorPending",
     summary: cursor,
   };
@@ -183,6 +201,13 @@ function otherReading(
   window: UsageSummaryInput,
   response: NonNullable<typeof state.secondEnvironment>,
 ): EnvironmentUsageStatus {
+  if (response === "revoked") {
+    return {
+      ...reading(window, "revoked"),
+      environmentId: EnvironmentId.make("laptop"),
+      label: "Laptop",
+    };
+  }
   const other = reading(window, "ready");
   const summary = other.summary!;
   return {
@@ -360,8 +385,9 @@ it("keeps retained figures readable and disables price edits when the period cha
   }
 });
 
-it("keeps a model dialog open when the newly selected period has no records for it", async () => {
+it("keeps the model dialog on its authorized reading when the new period is empty and Laptop was already denied", async () => {
   setup();
+  state.secondEnvironment = "revoked";
   await using screen = await render(<Screen />);
   await screen.getByRole("button", { name: "usage-test-model" }).click();
   const dialog = page.getByRole("dialog");
@@ -372,6 +398,18 @@ it("keeps a model dialog open when the newly selected period has no records for 
   await expect.element(dialog.getByRole("heading", { name: "usage-test-model" })).toBeVisible();
   await expect.element(close).toHaveFocus();
   await expect.element(dialog.getByText(/Showing previous usage for Desk/)).toBeVisible();
+});
+
+it("keeps the web failure layout while the next clock tick retries a cold scan", async () => {
+  setup();
+  state.response = "failed";
+  await using screen = await render(<Screen />);
+  await expect.element(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+  state.response = "waiting";
+  state.now += 60_000;
+  await update();
+  await expect.element(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+  await expect.element(screen.getByText("Loading usage…")).not.toBeInTheDocument();
 });
 
 it("reports live compatibility and source failures beside the saved total", async () => {
