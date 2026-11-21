@@ -85,6 +85,7 @@ import {
   MessagesSquareIcon,
   PaletteIcon,
   ArchiveIcon,
+  ArchiveRestoreIcon,
   RotateCcwIcon,
   ServerIcon,
   SettingsIcon,
@@ -136,6 +137,7 @@ import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
 import { environmentThreadShells, threadEnvironment } from "../state/threads";
+import { useReopenLastArchivedThread } from "../hooks/useReopenLastArchivedThread";
 import { nextNeedsYouThread } from "@t3tools/client-runtime/state/thread-inbox";
 import { anyEnvironmentSupportsThreadFolders } from "@t3tools/client-runtime/thread-folders";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
@@ -440,6 +442,7 @@ function OpenCommandPaletteDialog(props: {
   readonly initialContext: CommandPaletteReturnContext | undefined;
 }) {
   const navigate = useNavigate();
+  const reopenLastArchivedThread = useReopenLastArchivedThread();
   const openSetupWizard = useOpenSetupWizard();
   const pathname = useLocation({ select: (location) => location.pathname });
   const { openChildSearch, setOpen } = props;
@@ -1865,6 +1868,16 @@ function OpenCommandPaletteDialog(props: {
     run: async () => {
       await navigate({ to: "/archived" });
     },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:reopen-last-archived-thread",
+    searchTerms: ["reopen", "restore", "unarchive", "undo archive", "last archived", "archived"],
+    title: t("Reopen last archived thread"),
+    icon: <ArchiveRestoreIcon className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "thread.reopenLastArchived",
+    run: reopenLastArchivedThread,
   });
 
   actionItems.push({

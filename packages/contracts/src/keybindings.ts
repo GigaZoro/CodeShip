@@ -47,6 +47,7 @@ const THREAD_KEYBINDING_COMMANDS = [
   "thread.pin",
   "thread.snooze",
   "thread.archive",
+  "thread.reopenLastArchived",
   "thread.undo",
   ...THREAD_JUMP_KEYBINDING_COMMANDS,
 ] as const;

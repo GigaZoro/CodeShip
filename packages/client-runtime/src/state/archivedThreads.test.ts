@@ -13,6 +13,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   type ArchivedThreadsView,
   createArchivedThreadSnapshotsAtomFamily,
+  latestArchivedThread,
   makeArchivedThreadsViewKey,
 } from "./archivedThreads.ts";
 import { v2Project, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
@@ -219,5 +220,42 @@ describe("archived pages from several machines", () => {
     ]);
     expect(state.hasMore).toBe(false);
     registry.dispose();
+  });
+});
+
+describe("latestArchivedThread", () => {
+  const laptop = EnvironmentId.make("env-laptop");
+  const desktop = EnvironmentId.make("env-desktop");
+  const archived = (id: string, minute: number) => ({
+    ...v2ThreadShell,
+    id: ThreadId.make(id),
+    archivedAt: DateTime.makeUnsafe(Date.UTC(2026, 5, 20, 0, minute)),
+  });
+  const entry = (
+    environmentId: EnvironmentId,
+    threads: ReadonlyArray<ReturnType<typeof archived>>,
+  ) => ({
+    environmentId,
+    snapshot: { schemaVersion: 1, snapshotSequence: 1, projects: [v2Project], threads },
+  });
+
+  it("picks the newest archive across machines", () => {
+    const latest = latestArchivedThread([
+      entry(laptop, [archived("a", 5), archived("b", 1)]),
+      entry(desktop, [archived("c", 9)]),
+    ]);
+    expect([latest?.environmentId, latest?.thread.id]).toEqual([desktop, "c"]);
+  });
+
+  it("breaks an archive-time tie by thread id, like the server order", () => {
+    const latest = latestArchivedThread([
+      entry(laptop, [archived("b", 5)]),
+      entry(desktop, [archived("a", 5)]),
+    ]);
+    expect(latest?.thread.id).toBe("a");
+  });
+
+  it("is null when nothing is archived", () => {
+    expect(latestArchivedThread([entry(laptop, [])])).toBeNull();
   });
 });
