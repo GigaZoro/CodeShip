@@ -482,6 +482,11 @@ export interface ProviderAdapterV2InterruptInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly providerTurnId: ProviderTurnId;
   readonly requestRuntimeRestart?: boolean;
+  /**
+   * Set when Stop covers only some runs of the provider thread. A runtime-restart Stop then reaches
+   * the settled turns listed here and their descendants; other settled turns keep their work.
+   */
+  readonly ownedProviderTurnIds?: ReadonlyArray<ProviderTurnId>;
 }
 
 export interface ProviderAdapterV2RuntimeRequestResponseInput {

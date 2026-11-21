@@ -7565,6 +7565,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   );
               }
               const { turnInput, goalTurns } = yield* resolveGoalStopTarget(requestedInput);
+              const restartReaches = (candidate: ActiveCodexTurnContext) =>
+                turnInput.requestRuntimeRestart === true &&
+                candidate.providerThread.id === turnInput.providerThread.id &&
+                (turnInput.ownedProviderTurnIds === undefined ||
+                  turnInput.ownedProviderTurnIds.includes(candidate.providerTurnId));
               const [activeTurnContexts, settledTurnContexts] =
                 yield* turnTerminalizationPermit.withPermits(1)(
                   Effect.gen(function* () {
@@ -7577,12 +7582,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const activeTurn =
                 activeTurnContexts.find(
                   (candidate) => candidate.providerTurnId === turnInput.providerTurnId,
-                ) ??
-                (turnInput.requestRuntimeRestart === true
-                  ? settledTurnContexts.find(
-                      (candidate) => candidate.providerThread.id === turnInput.providerThread.id,
-                    )
-                  : undefined);
+                ) ?? settledTurnContexts.find(restartReaches);
               const lineageRoots = Array.from(
                 new Set([
                   ...(activeTurn === undefined ? [] : [activeTurn]),
@@ -7601,10 +7601,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ),
                 ...settledTurnContexts.filter(
                   (candidate) =>
-                    candidate !== activeTurn &&
-                    ((turnInput.requestRuntimeRestart === true &&
-                      candidate.providerThread.id === turnInput.providerThread.id) ||
-                      inLineage(candidate)),
+                    candidate !== activeTurn && (restartReaches(candidate) || inLineage(candidate)),
                 ),
               ];
               if (interruptTargetContexts.length === 0) {

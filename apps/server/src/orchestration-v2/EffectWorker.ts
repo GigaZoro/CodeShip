@@ -192,6 +192,9 @@ export const layerExecutor: Layer.Layer<
                 providerSessionId: request.providerSessionId,
                 providerThreadId: request.providerThreadId,
                 providerTurnId: request.providerTurnId,
+                ...(request.ownedProviderTurnIds === undefined
+                  ? {}
+                  : { ownedProviderTurnIds: request.ownedProviderTurnIds }),
                 ...(request.subagent === undefined
                   ? {}
                   : {
