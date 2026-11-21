@@ -20,6 +20,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as TestClock from "effect/testing/TestClock";
 
 import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
 
 import {
   argumentBatches,
@@ -663,42 +664,53 @@ describe("check:changed", () => {
     );
   });
 
-  it.effect("fails instead of returning an empty file list when git exits nonzero", () => {
-    const spawner = (exitCode: number) =>
-      ChildProcessSpawner.make(() =>
-        Effect.succeed(
-          ChildProcessSpawner.makeHandle({
-            pid: ChildProcessSpawner.ProcessId(1),
-            exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
-            isRunning: Effect.succeed(false),
-            kill: () => Effect.void,
-            unref: Effect.succeed(Effect.void),
-            stdin: Sink.drain,
-            stdout: Stream.encodeText(Stream.make(exitCode === 0 ? "a.ts\nb.ts\n" : "")),
-            stderr: Stream.encodeText(
-              Stream.make(exitCode === 0 ? "" : "fatal: index file corrupt"),
+  it.effect(
+    "fails instead of returning an empty file list when git exits nonzero, and walks no Windows tree for git",
+    () => {
+      const spawned: Array<string> = [];
+      const spawner = (exitCode: number) =>
+        ChildProcessSpawner.make((command) =>
+          Effect.sync(() => {
+            if (command._tag === "StandardCommand") spawned.push(command.command);
+          }).pipe(
+            Effect.as(
+              ChildProcessSpawner.makeHandle({
+                pid: ChildProcessSpawner.ProcessId(1),
+                exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
+                isRunning: Effect.succeed(false),
+                kill: () => Effect.void,
+                unref: Effect.succeed(Effect.void),
+                stdin: Sink.drain,
+                stdout: Stream.encodeText(Stream.make(exitCode === 0 ? "a.ts\nb.ts\n" : "")),
+                stderr: Stream.encodeText(
+                  Stream.make(exitCode === 0 ? "" : "fatal: index file corrupt"),
+                ),
+                all: Stream.empty,
+                getInputFd: () => Sink.drain,
+                getOutputFd: () => Stream.empty,
+              }),
             ),
-            all: Stream.empty,
-            getInputFd: () => Sink.drain,
-            getOutputFd: () => Stream.empty,
-          }),
-        ),
-      );
-    return Effect.gen(function* () {
-      const listed = yield* gitLines("/repo", ["ls-files"]).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner(0)),
-      );
-      assert.deepStrictEqual(listed, ["a.ts", "b.ts"]);
-      const error = yield* gitLines("/repo", ["ls-files"]).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner(128)),
-        Effect.flip,
-      );
-      assert.strictEqual(
-        error,
-        "check:changed: git ls-files exited with 128: fatal: index file corrupt",
-      );
-    });
-  });
+          ),
+        );
+      // check-changed's own spawner, which walks each process's tree once it closes.
+      const ending = (exitCode: number) => endingWindowsTrees(spawner(exitCode), "win32");
+      return Effect.gen(function* () {
+        const listed = yield* gitLines("/repo", ["ls-files"]).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, ending(0)),
+        );
+        assert.deepStrictEqual(listed, ["a.ts", "b.ts"]);
+        const error = yield* gitLines("/repo", ["ls-files"]).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, ending(128)),
+          Effect.flip,
+        );
+        assert.strictEqual(
+          error,
+          "check:changed: git ls-files exited with 128: fatal: index file corrupt",
+        );
+        assert.deepStrictEqual(spawned, ["git", "git"]);
+      });
+    },
+  );
 
   // A provider's replay suite reaches its adapter through the adapter's testkit
   // and the fixture index, which is how 40b1b72673 broke one unseen. A service's
@@ -1427,11 +1439,13 @@ it("fails a run whose files changed while its checks ran", () => {
 
 it("records no push pass for a tree that changed before a cached result", () => {
   using project = launcherFixture();
-  project.write(project.source, "export const value = 2;\n// edited\n");
+  // A doc runs the fewest checks, and on Windows each one ends with a walk of its process tree.
+  const doc = "docs/note.md";
+  project.write(doc, "# Note\n// edited\n");
   const first = project.run();
   expect(first.status, first.stdout + first.stderr).toBe(0);
-  project.write(project.source, "export const value = 2;\n");
-  const result = project.run("", "install");
+  project.write(doc, "# Note\n");
+  const result = project.run("", "install", doc);
   expect(result.status, result.stdout + result.stderr).toBe(1);
   expect(result.stdout).toContain("files changed while the checks ran");
   // The second run matched the cached pass, so it ran no lint of its own.

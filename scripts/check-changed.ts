@@ -41,7 +41,7 @@ import {
   hostCapabilitiesEnv,
   probeHostCapabilities,
 } from "@t3tools/shared/testing/hostCapabilityProbe";
-import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
+import { endingWindowsTrees, withoutWindowsTreeEnding } from "@t3tools/shared/windowsProcessTree";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";
@@ -362,13 +362,14 @@ const collectBytes = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformEr
 
 // Fails on a nonzero exit: an empty file list from a broken index would
 // otherwise pass as "no changes". quotePath=false keeps non-ASCII paths as real
-// paths instead of quoted escapes.
+// paths instead of quoted escapes. What git leaves running, such as its fsmonitor daemon, is meant
+// to outlive the call, so git skips the PowerShell walk that ends a Windows tree, 2 s a call.
 export const git = Effect.fn("checkChanged.git")(function* (
   cwd: string,
   args: ReadonlyArray<string>,
   env: Record<string, string> = {},
 ) {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const spawner = withoutWindowsTreeEnding(yield* ChildProcessSpawner.ChildProcessSpawner);
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const handle = yield* spawner.spawn(
