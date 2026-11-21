@@ -1733,9 +1733,22 @@ export const layer: Layer.Layer<
           input.message.attachments.length === 0 &&
           input.message.text.trim().toLowerCase() === "/compact";
         const callProvider = compact ? input.session.compactThread : input.session.startTurn;
+        // Ingestion can settle the run while the context read or the preparation awaits, so ownership
+        // is checked after each. A failed ownership read fails the start below like a failed preparation.
+        const stillOwned = Effect.exit(
+          Effect.suspend(() => input.shouldStartProviderTurn?.() ?? Effect.succeed(true)),
+        );
+        type PreparedCall = RunExecutionServiceV2PreparedTurn & {
+          readonly callProvider: NonNullable<typeof callProvider>;
+        };
+        // The failure is only logged and classified below, so its error type is not kept.
+        const starting = (turn: Exit.Exit<PreparedCall, unknown>, ownershipFailed: boolean) => ({
+          turn,
+          ownershipFailed,
+        });
         // A Stop before the provider turn starts leaves the consumer nothing to wait for. One during
         // the start does not: the provider may already hold the prompt, and its events settle the run.
-        const { prepared, shouldStart } = yield* Effect.gen(function* () {
+        const start = yield* Effect.gen(function* () {
           yield* touchMcpCredential;
           const appContext = (yield* mcpAppModelContext
             .forThread(input.run.threadId)
@@ -1774,6 +1787,11 @@ export const layer: Layer.Layer<
             runtimePolicy: input.runtimePolicy,
             ...(appContext.length === 0 ? {} : { appContext }),
           };
+          const ownedBeforePrepare = yield* stillOwned;
+          if (Exit.isFailure(ownedBeforePrepare)) {
+            return starting(Exit.failCause(ownedBeforePrepare.cause), true);
+          }
+          if (!ownedBeforePrepare.value) return undefined;
           const prepared = yield* Effect.exit(
             callProvider === undefined
               ? Effect.fail(
@@ -1794,28 +1812,22 @@ export const layer: Layer.Layer<
                   })
                 ).pipe(Effect.map((turn) => ({ ...turn, callProvider }))),
           );
-          // Check after the context read and the preparation: ingestion can settle the run while
-          // they await. A failed ownership read or preparation fails the start below.
-          const shouldStart =
-            input.shouldStartProviderTurn === undefined || Exit.isFailure(prepared)
-              ? Exit.succeed(true)
-              : yield* Effect.exit(input.shouldStartProviderTurn());
-          if (Exit.isSuccess(prepared) && !(Exit.isSuccess(shouldStart) && shouldStart.value)) {
-            yield* prepared.value.notAccepted(undefined);
-          }
-          return { prepared, shouldStart };
+          if (Exit.isFailure(prepared)) return starting(prepared, false);
+          const owned = yield* stillOwned;
+          if (Exit.isSuccess(owned) && owned.value) return starting(prepared, false);
+          yield* prepared.value.notAccepted(undefined);
+          return Exit.isFailure(owned) ? starting(Exit.failCause(owned.cause), true) : undefined;
         }).pipe(Effect.onInterrupt(() => Fiber.interrupt(providerEventFiber)));
-        if (Exit.isSuccess(shouldStart) && !shouldStart.value) {
+        if (start === undefined) {
           yield* Fiber.interrupt(providerEventFiber);
           return;
         }
 
-        const startTurn = Effect.flatMap(prepared, (turn) =>
+        yield* Effect.flatMap(start.turn, (turn) =>
           turn
             .callProvider(turn.turnInput)
             .pipe(Effect.tapError(turn.notAccepted), Effect.andThen(turn.accepted)),
-        );
-        yield* Effect.andThen(shouldStart, startTurn).pipe(
+        ).pipe(
           // Wait for acceptance so abandoned startup cannot leave a refresher
           // on the already-detached ingestion fiber.
           Effect.tap(() =>
@@ -1832,7 +1844,7 @@ export const layer: Layer.Layer<
             }).pipe(
               Effect.andThen(Fiber.interrupt(providerEventFiber)),
               Effect.andThen(
-                Exit.isFailure(shouldStart)
+                start.ownershipFailed
                   ? Effect.succeed(
                       makeProviderFailure({ cause: Cause.squash(cause), class: "unknown" }),
                     )

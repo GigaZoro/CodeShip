@@ -231,12 +231,14 @@ function describeCause(cause: unknown): {
       }
       if (typeof cause !== "object") break;
       const record = cause as Record<string, unknown>;
-      const name =
+      const named =
         typeof record._tag === "string"
           ? record._tag
           : cause instanceof Error
             ? cause.name
             : undefined;
+      // Anyone can name an error, so a name that is not an identifier could be the prompt.
+      const name = named !== undefined && CAUSE_FACT_TEXT.test(named) ? named : undefined;
       // Its message repeats the process output, which can carry the prompt or credentials.
       const exited = record.stderr !== undefined;
       const facts = exited

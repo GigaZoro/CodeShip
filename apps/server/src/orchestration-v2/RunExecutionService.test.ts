@@ -2841,7 +2841,7 @@ it.effect.each([
     const block = Deferred.succeed(blocked, undefined).pipe(Effect.andThen(Effect.never));
     const turnsStarted: Array<string> = [];
     const notAccepted: Array<unknown> = [];
-    const ownershipChecks = yield* Ref.make(0);
+    const owned = yield* Ref.make(true);
     const subscriptionClosedOnReturn: Array<boolean> = [];
     const { previewActivityEnded } = yield* captureRootRunTermination({
       key: `start-stopped:${scenario.replaceAll(" ", "-")}`,
@@ -2852,17 +2852,16 @@ it.effect.each([
         : scenario === "a Stop while it prepares the turn"
           ? { prepareTurn: () => block, stopStartWhen: Deferred.await(blocked) }
           : {
+              // Another start owns the run once the turn is ready.
               prepareTurn: (turnInput) =>
-                Effect.succeed({
-                  turnInput,
-                  accepted: Effect.void,
-                  notAccepted: (error) => Effect.sync(() => void notAccepted.push(error)),
-                }),
-              // Owned when the start begins; another start owns the run once the turn is ready.
-              shouldStartProviderTurn: () =>
-                Ref.getAndUpdate(ownershipChecks, (checks) => checks + 1).pipe(
-                  Effect.map((checks) => checks === 0),
+                Ref.set(owned, false).pipe(
+                  Effect.as({
+                    turnInput,
+                    accepted: Effect.void,
+                    notAccepted: (error) => Effect.sync(() => void notAccepted.push(error)),
+                  }),
                 ),
+              shouldStartProviderTurn: () => Ref.get(owned),
             }),
       startTurn: (turn) => Effect.sync(() => void turnsStarted.push(turn.runId)),
       // Ends a subscription left open so the assertions below report it.
@@ -3283,9 +3282,15 @@ it.effect("does not start a turn whose run settled during the app context read",
     const runFailed = yield* Deferred.make<void>();
     const current = yield* Ref.make(true);
     const providerCalls = yield* Ref.make(0);
+    const preparations = yield* Ref.make(0);
     const { observed } = yield* captureRootRunTermination({
       key: "stream-end:context-read",
       shouldStartProviderTurn: () => Ref.get(current),
+      // Preparing injects history into the provider and records handoffs, so it waits for ownership too.
+      prepareTurn: (turnInput) =>
+        Ref.update(preparations, (count) => count + 1).pipe(
+          Effect.as({ turnInput, accepted: Effect.void, notAccepted: () => Effect.void }),
+        ),
       shouldFinalizeRun: () => Ref.get(current),
       events: () => Stream.unwrap(Deferred.await(contextReadStarted).pipe(Effect.as(Stream.empty))),
       appContext: Deferred.succeed(contextReadStarted, undefined).pipe(
@@ -3299,6 +3304,7 @@ it.effect("does not start a turn whose run settled during the app context read",
     });
     assert.deepEqual(observed, ["run:failed", "pull-requests-refreshed"]);
     assert.equal(yield* Ref.get(providerCalls), 0);
+    assert.equal(yield* Ref.get(preparations), 0);
   }),
 );
 

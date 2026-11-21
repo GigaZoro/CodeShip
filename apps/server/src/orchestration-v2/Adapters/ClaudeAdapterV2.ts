@@ -10981,8 +10981,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }),
             ),
             Effect.catchTags({
-              ClaudeAgentSdkQueryRunnerError: (cause) =>
-                Effect.gen(function* () {
+              ClaudeAgentSdkQueryRunnerError: Effect.fn("ClaudeAdapterV2.queryOpenFailure")(
+                function* (cause) {
                   const failure =
                     claudeStartupUsageFailure(cause, yield* DateTime.now) ??
                     (isClaudeMcpRegistrationTimeoutError(cause.cause) &&
@@ -10997,7 +10997,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                         cause,
                         failure,
                       });
-                }),
+                },
+              ),
             }),
             Effect.onError(() =>
               closedExistingNativeThreadId === nativeThreadId

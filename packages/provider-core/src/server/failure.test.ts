@@ -145,6 +145,18 @@ it("stores a cause's error tags and identifiers but none of its text", () => {
       "Error > Error (code ENOTFOUND)",
       `Error > Error (code ENOTFOUND): getaddrinfo ENOTFOUND ${sentinel}`,
     ],
+    [
+      {
+        _tag: "ProviderAdapterTurnStartError",
+        cause: Object.assign(new Error("socket closed"), {
+          name: `Error: ${sentinel}`,
+          code: "ECONNRESET",
+          cause: { _tag: sentinel },
+        }),
+      },
+      "ProviderAdapterTurnStartError > (code ECONNRESET)",
+      "ProviderAdapterTurnStartError > (code ECONNRESET): socket closed",
+    ],
   ] as const) {
     const failure = makeProviderFailure({ cause });
     assert.equal(failure.detail, detail);

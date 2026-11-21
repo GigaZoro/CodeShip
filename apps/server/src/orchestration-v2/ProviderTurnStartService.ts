@@ -250,6 +250,10 @@ interface StartWait extends AwakeWait {
   readonly afterWake: boolean;
 }
 
+// Explained, yet what a wake breaks: MCP servers still reconnecting do not register in time.
+const isAfterWakeTimeout = (cause: object) =>
+  Predicate.isTagged(cause, "ClaudeMcpRegistrationTimeoutError");
+
 /**
  * The agent never got the message, so a sleep, stall, lost connection or timeout (provider
  * deadlines expire meanwhile) retries it, and so does an unexplained failure right after a wake,
@@ -265,7 +269,7 @@ function unstartedTurnFailure(
     !refusedUntilChanged(error) &&
     (wait?.slept === true ||
       wait?.stalled === true ||
-      (wait?.afterWake === true && !explained) ||
+      (wait?.afterWake === true && (!explained || causedBy(error, isAfterWakeTimeout))) ||
       isProviderStartStepTimeoutError(error) ||
       [shown?.message, providerFailureDiagnostic(error)].some(
         (text) => providerErrorClass(text) === "transport_error",
@@ -699,6 +703,9 @@ export const layer: Layer.Layer<
       readonly waitDuringStart: Effect.Effect<StartWait>;
     }) {
       const { runId } = input;
+      // The effect worker retries a failed start; a refusal settles now, since a retry gets it again.
+      const retriesLater = (failure: unknown) =>
+        input.willRetry === true && !refusedUntilChanged(failure);
       const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
       const run = projection.runs.find((candidate) => candidate.id === runId);
       if (run === undefined) {
@@ -941,7 +948,7 @@ export const layer: Layer.Layer<
               ),
             );
             if (recreateResult._tag === "Failure") {
-              if (input.willRetry === true) return yield* recreateResult.failure;
+              if (retriesLater(recreateResult.failure)) return yield* recreateResult.failure;
               yield* settleStartFailure({
                 signal: "worktree-recreate-failure",
                 title: "Couldn't recreate thread workspace",
@@ -1037,7 +1044,7 @@ export const layer: Layer.Layer<
             }),
           );
           if (recovered._tag === "Failure") {
-            if (input.willRetry === true) return yield* recovered.failure;
+            if (retriesLater(recovered.failure)) return yield* recovered.failure;
             yield* settleStartFailure({
               signal: "provider-turn-recovery-failure",
               title: "Provider turn recovery failed",
@@ -1095,11 +1102,7 @@ export const layer: Layer.Layer<
       );
       if (sessionResult._tag === "Failure") {
         const failure = sessionResult.failure;
-        if (
-          failure._tag !== "ProviderStartStepTimeoutError" &&
-          input.willRetry === true &&
-          !refusedUntilChanged(failure)
-        ) {
+        if (failure._tag !== "ProviderStartStepTimeoutError" && retriesLater(failure)) {
           return yield* failure;
         }
         yield* settleStartFailure({
@@ -1118,7 +1121,10 @@ export const layer: Layer.Layer<
           load.pipe(withStartStepTimeout("load the conversation")),
         );
         if (loaded._tag === "Success") return loaded.success;
-        if (input.willRetry === true && loaded.failure._tag !== "ProviderStartStepTimeoutError") {
+        if (
+          loaded.failure._tag !== "ProviderStartStepTimeoutError" &&
+          retriesLater(loaded.failure)
+        ) {
           return yield* loaded.failure;
         }
         yield* settleStartFailure({
@@ -1144,7 +1150,7 @@ export const layer: Layer.Layer<
           : Effect.succeed(message.text),
       );
       if (expandedText._tag === "Failure") {
-        if (input.willRetry === true) return yield* expandedText.failure;
+        if (retriesLater(expandedText.failure)) return yield* expandedText.failure;
         yield* settleStartFailure({
           signal: "shared-skill-load-failure",
           title: "Shared skill could not be loaded",

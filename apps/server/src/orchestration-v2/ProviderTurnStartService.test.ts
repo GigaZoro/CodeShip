@@ -66,6 +66,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import {
   ClaudeAgentSdkQueryRunnerError,
   ClaudeAppendSystemPromptMissingValueError,
+  ClaudeMcpRegistrationTimeoutError,
 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
@@ -354,7 +355,8 @@ function makeLocalCommandHarness(input: {
     readonly turnStatus: "running" | "completed" | "interrupted";
     readonly differentThread?: boolean;
     readonly liveSession?: boolean;
-    readonly interruptFailure?: boolean;
+    /** `true` fails the interrupt; an object is the cause it fails with. */
+    readonly interruptFailure?: true | { readonly status: number };
     readonly interruptCurrentRun?: boolean;
   };
   /**
@@ -793,7 +795,10 @@ function makeLocalCommandHarness(input: {
           driver: providerThread.driver,
           providerThreadId,
           providerTurnId: request.providerTurnId,
-          cause: "provider interrupt failed",
+          cause:
+            input.previousTurn.interruptFailure === true
+              ? "provider interrupt failed"
+              : input.previousTurn.interruptFailure,
         });
       }
       providerBusy = false;
@@ -1723,19 +1728,25 @@ effectIt.effect("does not start another turn when abandoned-turn cleanup fails",
   }),
 );
 
-effectIt.effect("retries abandoned-turn cleanup without failing the continuation early", () =>
-  Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({
-      text: "Continue",
-      previousTurn: { runStatus: "failed", turnStatus: "running", interruptFailure: true },
-    });
+effectIt.effect.each([
+  { case: "a failure", interruptFailure: true, status: "starting" },
+  // A retry meets the same refusal, so the run fails now instead of after every retry.
+  { case: "a refused account", interruptFailure: { status: 403 }, status: "failed" },
+] as const)(
+  "retries abandoned-turn cleanup after $case only when a retry can help",
+  ({ interruptFailure, status }) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        previousTurn: { runStatus: "failed", turnStatus: "running", interruptFailure },
+      });
 
-    const error = yield* harness.startWithRetry.pipe(Effect.flip);
+      const retry = yield* Effect.result(harness.startWithRetry);
 
-    expect(error._tag).toBe("ProviderTurnStartError");
-    expect(harness.projection().runs.at(-1)?.status).toBe("starting");
-    expect(harness.open).not.toHaveBeenCalled();
-  }),
+      expect(retry._tag).toBe(status === "starting" ? "Failure" : "Success");
+      expect(harness.projection().runs.at(-1)?.status).toBe(status);
+      expect(harness.open).not.toHaveBeenCalled();
+    }),
 );
 
 effectIt.effect("does not start the continuation if recording recovery fails", () =>
@@ -2329,6 +2340,25 @@ effectIt.effect.each([
     class: "provider_error",
     code: null,
   },
+  // Explained, but MCP servers reconnecting after a wake miss the registration deadline.
+  {
+    case: "30 seconds after a wake, for MCP tools that did not register in time",
+    cause: "MCP registration timed out",
+    beforePrompt: undefined,
+    pause: undefined,
+    sinceWakeMs: 30_000,
+    class: "transport_error",
+    code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+  },
+  {
+    case: "10 minutes after a wake, for MCP tools that did not register in time",
+    cause: "MCP registration timed out",
+    beforePrompt: undefined,
+    pause: undefined,
+    sinceWakeMs: 10 * 60_000,
+    class: "provider_error",
+    code: null,
+  },
   {
     case: "across a sleep",
     cause: "Query closed before response received",
@@ -2373,6 +2403,10 @@ effectIt.effect.each([
     const harness = makeLocalCommandHarness({ text: "Continue", nativeTurn: true });
     const failures: Array<OrchestrationV2ProviderFailure> = [];
     const driver = ProviderDriverKind.make("claudeAgent");
+    const registrationTimeout = new ClaudeMcpRegistrationTimeoutError({
+      slept: false,
+      stalled: false,
+    });
     const causes = {
       previous_turn_active: new ProviderAdapter.ProviderAdapterProtocolError({
         driver,
@@ -2380,6 +2414,10 @@ effectIt.effect.each([
         reason: "previous_turn_active",
       }),
       "status 401": new ClaudeAgentSdkQueryRunnerError({ method: "query", cause: { status: 401 } }),
+      "MCP registration timed out": new ClaudeAgentSdkQueryRunnerError({
+        method: "setMcpServers",
+        cause: registrationTimeout,
+      }),
       "missing --append-system-prompt text": new ClaudeAppendSystemPromptMissingValueError({
         flag: "--append-system-prompt",
       }),
@@ -2418,6 +2456,7 @@ effectIt.effect.each([
         detail:
           "ProviderAdapterTurnStartError > ClaudeAgentSdkQueryRunnerError (method query) > (status 401)",
       },
+      "MCP registration timed out": { message: registrationTimeout.message },
       "missing --append-system-prompt text": { message: cause.message },
     } as const;
     expect(failures).toEqual([
