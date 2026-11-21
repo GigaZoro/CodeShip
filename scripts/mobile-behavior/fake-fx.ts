@@ -247,9 +247,18 @@ function main(args: ReadonlyArray<string>) {
     status: JSON.stringify({ auth: "eval", model: MODEL }),
     models: JSON.stringify({ ids: [MODEL] }),
   };
-  const probe = probes[args[0] ?? ""];
+  const [command, ...options] = args;
+  const probe =
+    command !== undefined &&
+    (options.length === 0 ||
+      ((command === "status" || command === "models") &&
+        options.length === 1 &&
+        options[0] === "--json")) &&
+    Object.hasOwn(probes, command)
+      ? probes[command]
+      : undefined;
   if (probe !== undefined) return console.log(probe);
-  if (args[0] !== "acp") {
+  if (command !== "acp" || options.length !== 0) {
     console.error(`fake-fx: unsupported command ${args.join(" ")}`);
     process.exitCode = 2;
     return;

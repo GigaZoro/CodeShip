@@ -10,6 +10,7 @@ import * as NodeProcess from "node:process";
 import * as NodeReadline from "node:readline";
 import * as NodeURL from "node:url";
 
+import { parseCommandLine, positiveInteger } from "./lib/command-line.ts";
 import { CASES } from "./mobile-behavior/cases.ts";
 import { blockingResults, resultsFor, summarize, type SampleRow } from "./mobile-behavior/grade.ts";
 import { Device, type Pool, poolError, run } from "./mobile-e2e/device.ts";
@@ -130,24 +131,46 @@ async function runTarget(
   }
 }
 
+export function parseBehaviorArguments(args: ReadonlyArray<string>) {
+  const { values, tokens } = parseCommandLine({
+    args,
+    options: {
+      list: { type: "boolean" },
+      device: { type: "string", multiple: true, default: [] },
+      samples: { type: "string" },
+      case: { type: "string" },
+    },
+  });
+  if (values.list && tokens.length !== 1) throw new Error("--list must be used alone.");
+  const unknown = values.device.filter((id) => !TARGETS.some((target) => target.id === id));
+  if (unknown.length)
+    throw new Error("Unknown device " + unknown.join(", ") + ". Run with --list.");
+  const targets = TARGETS.filter(
+    (target) => values.device.length === 0 || values.device.includes(target.id),
+  );
+  const passThrough: string[] = [];
+  if (values.samples !== undefined) {
+    passThrough.push("--samples", String(positiveInteger(values.samples, "--samples")));
+  }
+  if (values.case !== undefined) {
+    const unknownCases = values.case
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => !CASES.some((testCase) => testCase.id === id));
+    if (unknownCases.length) throw new Error("Unknown case id(s): " + JSON.stringify(unknownCases));
+    passThrough.push("--case", values.case);
+  }
+  return { list: values.list === true, targets, passThrough };
+}
+
 async function main() {
-  const args = NodeProcess.argv.slice(2);
-  const values = (flag: string) =>
-    args.flatMap((arg, index) => (args[index - 1] === flag ? [arg] : []));
-  if (args.includes("--list")) {
-    for (const target of TARGETS) NodeProcess.stdout.write(`${target.id}\t${target.device}\n`);
+  const { list, targets, passThrough } = parseBehaviorArguments(NodeProcess.argv.slice(2));
+  if (list) {
+    for (const target of TARGETS) NodeProcess.stdout.write(target.id + "\t" + target.device + "\n");
     for (const testCase of CASES)
-      NodeProcess.stdout.write(`${testCase.id}\t${testCase.kind}\t${testCase.source}\n`);
+      NodeProcess.stdout.write(testCase.id + "\t" + testCase.kind + "\t" + testCase.source + "\n");
     return;
   }
-  const selected = values("--device");
-  const unknown = selected.filter((id) => !TARGETS.some((target) => target.id === id));
-  if (unknown.length) throw new Error(`Unknown device ${unknown.join(", ")}. Run with --list.`);
-  const targets = TARGETS.filter((target) => selected.length === 0 || selected.includes(target.id));
-  const passThrough = [
-    ...values("--samples").flatMap((value) => ["--samples", value]),
-    ...values("--case").flatMap((value) => ["--case", value]),
-  ];
 
   const agentDeviceUrl = NodeProcess.env.SIMLOCK_AGENT_DEVICE_URL;
   const token = NodeProcess.env.AGENT_DEVICE_DAEMON_AUTH_TOKEN;
