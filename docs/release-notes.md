@@ -1,3 +1,7 @@
+## 2026-11-21 — Libraries are upgraded every week
+
+- A weekly task now moves every library, Node, pnpm, Electron, Expo and the GitHub Actions to their newest stable releases, the day after the sync from T3 Code. It ports local patches, keeps upstream's mobile forks as they are, and lands only after the full checks and two reviewers pass. A version it cannot take yet is recorded as a hold and retried every week. No change to the app.
+
 ## 2026-11-21 — Start a worktree from a branch that exists only on the remote
 
 - Creating a worktree on a new branch from a base that exists only on the remote, such as a branch pushed from another machine and never checked out here, now starts from the remote copy instead of failing with "git worktree add failed".
