@@ -413,6 +413,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const [sidebarRouteReveal] = useState<SidebarRouteReveal>(() => ({
     observedKey: null,
     pendingKey: null,
+    widenedKey: null,
   }));
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();

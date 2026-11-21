@@ -29,7 +29,11 @@ function RevealList(props: {
 }
 
 const rowKeys = (count: number) => Array.from({ length: count }, (_, index) => `thread-${index}`);
-const newReveal = (): SidebarRouteReveal => ({ observedKey: null, pendingKey: null });
+const newReveal = (): SidebarRouteReveal => ({
+  observedKey: null,
+  pendingKey: null,
+  widenedKey: null,
+});
 
 describe("useActiveRowReveal", () => {
   it("scrolls an off-screen row into view when the route opens its thread", async () => {

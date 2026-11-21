@@ -9,6 +9,8 @@ import { filterSidebarV2VisibleThreads } from "../Sidebar.logic";
 export interface SidebarRouteReveal {
   observedKey: string | null;
   pendingKey: string | null;
+  // The route key whose reveal already widened the scope; a pick the user makes later stands.
+  widenedKey: string | null;
 }
 
 export function pendingSidebarRouteReveal(
@@ -19,8 +21,13 @@ export function pendingSidebarRouteReveal(
   if (reveal.observedKey !== routeKey) {
     reveal.observedKey = routeKey;
     reveal.pendingKey = routeKey;
+    reveal.widenedKey = null;
   }
   return reveal.pendingKey;
+}
+
+export function markSidebarRouteRevealWidened(reveal: SidebarRouteReveal): void {
+  reveal.widenedKey = reveal.observedKey;
 }
 
 export function completeSidebarRouteReveal(reveal: SidebarRouteReveal): void {
@@ -57,7 +64,7 @@ export function resolveSidebarRouteReveal<T extends RevealableThread>(input: {
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   readonly delegatedUnderParent: ReadonlySet<string>;
   readonly findThread: (key: string) => T | undefined;
-  readonly matchesFilters: (thread: T) => boolean;
+  readonly listsThread: (thread: T) => boolean;
 }): { readonly pendingKey: string | null; readonly widensScope: boolean } {
   const {
     reveal,
@@ -66,18 +73,19 @@ export function resolveSidebarRouteReveal<T extends RevealableThread>(input: {
     scopedProjectKeys,
     delegatedUnderParent,
     findThread,
-    matchesFilters,
+    listsThread,
   } = input;
   const pendingKey = pendingSidebarRouteReveal(reveal, routeKey);
   // Search results replace the thread list; the reveal waits for it to return.
   const thread = pendingKey === null || isSearching ? undefined : findThread(pendingKey);
-  if (thread !== undefined && !matchesFilters(thread)) {
-    // The filters hide it in every scope, so widening could never show it.
+  if (thread !== undefined && !listsThread(thread)) {
+    // No scope lists its row (filters, Needs you box, scheduled task), so widening could never show it.
     completeSidebarRouteReveal(reveal);
     return { pendingKey: null, widensScope: false };
   }
   const widensScope =
     thread !== undefined &&
+    reveal.widenedKey !== reveal.observedKey &&
     scopedProjectKeys !== null &&
     filterSidebarV2VisibleThreads([thread], scopedProjectKeys, delegatedUnderParent).length === 0 &&
     filterSidebarV2VisibleThreads([thread], null, delegatedUnderParent).length === 1;

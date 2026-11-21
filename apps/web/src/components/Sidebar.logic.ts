@@ -58,6 +58,13 @@ import { normalizeSearchText } from "../lib/utils";
 import { isLatestRunSettled } from "../session-logic";
 import { observeIntersection } from "../lib/observeIntersection";
 import { deadlineAfter, deadlineStore } from "@t3tools/client-runtime/clock";
+import { matchesAnyThreadTag } from "@t3tools/client-runtime/state/thread-tag-filter";
+import {
+  matchesThreadListStatus,
+  type ThreadListStatusFilter,
+} from "@t3tools/client-runtime/state/thread-status";
+import { threadNeedsYouReason } from "@t3tools/client-runtime/state/thread-inbox";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { useDeadlinePassed } from "../hooks/useDeadline";
 import { legacyProjectCwdPreferenceKey } from "../uiStateStore";
 
@@ -1531,4 +1538,50 @@ export function sortProjectsByRecentActivity<
         left.project.id.localeCompare(right.project.id),
     )
     .map(({ project }) => project);
+}
+
+function sidebarThreadKey(thread: Pick<EnvironmentThreadShell, "environmentId" | "id">): string {
+  return scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+}
+
+export function matchesSidebarThreadFilters(
+  thread: EnvironmentThreadShell,
+  filters: {
+    readonly statusFilter: ThreadListStatusFilter;
+    readonly tagFilter: ReadonlySet<string>;
+    readonly locallyUnreadKeys: ReadonlySet<string>;
+    readonly now: string;
+  },
+) {
+  return (
+    matchesAnyThreadTag(thread.source.tags, filters.tagFilter) &&
+    (filters.statusFilter === "all" ||
+      matchesThreadListStatus(thread, filters.statusFilter, {
+        woke: hasUnseenServerWake(thread, filters.now),
+        locallyUnread: filters.locallyUnreadKeys.has(sidebarThreadKey(thread)),
+      }))
+  );
+}
+
+/**
+ * Whether the sections list the thread as an ordinary row in some project scope. A thread that
+ * waits on the user lives in the Needs you box, and a scheduled task's thread is hidden, so
+ * neither ever mounts a section row.
+ */
+export function sidebarSectionsListThread(
+  thread: EnvironmentThreadShell,
+  filters: {
+    readonly statusFilter: ThreadListStatusFilter;
+    readonly tagFilter: ReadonlySet<string>;
+    readonly locallyUnreadKeys: ReadonlySet<string>;
+    readonly hiddenTaskThreadKeys: ReadonlySet<string>;
+    readonly nowMs: number;
+  },
+) {
+  const now = new Date(filters.nowMs).toISOString();
+  return (
+    matchesSidebarThreadFilters(thread, { ...filters, now }) &&
+    !filters.hiddenTaskThreadKeys.has(sidebarThreadKey(thread)) &&
+    threadNeedsYouReason(thread, { now }) === null
+  );
 }

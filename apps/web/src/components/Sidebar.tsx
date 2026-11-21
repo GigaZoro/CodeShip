@@ -1,11 +1,9 @@
 import {
-  matchesThreadListStatus,
   THREAD_LIST_STATUS_LABELS,
   ThreadListStatusFilter,
 } from "@t3tools/client-runtime/state/thread-status";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import {
-  matchesAnyThreadTag,
   threadTagFilterOptions,
   toggleThreadTagSelection,
 } from "@t3tools/client-runtime/state/thread-tag-filter";
@@ -251,6 +249,8 @@ import {
   capSidebarFolderThreads,
   resolveSidebarFolderDot,
   hasUnseenServerWake,
+  matchesSidebarThreadFilters,
+  sidebarSectionsListThread,
   SIDEBAR_FOLDER_PREVIEW_COUNT,
   sidebarFolderExpansionKeys,
   sidebarMachineFolderKey,
@@ -313,6 +313,7 @@ import { deriveProviderEntriesByEnvironment } from "../providerInstances";
 import { useStableCallback } from "../hooks/useStableCallback";
 import {
   resolveSidebarRouteReveal,
+  markSidebarRouteRevealWidened,
   type SidebarRouteReveal,
   useActiveRowReveal,
 } from "./sidebar/routeReveal";
@@ -608,6 +609,7 @@ export function useSidebarThreads(input: {
   readonly hiddenTaskThreadKeys: ReadonlySet<string>;
   readonly routeRowThreadKey: string | null;
   readonly grouping: SidebarThreadGrouping;
+  readonly snoozeWakeClock: number;
 }) {
   const {
     projectScopeKey,
@@ -620,6 +622,7 @@ export function useSidebarThreads(input: {
     hiddenTaskThreadKeys,
     routeRowThreadKey,
     grouping,
+    snoozeWakeClock,
   } = input;
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
   const environmentConnections = useEnvironmentConnectionSummaries();
@@ -639,8 +642,6 @@ export function useSidebarThreads(input: {
     inboxReturns.getSnapshot,
   );
   const nowMinute = useNowMinute();
-  // Minute-quantized clocks would delay second-precise snooze wakes by up to a minute.
-  const snoozeWakeClock = useSnoozeWakeClock(threads);
   const [settledShelfExpanded, setSettledShelfExpanded] = useLocalStorage(
     SETTLED_SHELF_EXPANDED_KEY,
     false,
@@ -1200,25 +1201,6 @@ export function useSidebarThreads(input: {
       threads.map((thread) => [threadShellKey(thread), thread.activeOrderKey ?? null] as const),
     ),
   };
-}
-
-function matchesSidebarThreadFilters(
-  thread: EnvironmentThreadShell,
-  filters: {
-    readonly statusFilter: ThreadListStatusFilter;
-    readonly tagFilter: ReadonlySet<string>;
-    readonly locallyUnreadKeys: ReadonlySet<string>;
-    readonly now: string;
-  },
-) {
-  return (
-    matchesAnyThreadTag(thread.source.tags, filters.tagFilter) &&
-    (filters.statusFilter === "all" ||
-      matchesThreadListStatus(thread, filters.statusFilter, {
-        woke: hasUnseenServerWake(thread, filters.now),
-        locallyUnread: filters.locallyUnreadKeys.has(threadShellKey(thread)),
-      }))
-  );
 }
 
 function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
@@ -1813,7 +1795,8 @@ export default function Sidebar({
   const threads = useQuietThreadShells();
   const lastActivityOrder = useAtomValue(environmentThreadShells.lastActivityOrderAtom(threadSort));
   const locallyUnreadKeys = useLocallyUnreadThreadKeys(threads);
-  const nowMinute = useNowMinute();
+  // Minute-quantized clocks would delay second-precise snooze wakes by up to a minute.
+  const snoozeWakeClock = useSnoozeWakeClock(threads);
   const availableTags = useAtomValue(
     environmentThreadShells.threadFilterTagsAtom(
       hiddenScheduledTaskThreadKeysAtom(taskEnvironmentIdsKey),
@@ -1846,12 +1829,13 @@ export default function Sidebar({
     scopedProjectKeys: chosenScopeProjectKeys,
     delegatedUnderParent,
     findThread: (key) => threads.find((candidate) => threadShellKey(candidate) === key),
-    matchesFilters: (thread) =>
-      matchesSidebarThreadFilters(thread, {
+    listsThread: (thread) =>
+      sidebarSectionsListThread(thread, {
         statusFilter,
         tagFilter,
         locallyUnreadKeys,
-        now: nowMinute,
+        hiddenTaskThreadKeys,
+        nowMs: snoozeWakeClock,
       }),
   });
   const projectScopeKeys = revealWidensScope ? [] : chosenProjectScopeKeys;
@@ -1880,12 +1864,14 @@ export default function Sidebar({
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- writes a route reveal's widened project and machine scope back to the persisted sidebar scope and clears selection
   useEffect(() => {
     if (!revealWidensScope) return;
+    markSidebarRouteRevealWidened(routeReveal);
     clearSelection();
     setPersistedProjectScopeKeys([]);
     setPersistedMachineScopeIds([]);
   }, [
     clearSelection,
     revealWidensScope,
+    routeReveal,
     setPersistedProjectScopeKeys,
     setPersistedMachineScopeIds,
   ]);
@@ -2083,6 +2069,7 @@ export default function Sidebar({
     delegatedUnderParent,
     hiddenTaskThreadKeys,
     routeRowThreadKey,
+    snoozeWakeClock,
     grouping: {
       projects: groupBy.project
         ? {

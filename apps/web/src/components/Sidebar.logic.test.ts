@@ -1,4 +1,5 @@
 import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
+import { threadNeedsYouReason } from "@t3tools/client-runtime/state/thread-inbox";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { isThreadWorking as isSidebarThreadWorking } from "@t3tools/client-runtime/state/thread-inbox";
 import * as DateTime from "effect/DateTime";
@@ -44,6 +45,7 @@ import {
   sidebarFolderExpansionKeys,
   sortSidebarMachines,
   resolveNextThreadAfterPark,
+  sidebarSectionsListThread,
 } from "./Sidebar.logic";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
@@ -53,7 +55,14 @@ import {
 import { resolveProjectExpanded } from "../uiStateStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
-import { EnvironmentId, ProjectId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  RunId,
+  RuntimeRequestId,
+  ThreadId,
+} from "@t3tools/contracts";
 
 import {
   DEFAULT_INTERACTION_MODE,
@@ -65,6 +74,7 @@ import { makeThreadFixture, type ThreadFixtureOverrides } from "../test-fixtures
 import {
   completeSidebarRouteReveal,
   pendingSidebarRouteReveal,
+  markSidebarRouteRevealWidened,
   resolveSidebarRouteReveal,
 } from "./sidebar/routeReveal";
 
@@ -1401,7 +1411,7 @@ describe("Working shelf (beta)", () => {
 
 describe("pendingSidebarRouteReveal", () => {
   it("keeps a revealed thread settled across a mount that reads no route params", () => {
-    const reveal = { observedKey: null, pendingKey: null };
+    const reveal = { observedKey: null, pendingKey: null, widenedKey: null };
     expect(pendingSidebarRouteReveal(reveal, "env:a1")).toBe("env:a1");
     completeSidebarRouteReveal(reveal);
 
@@ -1413,7 +1423,7 @@ describe("pendingSidebarRouteReveal", () => {
   });
 
   it("keeps a pending reveal through a render without route params", () => {
-    const reveal = { observedKey: null, pendingKey: null };
+    const reveal = { observedKey: null, pendingKey: null, widenedKey: null };
     pendingSidebarRouteReveal(reveal, "env:a1");
     expect(pendingSidebarRouteReveal(reveal, null)).toBeNull();
     expect(pendingSidebarRouteReveal(reveal, "env:a1")).toBe("env:a1");
@@ -1429,13 +1439,13 @@ describe("resolveSidebarRouteReveal", () => {
   it("widens the scope for a newly opened thread the scope hides", () => {
     expect(
       resolveSidebarRouteReveal({
-        reveal: { observedKey: "environment-test:other", pendingKey: null },
+        reveal: { observedKey: "environment-test:other", pendingKey: null, widenedKey: null },
         routeKey: hiddenKey,
         isSearching: false,
         scopedProjectKeys,
         delegatedUnderParent: new Set(),
         findThread,
-        matchesFilters: () => true,
+        listsThread: () => true,
       }),
     ).toEqual({ pendingKey: hiddenKey, widensScope: true });
   });
@@ -1444,13 +1454,13 @@ describe("resolveSidebarRouteReveal", () => {
     // A remount's once-per-mount scroll must keep the scope the user chose.
     expect(
       resolveSidebarRouteReveal({
-        reveal: { observedKey: hiddenKey, pendingKey: null },
+        reveal: { observedKey: hiddenKey, pendingKey: null, widenedKey: null },
         routeKey: hiddenKey,
         isSearching: false,
         scopedProjectKeys,
         delegatedUnderParent: new Set(),
         findThread,
-        matchesFilters: () => true,
+        listsThread: () => true,
       }),
     ).toEqual({ pendingKey: null, widensScope: false });
   });
@@ -1458,7 +1468,7 @@ describe("resolveSidebarRouteReveal", () => {
   it("widens again for a thread reopened before the thread between them listed its row", () => {
     // The user scoped away from the open thread, then went to a thread whose row
     // never mounted, then came back.
-    const reveal = { observedKey: hiddenKey, pendingKey: null };
+    const reveal = { observedKey: hiddenKey, pendingKey: null, widenedKey: null };
     const resolve = (routeKey: string) =>
       resolveSidebarRouteReveal({
         reveal,
@@ -1467,14 +1477,34 @@ describe("resolveSidebarRouteReveal", () => {
         scopedProjectKeys,
         delegatedUnderParent: new Set(),
         findThread,
-        matchesFilters: () => true,
+        listsThread: () => true,
       });
     resolve("environment-test:unlisted");
     expect(resolve(hiddenKey)).toEqual({ pendingKey: hiddenKey, widensScope: true });
   });
 
-  it("completes without widening when the filters hide the thread in every scope", () => {
-    const reveal = { observedKey: "environment-test:other", pendingKey: null };
+  it("widens once per route change, so a scope picked afterwards stands", () => {
+    const reveal = { observedKey: "environment-test:other", pendingKey: null, widenedKey: null };
+    const resolve = (routeKey: string, chosen: ReadonlySet<string>) =>
+      resolveSidebarRouteReveal({
+        reveal,
+        routeKey,
+        isSearching: false,
+        scopedProjectKeys: chosen,
+        delegatedUnderParent: new Set(),
+        findThread,
+        listsThread: () => true,
+      });
+    expect(resolve(hiddenKey, scopedProjectKeys).widensScope).toBe(true);
+    markSidebarRouteRevealWidened(reveal);
+    const another = new Set(["environment-test:project-another"]);
+    expect(resolve(hiddenKey, another).widensScope).toBe(false);
+    resolve("environment-test:other", another);
+    expect(resolve(hiddenKey, another).widensScope).toBe(true);
+  });
+
+  it("completes without widening when no scope lists the thread's row", () => {
+    const reveal = { observedKey: "environment-test:other", pendingKey: null, widenedKey: null };
     const resolve = (chosen: ReadonlySet<string>) =>
       resolveSidebarRouteReveal({
         reveal,
@@ -1483,7 +1513,7 @@ describe("resolveSidebarRouteReveal", () => {
         scopedProjectKeys: chosen,
         delegatedUnderParent: new Set(),
         findThread,
-        matchesFilters: () => false,
+        listsThread: () => false,
       });
     expect(resolve(scopedProjectKeys)).toEqual({ pendingKey: null, widensScope: false });
     expect(resolve(new Set(["environment-test:project-another"]))).toEqual({
@@ -1495,15 +1525,74 @@ describe("resolveSidebarRouteReveal", () => {
   it("holds a pending reveal without widening while searching", () => {
     expect(
       resolveSidebarRouteReveal({
-        reveal: { observedKey: hiddenKey, pendingKey: hiddenKey },
+        reveal: { observedKey: hiddenKey, pendingKey: hiddenKey, widenedKey: null },
         routeKey: hiddenKey,
         isSearching: true,
         scopedProjectKeys,
         delegatedUnderParent: new Set(),
         findThread,
-        matchesFilters: () => true,
+        listsThread: () => true,
       }),
     ).toEqual({ pendingKey: hiddenKey, widensScope: false });
+  });
+});
+
+describe("sidebarSectionsListThread", () => {
+  const base = {
+    statusFilter: "all",
+    tagFilter: new Set<string>(),
+    locallyUnreadKeys: new Set<string>(),
+    hiddenTaskThreadKeys: new Set<string>(),
+    nowMs: Date.parse("2026-06-20T12:00:05.000Z"),
+  } as const;
+  const shell = (overrides: Partial<ReturnType<typeof makeThreadFixture>["source"]> = {}) =>
+    presentThreadShell(localEnvironmentId, { ...makeThreadFixture().source, ...overrides });
+  const keyOf = (thread: ReturnType<typeof shell>) =>
+    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+
+  it("lists an ordinary matching thread", () => {
+    expect(sidebarSectionsListThread(shell(), base)).toBe(true);
+  });
+
+  it("does not list a thread the Needs you box holds", () => {
+    const waiting = shell({
+      pendingRuntimeRequest: {
+        id: RuntimeRequestId.make("request-approval"),
+        kind: "command",
+        createdAt: DateTime.makeUnsafe("2026-06-20T12:00:00.000Z"),
+      },
+    });
+    expect(threadNeedsYouReason(waiting, { now: "2026-06-20T12:00:05.000Z" })).toBe("approval");
+    expect(sidebarSectionsListThread(waiting, base)).toBe(false);
+  });
+
+  it("does not list a scheduled task's hidden thread or one the tag filter hides", () => {
+    const thread = shell();
+    expect(
+      sidebarSectionsListThread(thread, {
+        ...base,
+        hiddenTaskThreadKeys: new Set([keyOf(thread)]),
+      }),
+    ).toBe(false);
+    expect(sidebarSectionsListThread(thread, { ...base, tagFilter: new Set(["bug"]) })).toBe(false);
+  });
+
+  it("reads a snooze wake from the epoch clock in every time zone", () => {
+    const snoozed = shell({
+      status: "completed",
+      latestRunId: RunId.make("run-snoozed"),
+      snoozedAt: DateTime.makeUnsafe("2026-06-20T08:00:00.000Z"),
+      snoozedUntil: DateTime.makeUnsafe("2026-06-20T14:00:00.000Z"),
+      lastVisitedAt: DateTime.makeUnsafe("2026-06-20T07:00:00.000Z"),
+    });
+    const needsYou = { ...base, statusFilter: "attention" } as const;
+    expect(sidebarSectionsListThread(snoozed, needsYou)).toBe(false);
+    expect(
+      sidebarSectionsListThread(snoozed, {
+        ...needsYou,
+        nowMs: Date.parse("2026-06-20T14:00:01Z"),
+      }),
+    ).toBe(true);
   });
 });
 
