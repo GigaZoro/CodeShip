@@ -525,6 +525,10 @@
 - A thread started in a new worktree from a pushed commit that none of the checkout's fetched branches reaches, such as one on a branch a single-branch clone does not fetch, now starts. The launch fetches the commit itself, from the primary remote first and then the project's other remotes. Before, it fetched only the primary remote's branches and refused the commit as missing.
 - `delegate_task` to a linked environment now fails with "Unable to read this thread's project." when your thread's project cannot be read, instead of asking for a `target.projectId` it does not need or starting a worktree helper from that project's default branch.
 
+## 2026-11-21 — Commands stay awake on a Mac
+
+- On macOS, a command an agent starts with `t3_command_run` now keeps the Mac from idle-sleeping while it runs, so long test suites, builds and pushes no longer fail when you step away on battery.
+
 ## 2026-11-21 — Usage scans share one refresh
 
 - The Usage page shares one transcript scan with its slow-source refresh. If a scan runs past the request deadline, the page can show the figures already collected while the scan continues. New transcripts can take up to five seconds to appear.

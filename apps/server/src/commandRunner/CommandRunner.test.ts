@@ -26,7 +26,7 @@ import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
-import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { isDarwinHost, isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { windowsStopTreeArgs } from "@t3tools/shared/windowsProcessTree";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -2215,6 +2215,21 @@ describe("the shell a command runs in", () => {
     (platform, env, requested, name, path) => {
       assert.deepEqual(CommandRunner.resolveCommandShell(platform, env, requested), { name, path });
     },
+  );
+});
+
+describe.runIf(isDarwinHost)("macOS idle-sleep assertion", () => {
+  it.live("caffeinate holds until the watched command ends, then exits by itself", () =>
+    Effect.promise(async () => {
+      const watched = NodeChildProcess.spawn("/bin/sleep", ["60"], { stdio: "ignore" });
+      const [file, args] = CommandRunner.macKeepAwakeCommand(watched.pid ?? 0);
+      const awake = NodeChildProcess.spawn(file, [...args], { stdio: "ignore" });
+      const ended = new Promise<void>((resolve) => awake.once("exit", () => resolve()));
+      assert.isNull(awake.exitCode);
+      watched.kill("SIGKILL");
+      await ended;
+      assert.isNotNull(awake.exitCode ?? awake.signalCode);
+    }),
   );
 });
 

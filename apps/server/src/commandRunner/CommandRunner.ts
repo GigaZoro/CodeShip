@@ -350,6 +350,10 @@ export const COMMAND_SHELL_LABELS: Readonly<Record<CommandShellName, string>> = 
   sh: "/bin/sh",
 };
 
+/** `caffeinate -i -w <pid>`: no elevation, and it exits with the watched process. */
+export const macKeepAwakeCommand = (pid: number) =>
+  ["/usr/bin/caffeinate", ["-i", "-w", String(pid)]] as const;
+
 /**
  * Windows runs PowerShell, or Git Bash when asked for bash. Elsewhere bash or zsh as the user's own
  * commands expect; anything else (fish, nu) gets /bin/sh, and bash comes from PATH when the user's
@@ -1221,6 +1225,14 @@ const make = Effect.gen(function* () {
         survivesRestart: true,
       });
       const pid = yield* spawnDetached(scoped.command, scoped.args, cwd, env);
+      if (platform === "darwin" && pid > 0) {
+        // The assertion follows the wrapper across server restarts and ends with it.
+        yield* spawnDetached(...macKeepAwakeCommand(pid), cwd, hostCommandEnv).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("command-runner.sleep-assertion-failed", { pid, cause }),
+          ),
+        );
+      }
       return { pid, unit: scoped.unit ?? null, identity: undefined };
     }
     // Win32_Process.Create parents the wrapper under WMI, outside this server's job and tree. Its
