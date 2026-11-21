@@ -8,23 +8,31 @@ import { Link } from "@tanstack/react-router";
 import { ArrowRightLeftIcon, CloudOffIcon } from "lucide-react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
-import { useRelativeTimeState } from "../../hooks/useRelativeTimeState";
-import { formatChatTimestampTooltip, formatUpcomingTimestamp } from "../../timestampFormat";
+import {
+  formatRelativeElapsed,
+  relativeTimeElapsedMs,
+  formatChatTimestampTooltip,
+  formatUpcomingTimestamp,
+} from "../../timestampFormat";
 import { InlineButton } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { t } from "~/i18n";
 
-/** Relabels only when the minute or hour changes, not on a ticking clock. */
-export function useCheckedAgo(checkedAt: string): string | null {
-  const relative = useRelativeTimeState(checkedAt);
-  if (relative.status !== "relative") return null;
+function checkedRelative(checkedAt: string, now: number) {
+  const elapsed = relativeTimeElapsedMs(checkedAt, now);
+  return elapsed === null ? null : formatRelativeElapsed(elapsed);
+}
+
+export function formatCheckedAgo(checkedAt: string, now: number): string | null {
+  const relative = checkedRelative(checkedAt, now);
+  if (!relative) return null;
   return relative.suffix ? `${relative.value} ${relative.suffix}` : relative.value;
 }
 
-function LimitsCheckedAt({ checkedAt }: { readonly checkedAt: string }) {
+function LimitsCheckedAt({ checkedAt, now }: { readonly checkedAt: string; readonly now: number }) {
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
-  const relative = useRelativeTimeState(checkedAt);
-  if (relative.status !== "relative") return null;
+  const relative = checkedRelative(checkedAt, now);
+  if (!relative) return null;
   return (
     <Tooltip>
       <TooltipTrigger
@@ -46,12 +54,14 @@ function LimitsCheckedAt({ checkedAt }: { readonly checkedAt: string }) {
 function OfflineReading({
   label,
   checkedAt,
+  now,
 }: {
   readonly label: string;
   readonly checkedAt: string;
+  readonly now: number;
 }) {
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
-  const ago = useCheckedAgo(checkedAt);
+  const ago = formatCheckedAgo(checkedAt, now);
   return (
     <Tooltip>
       <TooltipTrigger
@@ -83,16 +93,23 @@ function OfflineReading({
 /** When the shown limits were read, naming each machine that cannot refresh its own right now. */
 export function LimitsFreshness({
   freshness,
+  now,
 }: {
+  readonly now: number;
   readonly freshness: ReturnType<typeof limitsFreshness>;
 }) {
   if (freshness.checkedAt === null && freshness.offline.length === 0) return null;
   return (
     <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
       {freshness.offline.map((entry) => (
-        <OfflineReading key={entry.label} label={entry.label} checkedAt={entry.checkedAt} />
+        <OfflineReading
+          key={entry.label}
+          label={entry.label}
+          checkedAt={entry.checkedAt}
+          now={now}
+        />
       ))}
-      {freshness.checkedAt ? <LimitsCheckedAt checkedAt={freshness.checkedAt} /> : null}
+      {freshness.checkedAt ? <LimitsCheckedAt checkedAt={freshness.checkedAt} now={now} /> : null}
     </span>
   );
 }

@@ -74,47 +74,91 @@ const layerTest = TestProviderHost.layer({ runBackgroundWork: false }).pipe(
 );
 
 it.layer(layerTest)("CursorDriver", (it) => {
-  it.effect("publishes the actual Cursor history credential state without a usage scan", () =>
-    Effect.gen(function* () {
-      const settings = yield* TestProviderHost.TestProviderHostSettings;
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const directory = yield* fs.makeTempDirectoryScoped();
-      yield* fs.makeDirectory(path.join(directory, "cursor"));
-      yield* fs.writeFileString(
-        path.join(directory, "cursor", "auth.json"),
-        JSON.stringify({
-          accessToken: "header.eyJzdWIiOiJjdXJzb3J8Zml4dHVyZSJ9.signature",
-        }),
-      );
-      const input = {
-        instanceId: ProviderInstanceId.make("cursor-keychain"),
-        displayName: "Cursor",
-        environment: [],
-        enabled: false,
-        config: CursorDriver.defaultConfig(),
-      };
-      for (const [platform, environment, enabled, history] of [
-        ["darwin", {}, false, "keychainOff"],
-        ["darwin", {}, true, "reading"],
-        ["linux", { XDG_CONFIG_HOME: directory }, false, "reading"],
-        ["linux", { XDG_CONFIG_HOME: path.join(directory, "missing") }, false, "unavailable"],
-        ["darwin", { AGENT_CLI_CREDENTIAL_STORE: "memory" }, false, "unavailable"],
-        [
-          "linux",
-          { CURSOR_AUTH_TOKEN: "test-token", XDG_CONFIG_HOME: directory },
-          false,
-          "unavailable",
-        ],
-      ] as const) {
-        yield* settings.set({ ...DEFAULT_SERVER_SETTINGS, cursorKeychainUsageEnabled: enabled });
-        const instance = yield* CursorDriver.create(input).pipe(
-          Effect.provideService(HostProcess.Platform, platform),
-          Effect.provideService(HostProcess.Environment, environment),
+  it.effect(
+    "publishes only verified history access and withdraws it when the endpoint rejects the credential",
+    () =>
+      Effect.gen(function* () {
+        const settings = yield* TestProviderHost.TestProviderHostSettings;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped();
+        const token = "header.eyJzdWIiOiJjdXJzb3J8Zml4dHVyZSJ9.signature";
+        yield* fs.makeDirectory(path.join(directory, "cursor"));
+        yield* fs.writeFileString(
+          path.join(directory, "cursor", "auth.json"),
+          JSON.stringify({ accessToken: token }),
         );
-        expect((yield* instance.snapshot.getSnapshot).cursorAccountHistory).toBe(history);
-      }
-    }),
+        for (const [platform, environment, keychainEnabled, expected] of [
+          ["darwin", {}, false, "keychainOff"],
+          ["darwin", {}, true, "reading"],
+          ["linux", { XDG_CONFIG_HOME: directory }, false, "reading"],
+          ["linux", { XDG_CONFIG_HOME: path.join(directory, "missing") }, false, "unavailable"],
+          ["darwin", { AGENT_CLI_CREDENTIAL_STORE: "memory" }, false, "unavailable"],
+          [
+            "linux",
+            { CURSOR_AUTH_TOKEN: "test-token", XDG_CONFIG_HOME: directory },
+            false,
+            "unavailable",
+          ],
+        ] as const) {
+          yield* settings.set({
+            ...DEFAULT_SERVER_SETTINGS,
+            cursorKeychainUsageEnabled: keychainEnabled,
+          });
+          let keychainToken: string | null = null;
+          let status = 200;
+          let requests = 0;
+          let keychainReads = 0;
+          const history = HttpClient.make((req) => {
+            expect(req.url).toBe("https://cursor.com/api/dashboard/get-filtered-usage-events");
+            requests++;
+            return Effect.succeed(
+              HttpClientResponse.fromWeb(
+                req,
+                Response.json({ totalUsageEventsCount: 0 }, { status }),
+              ),
+            );
+          });
+          const instance = yield* CursorDriver.create({
+            instanceId: ProviderInstanceId.make("cursor-history"),
+            displayName: "Cursor",
+            enabled: true,
+            environment: [],
+            config: CursorDriver.defaultConfig(),
+          }).pipe(
+            Effect.provideService(HostProcess.Platform, platform),
+            Effect.provideService(HostProcess.Environment, environment),
+            Effect.provideService(HttpClient.HttpClient, history),
+            Effect.provideService(CursorKeychain.CursorKeychain, {
+              accessToken: Effect.sync(() => {
+                keychainReads++;
+                return keychainToken;
+              }),
+            }),
+          );
+          expect((yield* instance.snapshot.getSnapshot).cursorAccountHistory).toBe("unavailable");
+          expect(requests).toBe(0);
+          if (keychainEnabled) {
+            expect((yield* instance.snapshot.refresh).cursorAccountHistory).toBe("unavailable");
+            expect(requests).toBe(0);
+            keychainToken = token;
+          }
+          expect((yield* instance.snapshot.refresh).cursorAccountHistory).toBe(expected);
+          if (expected === "reading") {
+            for (const code of [401, 403, 200]) {
+              status = code;
+              yield* instance.snapshot.refresh;
+              expect((yield* instance.snapshot.getSnapshot).cursorAccountHistory).toBe(
+                code === 200 ? "reading" : "unavailable",
+              );
+            }
+            expect(requests).toBe(4);
+          } else {
+            expect(requests).toBe(0);
+          }
+          if (!keychainEnabled) expect(keychainReads).toBe(0);
+        }
+      }),
   );
   it.effect(
     "persists browser credentials, uses them for chat, and closes the SDK session on logout",

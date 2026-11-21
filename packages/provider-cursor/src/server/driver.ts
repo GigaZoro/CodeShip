@@ -39,7 +39,7 @@ import * as CursorAgentSdk from "./CursorAgentSdk.ts";
 import * as CursorSdk from "./CursorSdk.ts";
 import * as CursorKeychain from "./CursorKeychain.ts";
 import * as CursorUsageAccounts from "./CursorUsageAccounts.ts";
-import { hasCursorHistoryFileCredentials } from "./accountUsage.ts";
+import { checkCursorHistoryAccess } from "./accountUsage.ts";
 
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 const isSdkRunnerError = Schema.is(CursorAgentSdk.CursorAgentSdkRunnerError);
@@ -120,19 +120,16 @@ export const CursorDriver: ProviderDriver<
     const readHistoryState = (
       keychainEnabled: boolean,
     ): Effect.Effect<NonNullable<ServerProvider["cursorAccountHistory"]>> => {
-      switch (historyCredentials) {
-        case "keychain":
-          return Effect.succeed(keychainEnabled ? "reading" : "keychainOff");
-        case "unavailable":
-          return Effect.succeed("unavailable");
-        case "file":
-          return hasCursorHistoryFileCredentials(historyAuthPath).pipe(
-            Effect.map((hasCredentials) =>
-              hasCredentials ? ("reading" as const) : ("unavailable" as const),
-            ),
-            Effect.provideService(FileSystem.FileSystem, fileSystem),
-          );
-      }
+      if (!enabled || historyCredentials === "unavailable") return Effect.succeed("unavailable");
+      if (historyCredentials === "keychain" && !keychainEnabled)
+        return Effect.succeed("keychainOff");
+      return checkCursorHistoryAccess(
+        historyCredentials === "file" ? historyAuthPath : keychain,
+      ).pipe(
+        Effect.map((accepted) => (accepted ? ("reading" as const) : ("unavailable" as const))),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(HttpClient.HttpClient, httpClient),
+      );
     };
     const continuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,
@@ -194,20 +191,19 @@ export const CursorDriver: ProviderDriver<
         ),
       onChanged: (): Effect.Effect<void> => snapshot.refresh.pipe(Effect.asVoid),
     });
-    const stampSnapshot = (draft: Parameters<typeof stampIdentity>[0], keychainEnabled: boolean) =>
-      readHistoryState(keychainEnabled).pipe(
-        Effect.map((cursorAccountHistory) =>
-          stampIdentity({
-            ...draft,
-            cursorAccountHistory,
-            setup: { canAuthenticate: !auth.usesApiKey, canInstall: false },
-            auth: {
-              ...draft.auth,
-              canLogout: !auth.usesApiKey,
-            },
-          }),
-        ),
-      );
+    const stampSnapshot = (
+      draft: Parameters<typeof stampIdentity>[0],
+      cursorAccountHistory: NonNullable<ServerProvider["cursorAccountHistory"]>,
+    ) =>
+      stampIdentity({
+        ...draft,
+        cursorAccountHistory,
+        setup: { canAuthenticate: !auth.usesApiKey, canInstall: false },
+        auth: {
+          ...draft.auth,
+          canLogout: !auth.usesApiKey,
+        },
+      });
 
     let catalogModels: ReadonlyArray<ServerProviderModel> = [];
     const orchestrationAdapter = yield* makeCursorAdapterV2({
@@ -290,7 +286,11 @@ export const CursorDriver: ProviderDriver<
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
           Effect.provideService(CursorKeychain.CursorKeychain, keychain),
-          Effect.flatMap((draft) => stampSnapshot(draft, settings.cursorKeychainUsageEnabled)),
+          Effect.flatMap((draft) =>
+            readHistoryState(settings.cursorKeychainUsageEnabled).pipe(
+              Effect.map((history) => stampSnapshot(draft, history)),
+            ),
+          ),
           Effect.tap((provider) =>
             Effect.sync(() => {
               // A failed check lists only custom models, so keep the last loaded catalog.
@@ -317,7 +317,7 @@ export const CursorDriver: ProviderDriver<
       haveSettingsChanged: haveProviderSnapshotSettingsChanged,
       initialSnapshot: (settings) =>
         buildInitialCursorProviderSnapshot(settings.provider).pipe(
-          Effect.flatMap((draft) => stampSnapshot(draft, settings.cursorKeychainUsageEnabled)),
+          Effect.map((draft) => stampSnapshot(draft, "unavailable")),
         ),
       checkProvider,
     }).pipe(

@@ -13,6 +13,7 @@ import {
   CHATGPT_USAGE_URL,
   collectAccountFailover,
   collectLimitAccounts,
+  hasLimitCountdown,
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
@@ -625,11 +626,14 @@ const accountWorkspacesAtom = usageLimitAccountWorkspacesAtom(
   environmentPresentations.presentationsWithProvidersAtom,
 );
 
-function useUsageLimitNow() {
+function useUsageLimitNow(hasCountdown: (at: number) => boolean) {
   const clocks = useAtomValue(limitClockAtom);
   const focused = useIsFocused();
   const foreground = useAppForeground();
-  const clock = focused && foreground ? clocks.countdown : clocks.resets;
+  const clock =
+    focused && foreground && hasCountdown(clocks.resets.getSnapshot())
+      ? clocks.countdown
+      : clocks.resets;
   const subscribe = useCallback(
     (listener: () => void) => {
       const unsubscribe = clock.subscribe(listener);
@@ -662,7 +666,7 @@ export function UsageLimitsSection({
       : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
   const workspaces = useAtomValue(accountWorkspacesAtom);
   const accounts = collectLimitAccounts(selected, workspaces);
-  const now = useUsageLimitNow();
+  const now = useUsageLimitNow((at) => hasLimitCountdown(accounts, at));
   const pools = collectLimitPools(accounts, now);
   const failover = collectAccountFailover(selected, now);
   const notices = collectLimitNotices(selected);
@@ -810,7 +814,15 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
       : new Map([...presentations].filter(([id]) => selectedIds.has(id)));
   const workspaces = useAtomValue(accountWorkspacesAtom);
   const accounts = collectLimitAccounts(selected, workspaces);
-  const now = useUsageLimitNow();
+  const now = useUsageLimitNow((at) => {
+    const reading = findLimitAccountWindow(
+      collectLimitPools(accounts, at),
+      accountKey,
+      windowId,
+      windowKind,
+    );
+    return (reading?.reset?.at ?? -Infinity) > at;
+  });
   const detail = findLimitAccountWindow(
     collectLimitPools(accounts, now),
     accountKey,

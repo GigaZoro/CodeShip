@@ -275,7 +275,7 @@ export const ServerProvider = Schema.Struct({
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   workspaceSnapshots: Schema.optionalKey(Schema.Array(ServerProviderWorkspaceSnapshot)),
   usageLimits: Schema.optional(ServerProviderUsageLimits),
-  /** Cursor account history credentials, independent of subscription quota probes. */
+  /** Cursor history access verified by the provider's latest status check. */
   cursorAccountHistory: Schema.optionalKey(
     Schema.Literals(["reading", "keychainOff", "unavailable"]),
   ),

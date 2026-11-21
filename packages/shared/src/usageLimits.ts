@@ -876,6 +876,12 @@ export function collectLimitPools(
   });
 }
 
+export function hasLimitCountdown(accounts: readonly LimitAccount[], now: number): boolean {
+  return collectLimitPools(accounts, now).some((pool) =>
+    displayLimitWindows(pool).some((window) => window.resets.some((reset) => reset.at > now)),
+  );
+}
+
 export function findLimitAccountWindow(
   pools: readonly LimitPool[],
   accountKey: string,

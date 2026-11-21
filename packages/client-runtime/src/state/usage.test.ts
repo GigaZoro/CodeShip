@@ -1,5 +1,6 @@
 import {
   AuthSettingsWriteScope,
+  AuthDiagnosticsReadScope,
   EnvironmentId,
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
@@ -17,6 +18,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { EnvironmentPresentation } from "../connection/presentation.ts";
 import {
+  createLegacyCursorReaders,
   cursorKeychainAccessEnvironments,
   cursorUsageAccess,
   resolveCursorUsageAccess,
@@ -283,8 +285,67 @@ describe("Cursor account usage access", () => {
       access: cursorUsageAccess({ settings: DEFAULT_SERVER_SETTINGS, providers: [provider] }),
       summary,
       isConnected: true,
-      session: { authenticated: true, scopes: [AuthSettingsWriteScope] },
+      session: { authenticated: true, scopes: [AuthDiagnosticsReadScope, AuthSettingsWriteScope] },
     });
+
+  it("uses explicit keychainOff even if the enabled Cursor provider is in error", () => {
+    expect(
+      access({ ...cursor("error"), cursorAccountHistory: "keychainOff" }, null)
+        .needsCursorKeychainAccess,
+    ).toBe(true);
+  });
+
+  it.each(["revoke", "disconnect", "upgrade"] as const)(
+    "forgets a legacy reader on %s while Usage is unmounted",
+    (change) => {
+      const id = EnvironmentId.make("desk");
+      const { registry, environments } = harness(["desk"]);
+      const connected = registry.get(environments[0]!.presentation)!;
+      const presentationsAtom = Atom.make<ReadonlyMap<EnvironmentId, EnvironmentPresentation>>(
+        new Map([[id, connected]]),
+      );
+      const grant = (authorized: boolean) =>
+        AsyncResult.success({
+          authenticated: true,
+          scopes: authorized ? [AuthDiagnosticsReadScope] : [],
+        });
+      const session = Atom.make(grant(true));
+      const config = Atom.make<ReturnType<typeof cursorUsageAccess>>({
+        history: undefined,
+        legacyCanEnable: true,
+      });
+      const read = createLegacyCursorReaders(
+        { presentationsAtom },
+        { sessionStateAtom: () => session },
+        { cursorUsageAccessAtom: () => config },
+      );
+      const usage = Atom.make((get) =>
+        read(get, id, {
+          ...summary,
+          sources: cursorPrompt.sources.map((source) => ({
+            ...source,
+            fingerprint: { ...source.fingerprint, hostId: "cursor.com" },
+          })),
+        }),
+      );
+      const limits = Atom.make((get) => read(get, id, null));
+      const unmount = registry.mount(usage);
+      expect(registry.get(usage)).toBe(true);
+      unmount();
+      expect(registry.get(limits)).toBe(true);
+      if (change === "revoke") {
+        registry.set(session, grant(false));
+        registry.set(session, grant(true));
+      } else if (change === "disconnect") {
+        registry.set(presentationsAtom, new Map());
+        registry.set(presentationsAtom, new Map([[id, connected]]));
+      } else {
+        registry.set(config, { history: "unavailable", legacyCanEnable: false });
+        registry.set(config, { history: undefined, legacyCanEnable: true });
+      }
+      expect(registry.get(limits)).toBe(false);
+    },
+  );
 
   it("uses legacy summary hints only for a server without a history status", () => {
     const ready = cursor("ready");

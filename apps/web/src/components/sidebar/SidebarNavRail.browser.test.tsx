@@ -1,4 +1,13 @@
-import { EnvironmentId, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import { RegistryContext } from "@effect/atom-react";
+import { AtomRegistry } from "effect/reactivity";
+import { minuteTick } from "@t3tools/client-runtime/clock";
+import { UsageLimitsSection } from "../usage/UsageLimits";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import { collectLimitAccounts, type LimitPresentations } from "@t3tools/shared/usageLimits";
 import { Profiler } from "react";
 import { expect, it, vi } from "vite-plus/test";
@@ -119,4 +128,32 @@ it("an open Usage glance with no future reset does not subscribe to minute ticks
   rendered.mockClear();
   await act(() => vi.advanceTimersByTimeAsync(60_000));
   expect(rendered).not.toHaveBeenCalled();
+});
+
+it("an empty web Limits section displays its message without a minute subscription", async () => {
+  const serverConfig = {
+    providers: [],
+    environment: { capabilities: {} },
+    settings: DEFAULT_SERVER_SETTINGS,
+  };
+  state.presentations = new Map([
+    [
+      EnvironmentId.make("desk"),
+      {
+        entry: { target: { label: "Desk" } },
+        serverConfig,
+        connection: { phase: "connected" },
+      },
+    ],
+  ]);
+  const registry = AtomRegistry.make();
+  using _registry = { [Symbol.dispose]: () => registry.dispose() };
+  using minute = vi.spyOn(minuteTick, "subscribe");
+  await using screen = await render(
+    <RegistryContext value={registry}>
+      <UsageLimitsSection selectedEnvironmentIds={null} hiddenProviders={new Set()} />
+    </RegistryContext>,
+  );
+  expect(screen.container.textContent).toMatch(/No provider/);
+  expect(minute).not.toHaveBeenCalled();
 });

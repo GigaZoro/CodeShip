@@ -14,6 +14,8 @@ import { useAtomValue } from "@effect/atom-react";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
   collectAccountFailover,
+  collectLimitAccounts,
+  hasLimitCountdown,
   formatDuration,
   formatResetsIn,
   type LimitPace,
@@ -422,7 +424,6 @@ export function UsageLimitsSection({
   readonly cursorPrompt?: ReactNode;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
-  const now = useUsageLimitNow();
   const workspaces = useUsageLimitWorkspaces();
   const hiddenDrivers = new Set<ServerProvider["driver"]>(
     [...hiddenProviders].map((provider) => PROVIDER_PRESENTATION[provider].driverKind),
@@ -453,6 +454,8 @@ export function UsageLimitsSection({
       ];
     }),
   );
+  const accounts = collectLimitAccounts(selected, workspaces);
+  const now = useUsageLimitNow(undefined, (at) => hasLimitCountdown(accounts, at));
   // Limits arrive with the server config, so a machine still connecting has none to show yet.
   const connecting = [...selected.values()].filter(
     (presentation) =>

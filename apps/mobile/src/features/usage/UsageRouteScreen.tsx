@@ -158,7 +158,10 @@ function UsageScreen(props: {
   const shownEnvironments = shown?.environments ?? selectedEnvironments;
   const isPast24Hours = shownWindow.resolution === "hour";
   const limits = useRefreshLimits(selectedEnvironmentIds, isFocused && showingLimits);
-  const cursorAccessEnvironments = cursorKeychainAccessEnvironments(selectedEnvironments);
+  const cursorAccessEnvironments = cursorKeychainAccessEnvironments(
+    selectedEnvironments,
+    environments,
+  );
   const refreshAfterCursorEnable = () => {
     void refresh();
     void limits.refreshAfterEnable();

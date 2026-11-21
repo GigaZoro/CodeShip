@@ -1,3 +1,5 @@
+import { usageClock } from "@t3tools/client-runtime/clock";
+import { fakeTimers } from "../../test/render";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { subscribeDocumentReturn } from "./documentActivity";
@@ -30,4 +32,21 @@ describe("subscribeDocumentReturn", () => {
     window.dispatchEvent(new Event("focus"));
     expect(wake).toHaveBeenCalledTimes(3);
   });
+});
+
+it("wakes a remaining reset subscriber after another subscriber disconnects", () => {
+  using _timers = fakeTimers();
+  const noon = Date.parse("2026-11-21T12:00:00Z");
+  vi.setSystemTime(noon);
+  const clock = usageClock([noon + 60_000], false);
+  const changed = vi.fn();
+  using active = new DisposableStack();
+  active.defer(clock.subscribe(changed));
+  active.defer(subscribeDocumentReturn(clock.refresh));
+  const removeOther = subscribeDocumentReturn(clock.refresh);
+  removeOther();
+  vi.setSystemTime(noon + 120_000);
+  window.dispatchEvent(new Event("focus"));
+  expect(changed).toHaveBeenCalledTimes(1);
+  expect(clock.getSnapshot()).toBe(noon + 120_000);
 });

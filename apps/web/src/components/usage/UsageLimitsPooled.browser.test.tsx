@@ -296,3 +296,14 @@ it("keeps the web workspace detail open on the hub reading after a native timeou
   );
   await expect.element(detail.getByText("75%", { exact: true })).toBeVisible();
 });
+
+it("labels freshness from the same observation time as the pool countdown", async () => {
+  using _timers = fakeTimers();
+  const now = Date.parse(checkedAt);
+  vi.setSystemTime(now);
+  const presentations = accountReadings(["Desk", "2026-10-25T16:10:00.000Z"]);
+  await using screen = await render(<UsageLimitsPooled presentations={presentations} now={now} />);
+  await expect.element(screen.getByText("Checked just now")).toBeVisible();
+  await screen.rerender(<UsageLimitsPooled presentations={presentations} now={now + 120_000} />);
+  expect(screen.container.textContent).toContain("Checked 2m ago");
+});

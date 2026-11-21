@@ -313,7 +313,7 @@ export function UsagePage() {
   );
   const cursorAccessEnvironments = hiddenProviders.has("cursor")
     ? []
-    : cursorKeychainAccessEnvironments(selectedEnvironments);
+    : cursorKeychainAccessEnvironments(selectedEnvironments, environments);
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });

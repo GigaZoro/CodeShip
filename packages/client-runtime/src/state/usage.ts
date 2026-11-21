@@ -1,5 +1,6 @@
 import {
   AuthSettingsWriteScope,
+  AuthDiagnosticsReadScope,
   sessionGrantsScope,
   type EnvironmentId,
   type ServerConfig,
@@ -8,8 +9,9 @@ import {
   type UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { Atom, type AtomRegistry } from "effect/reactivity";
+import { Atom, type AsyncResult, type AtomRegistry } from "effect/reactivity";
 
 import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
 import type { createEnvironmentPresentationAtoms } from "./presentation.ts";
@@ -24,7 +26,7 @@ export function cursorUsageAccess(config: Pick<ServerConfig, "providers" | "sett
   const ready = cursor.filter((provider) => provider.status === "ready");
   const history = cursor.some(({ cursorAccountHistory }) => cursorAccountHistory === "reading")
     ? ("reading" as const)
-    : ready.some(({ cursorAccountHistory }) => cursorAccountHistory === "keychainOff")
+    : cursor.some(({ cursorAccountHistory }) => cursorAccountHistory === "keychainOff")
       ? ("keychainOff" as const)
       : cursor.some(({ cursorAccountHistory }) => cursorAccountHistory !== undefined)
         ? ("unavailable" as const)
@@ -38,25 +40,67 @@ export function cursorUsageAccess(config: Pick<ServerConfig, "providers" | "sett
   };
 }
 
+function hasCursorHistorySource(summary: UsageSummary | null) {
+  return (
+    summary?.sources.some(
+      ({ fingerprint }) => fingerprint.provider === "cursor" && fingerprint.hostId === "cursor.com",
+    ) === true
+  );
+}
+
+export function createLegacyCursorReaders(
+  presentations: Pick<ReturnType<typeof createEnvironmentPresentationAtoms>, "presentationsAtom">,
+  sessions: {
+    sessionStateAtom: (
+      id: EnvironmentId,
+    ) => Atom.Atom<AsyncResult.AsyncResult<SessionGrantInput, unknown>>;
+  },
+  server: Pick<ReturnType<typeof createServerEnvironmentAtoms>, "cursorUsageAccessAtom">,
+) {
+  const readerAtom = Atom.family((id: EnvironmentId) =>
+    Atom.writable(
+      (get): boolean => {
+        if (get(presentations.presentationsAtom).get(id)?.connection.phase !== "connected")
+          return false;
+        const grant = get(sessions.sessionStateAtom(id));
+        return (
+          grant._tag === "Success" &&
+          sessionGrantsScope(grant.value, AuthDiagnosticsReadScope) &&
+          get(server.cursorUsageAccessAtom(id)).history === undefined &&
+          Option.getOrElse(get.self<boolean>(), () => false)
+        );
+      },
+      (ctx, reads: boolean) => ctx.setSelf(reads),
+    ).pipe(Atom.keepAlive, Atom.setLazy(false)),
+  );
+  return (get: Atom.AtomContext, id: EnvironmentId, summary: UsageSummary | null) => {
+    const reader = readerAtom(id);
+    if (summary === null) return get(reader);
+    const reads = hasCursorHistorySource(summary);
+    if (get.once(reader) !== reads) get.set(reader, reads);
+    return reads;
+  };
+}
+
 export function resolveCursorUsageAccess({
   access,
   summary,
   session,
   isConnected,
+  legacyReadsAccount = hasCursorHistorySource(summary),
 }: {
   readonly access: ReturnType<typeof cursorUsageAccess>;
   readonly summary: UsageSummary | null;
   readonly session: SessionGrantInput | null;
   readonly isConnected: boolean;
+  readonly legacyReadsAccount?: boolean;
 }) {
   return {
     readsCursorAccount:
-      access.history === "reading" ||
-      (access.history === undefined &&
-        summary?.sources.some(
-          ({ fingerprint }) =>
-            fingerprint.provider === "cursor" && fingerprint.hostId === "cursor.com",
-        ) === true),
+      isConnected &&
+      session !== null &&
+      sessionGrantsScope(session, AuthDiagnosticsReadScope) &&
+      (access.history === "reading" || (access.history === undefined && legacyReadsAccount)),
     needsCursorKeychainAccess:
       isConnected &&
       session !== null &&
@@ -76,8 +120,8 @@ export function cursorKeychainAccessEnvironments<
     readonly needsCursorKeychainAccess: boolean;
     readonly readsCursorAccount?: boolean;
   },
->(environments: readonly E[]): readonly E[] {
-  const hasCursorAccount = environments.some((environment) => environment.readsCursorAccount);
+>(environments: readonly E[], allEnvironments = environments): readonly E[] {
+  const hasCursorAccount = allEnvironments.some((environment) => environment.readsCursorAccount);
   return hasCursorAccount
     ? []
     : environments.filter((environment) => environment.needsCursorKeychainAccess);

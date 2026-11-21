@@ -61,7 +61,7 @@ import {
   resetCreditsSummary,
   useResetCredit,
 } from "./UsageLimits";
-import { AccountFailoverNotice, LimitsFreshness, useCheckedAgo } from "./UsageLimitsStatus";
+import { AccountFailoverNotice, LimitsFreshness, formatCheckedAgo } from "./UsageLimitsStatus";
 import { CodexLimitsSignIn } from "./CodexLimitsSignIn";
 import { ProviderHolds } from "./UsageHolds";
 import { t, tn } from "~/i18n";
@@ -173,7 +173,7 @@ function SegmentPopover({
   const where = limitAccountLocations(account).join(", ");
   const credits =
     redeem && account.limits.resetCredits?.availableCount ? account.limits.resetCredits : null;
-  const checkedAgo = useCheckedAgo(account.limits.checkedAt);
+  const checkedAgo = formatCheckedAgo(account.limits.checkedAt, now);
   return (
     <div className="flex w-72 max-w-[calc(100vw-3rem)] flex-col gap-2.5 text-xs">
       <div className="flex min-w-0 flex-col gap-0.5">
@@ -815,7 +815,7 @@ function ProviderSection({
             />
             {label}
           </h2>
-          {pool ? <LimitsFreshness freshness={limitsFreshness(pool.accounts)} /> : null}
+          {pool ? <LimitsFreshness now={now} freshness={limitsFreshness(pool.accounts)} /> : null}
         </div>
         <AccountFailoverNotice
           entries={failover.filter((entry) => entry.driver === driver)}

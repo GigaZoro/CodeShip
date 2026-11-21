@@ -1,3 +1,4 @@
+import { minuteTick } from "@t3tools/client-runtime/clock";
 import { RegistryContext } from "@effect/atom-react";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import {
@@ -28,7 +29,7 @@ const { Contents, state } = vi.hoisted(() => ({
   Contents: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   state: {
     cursorSetup: null as null | {
-      readonly reader: "reading" | "unavailable";
+      readonly reader: "reading" | "unavailable" | "legacy";
       readonly canEnable: boolean;
     },
     usageCalls: new Set<EnvironmentId>(),
@@ -218,7 +219,15 @@ vi.mock("../../state/server", async () => {
         input: UsageSummaryInput;
       }) => {
         state.usageCalls.add(environmentId);
-        return Atom.make(AsyncResult.success({ ...observedSummary(), ...input }));
+        return Atom.make(
+          AsyncResult.success({
+            ...observedSummary(),
+            ...input,
+            ...(state.cursorSetup?.reader === "legacy" && environmentId === "laptop"
+              ? { sources: [legacyHistorySource] }
+              : {}),
+          }),
+        );
       },
     },
   };
@@ -228,6 +237,18 @@ vi.mock("../../state/presentation", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
     environmentPresentations: {
+      presentationsWithProvidersAtom: Atom.make(
+        new Map([
+          [
+            EnvironmentId.make("desk"),
+            {
+              entry: { target: { label: "Desk" } },
+              serverConfig: null,
+              connection: { phase: "connected", error: null },
+            },
+          ],
+        ]),
+      ),
       presentationsAtom: Atom.make(
         new Map([
           [
@@ -269,7 +290,19 @@ vi.mock("../../state/session", async () => {
     readEnvironmentScope: () => false,
   };
 });
-vi.mock("../../lib/appState", () => ({ useAppForeground: () => true }));
+vi.mock("../../lib/appState", () => ({
+  useAppForeground: () => true,
+  subscribeAppActive: () => () => {},
+}));
+vi.mock("react-native-svg", () => ({
+  Defs: Contents,
+  Path: Contents,
+  Pattern: Contents,
+  Rect: Contents,
+  Svg: Contents,
+}));
+vi.mock("./CodexLimitsSignIn", () => ({ CodexLimitsSignIn: () => null }));
+vi.mock("./ProviderHolds", () => ({ ProviderHolds: () => null }));
 vi.mock("../../lib/i18n", () => ({
   t: (message: string, values?: Record<string, string>) =>
     message.replace(/\{([^}]+)\}/g, (key, name: string) => values?.[name] ?? key),
@@ -321,15 +354,11 @@ function setup(tab: string | undefined = "usage") {
   return {
     container,
     registry,
-    render: () =>
+    render: (child: ReactNode = <UsageRouteScreen />) =>
       act(() => {
         state.revision += 1;
         for (const listener of state.listeners) listener();
-        root.render(
-          <RegistryContext value={registry}>
-            <UsageRouteScreen />
-          </RegistryContext>,
-        );
+        root.render(<RegistryContext value={registry}>{child}</RegistryContext>);
       }),
     async [Symbol.asyncDispose]() {
       await act(() => root.unmount());
@@ -471,6 +500,20 @@ function observedSummary(contractVersion: number = USAGE_CONTRACT_VERSION) {
   };
 }
 
+const legacyHistorySource = {
+  fingerprint: {
+    hostId: "cursor.com",
+    provider: "cursor" as const,
+    resolvedHomePath: "cursor-account:test",
+    volumeId: "test",
+  },
+  status: "ok" as const,
+  scannedFiles: 1,
+  skippedFiles: 0,
+  malformedRecords: 0,
+  distinctSessions: 0,
+  message: null,
+};
 function cursorConfig(id: EnvironmentId) {
   const desk = id === "desk";
   const reader = state.cursorSetup?.reader ?? "unavailable";
@@ -489,7 +532,11 @@ function cursorConfig(id: EnvironmentId) {
         models: [],
         slashCommands: [],
         skills: [],
-        cursorAccountHistory: desk ? ("keychainOff" as const) : reader,
+        ...(desk
+          ? { cursorAccountHistory: "keychainOff" as const }
+          : reader === "legacy"
+            ? {}
+            : { cursorAccountHistory: reader }),
         ...(desk || !state.cursorSetup?.canEnable
           ? {}
           : {
@@ -731,4 +778,35 @@ it("checks each mobile scheduled grant and retries the failed environment's sess
   expect(screen.container.textContent).not.toContain(
     "Could not check access to scheduled task runs on Laptop.",
   );
+});
+
+it.each(["legacy", "reading"] as const)(
+  "remembers the %s reader when moving to Limits and deselecting Laptop on mobile",
+  async (reader) => {
+    await using screen = setup("usage");
+    state.cursorSetup = { reader, canEnable: true };
+    const action = () =>
+      screen.container.querySelector('button[aria-label="Enable Cursor usage from Desk"]');
+    await screen.render();
+    expect(state.usageCalls.has(EnvironmentId.make("laptop"))).toBe(true);
+    expect(action()).toBeNull();
+    state.usageCalls.clear();
+    state.tab = "limits";
+    await screen.render();
+    expect(screen.container.textContent).toContain("Limits overview");
+    expect(action()).toBeNull();
+    await act(() => menuEnvironment(screen.container, "laptop").click());
+    expect(action()).toBeNull();
+    expect(state.usageCalls.size).toBe(0);
+  },
+);
+
+it("an empty mobile Limits section displays its message without a minute subscription", async () => {
+  const { UsageLimitsSection } =
+    await vi.importActual<typeof import("./UsageLimitsPooled")>("./UsageLimitsPooled");
+  await using screen = setup("limits");
+  using minute = vi.spyOn(minuteTick, "subscribe");
+  await screen.render(<UsageLimitsSection selectedEnvironmentIds={null} failedLabels={[]} />);
+  expect(screen.container.textContent).toContain("No provider on the selected environments");
+  expect(minute).not.toHaveBeenCalled();
 });

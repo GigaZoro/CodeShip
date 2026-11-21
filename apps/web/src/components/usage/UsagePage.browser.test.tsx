@@ -28,7 +28,7 @@ import { PROVIDER_ORDER } from "./usageProviders";
 
 const state = vi.hoisted(() => ({
   cursorSetup: null as null | {
-    readonly reader: "reading" | "unavailable";
+    readonly reader: "reading" | "unavailable" | "legacy";
     readonly canEnable: boolean;
   },
   usageCalls: new Set<string>(),
@@ -159,7 +159,14 @@ vi.mock("../../state/server", async (importOriginal) => {
       cursorUsageAccessAtom: (id: EnvironmentId) => Atom.make(cursorUsageAccess(cursorConfig(id))),
       usageSummary: (request: { environmentId: EnvironmentId; input: UsageSummaryInput }) => {
         state.usageCalls.add(request.environmentId);
-        return Atom.make(AsyncResult.success(reading(request.input, "ready").summary!));
+        return Atom.make(
+          AsyncResult.success({
+            ...reading(request.input, "ready").summary!,
+            ...(state.cursorSetup?.reader === "legacy" && request.environmentId === "laptop"
+              ? { sources: [legacyHistorySource] }
+              : {}),
+          }),
+        );
       },
     },
   };
@@ -393,6 +400,20 @@ function cursorPresentations() {
   ]);
 }
 
+const legacyHistorySource = {
+  fingerprint: {
+    hostId: "cursor.com",
+    provider: "cursor" as const,
+    resolvedHomePath: "cursor-account:test",
+    volumeId: "test",
+  },
+  status: "ok" as const,
+  scannedFiles: 1,
+  skippedFiles: 0,
+  malformedRecords: 0,
+  distinctSessions: 0,
+  message: null,
+};
 function cursorConfig(id: EnvironmentId) {
   const desk = id === "desk";
   const reader = state.cursorSetup?.reader ?? "unavailable";
@@ -411,7 +432,11 @@ function cursorConfig(id: EnvironmentId) {
         models: [],
         slashCommands: [],
         skills: [],
-        cursorAccountHistory: desk ? ("keychainOff" as const) : reader,
+        ...(desk
+          ? { cursorAccountHistory: "keychainOff" as const }
+          : reader === "legacy"
+            ? {}
+            : { cursorAccountHistory: reader }),
         ...(desk || !state.cursorSetup?.canEnable
           ? {}
           : {
@@ -917,3 +942,36 @@ it("shows the live selected scheduled grant even without usage figures", async (
     "Could not check access to scheduled task runs on Desk.",
   );
 });
+
+it.each(["legacy", "reading"] as const)(
+  "remembers the %s reader when moving to Limits and deselecting Laptop on web",
+  async (reader) => {
+    setup();
+    state.cursorSetup = { reader, canEnable: true };
+    const registry = AtomRegistry.make();
+    using _registry = { [Symbol.dispose]: () => registry.dispose() };
+    await using screen = await render(
+      <RegistryContext value={registry}>
+        <UsagePage />
+      </RegistryContext>,
+    );
+    const action = screen.getByRole("button", { name: "Enable Cursor usage from Desk" });
+    expect(state.usageCalls.has("laptop")).toBe(true);
+    expect(action.query()).toBeNull();
+    state.usageCalls.clear();
+    await act(() =>
+      globalThis.window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "l", code: "KeyL", cancelable: true }),
+      ),
+    );
+    await expect
+      .element(screen.getByRole("button", { name: "Refresh limits" }).first())
+      .toBeVisible();
+    expect(action.query()).toBeNull();
+    await screen.getByRole("button", { name: /All environments/ }).click();
+    await page.getByRole("menuitemcheckbox", { name: /Laptop/ }).click();
+    await userEvent.keyboard("{Escape}");
+    expect(action.query()).toBeNull();
+    expect(state.usageCalls.size).toBe(0);
+  },
+);
