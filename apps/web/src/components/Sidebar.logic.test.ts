@@ -1435,6 +1435,7 @@ describe("resolveSidebarRouteReveal", () => {
         scopedProjectKeys,
         delegatedUnderParent: new Set(),
         findThread,
+        matchesFilters: () => true,
       }),
     ).toEqual({ pendingKey: hiddenKey, widensScope: true });
   });
@@ -1449,6 +1450,7 @@ describe("resolveSidebarRouteReveal", () => {
         scopedProjectKeys,
         delegatedUnderParent: new Set(),
         findThread,
+        matchesFilters: () => true,
       }),
     ).toEqual({ pendingKey: null, widensScope: false });
   });
@@ -1465,9 +1467,29 @@ describe("resolveSidebarRouteReveal", () => {
         scopedProjectKeys,
         delegatedUnderParent: new Set(),
         findThread,
+        matchesFilters: () => true,
       });
     resolve("environment-test:unlisted");
     expect(resolve(hiddenKey)).toEqual({ pendingKey: hiddenKey, widensScope: true });
+  });
+
+  it("completes without widening when the filters hide the thread in every scope", () => {
+    const reveal = { observedKey: "environment-test:other", pendingKey: null };
+    const resolve = (chosen: ReadonlySet<string>) =>
+      resolveSidebarRouteReveal({
+        reveal,
+        routeKey: hiddenKey,
+        isSearching: false,
+        scopedProjectKeys: chosen,
+        delegatedUnderParent: new Set(),
+        findThread,
+        matchesFilters: () => false,
+      });
+    expect(resolve(scopedProjectKeys)).toEqual({ pendingKey: null, widensScope: false });
+    expect(resolve(new Set(["environment-test:project-another"]))).toEqual({
+      pendingKey: null,
+      widensScope: false,
+    });
   });
 
   it("holds a pending reveal without widening while searching", () => {
@@ -1479,6 +1501,7 @@ describe("resolveSidebarRouteReveal", () => {
         scopedProjectKeys,
         delegatedUnderParent: new Set(),
         findThread,
+        matchesFilters: () => true,
       }),
     ).toEqual({ pendingKey: hiddenKey, widensScope: false });
   });

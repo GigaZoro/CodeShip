@@ -1202,6 +1202,25 @@ export function useSidebarThreads(input: {
   };
 }
 
+function matchesSidebarThreadFilters(
+  thread: EnvironmentThreadShell,
+  filters: {
+    readonly statusFilter: ThreadListStatusFilter;
+    readonly tagFilter: ReadonlySet<string>;
+    readonly locallyUnreadKeys: ReadonlySet<string>;
+    readonly now: string;
+  },
+) {
+  return (
+    matchesAnyThreadTag(thread.source.tags, filters.tagFilter) &&
+    (filters.statusFilter === "all" ||
+      matchesThreadListStatus(thread, filters.statusFilter, {
+        woke: hasUnseenServerWake(thread, filters.now),
+        locallyUnread: filters.locallyUnreadKeys.has(threadShellKey(thread)),
+      }))
+  );
+}
+
 function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   const {
     threads,
@@ -1216,12 +1235,12 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   } = input;
   const preciseNow = new Date().toISOString();
   const matchesFilters = (thread: EnvironmentThreadShell) =>
-    matchesAnyThreadTag(thread.source.tags, input.tagFilter) &&
-    (input.statusFilter === "all" ||
-      matchesThreadListStatus(thread, input.statusFilter, {
-        woke: hasUnseenServerWake(thread, preciseNow),
-        locallyUnread: input.locallyUnreadKeys.has(threadShellKey(thread)),
-      }));
+    matchesSidebarThreadFilters(thread, {
+      statusFilter: input.statusFilter,
+      tagFilter: input.tagFilter,
+      locallyUnreadKeys: input.locallyUnreadKeys,
+      now: preciseNow,
+    });
   // Ignores the project scope, not the status and tag filters the user picked: a thread waiting
   // on the user must not hide in a folder, shelf, or project filter.
   const needsYou = collectNeedsYouThreads(
@@ -1794,6 +1813,7 @@ export default function Sidebar({
   const threads = useQuietThreadShells();
   const lastActivityOrder = useAtomValue(environmentThreadShells.lastActivityOrderAtom(threadSort));
   const locallyUnreadKeys = useLocallyUnreadThreadKeys(threads);
+  const nowMinute = useNowMinute();
   const availableTags = useAtomValue(
     environmentThreadShells.threadFilterTagsAtom(
       hiddenScheduledTaskThreadKeysAtom(taskEnvironmentIdsKey),
@@ -1826,6 +1846,13 @@ export default function Sidebar({
     scopedProjectKeys: chosenScopeProjectKeys,
     delegatedUnderParent,
     findThread: (key) => threads.find((candidate) => threadShellKey(candidate) === key),
+    matchesFilters: (thread) =>
+      matchesSidebarThreadFilters(thread, {
+        statusFilter,
+        tagFilter,
+        locallyUnreadKeys,
+        now: nowMinute,
+      }),
   });
   const projectScopeKeys = revealWidensScope ? [] : chosenProjectScopeKeys;
   const scopedMachines = revealWidensScope ? [] : chosenMachines;

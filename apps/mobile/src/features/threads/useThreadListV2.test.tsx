@@ -401,6 +401,33 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   await act(async () => keptShowMoreSettled());
   // The failed environment waits for a retry.
   expect(seen.at(-1)!.olderSettledShelf.pages).toEqual(new Map([[otherEnvironmentId, 1]]));
+  // Retry also acts on the committed view: the other environment fails only in the even view.
+  const keptRetrySettled = seen.at(-1)!.retrySettled;
+  const shelfOf = (status: "ready" | "failed", otherStatus: "ready" | "failed") =>
+    new Map(
+      [
+        [environmentId, status],
+        [otherEnvironmentId, otherStatus],
+      ].map(([id, state]) => [
+        id as EnvironmentId,
+        {
+          older,
+          pages: { reads: [], frontier: { settledAt: before }, status: state as "ready" },
+          unloaded: 50,
+        },
+      ]),
+    );
+  await act(async () =>
+    root.render(<Probe input={{ ...filterInput, selectedTags: ["even"] }} tab="chats" />),
+  );
+  await act(async () => registry.set(shelfAtom, shelfOf("ready", "ready")));
+  await act(async () => seen.at(-1)!.showMoreSettled());
+  await act(async () => registry.set(shelfAtom, shelfOf("ready", "failed")));
+  vi.mocked(olderSettledThreads.retryPages).mockClear();
+  keptRetrySettled();
+  expect(vi.mocked(olderSettledThreads.retryPages).mock.calls).toEqual([
+    [undefined, { environmentId: otherEnvironmentId, projectIds: null, folder: null }, 1],
+  ]);
 
   const folderInput = {
     ...input,

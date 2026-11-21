@@ -57,12 +57,25 @@ export function resolveSidebarRouteReveal<T extends RevealableThread>(input: {
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   readonly delegatedUnderParent: ReadonlySet<string>;
   readonly findThread: (key: string) => T | undefined;
+  readonly matchesFilters: (thread: T) => boolean;
 }): { readonly pendingKey: string | null; readonly widensScope: boolean } {
-  const { reveal, routeKey, isSearching, scopedProjectKeys, delegatedUnderParent, findThread } =
-    input;
+  const {
+    reveal,
+    routeKey,
+    isSearching,
+    scopedProjectKeys,
+    delegatedUnderParent,
+    findThread,
+    matchesFilters,
+  } = input;
   const pendingKey = pendingSidebarRouteReveal(reveal, routeKey);
   // Search results replace the thread list; the reveal waits for it to return.
   const thread = pendingKey === null || isSearching ? undefined : findThread(pendingKey);
+  if (thread !== undefined && !matchesFilters(thread)) {
+    // The filters hide it in every scope, so widening could never show it.
+    completeSidebarRouteReveal(reveal);
+    return { pendingKey: null, widensScope: false };
+  }
   const widensScope =
     thread !== undefined &&
     scopedProjectKeys !== null &&
