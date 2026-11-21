@@ -165,6 +165,8 @@ interface BoxThread {
   readonly question: Ref.Ref<boolean>;
   /** A run after the task's own on the thread there, with this status. */
   readonly laterRun: Ref.Ref<OrchestrationV2Run["status"] | null>;
+  /** Ended runs after `laterRun` there, which others asked for. */
+  readonly endedLaterRuns: Ref.Ref<number>;
 }
 
 const makeBoxThread = Effect.gen(function* () {
@@ -215,6 +217,7 @@ const makeBoxThread = Effect.gen(function* () {
     dropSettles: yield* Ref.make(0),
     question: yield* Ref.make(false),
     laterRun: yield* Ref.make<OrchestrationV2Run["status"] | null>(null),
+    endedLaterRuns: yield* Ref.make(0),
   } satisfies BoxThread;
 });
 
@@ -309,6 +312,7 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
       const status = yield* Ref.get(thread.status);
       const runless = yield* Ref.get(thread.runless);
       const laterRun = yield* Ref.get(thread.laterRun);
+      const endedLaterRuns = yield* Ref.get(thread.endedLaterRuns);
       const question = yield* Ref.get(thread.question);
       return shell === null
         ? (null as never)
@@ -321,6 +325,11 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
                   ...(laterRun === null
                     ? []
                     : [{ ...runOf(laterRun), id: boxLaterRunId, ordinal: 2 }]),
+                  ...Array.from({ length: endedLaterRuns }, (_, index) => ({
+                    ...runOf("completed"),
+                    id: RunId.make(`run:box-ended-${index}`),
+                    ordinal: index + 3,
+                  })),
                 ],
             runtimeRequests: question
               ? [
@@ -2503,9 +2512,9 @@ it.effect("a Stop of the parent's run during the launch stops the run the launch
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect(
-  "a Stop of the parent's run reaches the first run there of a task recorded without it",
-  () =>
+it.effect.each([{ endedLaterRuns: 0 }, { endedLaterRuns: 60 }])(
+  "a Stop of the parent's run reaches the first run there of a task recorded without it, with $endedLaterRuns more ended runs",
+  ({ endedLaterRuns }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const thread = yield* makeBoxThread;
@@ -2521,8 +2530,9 @@ it.effect(
         yield* Ref.set(thread.runless, true);
         yield* Ref.set(thread.afterLaunch, Ref.set(thread.runless, false));
         const delegated = yield* delegateToBox(a);
-        // A later run there, asked for by someone else, is not the task's.
+        // Later runs there, asked for by someone else, are not the task's.
         yield* Ref.set(thread.laterRun, "running");
+        yield* Ref.set(thread.endedLaterRuns, endedLaterRuns);
         yield* a.threads.stopDelegatedTasks({
           threadId: parentThreadId,
           commandId: CommandId.make("command:stop:laptop-parent-run-runless"),

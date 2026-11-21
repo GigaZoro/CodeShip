@@ -162,7 +162,10 @@ the task's own run there with `withWork`, so the runs its results woke and their
 delegated tasks stop too, while a run someone asked for there since keeps
 running. The launch attaches its run to the task even when the Stop came first.
 A task recorded without its run (an older peer's launch) stops the thread's
-first run, which its launch started.
+first run, which its launch started, found with one `runOrder: "oldest"` read.
+A peer on a version without `withWork` refuses that Stop (see the argument check
+above): the follower keeps retrying it, warns with the peer's environment id each
+time, and the run there stops only once that machine is updated.
 
 A task with `isolation: "worktree"` branches its child's worktree there from the
 parent checkout's HEAD commit, passed as a SHA `baseRef` with `startFromOrigin`.

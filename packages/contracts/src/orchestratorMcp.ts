@@ -487,6 +487,9 @@ export const OrchestratorMcpThreadReadInput = Schema.Struct({
   runLimit: Schema.optional(clampedPositiveInt(50)).annotate({
     description: "Max recent runs, 1 to 50.",
   }),
+  runOrder: Schema.optional(Schema.Literals(["newest", "oldest"])).annotate({
+    description: "Keep the newest (default) or oldest runs.",
+  }),
   maxCharsPerItem: Schema.optional(clampedPositiveInt(50_000)).annotate({
     description: "Max chars per item, 1 to 50000.",
   }),

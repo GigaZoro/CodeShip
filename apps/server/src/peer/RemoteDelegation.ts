@@ -596,7 +596,8 @@ const make = Effect.gen(function* () {
         threadId: remote.threadId,
         limit: 1,
         maxCharsPerItem: 1,
-        runLimit: 50,
+        runLimit: 1,
+        runOrder: "oldest",
       });
       // Nothing has run there, so nothing is left to stop.
       if (read.thread.runCount === 0) return;
@@ -710,7 +711,15 @@ const make = Effect.gen(function* () {
       const environmentId = task?.remoteChild?.environmentId;
       if (environmentId === undefined) return error.message;
       const link = yield* links.get(environmentId);
-      return Option.isSome(link) ? undefined : error.message;
+      if (Option.isNone(link)) return error.message;
+      // An older version there refuses what this one sends, such as a run Stop's `withWork`,
+      // until it is updated; the retries would otherwise hide that.
+      yield* Effect.logWarning("remote-delegation.linked-environment-refused", {
+        taskId,
+        environmentId,
+        reason: error.message,
+      });
+      return undefined;
     },
     Effect.orElseSucceed(() => undefined),
   );

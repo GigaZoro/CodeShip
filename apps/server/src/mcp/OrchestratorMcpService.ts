@@ -4262,7 +4262,11 @@ const make = Effect.gen(function* () {
           ? {}
           : {
               recentRuns: target.runs
-                .toSorted((left, right) => right.ordinal - left.ordinal)
+                .toSorted((left, right) =>
+                  input.runOrder === "oldest"
+                    ? left.ordinal - right.ordinal
+                    : right.ordinal - left.ordinal,
+                )
                 .slice(0, input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT)
                 .map(threadRun),
             }),
