@@ -37,7 +37,8 @@ const modelSelection = { instanceId, model: "test-model" };
 const stopEarlierBackgroundWork = ({
   wakeAfterStop = false,
   failedStart = false,
-  stopWithQueue,
+  stop = "thread.stop",
+  queueFollowUp = false,
   olderStart = false,
   backgroundWorkAfterStop,
   stalledRun,
@@ -46,7 +47,9 @@ const stopEarlierBackgroundWork = ({
   readonly wakeAfterStop?: boolean;
   readonly failedStart?: boolean;
   readonly backgroundWorkAfterStop?: "running" | "unknown";
-  readonly stopWithQueue?: "thread.stop" | "run.interrupt";
+  /** `run.interrupt` with `holdQueue` is the Stop of clients that predate `thread.stop`. */
+  readonly stop?: "thread.stop" | "run.interrupt" | "run.interrupt with holdQueue";
+  readonly queueFollowUp?: boolean;
   readonly olderStart?: boolean;
   readonly workflowMember?: boolean;
   readonly stalledRun?: "missing-session-terminal" | "returned-interrupt" | "superseded-attempt";
@@ -867,7 +870,7 @@ const stopEarlierBackgroundWork = ({
           assert.deepEqual(beforeStop.pendingBackgroundTasks, backgroundTasks);
         }
 
-        if (stopWithQueue !== undefined) {
+        if (queueFollowUp) {
           const owner = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
             (run) => run.id === latestRun.runId,
           )!;
@@ -939,7 +942,7 @@ const stopEarlierBackgroundWork = ({
         }
 
         yield* orchestrator.dispatch(
-          stopWithQueue !== "run.interrupt"
+          stop === "thread.stop"
             ? {
                 type: "thread.stop",
                 commandId: CommandId.make("stop-background-work"),
@@ -954,20 +957,20 @@ const stopEarlierBackgroundWork = ({
                   : failedStart
                     ? failedRun.runId
                     : latestRun.runId,
-                ...(stopWithQueue === undefined ? {} : { holdQueue: true }),
+                ...(stop === "run.interrupt" ? {} : { holdQueue: true }),
               },
         );
         yield* worker.drain();
 
+        // A plain run interrupt reaches only its restart chain; earlier runs own this work.
+        const chainOnly = stop === "run.interrupt";
         assert.sameDeepMembers(
           interrupts.map((interrupt) => [interrupt.providerThread.id, interrupt.providerTurnId]),
           [
-            ...(olderStart || failedStart || stopWithQueue === "run.interrupt"
+            ...(olderStart || failedStart || chainOnly
               ? []
               : [[otherProviderThreadId, latestRun.providerTurnId]]),
-            ...(stopWithQueue === "run.interrupt"
-              ? []
-              : [[codexProviderThread.id, reviewerRun.providerTurnId]]),
+            ...(chainOnly ? [] : [[codexProviderThread.id, reviewerRun.providerTurnId]]),
           ],
         );
         const after = yield* orchestrator.getThreadProjection(threadId);
@@ -977,12 +980,12 @@ const stopEarlierBackgroundWork = ({
             "interrupted",
           );
         }
-        if (stopWithQueue !== undefined) {
+        if (queueFollowUp) {
           assert.equal(after.runs.at(-1)?.status, "queued");
           assert.equal(after.runs.at(-1)?.queueHeld, true);
           assert.lengthOf(started, 1);
         }
-        if (stopWithQueue === "run.interrupt") {
+        if (chainOnly) {
           for (const id of [devServerId, ...(olderStart ? [] : [watcherId]), reviewerId])
             assert.equal(after.turnItems.find((item) => item.id === id)?.status, "running");
           assert.equal(after.subagents[0]?.status, "running");
@@ -1055,14 +1058,22 @@ it.effect("Stop preserves the roster when the background work probe fails", () =
   stopEarlierBackgroundWork({ failedStart: true, backgroundWorkAfterStop: "unknown" }),
 );
 
-it.effect.each(["thread.stop", "run.interrupt"] as const)(
-  "%s respects background work ownership when a later message is queued",
-  (stopType) => stopEarlierBackgroundWork({ stopWithQueue: stopType }),
+it.effect.each(["thread.stop", "run.interrupt with holdQueue"] as const)(
+  "%s stops background work when a later message is queued",
+  (stop) => stopEarlierBackgroundWork({ stop, queueFollowUp: true }),
 );
 
-it.effect.each(["thread.stop", "run.interrupt"] as const)(
-  "%s respects later background work ownership when an older run is starting",
-  (stopType) => stopEarlierBackgroundWork({ stopWithQueue: stopType, olderStart: true }),
+it.effect.each(["thread.stop", "run.interrupt with holdQueue"] as const)(
+  "%s reaches later background work when an older run is starting",
+  (stop) => stopEarlierBackgroundWork({ stop, queueFollowUp: true, olderStart: true }),
+);
+
+it.effect.each([
+  { selected: "latest run", olderStart: false },
+  { selected: "starting older run", olderStart: true },
+])(
+  "run.interrupt of the $selected leaves background work of other runs running",
+  ({ olderStart }) => stopEarlierBackgroundWork({ stop: "run.interrupt", olderStart }),
 );
 
 it.effect.each(["missing-session-terminal", "returned-interrupt", "superseded-attempt"] as const)(

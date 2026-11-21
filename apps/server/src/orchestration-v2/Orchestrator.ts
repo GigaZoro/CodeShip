@@ -12590,8 +12590,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           now,
         });
       }
-      // A new turn may have started since Stop; its work is not this Stop's.
+      // A new turn may have started since Stop; its work is not this Stop's. A per-run Stop
+      // settles only its chain's work, so a newer run cannot lose work to it.
       if (
+        command.stopRunIds === undefined &&
         projection.runs.some(
           (run) =>
             run.id !== stoppedRun.id &&
@@ -13363,6 +13365,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               .pipe(
                 Effect.catchTags({
                   ProjectionStoreThreadNotFoundError: () => Effect.succeed(null),
+                  // Stop must commit when one child can't be read, so that child's task is left
+                  // for the delegated-task stop.
+                  ProjectionStoreReadError: (cause) =>
+                    Effect.logError("Stop could not read a delegated child thread", {
+                      threadId: command.threadId,
+                      childThreadId,
+                      cause,
+                    }).pipe(Effect.as(null)),
                 }),
                 Effect.mapError(
                   (cause) => new OrchestratorProjectionError({ threadId: childThreadId, cause }),
@@ -14965,38 +14975,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* dispatchSubagentStop(command, events, effects);
         break;
       case "run.interrupt": {
+        // Clients that predate thread.stop send their Stop as this command.
+        if (command.holdQueue === true) {
+          cancelUnsettledEffects = yield* dispatchThreadStop(
+            {
+              type: "thread.stop",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              ...(command.reason === undefined ? {} : { reason: command.reason }),
+            },
+            events,
+            effects,
+          );
+          break;
+        }
         const outcome = yield* dispatchRunInterrupt(command, events, effects);
         cancelUnsettledEffects = outcome?.cancelUnsettledEffects;
         const parentRunIds = outcome?.delegatedTaskRunIds;
         if (parentRunIds !== undefined && parentRunIds.size > 0) {
-          // Stop must still commit when a child can't be read, so a failed repair's
-          // partial events are dropped.
-          const repairEvents = yield* Ref.make(yield* Ref.get(events));
-          const repaired = yield* Effect.exit(
-            loadProjectionForCommand(command, ["subagents", "turnItems"], {
-              turnItemTypes: ["subagent"],
-              turnItemStatuses: ["pending", "running", "waiting"],
-            }).pipe(
-              Effect.flatMap((projection) =>
-                cancelIdleOrphans({
-                  command,
-                  events: repairEvents,
-                  projection: {
-                    ...projection,
-                    subagents: projection.subagents.filter(
-                      (task) => task.runId !== null && parentRunIds.has(task.runId),
-                    ),
-                  },
-                }),
+          const projection = yield* loadProjectionForCommand(command, ["subagents", "turnItems"], {
+            turnItemTypes: ["subagent"],
+            turnItemStatuses: ["pending", "running", "waiting"],
+          });
+          yield* cancelIdleOrphans({
+            command,
+            events,
+            projection: {
+              ...projection,
+              subagents: projection.subagents.filter(
+                (task) => task.runId !== null && parentRunIds.has(task.runId),
               ),
-            ),
-          );
-          if (Exit.isSuccess(repaired)) yield* Ref.set(events, yield* Ref.get(repairEvents));
-          else
-            yield* Effect.logWarning("Stop could not cancel orphaned delegated follow-ups", {
-              threadId: command.threadId,
-              cause: repaired.cause,
-            });
+            },
+          });
           yield* Ref.update(effects, (existing) => [
             ...existing,
             ...Array.from(parentRunIds, (id) => delegatedTasksStopEffect(command, id)),
@@ -15279,8 +15289,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           // Someone may have answered, or the run is attended.
           command.type === "runtime-request.decline-unattended" ||
           command.type === "thread.stop" ||
-          // A run may finish before its interrupt acquires the lock.
-          (command.type === "run.interrupt" && command.onlyIfActive === true) ||
+          // A run may finish before its interrupt acquires the lock. With holdQueue it is the
+          // Stop of an older client.
+          (command.type === "run.interrupt" &&
+            (command.onlyIfActive === true || command.holdQueue === true)) ||
           command.type === "subagent.stop" ||
           // Closing a share again, or after it ended, is not an error.
           command.type === "thread.guest-share.close" ||
