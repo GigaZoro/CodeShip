@@ -476,7 +476,9 @@ default `messages` view returns user messages, assistant
 messages, and proposed plans. The `activity` view also returns summarized tool,
 reasoning, checkpoint, handoff, and runtime-request items. Large item text is
 bounded and reports whether it was truncated. `afterPosition` and
-`nextPosition` support incremental reads.
+`nextPosition` support incremental reads. `runLimit` keeps the newest runs, or
+the oldest with `runOrder: "oldest"`, so a caller finds a thread's first run
+with one bounded read however many runs it has.
 
 Thread and message results include required `createdBy` and `creationSource`
 provenance. MCP-created threads and user-role messages use `createdBy: "agent"`
@@ -613,7 +615,11 @@ sub-agent turn item so the existing debug UI can render progress.
 Terminal provider events trigger finalization. The event stream first replays
 persisted events and then follows live events, so finalization also runs after
 a server restart. An existing `subagent_result` transfer makes finalization
-idempotent.
+idempotent. A child that awaits a restart continuation finalizes once it
+settles. A task a Stop reaches while a restart holds its child's work, through
+the child's chain or the parent run that owns the task, ends `interrupted`,
+whatever status the restart left on the child's last run; its result text still
+comes from that run.
 
 Users rarely watch child threads, so a child question would otherwise go
 unanswered. When a child opens a pending `user_input` request, the parent gets
