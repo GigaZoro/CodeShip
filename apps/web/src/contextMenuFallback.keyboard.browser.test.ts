@@ -1,4 +1,5 @@
-import { expect, it } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser";
 import {
   dismissContextMenu,
   isContextMenuOpen,
@@ -17,9 +18,19 @@ const items = [
       { id: "copy-unavailable", label: "Unavailable copy", disabled: true },
       { id: "path", label: "Path" },
       { id: "branch", label: "Branch" },
+      { id: "more", label: "More", children: [{ id: "tag", label: "Tag" }] },
     ],
   },
 ];
+
+async function wideViewport() {
+  const viewport = { width: window.innerWidth, height: window.innerHeight };
+  await page.viewport(1280, 800);
+  return { [Symbol.asyncDispose]: () => page.viewport(viewport.width, viewport.height) };
+}
+
+const menuAt = (level: number) =>
+  document.querySelector(`[data-context-menu][data-level="${level}"]`)!.getBoundingClientRect();
 
 function setup() {
   const origin = document.createElement("button");
@@ -74,6 +85,44 @@ it("opens and cancels one submenu level at a time, then returns to the thread", 
   press("Escape");
   expect(document.activeElement).toBe(fixture.origin);
   await expect(result).resolves.toBeNull();
+});
+
+it("keeps nested submenus opening away from the edge, beside their triggers after the next frame", async () => {
+  await using _viewport = await wideViewport();
+  const frames: FrameRequestCallback[] = [];
+  using _frames = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  using _fixture = setup();
+  void showContextMenuFallback(items, { x: window.innerWidth, y: 0 });
+  press("End");
+  const copy = document.activeElement!;
+  press("ArrowRight");
+  press("End");
+  const more = document.activeElement!;
+  press("ArrowRight");
+  for (const frame of frames.splice(0)) frame(0);
+
+  expect(menuAt(1).right).toBeLessThanOrEqual(copy.getBoundingClientRect().left);
+  expect(menuAt(2).right).toBeLessThanOrEqual(more.getBoundingClientRect().left);
+});
+
+it("opens submenus toward the end of a right-to-left line, with the arrow that points there", async () => {
+  await using _viewport = await wideViewport();
+  document.dir = "rtl";
+  using _direction = { [Symbol.dispose]: () => document.documentElement.removeAttribute("dir") };
+  using _fixture = setup();
+  void showContextMenuFallback(items, { x: 640, y: 0 });
+  press("End");
+  const copy = document.activeElement!;
+  press("ArrowRight");
+  expect(document.activeElement).toBe(copy);
+  press("ArrowLeft");
+  expect(label()).toBe("Path");
+  expect(menuAt(1).right).toBeLessThanOrEqual(copy.getBoundingClientRect().left);
+  press("ArrowRight");
+  expect(document.activeElement).toBe(copy);
 });
 
 it("activates the focused action with Space or Enter", async () => {

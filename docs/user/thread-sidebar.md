@@ -55,6 +55,13 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Get back to work from a new thread
+
+On web and desktop, a new thread's empty composer lists up to five threads to get back to,
+each opening on click: first the ones that need you, longest wait first, then running threads,
+latest started first, and the threads you last sent to. Recent threads follow the
+sidebar's project and machine scope. The list goes away once you start typing.
+
 ## See what needs you
 
 Threads waiting on you sit together under **Needs you** on web and desktop, in a box at the

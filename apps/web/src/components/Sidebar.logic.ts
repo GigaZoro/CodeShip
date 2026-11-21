@@ -53,7 +53,15 @@ import {
   toSortableTimestamp,
   type ThreadSortInput,
 } from "@t3tools/client-runtime/state/thread-sort";
+import {
+  pickableProjectGroups,
+  type ProjectGroupingSettings,
+} from "@t3tools/client-runtime/state/project-grouping";
 import type { SidebarThreadSummary, Thread } from "../types";
+import {
+  resolveSidebarProjectScopeKeys,
+  type SidebarProjectSnapshot,
+} from "../sidebarProjectGrouping";
 import { normalizeSearchText } from "../lib/utils";
 import { isLatestRunSettled } from "../session-logic";
 import { observeIntersection } from "../lib/observeIntersection";
@@ -721,6 +729,10 @@ export function filterSidebarV2VisibleThreads<
   threads: readonly T[],
   scopedProjectKeys: ReadonlySet<string> | null,
   delegatedUnderParent: ReadonlySet<string>,
+  scheduledTasks?: {
+    readonly hiddenKeys: ReadonlySet<string>;
+    readonly needsYouKeys: ReadonlySet<string>;
+  },
 ): T[] {
   return threads.filter(
     (thread) =>
@@ -731,7 +743,10 @@ export function filterSidebarV2VisibleThreads<
         delegatedUnderParent,
       ) &&
       (scopedProjectKeys === null ||
-        scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
+        scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)) &&
+      (scheduledTasks === undefined ||
+        !scheduledTasks.hiddenKeys.has(`${thread.environmentId}:${thread.id}`) ||
+        scheduledTasks.needsYouKeys.has(`${thread.environmentId}:${thread.id}`)),
   );
 }
 
@@ -1286,6 +1301,48 @@ export function resolveSidebarScopedProjectKeys(input: {
       ),
     ),
   );
+}
+
+/** What the sidebar's project and machine pickers narrow its list to. */
+export function resolveSidebarChosenScope<
+  TMachine extends { readonly environmentId: EnvironmentId },
+>(input: {
+  readonly projectGroups: ReadonlyArray<SidebarProjectSnapshot>;
+  readonly projectScopeKeys: ReadonlyArray<string>;
+  readonly machineScopeIds: ReadonlyArray<string>;
+  readonly machines: ReadonlyArray<TMachine>;
+  readonly settings: ProjectGroupingSettings;
+  readonly canClearMissingScope: boolean;
+}) {
+  // A scope whose project is gone reads as all projects once every snapshot has
+  // loaded. The stored keys are left alone, so the scope returns with its project.
+  // An archived project's scope reads as all projects, matching the menu.
+  const archivedProjectKeys = new Set(
+    input.projectGroups.filter((project) => project.archived).map((project) => project.projectKey),
+  );
+  const projectScopeKeys = resolveSidebarProjectScopeKeys({
+    groups: input.projectGroups,
+    keys: input.projectScopeKeys,
+    settings: input.settings,
+    canClearMissingScope: input.canClearMissingScope,
+  }).filter((key) => !archivedProjectKeys.has(key));
+  const projectGroups = pickableProjectGroups(input.projectGroups).filter((project) =>
+    projectScopeKeys.includes(project.projectKey),
+  );
+  // A machine that is gone no longer narrows the scope.
+  const machines = input.machines.filter((machine) =>
+    input.machineScopeIds.includes(machine.environmentId),
+  );
+  return {
+    projectScopeKeys,
+    projectGroups,
+    machines,
+    scopedProjectKeys: resolveSidebarScopedProjectKeys({
+      projectGroups: input.projectGroups,
+      chosenProjectGroups: projectGroups,
+      chosenEnvironmentIds: new Set(machines.map((machine) => machine.environmentId)),
+    }),
+  };
 }
 
 export type SidebarV2TopStatusKind =

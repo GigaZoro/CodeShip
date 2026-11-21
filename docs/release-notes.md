@@ -1,3 +1,8 @@
+## 2026-11-24 — See what needs you from a new thread, and submenus that stay on screen
+
+- On web and desktop, a new thread's empty composer lists the threads that need you, as the sidebar's Needs you does, before your recent threads. Recent threads list running threads first, latest started first, then the threads you last sent to, and follow the sidebar's project and machine scope and its scheduled-task placement.
+- On web, a context submenu with no room on the right opens to the left of its item and stays there, and deeper submenus keep going the same way instead of covering the menus they came from. In a right-to-left layout, submenus open to the left and the Left arrow opens them.
+
 ## 2026-11-24 — Claude starts with Ultracode exactly as the chat sets it
 
 - A Claude chat or delegated task with Ultracode off could still start with it on when the Claude launch arguments turned it on, with `ultracode` in `--settings` or with `--effort ultracode`. Starting a chat now follows the model's Ultracode toggle and effort, the same as switching models mid-chat, so Ultracode stays off unless you turn it on. Generated titles, commit messages and pull request text follow the model's Ultracode and Fast mode toggles over the launch arguments too. When your organization's managed Claude settings set `ultracode` to the other value, Claude Code would ignore the toggle, so the message is refused with the reason instead, and the chat stays as it was.

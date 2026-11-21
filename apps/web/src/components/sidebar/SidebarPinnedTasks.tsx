@@ -1,4 +1,3 @@
-import { hiddenScheduledTaskThreadKeysAtom } from "../../state/threads";
 import {
   resolveThreadStatus,
   THREAD_STATUS_DISPLAY,
@@ -115,11 +114,6 @@ const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
     ),
   ).pipe(Atom.withLabel(`web:sidebar-pinned-tasks:${environmentIdsKey}`)),
 );
-
-/** Scoped keys of the threads that scheduled tasks placed nowhere in the thread list. */
-export function useScheduledTaskHiddenThreadKeys(environmentIdsKey: string): ReadonlySet<string> {
-  return useAtomValue(hiddenScheduledTaskThreadKeysAtom(environmentIdsKey));
-}
 
 const STATUS_ICON: Record<Exclude<PinnedTaskStatus, "idle">, typeof CircleDashedIcon> = {
   starting: CircleDashedIcon,

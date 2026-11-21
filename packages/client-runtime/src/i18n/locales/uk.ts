@@ -618,6 +618,12 @@ const catalog: MessageCatalog = {
     many: "Ще {count} потребують вас",
     other: "Ще {count} потребують вас",
   },
+  "{count} more need you in the sidebar": {
+    one: "Ще {count} чекає на вас на бічній панелі",
+    few: "Ще {count} чекають на вас на бічній панелі",
+    many: "Ще {count} чекають на вас на бічній панелі",
+    other: "Ще {count} чекають на вас на бічній панелі",
+  },
   "{count} more replies": {
     one: "Ще {count} відповідь",
     few: "Ще {count} відповіді",

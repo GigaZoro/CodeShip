@@ -143,7 +143,6 @@ import {
 } from "@t3tools/client-runtime/state/project-grouping";
 import {
   projectGroupsSpanEnvironments,
-  resolveSidebarProjectScopeKeys,
   getSidebarProjectSettingsKey,
   type SidebarProjectGroupMember,
   type SidebarProjectSnapshot,
@@ -243,7 +242,7 @@ import {
   groupSidebarThreadsByMachineAndProject,
   groupSidebarThreadsByProject,
   resolveSidebarMachineFolderExpanded,
-  resolveSidebarScopedProjectKeys,
+  resolveSidebarChosenScope,
   capSidebarFolderThreads,
   resolveSidebarFolderDot,
   hasUnseenServerWake,
@@ -345,10 +344,7 @@ import {
   type SidebarSweepAction,
 } from "./sidebar/SidebarThreadRow";
 import { SidebarDraftBlock } from "./sidebar/SidebarDraftBlock";
-import {
-  SidebarPinnedTasksBlock,
-  useScheduledTaskHiddenThreadKeys,
-} from "./sidebar/SidebarPinnedTasks";
+import { SidebarPinnedTasksBlock } from "./sidebar/SidebarPinnedTasks";
 import { useSidebarMachines } from "./sidebar/useSidebarMachines";
 import { publishSidebarFolderControls } from "./sidebar/sidebarFolderControls";
 import { useLocallyUnreadThreadKeys } from "./sidebar/useLocallyUnreadThreadKeys";
@@ -1223,14 +1219,10 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   // Put-off threads still wait on the user, so they stay out of the other sections too.
   const needsYouThreads = [...needsYou.threads, ...needsYou.later];
   const needsYouKeys = new Set(needsYouThreads.map(threadShellKey));
-  const visible = filterSidebarV2VisibleThreads(
-    threads,
-    scopedProjectKeys,
-    delegatedUnderParent,
-  ).filter((thread) => {
-    const key = threadShellKey(thread);
-    return matchesFilters(thread) && (!hiddenTaskThreadKeys.has(key) || needsYouKeys.has(key));
-  });
+  const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent, {
+    hiddenKeys: hiddenTaskThreadKeys,
+    needsYouKeys,
+  }).filter(matchesFilters);
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
@@ -1432,7 +1424,9 @@ function useSidebarLookups() {
   const environments = useEnvironmentIdentities();
   const serverConfigs = useServerConfigs();
   const taskEnvironmentIdsKey = JSON.stringify([...serverConfigs.keys()]);
-  const hiddenTaskThreadKeys = useScheduledTaskHiddenThreadKeys(taskEnvironmentIdsKey);
+  const hiddenTaskThreadKeys = useAtomValue(
+    hiddenScheduledTaskThreadKeysAtom(taskEnvironmentIdsKey),
+  );
   const providerEntriesByEnvironment = useAtomValue(sidebarProviderEntriesAtom);
   const projectGroups = useSidebarProjectGroups();
   const environmentLabelById = new Map(
@@ -1758,30 +1752,19 @@ export default function Sidebar({
     clearSelection();
     setPersistedMachineScopeIds(environmentIds);
   };
-  // A scope whose project is gone reads as all projects once every snapshot has
-  // loaded. The stored keys are left alone, so the scope returns with its project.
-  // An archived project's scope reads as all projects, matching the menu.
   const scopeGroups = pickableProjectGroups(projectGroups);
-  const archivedProjectKeys = new Set(
-    projectGroups.filter((project) => project.archived).map((project) => project.projectKey),
-  );
-  const chosenProjectScopeKeys = resolveSidebarProjectScopeKeys({
-    groups: projectGroups,
-    keys: persistedProjectScopeKeys,
+  const {
+    projectScopeKeys: chosenProjectScopeKeys,
+    projectGroups: chosenProjectGroups,
+    machines: chosenMachines,
+    scopedProjectKeys: chosenScopeProjectKeys,
+  } = resolveSidebarChosenScope({
+    projectGroups,
+    projectScopeKeys: persistedProjectScopeKeys,
+    machineScopeIds: persistedMachineScopeIds,
+    machines,
     settings: projectGroupingSettings,
     canClearMissingScope: allProjectSnapshotsReady && allProjectConfigsReady,
-  }).filter((key) => !archivedProjectKeys.has(key));
-  const chosenProjectGroups = scopeGroups.filter((project) =>
-    chosenProjectScopeKeys.includes(project.projectKey),
-  );
-  // A machine that is gone no longer narrows the scope.
-  const chosenMachines = machines.filter((machine) =>
-    persistedMachineScopeIds.includes(machine.environmentId),
-  );
-  const chosenScopeProjectKeys = resolveSidebarScopedProjectKeys({
-    projectGroups,
-    chosenProjectGroups,
-    chosenEnvironmentIds: new Set(chosenMachines.map((machine) => machine.environmentId)),
   });
   const threads = useQuietThreadShells();
   const lastActivityOrder = useAtomValue(environmentThreadShells.lastActivityOrderAtom(threadSort));
