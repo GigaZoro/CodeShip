@@ -61,11 +61,10 @@ import * as PeerLinks from "./PeerLinks.ts";
 const replyTypes: ReadonlyArray<string> = SUBAGENT_REPLY_TURN_ITEM_TYPES;
 /** How long one follow of a remote task waits on its thread there before checking again. */
 const FOLLOW_WAIT_MS = 10 * 60 * 1_000;
-/** A linked environment that stops answering is retried, backing off to this. */
-const FOLLOW_MAX_BACKOFF = Duration.minutes(5);
-/** About 20 minutes of retrying a settle at the follow back-off, after which the thread there stays active. */
-const SETTLE_RETRIES = 10;
-/** How a follower retries; tests step it by hand. */
+const FOLLOW_MAX_BACKOFF = Duration.seconds(30);
+/** After this retry window, a thread that could not be settled there stays active. */
+const SETTLE_RETRY_WINDOW_MS = Duration.toMillis(Duration.minutes(20));
+/** Starts at two seconds for each follow step and backs off to 30 seconds. */
 export const FollowRetrySchedule = Context.Reference<Schedule.Schedule<unknown>>(
   "t3/peer/RemoteDelegation/FollowRetrySchedule",
   {
@@ -141,6 +140,11 @@ const isFinal = (error: OrchestratorMcpFailure) =>
 
 const make = Effect.gen(function* () {
   const followRetry = yield* FollowRetrySchedule;
+  const settleRetry = followRetry.pipe(
+    Schedule.while(
+      ({ elapsed, duration }) => elapsed + Duration.toMillis(duration) <= SETTLE_RETRY_WINDOW_MS,
+    ),
+  );
   const forwarding = yield* PeerForwarding.PeerForwarding;
   const links = yield* PeerLinks.PeerLinks;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -604,10 +608,9 @@ const make = Effect.gen(function* () {
   );
 
   /**
-   * Completes `task` here with its thread there's final state. Each attempt is its own
-   * command, so a failed one never blocks the next; a report refused because the task already
-   * has its result (a cancel, a Stop or an earlier report) is done. `stoppedThere` records that
-   * nothing is left to stop there, even on a task that already has its result.
+   * Completes `task` here with its thread there's final state, each attempt its own command.
+   * A report the task already holds records nothing and succeeds, so any failure is a write
+   * that did not happen, and its caller retries it.
    */
   const complete = Effect.fn("RemoteDelegation.complete")(function* (
     parentThreadId: ThreadId,
@@ -629,13 +632,7 @@ const make = Effect.gen(function* () {
         ...(stoppedThere === undefined ? {} : { stoppedThere }),
         ...(stopCount === undefined ? {} : { stopCount }),
       })
-      .pipe(
-        Effect.catch((error) =>
-          readTask(parentThreadId, taskId).pipe(
-            Effect.flatMap(({ task }) => (task?.result != null ? Effect.void : Effect.fail(error))),
-          ),
-        ),
-      );
+      .pipe(Effect.asVoid);
   });
 
   /**
@@ -850,8 +847,7 @@ const make = Effect.gen(function* () {
         ),
         inFlight.withPermits(1),
         Effect.retry({
-          schedule: followRetry,
-          times: SETTLE_RETRIES,
+          schedule: settleRetry,
           while: (error) =>
             isModeRefusal(error)
               ? false
@@ -881,15 +877,13 @@ const make = Effect.gen(function* () {
   const noReply = "(The thread in the linked environment ended without a reply.)";
 
   /**
-   * Waits for the task's run there to end, completes the task here, and stops it there if it
-   * ended here first. A revoked, expired or forgotten link, or a thread or run gone there,
-   * fails the task with nothing left to stop; anything else (the other machine asleep, a
-   * dropped route) is retried with back-off, and so is completing.
+   * Follows the task's run there and stops it there if it ends here first.
+   * A lost link, thread or run fails the task with nothing left to stop.
+   * Transient failures retry, including while recording completion. Each
+   * successful step resets the back-off before the next wait.
    */
   const follow = (parentThreadId: ThreadId, taskId: NodeId): Effect.Effect<void> =>
     followOnce(parentThreadId, taskId).pipe(
-      // `false` means it is still running there: follow again straight away.
-      Effect.repeat({ while: (done) => !done }),
       Effect.catchTags({
         OrchestratorMcpFailure: Effect.fn("RemoteDelegation.followFailed")(function* (error) {
           const reason = yield* finalReason(parentThreadId, taskId, error);
@@ -898,9 +892,12 @@ const make = Effect.gen(function* () {
           const { task } = yield* readTask(parentThreadId, taskId);
           const stopCount = task?.remoteChild?.stopCount;
           yield* complete(parentThreadId, taskId, "failed", reason, "stopped", stopCount);
+          return true;
         }),
       }),
       Effect.retry(followRetry),
+      // `false` means it is still running there: follow again straight away.
+      Effect.repeat({ while: (done) => !done }),
       Effect.ignoreCause({ log: true }),
     );
 

@@ -303,6 +303,10 @@
 - A thread started in a new worktree from a pushed commit that none of the checkout's fetched branches reaches, such as one on a branch a single-branch clone does not fetch, now starts. The launch fetches the commit itself, from the primary remote first and then the project's other remotes. Before, it fetched only the primary remote's branches and refused the commit as missing.
 - `delegate_task` to a linked environment now fails with "Unable to read this thread's project." when your thread's project cannot be read, instead of asking for a `target.projectId` it does not need or starting a worktree helper from that project's default branch.
 
+## 2026-11-21 — A task delegated to a machine that was away finishes sooner
+
+- When a linked machine running a delegated task stops answering (asleep, shut down, or restarting for an update), CodeShip now waits at most 30 seconds after a failed try before trying again, instead of backing off to 5 minutes. A machine that comes back hands over the task's result that much sooner. Moving the finished task's chat there off that machine's active list is retried for up to 20 minutes after the result arrives.
+
 ## 2026-11-21 — Worktree helpers in another repository on a linked machine start from its default branch
 
 - `delegate_task` with `isolation: "worktree"`, a linked environment, and `target.projectId` naming a project of another repository there now starts the helper in a new worktree of that project from its default branch. Before, it passed your thread's commit, which that repository cannot have, and the launch failed with only "git worktree add failed". A project of your thread's repository still branches from your pushed commit.

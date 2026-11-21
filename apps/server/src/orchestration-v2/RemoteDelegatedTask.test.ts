@@ -161,17 +161,16 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
           commandId: CommandId.make(`command:stop-generation:${count}`),
         });
       }
-      // Reports from before generation tracking cannot clear a later numbered Stop either.
+      // Reports from before generation tracking cannot clear a later numbered Stop either:
+      // they are done, and record nothing.
       for (const stopCount of [undefined, 1]) {
-        const rejected = yield* orchestrator
-          .dispatch({
-            ...complete,
-            commandId: CommandId.make(`command:stale-stop:${stopCount}`),
-            stoppedThere: "stopped",
-            ...(stopCount === undefined ? {} : { stopCount }),
-          })
-          .pipe(Effect.flip);
-        assert.equal(rejected._tag, "OrchestratorDispatchError");
+        const stale = yield* orchestrator.dispatch({
+          ...complete,
+          commandId: CommandId.make(`command:stale-stop:${stopCount}`),
+          stoppedThere: "stopped",
+          ...(stopCount === undefined ? {} : { stopCount }),
+        });
+        assert.deepEqual(stale.storedEvents, []);
         assert.deepEqual(yield* openFor, [{ parentThreadId: parent.threadId, taskId: task.id }]);
       }
       yield* orchestrator.dispatch({
@@ -279,9 +278,9 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
           stoppedThere: "ran-out",
         });
       yield* complete("All 412 tests pass on the box.");
-      // A second report is refused, so the first result stands.
-      const late = yield* complete("A late, different answer.").pipe(Effect.flip);
-      assert.equal(late._tag, "OrchestratorDispatchError");
+      // A second report is done and records nothing, so the first result stands.
+      const late = yield* complete("A late, different answer.");
+      assert.deepEqual(late.storedEvents, []);
 
       const projection = yield* orchestrator.getThreadProjection(parent.threadId);
       const task = projection.subagents.find((candidate) => candidate.id === taskId);

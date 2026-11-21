@@ -9063,9 +9063,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.stoppedThere === undefined
         ? task.remoteChild
         : { ...task.remoteChild!, stoppedThere: true };
-    // The first result stands; a repeated follower report records nothing, which
-    // the dispatcher refuses. A stop there after the result is still recorded, but
-    // a run that ended by itself does not settle a stop the task here still owes.
+    // The first result stands, so a repeated or superseded report records nothing. A stop
+    // there after the result is still recorded, but a run that ended by itself does not
+    // settle a stop the task here still owes.
     if (task.result !== null) {
       // A Stop or cancel here that lost the race to the result still owes its stop.
       if (command.stoppedThere === undefined) {
@@ -15323,6 +15323,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.type === "runtime-request.decline-unattended" ||
           command.type === "thread.stop" ||
           command.type === "subagent.stop" ||
+          // A report the task already holds, or a stop a newer one superseded, is done; its
+          // sender then fails only on a write that did not happen.
+          command.type === "delegated_task.remote.complete" ||
           // Closing a share again, or after it ended, is not an error.
           command.type === "thread.guest-share.close" ||
           command.type === "provider-session.detach-idle" ||

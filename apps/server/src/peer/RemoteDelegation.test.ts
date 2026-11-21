@@ -29,9 +29,11 @@ import { vi } from "vite-plus/test";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -44,6 +46,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Schema from "effect/Schema";
 import { McpSchema, McpServer, Toolkit } from "effect/ai";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
@@ -147,6 +150,10 @@ interface BoxThread {
   readonly sent: Ref.Ref<ReadonlyArray<string>>;
   /** Runs as the launch there is answered, before the laptop hears back. */
   readonly afterLaunch: Ref.Ref<Effect.Effect<void>>;
+  /** Runs once, as the next wait there is answered, before the laptop hears back. */
+  readonly afterWait: Ref.Ref<Effect.Effect<void>>;
+  /** Runs each time a stop there is answered, before the laptop hears back. */
+  readonly afterStop: Ref.Ref<Effect.Effect<void>>;
   /** The threads settled there, in order. */
   readonly settles: Ref.Ref<ReadonlyArray<ThreadId>>;
   /** Completed on the first settle recorded there. */
@@ -190,6 +197,8 @@ const makeBoxThread = Effect.gen(function* () {
     releaseStop: yield* Deferred.make<void>(),
     sent: yield* Ref.make<ReadonlyArray<string>>([]),
     afterLaunch: yield* Ref.make<Effect.Effect<void>>(Effect.void),
+    afterWait: yield* Ref.make<Effect.Effect<void>>(Effect.void),
+    afterStop: yield* Ref.make<Effect.Effect<void>>(Effect.void),
     settles: yield* Ref.make<ReadonlyArray<ThreadId>>([]),
     settledOnce: yield* Deferred.make<void>(),
     dropSettles: yield* Ref.make(0),
@@ -471,6 +480,7 @@ const boxToolkitLayer = (
         }
         // Unpinned, a wait reports the latest run: a later one once there is one.
         const later = input.runId === undefined && (yield* Ref.get(thread.laterReply)) !== null;
+        yield* Ref.getAndSet(thread.afterWait, Effect.void).pipe(Effect.flatten);
         return {
           threadId: input.threadId,
           run: {
@@ -589,6 +599,9 @@ const boxToolkitLayer = (
     dispatch: (command) =>
       command.type === "thread.stop"
         ? recordStop(command.threadId, command.commandId, "thread.stop").pipe(
+            Effect.tap(() =>
+              Ref.get(launches.get(command.threadId)!.state.afterStop).pipe(Effect.flatten),
+            ),
             Effect.tap(() =>
               Effect.gen(function* () {
                 const thread = launches.get(command.threadId)!.state;
@@ -889,7 +902,7 @@ const laptopScratchProject = ProjectId.make("project:laptop-scratch");
 const parentThreadId = ThreadId.make("thread:laptop-parent");
 const parentRunId = RunId.make("run:laptop-parent");
 const parentRootNode = NodeId.make("node:laptop-parent:root");
-const parentScope: McpInvocationContext.McpInvocationScope = {
+const parentScope: McpInvocationContext.McpThreadInvocationScope = {
   environmentId: laptop.environmentId,
   requestNamespace: "provider-session:laptop-parent",
   thread: {
@@ -3312,6 +3325,197 @@ const steppedRetries = Effect.gen(function* () {
   );
   return { failed, retry, cut, schedule };
 });
+
+it.effect.each([
+  { name: "caps follow retries at 30 seconds", delays: [2, 4, 8, 16, 30, 30], reset: false },
+  { name: "resets follow retry back-off after a successful wait", delays: [2, 4], reset: true },
+])("$name", ({ delays, reset }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offline = Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere"));
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const retryDelays = yield* Queue.unbounded<number>();
+      const policy = yield* RemoteDelegation.FollowRetrySchedule;
+      const a = yield* makeLaptop(database, offers).pipe(
+        Effect.provideService(
+          RemoteDelegation.FollowRetrySchedule,
+          policy.pipe(
+            Schedule.tap(({ duration }) => Queue.offer(retryDelays, Duration.toSeconds(duration))),
+          ),
+        ),
+      );
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      yield* Ref.set(thread.afterLaunch, offline);
+      const delegated = yield* delegateToBox(a);
+      for (const seconds of delays.slice(0, -1)) {
+        expect(yield* Queue.take(retryDelays)).toBe(seconds);
+        yield* TestClock.adjust(Duration.seconds(seconds));
+      }
+      const lastDelay = delays.at(-1)!;
+      expect(yield* Queue.take(retryDelays)).toBe(lastDelay);
+      if (reset) {
+        // One wait reports the run still active and the next wait loses the link again.
+        yield* Ref.set(thread.afterWait, offline);
+        yield* Deferred.succeed(thread.finished, undefined);
+        yield* Ref.set(b.descriptor, box);
+        yield* TestClock.adjust(Duration.seconds(lastDelay));
+        expect(yield* Queue.take(retryDelays)).toBe(2);
+      }
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      yield* Ref.set(b.descriptor, box);
+      yield* TestClock.adjust(Duration.seconds(reset ? 2 : lastDelay));
+      expect(yield* taskResult(a, delegated.taskId)).toMatchObject({ status: "completed" });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("keeps retrying settle for twenty minutes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const failed = yield* Queue.unbounded<number>();
+      const gaveUp = yield* Deferred.make<"gave up">();
+      const logger = Logger.make(({ message }) => {
+        if (
+          Array.isArray(message) &&
+          message[0] === "A linked environment kept a finished delegated task's thread active"
+        ) {
+          Deferred.doneUnsafe(gaveUp, Effect.succeed("gave up"));
+        }
+      });
+      yield* Effect.gen(function* () {
+        const schedule = Schedule.spaced("1 minute").pipe(
+          Schedule.tap(({ elapsed }) => Queue.offer(failed, elapsed / 60_000)),
+        );
+        const a = yield* makeLaptop(database, offers).pipe(
+          Effect.provideService(RemoteDelegation.FollowRetrySchedule, schedule),
+        );
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        yield* Ref.set(thread.dropSettles, 21);
+        const delegated = yield* delegateToBox(a);
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        expect(yield* taskResult(a, delegated.taskId)).toMatchObject({ status: "completed" });
+
+        const nextFailure = Effect.raceFirst(Queue.take(failed), Deferred.await(gaveUp));
+        for (let minute = 0; minute < 20; minute++) {
+          expect(yield* nextFailure).toBe(minute);
+          yield* TestClock.adjust("1 minute");
+        }
+        expect(yield* Queue.take(failed)).toBe(20);
+        yield* TestClock.adjust("1 minute");
+        expect(
+          yield* Effect.raceFirst(
+            Deferred.await(gaveUp),
+            Deferred.await(thread.settledOnce).pipe(Effect.as("settled")),
+          ),
+        ).toBe("gave up");
+      }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("keeps backing off while a stop there cannot be recorded here", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offline = Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere"));
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const retryDelays = yield* Queue.unbounded<number>();
+      const policy = yield* RemoteDelegation.FollowRetrySchedule;
+      const a = yield* makeLaptop(database, offers).pipe(
+        Effect.provideService(
+          RemoteDelegation.FollowRetrySchedule,
+          policy.pipe(
+            Schedule.tap(({ duration }) => Queue.offer(retryDelays, Duration.toSeconds(duration))),
+          ),
+        ),
+      );
+      yield* a.remote.start();
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const delegated = yield* delegateToBox(a);
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      yield* taskResult(a, delegated.taskId);
+      yield* Deferred.await(thread.settledOnce);
+      // Every stop there is answered and the box then drops away, while recording it here fails.
+      yield* Context.get(database, SqlClient.SqlClient).unsafe(
+        "CREATE TRIGGER fail_remote_task_complete BEFORE INSERT ON orchestration_events WHEN NEW.command_id LIKE 'command:remote-task-complete:%' BEGIN SELECT RAISE(ABORT, 'write failed'); END",
+      );
+      const answered = yield* Ref.make(0);
+      yield* Ref.set(
+        thread.afterStop,
+        Ref.update(answered, (count) => count + 1).pipe(Effect.andThen(offline)),
+      );
+      yield* a.threads.stopDelegatedTasks({
+        threadId: parentThreadId,
+        commandId: CommandId.make("command:stop-unrecorded"),
+      });
+      const delays = [2, 4, 8];
+      for (const [index, seconds] of delays.entries()) {
+        expect(yield* Queue.take(retryDelays)).toBe(seconds);
+        expect(yield* Ref.get(answered)).toBe(index + 1);
+        if (index === delays.length - 1) break;
+        yield* Ref.set(b.descriptor, box);
+        yield* TestClock.adjust(Duration.seconds(seconds));
+      }
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "a cancel that loses the race to the result fails when its owed stop is not recorded",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const delegated = yield* delegateToBox(a);
+        // The cancel read the task while it still ran there; its result lands before the cancel
+        // records anything.
+        const running = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+          (task) => task.id === delegated.taskId,
+        );
+        expect(running?.result).toBeNull();
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        yield* taskResult(a, delegated.taskId);
+        yield* Deferred.await(thread.settledOnce);
+        // Its stop there fails, so the task owes one, and recording that fails here too.
+        yield* Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere"));
+        yield* Context.get(database, SqlClient.SqlClient).unsafe(
+          "CREATE TRIGGER fail_remote_task_complete BEFORE INSERT ON orchestration_events WHEN NEW.command_id LIKE 'command:remote-task-complete:%' BEGIN SELECT RAISE(ABORT, 'write failed'); END",
+        );
+        const failed = yield* a.remote.cancel(parentScope, running!, {}).pipe(Effect.flip);
+        expect(failed.message).toBe("Unable to record the cancellation.");
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
 
 /** Waits until the task here records that the `stopCount`th Stop after its result reached there. */
 const stoppedThere = (
