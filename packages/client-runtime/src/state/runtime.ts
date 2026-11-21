@@ -96,6 +96,7 @@ interface EnvironmentQueryAtomOptions<Input, A, E, R> extends Omit<
   readonly staleTimeMs?: number;
   readonly idleTtlMs?: number;
   readonly refreshIntervalMs?: number;
+  readonly requestTimeoutMs?: number;
   readonly refreshTrigger?: (target: {
     readonly environmentId: EnvironmentIdType;
     readonly input: Input;
@@ -400,12 +401,14 @@ export interface AtomQueryOptions extends AtomCommandOptions {
   readonly refresh?: boolean;
 }
 
-export async function executeAtomQuery<A, E>(
+export async function executeAtomQuery<A, E, F = never>(
   registry: AtomRegistry.AtomRegistry,
   atom: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
-  options: AtomQueryOptions = {},
+  options: AtomQueryOptions & {
+    readonly deadline?: { readonly milliseconds: number; readonly error: F };
+  } = {},
   reporter: AtomCommandReporter = console,
-): Promise<AtomCommandResult<A, E>> {
+): Promise<AtomCommandResult<A, E | F>> {
   const query = Effect.scoped(
     Effect.gen(function* () {
       yield* AtomRegistry.mount(registry, atom);
@@ -422,8 +425,20 @@ export async function executeAtomQuery<A, E>(
       });
     }),
   );
+  const deadline = options.deadline;
   return executeAtomCommand(
-    () => Effect.runPromiseExit(query, { signal: options.signal }),
+    () =>
+      Effect.runPromiseExit(
+        deadline === undefined
+          ? query
+          : query.pipe(
+              Effect.timeoutOrElse({
+                duration: deadline.milliseconds,
+                orElse: () => Effect.fail(deadline.error),
+              }),
+            ),
+        { signal: options.signal },
+      ),
     options,
     reporter,
   );
@@ -758,11 +773,27 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
               );
           }
         };
+        const fetch = () =>
+          options.requestTimeoutMs === undefined
+            ? execute()
+            : execute().pipe(
+                Effect.timeoutOrElse({
+                  duration: options.requestTimeoutMs,
+                  orElse: () =>
+                    Effect.fail(
+                      new EnvironmentRpcUnavailableError({
+                        environmentId: target.environmentId,
+                        message: "The request timed out.",
+                        reason: "timeout",
+                      }),
+                    ),
+                }),
+              );
         const onAnswer = options.onAnswer;
         const answer = () =>
           onAnswer === undefined
-            ? execute().pipe(Effect.map(share))
-            : execute().pipe(
+            ? fetch().pipe(Effect.map(share))
+            : fetch().pipe(
                 Effect.map(share),
                 Effect.tap((value) => onAnswer(target, value, get.registry)),
               );
@@ -904,6 +935,7 @@ export function createEnvironmentRpcQueryAtomFamily<
     readonly staleTimeMs?: number;
     readonly idleTtlMs?: number;
     readonly refreshIntervalMs?: number;
+    readonly requestTimeoutMs?: number;
     readonly refreshTrigger?: (target: {
       readonly environmentId: EnvironmentIdType;
       readonly input: EnvironmentRpcInput<TTag>;
@@ -920,6 +952,9 @@ export function createEnvironmentRpcQueryAtomFamily<
     ...(options.refreshIntervalMs === undefined
       ? {}
       : { refreshIntervalMs: options.refreshIntervalMs }),
+    ...(options.requestTimeoutMs === undefined
+      ? {}
+      : { requestTimeoutMs: options.requestTimeoutMs }),
     ...(options.refreshTrigger === undefined ? {} : { refreshTrigger: options.refreshTrigger }),
     ...(options.isFinal === undefined ? {} : { isFinal: options.isFinal }),
     ...(options.onAnswer === undefined ? {} : { onAnswer: options.onAnswer }),

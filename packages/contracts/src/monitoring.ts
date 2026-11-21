@@ -395,6 +395,8 @@ export const MonitoringUnanalyzed = Schema.Struct({
 export type MonitoringUnanalyzed = typeof MonitoringUnanalyzed.Type;
 
 export const MonitoringOverviewResult = Schema.Struct({
+  serverEpoch: Schema.optionalKey(Schema.String),
+  revision: Schema.optionalKey(NonNegativeInt),
   /** Every analyzed chat in the window, grouped. */
   groups: Schema.Array(MonitoringGroup),
   /** One entry per project that has such chats; kind and model are known only after analysis. */
@@ -443,6 +445,8 @@ export const MonitoringListedChat = Schema.Struct({
 export type MonitoringListedChat = typeof MonitoringListedChat.Type;
 
 export const MonitoringChatsResult = Schema.Struct({
+  serverEpoch: Schema.optionalKey(Schema.String),
+  revision: Schema.optionalKey(NonNegativeInt),
   chats: Schema.Array(MonitoringListedChat),
   /** Every chat that matches, on every page. */
   total: NonNegativeInt,
@@ -451,15 +455,31 @@ export type MonitoringChatsResult = typeof MonitoringChatsResult.Type;
 
 export const MonitoringThreadInput = Schema.Struct({
   threadId: ThreadId,
+  withRevision: Schema.optionalKey(Schema.Boolean),
 });
 export type MonitoringThreadInput = typeof MonitoringThreadInput.Type;
 
 /** `null` when the chat is not settled, not a listed chat, or gone. */
-export const MonitoringThreadResult = Schema.NullOr(MonitoringThreadDetail);
+export const MonitoringThreadAnswer = Schema.Struct({
+  serverEpoch: Schema.optionalKey(Schema.String),
+  revision: NonNegativeInt,
+  detail: Schema.NullOr(MonitoringThreadDetail),
+});
+export type MonitoringThreadAnswer = typeof MonitoringThreadAnswer.Type;
+
+// Older clients receive the original detail or null unless they opt in to revision tracking.
+export const MonitoringThreadResult = Schema.Union([
+  MonitoringThreadAnswer,
+  MonitoringThreadDetail,
+  Schema.Null,
+]);
 export type MonitoringThreadResult = typeof MonitoringThreadResult.Type;
 
 /** Sent when the set of analyzed chats changes: a chat settled, reopened, or was analyzed again. */
 export const MonitoringChange = Schema.Struct({
+  serverEpoch: Schema.optionalKey(Schema.String),
   revision: NonNegativeInt,
+  sinceRevision: Schema.optionalKey(NonNegativeInt),
+  threadIds: Schema.optionalKey(Schema.Array(ThreadId)),
 });
 export type MonitoringChange = typeof MonitoringChange.Type;

@@ -1,3 +1,4 @@
+import { monitoringRefreshTimedOut } from "@t3tools/client-runtime/monitoring/atoms";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import {
@@ -37,7 +38,13 @@ import {
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { formatPercent, formatUsd } from "@t3tools/shared/usageFormat";
 import { useMemo, useState } from "react";
-import { FlatList, Pressable, RefreshControl, View } from "react-native";
+import {
+  FlatList,
+  Pressable,
+  RefreshControl,
+  ScrollView as NativeScrollView,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -99,7 +106,7 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
   const [shown, setShown] = useState(PAGE_SIZE);
   const period = monitoringWindow(windowChoice.days, windowChoice.now);
   const overviewInput = { days: period.days, until: period.until };
-  const overview = useMonitoringOverview(overviewInput);
+  const { view: overview } = useMonitoringOverview(overviewInput);
   const chatsRequest: MonitoringChatsRequest = {
     window: { since: period.since, until: period.until },
     filters: {
@@ -113,21 +120,31 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
   };
   const { view: chats, updating, retry: chatsRetry } = useMonitoringChats(chatsRequest);
   const projects = useProjects();
-  const refreshing = overview.environments.some((environment) => environment.isPending);
+  const [refreshing, setRefreshing] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
   const refresh = () => {
     const now = Date.now();
     const today = monitoringWindow(windowChoice.days, now);
     if (today.until === period.until) {
-      refreshMonitoring({ overview: overviewInput, chats: [chatsRequest] });
-      return;
+      return refreshMonitoring({ overview: overviewInput, chats: [chatsRequest] });
     }
     // A period left open past midnight moves to today. Its queries are new and load on their own,
     // so the refresh only reconnects environments that are down.
     setWindowChoice({ days: windowChoice.days, now });
-    refreshMonitoring({
+    return refreshMonitoring({
       overview: { days: today.days, until: today.until },
       chats: [],
     });
+  };
+
+  const refreshFromPull = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setTimedOut(false);
+    const answers = await Promise.resolve()
+      .then(refresh)
+      .finally(() => setRefreshing(false));
+    setTimedOut(answers.some(monitoringRefreshTimedOut));
   };
 
   const projectTitles = useMemo(
@@ -183,39 +200,46 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
           setShown(PAGE_SIZE);
         }}
       />
-      {overviewMissing.unreadable && body !== "failed" ? (
-        <MonitoringNote
-          text={t("Some environments could not be read, so their chats are missing: {names}", {
-            names: overviewMissing.unreadable,
-          })}
-          action={retry(overviewRetry)}
-        />
-      ) : null}
-      {overviewMissing.waiting ? (
-        <MonitoringNote
-          text={t("These environments are not counted yet: {names}", {
-            names: overviewMissing.waiting,
-          })}
-        />
-      ) : null}
-      {unanalyzed.pending > 0 ? (
-        <MonitoringNote
-          text={tn(
-            unanalyzed.pending,
-            "{count} settled chat is still being analyzed.",
-            "{count} settled chats are still being analyzed.",
-          )}
-        />
-      ) : null}
-      {unanalyzed.failed > 0 ? (
-        <MonitoringNote
-          text={tn(
-            unanalyzed.failed,
-            "{count} chat could not be analyzed. It is tried again every 30 minutes.",
-            "{count} chats could not be analyzed. They are tried again every 30 minutes.",
-          )}
-        />
-      ) : null}
+      <NativeScrollView className="h-24" nestedScrollEnabled contentContainerClassName="gap-2">
+        {overview.stale ? (
+          <Text textRole="footnote" accessibilityLiveRegion="polite">
+            {t("Showing previous monitoring results.")}
+          </Text>
+        ) : null}
+        {overviewMissing.unreadable && body !== "failed" ? (
+          <MonitoringNote
+            text={t("Could not refresh these environments: {names}", {
+              names: overviewMissing.unreadable,
+            })}
+            action={retry(overviewRetry)}
+          />
+        ) : null}
+        {overviewMissing.waiting ? (
+          <MonitoringNote
+            text={t("Waiting for these environments: {names}", {
+              names: overviewMissing.waiting,
+            })}
+          />
+        ) : null}
+        {unanalyzed.pending > 0 ? (
+          <MonitoringNote
+            text={tn(
+              unanalyzed.pending,
+              "{count} settled chat is still being analyzed.",
+              "{count} settled chats are still being analyzed.",
+            )}
+          />
+        ) : null}
+        {unanalyzed.failed > 0 ? (
+          <MonitoringNote
+            text={tn(
+              unanalyzed.failed,
+              "{count} chat could not be analyzed.",
+              "{count} chats could not be analyzed.",
+            )}
+          />
+        ) : null}
+      </NativeScrollView>
     </View>
   );
 
@@ -410,28 +434,50 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
         className="flex-1"
         contentContainerClassName="px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={refreshFromPull}
+            accessibilityLabel={refreshing ? t("Refreshing…") : t("Refresh monitoring")}
+            accessibilityLiveRegion="polite"
+          />
+        }
         ListHeaderComponent={
           <View className="w-full gap-3 self-center pb-3" style={{ maxWidth: MAX_CONTENT_WIDTH }}>
             {header}
-            {status}
-            {body === "ready" && chatsMissing.unreadable ? (
-              <MonitoringNote
-                text={t(
-                  "Some environments could not be read, so their chats are missing: {names}",
-                  {
-                    names: chatsMissing.unreadable,
-                  },
-                )}
-                action={retry(chatsRetry)}
-              />
+            {timedOut ? (
+              <Text accessibilityLiveRegion="polite" textRole="footnote">
+                {t("The request timed out.")}
+              </Text>
             ) : null}
-            {body === "ready" && chatsMissing.waiting ? (
-              <MonitoringNote
-                text={t("These environments are not counted yet: {names}", {
-                  names: chatsMissing.waiting,
-                })}
-              />
+            {status}
+            {body === "ready" ? (
+              <NativeScrollView
+                className="h-20"
+                nestedScrollEnabled
+                contentContainerClassName="gap-2"
+              >
+                {chats.stale ? (
+                  <Text textRole="footnote" accessibilityLiveRegion="polite">
+                    {t("Showing previous monitoring results.")}
+                  </Text>
+                ) : null}
+                {chatsMissing.unreadable ? (
+                  <MonitoringNote
+                    text={t("Could not refresh these environments: {names}", {
+                      names: chatsMissing.unreadable,
+                    })}
+                    action={retry(chatsRetry)}
+                  />
+                ) : null}
+                {chatsMissing.waiting ? (
+                  <MonitoringNote
+                    text={t("Waiting for these environments: {names}", {
+                      names: chatsMissing.waiting,
+                    })}
+                  />
+                ) : null}
+              </NativeScrollView>
             ) : null}
             {body === "ready" && chats.isLoading ? (
               <View className="items-center py-8" accessibilityState={{ busy: true }}>

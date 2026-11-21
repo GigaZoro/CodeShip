@@ -1,12 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { MonitoringOverviewInput } from "@t3tools/contracts";
 import {
-  failureRetry,
-  keepsShownChats,
+  presentMonitoringChats,
+  presentMonitoringOverview,
   type MonitoringChatsRequest,
-  type MonitoringChatsView,
-  type MonitoringOverviewView,
-  type MonitoringRetry,
 } from "@t3tools/client-runtime/monitoring";
 import { createMonitoringAtoms } from "@t3tools/client-runtime/monitoring/atoms";
 import { useState } from "react";
@@ -26,32 +23,23 @@ const monitoring = createMonitoringAtoms({
   describeFailure: formatEnvironmentQueryError,
 });
 
-export function useMonitoringOverview(input: MonitoringOverviewInput): MonitoringOverviewView {
-  return useAtomValue(monitoring.overviewAtom(JSON.stringify(input)));
+export function useMonitoringOverview(input: MonitoringOverviewInput) {
+  const key = JSON.stringify(input);
+  const view = useAtomValue(monitoring.overviewAtom(key));
+  const next = { key, view, days: input.days };
+  const [shown, setShown] = useState(next);
+  const { keep, ...displayed } = presentMonitoringOverview(shown, next);
+  if (!keep && (shown.key !== key || shown.view !== view)) setShown(next);
+  return displayed;
 }
 
-/**
- * The chats for `request`. While a longer list or a later answer of the same chats loads, the
- * chats on screen stay until it shows as many, and a complete list stays until it is read again
- * whole, so the list does not collapse under the reader; `retry` is what Retry offers for the
- * failures they name.
- */
-export function useMonitoringChats(request: MonitoringChatsRequest): {
-  readonly view: MonitoringChatsView;
-  readonly updating: boolean;
-  readonly retry: MonitoringRetry;
-} {
+export function useMonitoringChats(request: MonitoringChatsRequest) {
   const view = useAtomValue(monitoring.chatsAtom(JSON.stringify(request)));
   const next = { request, view };
   const [shown, setShown] = useState(next);
-  const keep = keepsShownChats(shown, next);
+  const { keep, ...displayed } = presentMonitoringChats(shown, next);
   if (!keep && shown.view !== view) setShown(next);
-  const displayed = keep ? shown.view : view;
-  return {
-    view: displayed,
-    updating: view.awaitingPage,
-    retry: failureRetry(displayed, view),
-  };
+  return displayed;
 }
 
 export const refreshMonitoring = monitoring.refresh;

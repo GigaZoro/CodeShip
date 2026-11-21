@@ -223,11 +223,11 @@ const catalog: MessageCatalog = {
     many: "{count} чатів",
     other: "{count} чату",
   },
-  "{count} chats could not be analyzed. They are tried again every 30 minutes.": {
-    one: "{count} чат не вдалося проаналізувати. Спроба повторюється кожні 30 хвилин.",
-    few: "{count} чати не вдалося проаналізувати. Спроба повторюється кожні 30 хвилин.",
-    many: "{count} чатів не вдалося проаналізувати. Спроба повторюється кожні 30 хвилин.",
-    other: "{count} чату не вдалося проаналізувати. Спроба повторюється кожні 30 хвилин.",
+  "{count} chats could not be analyzed.": {
+    one: "Не вдалося проаналізувати {count} чат.",
+    few: "Не вдалося проаналізувати {count} чати.",
+    many: "Не вдалося проаналізувати {count} чатів.",
+    other: "Не вдалося проаналізувати {count} чату.",
   },
   "{count} checkouts": {
     one: "{count} робоча копія",
@@ -4543,6 +4543,7 @@ const catalog: MessageCatalog = {
   "Could not refresh guide": "Не вдалося оновити посібник",
   "Could not refresh models": "Не вдалося оновити моделі",
   "Could not refresh plugins": "Не вдалося оновити плагіни",
+  "Could not refresh these environments: {names}": "Не вдалося оновити ці середовища: {names}",
   "Could not refresh this chat's analysis, so it may be out of date: {error}":
     "Не вдалося оновити аналіз цього чату, тож він може бути застарілим: {error}",
   "Could not regenerate title": "Не вдалося перегенерувати назву",
@@ -11157,6 +11158,7 @@ const catalog: MessageCatalog = {
   "Showing archived threads for": "Показано архівні чати для",
   "Showing diagnostics for": "Показано діагностику для",
   "Showing latest {count} commits": "Показано останні коміти: {count}",
+  "Showing previous monitoring results.": "Показано попередні результати моніторингу.",
   "Showing tasks for": "Показано завдання для",
   "Showing the first {count} files.": "Показано перші {count} файлів.",
   "Showing the first 1,024 columns. Source and Save retain every column.":
@@ -11377,8 +11379,6 @@ const catalog: MessageCatalog = {
   "Some checks were not successful": "Деякі перевірки не пройдено",
   "Some context is unavailable": "Частина контексту недоступна",
   "Some environment prices are unavailable.": "Ціни деяких середовищ недоступні.",
-  "Some environments could not be read, so their chats are missing: {names}":
-    "Деякі середовища не вдалося прочитати, тому їхніх чатів немає: {names}",
   "Some environments could not report usage": "Деякі середовища не змогли повідомити використання",
   "Some file contents are unavailable. Open the {term} on its provider to see the full changes.":
     "Вміст деяких файлів недоступний. Відкрийте {term} у його провайдера, щоб побачити всі зміни.",
@@ -12494,6 +12494,7 @@ const catalog: MessageCatalog = {
   "The relay client is still unavailable after installation.":
     "Клієнт ретранслятора досі недоступний після встановлення.",
   "The request failed.": "Запит не вдався.",
+  "The request timed out.": "Час очікування відповіді минув.",
   "The requested model is not available, so your default is used.":
     "Запитана модель недоступна, тому використано вашу типову.",
   "The requested path is outside the workspace.": "Запитаний шлях поза робочим простором.",
@@ -12682,7 +12683,6 @@ const catalog: MessageCatalog = {
   "These cells could not be drawn.": "Не вдалося відобразити ці комірки.",
   "These cells could not be drawn. Try scrolling to another area.":
     "Не вдалося відобразити ці комірки. Спробуйте прокрутити до іншої ділянки.",
-  "These environments are not counted yet: {names}": "Ці середовища ще не враховано: {names}",
   "These permissions apply to this client’s current connection.":
     "Ці дозволи діють для поточного підключення цього клієнта.",
   "These permissions apply to your active route. Other routes may have different permissions.":
@@ -14421,6 +14421,7 @@ const catalog: MessageCatalog = {
   "Waiting for the server to report installation and authentication details.":
     "Очікування, поки сервер повідомить відомості про встановлення й автентифікацію.",
   "Waiting for the T3 Connect sign-in to load.": "Очікування завантаження входу T3 Connect.",
+  "Waiting for these environments: {names}": "Очікуємо на ці середовища: {names}",
   "Waiting for this connection's permissions.": "Очікування дозволів цього підключення.",
   "Waiting for you": "Очікування вас",
   "Waiting for your answer": "Очікують вашої відповіді",

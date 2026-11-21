@@ -1,6 +1,16 @@
+import { useAtomValue } from "@effect/atom-react";
+import { useState } from "react";
+import {
+  executeMonitoringQuery,
+  monitoringRefreshTimedOut,
+} from "@t3tools/client-runtime/monitoring/atoms";
 import type { StaticScreenProps } from "@react-navigation/native";
 import type { EnvironmentId, MonitoringThreadDetail, ThreadId } from "@t3tools/contracts";
-import { formatMonitoringTime } from "@t3tools/client-runtime/monitoring";
+import {
+  formatMonitoringTime,
+  monitoringDetailReconnects,
+  threadDetailOf,
+} from "@t3tools/client-runtime/monitoring";
 import {
   FINDING_DETAIL_LABELED,
   FINDING_TEXT,
@@ -23,7 +33,8 @@ import { msg, t, tn } from "../../lib/i18n";
 import { refreshMonitoring } from "../../state/monitoring";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
-import { usePullToRefresh } from "../../state/use-pull-to-refresh";
+import { appAtomRegistry } from "../../state/atom-registry";
+import { environmentPresentations } from "../../state/presentation";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { useOpenScheduledTaskThread } from "../settings/ScheduledTaskRunsRouteScreen";
@@ -50,12 +61,28 @@ export function MonitoringThreadRouteScreen({
   const openThread = useOpenScheduledTaskThread();
   const threadAtom = serverEnvironment.monitoringThread({ environmentId, input: { threadId } });
   const query = useEnvironmentQuery(threadAtom);
-  const pullRefresh = usePullToRefresh(threadAtom);
-  const detail = query.data;
-  // As Refresh on the list does, it also asks again every failure a monitoring view read.
-  const refreshAll = (refreshChat: () => void) => {
-    refreshMonitoring({});
-    refreshChat();
+  const detail = threadDetailOf(query.data);
+  const ready =
+    useAtomValue(environmentPresentations.presentationsAtom).get(environmentId)?.connection
+      .phase === "connected";
+  const [wasReconnecting, setWasReconnecting] = useState(!ready);
+  const reconnecting = monitoringDetailReconnects(ready, wasReconnecting, query.isPending);
+  if (reconnecting !== wasReconnecting) setWasReconnecting(reconnecting);
+  const [refreshing, setRefreshing] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
+  const refreshAll = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setTimedOut(false);
+    const [result] = await Promise.resolve()
+      .then(() =>
+        Promise.all([
+          executeMonitoringQuery(appAtomRegistry, threadAtom, environmentId, { refresh: true }),
+          refreshMonitoring({}),
+        ]),
+      )
+      .finally(() => setRefreshing(false));
+    setTimedOut(monitoringRefreshTimedOut(result));
   };
 
   return (
@@ -66,27 +93,23 @@ export function MonitoringThreadRouteScreen({
         className="flex-1"
         contentContainerClassName="px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
-        refreshControl={
-          <RefreshControl
-            refreshing={pullRefresh.refreshing}
-            onRefresh={() => refreshAll(() => pullRefresh.onRefresh())}
-          />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshAll} />}
       >
         <View className="w-full gap-5 self-center" style={{ maxWidth: MAX_CONTENT_WIDTH }}>
+          {timedOut ? (
+            <Text accessibilityLiveRegion="polite" textRole="footnote">
+              {t("The request timed out.")}
+            </Text>
+          ) : null}
           {detail && query.error !== null ? (
             <MonitoringNote
               text={t("Could not refresh this chat's analysis, so it may be out of date: {error}", {
                 error: query.error,
               })}
-              action={
-                <Button
-                  label={t("Retry")}
-                  onPress={() => refreshAll(query.refresh)}
-                  loading={query.isPending}
-                />
-              }
+              action={<Button label={t("Retry")} onPress={refreshAll} loading={query.isPending} />}
             />
+          ) : reconnecting && detail ? (
+            <Text textRole="footnote">{t("Showing previous monitoring results.")}</Text>
           ) : null}
           {detail ? (
             <DeepDiveBody detail={detail} onOpenChat={() => openThread(environmentId, threadId)} />
@@ -96,7 +119,7 @@ export function MonitoringThreadRouteScreen({
               title={t("Could not load this chat's analysis")}
               detail={query.error}
               actionLabel={t("Retry")}
-              onAction={() => refreshAll(query.refresh)}
+              onAction={refreshAll}
             />
           ) : query.isPending ? (
             <View className="items-center py-16" accessibilityState={{ busy: true }}>

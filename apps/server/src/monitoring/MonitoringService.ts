@@ -1,6 +1,7 @@
 import {
   MonitoringError,
   MonitoringThreadSummary,
+  MonitoringThreadDetail,
   type MonitoringChange,
   type MonitoringChatSort,
   type MonitoringChatsInput,
@@ -8,9 +9,10 @@ import {
   type MonitoringListedChat,
   type MonitoringOverviewInput,
   type MonitoringOverviewResult,
-  type MonitoringThreadDetail,
+  type MonitoringThreadAnswer,
   type MonitoringUnanalyzed,
   type OrchestrationV2AppThread,
+  isListedThreadLineage,
   type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -18,18 +20,20 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
-import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
+import * as Struct from "effect/Struct";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -40,18 +44,13 @@ import { readThreadAnalysis, settledListedThread } from "./ThreadAnalysisReader.
 import { ANALYZER_VERSION, analyzeThread, type AnalysisTurn } from "./ThreadAnalyzer.ts";
 
 const ANALYSIS_BATCH = 25;
-/**
- * Passes the loop runs before it announces what they stored, unless it runs out of chats first:
- * each notice makes every open Monitoring view read again, so a backfill sends one per up to 200
- * chats.
- */
-const PUBLISH_EVERY_PASSES = 8;
+const CHANGE_WINDOW = Duration.seconds(3);
+const RETRY_SWEEP_INTERVAL = Duration.minutes(30);
+const MAX_ANALYSIS_ATTEMPTS = 6;
 /** Analyses the overview reads per query, so a long window never loads every row at once. */
 const OVERVIEW_BATCH = 500;
 const ANALYSIS_ERROR_LENGTH = 300;
 const UNREADABLE_ANALYSIS = "The stored analysis could not be read.";
-/** A failed analysis is tried again this long after it failed, and the loop wakes this often. */
-const ANALYSIS_RETRY = Duration.minutes(30);
 
 interface OverviewCursor {
   readonly settledAt: string;
@@ -84,6 +83,11 @@ const SummaryJson = Schema.fromJsonString(MonitoringThreadSummary);
 const decodeSummaryJson = Schema.decodeEffect(SummaryJson);
 const decodeSummary = (json: string) => decodeSummaryJson(json).pipe(Effect.option);
 const encodeSummary = Schema.encodeEffect(SummaryJson);
+const DetailJson = Schema.fromJsonString(
+  MonitoringThreadDetail.mapFields(Struct.omit(["summary"])),
+);
+const decodeDetail = Schema.decodeEffect(DetailJson);
+const encodeDetail = Schema.encodeEffect(DetailJson);
 
 /**
  * The instant a time names, only in the ISO form T3 writes. Stored times are compared as text and
@@ -129,6 +133,31 @@ const CHAT_SORT_SQL: Record<MonitoringChatSort, string> = {
     "json_extract(m.summary_json, '$.runs.failed') + json_extract(m.summary_json, '$.commands.failed')",
 };
 
+interface StaleChat {
+  readonly thread_id: ThreadId;
+  readonly settled_at: string;
+  readonly error: string | null;
+  readonly attempts: number;
+}
+
+function staleAnalysisCandidates(sql: SqlClient.SqlClient, now: string, threadId?: ThreadId) {
+  return sql<StaleChat>`
+    SELECT t.thread_id, json_extract(t.payload_json, '$.settledAt') AS settled_at,
+      m.error, coalesce(m.attempts, 0) AS attempts
+    FROM orchestration_v2_projection_threads t
+    LEFT JOIN monitoring_thread_analyses m
+      ON m.thread_id = t.thread_id
+      AND m.analyzer_version = ${ANALYZER_VERSION}
+      AND m.settled_at = json_extract(t.payload_json, '$.settledAt')
+    WHERE ${settledListedThread(sql)}
+      ${threadId === undefined ? sql`` : sql`AND t.thread_id = ${threadId}`}
+      AND (m.thread_id IS NULL
+        OR (m.error IS NULL AND m.detail_json IS NULL)
+        OR (m.error IS NOT NULL AND (m.attempts = 0 OR m.retry_at <= ${now})))
+    ${threadId === undefined ? sql`ORDER BY m.thread_id IS NOT NULL, settled_at DESC, t.thread_id` : sql``}
+  `;
+}
+
 export class MonitoringService extends Context.Service<
   MonitoringService,
   {
@@ -139,10 +168,10 @@ export class MonitoringService extends Context.Service<
     readonly chats: (
       input: MonitoringChatsInput,
     ) => Effect.Effect<MonitoringChatsResult, MonitoringError>;
-    /** The chat's analysis, made now; null unless the chat is settled and listed. */
+    /** The current stored analysis, with its read revision. */
     readonly thread: (input: {
       readonly threadId: ThreadId;
-    }) => Effect.Effect<MonitoringThreadDetail | null, MonitoringError>;
+    }) => Effect.Effect<MonitoringThreadAnswer, MonitoringError>;
     readonly subscribeChanges: Stream.Stream<MonitoringChange>;
     /** Analyzes every settled chat that has no current analysis, then each chat as it settles. */
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
@@ -153,14 +182,33 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const usage = yield* UsageService.UsageService;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
-  // A subscriber that connects late still learns the latest revision.
+  const crypto = yield* Crypto.Crypto;
+  const serverEpoch = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
   const changes = yield* PubSub.sliding<MonitoringChange>({ capacity: 16, replay: 1 });
-  const revision = yield* Ref.make(0);
+  let revision = 0;
+  const changedThreadIds = new Set<ThreadId>();
+  const changeWake = yield* Queue.sliding<void>(1);
   const wake = yield* Queue.sliding<void>(1);
+  const work = new Set<ThreadId>();
 
-  const publishChange = Effect.fn("MonitoringService.publishChange")(function* () {
-    const next = yield* Ref.updateAndGet(revision, (current) => current + 1);
-    yield* PubSub.publish(changes, { revision: next });
+  const markChanged = Effect.fn("MonitoringService.markChanged")(function* (threadId: ThreadId) {
+    revision++;
+    changedThreadIds.add(threadId);
+    yield* Queue.offer(changeWake, undefined);
+  });
+
+  const announceChanges = Effect.gen(function* () {
+    let sinceRevision = 0;
+    for (;;) {
+      yield* Queue.take(changeWake);
+      yield* Effect.sleep(CHANGE_WINDOW);
+      yield* Queue.clear(changeWake);
+      if (changedThreadIds.size === 0) continue;
+      const batch = { serverEpoch, revision, sinceRevision, threadIds: [...changedThreadIds] };
+      changedThreadIds.clear();
+      sinceRevision = revision;
+      yield* PubSub.publish(changes, batch);
+    }
   });
 
   const toError = (message: string) => (cause: unknown) => new MonitoringError({ message, cause });
@@ -172,7 +220,9 @@ const make = Effect.gen(function* () {
   const analyze = Effect.fn("MonitoringService.analyze")(function* (threadId: ThreadId) {
     const read = yield* readThreadAnalysis(threadId).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
+      sql.withTransaction,
       NodeSqliteClient.readOnly,
+      NodeSqliteClient.inBackground,
     );
     if (read === null) return null;
     // Such a chat falls on no day of the overview, so it fails here and counts as failed.
@@ -209,14 +259,27 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly settledKey: string;
     readonly summaryJson: string | null;
+    readonly detailJson: string | null;
     readonly error: string | null;
+    readonly attempts: number;
+    readonly previousError: string | null;
   }) {
-    const analyzedAt = DateTime.formatIso(yield* DateTime.now);
+    const now = yield* DateTime.now;
+    const analyzedAt = DateTime.formatIso(now);
+    const retryAt =
+      row.error !== null && row.attempts < MAX_ANALYSIS_ATTEMPTS
+        ? DateTime.formatIso(
+            DateTime.addDuration(now, Duration.minutes(30 * 2 ** (row.attempts - 1))),
+          )
+        : null;
+    const announcesChange = row.error === null || row.error !== row.previousError;
     const stored = yield* sql<{ readonly thread_id: string }>`
       INSERT INTO monitoring_thread_analyses
-        (thread_id, settled_at, analyzer_version, analyzed_at, summary_json, error)
+        (thread_id, settled_at, analyzer_version, analyzed_at, summary_json, detail_json, error,
+         attempts, retry_at, announced_title, announced_project_id, announced_settled_at)
       SELECT t.thread_id, ${row.settledKey}, ${ANALYZER_VERSION}, ${analyzedAt},
-        ${row.summaryJson}, ${row.error}
+        ${row.summaryJson}, ${row.detailJson}, ${row.error}, ${row.attempts}, ${retryAt},
+        t.title, t.project_id, ${row.settledKey}
       FROM orchestration_v2_projection_threads t
       WHERE t.thread_id = ${row.threadId}
         AND ${settledListedThread(sql)}
@@ -224,35 +287,44 @@ const make = Effect.gen(function* () {
       ON CONFLICT (thread_id) DO UPDATE SET
         settled_at = excluded.settled_at,
         analyzer_version = excluded.analyzer_version, analyzed_at = excluded.analyzed_at,
-        summary_json = excluded.summary_json, error = excluded.error
+        summary_json = excluded.summary_json, detail_json = excluded.detail_json,
+        error = excluded.error, attempts = excluded.attempts, retry_at = excluded.retry_at
+        ${
+          announcesChange
+            ? sql`,
+          announced_title = excluded.announced_title,
+          announced_project_id = excluded.announced_project_id,
+          announced_settled_at = excluded.announced_settled_at
+        `
+            : sql``
+        }
       RETURNING thread_id
     `;
+    if (stored.length > 0 && announcesChange) {
+      yield* markChanged(row.threadId);
+    }
     return stored.length > 0;
-  });
-
-  const storeAnalysis = Effect.fn("MonitoringService.storeAnalysis")(function* ({
-    detail: { summary },
-    settledKey,
-  }: {
-    readonly detail: MonitoringThreadDetail;
-    readonly settledKey: string;
-  }) {
-    const summaryJson = yield* encodeSummary(summary);
-    return yield* storeRow({ threadId: summary.threadId, settledKey, summaryJson, error: null });
   });
 
   const deleteAnalysis = Effect.fn("MonitoringService.deleteAnalysis")(function* (
     threadId: ThreadId,
   ) {
-    // Most chats an event names have no analysis; a read keeps them off the write lock.
-    const existing = yield* sql<{ readonly thread_id: string }>`
-      SELECT thread_id FROM monitoring_thread_analyses WHERE thread_id = ${threadId}
+    const obsolete = sql`
+      thread_id = ${threadId}
+      AND NOT EXISTS (
+        SELECT 1 FROM orchestration_v2_projection_threads t
+        WHERE t.thread_id = ${threadId} AND ${settledListedThread(sql)}
+          AND json_extract(t.payload_json, '$.settledAt') = monitoring_thread_analyses.settled_at
+      )
+    `;
+    const existing = yield* sql`
+      SELECT thread_id FROM monitoring_thread_analyses WHERE ${obsolete}
     `.pipe(NodeSqliteClient.readOnly);
     if (existing.length === 0) return;
-    const removed = yield* sql<{ readonly thread_id: string }>`
-      DELETE FROM monitoring_thread_analyses WHERE thread_id = ${threadId} RETURNING thread_id
+    const removed = yield* sql`
+      DELETE FROM monitoring_thread_analyses WHERE ${obsolete} RETURNING thread_id
     `;
-    if (removed.length > 0) yield* publishChange();
+    if (removed.length > 0) yield* markChanged(threadId);
   });
 
   const resolveWindow = Effect.fn("MonitoringService.resolveWindow")(function* (input: {
@@ -338,25 +410,25 @@ const make = Effect.gen(function* () {
    * failed and is analyzed again instead of leaving the sums and pages. A row stored since is kept.
    */
   const markUnreadable = Effect.fn("MonitoringService.markUnreadable")(function* (
-    rows: ReadonlyArray<StoredAnalysis>,
+    rows: ReadonlyArray<StoredAnalysis & { readonly detail_json?: string | null }>,
   ) {
     yield* Effect.logWarning("Stored chat analyses could not be read; they are analyzed again.", {
       threadIds: rows.map((row) => row.thread_id),
     });
     const analyzedAt = DateTime.formatIso(yield* DateTime.now);
-    let marked = 0;
     for (const row of rows) {
       const updated = yield* sql<{ readonly thread_id: string }>`
         UPDATE monitoring_thread_analyses
-        SET summary_json = NULL, error = ${UNREADABLE_ANALYSIS}, analyzed_at = ${analyzedAt}
+        SET summary_json = NULL, detail_json = NULL, error = ${UNREADABLE_ANALYSIS},
+          analyzed_at = ${analyzedAt}, attempts = 0, retry_at = NULL
         WHERE thread_id = ${row.thread_id}
           AND settled_at = ${row.settled_at}
           AND summary_json = ${row.summary_json}
+          ${row.detail_json === undefined ? sql`` : sql`AND detail_json IS ${row.detail_json}`}
         RETURNING thread_id
       `;
-      marked += updated.length;
+      if (updated.length > 0) yield* markChanged(row.thread_id as ThreadId);
     }
-    if (marked > 0) yield* publishChange();
   });
 
   /** Runs `read` again after marking the analyses it could not decode, until it decodes all. */
@@ -382,10 +454,16 @@ const make = Effect.gen(function* () {
 
     return yield* readDecoded(
       Effect.gen(function* () {
+        const readRevision = revision;
         const groups = makeMonitoringGroups(days);
         const read = yield* readOverview(window, groups);
         return {
-          result: { groups: groups.groups(), unanalyzed: read.unanalyzed },
+          result: {
+            serverEpoch,
+            revision: readRevision,
+            groups: groups.groups(),
+            unanalyzed: read.unanalyzed,
+          },
           unreadable: read.unreadable,
         };
       }),
@@ -485,6 +563,7 @@ const make = Effect.gen(function* () {
         WHERE ${matching()}
       `.pipe(Effect.map((rows) => rows[0]?.total ?? 0));
       const readPage = Effect.gen(function* () {
+        const readRevision = revision;
         // The sort holds only each chat's keys; summaries are read for the one page it keeps.
         const rows = yield* sql<
           StoredAnalysis & { readonly sort_value: number | null; readonly total: number }
@@ -520,7 +599,7 @@ const make = Effect.gen(function* () {
             unreadable.push(row);
           }
         }
-        return { result: { chats, total }, unreadable };
+        return { result: { serverEpoch, revision: readRevision, chats, total }, unreadable };
       }).pipe(
         sql.withTransaction,
         NodeSqliteClient.readOnly,
@@ -533,84 +612,98 @@ const make = Effect.gen(function* () {
 
   const thread: MonitoringService["Service"]["thread"] = Effect.fn("MonitoringService.thread")(
     function* ({ threadId }) {
-      const analyzed = yield* analyze(threadId).pipe(
-        Effect.mapError(toError("Could not analyze the chat.")),
-      );
-      if (analyzed === null) return null;
-      const stored = yield* sql<{
-        readonly settled_at: string;
-        readonly analyzer_version: number;
-        readonly summary_json: string | null;
-      }>`
-        SELECT settled_at, analyzer_version, summary_json
-        FROM monitoring_thread_analyses WHERE thread_id = ${threadId}
+      const readRevision = revision;
+      const rows = yield* sql<
+        Omit<StoredAnalysis, "summary_json"> & {
+          readonly summary_json: string | null;
+          readonly detail_json: string | null;
+          readonly error: string | null;
+        }
+      >`
+        SELECT m.thread_id, m.settled_at, m.summary_json, m.detail_json, m.error, t.title, t.project_id
+        FROM monitoring_thread_analyses m
+        JOIN orchestration_v2_projection_threads t ON t.thread_id = m.thread_id
+        WHERE m.thread_id = ${threadId} AND ${settledListedThread(sql)}
+          AND m.settled_at = json_extract(t.payload_json, '$.settledAt')
+          AND m.analyzer_version = ${ANALYZER_VERSION}
       `.pipe(
         NodeSqliteClient.readOnly,
         Effect.mapError(toError("Could not read the stored chat analysis.")),
       );
-      const current = stored[0];
-      if (
-        current === undefined ||
-        current.summary_json === null ||
-        current.analyzer_version !== ANALYZER_VERSION ||
-        current.settled_at !== analyzed.settledKey
-      ) {
-        const stored = yield* storeAnalysis(analyzed).pipe(
-          Effect.mapError(toError("Could not store the chat analysis.")),
-        );
-        if (stored) yield* publishChange();
+      const row = rows[0];
+      if (row?.error != null) return yield* new MonitoringError({ message: row.error });
+      if (row?.summary_json == null || row.detail_json === null) {
+        return { serverEpoch, revision: readRevision, detail: null };
       }
-      return analyzed.detail;
+      const stored = { ...row, summary_json: row.summary_json };
+      const summary = yield* readStored(stored);
+      const detail = yield* decodeDetail(row.detail_json).pipe(Effect.option);
+      if (Option.isNone(summary) || Option.isNone(detail)) {
+        yield* markUnreadable([stored]).pipe(
+          Effect.mapError(toError("Could not mark the unreadable chat analysis.")),
+        );
+        return yield* new MonitoringError({ message: UNREADABLE_ANALYSIS });
+      }
+      const current = summary.value.summary;
+      return {
+        serverEpoch,
+        revision: readRevision,
+        detail: {
+          ...detail.value,
+          summary: current,
+          lanes: detail.value.lanes.map((lane) =>
+            lane.kind === "chat" ? { ...lane, label: current.title } : lane,
+          ),
+        },
+      };
     },
   );
 
-  /**
-   * Settled listed chats with no analysis of the current version and settle, then those whose
-   * analysis failed at least {@link ANALYSIS_RETRY} ago; newest settle first.
-   */
-  const selectStale = Effect.fn("MonitoringService.selectStale")(function* () {
-    const retryBefore = DateTime.formatIso(
-      DateTime.subtractDuration(yield* DateTime.now, ANALYSIS_RETRY),
-    );
-    return yield* sql<{ readonly thread_id: ThreadId; readonly settled_at: string }>`
-      SELECT t.thread_id, json_extract(t.payload_json, '$.settledAt') AS settled_at
-      FROM orchestration_v2_projection_threads t
-      LEFT JOIN monitoring_thread_analyses m
-        ON m.thread_id = t.thread_id
-        AND m.analyzer_version = ${ANALYZER_VERSION}
-        AND m.settled_at = json_extract(t.payload_json, '$.settledAt')
-      WHERE ${settledListedThread(sql)}
-        AND (m.thread_id IS NULL OR (m.error IS NOT NULL AND m.analyzed_at <= ${retryBefore}))
-      ORDER BY m.thread_id IS NOT NULL, settled_at DESC, t.thread_id
-      LIMIT ${ANALYSIS_BATCH}
-    `.pipe(NodeSqliteClient.readOnly);
-  });
+  const selectStale = Effect.fn("MonitoringService.selectStale")(
+    function* (threadId: ThreadId | undefined) {
+      const now = DateTime.formatIso(yield* DateTime.now);
+      return yield* staleAnalysisCandidates(sql, now, threadId);
+    },
+    NodeSqliteClient.readOnly,
+    NodeSqliteClient.inBackground,
+  );
 
-  /**
-   * True when a row was stored. A chat that cannot be analyzed is stored as failed, so it neither
-   * holds back the chats behind it nor is tried again before {@link ANALYSIS_RETRY} has passed.
-   */
   const analyzeAndStore = Effect.fn("MonitoringService.analyzeAndStore")(
-    function* (stale: { readonly thread_id: ThreadId; readonly settled_at: string }) {
-      const outcome = yield* analyze(stale.thread_id).pipe(
-        Effect.map((analyzed) => ({ analyzed, cause: null })),
-        Effect.catchCauseIf(notInterrupt, (cause) => Effect.succeed({ analyzed: null, cause })),
-      );
-      if (outcome.cause !== null) {
+    function* (stale: StaleChat) {
+      const encoded = yield* Effect.gen(function* () {
+        const analyzed = yield* analyze(stale.thread_id);
+        if (analyzed === null || analyzed.settledKey !== stale.settled_at) return null;
+        const { summary, ...detail } = analyzed.detail;
+        return {
+          summaryJson: yield* encodeSummary(summary),
+          detailJson: yield* encodeDetail(detail),
+        };
+      }).pipe(Effect.exit);
+      if (Exit.isFailure(encoded)) {
+        if (!notInterrupt(encoded.cause)) return yield* Effect.failCause(encoded.cause);
         yield* Effect.logWarning("A chat could not be analyzed.", {
           threadId: stale.thread_id,
-          cause: Cause.pretty(outcome.cause),
+          cause: Cause.pretty(encoded.cause),
         });
         return yield* storeRow({
           threadId: stale.thread_id,
           settledKey: stale.settled_at,
           summaryJson: null,
-          error: failureMessage(outcome.cause),
+          detailJson: null,
+          attempts: stale.attempts + 1,
+          previousError: stale.error,
+          error: failureMessage(encoded.cause),
         });
       }
-      // The chat stopped being a settled listed chat after it was selected.
-      if (outcome.analyzed === null) return false;
-      return yield* storeAnalysis(outcome.analyzed);
+      if (encoded.value === null) return false;
+      return yield* storeRow({
+        threadId: stale.thread_id,
+        settledKey: stale.settled_at,
+        ...encoded.value,
+        attempts: 0,
+        previousError: stale.error,
+        error: null,
+      });
     },
     (effect, stale) =>
       effect.pipe(
@@ -623,30 +716,48 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  /** True when it stored a row. */
-  const analysisPass = Effect.fn("MonitoringService.analysisPass")(function* () {
-    const stale = yield* selectStale();
-    if (stale.length === 0) return false;
-    const stored = yield* Effect.forEach(stale, analyzeAndStore);
-    return stored.some(Boolean);
+  const selectCandidates = Effect.fn("MonitoringService.selectCandidates")(
+    function* (threadId: ThreadId | undefined) {
+      return yield* selectStale(threadId);
+    },
+    Effect.catchCauseIf(notInterrupt, (cause) =>
+      Effect.logWarning("Monitoring could not select chats to analyze.", {
+        cause: Cause.pretty(cause),
+      }).pipe(Effect.as([])),
+    ),
+  );
+
+  const enqueue = Effect.fn("MonitoringService.enqueue")(function* (threadId: ThreadId) {
+    work.add(threadId);
+    yield* Queue.offer(wake, undefined);
   });
 
   const analysisLoop = Effect.gen(function* () {
-    let unpublished = 0;
+    let candidates = yield* selectCandidates(undefined);
+    let index = 0;
+    let nextSweep = DateTime.addDuration(yield* DateTime.now, RETRY_SWEEP_INTERVAL);
     for (;;) {
-      const progressed = yield* analysisPass().pipe(
-        Effect.catchCauseIf(notInterrupt, (cause) =>
-          Effect.logWarning("Monitoring could not select chats to analyze.", {
-            cause: Cause.pretty(cause),
-          }).pipe(Effect.as(false)),
-        ),
-      );
-      if (progressed) unpublished++;
-      if (unpublished > 0 && (!progressed || unpublished === PUBLISH_EVERY_PASSES)) {
-        unpublished = 0;
-        yield* publishChange();
+      const pending = Array.from(work);
+      work.clear();
+      for (const threadId of pending) {
+        const [candidate] = yield* selectCandidates(threadId);
+        if (candidate !== undefined) yield* analyzeAndStore(candidate);
       }
-      if (!progressed) yield* Queue.take(wake).pipe(Effect.timeoutOption(ANALYSIS_RETRY));
+      const now = yield* DateTime.now;
+      if (index >= candidates.length && DateTime.isGreaterThanOrEqualTo(now, nextSweep)) {
+        candidates = yield* selectCandidates(undefined);
+        index = 0;
+        nextSweep = DateTime.addDuration(now, RETRY_SWEEP_INTERVAL);
+      }
+      const end = Math.min(index + ANALYSIS_BATCH, candidates.length);
+      for (; index < end; index++) {
+        const candidate = candidates[index]!;
+        const [current] = yield* selectCandidates(candidate.thread_id);
+        if (current !== undefined) yield* analyzeAndStore(current);
+      }
+      if (index >= candidates.length && work.size === 0) {
+        yield* Queue.take(wake).pipe(Effect.timeoutOption(DateTime.distance(now, nextSweep)));
+      }
     }
   });
 
@@ -660,48 +771,70 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  /**
-   * Announces a settled listed chat, since the overview and the list show its title and project as
-   * they are now, its pending count included. A failed lookup announces it anyway, so no view keeps
-   * an old title or project.
-   */
-  const announceSettled = (threadId: ThreadId) =>
-    sql<{ readonly thread_id: string }>`
-      SELECT t.thread_id
-      FROM orchestration_v2_projection_threads t
-      WHERE t.thread_id = ${threadId} AND ${settledListedThread(sql)}
-    `.pipe(
-      NodeSqliteClient.readOnly,
-      Effect.flatMap((rows) => (rows.length > 0 ? publishChange() : Effect.void)),
-      Effect.catchCauseIf(notInterrupt, (cause) =>
-        Effect.logWarning("Monitoring could not read a changed chat.", {
-          threadId,
-          cause: Cause.pretty(cause),
-        }).pipe(Effect.andThen(publishChange())),
+  const announceMetadataChange = Effect.fn("MonitoringService.announceMetadataChange")(
+    function* ({
+      payload,
+      threadId,
+    }: {
+      readonly threadId: ThreadId;
+      readonly payload: OrchestrationV2AppThread;
+    }) {
+      if (payload.deletedAt !== null || !isListedThreadLineage(payload.lineage)) return;
+
+      const same = yield* sql`
+        SELECT 1
+        FROM monitoring_thread_analyses m
+        JOIN orchestration_v2_projection_threads t ON t.thread_id = m.thread_id
+        WHERE m.thread_id = ${threadId}
+          AND ${settledListedThread(sql)}
+          AND m.announced_title = t.title
+          AND m.announced_project_id = t.project_id
+          AND m.announced_settled_at = json_extract(t.payload_json, '$.settledAt')
+      `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
+      if (same.length > 0) return;
+
+      yield* sql`
+        UPDATE monitoring_thread_analyses
+        SET announced_title = t.title, announced_project_id = t.project_id,
+          announced_settled_at = json_extract(t.payload_json, '$.settledAt')
+        FROM orchestration_v2_projection_threads t
+        WHERE monitoring_thread_analyses.thread_id = ${threadId}
+          AND t.thread_id = ${threadId} AND ${settledListedThread(sql)}
+      `;
+      yield* markChanged(threadId);
+    },
+    (effect, { threadId }) =>
+      effect.pipe(
+        Effect.catchCauseIf(notInterrupt, (cause) =>
+          Effect.logWarning("Monitoring could not compare the chat's announced metadata.", {
+            threadId,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.andThen(markChanged(threadId))),
+        ),
       ),
-    );
+  );
 
   const start: MonitoringService["Service"]["start"] = Effect.fn("MonitoringService.start")(
     function* () {
       const events = orchestrator.streamDomainEvents;
-      yield* forkParked(analysisLoop);
+      yield* forkParked(announceChanges);
       yield* forkParked(
         Stream.runForEach(events, (event) => {
           switch (event.type) {
             case "thread.settled":
-              return Queue.offer(wake, undefined);
+              return enqueue(event.threadId);
             case "thread.unsettled":
             case "thread.deleted":
               return removeAnalysis(event.threadId);
             // A pin and a skipped scheduled recovery change the settle with no settle event.
             case "thread.pinned":
               return isSettled(event.payload)
-                ? Queue.offer(wake, undefined)
+                ? enqueue(event.threadId)
                 : removeAnalysis(event.threadId);
             // So can a metadata update, which also carries a rename or a move.
             case "thread.metadata-updated":
               return isSettled(event.payload)
-                ? Queue.offer(wake, undefined).pipe(Effect.andThen(announceSettled(event.threadId)))
+                ? enqueue(event.threadId).pipe(Effect.andThen(announceMetadataChange(event)))
                 : removeAnalysis(event.threadId);
             default:
               return Effect.void;
@@ -712,6 +845,7 @@ const make = Effect.gen(function* () {
           ),
         ),
       );
+      yield* forkParked(analysisLoop);
     },
   );
 

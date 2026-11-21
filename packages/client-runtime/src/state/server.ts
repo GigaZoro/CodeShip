@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type ThreadId,
   type EnvironmentStartup,
   type OrchestrationV2RestartHold,
   OrchestrationV2RestartHoldError,
@@ -34,6 +35,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as HttpClient from "effect/http/HttpClient";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
+import { followMonitoringChanges, MONITORING_REQUEST_TIMEOUT_MS } from "../monitoring/atoms.ts";
 import {
   createAtomCommandScheduler,
   createEnvironmentRpcCommand,
@@ -1404,24 +1406,60 @@ export function createServerEnvironmentAtoms<R, E>(
     label: "environment-data:server:monitoring:changes",
     tag: WS_METHODS.monitoringSubscribeChanges,
   });
-  const monitoringOverview = createEnvironmentRpcQueryAtomFamily(runtime, {
-    label: "environment-data:server:monitoring:overview",
-    tag: WS_METHODS.monitoringOverview,
+  const watchMonitoringQuery = <I, A extends object | null, E>(
+    query: (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: I;
+    }) => Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+    threadIdOf?: (input: I) => ThreadId,
+  ) => {
+    const watched = Atom.family((key: string) => {
+      const [environmentId, input] = JSON.parse(key) as [EnvironmentId, I];
+      return followMonitoringChanges(
+        query({ environmentId, input }),
+        monitoringChanges({ environmentId, input: {} }),
+        threadIdOf?.(input),
+      );
+    });
+    return ({
+      environmentId,
+      input,
+    }: {
+      readonly environmentId: EnvironmentId;
+      readonly input: I;
+    }) => watched(JSON.stringify([environmentId, input]));
+  };
+  const monitoringQueryOptions = {
     staleTimeMs: 60_000,
-    refreshTrigger: ({ environmentId }) => monitoringChanges({ environmentId, input: {} }),
-  });
-  const monitoringChats = createEnvironmentRpcQueryAtomFamily(runtime, {
-    label: "environment-data:server:monitoring:chats",
-    tag: WS_METHODS.monitoringChats,
-    staleTimeMs: 60_000,
-    refreshTrigger: ({ environmentId }) => monitoringChanges({ environmentId, input: {} }),
-  });
-  const monitoringThread = createEnvironmentRpcQueryAtomFamily(runtime, {
+    requestTimeoutMs: MONITORING_REQUEST_TIMEOUT_MS,
+  };
+  const monitoringOverview = watchMonitoringQuery(
+    createEnvironmentRpcQueryAtomFamily(runtime, {
+      ...monitoringQueryOptions,
+      label: "environment-data:server:monitoring:overview",
+      tag: WS_METHODS.monitoringOverview,
+    }),
+  );
+  const monitoringChats = watchMonitoringQuery(
+    createEnvironmentRpcQueryAtomFamily(runtime, {
+      ...monitoringQueryOptions,
+      label: "environment-data:server:monitoring:chats",
+      tag: WS_METHODS.monitoringChats,
+    }),
+  );
+  const threadQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    ...monitoringQueryOptions,
     label: "environment-data:server:monitoring:thread",
     tag: WS_METHODS.monitoringThread,
-    staleTimeMs: 60_000,
-    refreshTrigger: ({ environmentId }) => monitoringChanges({ environmentId, input: {} }),
   });
+  const monitoringThread = watchMonitoringQuery(
+    (target: Parameters<typeof threadQuery>[0]) =>
+      threadQuery({
+        ...target,
+        input: { ...target.input, withRevision: true },
+      }),
+    ({ threadId }) => threadId,
+  );
   // The server lifts a hold when a sign-in changes, so a switch shows here within the minute.
   const usageHolds = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:provider:usage-holds",

@@ -1,15 +1,20 @@
 import type {
   EnvironmentId,
+  MonitoringChange,
   MonitoringChatsInput,
   MonitoringOverviewInput,
+  ThreadId,
 } from "@t3tools/contracts";
-import type * as Cause from "effect/Cause";
-import { type AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
+import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 
 import type { EnvironmentPresentation } from "../connection/presentation.ts";
+import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
 import type { createEnvironmentCatalogAtoms } from "../state/connections.ts";
 import type { createEnvironmentPresentationAtoms } from "../state/presentation.ts";
-import { runAtomCommand } from "../state/runtime.ts";
+import { executeAtomQuery, runAtomCommand, type AtomQueryOptions } from "../state/runtime.ts";
 import type { createServerEnvironmentAtoms } from "../state/server.ts";
 import {
   environmentReport,
@@ -35,6 +40,125 @@ function monitoringEnvironments(
     if (environment !== null) environments.push(environment);
   }
   return environments;
+}
+
+/**
+ * Defer invalidations while a read is in flight. Its answer may already include the change.
+ * When a subscriber skips a batch, the newest notice cannot tell it which threads it missed.
+ */
+export function followMonitoringChanges<A extends object | null, E, F>(
+  query: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+  changes: Atom.Atom<AsyncResult.AsyncResult<MonitoringChange, F>>,
+  threadId?: ThreadId,
+): Atom.Atom<AsyncResult.AsyncResult<A, E>> {
+  const state = new WeakMap<
+    AtomRegistry.AtomRegistry,
+    {
+      seen: MonitoringChange | null;
+      pending: MonitoringChange | null;
+    }
+  >();
+  return Atom.transform(
+    query,
+    (get) => {
+      const notice = AsyncResult.getOrElse(get(changes), () => null);
+      const result = get(query);
+      const cursor = state.get(get.registry) ?? { seen: null, pending: null };
+      state.set(get.registry, cursor);
+      const answer = answerVersion(result);
+      if (notice !== null && notice !== cursor.seen) {
+        const seen = cursor.seen;
+        const sameEpoch = seen?.serverEpoch === notice.serverEpoch;
+        const reset = !sameEpoch || (seen !== null && notice.revision <= seen.revision);
+        if (reset) cursor.pending = null;
+        const baseline =
+          reset || seen === null
+            ? answer?.serverEpoch === notice.serverEpoch
+              ? (answer?.revision ?? 0)
+              : 0
+            : seen.revision;
+        const mayHaveMissed = notice.sinceRevision !== undefined && notice.sinceRevision > baseline;
+        if (
+          threadId === undefined ||
+          mayHaveMissed ||
+          notice.threadIds?.includes(threadId) !== false
+        ) {
+          cursor.pending = notice;
+        }
+        cursor.seen = notice;
+      }
+      const pending = cursor.pending;
+      if (pending === null || result.waiting || result._tag === "Initial") return result;
+      if (
+        result._tag !== "Failure" &&
+        answer?.serverEpoch !== undefined &&
+        pending.serverEpoch !== undefined &&
+        answer.serverEpoch !== pending.serverEpoch
+      )
+        return result;
+      if (
+        answer?.serverEpoch === pending.serverEpoch &&
+        pending.revision <= (answer?.revision ?? -1)
+      ) {
+        cursor.pending = null;
+        return result;
+      }
+      // Readers and a manual refresh can consume this completion before the next read starts.
+      let current = true;
+      get.addFinalizer(() => {
+        current = false;
+      });
+      queueMicrotask(() => {
+        if (!current || cursor.pending !== pending || get.registry.get(query) !== result) return;
+        cursor.pending = null;
+        get.registry.refresh(query);
+      });
+      return result;
+    },
+    { initialValueTarget: query },
+  );
+}
+
+function answerVersion<A extends object | null, E>(result: AsyncResult.AsyncResult<A, E>) {
+  const value = AsyncResult.getOrElse(result, () => null);
+  if (value === null || !("revision" in value) || typeof value.revision !== "number") return null;
+  return {
+    revision: value.revision,
+    serverEpoch:
+      "serverEpoch" in value && typeof value.serverEpoch === "string"
+        ? value.serverEpoch
+        : undefined,
+  };
+}
+
+export const MONITORING_REQUEST_TIMEOUT_MS = 15_000;
+const isEnvironmentRpcUnavailable = Schema.is(EnvironmentRpcUnavailableError);
+
+export function executeMonitoringQuery<A, E>(
+  registry: AtomRegistry.AtomRegistry,
+  query: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+  environmentId: EnvironmentId,
+  options: AtomQueryOptions = {},
+) {
+  return executeAtomQuery(registry, query, {
+    reportFailure: false,
+    reportDefect: false,
+    ...options,
+    deadline: {
+      milliseconds: MONITORING_REQUEST_TIMEOUT_MS,
+      error: new EnvironmentRpcUnavailableError({
+        environmentId,
+        reason: "timeout",
+        message: "The request timed out.",
+      }),
+    },
+  });
+}
+
+export function monitoringRefreshTimedOut(result: AsyncResult.AsyncResult<unknown, unknown>) {
+  if (result._tag !== "Failure") return false;
+  const error = Cause.squash(result.cause);
+  return isEnvironmentRpcUnavailable(error) && error.reason === "timeout";
 }
 
 /** The overview and chat lists merged across every environment the user asked to connect. */
@@ -106,16 +230,19 @@ export function createMonitoringAtoms(input: {
   const overviewAtom = Atom.family((inputKey: string) =>
     Atom.make((get): MonitoringOverviewView => {
       const overview = JSON.parse(inputKey) as MonitoringOverviewInput;
+      const previous = Option.getOrNull(get.self<MonitoringOverviewView>());
       return mergeMonitoringOverviews(
         monitoringEnvironments(get(presentations.presentationsAtom)).map((environment) => {
           const { environmentId } = environment;
-          return environmentReport(environment, () =>
-            noteRead(
-              get(overviewQuery(environmentId, overview)),
-              environmentId,
-              queryKey(environmentId, overview),
-              overviewQuery(environmentId, overview),
-            ),
+          const query = overviewQuery(environmentId, overview);
+          const previousReport = previous?.environments.find(
+            (report) => report.environmentId === environmentId,
+          );
+          return environmentReport(
+            environment,
+            () => noteRead(get(query), environmentId, queryKey(environmentId, overview), query),
+            previousReport?.result,
+            previousReport,
           );
         }),
       );
@@ -136,7 +263,8 @@ export function createMonitoringAtoms(input: {
       const listRead = offsetsRead.get(requestKey) ?? new Map<EnvironmentId, Set<number>>();
       offsetsRead.set(requestKey, listRead);
       const sources: MonitoringChatsSource[] = [];
-      for (const environment of monitoringEnvironments(get(presentations.presentationsAtom))) {
+      const environments = monitoringEnvironments(get(presentations.presentationsAtom));
+      for (const environment of environments) {
         const { environmentId } = environment;
         const firstPage = monitoringChatsInput(environmentId, request, 0);
         if (firstPage === null) continue;
@@ -156,7 +284,12 @@ export function createMonitoringAtoms(input: {
           },
         });
       }
-      return mergeMonitoringChats(sources, request);
+      return mergeMonitoringChats(
+        sources,
+        request,
+        Option.getOrUndefined(get.self<MonitoringChatsView>()),
+        environments.map(({ environmentId }) => environmentId),
+      );
     }).pipe(Atom.withLabel(`${input.label}:chats:${requestKey}`)),
   );
 
@@ -172,15 +305,22 @@ export function createMonitoringAtoms(input: {
   }) => {
     const environments = monitoringEnvironments(registry.get(presentations.presentationsAtom));
     const ready = new Set<EnvironmentId>();
-    const asks = new Map<string, () => void>();
-    const ask = (key: string, query: Atom.Atom<unknown>) =>
-      asks.set(key, () => registry.refresh(query));
+    const asks = new Map<
+      string,
+      { environmentId: EnvironmentId; query: FailedRead["query"]; run: () => void }
+    >();
+    const ask = (environmentId: EnvironmentId, key: string, query: FailedRead["query"]) =>
+      asks.set(key, { environmentId, query, run: () => registry.refresh(query) });
     for (const { environmentId, unready } of environments) {
       if (unready === null) {
         ready.add(environmentId);
         const { overview } = views;
         if (overview !== undefined) {
-          ask(queryKey(environmentId, overview), overviewQuery(environmentId, overview));
+          ask(
+            environmentId,
+            queryKey(environmentId, overview),
+            overviewQuery(environmentId, overview),
+          );
         }
       } else if (unready.reconnects) {
         void runAtomCommand(registry, input.catalog.retryNow, environmentId, {
@@ -195,14 +335,34 @@ export function createMonitoringAtoms(input: {
         if (firstPage === null) continue;
         for (const offset of listRead?.get(environmentId) ?? []) {
           const page = { ...firstPage, offset };
-          ask(queryKey(environmentId, page), chatsQuery(environmentId, page));
+          ask(environmentId, queryKey(environmentId, page), chatsQuery(environmentId, page));
         }
       }
     }
     for (const [key, failed] of failedReads) {
-      if (ready.has(failed.environmentId)) asks.set(key, () => askFailed(key, failed));
+      if (ready.has(failed.environmentId)) {
+        asks.set(key, {
+          environmentId: failed.environmentId,
+          query: failed.query,
+          run: () => askFailed(key, failed),
+        });
+      }
     }
-    for (const run of asks.values()) run();
+    const pending = [];
+    for (const [key, { environmentId, query, run }] of asks) {
+      run();
+      pending.push(
+        executeMonitoringQuery(registry, query, environmentId).then((result) => {
+          const failed = failedReads.get(key);
+          if (failed !== undefined && monitoringRefreshTimedOut(result)) {
+            failed.unwatch?.();
+            failed.unwatch = null;
+          }
+          return result;
+        }),
+      );
+    }
+    return Promise.all(pending);
   };
 
   return { overviewAtom, chatsAtom, refresh };

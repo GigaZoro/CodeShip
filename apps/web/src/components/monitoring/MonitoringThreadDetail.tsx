@@ -1,3 +1,5 @@
+import { monitoringRefreshTimedOut } from "@t3tools/client-runtime/monitoring/atoms";
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import type { EnvironmentId, MonitoringThreadDetail, ThreadId } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
@@ -49,7 +51,7 @@ export function MonitoringThreadDeepDive({
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
-  const { detail, isPending, error } = useMonitoringThread(environmentId, threadId);
+  const { detail, isPending, error, reconnecting } = useMonitoringThread(environmentId, threadId);
 
   return (
     <div className="flex flex-col gap-6">
@@ -82,6 +84,8 @@ export function MonitoringThreadDeepDive({
             </Button>
           </AlertAction>
         </Alert>
+      ) : reconnecting && detail ? (
+        <p className="text-sm text-muted-foreground">{t("Showing previous monitoring results.")}</p>
       ) : null}
       {detail ? (
         <DeepDiveBody detail={detail} environmentId={environmentId} />
@@ -108,12 +112,19 @@ export function MonitoringThreadRefresh({
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
-  const { isPending } = useMonitoringThread(environmentId, threadId);
+  const [refreshing, setRefreshing] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
+  const refresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setTimedOut(false);
+    const [answer] = await Promise.resolve()
+      .then(() => refreshMonitoringThread(environmentId, threadId))
+      .finally(() => setRefreshing(false));
+    setTimedOut(monitoringRefreshTimedOut(answer));
+  };
   return (
-    <MonitoringRefreshButton
-      refreshing={isPending}
-      onRefresh={() => refreshMonitoringThread(environmentId, threadId)}
-    />
+    <MonitoringRefreshButton refreshing={refreshing} timedOut={timedOut} onRefresh={refresh} />
   );
 }
 

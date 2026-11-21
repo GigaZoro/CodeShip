@@ -1,5 +1,7 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import type {
+  MonitoringChange,
   MonitoringOverviewInput,
   MonitoringThreadSummary,
   OrchestrationV2AppThread,
@@ -18,12 +20,17 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Stream from "effect/Stream";
+import * as Tracer from "effect/Tracer";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -140,7 +147,12 @@ const analyzedSummary = (
 });
 
 const domainEvent = (
-  type: "thread.settled" | "thread.unsettled" | "thread.pinned" | "thread.metadata-updated",
+  type:
+    | "thread.created"
+    | "thread.settled"
+    | "thread.unsettled"
+    | "thread.pinned"
+    | "thread.metadata-updated",
   thread: OrchestrationV2AppThread,
   key: string = type,
 ): OrchestrationV2DomainEvent => ({
@@ -156,6 +168,7 @@ const makeHarness = Effect.fn("makeHarness")(function* (
 ) {
   const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
   const layer = MonitoringService.layer.pipe(
+    Layer.provide(NodeCrypto.layer),
     Layer.provide(Layer.mock(UsageService.UsageService)({ priceTokens })),
     Layer.provide(
       Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.fromQueue(events) }),
@@ -262,10 +275,39 @@ const overviewIds = (monitoring: MonitoringService.MonitoringService["Service"])
 const unanalyzedOf = (monitoring: MonitoringService.MonitoringService["Service"]) =>
   monitoring.overview(january()).pipe(Effect.map((overview) => overview.unanalyzed));
 
-const nextChange = (monitoring: MonitoringService.MonitoringService["Service"], seen: number) =>
-  Stream.runHead(
+const nextNotice = Effect.fn("nextNotice")(function* (
+  monitoring: MonitoringService.MonitoringService["Service"],
+  seen: number,
+) {
+  const next = yield* Stream.runHead(
     monitoring.subscribeChanges.pipe(Stream.filter((change) => change.revision > seen)),
-  ).pipe(Effect.map((change) => Option.getOrThrow(change).revision));
+  ).pipe(Effect.forkChild);
+  yield* TestClock.adjust("3 seconds");
+  return Option.getOrThrow(yield* Fiber.join(next));
+});
+
+const nextChange = (monitoring: MonitoringService.MonitoringService["Service"], seen: number) =>
+  nextNotice(monitoring, seen).pipe(Effect.map((change) => change.revision));
+
+const observeAnalysesStored = Effect.fn("observeAnalysesStored")(function* (count: number) {
+  const done = yield* Deferred.make<void>();
+  let stored = 0;
+  const tracer = Tracer.make({
+    span(options) {
+      const span = new Tracer.NativeSpan(options);
+      if (options.name !== "MonitoringService.storeRow") return span;
+      const end = span.end.bind(span);
+      span.end = (endTime, exit) => {
+        end(endTime, exit);
+        if (Exit.isSuccess(exit) && exit.value === true && ++stored === count) {
+          Deferred.doneUnsafe(done, Effect.void);
+        }
+      };
+      return span;
+    },
+  });
+  return { tracer, done: Deferred.await(done) };
+});
 
 it.effect("analyzes settled chats at start and drops one when it is unsettled", () =>
   Effect.gen(function* () {
@@ -296,7 +338,15 @@ it.effect("analyzes settled chats at start and drops one when it is unsettled", 
 
 it.effect("follows a settle and an unsettle that come without their own event", () =>
   Effect.gen(function* () {
-    const { events, monitoring, seedThread, sql } = yield* makeHarness();
+    const repriced = yield* Deferred.make<void>();
+    let pricingCalls = 0;
+    const { events, monitoring, seedThread, sql } = yield* makeHarness(() =>
+      Effect.suspend(() =>
+        ++pricingCalls === 2
+          ? Deferred.succeed(repriced, undefined).pipe(Effect.as([]))
+          : Effect.succeed([]),
+      ),
+    );
     yield* seedThread("recovered-chat");
     yield* monitoring.start();
     const analyzed = yield* nextChange(monitoring, 0);
@@ -312,18 +362,11 @@ it.effect("follows a settle and an unsettle that come without their own event", 
       events,
       domainEvent("thread.metadata-updated", appThread("recovered-chat", resettledAt)),
     );
-    // It is announced at once as pending, and again once its analysis carries the new stamp.
     const stored = sql<{ readonly settled_at: string }>`
       SELECT settled_at FROM monitoring_thread_analyses
     `;
-    const reanalyzed = yield* Stream.runHead(
-      monitoring.subscribeChanges.pipe(
-        Stream.filter((change) => change.revision > analyzed),
-        Stream.filterEffect(() =>
-          stored.pipe(Effect.map((rows) => rows.some((row) => row.settled_at === resettledAt))),
-        ),
-      ),
-    ).pipe(Effect.map((change) => Option.getOrThrow(change).revision));
+    yield* Deferred.await(repriced);
+    const reanalyzed = yield* nextChange(monitoring, analyzed);
     expect(yield* stored).toEqual([{ settled_at: resettledAt }]);
 
     // Pinning a settled chat makes it active without an unsettle event.
@@ -338,25 +381,99 @@ it.effect("follows a settle and an unsettle that come without their own event", 
   }).pipe(Effect.scoped),
 );
 
-it.effect("analyzes a chat on demand and returns nothing for one that is not settled", () =>
+it.effect("reads the stored detail and returns nothing for one that is not settled", () =>
   Effect.gen(function* () {
-    const { monitoring, seedThread } = yield* makeHarness();
+    const { monitoring, seedThread, sql } = yield* makeHarness();
     yield* seedThread("settled-chat");
     yield* seedThread("open-chat", { settledOverride: "active" });
     // Stamped as settled before it was created: its summary and stored key keep that stamp alike.
     yield* seedThread("skewed-chat", { settledAt: "2026-01-09T23:00:00.000Z" });
 
+    yield* monitoring.start();
+    yield* nextChange(monitoring, 0);
     const detail = yield* monitoring.thread({ threadId: ThreadId.make("settled-chat") });
     const open = yield* monitoring.thread({ threadId: ThreadId.make("open-chat") });
-    yield* monitoring.thread({ threadId: ThreadId.make("skewed-chat") });
 
-    expect([detail?.summary.threadId, open]).toEqual(["settled-chat", null]);
+    expect([detail.detail?.summary.threadId, open.detail]).toEqual(["settled-chat", null]);
+    yield* sql`DROP TABLE orchestration_v2_projection_runs`;
+    expect(yield* monitoring.thread({ threadId: ThreadId.make("settled-chat") })).toEqual(detail);
     expect(yield* overviewIds(monitoring)).toEqual({
       ids: ["settled-chat", "skewed-chat"],
       pending: 0,
       failed: 0,
     });
   }).pipe(Effect.scoped),
+);
+
+it.effect("scans sweep candidates once and uses indexed point lookups to recheck them", () =>
+  Effect.gen(function* () {
+    const { monitoring, seedThread, sql } = yield* makeHarness();
+    for (let i = 0; i < 27; i++) yield* seedThread(`candidate-${i}`);
+    const scans: string[][] = [];
+    const points: string[][] = [];
+    const observe: Statement.Transformer = (statement) =>
+      Effect.gen(function* () {
+        const [query, params] = statement.compile();
+        if (!query.includes("coalesce(m.attempts, 0)")) return statement;
+        const queryPlan = yield* sql
+          .unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, params)
+          .pipe(Effect.provideService(Statement.CurrentTransformer, undefined), Effect.orDie);
+        const plans = query.includes("t.thread_id = ?") ? points : scans;
+        plans.push(queryPlan.map(({ detail }) => detail));
+        return statement;
+      });
+    const stored = yield* observeAnalysesStored(27);
+    yield* monitoring
+      .start()
+      .pipe(
+        Effect.provideService(Statement.CurrentTransformer, observe),
+        Effect.withTracer(stored.tracer),
+      );
+    yield* stored.done;
+    expect((yield* overviewIds(monitoring)).ids).toHaveLength(27);
+    expect(scans).toHaveLength(1);
+    expect(points).toHaveLength(27);
+    expect(points.every((plan) => plan.some((step) => step.includes("SEARCH t USING INDEX")))).toBe(
+      true,
+    );
+  }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "reads stored details on the interactive pool and does not erase a concurrent repair",
+  () =>
+    Effect.gen(function* () {
+      const { monitoring, seedThread, sql } = yield* makeHarness();
+      yield* seedThread("repaired-chat");
+      yield* monitoring.start();
+      yield* nextChange(monitoring, 0);
+      const threadId = ThreadId.make("repaired-chat");
+      const previous = yield* monitoring.thread({ threadId });
+      const [stored] = yield* sql<{
+        detail_json: string;
+      }>`SELECT detail_json FROM monitoring_thread_analyses WHERE thread_id = ${threadId}`;
+      yield* sql`UPDATE monitoring_thread_analyses SET detail_json = '{}' WHERE thread_id = ${threadId}`;
+      const detailsReadInBackground: boolean[] = [];
+      const repair: Statement.Transformer = (statement) =>
+        Effect.gen(function* () {
+          const [query] = statement.compile();
+          if (query.includes("SELECT m.thread_id, m.settled_at, m.summary_json, m.detail_json")) {
+            detailsReadInBackground.push(yield* NodeSqliteClient.Background);
+          }
+          if (query.includes("SET summary_json = NULL, detail_json = NULL")) {
+            yield* sql`UPDATE monitoring_thread_analyses SET detail_json = ${stored!.detail_json} WHERE thread_id = ${threadId}`.pipe(
+              Effect.provideService(Statement.CurrentTransformer, undefined),
+              Effect.orDie,
+            );
+          }
+          return statement;
+        });
+      yield* monitoring
+        .thread({ threadId })
+        .pipe(Effect.provideService(Statement.CurrentTransformer, repair), Effect.flip);
+      expect(detailsReadInBackground).toEqual([false]);
+      expect((yield* monitoring.thread({ threadId })).detail).toEqual(previous.detail);
+    }).pipe(Effect.scoped),
 );
 
 it.effect("counts the reopens after the chat first settled, however it settled", () =>
@@ -388,9 +505,11 @@ it.effect("counts the reopens after the chat first settled, however it settled",
       events: history.map(([type, thread], index) => domainEvent(type, thread, `${index}`)),
     });
 
+    yield* monitoring.start();
+    yield* nextChange(monitoring, 0);
     const detail = yield* monitoring.thread({ threadId: ThreadId.make("reopened-chat") });
 
-    expect(detail?.summary.reopens).toBe(4);
+    expect(detail.detail?.summary.reopens).toBe(4);
   }).pipe(Effect.scoped),
 );
 
@@ -407,13 +526,14 @@ it.effect("does not store an analysis whose chat settled again while it ran", ()
       WHERE thread_id = 'settled-chat'
     `.pipe(Effect.orDie, Effect.asVoid);
 
-    yield* monitoring.thread({ threadId: ThreadId.make("settled-chat") });
+    yield* monitoring.start();
+    yield* TestClock.adjust("3 seconds");
 
     expect(yield* sql`SELECT thread_id FROM monitoring_thread_analyses`).toEqual([]);
   }).pipe(Effect.scoped),
 );
 
-it.effect("stores a chat whose analysis fails and analyzes it again later", () =>
+it.effect("backs off unchanged failures without announcing them and publishes a recovery", () =>
   Effect.gen(function* () {
     const pricing: { result: Effect.Effect<ReadonlyArray<number | null>, UsageReadError> } = {
       result: Effect.fail(
@@ -446,23 +566,36 @@ it.effect("stores a chat whose analysis fails and analyzes it again later", () =
       { projectId: "project-2", pending: 0, failed: 1 },
     ]);
 
-    pricing.result = Effect.die("pricing bug");
     yield* TestClock.adjust("30 minutes");
-    yield* Queue.offer(events, domainEvent("thread.settled", appThread("failing-chat")));
-    const retried = yield* nextChange(monitoring, failed);
+    expect((yield* monitoring.overview(january())).revision).toBe(failed);
+    expect(yield* sql`SELECT DISTINCT attempts FROM monitoring_thread_analyses`).toEqual([
+      { attempts: 2 },
+    ]);
     expect(yield* failedRows).toEqual([
       {
         thread_id: "bad-settle",
         error: "The analysis failed: The chat's stored settle time is damaged.",
       },
-      { thread_id: "crashing-chat", error: "The analysis failed: pricing bug" },
-      { thread_id: "failing-chat", error: "The analysis failed: pricing bug" },
+      {
+        thread_id: "crashing-chat",
+        error: "The analysis failed: Usage read failed (scanFailed): The usage store is offline.",
+      },
+      {
+        thread_id: "failing-chat",
+        error: "The analysis failed: Usage read failed (scanFailed): The usage store is offline.",
+      },
     ]);
 
     pricing.result = Effect.succeed([]);
     yield* TestClock.adjust("30 minutes");
     yield* Queue.offer(events, domainEvent("thread.settled", appThread("failing-chat")));
-    yield* nextChange(monitoring, retried);
+    yield* TestClock.adjust("3 seconds");
+    expect((yield* monitoring.overview(january())).revision).toBe(failed);
+    expect(yield* sql`SELECT DISTINCT attempts FROM monitoring_thread_analyses`).toEqual([
+      { attempts: 2 },
+    ]);
+    yield* TestClock.adjust("30 minutes");
+    yield* nextChange(monitoring, failed);
     expect(yield* overviewIds(monitoring)).toEqual({
       ids: ["crashing-chat", "failing-chat"],
       pending: 0,
@@ -471,141 +604,204 @@ it.effect("stores a chat whose analysis fails and analyzes it again later", () =
     expect(yield* unanalyzedOf(monitoring)).toEqual([
       { projectId: "project-1", pending: 0, failed: 1 },
     ]);
+    yield* TestClock.adjust("15 hours");
+    const abandoned = sql`SELECT attempts, retry_at FROM monitoring_thread_analyses WHERE thread_id = 'bad-settle'`;
+    expect(yield* abandoned).toEqual([{ attempts: 6, retry_at: null }]);
+    yield* TestClock.adjust("1 day");
+    expect(yield* abandoned).toEqual([{ attempts: 6, retry_at: null }]);
+    const failedDetail = yield* monitoring
+      .thread({ threadId: ThreadId.make("bad-settle") })
+      .pipe(Effect.flip);
+    expect(failedDetail.message).toBe(
+      "The analysis failed: The chat's stored settle time is damaged.",
+    );
   }).pipe(Effect.scoped),
 );
 
-it.effect("announces a backfill after eight passes and when it runs out of chats", () =>
+it.effect("records malformed details as failed and advances beyond a full batch of them", () =>
   Effect.gen(function* () {
-    // Passes of 25 chats; the first chat of the eighth and of the ninth waits for the test, which
-    // opens a chat there. Opening announces before it returns, so the latest revision is exact.
-    const gate = (call: number) =>
-      Effect.all({ reached: Deferred.make<void>(), finish: Deferred.make<void>() }).pipe(
-        Effect.map((deferreds) => ({ call, ...deferreds })),
-      );
-    const eighth = yield* gate(7 * 25 + 1);
-    const ninth = yield* gate(8 * 25 + 2);
-    let calls = 0;
-    const { monitoring, seedThread } = yield* makeHarness(() =>
-      Effect.suspend(() => {
-        calls++;
-        const gated = [eighth, ninth].find(({ call }) => call === calls);
-        if (gated === undefined) return Effect.succeed([]);
-        return Deferred.succeed(gated.reached, undefined).pipe(
-          Effect.andThen(Deferred.await(gated.finish)),
-          Effect.as([]),
-        );
-      }),
-    );
-    const backfill = 8 * 25 + 5;
-    for (let index = 0; index < backfill; index++) {
-      yield* seedThread(`backfill-${String(index).padStart(3, "0")}`);
+    const { monitoring, seedThread, sql } = yield* makeHarness();
+    yield* seedThread("valid", { settledAt: CREATED_AT });
+    for (let index = 0; index < 25; index++) {
+      const id = `malformed-${index}`;
+      yield* seedThread(id);
+      // The projection schema rejects these values before a normal write.
+      const workflow = {
+        agents: [{ label: "Worker", state: "queued", totalTokens: index === 0 ? -1 : 2 }],
+      };
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_subagents (
+          subagent_id, thread_id, parent_node_id, provider, child_thread_id, origin, status, updated_at, payload_json
+        ) VALUES (${id}, ${id}, 'parent', 'claude_test', '', 'provider', 'completed', ${SETTLED_AT},
+          ${JSON.stringify({ workflow })})
+      `;
     }
-    const open = (threadId: string) =>
-      seedThread(threadId).pipe(
-        Effect.andThen(monitoring.thread({ threadId: ThreadId.make(threadId) })),
-        Effect.andThen(nextChange(monitoring, 0)),
-      );
-
-    yield* monitoring.start();
-    yield* Deferred.await(eighth.reached);
-    const atEighth = yield* open("opened-early");
-    yield* Deferred.succeed(eighth.finish, undefined);
-    yield* Deferred.await(ninth.reached);
-    const atNinth = yield* open("opened-late");
-    yield* Deferred.succeed(ninth.finish, undefined);
-    const drained = yield* nextChange(monitoring, atNinth);
-    const { ids, pending, failed } = yield* overviewIds(monitoring);
-
-    expect({ atEighth, atNinth, drained, analyzed: ids.length, pending, failed }).toEqual({
-      atEighth: 1,
-      atNinth: 3,
-      drained: 4,
-      analyzed: backfill + 2,
-      pending: 0,
-      failed: 0,
-    });
+    const stored = yield* observeAnalysesStored(26);
+    yield* monitoring.start().pipe(Effect.withTracer(stored.tracer));
+    yield* stored.done;
+    expect(yield* overviewIds(monitoring)).toEqual({ ids: ["valid"], pending: 0, failed: 25 });
+    expect(
+      yield* sql`
+      SELECT count(*) AS failed FROM monitoring_thread_analyses
+      WHERE error IS NOT NULL AND attempts = 1 AND retry_at IS NOT NULL
+    `,
+    ).toEqual([{ failed: 25 }]);
   }).pipe(Effect.scoped),
 );
 
-it.effect("shows a renamed or moved chat by its current title and project at once", () =>
+it.effect("batches a burst of settles and returns their revision on each read", () =>
   Effect.gen(function* () {
-    // The second chat analyzed waits for the scope to end, so it stays pending.
-    const held = yield* Deferred.make<void>();
-    let calls = 0;
-    const { events, monitoring, seedThread, sql } = yield* makeHarness(() =>
-      Effect.suspend(() => {
-        calls++;
-        return calls === 2 ? Deferred.await(held).pipe(Effect.as([])) : Effect.succeed([]);
-      }),
+    const ids = ["first", "second", "third"];
+    const { events, monitoring, seedThread } = yield* makeHarness();
+    const stored = yield* observeAnalysesStored(1 + ids.length);
+    yield* seedThread("at-startup");
+    yield* monitoring.start().pipe(Effect.withTracer(stored.tracer));
+    const startup = yield* nextChange(monitoring, 0);
+    const collecting = yield* Queue.unbounded<MonitoringChange>();
+    yield* Stream.runForEach(monitoring.subscribeChanges, (change) =>
+      Queue.offer(collecting, change),
+    ).pipe(Effect.forkScoped);
+    expect((yield* Queue.take(collecting)).revision).toBe(startup);
+    for (const id of ids) yield* seedThread(id);
+    yield* Queue.offerAll(
+      events,
+      ids.map((id) => domainEvent("thread.settled", appThread(id))),
     );
-    yield* seedThread("moved-chat");
-    yield* monitoring.start();
-    const analyzed = yield* nextChange(monitoring, 0);
+    yield* stored.done;
 
-    yield* sql`
+    yield* TestClock.adjust("3 seconds");
+    const batches = yield* Queue.clear(collecting);
+    expect(batches).toHaveLength(1);
+    const [batch] = batches;
+    expect(batch).toBeDefined();
+    expect(batch!.sinceRevision).toBe(startup);
+    expect([...(batch!.threadIds ?? [])].sort()).toEqual(ids);
+    expect((yield* monitoring.overview(january())).revision).toBe(batch!.revision);
+    expect((yield* monitoring.thread({ threadId: ThreadId.make("first") })).revision).toBe(
+      batch!.revision,
+    );
+  }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "announces changed metadata once and uses the current title in both summary and timeline",
+  () =>
+    Effect.gen(function* () {
+      // The second chat analyzed waits for the scope to end, so it stays pending.
+      let calls = 0;
+      const { eventStore, events, monitoring, seedThread, sql } = yield* makeHarness(() =>
+        Effect.suspend(() => {
+          calls++;
+          return calls === 2 ? Effect.never : Effect.succeed([]);
+        }),
+      );
+      yield* seedThread("moved-chat");
+      yield* monitoring.start();
+      const analyzed = yield* nextChange(monitoring, 0);
+
+      const original = appThread("moved-chat");
+      const send = (event: OrchestrationV2DomainEvent) => Queue.offer(events, event);
+      yield* sql`ALTER TABLE orchestration_events RENAME TO hidden_events`;
+      yield* send(domainEvent("thread.metadata-updated", original, "unchanged"));
+      yield* TestClock.adjust("3 seconds");
+      expect((yield* monitoring.overview(january())).revision).toBe(analyzed);
+      yield* sql`ALTER TABLE hidden_events RENAME TO orchestration_events`;
+      const unchanged = domainEvent("thread.metadata-updated", original, "after-compaction");
+      yield* eventStore.appendAgentEvents({
+        events: [
+          domainEvent("thread.created", appThread("moved-chat", null)),
+          domainEvent("thread.settled", original),
+          unchanged,
+        ],
+      });
+      yield* sql`DELETE FROM orchestration_events WHERE event_type = 'thread.settled'`;
+      yield* send(unchanged);
+      yield* TestClock.adjust("3 seconds");
+      expect((yield* monitoring.overview(january())).revision).toBe(analyzed);
+
+      yield* sql`
       UPDATE orchestration_v2_projection_threads SET title = 'New name', project_id = 'project-2'
       WHERE thread_id = 'moved-chat'
     `;
-    yield* Queue.offer(events, domainEvent("thread.metadata-updated", appThread("moved-chat")));
-    const renamed = yield* nextChange(monitoring, analyzed);
-    const overview = yield* monitoring.overview(january());
-    const listed = (projectId: string) =>
-      monitoring
-        .chats({
-          since: SINCE,
-          until: UNTIL,
-          projectId: ProjectId.make(projectId),
-          sort: "settledAt",
-          direction: "desc",
-          limit: 500,
-          offset: 0,
-        })
-        .pipe(
-          Effect.map((result) =>
-            result.chats.map(({ summary }) => ({
-              title: summary.title,
-              project: summary.projectId,
-            })),
-          ),
-        );
+      yield* send(
+        domainEvent(
+          "thread.metadata-updated",
+          {
+            ...original,
+            title: "New name",
+            projectId: ProjectId.make("project-2"),
+          },
+          "rename",
+        ),
+      );
+      yield* TestClock.adjust("3 seconds");
+      const renamed = (yield* monitoring.overview(january())).revision;
+      expect(renamed).toBe(analyzed + 1);
+      const overview = yield* monitoring.overview(january());
+      const listed = (projectId: string) =>
+        monitoring
+          .chats({
+            since: SINCE,
+            until: UNTIL,
+            projectId: ProjectId.make(projectId),
+            sort: "settledAt",
+            direction: "desc",
+            limit: 500,
+            offset: 0,
+          })
+          .pipe(
+            Effect.map((result) =>
+              result.chats.map(({ summary }) => ({
+                title: summary.title,
+                project: summary.projectId,
+              })),
+            ),
+          );
 
-    const moved = yield* listed("project-2");
-    const left = yield* listed("project-1");
+      const moved = yield* listed("project-2");
+      const left = yield* listed("project-1");
 
-    // A change it cannot look up is announced too, so no view keeps an old title or project.
-    yield* sql`ALTER TABLE orchestration_v2_projection_threads RENAME TO unreadable_threads`;
-    yield* Queue.offer(
-      events,
-      domainEvent("thread.metadata-updated", appThread("moved-chat"), "unreadable"),
-    );
-    const unreadable = yield* nextChange(monitoring, renamed);
-    yield* sql`ALTER TABLE unreadable_threads RENAME TO orchestration_v2_projection_threads`;
+      const detail = (yield* monitoring.thread({ threadId: original.id })).detail;
+      expect(detail?.summary.title).toBe("New name");
+      expect(detail?.lanes.find((lane) => lane.kind === "chat")?.label).toBe("New name");
 
-    // A chat still being analyzed counts as pending under the project it moved to.
-    yield* seedThread("pending-chat");
-    yield* sql`
+      yield* seedThread("pending-chat");
+      const pending = appThread("pending-chat");
+      yield* sql`
       UPDATE orchestration_v2_projection_threads SET project_id = 'project-2'
       WHERE thread_id = 'pending-chat'
     `;
-    yield* Queue.offer(events, domainEvent("thread.metadata-updated", appThread("pending-chat")));
-    const pendingMoved = yield* nextChange(monitoring, unreadable);
+      yield* send(
+        domainEvent(
+          "thread.metadata-updated",
+          {
+            ...pending,
+            projectId: ProjectId.make("project-2"),
+          },
+          "move",
+        ),
+      );
+      yield* TestClock.adjust("3 seconds");
+      const pendingMoved = (yield* monitoring.overview(january())).revision;
+      expect(pendingMoved).toBe(analyzed + 2);
+      yield* sql`ALTER TABLE monitoring_thread_analyses RENAME TO hidden_analyses`;
+      yield* send(domainEvent("thread.metadata-updated", original, "unreadable"));
+      yield* TestClock.adjust("3 seconds");
+      yield* sql`ALTER TABLE hidden_analyses RENAME TO monitoring_thread_analyses`;
+      expect((yield* monitoring.overview(january())).revision).toBe(analyzed + 3);
 
-    expect({
-      groups: overview.groups.map((group) => group.projectId),
-      moved,
-      left,
-      announced: unreadable - renamed,
-      pendingAnnounced: pendingMoved - unreadable,
-      unanalyzed: yield* unanalyzedOf(monitoring),
-    }).toEqual({
-      groups: ["project-2"],
-      moved: [{ title: "New name", project: "project-2" }],
-      left: [],
-      announced: 1,
-      pendingAnnounced: 1,
-      unanalyzed: [{ projectId: "project-2", pending: 1, failed: 0 }],
-    });
-  }).pipe(Effect.scoped),
+      expect({
+        groups: overview.groups.map((group) => group.projectId),
+        moved,
+        left,
+        unanalyzed: yield* unanalyzedOf(monitoring),
+      }).toEqual({
+        groups: ["project-2"],
+        moved: [{ title: "New name", project: "project-2" }],
+        left: [],
+        unanalyzed: [{ projectId: "project-2", pending: 1, failed: 0 }],
+      });
+    }).pipe(Effect.scoped),
 );
 
 it.effect("sums every analyzed chat of the window into groups on the days the viewer sent", () =>
@@ -905,7 +1101,7 @@ it.effect("counts a stored analysis it cannot read as failed instead of dropping
       grouped: overview.groups.reduce((total, group) => total + group.lifetimesMs.length, 0),
       unanalyzed: overview.unanalyzed,
       listed,
-      revision: yield* nextChange(monitoring, 0),
+      revision: (yield* monitoring.overview(january())).revision,
       rows: yield* sql`
         SELECT thread_id, summary_json, error FROM monitoring_thread_analyses
         WHERE error IS NOT NULL ORDER BY thread_id
@@ -914,7 +1110,7 @@ it.effect("counts a stored analysis it cannot read as failed instead of dropping
       grouped: 2,
       unanalyzed: [{ projectId: "project-1", pending: 0, failed: 3 }],
       listed: { ids: ["readable"], total: 1 },
-      revision: 2,
+      revision: 6,
       rows: [
         {
           thread_id: "bad-settle-before-list",

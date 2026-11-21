@@ -11,6 +11,7 @@ import type {
   MonitoringOverviewInput,
   MonitoringOverviewResult,
   MonitoringThreadDetail,
+  MonitoringThreadResult,
   MonitoringThreadKind,
   MonitoringThreadSummary,
   MonitoringTimeBuckets,
@@ -19,7 +20,7 @@ import type {
 import { ProjectId } from "@t3tools/contracts";
 import { getFormattingLocale, t } from "@t3tools/shared/i18n";
 import type * as Cause from "effect/Cause";
-import type { AsyncResult } from "effect/reactivity";
+import { AsyncResult } from "effect/reactivity";
 
 import {
   connectionCanRetry,
@@ -44,7 +45,7 @@ export interface MonitoringQueryRead<A> {
   /** A request for it is in flight. */
   readonly isPending: boolean;
   readonly error: string | null;
-  /** The last answer, kept while the query refreshes; a failed refresh drops it. */
+  /** The last answer, kept while the query refreshes or after a failed refresh. */
   readonly result: A | null;
 }
 
@@ -55,8 +56,7 @@ export function queryRead<A, E>(
   return {
     isPending: result.waiting,
     error: result._tag === "Failure" ? describeFailure(result.cause) : null,
-    // A failure's previous answer would be counted while the screen names it as not counted.
-    result: result._tag === "Success" ? result.value : null,
+    result: AsyncResult.getOrElse(result, () => null),
   };
 }
 
@@ -68,6 +68,8 @@ export interface MonitoringEnvironmentReport<
   readonly label: string;
   /** Retry can reach it: it answers queries, or its connection can be retried now. */
   readonly retryable: boolean;
+  readonly stale?: boolean;
+  readonly connectionFailure?: boolean;
 }
 
 /** An environment the user asked to connect, and whether Monitoring can ask it yet. */
@@ -112,46 +114,68 @@ export function monitoringEnvironment(
   }
 }
 
-/**
- * The environment's answer to one query; `read` runs only once the environment can answer. Until
- * then no request is in flight, so one still connecting does not disable Refresh, which retries it.
- */
+/** The last answer stays visible when this environment temporarily cannot answer. */
 export function environmentReport<A>(
   { environmentId, label, unready }: MonitoringEnvironment,
   read: () => MonitoringQueryRead<A>,
+  previous: A | null = null,
+  previousReport?: MonitoringEnvironmentReport<A>,
 ): MonitoringEnvironmentReport<A> {
-  return unready === null
-    ? { environmentId, label, retryable: true, ...read() }
-    : {
-        environmentId,
-        label,
-        retryable: unready.reconnects,
-        isPending: false,
-        error: unready.error,
-        result: null,
-      };
+  const current =
+    unready === null ? read() : { isPending: false, error: unready.error, result: null };
+  const result = current.result ?? previous;
+  const retryingConnection =
+    current.error === null &&
+    previousReport?.connectionFailure === true &&
+    (unready !== null || current.isPending);
+  return {
+    ...current,
+    isPending: current.isPending || retryingConnection,
+    error: retryingConnection ? previousReport.error : current.error,
+    connectionFailure: retryingConnection || (unready !== null && current.error !== null),
+    environmentId,
+    label,
+    retryable: retryingConnection || unready === null || unready.reconnects,
+    result,
+    stale:
+      result !== null &&
+      (unready !== null || retryingConnection || current.error !== null || current.result === null),
+  };
+}
+
+export const threadDetailOf = (answer: MonitoringThreadResult): MonitoringThreadDetail | null =>
+  answer !== null && "detail" in answer ? answer.detail : answer;
+
+export function monitoringDetailReconnects(
+  ready: boolean,
+  wasReconnecting: boolean,
+  isPending: boolean,
+) {
+  return !ready || (wasReconnecting && isPending);
 }
 
 /** Which environments a merged answer is still missing, and whether it has any answer at all. */
 export interface MonitoringReportStatus<A> {
   readonly environments: ReadonlyArray<MonitoringEnvironmentReport<A>>;
-  /** Environments that have not answered this query yet, so their chats are not counted. */
+  /** Environments without a current answer that can still respond. */
   readonly waiting: ReadonlyArray<MonitoringEnvironmentReport<A>>;
-  /** Environments that could not answer, so their chats are not counted. */
+  /** Environments that could not answer the current request. */
   readonly unreadable: ReadonlyArray<MonitoringEnvironmentReport<A>>;
   /** No environment has answered yet, and one still may. */
   readonly isLoading: boolean;
   /** Every environment answered, so an empty answer means there is nothing to show. */
   readonly complete: boolean;
-  /** Every environment failed. */
+  /** Every environment failed and there is no answer to display. */
   readonly failed: boolean;
+  readonly stale?: boolean;
 }
 
-/** An environment counts once it has an answer for this very query; a failed one does not. */
 function reportStatus<A>(
   reports: ReadonlyArray<MonitoringEnvironmentReport<A>>,
 ): MonitoringReportStatus<A> {
-  const waiting = reports.filter((report) => report.result === null && report.error === null);
+  const waiting = reports.filter(
+    (report) => (report.result === null || report.stale) && report.error === null,
+  );
   const unreadable = reports.filter((report) => report.error !== null);
   return {
     environments: reports,
@@ -159,7 +183,11 @@ function reportStatus<A>(
     unreadable,
     isLoading: waiting.length > 0 && reports.every((report) => report.result === null),
     complete: waiting.length === 0 && unreadable.length === 0,
-    failed: reports.length > 0 && unreadable.length === reports.length,
+    failed:
+      reports.length > 0 &&
+      unreadable.length === reports.length &&
+      reports.every((report) => report.result === null),
+    stale: reports.some((report) => report.stale),
   };
 }
 
@@ -214,6 +242,51 @@ export interface MonitoringUnanalyzedEntry {
 export interface MonitoringOverviewView extends MonitoringReportStatus<MonitoringOverviewResult> {
   readonly groups: ReadonlyArray<MonitoringGroupEntry>;
   readonly unanalyzed: ReadonlyArray<MonitoringUnanalyzedEntry>;
+}
+
+function sameMonitoringEnvironments(
+  a: MonitoringReportStatus<unknown>,
+  b: MonitoringReportStatus<unknown>,
+): boolean {
+  return (
+    a.environments.length === b.environments.length &&
+    a.environments.every(({ environmentId }) =>
+      b.environments.some((report) => report.environmentId === environmentId),
+    )
+  );
+}
+
+interface MonitoringOverviewShown {
+  readonly key: string;
+  readonly view: MonitoringOverviewView;
+  readonly days: ReadonlyArray<MonitoringDay>;
+}
+
+export function presentMonitoringOverview(
+  shown: MonitoringOverviewShown,
+  next: MonitoringOverviewShown,
+) {
+  const keep =
+    next.key !== shown.key &&
+    !next.view.environments.some(
+      ({ result, stale, error }) => result !== null && !stale && error === null,
+    ) &&
+    shown.view.environments.some(({ result }) => result !== null) &&
+    sameMonitoringEnvironments(shown.view, next.view);
+  return {
+    keep,
+    view: keep
+      ? {
+          ...next.view,
+          groups: shown.view.groups,
+          unanalyzed: shown.view.unanalyzed,
+          stale: true,
+          isLoading: false,
+          failed: false,
+        }
+      : next.view,
+    days: keep ? shown.days : next.days,
+  };
 }
 
 /** Merges the connected environments' answers into one overview. */
@@ -796,6 +869,10 @@ export interface MonitoringChatsView extends MonitoringReportStatus<MonitoringCh
   readonly pages: ReadonlyArray<MonitoringChatsPage>;
   /** A page the list needs is still loading or being read again, so the list can still change. */
   readonly awaitingPage: boolean;
+  readonly cachedPages: ReadonlyMap<EnvironmentId, ReadonlyArray<MonitoringChatsResult>>;
+  readonly failedOffsets: ReadonlyMap<EnvironmentId, number>;
+  readonly keptPendingPages: boolean;
+  readonly availableEnvironmentIds: ReadonlyArray<EnvironmentId>;
 }
 
 interface ChatQueue {
@@ -808,15 +885,17 @@ interface ChatQueue {
   nextOffset: number | null;
 }
 
+interface DeferredChatPage {
+  readonly environmentId: EnvironmentId;
+  readonly error: string | null;
+  readonly offset: number;
+  readonly isPending: boolean;
+  readonly awaitingEarlierPage: boolean;
+}
+
 type MergeAttempt =
-  | { readonly view: MonitoringChatsView }
-  | {
-      readonly failure: {
-        readonly environmentId: EnvironmentId;
-        readonly error: string;
-        readonly pages: ReadonlyArray<MonitoringChatsPage>;
-      };
-    };
+  | { readonly view: Omit<MonitoringChatsView, "availableEnvironmentIds"> }
+  | { readonly failure: DeferredChatPage };
 
 /**
  * Keeps each environment's server order and orders by the servers' keys, which can disagree with
@@ -827,14 +906,13 @@ type MergeAttempt =
 export function mergeMonitoringChats(
   sources: ReadonlyArray<MonitoringChatsSource>,
   request: MonitoringChatsRequest,
+  previous?: MonitoringChatsView,
+  availableEnvironmentIds = sources.map(({ environment }) => environment.environmentId),
 ): MonitoringChatsView {
-  const failed = new Map<
-    EnvironmentId,
-    { readonly error: string; readonly pages: ReadonlyArray<MonitoringChatsPage> }
-  >();
+  const failed = new Map<EnvironmentId, DeferredChatPage>();
   for (;;) {
-    const attempt = mergeChatPages(sources, request, failed);
-    if ("view" in attempt) return attempt.view;
+    const attempt = mergeChatPages(sources, request, failed, previous);
+    if ("view" in attempt) return { ...attempt.view, availableEnvironmentIds };
     failed.set(attempt.failure.environmentId, attempt.failure);
   }
 }
@@ -847,20 +925,54 @@ export function mergeMonitoringChats(
 const currentPage = (
   read: MonitoringQueryRead<MonitoringChatsResult>,
 ): MonitoringQueryRead<MonitoringChatsResult> =>
-  read.isPending ? { isPending: true, error: null, result: null } : read;
+  read.isPending
+    ? { isPending: true, error: null, result: null }
+    : read.error !== null
+      ? { ...read, result: null }
+      : read;
 
 function mergeChatPages(
   sources: ReadonlyArray<MonitoringChatsSource>,
   { order, pageSize }: MonitoringChatsRequest,
-  failed: ReadonlyMap<
-    EnvironmentId,
-    { readonly error: string; readonly pages: ReadonlyArray<MonitoringChatsPage> }
-  >,
+  failed: ReadonlyMap<EnvironmentId, DeferredChatPage>,
+  previous: MonitoringChatsView | undefined,
 ): MergeAttempt {
   const pages: MonitoringChatsPage[] = [];
   const reports: MonitoringEnvironmentReport<MonitoringChatsResult>[] = [];
   const queues: ChatQueue[] = [];
   let awaitingPage = false;
+  const cachedPages = new Map<EnvironmentId, ReadonlyArray<MonitoringChatsResult>>();
+  const answeredPages = new Map<EnvironmentId, MonitoringChatsResult[]>();
+  const pendingEnvironments = new Set<EnvironmentId>();
+
+  const readPage = (source: MonitoringChatsSource, offset: number) => {
+    const { environmentId } = source.environment;
+    pages.push({ environmentId, offset });
+    const read = currentPage(source.readPage(offset));
+    const failedOffset = previous?.failedOffsets.get(environmentId);
+    const retry =
+      read.isPending && failedOffset !== undefined && offset <= failedOffset
+        ? previous?.unreadable.find((report) => report.environmentId === environmentId)?.error
+        : null;
+    const error = read.error ?? retry;
+    const hold = read.isPending && previous?.cachedPages.has(environmentId) === true;
+    if (error != null || hold) {
+      return {
+        failure: {
+          environmentId,
+          error: error ?? null,
+          offset: retry == null ? offset : (failedOffset ?? offset),
+          isPending: read.isPending,
+          awaitingEarlierPage:
+            hold || (retry != null && failedOffset !== undefined && offset < failedOffset),
+        },
+      };
+    }
+    if (read.result === null) pendingEnvironments.add(environmentId);
+    else answeredPages.get(environmentId)?.push(read.result);
+    return { read };
+  };
+
   const append = (queue: ChatQueue, offset: number, page: MonitoringChatsResult) => {
     for (const { summary, sortValue } of page.chats) {
       // Chats settling between two page reads shift the pages, so one can repeat.
@@ -872,28 +984,13 @@ function mergeChatPages(
       page.chats.length === pageSize && offset + pageSize < page.total ? offset + pageSize : null;
   };
   for (const source of sources) {
-    const { environmentId, label } = source.environment;
+    const { environmentId, unready } = source.environment;
+    const cached = previous?.cachedPages.get(environmentId);
+    const previousReport = previous?.environments.find(
+      (report) => report.environmentId === environmentId,
+    );
+    if (cached !== undefined) cachedPages.set(environmentId, cached);
     const failure = failed.get(environmentId);
-    if (failure !== undefined) {
-      pages.push(...failure.pages);
-      reports.push({
-        environmentId,
-        label,
-        retryable: true,
-        isPending: false,
-        error: failure.error,
-        result: null,
-      });
-      continue;
-    }
-    const report = environmentReport(source.environment, () => currentPage(source.readPage(0)));
-    reports.push(report);
-    if (source.environment.unready !== null) continue;
-    pages.push({ environmentId, offset: 0 });
-    if (report.result === null) {
-      if (report.error === null) awaitingPage = true;
-      continue;
-    }
     const queue: ChatQueue = {
       environmentId,
       source,
@@ -902,6 +999,37 @@ function mergeChatPages(
       next: 0,
       nextOffset: null,
     };
+    if (failure !== undefined || unready !== null) {
+      const report = environmentReport(
+        source.environment,
+        () => ({
+          isPending: failure?.isPending ?? false,
+          error: failure?.error ?? null,
+          result: failure?.error === null ? (cached?.[0] ?? null) : null,
+        }),
+        cached?.[0],
+        previousReport,
+      );
+      reports.push(report);
+      if (failure !== undefined) {
+        pages.push({ environmentId, offset: failure.offset });
+        awaitingPage ||= failure.awaitingEarlierPage;
+      }
+      cached?.forEach((page, index) => append(queue, index * pageSize, page));
+      queue.nextOffset = null;
+      queues.push(queue);
+      continue;
+    }
+
+    answeredPages.set(environmentId, []);
+    const first = readPage(source, 0);
+    if (first.failure !== undefined) return { failure: first.failure };
+    const report = environmentReport(source.environment, () => first.read, null, previousReport);
+    reports.push(report);
+    if (report.result === null) {
+      awaitingPage = true;
+      continue;
+    }
     append(queue, 0, report.result);
     queues.push(queue);
   }
@@ -912,19 +1040,9 @@ function mergeChatPages(
     for (const queue of queues) {
       while (queue.next === queue.rows.length && queue.nextOffset !== null) {
         const offset = queue.nextOffset;
-        pages.push({ environmentId: queue.environmentId, offset });
-        const page = currentPage(queue.source.readPage(offset));
-        if (page.error !== null) {
-          const environmentId = queue.environmentId;
-          return {
-            failure: {
-              environmentId,
-              error: page.error,
-              pages: pages.filter((read) => read.environmentId === environmentId),
-            },
-          };
-        }
-        if (page.result === null) {
+        const page = readPage(queue.source, offset);
+        if (page.failure !== undefined) return { failure: page.failure };
+        if (page.read.result === null) {
           awaitingPage = true;
           const stopped = reports.findIndex(
             (report) => report.environmentId === queue.environmentId,
@@ -932,7 +1050,7 @@ function mergeChatPages(
           reports[stopped] = { ...reports[stopped]!, isPending: true };
           break merging;
         }
-        append(queue, offset, page.result);
+        append(queue, offset, page.read.result);
       }
     }
     let first: ChatQueue | null = null;
@@ -949,9 +1067,29 @@ function mergeChatPages(
     first.next += 1;
   }
 
+  for (const [environmentId, answers] of answeredPages) {
+    if (!pendingEnvironments.has(environmentId)) cachedPages.set(environmentId, answers);
+  }
   let total = 0;
   for (const { result } of reports) total += result?.total ?? 0;
-  return { view: { ...reportStatus(reports), chats, total, pages, awaitingPage } };
+  const status = reportStatus(reports);
+  return {
+    view: {
+      ...status,
+      complete: status.complete && pendingEnvironments.size === 0,
+      chats,
+      total,
+      pages,
+      awaitingPage,
+      cachedPages,
+      failedOffsets: new Map(
+        Array.from(failed).flatMap(([id, failure]) =>
+          failure.error === null ? [] : [[id, failure.offset]],
+        ),
+      ),
+      keptPendingPages: Array.from(failed.values()).some((failure) => failure.error === null),
+    },
+  };
 }
 
 /** A chat list on screen: the question and the answer it shows. */
@@ -961,17 +1099,23 @@ export interface MonitoringChatsShown {
 }
 
 /**
- * Whether the list keeps `shown`, with its notes, while `next` awaits a page of the same window,
- * filters and environments and shows fewer chats, or reads its request again when it awaited none
- * or to ask a failure it names. A new, changed or cleared failure, or rows from an environment it
- * could not ask, release it; one it asked keeps its rows, wait or failure until the list answers.
+ * Keep the rows visible while the period or scope changes, a contributing environment reconnects
+ * or fails, or a later read would show fewer rows until the pages catch up.
  */
 export function keepsShownChats(shown: MonitoringChatsShown, next: MonitoringChatsShown): boolean {
-  if (!next.view.awaitingPage) return false;
+  const oldEnvironments = shown.view.availableEnvironmentIds;
+  const newEnvironments = next.view.availableEnvironmentIds;
+  if (
+    oldEnvironments.length !== newEnvironments.length ||
+    oldEnvironments.some((id) => !newEnvironments.includes(id))
+  )
+    return false;
   const scope = ({ request }: MonitoringChatsShown) =>
     JSON.stringify([request.window, request.filters]);
-  const environments = ({ view }: MonitoringChatsShown) =>
-    view.environments.map(({ environmentId }) => environmentId).sort();
+  if (scope(next) !== scope(shown)) {
+    return shown.view.chats.length > 0 && next.view.awaitingPage;
+  }
+  if (!next.view.awaitingPage || next.view.keptPendingPages) return false;
   const asked = new Set(shown.view.pages.map(({ environmentId }) => environmentId));
   const failures = new Map(shown.view.unreadable.map((report) => [report.environmentId, report]));
   const sameRequest = JSON.stringify(next.request) === JSON.stringify(shown.request);
@@ -986,8 +1130,6 @@ export function keepsShownChats(shown: MonitoringChatsShown, next: MonitoringCha
   const nextChats = next.view.chats.length;
   return (
     (nextChats < shownChats || readAgain || (retrying && nextChats === shownChats)) &&
-    scope(next) === scope(shown) &&
-    JSON.stringify(environments(next)) === JSON.stringify(environments(shown)) &&
     next.view.environments.every(({ environmentId, error, result, isPending, retryable }) => {
       const failure = failures.get(environmentId);
       if (error !== null) return failure?.error === error && failure.retryable === retryable;
@@ -996,6 +1138,50 @@ export function keepsShownChats(shown: MonitoringChatsShown, next: MonitoringCha
       return asked.has(environmentId);
     })
   );
+}
+
+export function presentMonitoringChats(shown: MonitoringChatsShown, next: MonitoringChatsShown) {
+  const { request, view } = next;
+  const keep = keepsShownChats(shown, next);
+  const displayed = keep ? shown.view : view;
+  const retry = failureRetry(view.unreadable.length > 0 ? view : displayed, view);
+  const unreadable =
+    retry === "busy" && view.unreadable.length === 0 ? displayed.unreadable : view.unreadable;
+  const sameRequest = JSON.stringify(shown.request) === JSON.stringify(request);
+  // Pending pages can still be displayed as a coherent answer from the same read.
+  const waiting =
+    keep && sameRequest
+      ? view.waiting.filter(
+          (report) =>
+            !report.isPending ||
+            !shown.view.environments.some(
+              (previous) =>
+                previous.environmentId === report.environmentId &&
+                previous.result !== null &&
+                !previous.stale,
+            ),
+        )
+      : view.waiting;
+  const stale = !sameRequest || waiting.length > 0 || unreadable.length > 0;
+  return {
+    keep,
+    view: keep
+      ? {
+          ...view,
+          unreadable,
+          waiting,
+          stale,
+          chats: displayed.chats,
+          total: displayed.total,
+          complete: !stale && displayed.complete,
+          isLoading: false,
+          failed: false,
+        }
+      : view,
+    updating: view.awaitingPage,
+    retry,
+    sortedBy: keep ? shown.request.order : request.order,
+  };
 }
 
 /**

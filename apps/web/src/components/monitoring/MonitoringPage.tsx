@@ -1,7 +1,9 @@
+import { monitoringRefreshTimedOut } from "@t3tools/client-runtime/monitoring/atoms";
 import { Link, useSearch } from "@tanstack/react-router";
 import {
   EnvironmentId,
   ThreadId,
+  type MonitoringDay,
   type MonitoringFindingCode,
   type MonitoringThreadKind,
 } from "@t3tools/contracts";
@@ -36,7 +38,7 @@ import {
 } from "@t3tools/client-runtime/monitoring";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { formatPercent, formatUsd } from "@t3tools/shared/usageFormat";
-import { CircleAlertIcon, InfoIcon, XIcon } from "lucide-react";
+import { CircleAlertIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
 import { isElectron } from "../../env";
@@ -65,7 +67,12 @@ import {
   RetryButton,
 } from "./MonitoringChatList";
 import { MonitoringFindingRanking } from "./MonitoringFindings";
-import { MonitoringKpi, MonitoringRefreshButton, MonitoringSection } from "./MonitoringSection";
+import {
+  MonitoringKpi,
+  MonitoringOverviewNotices,
+  MonitoringRefreshButton,
+  MonitoringSection,
+} from "./MonitoringSection";
 import { MonitoringBreakdownTable, MonitoringPhaseTable } from "./MonitoringTables";
 import { MonitoringThreadDeepDive, MonitoringThreadRefresh } from "./MonitoringThreadDetail";
 import { MonitoringTimeBar } from "./MonitoringTimeBar";
@@ -152,7 +159,7 @@ export function MonitoringPage() {
   const [listOrder, setListOrder] = useState(FIRST_PAGE);
   const period = monitoringWindow(windowChoice.days, windowChoice.now);
   const overviewInput = { days: period.days, until: period.until };
-  const overview = useMonitoringOverview(overviewInput);
+  const { view: overview, days: overviewDays } = useMonitoringOverview(overviewInput);
   const requests = chatRequests(period, filters, listOrder);
   const projects = useProjects();
 
@@ -175,18 +182,30 @@ export function MonitoringPage() {
     const now = Date.now();
     const today = monitoringWindow(windowChoice.days, now);
     if (today.until === period.until) {
-      refreshMonitoring({ overview: overviewInput, chats: [requests.list, ...requests.outliers] });
-      return;
+      return refreshMonitoring({
+        overview: overviewInput,
+        chats: [requests.list, ...requests.outliers],
+      });
     }
     // A period left open past midnight moves to today. Its queries are new and load on their own,
     // so the refresh only reconnects environments that are down.
     setWindowChoice({ days: windowChoice.days, now });
-    refreshMonitoring({
+    return refreshMonitoring({
       overview: { days: today.days, until: today.until },
       chats: [],
     });
   };
-  const refreshing = overview.environments.some((environment) => environment.isPending);
+  const [refreshing, setRefreshing] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
+  const refreshFromButton = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setTimedOut(false);
+    const answers = await Promise.resolve()
+      .then(refresh)
+      .finally(() => setRefreshing(false));
+    setTimedOut(answers.some(monitoringRefreshTimedOut));
+  };
   // A new period or scope starts the list from its first page again.
   const changeFilters = (next: Filters) => {
     setFilters(next);
@@ -231,7 +250,11 @@ export function MonitoringPage() {
               threadId={deepDive.threadId}
             />
           ) : (
-            <MonitoringRefreshButton refreshing={refreshing} onRefresh={refresh} />
+            <MonitoringRefreshButton
+              refreshing={refreshing}
+              timedOut={timedOut}
+              onRefresh={refreshFromButton}
+            />
           )}
         </div>
       </WorkspacePageHeader>
@@ -246,7 +269,7 @@ export function MonitoringPage() {
           ) : (
             <MonitoringOverview
               overview={overview}
-              period={period}
+              days={overviewDays}
               filters={filters}
               onFiltersChange={changeFilters}
               requests={requests}
@@ -265,7 +288,7 @@ export function MonitoringPage() {
 
 function MonitoringOverview({
   overview,
-  period,
+  days,
   filters,
   onFiltersChange,
   requests,
@@ -275,8 +298,8 @@ function MonitoringOverview({
   retry,
   onRetry,
 }: {
-  readonly overview: ReturnType<typeof useMonitoringOverview>;
-  readonly period: MonitoringWindow;
+  readonly overview: MonitoringOverviewView;
+  readonly days: ReadonlyArray<MonitoringDay>;
   readonly filters: Filters;
   readonly onFiltersChange: (filters: Filters) => void;
   readonly requests: ReturnType<typeof chatRequests>;
@@ -349,37 +372,15 @@ function MonitoringOverview({
   const buckets = sumTimeBuckets(scoped);
   const ranks = rankFindings(scoped);
   const phases = phaseTotals(scoped);
-  const trend = dailyTrend(scoped, { days: period.days });
+  const trend = dailyTrend(scoped, { days });
   const filtered = filters.project !== null || filters.kind !== null || filters.model !== null;
   const unanalyzed = unanalyzedCounts(overview.unanalyzed, filters.project);
 
   return (
     <div className="flex flex-col gap-8">
-      {missingNotices}
-      {unanalyzed.pending > 0 ? (
-        <Alert variant="info">
-          <InfoIcon />
-          <AlertDescription>
-            {tn(
-              unanalyzed.pending,
-              "{count} settled chat is still being analyzed.",
-              "{count} settled chats are still being analyzed.",
-            )}
-          </AlertDescription>
-        </Alert>
-      ) : null}
-      {unanalyzed.failed > 0 ? (
-        <Alert variant="warning">
-          <CircleAlertIcon />
-          <AlertDescription>
-            {tn(
-              unanalyzed.failed,
-              "{count} chat could not be analyzed. It is tried again every 30 minutes.",
-              "{count} chats could not be analyzed. They are tried again every 30 minutes.",
-            )}
-          </AlertDescription>
-        </Alert>
-      ) : null}
+      <MonitoringOverviewNotices stale={overview.stale ?? false} {...unanalyzed}>
+        {missingNotices}
+      </MonitoringOverviewNotices>
 
       <MonitoringFilters
         overview={overview}
@@ -560,7 +561,7 @@ function MonitoringOutliers({
   readonly projectTitleOf: (chat: MonitoringChat) => string;
 }) {
   return (
-    <div className="grid gap-3 empty:hidden md:grid-cols-3">
+    <div className="grid gap-3 md:grid-cols-3">
       {OUTLIERS.map((outlier, index) => (
         <OutlierGroupQuery
           key={outlier.sort}
@@ -588,10 +589,10 @@ function OutlierGroupQuery({
   const { view, retry } = useMonitoringChats(request);
   const chats = view.chats.filter((chat) => outlier.score(chat) > 0);
   const missing = missingEnvironments(view);
-  if (chats.length === 0 && !missing.waiting && !missing.unreadable) return null;
   return (
     <OutlierGroup
       label={t(outlier.label)}
+      stale={view.stale ?? false}
       chats={chats}
       missing={missing}
       value={outlier.value}
@@ -604,6 +605,7 @@ function OutlierGroupQuery({
 
 function OutlierGroup({
   label,
+  stale,
   chats,
   missing,
   value,
@@ -612,6 +614,7 @@ function OutlierGroup({
   projectTitleOf,
 }: {
   readonly label: string;
+  readonly stale: boolean;
   readonly chats: ReadonlyArray<MonitoringChat>;
   /** Environments whose chats this ranking does not include yet. */
   readonly missing: MissingEnvironments;
@@ -625,7 +628,7 @@ function OutlierGroup({
       <h3 className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
         {label}
       </h3>
-      <ul className="divide-y divide-border">
+      <ul className="min-h-36 divide-y divide-border">
         {chats.map((chat) => (
           <li key={monitoringChatKey(chat)}>
             <Link
@@ -644,27 +647,27 @@ function OutlierGroup({
           </li>
         ))}
       </ul>
-      {missing.waiting || missing.unreadable ? (
-        <div className="flex items-start justify-between gap-3 px-3 py-2 text-xs text-muted-foreground">
-          <div className="min-w-0 break-words">
-            {missing.unreadable ? (
-              <p>
-                {t("Some environments could not be read, so their chats are missing: {names}", {
-                  names: missing.unreadable,
-                })}
-              </p>
-            ) : null}
-            {missing.waiting ? (
-              <p>
-                {t("These environments are not counted yet: {names}", { names: missing.waiting })}
-              </p>
-            ) : null}
-          </div>
-          {missing.unreadable && retry !== "unavailable" ? (
-            <RetryButton retry={retry} onRetry={onRetry} />
+      <div
+        role="status"
+        className="flex h-16 items-start justify-between gap-3 overflow-y-auto px-3 py-2 text-xs text-muted-foreground"
+      >
+        <div className="min-w-0 break-words">
+          {stale ? <p>{t("Showing previous monitoring results.")}</p> : null}
+          {missing.unreadable ? (
+            <p>
+              {t("Could not refresh these environments: {names}", {
+                names: missing.unreadable,
+              })}
+            </p>
+          ) : null}
+          {missing.waiting ? (
+            <p>{t("Waiting for these environments: {names}", { names: missing.waiting })}</p>
           ) : null}
         </div>
-      ) : null}
+        {missing.unreadable && retry !== "unavailable" ? (
+          <RetryButton retry={retry} onRetry={onRetry} />
+        ) : null}
+      </div>
     </div>
   );
 }

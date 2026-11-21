@@ -3,6 +3,7 @@ import {
   ProjectId,
   type MonitoringChatsResult,
   type MonitoringGroup,
+  type MonitoringOverviewResult,
   type MonitoringThreadSummary,
 } from "@t3tools/contracts";
 import { activateLanguage } from "@t3tools/shared/i18n";
@@ -32,11 +33,14 @@ import {
   monitoringChatKey,
   monitoringChatsInput,
   monitoringEnvironment,
+  monitoringDetailReconnects,
   monitoringFacets,
   monitoringWindow,
   percentile,
   phaseTotals,
   projectKey,
+  presentMonitoringChats,
+  presentMonitoringOverview,
   queryRead,
   rankFindings,
   sumTimeBuckets,
@@ -518,6 +522,64 @@ describe("mergeMonitoringOverviews", () => {
     ]);
   });
 
+  it("keeps an answered overview complete during a notice-driven reload", () => {
+    const refreshing = environmentReport(environment("env-a"), () => ({
+      result: overview("env-a"),
+      isPending: true,
+      error: null,
+    }));
+    expect(mergeMonitoringOverviews([refreshing])).toMatchObject({
+      stale: false,
+      waiting: [],
+      complete: true,
+    });
+  });
+
+  it("shows the selected period after one environment answers and the other fails", () => {
+    const before = mergeMonitoringOverviews([
+      report("env-a", overview("env-a")),
+      report("env-b", overview("env-b")),
+    ]);
+    const days = [{ day: "2026-11-20", since: "2026-11-20T00:00:00.000Z" }];
+    const shown = {
+      key: "old",
+      view: before,
+      days: [{ day: "2026-11-10", since: "2026-11-10T00:00:00.000Z" }],
+    };
+    const answer = { ...overview("env-a"), groups: [group({ day: days[0]!.day }).group] };
+    const failure = report<MonitoringOverviewResult>("env-b", null, { error: "offline" });
+    const loading = mergeMonitoringOverviews([report("env-a", null), failure]);
+    expect(presentMonitoringOverview(shown, { key: "new", view: loading, days })).toMatchObject({
+      keep: true,
+      days: shown.days,
+      view: { groups: before.groups, stale: true },
+    });
+
+    const loaded = mergeMonitoringOverviews([report("env-a", answer), failure]);
+    expect(presentMonitoringOverview(shown, { key: "new", view: loaded, days })).toMatchObject({
+      keep: false,
+      days,
+      view: { groups: loaded.groups, unreadable: [failure], complete: false },
+    });
+    const reconnecting = mergeMonitoringOverviews([report("env-a", answer), report("env-b", null)]);
+    expect(
+      presentMonitoringOverview(shown, { key: "new", view: reconnecting, days }),
+    ).toMatchObject({
+      keep: false,
+      days,
+      view: { groups: reconnecting.groups, waiting: [{ environmentId: "env-b" }] },
+    });
+    const failed = mergeMonitoringOverviews([
+      report("env-a", null, { error: "unreachable" }),
+      failure,
+    ]);
+    expect(presentMonitoringOverview(shown, { key: "new", view: failed, days })).toMatchObject({
+      keep: true,
+      days: shown.days,
+      view: { groups: before.groups, failed: false, stale: true },
+    });
+  });
+
   it("loads until the first answer, names whom it waits for once another failed, and fails when all did", () => {
     const status = (...reports: MonitoringEnvironmentReport[]) => {
       const merged = mergeMonitoringOverviews(reports);
@@ -617,7 +679,7 @@ describe("environmentReport", () => {
       queryRead(result, (cause) => `failed: ${String(Cause.squash(cause))}`),
     );
 
-  it("keeps an answer while it refreshes and drops it when the refresh fails", () => {
+  it("marks a previous answer stale during and after a failed refresh", () => {
     expect(
       reportOf(null, AsyncResult.success(answer, { waiting: true, timestamp: 0 })),
     ).toMatchObject({ isPending: true, error: null, result: answer });
@@ -626,7 +688,7 @@ describe("environmentReport", () => {
         null,
         AsyncResult.failure(Cause.fail("boom"), { previousSuccess: Option.some(kept) }),
       ),
-    ).toMatchObject({ isPending: false, error: "failed: boom", result: null });
+    ).toMatchObject({ isPending: false, error: "failed: boom", result: answer, stale: true });
   });
 
   it("does not count an environment that cannot answer yet, nor wait on a request it never sent", () => {
@@ -726,9 +788,9 @@ describe("chat list across environments", () => {
       readAgain({ ...pagesOfA, 2: { again: "boom" } }),
       readAgain({ ...pagesOfA, 0: { again: "boom" } }),
     ]).toEqual([
-      [[9, 8], 7, true, true],
+      [[9, 8], 7, false, true],
       [[6, 5], 2, false, true],
-      [[9, 8], 7, true, true],
+      [[9, 8], 7, false, true],
       [[6, 5], 2, false, true],
     ]);
   });
@@ -850,7 +912,7 @@ describe("keepsShownChats", () => {
   });
   const shown = at(byCost, source("env-a", { 0: four }));
 
-  it("keeps the chats on screen only while a list of the same chats loads and shows fewer or is read again", () => {
+  it("keeps the previous rows while a new period or sort is loading", () => {
     const earlier = {
       ...ascending,
       window: { ...ascending.window, since: "2026-10-01T00:00:00.000Z" },
@@ -909,7 +971,103 @@ describe("keepsShownChats", () => {
         at(byCost, source("env-a", { 0: four }), source("env-b", { 0: "boom" })),
         at(byCost, source("env-a", { 0: four }), source("env-b", { 0: { again: "boom" } })),
       ),
-    ]).toEqual([true, false, false, false, true, false, false, false, false, true, true]);
+    ]).toEqual([true, false, true, false, true, false, false, false, false, true, true]);
+  });
+
+  it("keeps an answered chat page complete during a notice-driven reload", () => {
+    const refreshing = at(byCost, source("env-a", { 0: { again: four } }));
+    expect(presentMonitoringChats(shown, refreshing)).toMatchObject({
+      updating: true,
+      view: { stale: false, waiting: [], complete: true, chats: shown.view.chats },
+    });
+  });
+
+  it("releases previous period and filter rows when the new request finishes with a failure", () => {
+    const previous = at(byCost, source("env-a", { 0: four }), source("env-b", { 0: two }));
+    const newChat = answer([[chat("new"), 1]]);
+    const fail = source("env-b", { 0: "offline" });
+    const earlier = { ...byCost, window: { ...byCost.window, since: "2026-10-01T00:00:00.000Z" } };
+    const filtered = { ...byCost, filters: { kind: "interactive" as const } };
+    for (const request of [earlier, filtered]) {
+      expect(keepsShownChats(previous, at(request, source("env-a", {}), fail))).toBe(true);
+      const loaded = at(request, source("env-a", { 0: newChat }), fail);
+      expect(presentMonitoringChats(previous, loaded)).toMatchObject({
+        keep: false,
+        view: { chats: loaded.view.chats, unreadable: loaded.view.unreadable },
+      });
+    }
+  });
+
+  it("merges current rows with only the failed environment's previous pages", () => {
+    const request = chatsRequest({ limit: 4 }, 4);
+    const b = answer([
+      [chat("b1"), 11],
+      [chat("b2"), 2],
+    ]);
+    const initial = mergeMonitoringChats(
+      [source("env-a", { 0: four }), source("env-b", { 0: b })],
+      request,
+    );
+    const offline = source("env-b", {}, [], { error: "offline", reconnects: true });
+    let view = initial;
+    for (const [current, ids] of [
+      [two, ["env-b:b1", "env-a:a", "env-b:b2", "env-a:b"]],
+      [answer([]), ["env-b:b1", "env-b:b2"]],
+      [answer([[chat("a-new"), 12]]), ["env-a:a-new", "env-b:b1", "env-b:b2"]],
+    ] as const) {
+      view = mergeMonitoringChats([source("env-a", { 0: current }), offline], request, view);
+      expect(view.chats.map(monitoringChatKey)).toEqual(ids);
+      expect(view).toMatchObject({
+        stale: true,
+        complete: false,
+        unreadable: [{ environmentId: "env-b" }],
+      });
+    }
+  });
+
+  it("releases the previous filter when its requested pages settle while another environment reconnects", () => {
+    const previous = at(byCost, source("env-a", { 0: four }), source("env-b", { 0: two }));
+    const request = { ...byCost, filters: { kind: "interactive" as const } };
+    const reconnecting = source("env-b", {}, [], { error: null, reconnects: true });
+    const loaded = at(request, source("env-a", { 0: answer([[chat("new"), 1]]) }), reconnecting);
+    expect(presentMonitoringChats(previous, loaded)).toMatchObject({
+      keep: false,
+      view: { chats: loaded.view.chats, waiting: [{ environmentId: "env-b" }], complete: false },
+    });
+  });
+
+  it("retains rows when a project narrows the sources but releases them when an environment is removed", () => {
+    const a = source("env-a", { 0: four });
+    const b = source("env-b", { 0: two });
+    const previous = at(byCost, a, b);
+    const request = { ...byCost, filters: { projectKey: "env-a:p1" } };
+    const pending = source("env-a", {});
+    const narrowed = {
+      request,
+      view: mergeMonitoringChats([pending], request, undefined, [
+        a.environment.environmentId,
+        b.environment.environmentId,
+      ]),
+    };
+    expect(presentMonitoringChats(previous, narrowed)).toMatchObject({
+      keep: true,
+      view: { chats: previous.view.chats, stale: true, isLoading: false },
+    });
+    expect(keepsShownChats(previous, at(request, pending))).toBe(false);
+  });
+
+  it("keeps each pending environment's coherent pages when another refresh fails first", () => {
+    const previous = at(byCost, source("env-a", { 0: two }), source("env-b", { 0: four }));
+    const view = mergeMonitoringChats(
+      [source("env-a", { 0: { again: two } }), source("env-b", { 0: "offline" })],
+      byCost,
+      previous.view,
+    );
+    expect(view.chats).toEqual(previous.view.chats);
+    expect(view).toMatchObject({
+      awaitingPage: true,
+      unreadable: [{ environmentId: "env-b", error: "offline" }],
+    });
   });
 
   it("shows a new order once it has as many chats, though an environment still loads", () => {
@@ -1003,12 +1161,21 @@ describe("keepsShownChats", () => {
     ]).toEqual([false, true, true, false, true, false, false, false]);
   });
 
-  it("does not wait for an environment that is still connecting", () => {
+  it("keeps rows during reconnect only for the same set of environments", () => {
     const next = at(
       ascending,
       source("env-a", { 0: two }),
       source("env-b", {}, [], { error: null, reconnects: true }),
     );
-    expect([next.view.awaitingPage, keepsShownChats(shown, next)]).toEqual([false, false]);
+    expect(keepsShownChats(shown, next)).toBe(false);
   });
+});
+
+it("marks retained detail until the replacement connection's read settles", () => {
+  const offline = monitoringDetailReconnects(false, false, false);
+  expect(offline).toBe(true);
+  const replacementReading = monitoringDetailReconnects(true, offline, true);
+  expect(replacementReading).toBe(true);
+  expect(monitoringDetailReconnects(true, replacementReading, false)).toBe(false);
+  expect(monitoringDetailReconnects(true, false, true)).toBe(false);
 });

@@ -1,17 +1,26 @@
 import {
   EnvironmentId,
+  ThreadId,
+  type MonitoringChange,
   type MonitoringChatsInput,
   type MonitoringChatsResult,
   type MonitoringOverviewInput,
   type MonitoringThreadSummary,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, vi } from "@effect/vitest";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
 import type { EnvironmentPresentation } from "../connection/presentation.ts";
+import { executeAtomQuery } from "../state/runtime.ts";
 import type { MonitoringChatsRequest } from "./aggregate.ts";
-import { createMonitoringAtoms } from "./atoms.ts";
+import {
+  createMonitoringAtoms,
+  executeMonitoringQuery,
+  followMonitoringChanges,
+  monitoringRefreshTimedOut,
+} from "./atoms.ts";
 
 type MonitoringAtomsInput = Parameters<typeof createMonitoringAtoms>[0];
 
@@ -125,6 +134,24 @@ describe("createMonitoringAtoms refresh", () => {
     land("overview:last-week");
     const afterRecovery = refreshed(shorterRequest);
     const lastWeekShown = registry.get(lastWeekOverview);
+    registry.set(
+      presentationsAtom,
+      new Map([
+        [
+          environmentId,
+          {
+            ...ready,
+            connection: { phase: "reconnecting", error: null, traceId: null },
+          } as EnvironmentPresentation,
+        ],
+      ]),
+    );
+    const reconnecting = registry.get(lastWeekOverview);
+    expect(reconnecting.environments[0]?.result).toEqual({ groups: [], unanalyzed: [] });
+    expect(reconnecting.waiting.map(({ label }) => label)).toEqual(["Laptop"]);
+    expect(reconnecting.isLoading).toBe(false);
+    expect(reconnecting.complete).toBe(false);
+    registry.set(presentationsAtom, new Map([[environmentId, ready]]));
     pageTwo = "loads";
     registry.refresh(query("page:2"));
     const stopped = registry.get(list);
@@ -174,4 +201,196 @@ describe("createMonitoringAtoms refresh", () => {
       [],
     ]);
   });
+});
+
+it("reloads a detail only for unseen changes to that chat and lets its in-flight answer catch up", async () => {
+  const registry = AtomRegistry.make();
+  const changes = Atom.make<AsyncResult.AsyncResult<MonitoringChange>>(AsyncResult.initial());
+  const answer = Atom.make(AsyncResult.success({ revision: 4 }));
+  let reads = 0;
+  const query = Atom.readable(
+    (get) => get(answer),
+    () => {
+      reads++;
+      registry.set(answer, AsyncResult.success(registry.get(answer).value, { waiting: true }));
+    },
+  );
+  const thread = ThreadId.make("selected");
+  const detail = followMonitoringChanges(query, changes, thread);
+  const unmount = registry.mount(detail);
+  const publish = (sinceRevision: number, revision: number, threadId: string) => {
+    registry.set(
+      changes,
+      AsyncResult.success({ sinceRevision, revision, threadIds: [ThreadId.make(threadId)] }),
+    );
+  };
+  try {
+    publish(0, 4, thread);
+    publish(4, 5, "another-chat");
+    expect(reads).toBe(0);
+
+    publish(5, 6, thread);
+    await Promise.resolve();
+    expect(reads).toBe(1);
+    publish(6, 7, thread);
+    publish(7, 8, "another-chat");
+    registry.set(answer, AsyncResult.success({ revision: 7 }));
+    expect(reads).toBe(1);
+
+    publish(8, 9, thread);
+    await Promise.resolve();
+    publish(9, 10, thread);
+    registry.set(answer, AsyncResult.success({ revision: 9 }));
+    await Promise.resolve();
+    expect(reads).toBe(3);
+  } finally {
+    unmount();
+  }
+});
+
+it("publishes every completed answer and settles manual Refresh under continuous notices", async () => {
+  const registry = AtomRegistry.make();
+  const changes = Atom.make<AsyncResult.AsyncResult<MonitoringChange>>(AsyncResult.initial());
+  const answer = Atom.make<AsyncResult.AsyncResult<{ revision: number }, string>>(
+    AsyncResult.success({ revision: 0 }),
+  );
+  let reads = 0;
+  const query = Atom.readable(
+    (get) => get(answer),
+    () => {
+      reads++;
+      registry.set(answer, AsyncResult.waiting(registry.get(answer)));
+    },
+  );
+  const watched = followMonitoringChanges(query, changes);
+  const completions: Array<number | string> = [];
+  const unsubscribe = registry.subscribe(watched, (value) => {
+    if (value.waiting) return;
+    if (value._tag === "Success") completions.push(value.value.revision);
+    if (value._tag === "Failure") completions.push(String(Cause.squash(value.cause)));
+  });
+  const notice = (revision: number) =>
+    registry.set(changes, AsyncResult.success({ revision, sinceRevision: revision - 1 }));
+
+  try {
+    const refresh = executeAtomQuery(registry, watched, { refresh: true, reportFailure: false });
+    expect(reads).toBe(1);
+    completions.length = 0;
+    for (const revision of [1, 3, 5]) {
+      notice(revision + 1);
+      registry.set(answer, AsyncResult.success({ revision }));
+      expect(completions.at(-1)).toBe(revision);
+      expect(registry.get(watched).waiting).toBe(false);
+      await Promise.resolve();
+      expect(registry.get(watched).waiting).toBe(true);
+    }
+    expect(await refresh).toMatchObject({ _tag: "Success", value: { revision: 1 } });
+
+    notice(8);
+    registry.set(answer, AsyncResult.failure(Cause.fail("The request timed out.")));
+    expect(registry.get(watched)).toMatchObject({ waiting: false, _tag: "Failure" });
+    expect(completions).toEqual([1, 3, 5, "The request timed out."]);
+  } finally {
+    unsubscribe();
+    registry.dispose();
+  }
+});
+
+it("detects a skipped detail notice after a server restarts at revision zero", async () => {
+  const registry = AtomRegistry.make();
+  const changes = Atom.make<AsyncResult.AsyncResult<MonitoringChange>>(AsyncResult.initial());
+  const answer = Atom.make(AsyncResult.success({ revision: 100, serverEpoch: "old" }));
+  let reads = 0;
+  const query = Atom.readable(
+    (get) => get(answer),
+    () => {
+      reads++;
+    },
+  );
+  const watched = followMonitoringChanges(query, changes, ThreadId.make("selected"));
+  const unmount = registry.mount(watched);
+  try {
+    registry.set(
+      changes,
+      AsyncResult.success({ revision: 100, sinceRevision: 99, serverEpoch: "old" }),
+    );
+    registry.set(answer, AsyncResult.success({ revision: 0, serverEpoch: "new" }));
+    registry.set(
+      changes,
+      AsyncResult.success({
+        revision: 2,
+        sinceRevision: 1,
+        serverEpoch: "new",
+        threadIds: [ThreadId.make("other")],
+      }),
+    );
+    registry.get(watched);
+    await Promise.resolve();
+    expect(reads).toBe(1);
+  } finally {
+    unmount();
+    registry.dispose();
+  }
+});
+
+it("retries the selected detail after its first read on a new server fails", async () => {
+  const registry = AtomRegistry.make();
+  const changes = Atom.make<AsyncResult.AsyncResult<MonitoringChange>>(AsyncResult.initial());
+  const old = AsyncResult.success({ revision: 100, serverEpoch: "old" });
+  const answer = Atom.make<AsyncResult.AsyncResult<typeof old.value, string>>(old);
+  let reads = 0;
+  const query = Atom.readable(
+    (get) => get(answer),
+    () => {
+      reads++;
+    },
+  );
+  const thread = ThreadId.make("selected");
+  const watched = followMonitoringChanges(query, changes, thread);
+  const unmount = registry.mount(watched);
+  try {
+    registry.set(
+      changes,
+      AsyncResult.success({ revision: 100, serverEpoch: "old", threadIds: [thread] }),
+    );
+    registry.set(
+      answer,
+      AsyncResult.failure(Cause.fail("first read failed"), { previousSuccess: Option.some(old) }),
+    );
+    registry.set(
+      changes,
+      AsyncResult.success({
+        revision: 1,
+        sinceRevision: 0,
+        serverEpoch: "new",
+        threadIds: [thread],
+      }),
+    );
+    await Promise.resolve();
+    expect(reads).toBe(1);
+  } finally {
+    unmount();
+    registry.dispose();
+  }
+});
+
+it("ends a manual Refresh at its own deadline through repeated connection replacements", async () => {
+  vi.useFakeTimers();
+  const registry = AtomRegistry.make();
+  const previous = { revision: 7 };
+  const answer = Atom.make(AsyncResult.success(previous, { waiting: true }));
+  const query = Atom.readable((get) => get(answer));
+  try {
+    const outcome = executeMonitoringQuery(registry, query, EnvironmentId.make("env-a"));
+    for (let generation = 1; generation <= 5; generation++) {
+      await vi.advanceTimersByTimeAsync(3_000);
+      registry.set(answer, AsyncResult.success(previous, { waiting: true, timestamp: generation }));
+    }
+    expect(monitoringRefreshTimedOut(await outcome)).toBe(true);
+    expect(registry.getNodes().get(query)?.listeners.size ?? 0).toBe(0);
+    expect(AsyncResult.getOrElse(registry.get(query), () => null)).toEqual(previous);
+  } finally {
+    registry.dispose();
+    vi.useRealTimers();
+  }
 });

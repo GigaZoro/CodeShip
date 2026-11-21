@@ -70,10 +70,10 @@ export function MissingEnvironmentNotes({
   return (
     <>
       {missing.unreadable ? (
-        <Alert variant="warning">
+        <Alert variant="warning" role={undefined}>
           <CircleAlertIcon />
           <AlertDescription>
-            {t("Some environments could not be read, so their chats are missing: {names}", {
+            {t("Could not refresh these environments: {names}", {
               names: missing.unreadable,
             })}
           </AlertDescription>
@@ -85,10 +85,10 @@ export function MissingEnvironmentNotes({
         </Alert>
       ) : null}
       {missing.waiting ? (
-        <Alert variant="info">
+        <Alert variant="info" role={undefined}>
           <InfoIcon />
           <AlertDescription>
-            {t("These environments are not counted yet: {names}", { names: missing.waiting })}
+            {t("Waiting for these environments: {names}", { names: missing.waiting })}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -123,7 +123,16 @@ export function MonitoringChatList({
 }) {
   const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
   const notes = (
-    <MissingEnvironmentNotes missing={missingEnvironments(view)} retry={retry} onRetry={onRetry} />
+    <div role="status" className="flex h-20 flex-col gap-2 overflow-y-auto">
+      {view.stale ? (
+        <p className="text-sm text-muted-foreground">{t("Showing previous monitoring results.")}</p>
+      ) : null}
+      <MissingEnvironmentNotes
+        missing={missingEnvironments(view)}
+        retry={retry}
+        onRetry={onRetry}
+      />
+    </div>
   );
 
   // Without every answer, a failure keeps the table and its headers, so a failed sort can change.
@@ -238,7 +247,7 @@ export function MonitoringChatList({
       </div>
       {view.chats.length > 0 ? (
         <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-          <span aria-live="polite">
+          <span>
             {tn(view.total, "Showing {shown} of {count} chat", "Showing {shown} of {count} chats", {
               shown: view.chats.length,
             })}

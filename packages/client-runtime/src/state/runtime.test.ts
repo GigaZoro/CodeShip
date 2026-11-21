@@ -9,6 +9,7 @@ import {
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -19,6 +20,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
 import {
@@ -90,6 +92,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
   execute: Effect.Effect<A, E>,
   {
     refreshTrigger,
+    requestTimeoutMs,
     idleTtlMs,
     persistence,
     initialState,
@@ -98,6 +101,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     onAnswer,
   }: {
     readonly refreshTrigger?: Atom.Atom<unknown>;
+    readonly requestTimeoutMs?: number;
     readonly onAnswer?: QueryAnswerHandler<undefined, A>;
     readonly isFinal?: (value: A) => boolean;
     readonly idleTtlMs?: number;
@@ -137,7 +141,10 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     stateChanges: () => SubscriptionRef.changes(supervisorState),
   } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]);
   const runtime = Atom.runtime(
-    Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+    Layer.merge(
+      Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+      Layer.succeed(Clock.Clock, yield* Clock.Clock),
+    ),
   );
   const family = createEnvironmentQueryAtomFamily(runtime, {
     label: "test.environment-query",
@@ -145,6 +152,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     ...(persistence === undefined ? {} : { persistence }),
     execute: () => execute,
     ...(refreshTrigger === undefined ? {} : { refreshTrigger: () => refreshTrigger }),
+    ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
     ...(idleTtlMs === undefined ? {} : { idleTtlMs }),
     ...(isFinal === undefined ? {} : { isFinal }),
     ...(onAnswer === undefined ? {} : { onAnswer }),
@@ -330,6 +338,37 @@ describe("finite environment subscription lifecycle", () => {
 });
 
 describe("environment query lifecycle", () => {
+  it.effect("settles a timed out request and retains its previous answer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        let responding = true;
+        const { atom } = yield* makeEnvironmentQueryHarness(
+          Effect.suspend(() =>
+            responding
+              ? Effect.succeed("previous answer")
+              : Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+          ),
+          { requestTimeoutMs: 15_000 },
+        );
+        const registry = yield* mountEnvironmentQuery(atom);
+        expect(yield* readEnvironmentQuery(registry, atom)).toBe("previous answer");
+        responding = false;
+        registry.refresh(atom);
+        yield* Deferred.await(started);
+
+        yield* TestClock.adjust(15_000);
+
+        const timedOut = registry.get(atom);
+        expect(timedOut).toMatchObject({ _tag: "Failure", waiting: false });
+        expect(AsyncResult.getOrElse(timedOut, () => null)).toBe("previous answer");
+        expect(AsyncResult.isFailure(timedOut) && Cause.squash(timedOut.cause)).toBeInstanceOf(
+          EnvironmentRpcUnavailableError,
+        );
+      }),
+    ),
+  );
+
   it.effect(
     "terminal metadata waits for snapshots and retains known sessions across restarts",
     () =>

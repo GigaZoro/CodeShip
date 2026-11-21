@@ -26,6 +26,7 @@ export class EnvironmentRpcUnavailableError extends Schema.TaggedError<Environme
   {
     environmentId: Schema.String,
     message: Schema.String,
+    reason: Schema.optionalKey(Schema.Literal("timeout")),
   },
 ) {}
 
