@@ -384,9 +384,9 @@ function ThreadNavigationSidebarPane(
     layout: threadListV2Layout,
     items: threadListV2Items,
     contentOnlyThreadKeys,
-    olderSettledShelf,
     settledFooter,
     retryFolder,
+    retrySettled,
     showMoreInFolder,
     showMoreSettled,
     getListedArrangement,
@@ -803,7 +803,7 @@ function ThreadNavigationSidebarPane(
             pane="sidebar"
             hiddenCount={item.hiddenCount}
             state={item.state}
-            onShowMore={() => showMoreInFolder(item.folderKey, item.listedCount)}
+            onShowMore={() => showMoreInFolder(item.folderKey)}
             onRetry={item.failed ? () => retryFolder(item.folderKey) : undefined}
           />
         );
@@ -846,7 +846,7 @@ function ThreadNavigationSidebarPane(
             hiddenCount={item.hiddenCount}
             state={item.state}
             onShowMore={showMoreSettled}
-            onRetry={item.failed ? olderSettledShelf.retry : undefined}
+            onRetry={item.failed ? retrySettled : undefined}
           />
         );
     }

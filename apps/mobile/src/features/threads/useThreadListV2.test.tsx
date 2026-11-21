@@ -379,7 +379,7 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
     ]),
   );
   expect(olderSettledThreads.retryPages).not.toHaveBeenCalled();
-  seen.at(-1)!.olderSettledShelf.retry();
+  seen.at(-1)!.retrySettled();
   expect(vi.mocked(olderSettledThreads.retryPages).mock.calls).toEqual([
     [undefined, { environmentId, projectIds: null, folder: null }, 1],
   ]);
@@ -394,6 +394,13 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
     root.render(<Probe input={{ ...filterInput, selectedTags: ["even"] }} tab="chats" />),
   );
   expect(seen.at(-1)!.olderSettledShelf.pages.size).toBe(0);
+  // LegendList can keep the even view's footer handler; it pages the view shown when pressed.
+  const keptShowMoreSettled = seen.at(-1)!.showMoreSettled;
+  await act(async () => root.render(<Probe input={filterInput} tab="chats" />));
+  expect(seen.at(-1)!.olderSettledShelf.pages.size).toBe(0);
+  await act(async () => keptShowMoreSettled());
+  // The failed environment waits for a retry.
+  expect(seen.at(-1)!.olderSettledShelf.pages).toEqual(new Map([[otherEnvironmentId, 1]]));
 
   const folderInput = {
     ...input,
@@ -519,7 +526,7 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
     return scope.pages === 0 ? readyFolder : pendingFolder;
   });
   await act(async () => root.render(<Probe input={folderInput} tab="chats" />));
-  await act(async () => seen.at(-1)!.showMoreInFolder("chat-folder:autopilot", 0));
+  await act(async () => seen.at(-1)!.showMoreInFolder("chat-folder:autopilot"));
   expect(folderPages()).toBeGreaterThan(0);
   await act(async () =>
     root.render(
@@ -541,12 +548,13 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   };
   await act(async () => root.render(<Probe input={firstView} tab="chats" />));
   expect(readPage.mock.calls).toEqual([]);
-  await act(async () => seen.at(-1)!.showMoreInFolder("chat-folder:autopilot", 0));
+  const keptShowMoreInFolder = seen.at(-1)!.showMoreInFolder;
+  await act(async () => seen.at(-1)!.showMoreInFolder("chat-folder:autopilot"));
   expect(folderPages()).toBe(1);
   await act(async () => {
     await untilPage(1);
   });
-  await act(async () => seen.at(-1)!.showMoreInFolder("chat-folder:autopilot", 0));
+  await act(async () => seen.at(-1)!.showMoreInFolder("chat-folder:autopilot"));
   expect(folderPages()).toBe(2);
   await act(async () => {
     await untilPage(2);
@@ -599,7 +607,7 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
       await untilPage(reopenedDepth);
     });
   expect.soft(readPage.mock.calls).toEqual([]);
-  await act(async () => seen.at(-1)!.showMoreInFolder("chat-folder:autopilot", 0));
+  await act(async () => keptShowMoreInFolder("chat-folder:autopilot"));
   await act(async () => {
     await untilPage(1);
   });

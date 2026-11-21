@@ -441,9 +441,9 @@ export function HomeScreen(props: HomeScreenProps) {
     layout: threadListV2Layout,
     items: threadListV2Items,
     contentOnlyThreadKeys,
-    olderSettledShelf,
     settledFooter,
     retryFolder,
+    retrySettled,
     showMoreInFolder,
     showMoreSettled,
     getListedArrangement,
@@ -557,7 +557,7 @@ export function HomeScreen(props: HomeScreenProps) {
           pane={primaryColumn ? "sidebar" : "screen"}
           hiddenCount={item.hiddenCount}
           state={item.state}
-          onShowMore={() => showMoreInFolder(item.folderKey, item.listedCount)}
+          onShowMore={() => showMoreInFolder(item.folderKey)}
           onRetry={item.failed ? () => retryFolder(item.folderKey) : undefined}
         />
       );
@@ -895,7 +895,7 @@ export function HomeScreen(props: HomeScreenProps) {
                     hiddenCount={settledFooter.hiddenCount}
                     state={settledFooter.state}
                     onShowMore={showMoreSettled}
-                    onRetry={settledFooter.failed ? olderSettledShelf.retry : undefined}
+                    onRetry={settledFooter.failed ? retrySettled : undefined}
                   />
                 ) : null
               }

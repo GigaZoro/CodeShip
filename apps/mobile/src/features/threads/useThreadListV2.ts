@@ -329,33 +329,59 @@ export function useThreadListV2(input: {
         : [{ shelf, listedCount: layout.listedFolderSettledCounts.get(folder.key) ?? 0 }];
     }),
   ]);
-  const showMoreSettled = () => {
-    if (filtered) {
-      const listed = layout.listedSettledThreads.length;
-      const count = olderSettledShelf.showMoreFiltered(Math.min(settledLimit, listed), listed);
-      setViewTargets((current) => ({ ...current, settled: count }));
-    } else {
-      setSettledTarget({
-        scopeKey,
-        count: settledLimit + THREAD_LIST_V2_SETTLED_PAGE_COUNT,
-      });
-    }
+  const paging = {
+    showMoreSettled: () => {
+      if (filtered) {
+        const listed = layout.listedSettledThreads.length;
+        const count = olderSettledShelf.showMoreFiltered(Math.min(settledLimit, listed), listed);
+        setViewTargets((current) => ({ ...current, settled: count }));
+      } else {
+        setSettledTarget({
+          scopeKey,
+          count: settledLimit + THREAD_LIST_V2_SETTLED_PAGE_COUNT,
+        });
+      }
+    },
+    showMoreInFolder: (folderKey: string) => {
+      const shelf = folderShelves[folders.findIndex((folder) => folder.key === folderKey)];
+      const footer = layout.folderFooters.find((entry) => entry.folderKey === folderKey);
+      if (shelf === undefined || footer === undefined) return;
+      const count = filtered
+        ? shelf.showMoreFiltered(
+            footer.listedCount,
+            layout.listedFolderSettledCounts.get(folderKey) ?? 0,
+          )
+        : footer.listedCount + THREAD_LIST_V2_SETTLED_PAGE_COUNT;
+      setViewTargets((current) => ({
+        ...current,
+        folders: new Map(
+          [...(current.folders ?? [])].filter(([key]) =>
+            folders.some((folder) => folder.key === key),
+          ),
+        ).set(folderKey, count),
+      }));
+    },
+    retrySettled: olderSettledShelf.retry,
+    retryFolder: (folderKey: string) =>
+      folderShelves[folders.findIndex((folder) => folder.key === folderKey)]?.retry(),
   };
-  const showMoreInFolder = (folderKey: string, shownCount: number) => {
-    const shelf = folderShelves[folders.findIndex((folder) => folder.key === folderKey)];
-    if (shelf === undefined) return;
-    const count = filtered
-      ? shelf.showMoreFiltered(shownCount, layout.listedFolderSettledCounts.get(folderKey) ?? 0)
-      : shownCount + THREAD_LIST_V2_SETTLED_PAGE_COUNT;
-    setViewTargets((current) => ({
-      ...current,
-      folders: new Map(
-        [...(current.folders ?? [])].filter(([key]) =>
-          folders.some((folder) => folder.key === key),
-        ),
-      ).set(folderKey, count),
-    }));
-  };
+  // LegendList can keep a footer's handlers across a filter change, since the footer compares
+  // equal, so they act on the committed shelves when pressed.
+  const committedPaging = useRef(paging);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes the committed shelves to footer handlers LegendList retains
+  useLayoutEffect(() => {
+    committedPaging.current = paging;
+  });
+  const showMoreSettled = useCallback(() => committedPaging.current.showMoreSettled(), []);
+  const showMoreInFolder = useCallback(
+    (folderKey: string) => committedPaging.current.showMoreInFolder(folderKey),
+    [],
+  );
+  const retrySettled = useCallback(() => committedPaging.current.retrySettled(), []);
+  const retryFolder = useCallback(
+    (folderKey: string) => committedPaging.current.retryFolder(folderKey),
+    [],
+  );
   const contentOnlyThreadKeys = useKeySet([...layout.contentOnlyThreadKeys].sort().join("\n"));
   const pendingTasks = useMemo(() => {
     const scopedProjectKeys =
@@ -429,8 +455,8 @@ export function useThreadListV2(input: {
     items,
     contentOnlyThreadKeys,
     olderSettledShelf,
-    retryFolder: (folderKey: string) =>
-      folderShelves[folders.findIndex((folder) => folder.key === folderKey)]?.retry(),
+    retryFolder,
+    retrySettled,
     showMoreInFolder,
     showMoreSettled,
     getListedArrangement,
