@@ -1902,6 +1902,33 @@ describe("ThreadSettlementServiceV2 worker", () => {
       ),
     );
 
+    it.effect("keeps a delivered own-worktree child active without any pull request work", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(nowMs);
+          const own = child("own-delivered", { worktreePath: "/worktrees/own" });
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([own]),
+            // The user wrote in the thread and the setting is on, so only the delivery rule can stop it.
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              sidebarAutoSettleAfterDays: 3,
+              sidebarAutoSettleOpensPullRequests: true,
+            },
+            existingWorktreePaths: ["/worktrees/own"],
+            unmergedWork: { refName: "feature", changedFileCount: 1, unmergedCommitCount: 2 },
+          });
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            assert.deepStrictEqual(yield* Ref.get(fixture.commands), []);
+            assert.deepStrictEqual(yield* Ref.get(fixture.branchCalls), []);
+            assert.deepStrictEqual(yield* Ref.get(fixture.stackedActions), []);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+    );
+
     it.effect("settles a child on its result while automatic settlement is off", () =>
       Effect.scoped(
         Effect.gen(function* () {

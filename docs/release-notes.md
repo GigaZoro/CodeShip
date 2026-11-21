@@ -25,6 +25,10 @@
 - Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
 - A landing that joins the queue comes after every landing it finds waiting there, even when that landing's machine clock runs ahead; landings that join at the same moment, before either can see the other, go in the order of their machines' clocks. A queue of any length keeps moving, and a waiter reads a bounded part of it per poll. Entries origin will not delete block no one and are reported once: a crashed lander's, or a waiter's own old names, which no longer keep it from a free lease, and the waiter keeps renewing its entry, so it keeps its place. A landing whose entry origin refused joins again behind the landings that came meanwhile. A lander whose take reached origin while its answer was lost keeps the turn instead of waiting behind itself, unless the lease expired before the take was confirmed, and its checks get the time that lease has left.
 
+## 2026-11-21 — A finished subagent no longer opens pull requests from its own worktree
+
+- When a subagent that has its own worktree delivers its result, T3.CodeShip keeps it active while it has unmerged work but no longer looks up or opens a pull request for it. The agent that started the subagent decides how that work lands.
+
 ## 2026-11-21 — Recent threads keep their places while chats run
 
 - The recent threads under an empty draft and the thread picker for linking a pull request no longer reorder while chats run. Both now order by when you last sent a message or started the chat, as the sidebar's Working list does, and the draft list shows that time. The draft list also leaves out tasks the sidebar shows under their parent thread, and the web command palette's thread times show when you last sent a message or started the chat.

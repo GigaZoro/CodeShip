@@ -61,7 +61,12 @@ const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
  * Open a pull request for a worktree's unmerged work, or keep the thread active. Keeping it active
  * holds the check for every thread on the worktree, or for this thread only.
  */
-type UnmergedWorkAction = "open-pull-request" | "keep-worktree-active" | "keep-thread-active";
+type UnmergedWorkAction =
+  | "open-pull-request"
+  | "keep-worktree-active"
+  | "keep-thread-active"
+  // A delivered subagent's work lands as its delegating agent decides: no pull request lookup or action.
+  | "keep-for-delegator";
 
 function toMillis(value: DateTime.Utc | null | undefined): number | null {
   return value == null ? null : DateTime.toEpochMillis(value);
@@ -421,7 +426,8 @@ export const make = Effect.gen(function* () {
     action: UnmergedWorkAction,
     untilMs: number,
   ) => {
-    if (action === "keep-thread-active") threadsHeldUntilMs.set(threadId, untilMs);
+    if (action === "keep-thread-active" || action === "keep-for-delegator")
+      threadsHeldUntilMs.set(threadId, untilMs);
     else unmergedWorkHeldUntilMs.set(cwd, untilMs);
   };
 
@@ -445,7 +451,7 @@ export const make = Effect.gen(function* () {
       return release();
     }
     const pullRequest =
-      work.refName === null
+      work.refName === null || action === "keep-for-delegator"
         ? null
         : yield* git.branchPullRequest({ cwd, branch: work.refName }, { freshGitState: true });
     // A pull request accounts for the commits up to its head: an open one ships them and a closed
@@ -512,6 +518,7 @@ export const make = Effect.gen(function* () {
   const releasesUnmergedWork = Effect.fnUntraced(function* (
     thread: ProjectionStore.ProjectionSettlementCandidate,
     opensPullRequests: boolean,
+    deliveredToParent: boolean,
     nowMs: number,
   ) {
     const cwd = thread.worktreePath;
@@ -521,11 +528,13 @@ export const make = Effect.gen(function* () {
     return yield* Effect.gen(function* () {
       // Only a thread the user wrote in is theirs to publish; agents and scheduled tasks decide how
       // the work of the threads they started lands.
-      const action: UnmergedWorkAction = !opensPullRequests
-        ? "keep-worktree-active"
-        : (yield* projections.hasUserWrittenMessage(thread.id))
-          ? "open-pull-request"
-          : "keep-thread-active";
+      const action: UnmergedWorkAction = deliveredToParent
+        ? "keep-for-delegator"
+        : !opensPullRequests
+          ? "keep-worktree-active"
+          : (yield* projections.hasUserWrittenMessage(thread.id))
+            ? "open-pull-request"
+            : "keep-thread-active";
       return yield* checkUnmergedWork(thread, cwd, action, nowMs).pipe(
         Effect.catchCauseIf(
           (cause) => !Cause.hasInterruptsOnly(cause),
@@ -608,6 +617,7 @@ export const make = Effect.gen(function* () {
           !(yield* releasesUnmergedWork(
             thread,
             currentSettings.sidebarAutoSettleOpensPullRequests,
+            deliveredAt !== null,
             decisionNowMs,
           ))
         ) {
