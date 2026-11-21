@@ -32,7 +32,11 @@ import * as ProviderReplayHarness from "../src/orchestration-v2/testkit/Provider
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import { makeGrokAcpRuntime } from "@t3tools/provider-grok/testing";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
-import { parseRecorderArguments } from "./replayRecorderArguments.ts";
+import {
+  parseRecorderArguments,
+  replayScenarioNames,
+  validateReplayOutput,
+} from "./replayRecorderArguments.ts";
 
 const wallClock = Clock.Clock.defaultValue();
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -54,9 +58,29 @@ interface WireMessage {
   readonly message: JsonRpcMessage;
 }
 
-const { values: options } = parseRecorderArguments({
-  options: { out: { type: "string" }, scenario: { type: "string", multiple: true, default: [] } },
-});
+export function parseReplayArguments(args: ReadonlyArray<string>) {
+  const { values } = parseRecorderArguments(
+    {
+      options: {
+        out: { type: "string" },
+        scenario: { type: "string", multiple: true, default: [] },
+      },
+    },
+    args,
+  );
+  const selected = replayScenarioNames(values.scenario).map((fixtureName) => {
+    const fixture = ORCHESTRATOR_REPLAY_FIXTURES.find(
+      (candidate) => candidate.name === fixtureName,
+    );
+    const variant = fixture?.providers.find((provider) => provider.driver === GROK_PROVIDER);
+    if (fixture === undefined || variant === undefined) {
+      throw new Error("No Grok replay fixture named '" + fixtureName + "'.");
+    }
+    return { fixtureName, fixture, variant };
+  });
+  validateReplayOutput(values.out, selected.length);
+  return { selected, out: values.out };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -369,12 +393,10 @@ function normalizeEntries(input: {
 
 const DEFAULT_GROK_SETTINGS = Schema.decodeSync(GrokSettings)({});
 
-const recordScenario = Effect.fn("recordGrokScenario")(function* (fixtureName: string) {
-  const fixture = ORCHESTRATOR_REPLAY_FIXTURES.find((candidate) => candidate.name === fixtureName);
-  const variant = fixture?.providers.find((provider) => provider.driver === GROK_PROVIDER);
-  if (fixture === undefined || variant === undefined) {
-    return yield* Effect.die(new Error(`No Grok replay fixture named '${fixtureName}'.`));
-  }
+const recordScenario = Effect.fn("recordGrokScenario")(function* (
+  { fixtureName, fixture, variant }: ReturnType<typeof parseReplayArguments>["selected"][number],
+  out: string | undefined,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const fixtureInput = fixture.buildInput();
@@ -529,7 +551,7 @@ const recordScenario = Effect.fn("recordGrokScenario")(function* (fixtureName: s
     ],
   };
 
-  const outputPath = options.out ?? (yield* path.fromFileUrl(variant.transcriptFile));
+  const outputPath = out ?? (yield* path.fromFileUrl(variant.transcriptFile));
   const { entries: transcriptEntries, ...header } = transcript;
   yield* fs.writeFileString(
     outputPath,
@@ -550,13 +572,11 @@ const recordScenario = Effect.fn("recordGrokScenario")(function* (fixtureName: s
   }
 });
 
-const scenarios = options.scenario.flatMap((value) => value.split(","));
-if (scenarios.length === 0) {
-  throw new Error("Pass --scenario <fixture name>[,<fixture name>...]");
+if (import.meta.main) {
+  const { selected, out } = parseReplayArguments(process.argv.slice(2));
+  await Effect.runPromise(
+    Effect.forEach(selected, (scenario) => Effect.scoped(recordScenario(scenario, out)), {
+      discard: true,
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 }
-
-await Effect.runPromise(
-  Effect.forEach(scenarios, (name) => Effect.scoped(recordScenario(name)), {
-    discard: true,
-  }).pipe(Effect.provide(NodeServices.layer)),
-);

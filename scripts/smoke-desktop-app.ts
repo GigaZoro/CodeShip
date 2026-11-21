@@ -6,7 +6,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
-import * as NodeUtil from "node:util";
+import { parseCommandLine } from "./lib/command-line.ts";
 import { _electron, type ElectronApplication, type Page } from "playwright-core";
 
 // A snapshot from an older build on purpose: the packaged server must migrate it forward, as it
@@ -16,7 +16,7 @@ const THREAD_TITLE = "Release launch check";
 const THREAD_MESSAGE = "The release opens and shows this thread.";
 const STEP_TIMEOUT_MS = 60_000;
 
-const { values } = NodeUtil.parseArgs({
+const { values } = parseCommandLine({
   options: {
     executable: { type: "string" },
     "artifacts-dir": { type: "string" },

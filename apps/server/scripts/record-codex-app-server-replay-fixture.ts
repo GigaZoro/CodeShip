@@ -54,7 +54,11 @@ import {
 } from "../src/orchestration-v2/testkit/fixtures/shared.ts";
 import { codexReplayRecordingOutputRecords } from "./codexReplayRecordingRecords.ts";
 import { makeReplayRecorderDeferredRegistry } from "./replayRecorderDeferredRegistry.ts";
-import { parseRecorderArguments } from "./replayRecorderArguments.ts";
+import {
+  parseRecorderArguments,
+  replayScenarioNames,
+  validateReplayOutput,
+} from "./replayRecorderArguments.ts";
 
 const CODEX_REPLAY_PLAN_MODE_DEVELOPER_INSTRUCTIONS =
   process.env.T3_CODEX_REPLAY_PLAN_DEVELOPER_INSTRUCTIONS ??
@@ -65,16 +69,7 @@ const CODEX_CLIENT_CAPABILITIES = {
   optOutNotificationMethods: ["turn/diff/updated"],
   extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } },
 } as const;
-const { values: options } = parseRecorderArguments({
-  options: {
-    model: { type: "string" },
-    scenario: { type: "string", multiple: true, default: [] },
-    "out-dir": { type: "string" },
-    out: { type: "string" },
-  },
-});
 const CODEX_REPLAY_DEFAULT_MODEL = "gpt-6-luna";
-const CODEX_REPLAY_MODEL_OVERRIDE = options.model ?? process.env.T3_CODEX_REPLAY_MODEL;
 
 const SCENARIO_NAMES = [
   "simple",
@@ -191,41 +186,58 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function parseScenarios(): ReadonlyArray<ScenarioName> {
-  const rawValues = [
-    ...options.scenario,
-    ...(process.env.T3_CODEX_REPLAY_SCENARIOS ? [process.env.T3_CODEX_REPLAY_SCENARIOS] : []),
+export function parseReplayArguments(args: ReadonlyArray<string>, env: NodeJS.ProcessEnv = {}) {
+  const { values } = parseRecorderArguments(
+    {
+      options: {
+        model: { type: "string" },
+        scenario: { type: "string", multiple: true, default: [] },
+        "out-dir": { type: "string" },
+        out: { type: "string" },
+      },
+    },
+    args,
+  );
+  const requested = [
+    ...values.scenario,
+    ...(env.T3_CODEX_REPLAY_SCENARIOS === undefined ? [] : [env.T3_CODEX_REPLAY_SCENARIOS]),
   ];
-  const requested = rawValues.length > 0 ? rawValues : ["simple"];
-  const names = requested.flatMap((value) =>
-    value
-      .split(",")
-      .map((part) => part.trim())
-      .filter((part) => part.length > 0),
-  );
-
-  if (names.includes("all")) {
-    return SCENARIO_NAMES;
-  }
-
-  const expandedNames = names.flatMap((name) =>
-    name === "tool_call"
-      ? [
-          "tool_call_read_only_on_request",
-          "tool_call_workspace_never",
-          "tool_call_restricted_granular",
-        ]
-      : [name],
-  );
-
-  const invalid = expandedNames.filter(
-    (name): name is string => !SCENARIO_NAMES.includes(name as ScenarioName),
-  );
+  const names = replayScenarioNames(requested.length > 0 ? requested : ["simple"]);
+  const expanded = names.flatMap((name) => {
+    if (name === "all") return SCENARIO_NAMES;
+    if (name === "tool_call") {
+      return [
+        "tool_call_read_only_on_request",
+        "tool_call_workspace_never",
+        "tool_call_restricted_granular",
+      ];
+    }
+    return [name];
+  });
+  const valid = new Set<string>(SCENARIO_NAMES);
+  const invalid = expanded.filter((name) => !valid.has(name));
   if (invalid.length > 0) {
-    throw new Error(`Unknown scenario(s): ${invalid.join(", ")}`);
+    throw new Error("Unknown scenario(s): " + invalid.join(", "));
   }
 
-  return [...new Set(expandedNames)] as ReadonlyArray<ScenarioName>;
+  if (values.out !== undefined && values["out-dir"] !== undefined) {
+    throw new Error("Pass either --out or --out-dir.");
+  }
+  // An explicit CLI destination takes precedence over environment defaults.
+  const out = values.out ?? (values["out-dir"] === undefined ? env.T3_CODEX_REPLAY_OUT : undefined);
+  const outDir =
+    values["out-dir"] ?? (values.out === undefined ? env.T3_CODEX_REPLAY_OUT_DIR : undefined);
+  if (out !== undefined && outDir !== undefined) {
+    throw new Error("Set either T3_CODEX_REPLAY_OUT or T3_CODEX_REPLAY_OUT_DIR.");
+  }
+  const selected = new Set(expanded);
+  validateReplayOutput(out, selected.size);
+  return {
+    requestedScenarios: SCENARIO_NAMES.filter((name) => selected.has(name)),
+    out,
+    outDir,
+    model: values.model ?? env.T3_CODEX_REPLAY_MODEL,
+  };
 }
 
 function classifyJsonRpcPayload(payload: unknown): string {
@@ -319,10 +331,6 @@ function granularApprovalPolicy(): ApprovalPolicy {
       skill_approval: true,
     },
   };
-}
-
-function scenarioModel(scenario: ReplayScenario): string {
-  return CODEX_REPLAY_MODEL_OVERRIDE ?? scenario.model ?? CODEX_REPLAY_DEFAULT_MODEL;
 }
 
 function planCollaborationMode(model: string): CodexSchema.V2TurnStartParams__CollaborationMode {
@@ -963,7 +971,9 @@ const makeRecorder = Effect.fn("record-codex-app-server-replay-fixture.makeRecor
   outPath,
   scenario,
   checkout,
+  model,
 }: {
+  readonly model: string;
   readonly outPath: string;
   readonly scenario: ReplayScenario;
   readonly checkout: string;
@@ -1001,7 +1011,7 @@ const makeRecorder = Effect.fn("record-codex-app-server-replay-fixture.makeRecor
             source: "record-codex-app-server-replay-fixture",
             fileName: scenario.fileName,
             description: scenario.description,
-            model: scenarioModel(scenario),
+            model,
             ...recorderThreadConfigMetadata(scenario),
           },
         },
@@ -1199,7 +1209,9 @@ const runReplaySession = Effect.fn("record-codex-app-server-replay-fixture.runRe
     scenario,
     run,
     recorder,
+    model,
   }: {
+    readonly model: string;
     readonly scenario: ReplayScenario;
     readonly run: ReplayRun;
     readonly recorder: Recorder;
@@ -1216,7 +1228,6 @@ const runReplaySession = Effect.fn("record-codex-app-server-replay-fixture.runRe
     const startCommandExecution = startedCommandExecutions.succeed;
     const beforeApprovalResponse = () =>
       approvalGate ? Deferred.await(approvalGate) : Effect.void;
-    const model = scenarioModel(scenario);
     const threadRuntimeParams = { cwd: process.cwd(), model, config: CODEX_THREAD_CONFIG };
     const lastTurnIdByThread = new Map<string, string>();
     const runningCommandProcessIds = new Map<string, Map<string, string>>();
@@ -1461,21 +1472,27 @@ const runReplaySession = Effect.fn("record-codex-app-server-replay-fixture.runRe
 const runScenario = Effect.fn("record-codex-app-server-replay-fixture.runScenario")(function* ({
   scenario,
   outPath,
+  model,
 }: {
+  readonly model: string;
   readonly scenario: ReplayScenario;
   readonly outPath: string;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const checkout = path.resolve(yield* path.fromFileUrl(new URL("../../..", import.meta.url)));
-  const recorder = yield* makeRecorder({ outPath, scenario, checkout });
+  const recorder = yield* makeRecorder({ outPath, scenario, checkout, model });
 
   yield* fs.makeDirectory(path.dirname(outPath), { recursive: true });
   yield* Console.log(`Writing ${scenario.name} Codex replay events to ${recorder.path}`);
 
-  yield* Effect.forEach(scenario.runs, (run) => runReplaySession({ scenario, run, recorder }), {
-    concurrency: 1,
-  });
+  yield* Effect.forEach(
+    scenario.runs,
+    (run) => runReplaySession({ scenario, run, recorder, model }),
+    {
+      concurrency: 1,
+    },
+  );
 
   yield* recorder.writeRecord({
     type: "runtime_exit",
@@ -1484,34 +1501,27 @@ const runScenario = Effect.fn("record-codex-app-server-replay-fixture.runScenari
   yield* recorder.flush();
 });
 
-const program = Effect.gen(function* () {
-  const path = yield* Path.Path;
-  const requestedScenarios = parseScenarios();
-  const allScenarios = scenarios();
-  const outDir = options["out-dir"] ?? process.env.T3_CODEX_REPLAY_OUT_DIR;
-  const singleOutPath = options.out ?? process.env.T3_CODEX_REPLAY_OUT;
-  const selected = allScenarios.filter((scenario) => requestedScenarios.includes(scenario.name));
-
-  if (selected.length === 0) {
-    throw new Error("No replay scenarios selected.");
-  }
-  if (singleOutPath && selected.length !== 1) {
-    throw new Error("--out / T3_CODEX_REPLAY_OUT can only be used with exactly one --scenario.");
-  }
-
-  yield* Effect.forEach(
-    selected,
-    (scenario) =>
-      Effect.gen(function* () {
-        const defaultOutPath = yield* path.fromFileUrl(defaultTranscriptUrl(scenario));
-        yield* runScenario({
-          scenario,
-          outPath:
-            singleOutPath ?? (outDir ? path.join(outDir, scenario.fileName) : defaultOutPath),
-        });
-      }),
-    { concurrency: 1 },
+if (import.meta.main) {
+  const { requestedScenarios, out, outDir, model } = parseReplayArguments(
+    process.argv.slice(2),
+    process.env,
   );
-});
-
-program.pipe(Effect.scoped, Effect.provide(NodeServices.layer), NodeRuntime.runMain);
+  const selected = scenarios().filter((scenario) => requestedScenarios.includes(scenario.name));
+  const program = Effect.gen(function* () {
+    const path = yield* Path.Path;
+    yield* Effect.forEach(
+      selected,
+      (scenario) =>
+        Effect.gen(function* () {
+          const defaultOutPath = yield* path.fromFileUrl(defaultTranscriptUrl(scenario));
+          yield* runScenario({
+            scenario,
+            model: model ?? scenario.model ?? CODEX_REPLAY_DEFAULT_MODEL,
+            outPath: out ?? (outDir ? path.join(outDir, scenario.fileName) : defaultOutPath),
+          });
+        }),
+      { concurrency: 1 },
+    );
+  });
+  program.pipe(Effect.scoped, Effect.provide(NodeServices.layer), NodeRuntime.runMain);
+}

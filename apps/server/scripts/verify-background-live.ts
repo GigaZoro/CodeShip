@@ -7,7 +7,7 @@ import * as NodeFS from "node:fs";
 import * as NodeHttp from "node:http";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import * as NodeUtil from "node:util";
+import { parseCommandLine } from "../../../scripts/lib/command-line.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -25,7 +25,7 @@ import {
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 
-const { values } = NodeUtil.parseArgs({
+const { values } = parseCommandLine({
   options: {
     model: { type: "string", default: "claude-sonnet-4-6" },
     provider: { type: "string", default: "claudeAgent" },

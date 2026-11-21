@@ -175,9 +175,15 @@ function decide(files, packages, full) {
 
 function main() {
   // parseArgs refuses an option it does not know: a mistyped --full must fail the job, not run fewer jobs.
-  const { values } = parseArgs({
+  const { values, tokens } = parseArgs({
+    tokens: true,
     options: { paths: { type: "string" }, full: { type: "boolean", default: false } },
   });
+  for (const flag of ["paths", "full"]) {
+    if (tokens.filter((token) => token.kind === "option" && token.name === flag).length > 1) {
+      throw new Error("Pass --" + flag + " at most once.");
+    }
+  }
   const files =
     values.paths === undefined
       ? null

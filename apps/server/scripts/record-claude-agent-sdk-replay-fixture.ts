@@ -74,7 +74,7 @@ import {
   validateClaudeReplayRecordingSelection,
   type ClaudeRecordingQueryMode,
 } from "./claudeReplayRecordingConfig.ts";
-import { parseRecorderArguments } from "./replayRecorderArguments.ts";
+import { parseClaudeReplayArguments } from "./replayRecorderArguments.ts";
 
 const CLAUDE_RECORDINGS = {
   simple: {
@@ -300,17 +300,7 @@ const CLAUDE_RECORDINGS = {
   },
 } as const;
 
-const { values: options, positionals } = parseRecorderArguments({
-  allowPositionals: true,
-  options: {
-    "query-mode": { type: "string" },
-    scenario: { type: "string" },
-    out: { type: "string" },
-  },
-});
-if (positionals.length > 1) {
-  throw new Error(`Pass at most one output path, not ${positionals.join(" ")}.`);
-}
+const options = parseClaudeReplayArguments();
 
 function selectedQueryMode(defaultMode: ClaudeRecordingQueryMode): ClaudeRecordingQueryMode {
   const raw = options["query-mode"] ?? process.env.T3_CLAUDE_REPLAY_QUERY_MODE;
@@ -348,7 +338,6 @@ const path = await Effect.runPromise(
 );
 const outputPath =
   options.out ??
-  positionals[0] ??
   (await Effect.runPromise(
     path.fromFileUrl(
       new URL(

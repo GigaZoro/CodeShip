@@ -2,7 +2,7 @@
 
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import * as NodeUtil from "node:util";
+import { parseCommandLine } from "../../../scripts/lib/command-line.ts";
 import tailwindColors from "tailwindcss/colors";
 import { BUILT_IN_THEME_IDS, type BuiltInThemeId } from "@t3tools/shared/themePalettes";
 
@@ -284,7 +284,7 @@ const writeFileAtomically = (filename: string, contents: string) => {
 
 if (import.meta.main) {
   // parseArgs refuses an option this does not take: a mistyped --check must not rewrite the files.
-  const checkOnly = NodeUtil.parseArgs({ options: { check: { type: "boolean", default: false } } })
+  const checkOnly = parseCommandLine({ options: { check: { type: "boolean", default: false } } })
     .values.check;
   for (const [filename, contents] of getGeneratedUniwindThemeOutputs()) {
     if (checkOnly) {
