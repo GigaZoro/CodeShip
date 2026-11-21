@@ -1000,6 +1000,30 @@ export function capSidebarFolderThreads<T>(
   return { visible: threads.filter((thread) => !foldedSet.has(thread)), overflow: folded };
 }
 
+const NO_BOXED_THREAD_KEYS: ReadonlySet<string> = new Set();
+
+/**
+ * The rows a thread selection may hold, in list order. Needs you rows drawn in the box under the
+ * chat show no selection, Later ones may be folded away, so no range or bulk action reaches them.
+ */
+export function resolveSidebarSelectableThreads(input: {
+  readonly orderedThreadKeys: readonly string[];
+  readonly listedThreadKeys: { readonly has: (key: string) => boolean };
+  readonly boxedThreadKeys: readonly string[] | null;
+}): { readonly orderedKeys: readonly string[]; readonly has: (key: string) => boolean } {
+  const boxed =
+    input.boxedThreadKeys === null || input.boxedThreadKeys.length === 0
+      ? NO_BOXED_THREAD_KEYS
+      : new Set(input.boxedThreadKeys);
+  return {
+    orderedKeys:
+      boxed.size === 0
+        ? input.orderedThreadKeys
+        : input.orderedThreadKeys.filter((key) => !boxed.has(key)),
+    has: (key) => input.listedThreadKeys.has(key) && !boxed.has(key),
+  };
+}
+
 /**
  * Keys the old per-project sidebar saved folder open state under, most
  * specific first, for `resolveProjectExpanded`. Project folders read and write

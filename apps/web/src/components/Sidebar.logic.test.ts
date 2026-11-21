@@ -8,6 +8,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import {
   capSidebarFolderThreads,
+  resolveSidebarSelectableThreads,
   partitionSidebarUserFolders,
   newThreadAsksForProject,
   deleteSelectedThreadEntries,
@@ -50,6 +51,7 @@ import {
   sortPinnedThreadsByOrderKey,
 } from "@t3tools/client-runtime/state/thread-sort";
 import { resolveProjectExpanded } from "../uiStateStore";
+import { useThreadSelectionStore } from "../threadSelectionStore";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { EnvironmentId, ProjectId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
 
@@ -1745,6 +1747,34 @@ describe("resolveSidebarScopedProjectKeys", () => {
     expect(resolve([], [remoteEnvironmentId])).toEqual(["environment-remote:t3code-remote"]);
     expect(resolve([t3code], [localEnvironmentId])).toEqual(["environment-local:t3code"]);
     expect(resolve([fleet], [remoteEnvironmentId])).toEqual([]);
+  });
+});
+
+describe("resolveSidebarSelectableThreads", () => {
+  const ordered = ["env:now", "env:later", "env:pinned", "env:active"];
+  const listed = new Set(ordered);
+
+  it("keeps rows in the Needs you box out of a Shift-click range and the shown keys", () => {
+    const store = useThreadSelectionStore.getState();
+    using _reset = { [Symbol.dispose]: () => useThreadSelectionStore.getState().clearSelection() };
+    const boxed = resolveSidebarSelectableThreads({
+      orderedThreadKeys: ordered,
+      listedThreadKeys: listed,
+      boxedThreadKeys: ["env:now", "env:later"],
+    });
+    // Opening a box row leaves its key as the anchor.
+    store.setAnchor("env:now");
+    store.rangeSelectTo("env:active", boxed.orderedKeys);
+    expect([...useThreadSelectionStore.getState().selectedThreadKeys]).toEqual(["env:active"]);
+    expect(["env:later", "env:pinned", "env:gone"].map(boxed.has)).toEqual([false, true, false]);
+
+    const inline = resolveSidebarSelectableThreads({
+      orderedThreadKeys: ordered,
+      listedThreadKeys: listed,
+      boxedThreadKeys: null,
+    });
+    expect(inline.orderedKeys).toBe(ordered);
+    expect(inline.has("env:later")).toBe(true);
   });
 });
 

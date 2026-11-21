@@ -278,6 +278,7 @@ import {
   sidebarDragAutoScrollDelta,
   resolveSidebarThreadSection,
   resolveSidebarReorderableThreadKeys,
+  resolveSidebarSelectableThreads,
   searchSidebarThreads,
   newThreadAsksForProject,
   shouldNavigateAfterThreadPark,
@@ -2520,7 +2521,13 @@ export default function Sidebar({
     setActiveSearchResultIndex((activeSearchResultIndex + step + count) % count);
   };
 
+  const selectableThreads = resolveSidebarSelectableThreads({
+    orderedThreadKeys,
+    listedThreadKeys: threadByKey,
+    boxedThreadKeys: needsYouPanelTarget === null ? null : needsYouThreads.map(threadShellKey),
+  });
   const orderedThreadKeysRef = useRef(orderedThreadKeys);
+  const selectableThreadKeysRef = useRef(selectableThreads.orderedKeys);
   // Read changing maps/sets through refs so streamed events preserve row callbacks.
   const threadByKeyRef = useRef(threadByKey);
   const settledThreadKeysRef = useRef(settledThreadKeys);
@@ -2666,7 +2673,7 @@ export default function Sidebar({
     }
     if (event.shiftKey) {
       event.preventDefault();
-      rangeSelectTo(threadKey, orderedThreadKeysRef.current);
+      rangeSelectTo(threadKey, selectableThreadKeysRef.current);
       return;
     }
     if (isTrailingDoubleClick(event.detail)) {
@@ -2921,11 +2928,12 @@ export default function Sidebar({
   useLayoutEffect(() => {
     projectGroupsRef.current = projectGroups;
     orderedThreadKeysRef.current = orderedThreadKeys;
+    selectableThreadKeysRef.current = selectableThreads.orderedKeys;
     threadByKeyRef.current = threadByKey;
     settledThreadKeysRef.current = settledThreadKeys;
     snoozedThreadKeysRef.current = snoozedThreadKeys;
     sectionByThreadKeyRef.current = sectionByThreadKey;
-    return publishShownThreadKeys(isSearchingThreads ? null : threadByKey);
+    return publishShownThreadKeys(isSearchingThreads ? null : selectableThreads);
   });
   const startActionSweep = useStableCallback(
     (threadRef: ScopedThreadRef, action: SidebarSweepAction, event: PointerEvent) => {
