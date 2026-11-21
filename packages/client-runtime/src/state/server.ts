@@ -77,6 +77,7 @@ import type { RpcSession } from "../rpc/session.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 import { recordProviderMcpProblems } from "./providerMcpProblems.ts";
 import { cursorUsageAccess } from "./usage.ts";
+import { isUsageSummaryPartial } from "./usageProgress.ts";
 import {
   applyServerConfigProjection,
   reuseUnchanged,
@@ -1891,6 +1892,7 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.serverGetUsageSummary,
       staleTimeMs: 60_000,
       refreshTrigger: ({ environmentId }) => usageScanSettingsAtom(environmentId),
+      discardPreviousOnSignalChange: true,
       execute: Effect.fn("ServerEnvironment.readUsageSummary")(function* (input, emit, prior) {
         let previous: UsageSummary | undefined;
         for (let attempt = 0; attempt <= 20; attempt++) {
@@ -1909,21 +1911,18 @@ export function createServerEnvironmentAtoms<R, E>(
             return markUnrefreshedSources(previous);
           }
           const summary = result.success;
-          if (
-            summary.partialReason === undefined &&
-            !summary.sources.some((source) => source.refreshing)
-          ) {
-            return summary;
-          }
+          if (!isUsageSummaryPartial(summary)) return summary;
           previous = summary;
           yield* emit(summary);
         }
-        if (previous !== undefined) return previous;
-        if (
-          prior?.partialReason !== undefined &&
+        const fallback =
+          previous ??
+          (prior !== undefined &&
+          isUsageSummaryPartial(prior) &&
           isCompatibleUsageContractVersion(prior.contractVersion, USAGE_CONTRACT_VERSION)
-        )
-          return prior;
+            ? prior
+            : undefined);
+        if (fallback !== undefined) return { ...fallback, partialReason: "scanTimedOut" as const };
         return yield* new UsageReadError({
           reason: "scanFailed",
           detail: "The usage scan timed out.",

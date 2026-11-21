@@ -413,45 +413,97 @@ it.effect("keeps five partial tokens when the Usage follow-up budget runs out", 
   ),
 );
 
-it.effect("keeps the same window's partial figures through a scanPending-only refresh", () =>
+it.effect.each(["top-level reason", "refreshing source"] as const)(
+  "keeps the same window's partial figures from a %s through a scanPending-only refresh",
+  (kind) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const first = yield* Deferred.make<void>();
+        const retry = yield* Deferred.make<void>();
+        const harness = yield* makeHarness(
+          (request) =>
+            request <= 21
+              ? Deferred.succeed(first, undefined)
+              : Deferred.succeed(retry, undefined).pipe(
+                  Effect.andThen(
+                    Effect.fail(new UsageReadError({ reason: "scanPending", detail: "Scanning" })),
+                  ),
+                ),
+          () => [cursorSource(kind === "refreshing source")],
+          () =>
+            kind === "top-level reason"
+              ? { output: 5, partialReason: "scanTimedOut" }
+              : { output: 5 },
+        );
+        const summary = harness.summary();
+        const unmount = harness.registry.mount(summary);
+        yield* Deferred.await(first);
+        yield* TestClock.adjust("20 seconds");
+        expect(
+          (yield* settledSummary(harness.registry, summary)).buckets[0]?.totals.outputTokens,
+        ).toBe(5);
+
+        harness.registry.refresh(summary);
+        yield* Deferred.await(retry);
+        yield* TestClock.adjust("20 seconds");
+        const settled = yield* AtomRegistry.toStream(harness.registry, summary).pipe(
+          Stream.filter((result) => !result.waiting && !AsyncResult.isInitial(result)),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect(
+          AsyncResult.isSuccess(settled) && settled.value.buckets[0]?.totals.outputTokens,
+        ).toBe(5);
+        expect(AsyncResult.isSuccess(settled) && settled.value.partialReason).toBe("scanTimedOut");
+        expect(harness.requests()).toBe(42);
+        unmount();
+      }),
+    ),
+);
+
+it.effect("never settles a pending scan with partial figures from the previous price", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const first = yield* Deferred.make<void>();
-      const retry = yield* Deferred.make<void>();
+      const changed = yield* Deferred.make<void>();
       const harness = yield* makeHarness(
         (request) =>
           request <= 21
             ? Deferred.succeed(first, undefined)
-            : Deferred.succeed(retry, undefined).pipe(
+            : Deferred.succeed(changed, undefined).pipe(
                 Effect.andThen(
                   Effect.fail(new UsageReadError({ reason: "scanPending", detail: "Scanning" })),
                 ),
               ),
-        () => [
-          { ...cursorSource(false), status: "partial", message: "Usage is still refreshing." },
-        ],
+        () => [],
         () => ({ output: 5, partialReason: "scanTimedOut" }),
       );
       const summary = harness.summary();
       const unmount = harness.registry.mount(summary);
       yield* Deferred.await(first);
       yield* TestClock.adjust("20 seconds");
-      expect(
-        (yield* settledSummary(harness.registry, summary)).buckets[0]?.totals.outputTokens,
-      ).toBe(5);
+      expect((yield* settledSummary(harness.registry, summary)).buckets[0]?.costUsd).toBe(0);
+      yield* harness.updateSettings({
+        ...DEFAULT_SERVER_SETTINGS,
+        usagePriceOverrides: {
+          "custom-model": { inputCostPerMillionTokens: 5, outputCostPerMillionTokens: 10 },
+        },
+      });
+      yield* Deferred.await(changed);
+      expect(Option.isNone(AsyncResult.value(harness.registry.get(summary)))).toBe(true);
+      yield* TestClock.adjust("20 seconds");
+      const settled = harness.registry.get(summary);
+      expect(settled.waiting).toBe(false);
+      expect(AsyncResult.isFailure(settled)).toBe(true);
+      expect(Option.isNone(AsyncResult.value(settled))).toBe(true);
+      expect(harness.requests()).toBe(42);
 
       harness.registry.refresh(summary);
-      yield* Deferred.await(retry);
       yield* TestClock.adjust("20 seconds");
-      const settled = yield* AtomRegistry.toStream(harness.registry, summary).pipe(
-        Stream.filter((result) => !result.waiting && !AsyncResult.isInitial(result)),
-        Stream.runHead,
-        Effect.map(Option.getOrThrow),
-      );
-      expect(AsyncResult.isSuccess(settled) && settled.value.buckets[0]?.totals.outputTokens).toBe(
-        5,
-      );
-      expect(harness.requests()).toBe(42);
+      const retried = harness.registry.get(summary);
+      expect(retried.waiting).toBe(false);
+      expect(AsyncResult.isFailure(retried)).toBe(true);
+      expect(harness.requests()).toBe(63);
       unmount();
     }),
   ),

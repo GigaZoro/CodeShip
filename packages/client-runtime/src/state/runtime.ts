@@ -102,6 +102,7 @@ interface EnvironmentQueryAtomOptions<Input, A, E, R> extends Omit<
     readonly environmentId: EnvironmentIdType;
     readonly input: Input;
   }) => Atom.Atom<unknown> | undefined;
+  readonly discardPreviousOnSignalChange?: boolean;
   readonly isFinal?: (value: A) => boolean;
   /**
    * Runs where each server answer lands, before readers see it, so derived records (summaries,
@@ -541,8 +542,12 @@ function runInEnvironment<A, E, R>(
  * refreshes on its next read.
  */
 const refreshOnSignalWhileRead =
-  <V>(signal: Atom.Atom<unknown>, isFinal: (value: V) => boolean) =>
-  <A extends V>(self: Atom.Atom<A>): Atom.Atom<A> => {
+  <A>(
+    signal: Atom.Atom<unknown>,
+    isFinal: (value: A) => boolean,
+    select: (registry: AtomRegistry.AtomRegistry, signalValue: unknown, value: A) => A,
+  ) =>
+  (self: Atom.Atom<A>): Atom.Atom<A> => {
     // The signal value each registry's data was read under. Held outside the node because the
     // registry can sweep this node while `self` keeps the data, and the rebuilt node must still
     // see a change it missed.
@@ -551,12 +556,12 @@ const refreshOnSignalWhileRead =
       self,
       (get) => {
         const current = get(signal);
-        get.subscribe(self, (value) => get.setSelf(value));
+        get.subscribe(self, (value) => get.setSelf(select(get.registry, current, value)));
         const changed =
           readUnder.has(get.registry) && !Object.is(readUnder.get(get.registry), current);
         readUnder.set(get.registry, current);
         if (changed && !isFinal(get.once(self))) get.refresh(self);
-        return get.once(self);
+        return select(get.registry, current, get.once(self));
       },
       { initialValueTarget: self },
     );
@@ -704,6 +709,13 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
   const family = Atom.family((key: string) => {
     const target = parseEnvironmentRpcKey<Input>(key);
     const idleTtlMs = options.idleTtlMs ?? 5 * 60_000;
+    const refreshTrigger = options.refreshTrigger?.(target);
+    const answerSignals = options.discardPreviousOnSignalChange
+      ? new WeakMap<AtomRegistry.AtomRegistry, unknown>()
+      : undefined;
+    const hasCompatibleAnswer = (registry: AtomRegistry.AtomRegistry, signal: unknown) =>
+      answerSignals === undefined ||
+      (answerSignals.has(registry) && Object.is(answerSignals.get(registry), signal));
     const queryAtom = runtime
       .atom<
         A,
@@ -716,15 +728,18 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
           get(connectionAtom(target.environmentId)),
           () => null,
         );
+        const signalValue = refreshTrigger === undefined ? undefined : get.once(refreshTrigger);
         // A refetch that returns equal content keeps the previous value's
         // references, so readers of the data skip re-rendering on idle polls.
-        const share = (value: A): A =>
-          reuseUnchanged(
+        const share = (value: A): A => {
+          answerSignals?.set(get.registry, signalValue);
+          return reuseUnchanged(
             Option.getOrUndefined(
               Option.flatMap(get.self<AsyncResult.AsyncResult<A, unknown>>(), AsyncResult.value),
             ),
             value,
           );
+        };
         const emit = (value: A) =>
           Effect.sync(() => get.setSelf(AsyncResult.success(share(value), { waiting: true }))).pipe(
             // A value set while the atom builds wins over the build's own
@@ -745,9 +760,11 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
         > => {
           if (connection === null) return Effect.never;
           const [connectionState, session] = connection;
-          const previous = Option.getOrUndefined(
-            Option.flatMap(get.self<AsyncResult.AsyncResult<A, unknown>>(), AsyncResult.value),
-          );
+          const previous = hasCompatibleAnswer(get.registry, signalValue)
+            ? Option.getOrUndefined(
+                Option.flatMap(get.self<AsyncResult.AsyncResult<A, unknown>>(), AsyncResult.value),
+              )
+            : undefined;
           switch (connectionState.phase) {
             case "connected":
               return Option.isSome(session)
@@ -848,11 +865,21 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
       options.refreshIntervalMs === undefined
         ? queryAtom
         : queryAtom.pipe(refreshEveryUntilFinal(options.refreshIntervalMs, isFinal));
-    const refreshTrigger = options.refreshTrigger?.(target);
     return (
       refreshTrigger === undefined
         ? intervalQuery
-        : intervalQuery.pipe(refreshOnSignalWhileRead(refreshTrigger, isFinal))
+        : intervalQuery.pipe(
+            refreshOnSignalWhileRead<Atom.Type<typeof intervalQuery>>(
+              refreshTrigger,
+              isFinal,
+              (registry, signal, result) => {
+                if (hasCompatibleAnswer(registry, signal)) return result;
+                return AsyncResult.isFailure(result)
+                  ? AsyncResult.failure(result.cause, { waiting: result.waiting })
+                  : AsyncResult.initial(result.waiting);
+              },
+            ),
+          )
     ).pipe(Atom.setIdleTTL(idleTtlMs), Atom.withLabel(`${options.label}:${key}`));
   });
   return (target) => family(environmentRpcKey(target));
@@ -956,6 +983,7 @@ export function createEnvironmentRpcQueryAtomFamily<
       readonly environmentId: EnvironmentIdType;
       readonly input: EnvironmentRpcInput<TTag>;
     }) => Atom.Atom<unknown> | undefined;
+    readonly discardPreviousOnSignalChange?: boolean;
     readonly isFinal?: (value: EnvironmentRpcSuccess<TTag>) => boolean;
     readonly onAnswer?: QueryAnswerHandler<EnvironmentRpcInput<TTag>, EnvironmentRpcSuccess<TTag>>;
   },
@@ -972,6 +1000,9 @@ export function createEnvironmentRpcQueryAtomFamily<
       ? {}
       : { requestTimeoutMs: options.requestTimeoutMs }),
     ...(options.refreshTrigger === undefined ? {} : { refreshTrigger: options.refreshTrigger }),
+    ...(options.discardPreviousOnSignalChange === undefined
+      ? {}
+      : { discardPreviousOnSignalChange: options.discardPreviousOnSignalChange }),
     ...(options.isFinal === undefined ? {} : { isFinal: options.isFinal }),
     ...(options.onAnswer === undefined ? {} : { onAnswer: options.onAnswer }),
     execute: (

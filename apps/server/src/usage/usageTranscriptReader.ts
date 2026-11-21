@@ -154,6 +154,7 @@ export async function readDirectoryVolumeId(path: string): Promise<string> {
 async function guardMatches(
   handle: NodeFSP.FileHandle,
   position: TranscriptParsePosition,
+  onProgress: (() => void) | undefined,
 ): Promise<boolean> {
   if (position.guardLength <= 0 || position.guardLength > GUARD_LENGTH) return false;
   try {
@@ -164,6 +165,7 @@ async function guardMatches(
       position.guardLength,
       position.resumeOffset - position.guardLength,
     );
+    onProgress?.();
     return bytesRead === position.guardLength && fnv1a(window) === position.guardHash;
   } catch {
     return false;
@@ -192,6 +194,7 @@ export async function readTranscriptRecords<State>(
   },
 ): Promise<TranscriptParseResult | null> {
   const signal = options?.signal;
+  const onProgress = options?.onProgress;
   for (let read = activeReads.get(filePath); read !== undefined; read = activeReads.get(filePath)) {
     if (signal?.aborted) return null;
     const outstanding = read;
@@ -216,8 +219,11 @@ export async function readTranscriptRecords<State>(
   try {
     handle = await NodeFSP.open(filePath, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NONBLOCK);
     signal?.throwIfAborted();
-    if (!(await handle.stat()).isFile()) return null;
+    onProgress?.();
+    const stat = await handle.stat();
     signal?.throwIfAborted();
+    onProgress?.();
+    if (!stat.isFile()) return null;
     const codec = format.state;
     const decodeState = codec === undefined ? undefined : Schema.decodeUnknownOption(codec.schema);
     const encodeState = codec === undefined ? undefined : Schema.encodeSync(codec.schema);
@@ -233,7 +239,7 @@ export async function readTranscriptRecords<State>(
       resumeFrom !== undefined &&
       resumeFrom.resumeOffset > 0 &&
       (codec === undefined || Option.isSome(savedState)) &&
-      (await guardMatches(handle, resumeFrom))
+      (await guardMatches(handle, resumeFrom, onProgress))
     ) {
       if (Option.isSome(savedState)) state = savedState.value;
       start = resumeFrom.resumeOffset;
@@ -306,7 +312,7 @@ export async function readTranscriptRecords<State>(
     // resume the compressed input.
     const stream = compressed ? input.compose(NodeZlib.createZstdDecompress()) : input;
     for await (const chunk of stream) {
-      if (chunk.length > 0) options?.onProgress?.();
+      onProgress?.();
       let lineStart = 0;
       while (lineStart < chunk.length) {
         const newlineIndex = chunk.indexOf(NEWLINE, lineStart);
@@ -338,6 +344,7 @@ export async function readTranscriptRecords<State>(
     if (guardLength > 0) {
       const window = Buffer.alloc(guardLength);
       await handle.read(window, 0, guardLength, resumeOffset - guardLength);
+      onProgress?.();
       guardHash = fnv1a(window);
     }
 

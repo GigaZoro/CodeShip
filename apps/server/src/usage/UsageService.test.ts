@@ -4437,6 +4437,87 @@ describe("UsageService", () => {
       }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
+  it.live.each(["open", "stat"] as const)(
+    "resets the stall watchdog when a transcript %s completes",
+    (operation) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+        const actual = yield* Effect.promise(() =>
+          vi.importActual<typeof NodeFSP>("node:fs/promises"),
+        );
+        const beforeProgress = Promise.withResolvers<void>();
+        const finishOperation = Promise.withResolvers<void>();
+        const afterProgress = Promise.withResolvers<void>();
+        const finishRead = Promise.withResolvers<void>();
+        let opens = 0;
+        using _open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+          if (args[0] !== transcript) return actual.open(...args);
+          opens++;
+          if (operation === "open") {
+            beforeProgress.resolve();
+            await finishOperation.promise;
+          }
+          const handle = await actual.open(...args);
+          const stat = handle.stat.bind(handle);
+          Object.defineProperty(handle, "stat", {
+            value: async () => {
+              if (operation === "stat") {
+                beforeProgress.resolve();
+                await finishOperation.promise;
+              } else {
+                afterProgress.resolve();
+                await finishRead.promise;
+              }
+              return stat();
+            },
+          });
+          if (operation === "stat") {
+            const createStream = handle.createReadStream.bind(handle);
+            handle.createReadStream = (options) => {
+              const stream = createStream(options);
+              const chunks = stream[Symbol.asyncIterator].bind(stream);
+              stream[Symbol.asyncIterator] = async function* () {
+                afterProgress.resolve();
+                await finishRead.promise;
+                return yield* { [Symbol.asyncIterator]: chunks };
+              };
+              return stream;
+            };
+          }
+          return handle;
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            finishOperation.resolve();
+            finishRead.resolve();
+          }),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* UsageService.make;
+          const caller = yield* service.readSummary(WINDOW).pipe(Effect.result, Effect.forkChild);
+          yield* Effect.promise(() => beforeProgress.promise);
+          yield* TestClock.adjust("3 minutes");
+          finishOperation.resolve();
+          yield* Effect.promise(() => afterProgress.promise);
+          yield* TestClock.adjust("119 seconds");
+          const followUp = yield* service
+            .readSummary({ ...WINDOW, awaitRefresh: true })
+            .pipe(Effect.result, Effect.forkChild);
+          yield* TestClock.adjust("2 seconds");
+          finishRead.resolve();
+          const result = yield* Fiber.join(followUp);
+          assert.strictEqual(result._tag === "Success" && totalOutputTokens(result.success), 5);
+          assert.strictEqual(opens, 1);
+          const initial = yield* Fiber.join(caller);
+          assert.strictEqual(initial._tag === "Failure" && initial.failure.reason, "scanPending");
+        }).pipe(
+          Effect.provide(layerService({ prefix: "usage-file-operation-progress", home, settings })),
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.live("waits for a stuck transcript stat and close before opening its path again", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

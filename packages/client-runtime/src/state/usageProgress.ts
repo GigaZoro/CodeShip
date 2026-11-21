@@ -29,6 +29,10 @@ interface UsageProgressEnvironment {
   readonly summary: UsageSummary | null;
 }
 
+export function isUsageSummaryPartial(summary: UsageSummary): boolean {
+  return summary.partialReason !== undefined || summary.sources.some((source) => source.refreshing);
+}
+
 export function usageEnvironmentProgress(
   environment: UsageProgressEnvironment,
   refreshing = false,
@@ -38,7 +42,7 @@ export function usageEnvironmentProgress(
   if (summary === null) return { phase: "loading" } as const;
   if (refreshing) return { phase: "stale" } as const;
   if (!environment.isPending)
-    return { phase: summary.partialReason === "scanTimedOut" ? "incomplete" : "ready" } as const;
+    return { phase: isUsageSummaryPartial(summary) ? "incomplete" : "ready" } as const;
   const providers = [
     ...new Set(
       summary.sources.flatMap((source) => (source.refreshing ? [source.fingerprint.provider] : [])),

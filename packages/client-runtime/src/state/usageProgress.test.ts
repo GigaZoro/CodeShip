@@ -85,6 +85,9 @@ describe("usageProgress", () => {
         options,
       ),
     ).toEqual({ announcement: null, label: "Updating 2 providers…" });
+    expect(usageEnvironmentProgress({ ...partway, isPending: false })).toEqual({
+      phase: "incomplete",
+    });
     expect(usageProgress([{ ...partway, isPending: false }], options)).toEqual({
       announcement: null,
       label: null,
