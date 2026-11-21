@@ -1,3 +1,7 @@
+## 2026-11-22 — Landings take turns in arrival order
+
+- Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
+
 ## 2026-11-21 — Claude's held resets say what they clear, or why they cannot
 
 - In `orchestrator_capabilities` with `usage`, every Claude banked reset, usable now or held back, names what it clears in `kind`. When Claude gave only a total because no reset can be used now, the reset has `kind: null` and `kindUnknownReason: "total_only"`.

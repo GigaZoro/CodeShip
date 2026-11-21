@@ -306,7 +306,7 @@ Runtime-discovered entrypoints and dependency exceptions belong in [knip.jsonc](
 
 ### Landing on main
 
-A pass of `check:changed` covers only the tree it checked, and main moves faster than a slow machine's check, so landings take turns. `node .github/scripts/landing-turn.cjs land` takes a lease on `refs/heads/landing-lease/main` on origin (it expires after three hours, so a dead lander cannot hold it), rebases onto main, runs the checks once and pushes, then gives the lease back. `.vite-hooks/pre-push` refuses a push to `main` from anyone else, or for a tree no pass covers, and a `check:changed` run started by the lander takes free budget slots ahead of other runs. `vp run check:changed` for your own work needs none of this.
+A pass of `check:changed` covers only the tree it checked, and main moves faster than a slow machine's check, so landings take turns in a first-come, first-served queue on origin. `node .github/scripts/landing-turn.cjs land` takes its turn by claiming the lease at `refs/heads/landing-lease/main`, rebases onto main, runs the checks once and pushes, then gives the lease back. The lease expires after three hours, and the queue drops entries that stop refreshing. `.vite-hooks/pre-push` refuses a push to `main` from anyone else, or for a tree no pass covers, and a `check:changed` run started by the lander takes free budget slots ahead of other runs. `vp run check:changed` for your own work needs none of this.
 
 ## Desktop artifacts
 

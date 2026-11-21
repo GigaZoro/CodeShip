@@ -34,7 +34,7 @@ Invoking `/ship` is the developer's go-ahead to commit and push to the default b
 
 ## 5. Land
 
-Main has one landing turn, so a pass of `vp run check:changed` covers the tree that is pushed and is never repeated for a main that moved. Run the landing with `t3_command_run` (`timeoutMinutes: 720`; it may wait for the turn behind other landers):
+Main's landing turn goes first come, first served. Holding it keeps main steady so a single pass of `vp run check:changed` covers the tree that is pushed. Run the landing with `t3_command_run` (`timeoutMinutes: 720`; it may wait for the turn behind other landers):
 
 `node .github/scripts/landing-turn.cjs land`
 

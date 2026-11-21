@@ -1,11 +1,12 @@
 // The landing turn for origin's main. `node .github/scripts/landing-turn.cjs land` takes a lease on the remote
-// (refs/heads/landing-lease/main), rebases onto main, runs the checks once and pushes while it holds the lease; every
-// other lander waits. The pre-push hook (`verify`) refuses a push to main from anyone who does not hold it, so main
-// cannot move under the checked tree and one verification covers the landed tree.
+// (refs/heads/landing-lease/main), rebases onto main, runs the checks once and pushes while it holds the lease.
+// Other landers wait in a first-come, first-served queue. The pre-push hook (`verify`) requires the lease for pushes
+// to main, so main cannot move under the checked tree and one verification covers the landed tree.
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const { REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
+const { createQueueWaiter } = require("./lease-queue.cjs");
 const path = require("node:path");
 const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs");
 
@@ -22,7 +23,7 @@ const MAX_WAIT_MS = 6 * 60 * 60 * 1000;
 // A wait polls origin thousands of times, and one poll can meet a passing DNS or credential failure. Failures that go
 // on this long end the wait, so a remote that cannot be reached is not tried for hours.
 const FAILING_MS = 10 * 60 * 1000;
-// One read or write of the lease; a remote that stops answering must not hold a wait past its limits.
+// One lease or queue call; a remote that stops answering must not hold a wait past its limits.
 const LEASE_CALL_MS = 60 * 1000;
 
 function git(cwd, args, { env, config = [], allowFailure = false, timeoutMs } = {}) {
@@ -52,7 +53,7 @@ function git(cwd, args, { env, config = [], allowFailure = false, timeoutMs } = 
  */
 class RemoteFailure extends Error {}
 
-/** One read or write of origin's lease, bounded by `callMs`. */
+/** One call to origin, bounded by `callMs`. */
 function remoteGit(cwd, args, callMs, { allowFailure = false } = {}) {
   const result = git(cwd, args, { allowFailure: true, timeoutMs: callMs });
   if (!result.ok && !allowFailure) {
@@ -104,22 +105,27 @@ function moveLease(lease, from, to) {
  * `runId` names one wait: a live lease that carries it is that wait's own, as when a take reached origin although its
  * push reported a failure.
  */
-function tryAcquire({ runId, now = () => Date.now(), ...lease }) {
+function tryAcquire({ runId, now = Date.now, canTake = () => true, ...lease }) {
   const held = remoteLease(lease);
   if (held) {
     const holder = readHolder(lease, held);
     // A lease nobody can read is one nobody can release, so it expires like any other.
     const expired = !holder || !(Date.parse(holder.expires_at) > now());
     if (!expired) return holder.run_id === runId ? held : null;
-    if (!moveLease(lease, held, null)) return null;
   }
+  if (!canTake() || (held && !moveLease(lease, held, null))) return null;
   const acquiredAt = now();
-  const message = JSON.stringify({
+  const sha = landingCommit(lease.cwd, {
     run_id: runId,
     acquired_at: new Date(acquiredAt).toISOString(),
     expires_at: new Date(acquiredAt + LEASE_TTL_MS).toISOString(),
   });
-  const sha = git(lease.cwd, ["commit-tree", EMPTY_TREE, "-m", `${message}\n[skip ci]`], {
+  // A push that creates the ref is atomic: when two landers race, the remote takes one and refuses the other.
+  return moveLease(lease, null, sha) ? sha : null;
+}
+
+function landingCommit(cwd, data) {
+  return git(cwd, ["commit-tree", EMPTY_TREE, "-m", `${JSON.stringify(data)}\n[skip ci]`], {
     env: {
       GIT_AUTHOR_NAME: "landing-turn",
       GIT_AUTHOR_EMAIL: "landing-turn@localhost",
@@ -127,8 +133,6 @@ function tryAcquire({ runId, now = () => Date.now(), ...lease }) {
       GIT_COMMITTER_EMAIL: "landing-turn@localhost",
     },
   }).stdout;
-  // A push that creates the ref is atomic: when two landers race, the remote takes one and refuses the other.
-  return moveLease(lease, null, sha) ? sha : null;
 }
 
 function release(lease, sha) {
@@ -156,32 +160,76 @@ function acquire({
   pollMs = POLL_MS,
   sleep = sleepSync,
   clock = () => performance.now(),
+  now = Date.now,
   ...options
 }) {
   const started = clock();
   const runId = randomUUID();
+  const { cwd, remote, callMs = LEASE_CALL_MS } = options;
+  const queue = createQueueWaiter({
+    remote,
+    runId,
+    arrivedAt: now(),
+    clock,
+    remoteGit: (args) => remoteGit(cwd, args, callMs).stdout,
+    readMessage: (sha) => git(cwd, ["show", "-s", "--format=%B", sha]).stdout,
+    makeCommit: (data) => landingCommit(cwd, data),
+  });
+  let waiting = false;
   let failingSince = null;
-  for (;;) {
-    let failure = null;
+  try {
+    for (;;) {
+      let failure = null;
+      let firstInQueue = false;
+      const canTake = () => (firstInQueue = queue.canTake());
+      try {
+        if (waiting) queue.refresh();
+        if (canTake()) {
+          // Only the head polls the lease. It checks its place again before swapping a free or expired lease.
+          const sha = tryAcquire({ ...options, runId, now, canTake });
+          if (sha) return sha;
+        }
+      } catch (error) {
+        if (!(error instanceof RemoteFailure)) throw error;
+        failure = error;
+      }
+      if (clock() - started >= maxWaitMs) {
+        throw (
+          failure ??
+          new Error(
+            firstInQueue
+              ? "landing turn: another lander still holds main's landing turn."
+              : "landing turn: timed out waiting for main's landing queue.",
+          )
+        );
+      }
+      if (!waiting) {
+        waiting = true;
+        try {
+          queue.refresh();
+        } catch (error) {
+          if (!(error instanceof RemoteFailure)) throw error;
+          failure ??= error;
+        }
+        process.stderr.write("landing turn: waiting for its turn in main's landing queue.\n");
+      }
+      if (failure) {
+        const checkedAt = clock();
+        const first = failingSince === null;
+        failingSince ??= checkedAt;
+        if (checkedAt - failingSince >= failingMs) throw failure;
+        if (first) process.stderr.write(`landing turn: ${failure.message}\nTrying again.\n`);
+      } else {
+        failingSince = null;
+      }
+      sleep(pollMs);
+    }
+  } finally {
     try {
-      const sha = tryAcquire({ ...options, runId });
-      if (sha) return sha;
-      failingSince = null;
+      queue.leave();
     } catch (error) {
-      if (!(error instanceof RemoteFailure)) throw error;
-      failure = error;
+      process.stderr.write(`landing turn: could not remove its queue entry: ${error.message}\n`);
     }
-    const now = clock();
-    if (now - started >= maxWaitMs) {
-      throw failure ?? new Error("landing turn: another lander still holds main's landing turn.");
-    }
-    if (failure) {
-      const first = failingSince === null;
-      if (first) failingSince = now;
-      if (now - failingSince >= failingMs) throw failure;
-      if (first) process.stderr.write(`landing turn: ${failure.message}\nTrying again.\n`);
-    }
-    sleep(pollMs);
   }
 }
 
