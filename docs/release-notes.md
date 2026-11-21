@@ -1,3 +1,10 @@
+## 2026-11-21 — Stop reaches work continued after a server restart
+
+- On web and mobile, Stop cancels queued restart continuations, holds ordinary queued messages, and stops background work and delegated tasks across the thread. Sending a new message or resuming the queue cannot revive a stopped continuation.
+- Interrupting a run by ID follows its restart chain. It interrupts the chain's provider turns and stops its delegated commands, child runs, and descendants. Independent runs keep their work, including a new follow-up in a reused child thread.
+- An MCP interrupt settles owned work when it cancels a queued restart or delayed retry. A terminal run with no pending restart returns `already_terminal`. The response identifies the run reached and includes the requested ID when it differs.
+- A busy thread lock during shutdown preserves the restart request for startup. Related change AB#5487 (`7672a1cfb7`) settles a finished delegated chat once its parent has the result.
+
 ## 2026-11-21 — Organize tasks into folders from Scheduled
 
 - In **Scheduled**, open a task’s menu and choose **Move to folder** to file it in an existing or new folder. You can also create an empty folder from the **Scheduled tasks** page.
@@ -15,13 +22,6 @@
 ## 2026-11-21 — Use 1Password tokens for MCP servers
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
-
-## 2026-11-20 — Stop reaches work continued after a server restart
-
-- On web and mobile, Stop cancels queued restart continuations, holds ordinary queued messages, and stops background work and delegated tasks across the thread. Sending a new message or resuming the queue cannot revive a stopped continuation.
-- Interrupting a run by ID follows its restart chain. It interrupts the chain's provider turns and stops its delegated commands, child runs, and descendants. Independent runs keep their work, including a new follow-up in a reused child thread.
-- An MCP interrupt settles owned work when it cancels a queued restart or delayed retry. A terminal run with no pending restart returns `already_terminal`. The response identifies the run reached and includes the requested ID when it differs.
-- A busy thread lock during shutdown preserves the restart request for startup. Related change AB#5487 (`7672a1cfb7`) settles a finished delegated chat once its parent has the result.
 
 ## 2026-11-20 — Storage cleanup reports a failed unmerged-work check instead of "not integrated"
 
