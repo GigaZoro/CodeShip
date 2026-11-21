@@ -33,6 +33,10 @@ const STALL_LOG_FILE = "event-loop-stalls.ndjson";
 /** Tells the user where to find the server's stalls, for a message about one. */
 export const STALL_LOG_NOTE = `Its stalls are logged to ${STALL_LOG_FILE} in the server's logs folder, ~/.t3/userdata/logs by default.`;
 
+export const StallSpanNames = Context.Reference<
+  (elapsedMs: number, durationMs: number) => readonly string[]
+>("t3/observability/StallSpanNames", { defaultValue: () => () => [] });
+
 export class EventLoopMonitor extends Context.Reference<{
   /**
    * The latest stall of 5 s or more, if seen in the last 5 minutes. It samples
@@ -141,7 +145,7 @@ export interface StallLogOptions {
   readonly maxBytes: number;
 }
 
-const layerWith = (
+export const layerWith = (
   makeSampler: Effect.Effect<Effect.Effect<EventLoopReadings>, never, Scope.Scope>,
   stallLog: StallLogOptions,
 ) =>
@@ -149,6 +153,7 @@ const layerWith = (
     EventLoopMonitor,
     Effect.gen(function* () {
       const sample = yield* makeSampler;
+      const spanNames = yield* StallSpanNames;
       // Clients sample on connect as well as the timer, and the sampler resets shared state.
       const sampling = yield* Semaphore.make(1);
       const warmedUp = yield* Ref.make(false);
@@ -193,6 +198,7 @@ const layerWith = (
         }
         const attributes = {
           delayMaxMs,
+          spanNames: spanNames(readings.elapsedMs, delayMaxMs),
           utilization: Math.round(utilization * 100) / 100,
           cpuUserMs: Math.round(usage.userCPUTime / 1000),
           cpuSystemMs: Math.round(usage.systemCPUTime / 1000),

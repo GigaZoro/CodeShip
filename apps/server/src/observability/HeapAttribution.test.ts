@@ -67,3 +67,43 @@ it.effect("names the span that grew the heap in a spike, not an older open or en
     assert.equal(old.attributes.get("memory.heap_growth_bytes"), 160 * MB);
   }),
 );
+
+it.effect("names recently completed and active spans that overlapped a stall", () =>
+  Effect.gen(function* () {
+    let now = 0;
+    const attribution = yield* HeapAttribution.make(
+      Tracer.make({ span: (options) => new Tracer.NativeSpan(options) }),
+      () => 0,
+      () => now,
+    );
+    const open = (name: string) =>
+      attribution.tracer.span({
+        name,
+        parent: Option.none(),
+        annotations: Context.empty(),
+        links: [],
+        startTime: 0n,
+        kind: "internal",
+        root: false,
+        sampled: true,
+      });
+    open("ws.rpc.orchestration.subscribeShell");
+    const old = open("older scan");
+    now = 5_000;
+    old.end(0n, undefined as never);
+    open("UsageService.resolveTranscriptDirs");
+    now = 40_000;
+    const completed = open("UsageScanIndex.load");
+    open("UsageService.scanSummary");
+    now = 42_900;
+    const short = open("quick span");
+    now = 43_000;
+    short.end(0n, undefined as never);
+    completed.end(0n, undefined as never);
+    assert.deepStrictEqual(attribution.spanNames(30_000, 2_500), [
+      "UsageScanIndex.load",
+      "UsageService.scanSummary",
+      "UsageService.resolveTranscriptDirs",
+    ]);
+  }),
+);

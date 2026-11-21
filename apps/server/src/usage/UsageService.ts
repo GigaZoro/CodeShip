@@ -51,17 +51,16 @@ import {
   listTranscriptFiles,
   readDirectoryVolumeId,
   readTranscriptRecords,
+  statTranscriptFiles,
+  type TranscriptFile,
 } from "./usageTranscriptReader.ts";
 import {
-  decodeScanCache,
   dedupeWithinFile,
-  LEGACY_SCAN_CACHE_FILE_NAMES,
-  makeScanCacheWriter,
-  pruneScanCache,
-  SCAN_CACHE_FILE_NAME,
+  isLaterRead,
   type CachedFile,
   type ScanCache,
 } from "./usageScanCache.ts";
+import * as UsageScanIndex from "./usageScanIndex.ts";
 
 const LITELLM_RATES_URL =
   "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -79,6 +78,15 @@ const MAX_HOURLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const CACHE_RETENTION_DAYS = 92;
 
 const TRANSCRIPT_READ_CONCURRENCY = 4;
+const LISTING_TTL_MS = 5_000;
+const HOT_TRANSCRIPT_AGE_MS = 24 * 60 * 60 * 1000;
+const SCAN_WAIT_TIMEOUT_MS = 30_000;
+const SOURCE_REFRESH_TIMEOUT_MS = 25_000;
+const SCAN_HARD_TIMEOUT = "5 minutes";
+const FOLLOWUP_TTL_MS = 10_000;
+const monotonicMillis = Clock.monotonicTimeNanos.pipe(
+  Effect.map((nanos) => Number(nanos / 1_000_000n)),
+);
 
 const transcriptReaders = BUILT_IN_USAGE_DRIVERS.flatMap((driver) =>
   driver.usage?.kind === "transcripts" ? [{ driver, reader: driver.usage }] : [],
@@ -108,13 +116,7 @@ const decodeRatesCache = Schema.decodeUnknownEffect(Schema.fromJsonString(RatesC
 const encodeRatesCache = Schema.encodeEffect(Schema.fromJsonString(RatesCacheFile));
 
 const ScanCacheJson = Schema.fromJsonString(Schema.Unknown);
-const decodeScanCacheFile = Schema.decodeUnknownEffect(ScanCacheJson);
-const encodeUsageRecordKey = Schema.encodeSync(ScanCacheJson);
-const CachedSource = Schema.Struct({ dir: Schema.String, volumeId: Schema.String });
-
-function isLaterRead(a: CachedFile, b: CachedFile): boolean {
-  return a.mtimeMs > b.mtimeMs || (a.mtimeMs === b.mtimeMs && a.size > b.size);
-}
+const encodeJsonKey = Schema.encodeSync(ScanCacheJson);
 
 const sharedSessionProviders: ReadonlySet<UsageProviderKind> = new Set(
   transcriptReaders.flatMap(({ reader }) =>
@@ -141,10 +143,6 @@ function sharedSessions(
   }
   return shared;
 }
-const decodeCachedSources = Schema.decodeUnknownOption(
-  Schema.Struct({ sources: Schema.Record(Schema.String, CachedSource) }),
-);
-
 export class UsageService extends Context.Service<
   UsageService,
   {
@@ -166,22 +164,32 @@ export const make = Effect.gen(function* () {
   const hostEnvironment = yield* HostProcess.Environment;
   const hostname = yield* HostProcess.Hostname;
   const readerContext = yield* Effect.context<BuiltInUsageReadersEnv>();
+  const scope = yield* Effect.scope;
+  const scanIndex = yield* UsageScanIndex.make(transcriptFormats);
 
   const fileCache: ScanCache = new Map();
+  const fileOrders = new Map<string, number>();
+  let lastFileOrder = 0;
   // Reads from concurrent windows can still hold the original record after it is corrected.
   const resolvedRecords = new WeakMap<UsageRecord, UsageRecord>();
   const correctedRecord = (record: UsageRecord) => resolvedRecords.get(record) ?? record;
   const correctedBatch = (records: readonly UsageRecord[]) =>
     records.some((record) => resolvedRecords.has(record)) ? records.map(correctedRecord) : records;
-  const sourceCache = new Map<string, typeof CachedSource.Type>();
-  let cacheDirty = false;
+  const sourceCache: UsageScanIndex.ScanSources = new Map();
+  const dirtyFiles = new Map<string, UsageScanIndex.ScanIndexChange>();
+  let sourcesDirty = false;
+  const updateFile = (file: string, entry: CachedFile, reservedOrder?: number) => {
+    const order = fileOrders.get(file) ?? reservedOrder ?? ++lastFileOrder;
+    fileOrders.set(file, order);
+    fileCache.set(file, entry);
+    dirtyFiles.set(file, { entry, order });
+  };
   const isWithinDirectory = (filePath: string, dir: string) => {
     const relative = path.relative(dir, filePath);
     return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
   };
 
   const ratesCachePath = path.join(config.stateDir, "usage-model-rates.json");
-  const scanCachePath = path.join(config.stateDir, SCAN_CACHE_FILE_NAME);
   const writeCacheFile = (filePath: string, contents: string) =>
     writeFileStringAtomically({ filePath, contents }).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -370,7 +378,7 @@ export const make = Effect.gen(function* () {
             : currentVolumeId;
         if (previous?.dir !== dir || previous.volumeId !== volumeId) {
           sourceCache.set(sourceKey, { dir, volumeId });
-          cacheDirty = true;
+          sourcesDirty = true;
         }
         const key = `${provider}\0${dir}`;
         if (seen.has(key)) continue;
@@ -387,70 +395,67 @@ export const make = Effect.gen(function* () {
     return dirs;
   });
 
-  // Share first loads so concurrent readers cannot scan against a still-empty cache.
-  const ensureScanCacheLoaded = yield* Effect.cached(
-    Effect.gen(function* () {
-      const readDocument = (filePath: string) =>
-        fileSystem.readFileString(filePath).pipe(
-          Effect.flatMap((raw) => decodeScanCacheFile(raw)),
-          Effect.catchCause(() => Effect.succeed(null)),
-        );
-      let document = yield* readDocument(scanCachePath);
-      for (const fileName of LEGACY_SCAN_CACHE_FILE_NAMES) {
-        if (document !== null) break;
-        document = yield* readDocument(path.join(config.stateDir, fileName));
-        cacheDirty = document !== null;
-      }
-      if (document === null) return;
-      for (const [path, entry] of decodeScanCache(document, transcriptFormats)) {
-        fileCache.set(path, entry);
-      }
-      const sources = decodeCachedSources(document);
-      if (Option.isSome(sources)) {
-        for (const [key, source] of Object.entries(sources.value.sources))
-          sourceCache.set(key, source);
-      }
-    }),
+  const ensureScanCacheLoaded = yield* Effect.cachedWithTTL(
+    scanIndex.load().pipe(
+      Effect.tap(({ files, sources, orders, lastOrder }) =>
+        Effect.sync(() => {
+          for (const [file, entry] of files) fileCache.set(file, entry);
+          for (const [file, order] of orders) fileOrders.set(file, order);
+          lastFileOrder = lastOrder;
+          for (const [key, source] of sources) sourceCache.set(key, source);
+        }),
+      ),
+      Effect.asVoid,
+      Effect.mapError(
+        (cause) =>
+          new UsageReadError({
+            reason: "scanFailed",
+            detail: "Saved transcript usage could not be loaded.",
+            cause,
+          }),
+      ),
+    ),
+    (exit) => (Exit.isSuccess(exit) ? Infinity : 0),
   );
 
-  const writeScanCache = makeScanCacheWriter();
-  // Serialize writes so concurrently finished window scans cannot overwrite newer snapshots.
   const persistLock = yield* Semaphore.make(1);
-
-  // Clear dirty before encoding to retain concurrent changes; restore it on failure for retry.
   const persistCaches = Effect.gen(function* () {
-    if (cacheDirty) {
-      cacheDirty = false;
-      yield* Effect.sync(() =>
-        writeScanCache(fileCache, { sources: Object.fromEntries(sourceCache) }),
-      ).pipe(
-        Effect.flatMap((contents) => writeCacheFile(scanCachePath, contents)),
-        Effect.catchCause(() =>
+    if (dirtyFiles.size === 0 && !sourcesDirty) return;
+    const changes = new Map(dirtyFiles);
+    const sources = sourcesDirty ? new Map(sourceCache) : undefined;
+    sourcesDirty = false;
+    yield* scanIndex.write(changes, sources).pipe(
+      Effect.matchEffect({
+        onFailure: (error) => {
+          sourcesDirty ||= sources !== undefined;
+          return Effect.logWarning("Could not persist transcript usage", error);
+        },
+        onSuccess: () =>
           Effect.sync(() => {
-            cacheDirty = true;
+            for (const [file, entry] of changes) {
+              if (dirtyFiles.get(file) === entry) dirtyFiles.delete(file);
+            }
           }),
-        ),
-      );
-    }
+      }),
+    );
   }).pipe(persistLock.withPermit, Effect.withSpan("UsageService.persistCaches"));
 
   const pendingPersists = new Set<Fiber.Fiber<void>>();
-  const schedulePersist = Effect.forkDetach(persistCaches).pipe(
-    Effect.map((fiber) => {
-      pendingPersists.add(fiber);
-      fiber.addObserver(() => pendingPersists.delete(fiber));
-    }),
+  const schedulePersist = Effect.suspend(() =>
+    dirtyFiles.size === 0 && !sourcesDirty
+      ? Effect.void
+      : Effect.forkDetach(persistCaches).pipe(
+          Effect.map((fiber) => {
+            pendingPersists.add(fiber);
+            fiber.addObserver(() => pendingPersists.delete(fiber));
+          }),
+        ),
   );
   const awaitPersisted = Effect.suspend(() => Fiber.awaitAll([...pendingPersists])).pipe(
     Effect.asVoid,
   );
   yield* Effect.addFinalizer(() => awaitPersisted);
 
-  /**
-   * Reads run concurrently, and the caller stores updates in walk order rather
-   * than completion order: saved records of deleted transcripts aggregate in
-   * cache order, where the first copy of a duplicate wins.
-   */
   const readFileRecords = Effect.fn("UsageService.readFileRecords")(function* (
     filePath: string,
     size: number,
@@ -488,7 +493,9 @@ export const make = Effect.gen(function* () {
         ? cached.position
         : undefined;
 
-    const parsed = yield* Effect.promise(() => readTranscriptRecords(filePath, format, resumeFrom));
+    const parsed = yield* Effect.promise((signal) =>
+      readTranscriptRecords(filePath, format, resumeFrom, { signal }),
+    );
     // A read failure is not an empty transcript: caching it under this
     // (size, mtime) would silently drop the file's usage until it changes.
     if (parsed === null)
@@ -503,7 +510,7 @@ export const make = Effect.gen(function* () {
       // same usage is emitted again, without putting inferred tiers in the parser state.
       const reparsed = [...parsed.records, ...parsed.tailRecords];
       const identity = (record: UsageRecord) =>
-        encodeUsageRecordKey([
+        encodeJsonKey([
           record.provider,
           record.sessionId,
           record.timestampMs,
@@ -566,6 +573,77 @@ export const make = Effect.gen(function* () {
     readonly refreshing?: true;
   }
 
+  const listings = new Map<
+    string,
+    { readonly expiresAt: number; readonly files: readonly TranscriptFile[] }
+  >();
+
+  type Listing = Awaited<ReturnType<typeof listTranscriptFiles>>;
+  const listingLoads = new Map<string, Effect.Effect<Listing>>();
+
+  const loadListing = Effect.fn("UsageService.loadListing")(function* (
+    key: string,
+    dir: string,
+    fileName: string | undefined,
+  ) {
+    const effect = yield* Effect.cached(
+      Effect.gen(function* () {
+        const result = yield* Effect.promise((signal) =>
+          listTranscriptFiles(dir, -Infinity, {
+            ...(fileName === undefined ? {} : { fileName }),
+            signal,
+          }),
+        );
+        if (result.failedPaths === 0) {
+          const completedAt = yield* monotonicMillis;
+          for (const [key, cached] of listings) {
+            if (cached.expiresAt <= completedAt) listings.delete(key);
+          }
+          listings.set(key, { expiresAt: completedAt + LISTING_TTL_MS, files: result.files });
+        }
+        return result;
+      }).pipe(Effect.ensuring(Effect.sync(() => listingLoads.delete(key)))),
+    );
+    const existing = listingLoads.get(key);
+    if (existing !== undefined) return yield* existing;
+    listingLoads.set(key, effect);
+    return yield* effect;
+  });
+
+  const transcriptListing = Effect.fn("UsageService.transcriptListing")(function* (
+    dir: string,
+    fileName: string | undefined,
+    sinceMs: number,
+  ) {
+    const key = encodeJsonKey([dir, fileName ?? null]);
+    const now = yield* monotonicMillis;
+    const listing = listings.get(key);
+    if (listing === undefined || listing.expiresAt <= now) {
+      const result = yield* loadListing(key, dir, fileName);
+      return { ...result, files: result.files.filter((file) => file.mtimeMs >= sinceMs) };
+    }
+
+    // Active transcripts can grow without changing directory mtimes.
+    const wallTime = yield* Clock.currentTimeMillis;
+    const hotSince = Math.max(sinceMs, wallTime - HOT_TRANSCRIPT_AGE_MS);
+    const hotPaths = listing.files
+      .filter((file) => file.mtimeMs >= hotSince)
+      .map((file) => file.path);
+    const updated = yield* Effect.promise((signal) =>
+      statTranscriptFiles(hotPaths, sinceMs, signal),
+    );
+    const byPath = new Map(updated.files.map((file) => [file.path, file]));
+    return {
+      failedPaths: updated.failedPaths,
+      files: listing.files.flatMap((file) => {
+        if (file.mtimeMs < sinceMs) return [];
+        if (file.mtimeMs < hotSince) return [file];
+        const current = byPath.get(file.path);
+        return current === undefined ? [] : [current];
+      }),
+    };
+  });
+
   const scanTranscriptDir = Effect.fn("UsageService.scanTranscriptDir")(function* (
     source: TranscriptSource,
     windowStartMs: number,
@@ -574,44 +652,50 @@ export const make = Effect.gen(function* () {
     const exists = yield* fileSystem
       .exists(dir)
       .pipe(Effect.catchCause(() => Effect.succeed(false)));
-    if (!exists) return { provider, dir, volumeId, files: null } satisfies ScannedDir;
-    const { files, failedPaths } = yield* Effect.promise(() =>
-      listTranscriptFiles(dir, windowStartMs, fileName === undefined ? undefined : { fileName }),
-    );
+    if (!exists) {
+      listings.delete(encodeJsonKey([dir, fileName ?? null]));
+      return { provider, dir, volumeId, files: null } satisfies ScannedDir;
+    }
+    const { files, failedPaths } = yield* transcriptListing(dir, fileName, windowStartMs);
+    // Reserve walk order before concurrent reads, including files saved before a scan is interrupted.
+    const ordered = files.map((file) => ({
+      file,
+      order: fileOrders.get(file.path) ?? ++lastFileOrder,
+    }));
     const read = yield* Effect.forEach(
-      files,
-      (file) =>
+      ordered,
+      ({ file, order }) =>
         readFileRecords(file.path, file.size, file.mtimeMs, provider, format).pipe(
-          Effect.map((result) => ({ path: file.path, ...result })),
+          Effect.map(({ records, malformedRecords, failed, update }) => {
+            if (update !== undefined) {
+              const current = fileCache.get(file.path);
+              if (
+                current === update.replaces ||
+                current === undefined ||
+                isLaterRead(update.entry, current)
+              ) {
+                updateFile(
+                  file.path,
+                  {
+                    ...update.entry,
+                    records: correctedBatch(update.entry.records),
+                    tailRecords: correctedBatch(update.entry.tailRecords),
+                  },
+                  order,
+                );
+              }
+            }
+            return { path: file.path, records, malformedRecords, failed };
+          }),
         ),
       { concurrency: TRANSCRIPT_READ_CONCURRENCY },
     );
-    const parsedFiles = read.map(({ path, records, malformedRecords, update }) => {
-      if (update === undefined) return { path, records, malformedRecords };
-      // A scan of another window may have cached its own read of this file
-      // meanwhile. Then keep whichever read saw the later file, so a slower
-      // scan never replaces newer usage with older.
-      const current = fileCache.get(path);
-      if (
-        current === update.replaces ||
-        current === undefined ||
-        isLaterRead(update.entry, current)
-      ) {
-        fileCache.set(path, {
-          ...update.entry,
-          records: correctedBatch(update.entry.records),
-          tailRecords: correctedBatch(update.entry.tailRecords),
-        });
-        cacheDirty = true;
-      }
-      return { path, records, malformedRecords };
-    });
     const unread = failedPaths + read.filter((file) => file.failed).length;
     return {
       provider,
       dir,
       volumeId,
-      files: parsedFiles,
+      files: read,
       ...(unread > 0
         ? {
             status: "partial",
@@ -621,22 +705,48 @@ export const make = Effect.gen(function* () {
     } satisfies ScannedDir;
   });
 
-  const collectDirs = Effect.fn("UsageService.collectDirs")(function* (
+  const collectTranscriptDirs = Effect.fn("UsageService.collectTranscriptDirs")(function* (
     windowStartMs: number,
     settings: ServerSettingsValue,
     retentionCutoffMs: number,
-    awaitRefresh: boolean,
   ) {
     const dirs = yield* resolveTranscriptDirs(settings, retentionCutoffMs).pipe(
       Effect.provideContext(readerContext),
     );
+    return yield* Effect.forEach(dirs, (dir) => scanTranscriptDir(dir, windowStartMs));
+  });
 
-    const scans = Effect.forEach(
+  const markRefreshFailed = <Source extends { readonly refreshing?: true }>(
+    source: Source,
+    message: string,
+  ) => {
+    if (!source.refreshing) return source;
+    const { refreshing: _refreshing, ...previous } = source;
+    return { ...previous, status: "failed" as const, message };
+  };
+
+  const collectScanDirs = Effect.fn("UsageService.collectScanDirs")(function* (
+    windowStartMs: number,
+    settings: ServerSettingsValue,
+    retentionCutoffMs: number,
+    previous?: readonly (readonly ScannedDir[])[],
+  ) {
+    return yield* Effect.forEach(
       scanReaders,
-      ({ driver, reader }) =>
-        usageInstances(driver, settings).pipe(
+      ({ driver, reader }, index) => {
+        const prior = previous?.[index];
+        if (prior !== undefined && !prior.some((source) => source.refreshing)) {
+          return Effect.succeed(prior);
+        }
+        const scan = usageInstances(driver, settings).pipe(
           Effect.flatMap((instances) =>
-            reader.scan({ instances, settings, windowStartMs, retentionCutoffMs, awaitRefresh }),
+            reader.scan({
+              instances,
+              settings,
+              windowStartMs,
+              retentionCutoffMs,
+              awaitRefresh: previous !== undefined,
+            }),
           ),
           Effect.flatMap((sources) =>
             Effect.forEach(sources, ({ volumeId, ...source }) =>
@@ -654,22 +764,32 @@ export const make = Effect.gen(function* () {
             ),
           ),
           Effect.provideContext(readerContext),
-        ),
+        );
+        if (prior === undefined) return scan;
+        const failed = (message: string) =>
+          prior.map((source) => markRefreshFailed(source, message));
+        return scan.pipe(
+          Effect.timeoutOrElse({
+            duration: SOURCE_REFRESH_TIMEOUT_MS,
+            orElse: () => Effect.succeed(failed("Usage source refresh timed out.")),
+          }),
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterruptsOnly(cause),
+            () =>
+              Effect.logWarning("Usage source refresh failed", { provider: reader.provider }).pipe(
+                Effect.as(failed("Usage source could not be refreshed.")),
+              ),
+          ),
+        );
+      },
       { concurrency: "unbounded" },
     );
-
-    // Scan independent sources together, directories sequentially to bound open files; preserve order for first-copy dedupe.
-    const [transcripts, scanDirs] = yield* Effect.all(
-      [Effect.forEach(dirs, (dir) => scanTranscriptDir(dir, windowStartMs)), scans],
-      { concurrency: "unbounded" },
-    );
-    const scanned: readonly ScannedDir[] = [...transcripts, ...scanDirs.flat()];
-    return scanned;
   });
 
   const scanSummary = Effect.fn("UsageService.scanSummary")(function* (
     input: UsageSummaryInput,
     settings: ServerSettingsValue,
+    flight: SummaryFlight,
   ) {
     if (input.sinceDay > input.untilDay) {
       return yield* new UsageReadError({
@@ -702,7 +822,7 @@ export const make = Effect.gen(function* () {
       hourlyWindow = { sinceTimeMs, untilTimeMs };
     }
 
-    const startedAtMs = yield* Clock.currentTimeMillis;
+    const startedAtMs = yield* monotonicMillis;
     yield* ensureScanCacheLoaded;
 
     const windowStart = DateTime.make(`${input.sinceDay}T00:00:00Z`);
@@ -715,16 +835,49 @@ export const make = Effect.gen(function* () {
     const windowStartMs =
       (hourlyWindow?.sinceTimeMs ?? DateTime.toEpochMillis(windowStart.value)) - MTIME_SLACK_MS;
 
-    const retentionCutoffMs = startedAtMs - CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    const retentionCutoffMs =
+      (yield* Clock.currentTimeMillis) - CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
-    const [, scannedDirs] = yield* Effect.all(
+    const [, transcripts, scans] = yield* Effect.all(
       [
         ensureRates(false),
-        collectDirs(windowStartMs, settings, retentionCutoffMs, input.awaitRefresh === true),
+        collectTranscriptDirs(windowStartMs, settings, retentionCutoffMs),
+        collectScanDirs(windowStartMs, settings, retentionCutoffMs),
       ],
-      { concurrency: 2 },
+      { concurrency: "unbounded" },
     );
+    const window = { hourlyWindow, windowStartMs, startedAtMs, retentionCutoffMs };
+    const initial = yield* aggregateSummary(
+      input,
+      settings,
+      [...transcripts, ...scans.flat()],
+      window,
+    );
+    if (!scans.some((dirs) => dirs.some((source) => source.refreshing))) return initial;
 
+    yield* schedulePersist;
+    yield* Deferred.succeed(flight.initial, initial);
+    flight.refreshing = true;
+    const refreshed = yield* collectScanDirs(windowStartMs, settings, retentionCutoffMs, scans);
+    return yield* aggregateSummary(input, settings, [...transcripts, ...refreshed.flat()], window);
+  });
+
+  const aggregateSummary = Effect.fn("UsageService.aggregateSummary")(function* (
+    input: UsageSummaryInput,
+    settings: ServerSettingsValue,
+    scannedDirs: readonly ScannedDir[],
+    {
+      hourlyWindow,
+      windowStartMs,
+      startedAtMs,
+      retentionCutoffMs,
+    }: {
+      readonly hourlyWindow: { readonly sinceTimeMs: number; readonly untilTimeMs: number } | null;
+      readonly windowStartMs: number;
+      readonly startedAtMs: number;
+      readonly retentionCutoffMs: number;
+    },
+  ) {
     const aggregator = new UsageAggregator({
       timeZone: input.timeZone,
       sinceDay: input.sinceDay,
@@ -741,10 +894,13 @@ export const make = Effect.gen(function* () {
 
     // Deleted transcripts' saved usage still aggregates and deduplicates normally.
     const retainedSinceMs = Math.max(windowStartMs, retentionCutoffMs);
+    const retainedInOrder = [...fileCache].sort(
+      ([left], [right]) => fileOrders.get(left)! - fileOrders.get(right)!,
+    );
     const filesByDir = scannedDirs.map(({ provider, dir, files }) => {
       const retainedFiles = [...(files ?? [])];
       const livePaths = new Set(retainedFiles.map((file) => file.path));
-      for (const [filePath, entry] of fileCache) {
+      for (const [filePath, entry] of retainedInOrder) {
         if (
           entry.provider !== provider ||
           entry.mtimeMs < retainedSinceMs ||
@@ -799,8 +955,7 @@ export const make = Effect.gen(function* () {
         const tailRecords = correctedBatch(entry.tailRecords);
         if (records === entry.records && tailRecords === entry.tailRecords) continue;
         // Update the current entry by identity; a slow resolver cannot restore an older file.
-        fileCache.set(filePath, { ...entry, records, tailRecords });
-        cacheDirty = true;
+        updateFile(filePath, { ...entry, records, tailRecords });
       }
     }
     const crossFileSessions = sharedSessions(filesByDir.flat());
@@ -832,7 +987,7 @@ export const make = Effect.gen(function* () {
             crossFileSessions.has(record.sessionId)
           ) {
             // Dedupe moved copies but retain repeated equal events within a file, including second-precision timestamps.
-            const key = encodeUsageRecordKey([
+            const key = encodeJsonKey([
               record.provider,
               record.sessionId,
               record.timestampMs,
@@ -854,12 +1009,10 @@ export const make = Effect.gen(function* () {
       sources.push({
         fingerprint: { hostId: sourceHostId ?? hostId, provider, resolvedHomePath: dir, volumeId },
         status:
-          files === null && scannedFiles === 0
+          files === null && scannedFiles === 0 && status !== "failed"
             ? "missing"
-            : malformedRecords > 0
-              ? status === undefined || status === "ok"
-                ? "partial"
-                : status
+            : malformedRecords > 0 && (status === undefined || status === "ok")
+              ? "partial"
               : (status ?? "ok"),
         scannedFiles,
         skippedFiles,
@@ -876,12 +1029,16 @@ export const make = Effect.gen(function* () {
       });
     }
 
-    const pruned = pruneScanCache(fileCache, retentionCutoffMs);
-    if (pruned > 0) cacheDirty = true;
+    for (const [file, entry] of fileCache) {
+      if (entry.mtimeMs >= retentionCutoffMs) continue;
+      fileCache.delete(file);
+      fileOrders.delete(file);
+      dirtyFiles.set(file, { entry: null, order: 0 });
+    }
 
     const aggregated = aggregator.finish();
     const readAt = yield* DateTime.now;
-    const finishedAtMs = yield* Clock.currentTimeMillis;
+    const finishedAtMs = yield* monotonicMillis;
 
     return {
       contractVersion: USAGE_CONTRACT_VERSION,
@@ -897,7 +1054,31 @@ export const make = Effect.gen(function* () {
     } satisfies UsageSummary;
   });
 
-  const inflightScans = new Map<string, Deferred.Deferred<UsageSummary, UsageReadError>>();
+  interface SummaryFlight {
+    readonly initial: Deferred.Deferred<UsageSummary, UsageReadError>;
+    readonly refreshed: Deferred.Deferred<UsageSummary, UsageReadError>;
+    refreshing: boolean;
+    expiresAt: number | undefined;
+  }
+
+  const timedOut = Effect.fn("UsageService.timedOut")(function* (
+    flight: SummaryFlight,
+    allowPartial: boolean,
+  ) {
+    yield* schedulePersist;
+    if (allowPartial && flight.refreshing) {
+      const initial = yield* Deferred.await(flight.initial);
+      return {
+        ...initial,
+        sources: initial.sources.map((source) =>
+          markRefreshFailed(source, "Usage source refresh timed out."),
+        ),
+      };
+    }
+    return yield* new UsageReadError({ reason: "scanFailed", detail: "The usage scan timed out." });
+  });
+
+  const inflightScans = new Map<string, SummaryFlight>();
 
   const scanKey = (input: UsageSummaryInput, settings: ServerSettingsValue): string =>
     JSON.stringify([
@@ -908,7 +1089,6 @@ export const make = Effect.gen(function* () {
       input.sinceTime ?? null,
       input.untilTime ?? null,
       settings,
-      input.awaitRefresh === true,
       input.modelFilter ?? null,
     ]);
 
@@ -920,29 +1100,55 @@ export const make = Effect.gen(function* () {
     const input = modelFilter === undefined ? unfiltered : { ...unfiltered, modelFilter };
     const settings = yield* readSettings;
     const key = scanKey(input, settings);
-    const deferred = yield* Effect.uninterruptible(
+    const flight = yield* Effect.uninterruptible(
       Effect.gen(function* () {
+        const now = yield* monotonicMillis;
+        for (const [key, flight] of inflightScans) {
+          if (flight.expiresAt !== undefined && flight.expiresAt <= now) inflightScans.delete(key);
+        }
         const existing = inflightScans.get(key);
-        if (existing !== undefined) return existing;
+        if (existing !== undefined && (existing.expiresAt === undefined || input.awaitRefresh)) {
+          return existing;
+        }
 
-        // Register and fork atomically so cancellation cannot leave a Deferred without a scan.
-        const created = Deferred.makeUnsafe<UsageSummary, UsageReadError>();
+        // Register and fork atomically so cancellation cannot orphan the shared result.
+        const created: SummaryFlight = {
+          initial: Deferred.makeUnsafe(),
+          refreshed: Deferred.makeUnsafe(),
+          refreshing: false,
+          expiresAt: undefined,
+        };
         inflightScans.set(key, created);
-        // Detach so caller departure cannot cancel shared scans; finished scans warm the cache.
-        // Register writes before releasing waiters, but start writing after delivering their summary.
-        yield* scanSummary(input, settings).pipe(
+        yield* scanSummary(input, settings, created).pipe(
+          Effect.timeoutOrElse({
+            duration: SCAN_HARD_TIMEOUT,
+            orElse: () => timedOut(created, true),
+          }),
           Effect.onExit((exit) =>
-            Effect.sync(() => inflightScans.delete(key)).pipe(
-              Effect.andThen(Exit.isSuccess(exit) ? schedulePersist : Effect.void),
-              Effect.andThen(Deferred.done(created, exit)),
-            ),
+            Effect.gen(function* () {
+              if (!Exit.isFailure(exit) || !Cause.hasInterruptsOnly(exit.cause))
+                yield* schedulePersist;
+              if (created.refreshing && Exit.isSuccess(exit)) {
+                created.expiresAt = (yield* monotonicMillis) + FOLLOWUP_TTL_MS;
+              } else {
+                inflightScans.delete(key);
+              }
+              yield* Deferred.done(created.initial, exit);
+              yield* Deferred.done(created.refreshed, exit);
+            }),
           ),
-          Effect.forkDetach,
+          Effect.interruptible,
+          Effect.forkIn(scope),
         );
         return created;
       }),
     );
-    return yield* Deferred.await(deferred);
+    return yield* Deferred.await(input.awaitRefresh ? flight.refreshed : flight.initial).pipe(
+      Effect.timeoutOrElse({
+        duration: SCAN_WAIT_TIMEOUT_MS,
+        orElse: () => timedOut(flight, input.awaitRefresh === true),
+      }),
+    );
   });
 
   const priceTokens: UsageService["Service"]["priceTokens"] = Effect.fn("UsageService.priceTokens")(
@@ -962,7 +1168,18 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  return { readSummary, refreshRates, awaitPersisted, priceTokens } as const;
+  return { readSummary, refreshRates, awaitPersisted, priceTokens, ensureScanCacheLoaded } as const;
 });
 
-export const layer = Layer.effect(UsageService, make);
+export const layer = Layer.effect(
+  UsageService,
+  make.pipe(
+    Effect.tap((service) =>
+      service.ensureScanCacheLoaded.pipe(
+        Effect.timeout(SCAN_HARD_TIMEOUT),
+        Effect.ignore({ log: true }),
+        Effect.forkScoped,
+      ),
+    ),
+  ),
+);

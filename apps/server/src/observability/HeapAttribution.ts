@@ -25,13 +25,45 @@ interface Growth {
  * Heap growth is approximate: it includes other fibers' allocations and GC, so it names
  * suspects, not culprits. A spike lists what was open or just grew.
  */
-export const make = (tracer: Tracer.Tracer, heapUsed: () => number = readHeapUsed) =>
+export const make = (
+  tracer: Tracer.Tracer,
+  heapUsed: () => number = readHeapUsed,
+  now: () => number = () => performance.now(),
+) =>
   Effect.sync(() => {
     const open = new Map<
       Tracer.Span,
-      { readonly name: string; readonly startHeap: number; readonly startTick: number }
+      {
+        readonly name: string;
+        readonly startHeap: number;
+        readonly startTick: number;
+        readonly startMs: number;
+      }
     >();
     const recent: Array<Growth & { readonly endTick: number }> = [];
+    const completed: Array<{
+      readonly name: string;
+      readonly startMs: number;
+      readonly endMs: number;
+    }> = [];
+    const spanNames = (elapsedMs: number, stallDurationMs: number) => {
+      const endMs = now();
+      const startMs = endMs - elapsedMs;
+      return [
+        ...new Set(
+          [
+            ...completed.filter((span) => span.endMs >= startMs).toReversed(),
+            ...[...open.values()].toReversed(),
+          ]
+            .filter(
+              (span) =>
+                !/(?:^|[./])subscribe/i.test(span.name) &&
+                ("endMs" in span ? span.endMs : endMs) - span.startMs >= stallDurationMs,
+            )
+            .map(({ name }) => name),
+        ),
+      ].slice(0, REPORTED_SPANS);
+    };
     const samples: Array<number> = [];
     let cooldown = 0;
     let tick = 0;
@@ -41,10 +73,16 @@ export const make = (tracer: Tracer.Tracer, heapUsed: () => number = readHeapUse
       span(options) {
         const span = tracer.span(options);
         const startHeap = heapUsed();
-        open.set(span, { name: options.name, startHeap, startTick: tick });
+        const startMs = now();
+        open.set(span, { name: options.name, startHeap, startTick: tick, startMs });
         const end = span.end.bind(span);
         span.end = (endTime, exit) => {
           open.delete(span);
+          const endMs = now();
+          if (endMs - startMs >= 1_000) {
+            completed.push({ name: options.name, startMs, endMs });
+            if (completed.length > RECENT_SPANS) completed.shift();
+          }
           const growthBytes = heapUsed() - startHeap;
           if (growthBytes >= SPAN_GROWTH_ATTRIBUTE_BYTES) {
             span.attribute("memory.heap_growth_bytes", growthBytes);
@@ -104,5 +142,5 @@ export const make = (tracer: Tracer.Tracer, heapUsed: () => number = readHeapUse
       Effect.asVoid,
     );
 
-    return { tracer: wrapped, run };
+    return { tracer: wrapped, run, spanNames };
   });

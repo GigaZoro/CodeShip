@@ -11,6 +11,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { mergeUsage } from "@t3tools/shared/usageMerge";
 import {
   EnvironmentId,
@@ -52,7 +53,13 @@ import { totalTokens, type UsageRecord } from "@t3tools/provider-core/server/usa
 import * as UsageService from "./UsageService.ts";
 import * as MuseSdk from "../../../../packages/provider-muse/src/server/sdk.ts";
 import { MuseUsageHome } from "@t3tools/provider-muse/server";
-import { makeScanCacheWriter, SCAN_CACHE_FILE_NAME } from "./usageScanCache.ts";
+import {
+  decodeScanCache,
+  encodeScanCache,
+  LEGACY_SCAN_CACHE_FILE_NAMES,
+  ROLLBACK_SCAN_CACHE_FILE_NAME,
+} from "./usageScanCache.ts";
+import { TEST_FORMAT_MAP } from "./usageTestFormats.ts";
 
 vi.mock("node:fs/promises", { spy: true });
 vi.mock("../../../../packages/provider-muse/src/server/sdk.ts", async (importOriginal) => ({
@@ -140,6 +147,12 @@ const makeWithCursor = (read: CursorAccountReader.CursorAccountReader["Service"]
     };
   });
 
+const makeUsageService = <A, E, R>(layer: Layer.Layer<A, E, R>) =>
+  Effect.gen(function* () {
+    const context = yield* Layer.build(layer);
+    return yield* UsageService.make.pipe(Effect.provideContext(context));
+  });
+
 const layerService = (input: {
   readonly prefix: string;
   readonly home: string;
@@ -210,18 +223,6 @@ const NARROW_WINDOW: UsageSummaryInput = {
   sinceDay: UsageDay.make("2026-09-01"),
   untilDay: UsageDay.make("2026-09-02"),
 };
-
-// Each waiting gate holds a libuv thread; allow at most three.
-const makeGate = (path: string, lastWriteSeconds?: number) =>
-  Effect.promise(async () => {
-    NodeChildProcess.execFileSync("mkfifo", [path]);
-    if (lastWriteSeconds !== undefined) {
-      await NodeFSP.utimes(path, lastWriteSeconds, lastWriteSeconds);
-    }
-  });
-
-const openGate = (path: string) =>
-  Effect.promise(async () => (await NodeFSP.open(path, "w")).close());
 
 const replaceFile = (path: string, content: string) =>
   Effect.promise(async () => {
@@ -1438,14 +1439,64 @@ describe("UsageService", () => {
         await NodeFSP.writeFile(authPath, "invalid json");
       });
       const service = yield* UsageService.make.pipe(
-        Effect.provide(
-          layerService({ prefix: "usage-service-cursor-invalid-login", home, settings }),
+        Effect.provideContext(
+          yield* Layer.build(
+            layerService({ prefix: "usage-service-cursor-invalid-login", home, settings }),
+          ),
         ),
       );
       const summary = yield* service.readSummary({ ...WINDOW, awaitRefresh: true });
       const cursor = summary.sources.find((source) => source.fingerprint.provider === "cursor");
       assert.strictEqual(cursor?.message, "Cursor credentials could not be read.");
     }).pipe(Effect.scoped),
+  );
+
+  it.live.each(["complete", "failed", "stalled"] as const)(
+    "shares the transcript scan with a %s Cursor refresh follow-up",
+    (refresh) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* writeCursorLogin(home);
+        yield* TestClock.setTime(CURSOR_NOW);
+        yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+        const cursor = makeFakeCursor();
+        const release = yield* Deferred.make<void>();
+        cursor.state.gate = release;
+        cursor.state.events = [{ timestampMs: CURSOR_NOW - HOUR_MS, outputTokens: 7 }];
+        yield* Effect.gen(function* () {
+          const service = yield* makeWithCursor(cursor.read);
+          const stat = vi.spyOn(NodeFSP, "stat");
+          yield* Effect.addFinalizer(() => Effect.sync(() => stat.mockRestore()));
+          stat.mockClear();
+          const initial = yield* service.readSummary(WINDOW);
+          assert.isTrue(cursorSource(initial)?.refreshing);
+          assert.strictEqual(totalOutputTokens(initial), 5);
+          const followup = service.readSummary({ ...WINDOW, awaitRefresh: true });
+          if (refresh !== "stalled") {
+            if (refresh === "failed")
+              cursor.state.error = "Cursor account usage could not be read.";
+            yield* Deferred.succeed(release, undefined);
+            const refreshed = yield* followup;
+            const source = cursorSource(refreshed);
+            assert.isUndefined(source?.refreshing);
+            assert.strictEqual(totalOutputTokens(refreshed), refresh === "complete" ? 12 : 5);
+            assert.strictEqual(source?.status, refresh === "complete" ? "ok" : "failed");
+          } else {
+            const pending = yield* followup.pipe(Effect.forkChild);
+            yield* TestClock.adjust("25 seconds");
+            const refreshed = yield* Fiber.join(pending);
+            assert.strictEqual(totalOutputTokens(refreshed), 5);
+            const source = cursorSource(refreshed);
+            assert.strictEqual(source?.status, "failed");
+            assert.strictEqual(source?.message, "Usage source refresh timed out.");
+            assert.isUndefined(source?.refreshing);
+          }
+          assert.strictEqual(stat.mock.calls.filter(([file]) => file === transcript).length, 1);
+          assert.strictEqual(cursor.state.calls.length, 1);
+        }).pipe(
+          Effect.provide(layerService({ prefix: "usage-service-cursor-followup", home, settings })),
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
   it.live("restores the Cursor account cache after a restart", () =>
@@ -1488,14 +1539,16 @@ describe("UsageService", () => {
     Effect.gen(function* () {
       const { settings, home } = yield* setup;
       const service = yield* UsageService.make.pipe(
-        Effect.provide(
-          layerService({
-            prefix: "usage-service-cursor-keychain-disabled",
-            home,
-            settings,
-            platform: "darwin",
-            environment: {},
-          }),
+        Effect.provideContext(
+          yield* Layer.build(
+            layerService({
+              prefix: "usage-service-cursor-keychain-disabled",
+              home,
+              settings,
+              platform: "darwin",
+              environment: {},
+            }),
+          ),
         ),
       );
       const summary = yield* service.readSummary(WINDOW);
@@ -1565,14 +1618,16 @@ describe("UsageService", () => {
           );
         });
         const service = yield* UsageService.make.pipe(
-          Effect.provide(
-            layerService({
-              prefix: `usage-service-cursor-store-${index}`,
-              home,
-              settings,
-              platform: testCase.platform,
-              environment: testCase.environment,
-            }),
+          Effect.provideContext(
+            yield* Layer.build(
+              layerService({
+                prefix: `usage-service-cursor-store-${index}`,
+                home,
+                settings,
+                platform: testCase.platform,
+                environment: testCase.environment,
+              }),
+            ),
           ),
         );
         const summary = yield* service.readSummary(WINDOW);
@@ -1622,7 +1677,9 @@ describe("UsageService", () => {
           }
         });
         const service = yield* UsageService.make.pipe(
-          Effect.provide(layerService({ prefix: "usage-service-opencode", home, settings })),
+          Effect.provideContext(
+            yield* Layer.build(layerService({ prefix: "usage-service-opencode", home, settings })),
+          ),
         );
         const summary = yield* service.readSummary(WINDOW);
         assert.strictEqual(summary.buckets[0]?.provider, "opencode");
@@ -1671,32 +1728,34 @@ describe("UsageService", () => {
         await NodeFSP.symlink(instanceRoot, alias, "junction");
       });
       const service = yield* UsageService.make.pipe(
-        Effect.provide(
-          layerService({
-            prefix: "usage-service-opencode-instances",
-            home,
-            environment: { XDG_DATA_HOME: dataHome },
-            settings: {
-              ...settings,
-              providerInstances: {
-                ...settings.providerInstances,
-                [ProviderInstanceId.make("opencode-work")]: {
-                  driver: ProviderDriverKind.make("opencode"),
-                  environment: [
-                    {
-                      name: "OPENCODE_DATA_DIR",
-                      value: ` ${instanceRoot}, ${alias} `,
-                      sensitive: false,
-                    },
-                  ],
-                },
-                [ProviderInstanceId.make("opencode-xdg")]: {
-                  driver: ProviderDriverKind.make("opencode"),
-                  environment: [{ name: "OPENCODE_DATA_DIR", value: "", sensitive: false }],
+        Effect.provideContext(
+          yield* Layer.build(
+            layerService({
+              prefix: "usage-service-opencode-instances",
+              home,
+              environment: { XDG_DATA_HOME: dataHome },
+              settings: {
+                ...settings,
+                providerInstances: {
+                  ...settings.providerInstances,
+                  [ProviderInstanceId.make("opencode-work")]: {
+                    driver: ProviderDriverKind.make("opencode"),
+                    environment: [
+                      {
+                        name: "OPENCODE_DATA_DIR",
+                        value: ` ${instanceRoot}, ${alias} `,
+                        sensitive: false,
+                      },
+                    ],
+                  },
+                  [ProviderInstanceId.make("opencode-xdg")]: {
+                    driver: ProviderDriverKind.make("opencode"),
+                    environment: [{ name: "OPENCODE_DATA_DIR", value: "", sensitive: false }],
+                  },
                 },
               },
-            },
-          }),
+            }),
+          ),
         ),
       );
       const summary = yield* service.readSummary(WINDOW);
@@ -1746,16 +1805,18 @@ describe("UsageService", () => {
         );
       });
       const service = yield* UsageService.make.pipe(
-        Effect.provide(
-          layerService({
-            prefix: "usage-service-aliased-roots-test",
-            home,
-            settings,
-            environment: {
-              OPENCODE_DATA_DIR: `${opencode},${opencodeAlias}`,
-              ANTIGRAVITY_DATA_DIR: `${antigravityA},${antigravityB}`,
-            },
-          }),
+        Effect.provideContext(
+          yield* Layer.build(
+            layerService({
+              prefix: "usage-service-aliased-roots-test",
+              home,
+              settings,
+              environment: {
+                OPENCODE_DATA_DIR: `${opencode},${opencodeAlias}`,
+                ANTIGRAVITY_DATA_DIR: `${antigravityA},${antigravityB}`,
+              },
+            }),
+          ),
         ),
       );
       const summary = yield* service.readSummary(WINDOW);
@@ -1811,18 +1872,20 @@ describe("UsageService", () => {
         environment: [{ name: "ANTIGRAVITY_DATA_DIR", value: dataDir, sensitive: false }],
       });
       const service = yield* UsageService.make.pipe(
-        Effect.provide(
-          layerService({
-            prefix: "usage-service-antigravity-instances-test",
-            home,
-            settings: {
-              providerInstances: {
-                ...settings.providerInstances,
-                [ProviderInstanceId.make("antigravity-first")]: instance(first),
-                [ProviderInstanceId.make("antigravity-second")]: instance(` ${second}, `),
+        Effect.provideContext(
+          yield* Layer.build(
+            layerService({
+              prefix: "usage-service-antigravity-instances-test",
+              home,
+              settings: {
+                providerInstances: {
+                  ...settings.providerInstances,
+                  [ProviderInstanceId.make("antigravity-first")]: instance(first),
+                  [ProviderInstanceId.make("antigravity-second")]: instance(` ${second}, `),
+                },
               },
-            },
-          }),
+            }),
+          ),
         ),
       );
       const summary = yield* service.readSummary(WINDOW);
@@ -1896,42 +1959,50 @@ describe("UsageService", () => {
         );
       });
       const service = yield* UsageService.make.pipe(
-        Effect.provide(
-          layerService({
-            prefix: "usage-service-accounts-test",
-            home,
-            settings: {
-              ...settings,
-              providerInstances: {
-                ...settings.providerInstances,
-                [ProviderInstanceId.make("claude-work")]: {
-                  driver: ProviderDriverKind.make("claudeAgent"),
-                  enabled: false,
-                  environment: [{ name: "CLAUDE_CONFIG_DIR", value: claudeHome, sensitive: false }],
-                },
-                [ProviderInstanceId.make("codex-work")]: {
-                  driver: ProviderDriverKind.make("codex"),
-                  environment: [{ name: "CODEX_HOME", value: codexHome, sensitive: false }],
-                },
-                [ProviderInstanceId.make("codex-alias")]: {
-                  driver: ProviderDriverKind.make("codex"),
-                  config: { homePath: alias },
-                },
-                [ProviderInstanceId.make("codex-shadow")]: {
-                  driver: ProviderDriverKind.make("codex"),
-                  config: { homePath: codexHome, shadowHomePath: NodePath.join(home, "shadow") },
-                  environment: [
-                    { name: "CODEX_HOME", value: NodePath.join(home, "ignored"), sensitive: false },
-                  ],
-                },
-                [ProviderInstanceId.make("grok-work")]: {
-                  driver: ProviderDriverKind.make("grok"),
-                  config: { customModels: "not-a-list" },
-                  environment: [{ name: "GROK_HOME", value: grokHome, sensitive: false }],
+        Effect.provideContext(
+          yield* Layer.build(
+            layerService({
+              prefix: "usage-service-accounts-test",
+              home,
+              settings: {
+                ...settings,
+                providerInstances: {
+                  ...settings.providerInstances,
+                  [ProviderInstanceId.make("claude-work")]: {
+                    driver: ProviderDriverKind.make("claudeAgent"),
+                    enabled: false,
+                    environment: [
+                      { name: "CLAUDE_CONFIG_DIR", value: claudeHome, sensitive: false },
+                    ],
+                  },
+                  [ProviderInstanceId.make("codex-work")]: {
+                    driver: ProviderDriverKind.make("codex"),
+                    environment: [{ name: "CODEX_HOME", value: codexHome, sensitive: false }],
+                  },
+                  [ProviderInstanceId.make("codex-alias")]: {
+                    driver: ProviderDriverKind.make("codex"),
+                    config: { homePath: alias },
+                  },
+                  [ProviderInstanceId.make("codex-shadow")]: {
+                    driver: ProviderDriverKind.make("codex"),
+                    config: { homePath: codexHome, shadowHomePath: NodePath.join(home, "shadow") },
+                    environment: [
+                      {
+                        name: "CODEX_HOME",
+                        value: NodePath.join(home, "ignored"),
+                        sensitive: false,
+                      },
+                    ],
+                  },
+                  [ProviderInstanceId.make("grok-work")]: {
+                    driver: ProviderDriverKind.make("grok"),
+                    config: { customModels: "not-a-list" },
+                    environment: [{ name: "GROK_HOME", value: grokHome, sensitive: false }],
+                  },
                 },
               },
-            },
-          }),
+            }),
+          ),
         ),
       );
       const summary = yield* service.readSummary(WINDOW);
@@ -2054,28 +2125,30 @@ describe("UsageService", () => {
         const inheritedCodexHome = NodePath.join(home, "inherited-codex ");
         yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
         const service = yield* UsageService.make.pipe(
-          Effect.provide(
-            layerService({
-              prefix: "usage-service-inherited-homes-test",
-              home,
-              environment: {
-                CODEX_HOME: inheritedCodexHome,
-                CLAUDE_CONFIG_DIR: NodePath.join(home, "claude"),
-              },
-              settings: {
-                ...settings,
-                providerInstances: {
-                  [ProviderInstanceId.make("codex")]: {
-                    driver: ProviderDriverKind.make("codex"),
-                    config: {},
-                  },
-                  [ProviderInstanceId.make("claudeAgent")]: {
-                    driver: ProviderDriverKind.make("claudeAgent"),
-                    config: {},
+          Effect.provideContext(
+            yield* Layer.build(
+              layerService({
+                prefix: "usage-service-inherited-homes-test",
+                home,
+                environment: {
+                  CODEX_HOME: inheritedCodexHome,
+                  CLAUDE_CONFIG_DIR: NodePath.join(home, "claude"),
+                },
+                settings: {
+                  ...settings,
+                  providerInstances: {
+                    [ProviderInstanceId.make("codex")]: {
+                      driver: ProviderDriverKind.make("codex"),
+                      config: {},
+                    },
+                    [ProviderInstanceId.make("claudeAgent")]: {
+                      driver: ProviderDriverKind.make("claudeAgent"),
+                      config: {},
+                    },
                   },
                 },
-              },
-            }),
+              }),
+            ),
           ),
         );
         const summary = yield* service.readSummary(WINDOW);
@@ -2448,8 +2521,138 @@ describe("UsageService", () => {
       }).pipe(Effect.scoped),
   );
 
-  it.live.each([4, 5, 6, 7, 8])(
-    "upgrades a v%s cache: reparses live Codex usage, keeps deleted rollouts and the old file",
+  it.live("rereads and persists only the changed transcript within the listing window", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      const dir = NodePath.dirname(transcript);
+      const unchanged = NodePath.join(dir, "unchanged.jsonl");
+      const discovered = NodePath.join(dir, "discovered.jsonl");
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(transcript, claudeLine(1, 5));
+        await NodeFSP.writeFile(unchanged, claudeLine(2, 7));
+        await NodeFSP.utimes(unchanged, CURSOR_NOW / 1000, (CURSOR_NOW - 32 * HOUR_MS) / 1000);
+      });
+      yield* Effect.gen(function* () {
+        const service = yield* UsageService.make;
+        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 12);
+        yield* service.awaitPersisted;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE TABLE usage_writes (cache_key TEXT NOT NULL)`;
+        yield* sql`CREATE TRIGGER usage_writes_after_update AFTER UPDATE ON usage_scan_index
+          BEGIN INSERT INTO usage_writes VALUES (NEW.cache_key); END`;
+        yield* sql`CREATE TRIGGER usage_writes_after_insert AFTER INSERT ON usage_scan_index
+          BEGIN INSERT INTO usage_writes VALUES (NEW.cache_key); END`;
+
+        const open = vi.spyOn(NodeFSP, "open");
+        const stat = vi.spyOn(NodeFSP, "stat");
+        const readdir = vi.spyOn(NodeFSP, "readdir");
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            open.mockRestore();
+            stat.mockRestore();
+            readdir.mockRestore();
+          }),
+        );
+        open.mockClear();
+        stat.mockClear();
+        readdir.mockClear();
+
+        yield* Effect.promise(async () => {
+          await NodeFSP.appendFile(transcript, claudeLine(3, 11));
+          await NodeFSP.writeFile(discovered, claudeLine(4, 13));
+        });
+        yield* sql`CREATE TRIGGER block_usage_writes BEFORE UPDATE ON usage_scan_index
+          BEGIN SELECT RAISE(ABORT, 'injected write failure'); END`;
+        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 23);
+        yield* service.awaitPersisted;
+        assert.deepStrictEqual(yield* sql`SELECT * FROM usage_writes`, []);
+        yield* sql`DROP TRIGGER block_usage_writes`;
+        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 23);
+        yield* service.awaitPersisted;
+
+        assert.deepStrictEqual(
+          open.mock.calls
+            .map(([file]) => file)
+            .filter((file) => file === transcript || file === unchanged),
+          [transcript],
+        );
+        assert.isFalse(stat.mock.calls.some(([file]) => file === unchanged));
+        assert.isFalse(readdir.mock.calls.some(([file]) => file === dir));
+        assert.deepStrictEqual(yield* sql`SELECT * FROM usage_writes`, [
+          { cache_key: "file:" + transcript },
+        ]);
+        yield* TestClock.adjust("5 seconds");
+        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 36);
+      }).pipe(
+        Effect.provide(layerService({ prefix: "usage-service-incremental", home, settings })),
+      );
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live.each(["caller deadline", "shared scan cap"] as const)(
+    "keeps finished transcript reads after the %s",
+    (deadline) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        const dir = NodePath.dirname(transcript);
+        yield* TestClock.setTime(CURSOR_NOW);
+        const files = yield* Effect.promise(async () => {
+          for (let index = 0; index < 5; index++) {
+            await NodeFSP.writeFile(NodePath.join(dir, `${index}.jsonl`), claudeLine(index, 5));
+          }
+          return (await NodeFSP.readdir(dir)).map((name) => NodePath.join(dir, name));
+        });
+        const firstFile = files[0]!;
+        const finalFile = files.at(-1)!;
+        const waiting = Promise.withResolvers<void>();
+        const resume = Promise.withResolvers<void>();
+        const actual = yield* Effect.promise(() =>
+          vi.importActual<typeof NodeFSP>("node:fs/promises"),
+        );
+        const open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+          if (args[0] === finalFile) waiting.resolve();
+          if (args[0] !== firstFile && typeof args[0] === "string" && files.includes(args[0])) {
+            await resume.promise;
+          }
+          return actual.open(...args);
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            resume.resolve();
+            open.mockRestore();
+          }),
+        );
+
+        yield* Effect.gen(function* () {
+          const service = yield* UsageService.make;
+          const initial = yield* service.readSummary(WINDOW).pipe(Effect.flip, Effect.forkChild);
+          // The fifth read can only start after the first has been committed to the in-memory index.
+          yield* Effect.promise(() => waiting.promise);
+          yield* TestClock.adjust("30 seconds");
+          const error = yield* Fiber.join(initial);
+          assert.strictEqual(error.reason, "scanFailed");
+          assert.strictEqual(error.detail, "The usage scan timed out.");
+          yield* service.awaitPersisted;
+          const sql = yield* SqlClient.SqlClient;
+          assert.deepStrictEqual(
+            yield* sql`SELECT cache_key FROM usage_scan_index WHERE cache_key LIKE 'file:%'`,
+            [{ cache_key: "file:" + firstFile }],
+          );
+          if (deadline === "shared scan cap") yield* TestClock.adjust("270 seconds");
+
+          const retry = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
+          resume.resolve();
+          assert.strictEqual(totalOutputTokens(yield* Fiber.join(retry)), 25);
+          assert.strictEqual(open.mock.calls.filter(([file]) => file === firstFile).length, 1);
+        }).pipe(
+          Effect.provide(layerService({ prefix: "usage-service-scan-deadlines", home, settings })),
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live.each([4, 5, 6, 7, 8, 10])(
+    "upgrades a v%s cache: reparses live Codex usage, keeps deleted rollouts and cleans up old files",
     (version) =>
       Effect.gen(function* () {
         const { home, settings } = yield* setup;
@@ -2489,7 +2692,6 @@ describe("UsageService", () => {
 
         yield* Effect.gen(function* () {
           const { stateDir } = yield* ServerConfig.ServerConfig;
-          const cachePath = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
           const legacyPath = NodePath.join(
             stateDir,
             version === 4 ? "usage-scan-cache.json" : `usage-scan-cache-v${version}.json`,
@@ -2498,12 +2700,24 @@ describe("UsageService", () => {
           yield* first.readSummary(WINDOW);
           yield* first.awaitPersisted;
 
-          const legacy = yield* Effect.promise(async () => {
+          const sql = yield* SqlClient.SqlClient;
+          const rows = yield* sql<{ contents: string }>`
+            SELECT contents FROM usage_scan_index WHERE cache_key LIKE 'file:%' ORDER BY id
+          `;
+          const cache = new Map(
+            rows.flatMap(({ contents }) => [
+              ...decodeScanCache(decodeUnknownJsonString(contents), TEST_FORMAT_MAP),
+            ]),
+          );
+          yield* sql`DELETE FROM usage_scan_index`;
+
+          yield* Effect.promise(async () => {
             const livePath = await NodeFSP.realpath(live);
-            const document = decodeUnknownJsonString(await NodeFSP.readFile(cachePath, "utf8")) as {
+            const document = decodeUnknownJsonString(encodeScanCache(cache)) as {
               files: Record<string, { r: unknown[][]; mr: number; cs: Record<string, unknown> }>;
             };
             for (const [path, file] of Object.entries(document.files)) {
+              if (version === 10) continue;
               file.r = file.r.map((row) => [
                 ...row.slice(0, 6),
                 path === livePath ? 99 : row[6],
@@ -2522,7 +2736,6 @@ describe("UsageService", () => {
               }
             }
             const text = encodeUnknownJsonString({ ...document, version });
-            await NodeFSP.rm(cachePath);
             await NodeFSP.writeFile(legacyPath, text);
             if (version === 6) {
               for (const [name, olderVersion] of [
@@ -2536,7 +2749,6 @@ describe("UsageService", () => {
               }
             }
             await NodeFSP.rm(deleted);
-            return text;
           });
 
           const upgraded = yield* UsageService.make;
@@ -2544,14 +2756,39 @@ describe("UsageService", () => {
           assert.strictEqual(totalOutputTokens(summary), 30);
           assert.strictEqual(
             summary.buckets.reduce((sum, bucket) => sum + bucket.costUsd, 0),
-            60 + 20 * (version === 4 ? 1 : 2),
+            version === 10 ? 180 : 60 + 20 * (version === 4 ? 1 : 2),
           );
           yield* upgraded.awaitPersisted;
-          assert.strictEqual(SCAN_CACHE_FILE_NAME, "usage-scan-cache-v10.json");
-          assert.strictEqual(
-            yield* Effect.promise(() => NodeFSP.readFile(legacyPath, "utf8")),
-            legacy,
+          const remaining = yield* Effect.promise(() => NodeFSP.readdir(stateDir));
+          assert.deepStrictEqual(
+            remaining.filter((name) =>
+              LEGACY_SCAN_CACHE_FILE_NAMES.some((legacy) => legacy === name),
+            ),
+            version === 10 ? [ROLLBACK_SCAN_CACHE_FILE_NAME] : [],
           );
+          const restarted = yield* UsageService.make;
+          assert.deepStrictEqual((yield* restarted.readSummary(WINDOW)).buckets, summary.buckets);
+          if (version === 10) {
+            yield* Effect.promise(async () => {
+              const extra = NodePath.join(sessions, "rollback.jsonl");
+              const cached = cache.get(
+                (await NodeFSP.realpath(sessions)) + NodePath.sep + "deleted.jsonl",
+              );
+              assert.isDefined(cached);
+              const fromRollback = new Map(cache);
+              fromRollback.set(extra, {
+                ...cached!,
+                records: cached!.records.map((record) => ({
+                  ...record,
+                  sessionId: "rollback",
+                  dedupeKey: "rollback-only",
+                })),
+              });
+              await NodeFSP.writeFile(legacyPath, encodeScanCache(fromRollback));
+            });
+            const afterRollback = yield* UsageService.make;
+            assert.strictEqual(totalOutputTokens(yield* afterRollback.readSummary(WINDOW)), 50);
+          }
         }).pipe(
           Effect.provide(
             layerService({
@@ -2569,6 +2806,37 @@ describe("UsageService", () => {
                 },
               },
             }),
+          ),
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.live.each(["directory", "malformed"] as const)(
+    "keeps usage available and preserves a legacy cache that is %s",
+    (invalid) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+        yield* Effect.gen(function* () {
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const legacy = NodePath.join(stateDir, ROLLBACK_SCAN_CACHE_FILE_NAME);
+          yield* Effect.promise(() =>
+            invalid === "directory"
+              ? NodeFSP.mkdir(legacy)
+              : NodeFSP.writeFile(legacy, "invalid JSON"),
+          );
+
+          const service = yield* UsageService.make;
+          assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
+          yield* service.awaitPersisted;
+          yield* Effect.promise(() => NodeFSP.rm(transcript));
+          const restarted = yield* UsageService.make;
+          assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 5);
+          const fs = yield* FileSystem.FileSystem;
+          assert.isTrue(yield* fs.exists(legacy));
+        }).pipe(
+          Effect.provide(
+            layerService({ prefix: "usage-service-invalid-legacy-index", home, settings }),
           ),
         );
       }).pipe(Effect.scoped),
@@ -2713,34 +2981,62 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live.skipIf(HostProcess.Platform.defaultValue() === "win32")(
-    "keeps a newer cached read when a slower scan of another window finishes later",
-    () =>
-      Effect.gen(function* () {
-        const { transcript, settings, home } = yield* setup;
-        const dir = NodePath.dirname(transcript);
-        const probe = NodePath.join(dir, "probe.jsonl");
-        const hold = NodePath.join(dir, "hold.jsonl");
-        yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
-        yield* makeGate(probe, BEFORE_NARROW_WINDOW);
-        yield* makeGate(hold, BEFORE_NARROW_WINDOW);
-        yield* Effect.gen(function* () {
-          const service = yield* UsageService.make;
-          const wide = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
-          yield* openGate(probe);
-          yield* replaceFile(transcript, claudeLine(1, 5) + claudeLine(2, 7));
-          yield* service.readSummary(NARROW_WINDOW);
-          yield* openGate(hold);
-          yield* Fiber.join(wide);
+  it.live.skipIf(isWindowsHost)("skips non-regular transcripts on every request", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      const fifo = NodePath.join(NodePath.dirname(transcript), "idle.jsonl");
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      yield* Effect.sync(() => NodeChildProcess.execFileSync("mkfifo", [fifo]));
+      const open = vi.spyOn(NodeFSP, "open");
+      yield* Effect.addFinalizer(() => Effect.sync(() => open.mockRestore()));
+      const service = yield* makeUsageService(
+        layerService({ prefix: "usage-service-regular-files", home, settings }),
+      );
+      assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
+      assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
+      assert.isFalse(open.mock.calls.some(([file]) => file === fifo));
+    }).pipe(Effect.scoped),
+  );
 
-          yield* Effect.promise(() =>
-            Promise.all([transcript, probe, hold].map((path) => NodeFSP.rm(path))),
-          );
-          assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 12);
-        }).pipe(
-          Effect.provide(layerService({ prefix: "usage-service-stale-read-test", home, settings })),
-        );
-      }).pipe(Effect.scoped),
+  it.live("keeps a newer cached read when a slower scan of another window finishes later", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      const hold = NodePath.join(NodePath.dirname(transcript), "hold.jsonl");
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(transcript, claudeLine(1, 5));
+        await NodeFSP.writeFile(hold, "");
+        await NodeFSP.utimes(hold, BEFORE_NARROW_WINDOW, BEFORE_NARROW_WINDOW);
+      });
+      const opened = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      const actual = yield* Effect.promise(() =>
+        vi.importActual<typeof NodeFSP>("node:fs/promises"),
+      );
+      const open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+        if (args[0] === hold) await resume.promise;
+        const handle = await actual.open(...args);
+        if (args[0] === transcript) opened.resolve();
+        return handle;
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          resume.resolve();
+          open.mockRestore();
+        }),
+      );
+      const service = yield* makeUsageService(
+        layerService({ prefix: "usage-service-stale-read-test", home, settings }),
+      );
+      const wide = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
+      yield* Effect.promise(() => opened.promise);
+      yield* replaceFile(transcript, claudeLine(1, 5) + claudeLine(2, 7));
+      yield* service.readSummary(NARROW_WINDOW);
+      resume.resolve();
+      yield* Fiber.join(wide);
+
+      yield* Effect.promise(() => Promise.all([transcript, hold].map((path) => NodeFSP.rm(path))));
+      assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 12);
+    }).pipe(Effect.scoped),
   );
 
   it.live("keeps an absent directory missing when its cached files only contain diagnostics", () =>
@@ -2752,7 +3048,7 @@ describe("UsageService", () => {
       yield* Effect.gen(function* () {
         const { stateDir } = yield* ServerConfig.ServerConfig;
         const mtimeMs = yield* Clock.currentTimeMillis;
-        const cache = makeScanCacheWriter()(
+        const cache = encodeScanCache(
           new Map([
             [
               transcript,
@@ -2771,7 +3067,7 @@ describe("UsageService", () => {
         );
         yield* Effect.promise(async () => {
           await NodeFSP.mkdir(stateDir, { recursive: true });
-          await NodeFSP.writeFile(NodePath.join(stateDir, SCAN_CACHE_FILE_NAME), cache);
+          await NodeFSP.writeFile(NodePath.join(stateDir, LEGACY_SCAN_CACHE_FILE_NAMES[0]), cache);
         });
         const summary = yield* (yield* UsageService.make).readSummary(WINDOW);
         const source = summary.sources.find((source) => source.fingerprint.provider === "claude");
@@ -2798,7 +3094,11 @@ describe("UsageService", () => {
         await NodeFSP.utimes(transcript, lastWrite, lastWrite);
       });
       const service = yield* UsageService.make.pipe(
-        Effect.provide(layerService({ prefix: "usage-service-saved-window-test", home, settings })),
+        Effect.provideContext(
+          yield* Layer.build(
+            layerService({ prefix: "usage-service-saved-window-test", home, settings }),
+          ),
+        ),
       );
       const first = yield* service.readSummary(WINDOW);
       yield* Effect.promise(() =>
@@ -2917,7 +3217,7 @@ describe("UsageService", () => {
             );
           },
         });
-        const service = yield* UsageService.make.pipe(Effect.provide(serviceLayer));
+        const service = yield* makeUsageService(serviceLayer);
 
         const summary = yield* service.readSummary(WINDOW);
         assert.strictEqual(summary.pricing.status, "fresh");
@@ -2932,7 +3232,7 @@ describe("UsageService", () => {
         );
         assert.strictEqual(requests[1]?.headers.accept, "application/vnd.github.raw+json");
 
-        const restarted = yield* UsageService.make.pipe(Effect.provide(serviceLayer));
+        const restarted = yield* makeUsageService(serviceLayer);
         const cached = yield* restarted.readSummary(WINDOW);
         assert.strictEqual(cached.pricing.status, "cached");
         assert.deepStrictEqual(cached.buckets, summary.buckets);
@@ -2944,7 +3244,11 @@ describe("UsageService", () => {
     Effect.gen(function* () {
       const { settings, home } = yield* setup;
       const service = yield* UsageService.make.pipe(
-        Effect.provide(layerService({ prefix: "usage-service-interruption-test", home, settings })),
+        Effect.provideContext(
+          yield* Layer.build(
+            layerService({ prefix: "usage-service-interruption-test", home, settings }),
+          ),
+        ),
       );
 
       let orphanedAt: number | undefined;

@@ -11,7 +11,7 @@ import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { SCAN_CACHE_FILE_NAME } from "./usage/usageScanCache.ts";
+import { LEGACY_SCAN_CACHE_FILE_NAMES } from "./usage/usageScanCache.ts";
 import { TestClock } from "effect/testing";
 import * as SqlClient from "effect/sql/SqlClient";
 import {
@@ -2741,22 +2741,27 @@ describe("settled worktree rechecks", () => {
   );
 });
 
-it.live("keeps saved usage data when removing a settled checkout", () =>
-  runCleanupTest(
-    Effect.gen(function* () {
-      const fixture = yield* cleanupFixture();
-      fixture.setSettings({
-        storageCleanup: { ...DEFAULT_SERVER_SETTINGS.storageCleanup, worktreeSettledAfterDays: 0 },
-      });
-      fixture.setThreads([
-        shell({ branch: "feature", worktreePath: fixture.worktree, settledAt: at(0) }),
-      ]);
-      yield* fixture.fs.makeDirectory(fixture.config.stateDir, { recursive: true });
-      const cachePath = `${fixture.config.stateDir}/${SCAN_CACHE_FILE_NAME}`;
-      const savedUsage = JSON.stringify({ tokens: 12345, cost: 1.25 });
-      yield* fixture.fs.writeFileString(cachePath, savedUsage);
-      expect((yield* fixture.service.runNow).counts.removed).toBe(1);
-      expect(yield* fixture.fs.readFileString(cachePath)).toBe(savedUsage);
-    }),
-  ),
+it.live(
+  "keeps the legacy usage cache available for migration when removing a settled checkout",
+  () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture();
+        fixture.setSettings({
+          storageCleanup: {
+            ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+            worktreeSettledAfterDays: 0,
+          },
+        });
+        fixture.setThreads([
+          shell({ branch: "feature", worktreePath: fixture.worktree, settledAt: at(0) }),
+        ]);
+        yield* fixture.fs.makeDirectory(fixture.config.stateDir, { recursive: true });
+        const cachePath = `${fixture.config.stateDir}/${LEGACY_SCAN_CACHE_FILE_NAMES[0]}`;
+        const savedUsage = JSON.stringify({ tokens: 12345, cost: 1.25 });
+        yield* fixture.fs.writeFileString(cachePath, savedUsage);
+        expect((yield* fixture.service.runNow).counts.removed).toBe(1);
+        expect(yield* fixture.fs.readFileString(cachePath)).toBe(savedUsage);
+      }),
+    ),
 );

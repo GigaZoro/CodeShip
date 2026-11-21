@@ -1,3 +1,8 @@
+## 2026-11-21 — Usage refreshes with less disk work
+
+- The server updates saved usage per transcript and shares the local scan with slow account refreshes. New transcripts appear on the next scan after the five-second directory cache expires. Startup imports saved history and retains the v10 file for rollback while retiring earlier caches.
+- A slow scan returns a retryable error while it continues saving completed transcript reads. If an account refresh stalls, Usage keeps the transcript totals and reports the account error. Event-loop stall logs include span names from the sampling window to help diagnose delays.
+
 ## 2026-11-21 — A landing reads real git history and refuses marked files
 
 - The landing turn, its checks receipt, the pre-push hook, `check:changed` and the upstream sync read git history past replace refs and grafts, so an invented ancestry can no longer let a push move main past a commit it never held.

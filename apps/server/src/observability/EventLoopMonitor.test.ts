@@ -1,5 +1,13 @@
 import { assert, describe, it } from "@effect/vitest";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
+
 import * as EventLoopMonitor from "./EventLoopMonitor.ts";
 
 const ms = (value: number) => value * 1e6;
@@ -33,4 +41,33 @@ describe("EventLoopMonitor", () => {
     assert.isUndefined(EventLoopMonitor.stallMs(asleep));
     assert.strictEqual(EventLoopMonitor.stallMs({ ...asleep, activeMs: 600_000 }), 599_000);
   });
+
+  it.effect("writes overlapping span names to the stall log", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-event-loop-monitor" });
+      const filePath = path.join(dir, "event-loop-stalls.ndjson");
+      const context = yield* Layer.build(
+        EventLoopMonitor.layerWith(Effect.succeed(Effect.succeed(stalled)), {
+          filePath,
+          maxBytes: 64 * 1024,
+        }).pipe(
+          Layer.provide(
+            Layer.succeed(EventLoopMonitor.StallSpanNames, () => ["UsageService.scanSummary"]),
+          ),
+        ),
+      );
+      yield* TestClock.adjust("30 seconds");
+      yield* EventLoopMonitor.EventLoopMonitor.pipe(
+        Effect.flatMap((monitor) => monitor.latestNoticeableStall),
+        Effect.provideContext(context),
+      );
+      const log = yield* fs.readFileString(filePath);
+      const decode = Schema.decodeUnknownEffect(
+        Schema.fromJsonString(Schema.Struct({ spanNames: Schema.Array(Schema.String) })),
+      );
+      assert.deepStrictEqual((yield* decode(log)).spanNames, ["UsageService.scanSummary"]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });

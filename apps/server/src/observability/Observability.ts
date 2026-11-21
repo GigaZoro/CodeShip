@@ -16,6 +16,7 @@ import * as ServerConfig from "../config.ts";
 import * as ResourceAttribution from "../resourceTelemetry/ResourceAttribution.ts";
 import * as ServerLogger from "../serverLogger.ts";
 import * as BrowserTraceCollector from "./BrowserTraceCollector.ts";
+import { StallSpanNames } from "./EventLoopMonitor.ts";
 import * as HeapAttribution from "./HeapAttribution.ts";
 import { withProviderAuthTrace } from "./ProviderAuthTrace.ts";
 
@@ -78,6 +79,7 @@ export const layer = Layer.unwrap(
 
         return Layer.mergeAll(
           Layer.succeed(Tracer.Tracer, heapAttribution.tracer),
+          Layer.succeed(StallSpanNames, heapAttribution.spanNames),
           BrowserTraceCollector.layer(sink),
         );
       }),

@@ -52,6 +52,7 @@ const make = Effect.gen(function* () {
   const accountReader = yield* CursorAccountReader.CursorAccountReader;
   const hostEnvironment = yield* HostProcess.Environment;
   const platform = yield* HostProcess.Platform;
+  const scope = yield* Effect.scope;
 
   const cachePath = path.join(host.paths.stateDir, CURSOR_ACCOUNT_CACHE_FILE_NAME);
   const caches = new Map<string, CursorAccountCache>();
@@ -158,7 +159,7 @@ const make = Effect.gen(function* () {
         if (current !== undefined) return current;
         const done = Deferred.makeUnsafe<void>();
         refreshes.set(credentialKey, done);
-        // Detached: a departing client must not cancel a fetch later reads reuse.
+        // Keep the shared refresh alive across requests and stop it when the service closes.
         yield* refreshAccount(credential, credentialKey, retentionStartMs).pipe(
           Effect.catchCause(() =>
             Clock.currentTimeMillis.pipe(
@@ -173,7 +174,8 @@ const make = Effect.gen(function* () {
               return Deferred.succeed(done, undefined);
             }),
           ),
-          Effect.forkDetach,
+          Effect.interruptible,
+          Effect.forkIn(scope),
         );
         return done;
       }),
@@ -215,7 +217,11 @@ const make = Effect.gen(function* () {
         // Never combine a local fallback with another server's account-wide history.
         ...(refreshing
           ? { files: [], refreshing: true }
-          : { files: null, message: failureMessage ?? CURSOR_ACCOUNT_READ_ERROR }),
+          : {
+              files: null,
+              status: "failed",
+              message: failureMessage ?? CURSOR_ACCOUNT_READ_ERROR,
+            }),
       } satisfies ProviderUsageScan;
     }
     // Account history spans machines; a stable fingerprint prevents duplicate environment counts.

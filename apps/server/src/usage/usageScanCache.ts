@@ -12,13 +12,9 @@ import { GUARD_LENGTH, type TranscriptParsePosition } from "./usageTranscriptRea
 const USAGE_SCAN_CACHE_VERSION = 10 as const;
 const SPEED_COMPATIBLE_SINCE_VERSION = 4;
 
-/**
- * An older server sharing that directory cannot read a newer cache and would
- * replace it, dropping saved usage for deleted transcripts. Separate files keep
- * both.
- */
-export const SCAN_CACHE_FILE_NAME = "usage-scan-cache-v10.json";
+export const ROLLBACK_SCAN_CACHE_FILE_NAME = "usage-scan-cache-v10.json";
 export const LEGACY_SCAN_CACHE_FILE_NAMES = [
+  ROLLBACK_SCAN_CACHE_FILE_NAME,
   "usage-scan-cache-v9.json",
   "usage-scan-cache-v8.json",
   "usage-scan-cache-v7.json",
@@ -42,6 +38,10 @@ export interface CachedFile {
 }
 
 export type ScanCache = Map<string, CachedFile>;
+
+export function isLaterRead(a: CachedFile, b: CachedFile): boolean {
+  return a.mtimeMs > b.mtimeMs || (a.mtimeMs === b.mtimeMs && a.size > b.size);
+}
 
 type SerializedRecord = readonly [
   timestampMs: number,
@@ -133,32 +133,21 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
   };
 }
 
-/** Memoizes immutable entries by identity; growing intern tables preserve indexes, retaining unused strings until restart. */
-export function makeScanCacheWriter(): (
+export function encodeScanCache(
   cache: ScanCache,
-  extra: Readonly<Record<string, unknown>>,
-) => string {
+  extra: Readonly<Record<string, unknown>> = {},
+): string {
   const tables = makeInternTables();
-  const fragments = new WeakMap<CachedFile, string>();
-  return (cache, extra) => {
-    const files: string[] = [];
-    for (const [path, entry] of cache) {
-      let fragment = fragments.get(entry);
-      if (fragment === undefined) {
-        fragment = JSON.stringify(serializeFile(entry, tables));
-        fragments.set(entry, fragment);
-      }
-      files.push(`${JSON.stringify(path)}:${fragment}`);
-    }
-    // Encoded after the files, which may have added to the intern tables.
-    const head = JSON.stringify({
-      ...extra,
-      version: USAGE_SCAN_CACHE_VERSION,
-      models: tables.models,
-      sessions: tables.sessions,
-    });
-    return `${head.slice(0, -1)},"files":{${files.join(",")}}}`;
-  };
+  const files = Object.fromEntries(
+    [...cache].map(([path, entry]) => [path, serializeFile(entry, tables)]),
+  );
+  return JSON.stringify({
+    ...extra,
+    version: USAGE_SCAN_CACHE_VERSION,
+    models: tables.models,
+    sessions: tables.sessions,
+    files,
+  });
 }
 
 function isRecordArray(value: unknown): value is readonly unknown[] {
@@ -340,17 +329,6 @@ function makeStateValidators(
       ] as const;
     }),
   );
-}
-
-export function pruneScanCache(cache: ScanCache, retentionCutoffMs: number): number {
-  let removed = 0;
-  for (const [path, entry] of cache) {
-    if (entry.mtimeMs < retentionCutoffMs) {
-      cache.delete(path);
-      removed += 1;
-    }
-  }
-  return removed;
 }
 
 /** Mutates seen; share it across incremental line/tail batches to deduplicate the whole file. */
