@@ -259,7 +259,10 @@ export function UsagePage() {
   const window = makeWindow(windowDays, new Date(now), resolution);
   const chartType = preferences.chartType ?? "area";
   const { requestedWindow, environments, selectedEnvironments, shown, showingKept, refresh } =
-    useUsage(window, selectedEnvironmentIds, preferences.hiddenProviders, advanceWindow);
+    useUsage(window, selectedEnvironmentIds, preferences.hiddenProviders, {
+      advanceWindow,
+      enabled: !showingLimits,
+    });
   const merged = shown?.merged ?? EMPTY_USAGE;
   const shownEnvironments = shown?.environments ?? selectedEnvironments;
   const shownWindow = shown?.window ?? window;

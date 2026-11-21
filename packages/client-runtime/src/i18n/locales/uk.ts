@@ -1289,7 +1289,6 @@ const catalog: MessageCatalog = {
     "{error} Збережіть його або відкрийте в іншому застосунку.",
   "{error} Save it to open in another app.":
     "{error} Збережіть його, щоб відкрити в іншому застосунку.",
-  "{error} Showing saved totals.": "{error} Показано збережені підсумки.",
   "{error} Some pull requests may be missing or out of date.":
     "{error} Деякі пул-реквести можуть бути відсутніми або застарілими.",
   "{error} The project is in {path}.": "{error} Проєкт розташований у {path}.",
@@ -5222,7 +5221,6 @@ const catalog: MessageCatalog = {
   Disconnect: "Відключити",
   "Disconnect agent session": "Від’єднати сесію агента",
   "Disconnect server": "Відключити сервер",
-  "Disconnected · showing saved usage": "Відключено · показано збережене використання",
   "Disconnected locally, but T3 Connect did not confirm it removed this environment":
     "Відключено локально, але T3 Connect не підтвердив видалення цього середовища",
   "Discovering sign-in methods…": "Пошук способів входу…",

@@ -22,7 +22,7 @@ import { t } from "../lib/i18n";
 import {
   equalUsageStatuses,
   isKeptUsage,
-  nextUsageRequestWindow,
+  nextUsageRequest,
   settleUsageSnapshot,
   usageWindowKey,
   type EnvironmentUsageStatus,
@@ -31,9 +31,9 @@ import {
 
 export type { EnvironmentUsageStatus } from "@t3tools/client-runtime/state/usage-progress";
 
-const usageByWindowAtom = Atom.family((windowKey: string) =>
+const usageByWindowAtom = Atom.family((windowKey: string | null) =>
   Atom.make((get): readonly EnvironmentUsageStatus[] => {
-    const input = JSON.parse(windowKey) as UsageSummaryInput;
+    const input = windowKey === null ? null : (JSON.parse(windowKey) as UsageSummaryInput);
     const presentations = get(environmentPresentations.presentationsAtom);
 
     const statuses: EnvironmentUsageStatus[] = [];
@@ -44,7 +44,7 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
         session: AsyncResult.getOrElse(sessionResult, () => null),
         hasSessionError: sessionResult._tag === "Failure",
       });
-      if (!access.canReadDiagnostics) {
+      if (input === null || !access.canReadDiagnostics) {
         statuses.push({
           environmentId,
           label: presentation.entry.target.label,
@@ -90,22 +90,32 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
 export function useUsage(
   input: UsageSummaryInput,
   selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null = null,
-  active = true,
+  { advanceWindow = true, enabled = true } = {},
 ) {
-  const [requestedWindow, setRequestedWindow] = useState(input);
-  const environments = useAtomValue(usageByWindowAtom(usageWindowKey(requestedWindow)));
+  const [request, setRequest] = useState(() => ({
+    window: input,
+    failedThrough: null as string | null,
+    enabled,
+  }));
+  const requestedWindow = enabled && !request.enabled ? input : request.window;
+  const environments = useAtomValue(
+    usageByWindowAtom(enabled ? usageWindowKey(requestedWindow) : null),
+  );
   const selectedEnvironments =
     selectedEnvironmentIds === null
       ? environments
       : environments.filter(({ environmentId }) => selectedEnvironmentIds.has(environmentId));
   const [previous, setPrevious] = useState<UsageSnapshot | null>(null);
-  const shown = settleUsageSnapshot(previous, requestedWindow, environments, selectedEnvironments);
-  if (shown !== previous) setPrevious(shown);
-  const nextWindow = nextUsageRequestWindow(requestedWindow, input, selectedEnvironments, active);
-  if (nextWindow !== requestedWindow) setRequestedWindow(nextWindow);
+  const shown = enabled
+    ? settleUsageSnapshot(previous, requestedWindow, environments, selectedEnvironments)
+    : null;
+  if (enabled && shown !== previous) setPrevious(shown);
+  const next = nextUsageRequest(request, input, selectedEnvironments, advanceWindow, enabled);
+  if (next !== request) setRequest(next);
 
-  const refresh = (nextInput = requestedWindow) =>
-    refreshUsage({
+  const refresh = (nextInput = requestedWindow) => {
+    if (!enabled) return Promise.resolve();
+    return refreshUsage({
       registry: appAtomRegistry,
       server: serverEnvironment,
       presentations: environmentPresentations,
@@ -118,6 +128,7 @@ export function useUsage(
         .map(({ environmentId }) => environmentId),
       input: nextInput,
     });
+  };
 
   return {
     requestedWindow,

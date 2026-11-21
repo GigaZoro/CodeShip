@@ -1,5 +1,10 @@
 import { RegistryContext } from "@effect/atom-react";
-import type { EnvironmentId, UsageSummaryInput } from "@t3tools/contracts";
+import {
+  AuthOrchestrationReadScope,
+  type EnvironmentId,
+  type ScheduledTaskRunStats,
+  type UsageSummaryInput,
+} from "@t3tools/contracts";
 import {
   scheduledTaskGroupUsage,
   scheduledTaskStatsRange,
@@ -13,6 +18,7 @@ import { cn } from "../../lib/utils";
 import { useEnvironments } from "../../state/environments";
 import { supportsScheduledTaskGroups, useScheduledTaskStats } from "../../state/scheduledTaskStats";
 import { serverEnvironment } from "../../state/server";
+import { useEnvironmentsWithScope } from "../../state/session";
 import type { EnvironmentUsageStatus } from "../../state/usage";
 import { Button } from "../ui/button";
 
@@ -46,6 +52,7 @@ export function UsageScheduledTaskGroups({
   const registry = useContext(RegistryContext);
   const presentations = useEnvironments().environments;
   const connected = environments.filter((environment) => environment.isConnected);
+  const readable = useEnvironmentsWithScope(connected, AuthOrchestrationReadScope);
   const supportedIds = connected.flatMap((environment) =>
     supportsScheduledTaskGroups(
       presentations.find((entry) => entry.environmentId === environment.environmentId),
@@ -59,23 +66,35 @@ export function UsageScheduledTaskGroups({
   const range = scheduledTaskStatsRange(period);
   const input = range ?? { since: period.sinceDay };
   const results = useScheduledTaskStats(range === null ? [] : supportedIds, input);
-  const loading =
-    readOnly || results.some((result) => result.stats === null && result.error === null);
-  const answered = results.some((result) => result.stats !== null);
-  const rows = scheduledTaskGroupUsage(
-    results.flatMap((result) => (result.stats === null ? [] : [result.stats])),
-  ).filter((row) => row.runs > 0);
   const key = JSON.stringify([selectionKey, supportedIds.toSorted()]);
-  const [last, setLast] = useState<{ readonly key: string; readonly rows: typeof rows } | null>(
-    null,
+  type Reading = readonly [EnvironmentId, readonly ScheduledTaskRunStats[]];
+  const [last, setLast] = useState<{
+    readonly key: string;
+    readonly readings: readonly Reading[];
+  } | null>(null);
+  const retained = new Map(last?.key === key ? last.readings : []);
+  const readings = readOnly
+    ? []
+    : results.flatMap(({ environmentId, stats, error }): Reading[] => {
+        if (error !== null || !readable.has(environmentId)) return [];
+        const available = stats ?? retained.get(environmentId);
+        return available === undefined ? [] : [[environmentId, available]];
+      });
+  if (
+    (last !== null || readings.length > 0) &&
+    (last?.key !== key || JSON.stringify(last.readings) !== JSON.stringify(readings))
+  )
+    setLast({ key, readings });
+  const loading =
+    readOnly ||
+    results.some(
+      ({ environmentId, stats, error }) =>
+        readable.has(environmentId) && stats === null && error === null,
+    );
+  const displayedRows = scheduledTaskGroupUsage(readings.map(([, stats]) => stats)).filter(
+    (row) => row.runs > 0,
   );
-  if (last !== null && last.key !== key) setLast(null);
-  else if (!loading && answered && JSON.stringify(last?.rows) !== JSON.stringify(rows)) {
-    setLast({ key, rows });
-  }
-  const retained = readOnly || last?.key !== key ? undefined : last.rows;
-  const displayedRows = (loading || !answered) && retained !== undefined ? retained : rows;
-  const showLoading = loading && retained === undefined && (readOnly || !answered);
+  const showLoading = loading && readings.length === 0;
   if (connected.length === 0 || range === null) return null;
 
   const failures = results.flatMap((result) =>
@@ -143,7 +162,7 @@ export function UsageScheduledTaskGroups({
           {t("Loading…")}
         </p>
       ) : displayedRows.length === 0 ? (
-        answered || retained !== undefined ? (
+        readings.length > 0 ? (
           <p className="py-2 text-sm text-muted-foreground">
             {t("No scheduled task runs in this period.")}
           </p>

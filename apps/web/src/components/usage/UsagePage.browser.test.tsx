@@ -16,6 +16,7 @@ import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 import "../../index.css";
 import { UsagePage } from "./UsagePage";
 import { UsageProviderChart } from "./UsageProviderChart";
+import { PROVIDER_ORDER } from "./usageProviders";
 
 const state = vi.hoisted(() => ({
   now: 0,
@@ -426,7 +427,7 @@ it("pauses the rolling window in a hidden tab and catches up when it becomes vis
   expect(state.requests.size).toBe(requests + 1);
 });
 
-it("keeps refreshing chart strokes and bars above 3:1 in both themes", async () => {
+it("keeps every provider's chart strokes and bars at 3:1 or higher in both themes", async () => {
   const wasDark = document.documentElement.classList.contains("dark");
   using _theme = {
     [Symbol.dispose]: () => document.documentElement.classList.toggle("dark", wasDark),
@@ -434,7 +435,7 @@ it("keeps refreshing chart strokes and bars above 3:1 in both themes", async () 
   const day = "2026-11-21";
   const data = {
     chartType: "area" as const,
-    providers: ["cursor"] as const,
+    providers: PROVIDER_ORDER,
     loadingProviders: new Set(["cursor"] as const),
     days: [day],
     daily: [
@@ -442,7 +443,9 @@ it("keeps refreshing chart strokes and bars above 3:1 in both themes", async () 
         day,
         costUsd: 1,
         totalTokens: 100,
-        byProvider: new Map([["cursor" as const, { costUsd: 1, totalTokens: 100 }]]),
+        byProvider: new Map(
+          PROVIDER_ORDER.map((provider) => [provider, { costUsd: 1, totalTokens: 100 }]),
+        ),
       },
     ],
     hours: [],
@@ -464,22 +467,30 @@ it("keeps refreshing chart strokes and bars above 3:1 in both themes", async () 
         <UsageProviderChart {...data} chartType={chartType} />
       </main>,
     );
-    const series = screen.container.querySelector(
-      chartType === "area" ? "path[stroke-dasharray]" : 'rect[fill="#8b8b8b"]',
-    )!;
-    expect(series).not.toBeNull();
+    const series = [
+      ...screen.container.querySelectorAll(
+        chartType === "area" ? 'path[stroke-width="2"]' : "rect[fill]",
+      ),
+    ];
+    expect(series).toHaveLength(PROVIDER_ORDER.length);
+    if (chartType === "area")
+      expect(series.filter((line) => line.hasAttribute("stroke-dasharray"))).toHaveLength(1);
     await expect.element(screen.getByText("Updating Cursor…")).toBeVisible();
     for (const dark of [false, true]) {
       document.documentElement.classList.toggle("dark", dark);
-      const style = getComputedStyle(series);
       const canvas = colorLuminance(
         getComputedStyle(screen.getByRole("main").element()).backgroundColor,
       );
-      const value = colorLuminance(chartType === "area" ? style.stroke : style.fill);
-      expect(style.opacity).toBe("1");
-      expect(
-        (Math.max(canvas, value) + 0.05) / (Math.min(canvas, value) + 0.05),
-      ).toBeGreaterThanOrEqual(3);
+      for (const mark of series) {
+        const style = getComputedStyle(mark);
+        const color = chartType === "area" ? style.stroke : style.fill;
+        const value = colorLuminance(color);
+        expect(style.opacity).toBe("1");
+        expect(
+          (Math.max(canvas, value) + 0.05) / (Math.min(canvas, value) + 0.05),
+          `${chartType} ${color} on the ${dark ? "dark" : "light"} canvas`,
+        ).toBeGreaterThanOrEqual(3);
+      }
     }
   }
 });

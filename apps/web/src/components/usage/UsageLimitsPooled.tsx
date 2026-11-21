@@ -275,9 +275,7 @@ function ActiveSegmentPopover({
     payload.window.id,
     payload.window.kind,
   );
-  const available =
-    current !== null &&
-    JSON.stringify(current.account.redeem) === JSON.stringify(payload.account.redeem);
+  const available = current !== null;
   // The trigger is gone, so the popup has nothing to anchor to: an exit transition would
   // slide it to the viewport origin. Unmount it outright, which also clears Base UI's
   // active-trigger bookkeeping so the segment can open again when it comes back.
@@ -288,15 +286,20 @@ function ActiveSegmentPopover({
     actions.current?.unmount();
   }, [available, handle, actions]);
   if (!available) return null;
+  const redeem =
+    JSON.stringify(current.account.redeem) === JSON.stringify(payload.account.redeem)
+      ? payload.redeem
+      : null;
   return (
     <PopoverPopup side="top" sideOffset={6}>
       <SegmentPopover
         {...payload}
         {...current}
+        redeem={redeem}
         now={now}
         onRedeem={() => {
           handle.close();
-          payload.redeem?.setConfirming(true);
+          redeem?.setConfirming(true);
         }}
       />
     </PopoverPopup>
@@ -320,23 +323,11 @@ function PoolSegment({
   readonly index: number;
   readonly showAccountName: boolean;
 }) {
-  return account.redeem ? (
-    <RedeemableSegment account={account} redeemAt={account.redeem} {...props} />
-  ) : (
-    <SegmentTriggers account={account} redeem={null} {...props} />
-  );
-}
-
-function RedeemableSegment({
-  redeemAt,
-  ...props
-}: Omit<Parameters<typeof SegmentTriggers>[0], "redeem"> & {
-  readonly redeemAt: NonNullable<LimitAccount["redeem"]>;
-}) {
-  const redeem = useResetCredit(redeemAt.environmentId, redeemAt.input);
+  const redeemAt = account.redeem;
+  const redeem = useResetCredit(redeemAt?.environmentId ?? null, redeemAt?.input ?? null);
   return (
     <>
-      <SegmentTriggers redeem={redeem} {...props} />
+      <SegmentTriggers account={account} redeem={redeemAt === null ? null : redeem} {...props} />
       <ResetCreditDialog
         open={redeem.confirming}
         onOpenChange={redeem.setConfirming}
@@ -346,7 +337,7 @@ function RedeemableSegment({
       {/* The popover closed before the confirm, so progress and the outcome need a home outside it. */}
       {redeem.busy || redeem.status ? (
         <span role="status" className="col-span-full text-xs text-muted-foreground">
-          <AccountName account={props.account} className="font-medium text-foreground" />{" "}
+          <AccountName account={account} className="font-medium text-foreground" />{" "}
           {redeem.busy ? t("Using reset credit…") : redeem.status}
         </span>
       ) : null}

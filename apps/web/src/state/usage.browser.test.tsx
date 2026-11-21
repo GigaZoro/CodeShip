@@ -1,4 +1,5 @@
 import {
+  AuthDiagnosticsReadScope,
   EnvironmentId,
   USAGE_CONTRACT_VERSION,
   UsageDay,
@@ -9,13 +10,17 @@ import {
   mergeAnsweredUsage,
   retainedUsageLabel,
   usageEnvironmentError,
+  usageNotices,
 } from "@t3tools/client-runtime/state/usage-progress";
 import { UsageShareBar } from "../components/usage/UsageShareBar";
+import { UsageGapsNotice } from "../components/usage/UsageGapsNotice";
 import { makeWindow } from "@t3tools/shared/usageFormat";
 import { expect, it, vi } from "vite-plus/test";
+import { AtomRegistry } from "effect/reactivity";
 
 import { render } from "../../test/render";
 import { useUsage, type EnvironmentUsageStatus } from "./usage";
+import { serverEnvironment } from "./server";
 
 const state = vi.hoisted(() => ({
   environments: [] as readonly EnvironmentUsageStatus[],
@@ -31,10 +36,49 @@ vi.mock("@t3tools/client-runtime/state/usage", () => ({
   usageSummaryInput: (input: unknown) => input,
 }));
 vi.mock("../rpc/atomRegistry", () => ({ appAtomRegistry: {} }));
-vi.mock("./presentation", () => ({ environmentPresentations: {} }));
+vi.mock("./presentation", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return {
+    environmentPresentations: {
+      presentationsAtom: Atom.make(
+        new Map([
+          [
+            "desk",
+            {
+              connection: { phase: "connected", error: null },
+              entry: { target: { label: "Desk" } },
+            },
+          ],
+        ]),
+      ),
+    },
+  };
+});
 vi.mock("./query", () => ({ formatEnvironmentQueryError: () => "The request failed." }));
-vi.mock("./server", () => ({ serverEnvironment: {} }));
-vi.mock("./session", () => ({ environmentSession: {}, readEnvironmentScope: vi.fn() }));
+vi.mock("./server", async () => {
+  const { AsyncResult, Atom } = await import("effect/reactivity");
+  return {
+    serverEnvironment: {
+      usageSummary: vi.fn(() => Atom.make(AsyncResult.initial())),
+      usageModelFilterAtom: () => Atom.make(undefined),
+    },
+  };
+});
+vi.mock("./session", async () => {
+  const { AsyncResult, Atom } = await import("effect/reactivity");
+  return {
+    environmentSession: {
+      sessionStateAtom: () =>
+        Atom.make(
+          AsyncResult.success({
+            authenticated: true,
+            scopes: [AuthDiagnosticsReadScope],
+          }),
+        ),
+    },
+    readEnvironmentScope: vi.fn(),
+  };
+});
 
 function setup() {
   state.query = null;
@@ -174,6 +218,68 @@ function UsageProbeResult({ usage }: { readonly usage: ReturnType<typeof useUsag
     </>
   );
 }
+
+it("keeps two slow hourly scan failures visible until a later response", async () => {
+  const { answered, summary } = setup();
+  const time = (seconds: number) =>
+    makeWindow(1, new Date(Date.parse("2026-11-21T18:56:00Z") + seconds * 1000), "hour");
+  const pending = [{ ...answered, summary: null, isPending: true }];
+  const requests = new Map<object, readonly EnvironmentUsageStatus[]>();
+  state.query = (atom) => {
+    if (!requests.has(atom)) requests.set(atom, pending);
+    return requests.get(atom)!;
+  };
+  function Scan({ seconds }: { readonly seconds: number }) {
+    const usage = useUsage(time(seconds));
+    const { coverage } = usageNotices(usage.selectedEnvironments, usage.shown?.environments ?? []);
+    return (
+      <UsageGapsNotice notice={coverage} retrying={false} onRetry={() => void usage.refresh()} />
+    );
+  }
+  await using screen = await render(<Scan seconds={0} />);
+  for (const [i, started] of [0, 120].entries()) {
+    await screen.rerender(<Scan seconds={started + 60} />);
+    expect(requests.size).toBe(i + 1);
+    const atom = [...requests.keys()][i]!;
+    const error = `Scan ${i + 1} failed`;
+    requests.set(atom, [{ ...answered, summary: null, error }]);
+    await screen.rerender(<Scan seconds={started + 65} />);
+    expect(requests.size).toBe(i + 1);
+    await expect.element(screen.getByText(new RegExp(error))).toBeVisible();
+    await expect.element(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    await screen.rerender(<Scan seconds={started + 120} />);
+    expect(requests.size).toBe(i + 2);
+    await expect.element(screen.getByText(new RegExp(error))).toBeVisible();
+  }
+  requests.set([...requests.keys()][2]!, [{ ...answered, summary }]);
+  await screen.rerender(<Scan seconds={240} />);
+  await expect.element(screen.getByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+});
+
+it("reads environment grants on a cold Limits visit without requesting a usage summary", async () => {
+  const { window } = setup();
+  const registry = AtomRegistry.make();
+  using _cleanup = { [Symbol.dispose]: () => registry.dispose() };
+  state.query = (atom) =>
+    registry.get(atom as Parameters<typeof registry.get>[0]) as readonly EnvironmentUsageStatus[];
+  const summary = vi.mocked(serverEnvironment.usageSummary);
+  summary.mockClear();
+  function View({ limits }: { readonly limits: boolean }) {
+    const usage = useUsage(window, null, [], { enabled: !limits });
+    return (
+      <p>
+        {usage.environments.map(
+          ({ label, canReadDiagnostics }) => `${label}: ${canReadDiagnostics}`,
+        )}
+      </p>
+    );
+  }
+  await using screen = await render(<View limits />);
+  await expect.element(screen.getByText("Desk: true")).toBeVisible();
+  expect(summary).not.toHaveBeenCalled();
+  await screen.rerender(<View limits={false} />);
+  expect(summary).toHaveBeenCalledOnce();
+});
 
 it("keeps the previous resolution until both environments settle", async () => {
   const { window, answered } = setup();

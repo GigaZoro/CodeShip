@@ -955,6 +955,59 @@ describe("pools", () => {
     );
   });
 
+  it("keeps a mobile account lookup through a native timeout and retires disabled or removed readers", () => {
+    const reader = provider({
+      auth: { status: "authenticated", email: "a@example.com", workspaceId: "work" },
+      usageLimits: { checkedAt, windows: [window] },
+    });
+    const hub = {
+      id: "a.json",
+      email: "a@example.com",
+      driver: reader.driver,
+      usageLimits: { checkedAt, windows: [window] },
+    };
+    const presentations = (providers: readonly ServerProvider[]) =>
+      new Map([
+        [
+          EnvironmentId.make("desk"),
+          {
+            ...laptop,
+            serverConfig: { providers, usageLimitSources: [{ ...source, accounts: [hub] }] },
+          },
+        ],
+      ]);
+    const ready = presentations([reader]);
+    const known = limitAccountWorkspaces(ready);
+    const timeout: ServerProvider = {
+      ...reader,
+      auth: { status: "unknown" },
+      usageLimits: { checkedAt, windows: [], unavailable: { reason: "probeFailed" } },
+    };
+    const stale = presentations([timeout]);
+    const saved = limitAccountWorkspaces(stale, known);
+    const key = "codex:a@example.com:work";
+    const lookup = (live: typeof ready, evidence: typeof known) =>
+      findLimitAccountWindow(
+        collectLimitPools(collectLimitAccounts(live, evidence), now),
+        key,
+        window.id,
+        window.kind,
+      );
+    expect(lookup(stale, saved)?.account.key).toBe(key);
+    for (const changed of [
+      presentations([{ ...timeout, enabled: false }]),
+      presentations([]),
+      presentations([
+        {
+          ...reader,
+          auth: { status: "authenticated", email: "a@example.com", workspaceId: "personal" },
+        },
+      ]),
+    ]) {
+      expect(lookup(changed, limitAccountWorkspaces(changed, saved))).toBeNull();
+    }
+  });
+
   it("keeps workspace keys when one workspace stops reporting for a shared email", () => {
     const login = (workspaceId: string) =>
       provider({

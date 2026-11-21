@@ -216,6 +216,32 @@ function providersWithReservations(
   ];
 }
 
+function usageScanPending(environment: EnvironmentUsageStatus): boolean {
+  return environment.canReadDiagnostics && environment.isConnected && environment.isPending;
+}
+
+function usageScanFailed(environment: EnvironmentUsageStatus): boolean {
+  return (
+    environment.canReadDiagnostics &&
+    environment.isConnected &&
+    !environment.isPending &&
+    environment.error !== null
+  );
+}
+
+function withPendingScanFailure(
+  current: EnvironmentUsageStatus,
+  previous: readonly EnvironmentUsageStatus[],
+): EnvironmentUsageStatus {
+  if (!usageScanPending(current) || current.summary !== null || current.error !== null) {
+    return current;
+  }
+  const saved = previous.find(({ environmentId }) => environmentId === current.environmentId);
+  return saved?.canReadDiagnostics && saved.error !== null
+    ? { ...current, error: saved.error }
+    : current;
+}
+
 export function settleUsageSnapshot(
   previous: UsageSnapshot | null,
   window: UsageSummaryInput,
@@ -225,14 +251,19 @@ export function settleUsageSnapshot(
 ): UsageSnapshot | null {
   if (selected.length === 0) return null;
   const key = usageSelectionKey(window, selected, hidden);
+  const represented =
+    previous?.key === key
+      ? selected.map((status) => withPendingScanFailure(status, previous.environments))
+      : selected;
   const sameWindow =
     previous?.key === key && usageWindowKey(previous.window) === usageWindowKey(window);
-  if (sameWindow && equalUsageStatuses(previous.environments, selected)) return previous;
+  if (sameWindow && equalUsageStatuses(previous.environments, represented)) return previous;
 
   const kept =
     previous !== null && canRetainUsageSnapshot(previous, environments) ? previous : null;
   const pending = selected.filter(
-    ({ isConnected, isPending, error }) => error === null && isConnected && isPending,
+    ({ isConnected, isPending, canReadDiagnostics, error }) =>
+      isConnected && isPending && (canReadDiagnostics || error === null),
   );
   const waitingForAnswers = pending.some(({ summary }) => summary === null);
   const hasAnswer = selected.some(hasCompatibleUsage);
@@ -260,7 +291,8 @@ export function settleUsageSnapshot(
       reservedProviders: reserved,
     };
   }
-  if (waitingForAnswers && !hasAnswer) return null;
+  if (waitingForAnswers && !hasAnswer && !represented.some(({ error }) => error !== null))
+    return null;
 
   const merged = mergeAnsweredUsage(
     hiddenProviders.size === 0
@@ -295,7 +327,7 @@ export function settleUsageSnapshot(
     key,
     window,
     hiddenProviders,
-    environments: selected,
+    environments: represented,
     merged,
     hasAnswer,
     providers: providersWithReservations(active, reservedProviders),
@@ -321,19 +353,35 @@ export function canRetainUsageSnapshot(
   );
 }
 
-export function nextUsageRequestWindow(
-  current: UsageSummaryInput,
+interface UsageRequest {
+  readonly window: UsageSummaryInput;
+  readonly failedThrough: string | null;
+  readonly enabled: boolean;
+}
+
+export function nextUsageRequest(
+  current: UsageRequest,
   latest: UsageSummaryInput,
   selected: readonly EnvironmentUsageStatus[],
   active: boolean,
-): UsageSummaryInput {
-  if (usageWindowKey(current) === usageWindowKey(latest)) return current;
-  if (usagePeriodKey(current) !== usagePeriodKey(latest)) return latest;
-  return active &&
-    !selected.some(
-      ({ isConnected, isPending, error }) => isConnected && isPending && error === null,
-    )
-    ? latest
+  enabled: boolean,
+): UsageRequest {
+  if (current.enabled !== enabled) {
+    return { window: enabled ? latest : current.window, failedThrough: null, enabled };
+  }
+  if (!enabled) return current;
+  if (active && usagePeriodKey(current.window) !== usagePeriodKey(latest)) {
+    return { ...current, window: latest, failedThrough: null };
+  }
+  if (selected.some(usageScanPending)) {
+    return current.failedThrough === null ? current : { ...current, failedThrough: null };
+  }
+  const tick = usageWindowKey(latest);
+  if (current.failedThrough === null && selected.some(usageScanFailed)) {
+    return { ...current, failedThrough: tick };
+  }
+  return active && current.failedThrough !== tick && usageWindowKey(current.window) !== tick
+    ? { ...current, window: latest, failedThrough: null }
     : current;
 }
 
@@ -371,7 +419,11 @@ export function usageNotices(
   return {
     contractMismatches,
     sourceMessages,
-    coverage: usageGaps(live, contractMismatches, represented),
+    coverage: usageGaps(
+      live.map((status) => withPendingScanFailure(status, represented)),
+      contractMismatches,
+      represented,
+    ),
   };
 }
 

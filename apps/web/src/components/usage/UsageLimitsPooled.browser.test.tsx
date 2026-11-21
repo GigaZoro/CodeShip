@@ -1,12 +1,13 @@
 import {
   EnvironmentId,
+  UsageLimitSourceId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { useUsageLimitNow } from "../../hooks/useUsageNow";
-import { CHATGPT_USAGE_URL } from "@t3tools/shared/usageLimits";
+import { CHATGPT_USAGE_URL, limitAccountWorkspaces } from "@t3tools/shared/usageLimits";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 
@@ -229,4 +230,69 @@ it("closes a work workspace detail when only the personal workspace starts repor
   await screen.rerender(<UsageLimitsPooled presentations={reading("personal", 25)} now={now} />);
   await expect.element(detail).not.toBeInTheDocument();
   await expect.element(screen.getByRole("button", { name: /personal: 75% left/ })).toBeVisible();
+});
+
+it("keeps the web workspace detail open on the hub reading after a native timeout", async () => {
+  const now = Date.parse(checkedAt);
+  const base = accountReadings(["NativeWork", "2026-10-25T17:00:00.000Z"]);
+  const desk = base.get(EnvironmentId.make("desk"))!;
+  const native: ServerProvider = {
+    ...desk.serverConfig.providers[0]!,
+    auth: { status: "authenticated", email: "a@example.com", workspaceId: "work" },
+  };
+  const make = (provider: ServerProvider, usedPercent: number) =>
+    new Map([
+      [
+        EnvironmentId.make("desk"),
+        {
+          ...desk,
+          serverConfig: {
+            providers: [provider],
+            usageLimitSources: [
+              {
+                id: UsageLimitSourceId.make("hub"),
+                checkedAt,
+                kind: "cliproxy" as const,
+                label: "Hub",
+                accounts: [
+                  {
+                    id: "a.json",
+                    driver: native.driver,
+                    email: "a@example.com",
+                    usageLimits: {
+                      checkedAt,
+                      windows: [{ ...native.usageLimits!.windows[0]!, usedPercent }],
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+  const ready = make(native, 20);
+  const workspaces = limitAccountWorkspaces(ready);
+  await using screen = await render(
+    <UsageLimitsPooled presentations={ready} now={now} workspaces={workspaces} />,
+  );
+  await screen.getByRole("button", { name: /NativeWork: 80% left/ }).click();
+  const detail = page.getByRole("dialog");
+  await expect.element(detail.getByText("80%", { exact: true })).toBeVisible();
+  const timeout = make(
+    {
+      ...native,
+      auth: { status: "unknown" },
+      usageLimits: { checkedAt, windows: [], unavailable: { reason: "probeFailed" } },
+    },
+    25,
+  );
+  await screen.rerender(
+    <UsageLimitsPooled
+      presentations={timeout}
+      now={now}
+      workspaces={limitAccountWorkspaces(timeout, workspaces)}
+    />,
+  );
+  await expect.element(detail.getByText("75%", { exact: true })).toBeVisible();
 });

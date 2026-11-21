@@ -37,6 +37,7 @@ const reactTests = [
   "src/native/useRetryingImageSource.test.tsx",
   "src/state/queries.debounce.test.tsx",
   "src/state/usage.test.tsx",
+  "src/features/usage/UsageRouteScreen.test.tsx",
   "src/state/environments.test.tsx",
   "src/state/use-selected-thread-git-actions.test.tsx",
   "src/state/use-selected-thread-git-state.test.tsx",

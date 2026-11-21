@@ -493,6 +493,7 @@ type AccountWorkspace = readonly [login: string, workspace: string];
 export interface LimitAccountWorkspaces {
   readonly byLogin: ReadonlyMap<string, ReadonlySet<string>>;
   readonly byHub: ReadonlyMap<string, readonly AccountWorkspace[]>;
+  readonly byNative: ReadonlyMap<string, readonly AccountWorkspace[]>;
 }
 
 function accountWorkspace(report: AccountReport): AccountWorkspace[] {
@@ -515,7 +516,8 @@ export function limitAccountWorkspaces(
   previous?: LimitAccountWorkspaces,
 ): LimitAccountWorkspaces {
   const byHub = new Map<string, readonly AccountWorkspace[]>();
-  const native = [...presentations].flatMap(([environmentId, { serverConfig }]) => {
+  const byNative = new Map<string, readonly AccountWorkspace[]>();
+  for (const [environmentId, { serverConfig }] of presentations) {
     for (const source of serverConfig?.usageLimitSources ?? []) {
       const key = JSON.stringify([environmentId, source.id]);
       // A successful read replaces evidence, including an empty result. Removed hubs have no entry.
@@ -526,11 +528,25 @@ export function limitAccountWorkspaces(
           : source.accounts.flatMap(accountWorkspace),
       );
     }
-    return (serverConfig?.providers ?? [])
-      .filter(({ enabled }) => enabled)
-      .flatMap((provider) => accountWorkspace(nativeReport(provider)));
-  });
-  return { byLogin: accountWorkspaces([...native, ...[...byHub.values()].flat()]), byHub };
+    for (const provider of serverConfig?.providers ?? []) {
+      if (!provider.enabled) continue;
+      const key = JSON.stringify([environmentId, provider.instanceId]);
+      const unavailable =
+        provider.auth.status === "unknown" ||
+        provider.usageLimits?.unavailable?.reason === "probeFailed";
+      byNative.set(
+        key,
+        unavailable
+          ? (previous?.byNative.get(key) ?? accountWorkspace(nativeReport(provider)))
+          : accountWorkspace(nativeReport(provider)),
+      );
+    }
+  }
+  return {
+    byLogin: accountWorkspaces([...byNative.values(), ...byHub.values()].flat()),
+    byHub,
+    byNative,
+  };
 }
 
 function accountKeyResolver(workspaces: LimitAccountWorkspaces["byLogin"]) {

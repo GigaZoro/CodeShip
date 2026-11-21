@@ -5,7 +5,6 @@ import {
   mergeAnsweredUsage,
   retainedUsageLabel,
   refreshingUsageProviders,
-  usageEnvironmentError,
   usageNotices,
   usageWindowKey,
   type UsageProviderRow,
@@ -14,7 +13,7 @@ import { Button } from "../../components/ui/Button";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { ChatGptUsageSummary } from "./ChatGptUsageSummary";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
-import { EnvironmentId, USAGE_CONTRACT_VERSION, type UsageProviderKind } from "@t3tools/contracts";
+import { EnvironmentId, type UsageProviderKind } from "@t3tools/contracts";
 import { type RouteProp, useIsFocused, useRoute } from "@react-navigation/native";
 import { cursorKeychainAccessEnvironments } from "@t3tools/client-runtime/state/usage";
 import {
@@ -22,12 +21,7 @@ import {
   usageEnvironmentProgress,
   usageProgress,
 } from "@t3tools/client-runtime/state/usage-progress";
-import {
-  isCompatibleUsageContractVersion,
-  isModelCostUnknown,
-  type DailyTotals,
-  type MergedUsage,
-} from "@t3tools/shared/usageMerge";
+import { isModelCostUnknown, type DailyTotals, type MergedUsage } from "@t3tools/shared/usageMerge";
 import {
   enumerateDays,
   enumerateHourStarts,
@@ -36,7 +30,6 @@ import {
   formatHourShort,
   formatPercent,
   formatTokens,
-  formatUsageContractMismatch,
   formatUsd,
   makeWindow,
   usageEmptyMessage,
@@ -142,7 +135,7 @@ function UsageScreen(props: {
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const { requestedWindow, shown, showingKept, environments, selectedEnvironments, refresh } =
-    useUsage(window, selectedEnvironmentIds, advanceWindow);
+    useUsage(window, selectedEnvironmentIds, { advanceWindow, enabled: !showingLimits });
   const merged = shown?.merged ?? EMPTY_USAGE;
   const shownWindow = shown?.window ?? window;
   const shownEnvironments = shown?.environments ?? selectedEnvironments;
@@ -232,7 +225,9 @@ function UsageScreen(props: {
     ...environments.map((environment) => ({
       id: environment.environmentId,
       title: environment.label,
-      subtitle: usageEnvironmentStatus(environment, refreshingUsage),
+      subtitle:
+        coverage?.gaps.find((gap) => gap.environment.environmentId === environment.environmentId)
+          ?.message ?? usageEnvironmentStatus(environment, refreshingUsage),
       state:
         selectedEnvironmentIds === null || selectedEnvironmentIds.has(environment.environmentId)
           ? ("on" as const)
@@ -394,6 +389,23 @@ function UsageScreen(props: {
                     )}
                   </Text>
                 ) : null}
+                {coverage === null ? null : (
+                  <View className="gap-2">
+                    <Notice
+                      message={[
+                        coverage.title,
+                        ...coverage.gaps.map(({ message }) => message),
+                      ].join("\n")}
+                    />
+                    {coverage.gaps.some(({ retryable }) => retryable) ? (
+                      <Button
+                        label={t("Retry")}
+                        disabled={refreshingUsage || showingKept}
+                        onPress={refreshWindow}
+                      />
+                    ) : null}
+                  </View>
+                )}
                 {selectedEnvironments.length === 0 ? (
                   <Text className="py-16 text-center text-base text-foreground-muted">
                     {environments.length === 0
@@ -407,45 +419,13 @@ function UsageScreen(props: {
                   >
                     {t("Scanning provider transcripts…")}
                   </Text>
-                ) : !shown.hasAnswer ? (
-                  <View className="gap-2 py-16">
-                    {selectedEnvironments.map((environment) => {
-                      const error =
-                        usageEnvironmentError(environment) ??
-                        coverage?.gaps.find(
-                          (gap) => gap.environment.environmentId === environment.environmentId,
-                        )?.message;
-                      return error == null ? null : (
-                        <Notice
-                          key={environment.environmentId}
-                          message={
-                            selectedEnvironments.length > 1 &&
-                            usageEnvironmentError(environment) !== null
-                              ? t("{environment}: {error}", {
-                                  environment: environment.label,
-                                  error,
-                                })
-                              : error
-                          }
-                        />
-                      );
-                    })}
-                  </View>
-                ) : (
+                ) : !shown.hasAnswer ? null : (
                   <>
                     {showingKept ? (
                       <Text className="text-sm text-foreground-muted">
                         {retainedUsageLabel(shown)}
                       </Text>
                     ) : null}
-                    {coverage === null ? null : (
-                      <Notice
-                        message={[
-                          coverage.title,
-                          ...coverage.gaps.map(({ message }) => message),
-                        ].join("\n")}
-                      />
-                    )}
                     {sourceMessages.map((message) => (
                       <Notice key={message} message={message} />
                     ))}
@@ -995,6 +975,7 @@ function CostSection(props: { readonly merged: MergedUsage; readonly wide: boole
             <ShareBar
               label={t("By speed")}
               segments={bySpeed}
+              emptyMessage={emptyMessage}
               aside={t("{cost} premium", { cost: formatUsd(speedCost.premium) })}
             />
           </View>
@@ -1008,7 +989,7 @@ function ShareBar(props: {
   readonly label: string;
   readonly segments: readonly { label: string; value: number; color: string }[];
   readonly aside?: string;
-  readonly emptyMessage?: string;
+  readonly emptyMessage: string;
 }) {
   const visible = props.segments.filter((segment) => segment.value > 0);
 
@@ -1023,17 +1004,15 @@ function ShareBar(props: {
       {visible.length === 0 ? (
         <Text className="text-xs text-foreground-muted">{props.emptyMessage}</Text>
       ) : (
-        <>
-          <View className="h-2 flex-row gap-0.5">
-            {visible.map((segment) => (
-              <View
-                key={segment.label}
-                className="h-full rounded-sm"
-                style={{ flex: segment.value, backgroundColor: segment.color }}
-              />
-            ))}
-          </View>
-        </>
+        <View className="h-2 flex-row gap-0.5">
+          {visible.map((segment) => (
+            <View
+              key={segment.label}
+              className="h-full rounded-sm"
+              style={{ flex: segment.value, backgroundColor: segment.color }}
+            />
+          ))}
+        </View>
       )}
       <View className="flex-row flex-wrap gap-x-4 gap-y-1.5">
         {visible.map((segment) => (
@@ -1137,25 +1116,7 @@ function ModelsSection(props: {
 }
 
 function usageEnvironmentStatus(environment: EnvironmentUsageStatus, refreshing: boolean): string {
-  if (
-    environment.summary &&
-    !isCompatibleUsageContractVersion(environment.summary.contractVersion, USAGE_CONTRACT_VERSION)
-  ) {
-    return formatUsageContractMismatch(environment.label, {
-      direction:
-        environment.summary.contractVersion < USAGE_CONTRACT_VERSION
-          ? "serverBehind"
-          : "clientBehind",
-    });
-  }
-  if (environment.error)
-    return environment.summary
-      ? t("{error} Showing saved totals.", { error: environment.error })
-      : environment.error;
-  if (!environment.isConnected)
-    return environment.summary
-      ? t("Disconnected · showing saved usage")
-      : t("Waiting for connection…");
+  if (!environment.isConnected) return t("Waiting for connection…");
   const progress = usageEnvironmentProgress(environment, refreshing);
   if (progress.phase === "loading") return t("Loading usage…");
   if (progress.phase === "stale") return t("Updating usage…");
