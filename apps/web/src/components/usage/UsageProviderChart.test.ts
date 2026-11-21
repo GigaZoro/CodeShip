@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildChart, buildPeriodColumns } from "./UsageProviderChart";
+import { buildChart, buildPeriodColumns, usageChartPeriodIndex } from "./UsageProviderChart";
 
 describe("buildPeriodColumns", () => {
   const days = ["2026-08-01", "2026-08-02", "2026-08-03"];
-  const byDay = new Map([
+  const byDay = usageChartPeriodIndex(
     [
-      "2026-08-01",
       {
         day: "2026-08-01",
         costUsd: 42,
@@ -18,9 +17,6 @@ describe("buildPeriodColumns", () => {
           ["muse" as const, { costUsd: 7, totalTokens: 70 }],
         ]),
       },
-    ],
-    [
-      "2026-08-03",
       {
         day: "2026-08-03",
         costUsd: 5,
@@ -28,7 +24,9 @@ describe("buildPeriodColumns", () => {
         byProvider: new Map([["claude" as const, { costUsd: 5, totalTokens: 50 }]]),
       },
     ],
-  ]);
+    [],
+    "day",
+  );
 
   it("keeps band values absolute rather than cumulative", () => {
     const [first] = buildPeriodColumns(days, byDay, "cost");

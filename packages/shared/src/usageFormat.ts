@@ -7,7 +7,19 @@ import {
 } from "@t3tools/contracts";
 
 import { getFormattingLocale, t } from "./i18n.ts";
-import type { UsageContractMismatch } from "./usageMerge.ts";
+import type { MergedUsage, UsageContractMismatch } from "./usageMerge.ts";
+
+export function usageEmptyMessage(
+  usage: Pick<MergedUsage, "records" | "costQuality" | "totalTokens" | "costUsd">,
+  metric: "tokens" | "cost",
+): string {
+  if (usage.records === 0) return t("No activity in this window.");
+  if (metric === "tokens") {
+    return usage.totalTokens === 0 ? t("No tokens recorded") : t("No token breakdown available");
+  }
+  if (usage.costUsd > 0) return t("No cost breakdown available");
+  return usage.costQuality.unpricedShare === 1 ? t("No priced usage") : t("Priced usage costs $0");
+}
 
 const numberFormatters = new Map<string, Intl.NumberFormat>();
 

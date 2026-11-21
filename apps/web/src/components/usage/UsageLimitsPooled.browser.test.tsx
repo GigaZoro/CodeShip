@@ -8,6 +8,7 @@ import { Atom } from "effect/reactivity";
 import { useUsageLimitNow } from "../../hooks/useUsageNow";
 import { CHATGPT_USAGE_URL } from "@t3tools/shared/usageLimits";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser";
 
 import { act, fakeTimers, render } from "../../../test/render";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
@@ -190,4 +191,42 @@ it("uses hidden accounts' deadlines for the filtered Limits countdown", async ()
   await act(() => vi.advanceTimersByTimeAsync(40_000));
   await expect.element(rows.nth(0)).toHaveAccessibleName(/1m/);
   await expect.element(rows.nth(1)).toHaveAccessibleName(/1m/);
+});
+
+it("closes a work workspace detail when only the personal workspace starts reporting", async () => {
+  const now = Date.parse(checkedAt);
+  const reading = (workspaceId: string, usedPercent: number) => {
+    const input = accountReadings([workspaceId, "2026-10-25T17:00:00.000Z"]);
+    const desk = input.get(EnvironmentId.make("desk"))!;
+    const provider = desk.serverConfig.providers[0]!;
+    return new Map([
+      [
+        EnvironmentId.make("desk"),
+        {
+          ...desk,
+          serverConfig: {
+            providers: [
+              {
+                ...provider,
+                auth: { ...provider.auth, email: "a@example.com", workspaceId },
+                usageLimits: {
+                  ...provider.usageLimits,
+                  windows: [{ ...provider.usageLimits.windows[0]!, usedPercent }],
+                },
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+  };
+  await using screen = await render(
+    <UsageLimitsPooled presentations={reading("work", 20)} now={now} />,
+  );
+  await screen.getByRole("button", { name: /work: 80% left/ }).click();
+  const detail = page.getByRole("dialog");
+  await expect.element(detail.getByText("work", { exact: true })).toBeVisible();
+  await screen.rerender(<UsageLimitsPooled presentations={reading("personal", 25)} now={now} />);
+  await expect.element(detail).not.toBeInTheDocument();
+  await expect.element(screen.getByRole("button", { name: /personal: 75% left/ })).toBeVisible();
 });

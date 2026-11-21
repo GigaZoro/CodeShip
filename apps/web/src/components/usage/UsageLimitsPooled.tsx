@@ -6,6 +6,7 @@ import {
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
+  findLimitAccountWindow,
   cursorUsageWindowDetails,
   displayLimitWindows,
   type ExternalUsageLink,
@@ -268,17 +269,15 @@ function ActiveSegmentPopover({
   readonly pools: readonly LimitPool[];
   readonly now: number;
 }) {
-  const available = pools.some((pool) =>
-    displayLimitWindows(pool).some((window) =>
-      window.members.some(
-        (member) =>
-          member.account.key === payload.account.key &&
-          member.window.id === payload.window.id &&
-          member.window.kind === payload.window.kind &&
-          Boolean(member.account.redeem) === Boolean(payload.redeem),
-      ),
-    ),
+  const current = findLimitAccountWindow(
+    pools,
+    payload.account.key,
+    payload.window.id,
+    payload.window.kind,
   );
+  const available =
+    current !== null &&
+    JSON.stringify(current.account.redeem) === JSON.stringify(payload.account.redeem);
   // The trigger is gone, so the popup has nothing to anchor to: an exit transition would
   // slide it to the viewport origin. Unmount it outright, which also clears Base UI's
   // active-trigger bookkeeping so the segment can open again when it comes back.
@@ -288,10 +287,12 @@ function ActiveSegmentPopover({
     handle.close();
     actions.current?.unmount();
   }, [available, handle, actions]);
+  if (!available) return null;
   return (
     <PopoverPopup side="top" sideOffset={6}>
       <SegmentPopover
         {...payload}
+        {...current}
         now={now}
         onRedeem={() => {
           handle.close();

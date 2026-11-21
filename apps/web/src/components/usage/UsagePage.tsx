@@ -1,4 +1,4 @@
-import { useUsageNow } from "../../hooks/useUsageNow";
+import { useUsageDocumentVisible, useUsageNow } from "../../hooks/useUsageNow";
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
@@ -27,7 +27,8 @@ import {
   mergeAnsweredUsage,
   retainedUsageLabel,
   refreshingUsageProviders,
-  usageEnvironmentError,
+  canRetainUsageSnapshot,
+  usageWindowKey,
   usageNotices,
   usageProgress,
   type UsageSnapshot,
@@ -62,7 +63,6 @@ import {
   formatDayShort,
   formatPercent,
   formatTokens,
-  formatUsageContractMismatch,
   formatUsd,
   makeWindow,
   usageWindowLabel,
@@ -155,10 +155,12 @@ function selectUsageModel(key: string | null): void {
 
 function UsageModelDialogHost({
   snapshot,
+  liveEnvironments,
   onSetPrice,
   ...dialogProps
 }: Omit<Parameters<typeof UsageModelDialog>[0], "model" | "onSetPrice" | "onClose"> & {
   readonly snapshot: UsageSnapshot | null;
+  readonly liveEnvironments: readonly EnvironmentUsageStatus[];
   readonly onSetPrice: (model: string) => void;
 }) {
   const selectedKey = useAtomValue(selectedUsageModelKeyAtom);
@@ -176,6 +178,12 @@ function UsageModelDialogHost({
     readonly model: MergedUsage["models"][number];
     readonly chartWindow: typeof dialogProps.chartWindow;
   } | null>(null);
+  const revoked = last !== null && !canRetainUsageSnapshot(last.snapshot, liveEnvironments);
+  const closeRevoked = revoked && currentModel === undefined;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes the shared model selection when the open reading loses diagnostic access
+  useEffect(() => {
+    if (closeRevoked) selectUsageModel(null);
+  }, [closeRevoked]);
   if (
     selectedKey !== null &&
     currentModel !== undefined &&
@@ -191,7 +199,8 @@ function UsageModelDialogHost({
   } else if (selectedKey === null && last !== null) {
     setLast(null);
   }
-  const retained = last?.key === selectedKey && currentModel === undefined ? last : null;
+  const retained =
+    !revoked && last?.key === selectedKey && currentModel === undefined ? last : null;
   const model = currentModel ?? retained?.model;
   if (model === undefined) return null;
   return (
@@ -244,19 +253,22 @@ export function UsagePage() {
   const hiddenProviders = new Set(preferences.hiddenProviders);
   const windowDays = preferences.windowDays;
   const resolution = usageResolution(windowDays, preferences.weekResolution);
-  const now = useUsageNow(!showingLimits);
+  const visible = useUsageDocumentVisible();
+  const advanceWindow = visible && !showingLimits;
+  const now = useUsageNow(advanceWindow);
   const window = makeWindow(windowDays, new Date(now), resolution);
   const chartType = preferences.chartType ?? "area";
-  const { environments, selectedEnvironments, shown, showingKept, refresh } = useUsage(
-    window,
-    selectedEnvironmentIds,
-    preferences.hiddenProviders,
-  );
+  const { requestedWindow, environments, selectedEnvironments, shown, showingKept, refresh } =
+    useUsage(window, selectedEnvironmentIds, preferences.hiddenProviders, advanceWindow);
   const merged = shown?.merged ?? EMPTY_USAGE;
   const shownEnvironments = shown?.environments ?? selectedEnvironments;
   const shownWindow = shown?.window ?? window;
   const shownHourly = shownWindow.resolution === "hour";
   const refreshingUsage = isRefreshing && !showingLimits;
+  const rollingRefresh =
+    shown?.settled === true &&
+    !showingKept &&
+    usageWindowKey(shownWindow) !== usageWindowKey(requestedWindow);
   const progress = usageProgress(selectedEnvironments, {
     refreshing: refreshingUsage,
     providerLabel,
@@ -269,7 +281,7 @@ export function UsagePage() {
     shown?.hasAnswer === true &&
     !showingKept &&
     !selectedEnvironments.some(({ isConnected, isPending }) => isConnected && isPending);
-  const { contractMismatches, coverage, sourceMessages } = usageNotices(
+  const { coverage, sourceMessages } = usageNotices(
     selectedEnvironments,
     shownEnvironments,
     hiddenProviders,
@@ -431,8 +443,8 @@ export function UsagePage() {
       .map((environment) => environment.environmentId);
     refreshingRef.current = true;
     setIsRefreshing(true);
-    void refresh(window).finally(() => {
-      refreshScheduledTaskGroupUsage(appAtomRegistry, statsEnvironmentIds, window);
+    void refresh(requestedWindow).finally(() => {
+      refreshScheduledTaskGroupUsage(appAtomRegistry, statsEnvironmentIds, requestedWindow);
       refreshingRef.current = false;
       setIsRefreshing(false);
     });
@@ -491,7 +503,7 @@ export function UsagePage() {
             showUsageStatus={!showingLimits}
             refreshing={refreshingUsage}
             duplicateSources={showingKept ? [] : merged.duplicateSources}
-            contractMismatches={contractMismatches}
+            coverage={coverage}
             onOpenModelPrices={() => setPriceDialog({})}
           />
         </WorkspaceBreadcrumbItem>
@@ -632,9 +644,16 @@ export function UsagePage() {
         <ScrollArea className="min-h-0 flex-1">
           <WorkspacePageContainer width="wide">
             {!showingLimits ? (
-              <span role="status" className="sr-only">
-                {progress.announcement}
-              </span>
+              <>
+                <span role="status" className="sr-only">
+                  {progress.announcement}
+                </span>
+                <UsageGapsNotice
+                  notice={coverage}
+                  retrying={refreshingUsage || showingKept}
+                  onRetry={refreshWindow}
+                />
+              </>
             ) : null}
             {selectedEnvironments.length === 0 ? (
               <p className="text-sm text-muted-foreground">
@@ -703,54 +722,13 @@ export function UsagePage() {
               </>
             ) : shown === null ? (
               <UsageSkeleton hiddenProviders={hiddenProviders} />
-            ) : !shown.hasAnswer ? (
-              // Nothing to show at all: an empty overview would read as zero spend.
-              <div
-                role="status"
-                className="space-y-2 py-12 text-center text-sm text-muted-foreground"
-              >
-                {selectedEnvironments.map((environment) => {
-                  const mismatch = contractMismatches.find(
-                    ({ environmentId }) => environmentId === environment.environmentId,
-                  );
-                  return (
-                    <p key={environment.environmentId}>
-                      {mismatch === undefined ? (
-                        <>
-                          {selectedEnvironments.length > 1
-                            ? t("{environment}: ", { environment: environment.label })
-                            : null}
-                          {usageEnvironmentError(environment)}
-                        </>
-                      ) : (
-                        formatUsageContractMismatch(environment.label, mismatch)
-                      )}
-                    </p>
-                  );
-                })}
-                {canReadDiagnostics ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={refreshingUsage}
-                    onClick={refreshWindow}
-                  >
-                    {t("Retry")}
-                  </Button>
-                ) : null}
-              </div>
-            ) : (
+            ) : !shown.hasAnswer ? null : (
               <>
                 {showingKept && shown !== null ? (
                   <p className="text-xs text-muted-foreground">
                     {retainedUsageLabel(shown, hour12)}
                   </p>
                 ) : null}
-                <UsageGapsNotice
-                  notice={coverage}
-                  retrying={refreshingUsage || showingKept}
-                  onRetry={refreshWindow}
-                />
                 <UsageOverview
                   merged={merged}
                   shownWindow={shownWindow}
@@ -760,11 +738,17 @@ export function UsagePage() {
                   days={days}
                   hours={hours}
                   showingKept={showingKept}
-                  progressLabel={progress.label ?? (showingKept ? t("Updating…") : null)}
+                  progressLabel={
+                    rollingRefresh && !refreshingUsage
+                      ? null
+                      : (progress.label ?? (showingKept ? t("Updating…") : null))
+                  }
+                  selectionKey={shown.key}
                   metric={metric === "tokens" ? "tokens" : "cost"}
                   selectedEnvironments={shownEnvironments}
                   sourceMessages={sourceMessages}
                   activeProviders={activeProviders}
+                  providerRows={shown.providers}
                   refreshingProviders={refreshingUsageProviders(
                     selectedEnvironments,
                     shownHiddenProviders,
@@ -788,6 +772,7 @@ export function UsagePage() {
         <UsageModelDialogHost
           readOnly={showingKept}
           snapshot={shown}
+          liveEnvironments={environments}
           environments={shownEnvironments}
           metric={metric === "tokens" ? "tokens" : "cost"}
           chartWindow={{
@@ -823,6 +808,7 @@ function UsageOverview({
   days,
   hours,
   showingKept,
+  selectionKey,
   progressLabel,
   chartType,
   chartControls,
@@ -830,6 +816,7 @@ function UsageOverview({
   selectedEnvironments,
   sourceMessages,
   activeProviders,
+  providerRows,
   refreshingProviders,
   cursorAccessEnvironments,
   showChatGptSharing,
@@ -846,11 +833,13 @@ function UsageOverview({
   readonly days: readonly string[];
   readonly hours: readonly string[];
   readonly showingKept: boolean;
+  readonly selectionKey: string;
   readonly progressLabel: string | null;
   readonly metric: "tokens" | "cost";
   readonly selectedEnvironments: readonly EnvironmentUsageStatus[];
   readonly sourceMessages: readonly string[];
   readonly activeProviders: readonly UsageProviderKind[];
+  readonly providerRows: UsageSnapshot["providers"];
   readonly refreshingProviders: ReadonlySet<UsageProviderKind>;
   readonly cursorAccessEnvironments: readonly EnvironmentUsageStatus[];
   readonly showChatGptSharing: boolean;
@@ -956,7 +945,7 @@ function UsageOverview({
               );
             }
             const provider = row.provider;
-            const totals = merged.providers.find((entry) => entry.provider === provider);
+            const totals = providerRows.find((entry) => entry.provider === provider)?.totals;
             const share = metric === "cost" ? (totals?.costShare ?? 0) : (totals?.tokenShare ?? 0);
             const providerSessions = totals?.sessions ?? 0;
             const sessionLabel = tn(providerSessions, "{count} session", "{count} sessions", {
@@ -964,7 +953,12 @@ function UsageOverview({
             });
             const providerLoading = loadingProviders.has(provider);
             return (
-              <div key={provider} className="flex flex-col gap-1">
+              <div
+                key={provider}
+                role="group"
+                aria-label={PROVIDER_PRESENTATION[provider].label}
+                className="flex flex-col gap-1"
+              >
                 <div className="flex items-baseline justify-between gap-4">
                   <span className="flex min-w-0 items-center gap-2 text-sm text-foreground">
                     <span
@@ -993,21 +987,25 @@ function UsageOverview({
                       figureClass(providerLoading),
                     )}
                   >
-                    {metric === "cost"
-                      ? formatUsd(totals?.costUsd ?? 0)
-                      : formatTokens(totals?.totalTokens ?? 0)}
+                    {totals == null
+                      ? "–"
+                      : metric === "cost"
+                        ? formatUsd(totals.costUsd)
+                        : formatTokens(totals.totalTokens)}
                   </span>
                 </div>
                 <span className={cn("text-xs text-muted-foreground", figureClass(providerLoading))}>
-                  {metric === "cost"
-                    ? t("{percent} of cost · {tokens} tokens", {
-                        percent: formatPercent(share),
-                        tokens: formatTokens(totals?.totalTokens ?? 0),
-                      })
-                    : t("{percent} of tokens · {cost}", {
-                        percent: formatPercent(share),
-                        cost: formatUsd(totals?.costUsd ?? 0),
-                      })}
+                  {totals == null
+                    ? "–"
+                    : metric === "cost"
+                      ? t("{percent} of cost · {tokens} tokens", {
+                          percent: formatPercent(share),
+                          tokens: formatTokens(totals?.totalTokens ?? 0),
+                        })
+                      : t("{percent} of tokens · {cost}", {
+                          percent: formatPercent(share),
+                          cost: formatUsd(totals?.costUsd ?? 0),
+                        })}
                 </span>
               </div>
             );
@@ -1298,6 +1296,7 @@ function UsageOverview({
       </section>
 
       <UsageScheduledTaskGroups
+        selectionKey={selectionKey}
         period={shownWindow}
         environments={selectedEnvironments}
         readOnly={showingKept}
@@ -1488,37 +1487,20 @@ function Metric({
 }
 
 function UsageCoverageNotice({
-  environments,
   duplicateSources,
-  contractMismatches,
+  coverage,
 }: {
-  readonly environments: readonly EnvironmentUsageStatus[];
   readonly duplicateSources: readonly string[];
-  readonly contractMismatches: MergedUsage["contractMismatches"];
+  readonly coverage: ReturnType<typeof usageNotices>["coverage"];
 }) {
-  const failed = environments.filter((environment) => environment.error !== null);
-  const mismatchByEnvironment = new Map(
-    contractMismatches.map((mismatch) => [mismatch.environmentId, mismatch]),
-  );
-  const incompatible = environments.flatMap((environment) => {
-    const mismatch = mismatchByEnvironment.get(environment.environmentId);
-    return mismatch === undefined ? [] : [{ environment, mismatch }];
-  });
-  if (failed.length === 0 && incompatible.length === 0 && duplicateSources.length === 0) {
+  if (coverage === null && duplicateSources.length === 0) {
     return null;
   }
 
   return (
     <div className="flex flex-col gap-1 border-t border-border px-2 py-2 text-xs text-muted-foreground">
-      {failed.map((environment) => (
-        <span key={environment.label}>
-          {environment.label}: {environment.error}
-        </span>
-      ))}
-      {incompatible.map(({ environment, mismatch }) => (
-        <span key={environment.environmentId}>
-          {formatUsageContractMismatch(environment.label, mismatch)}
-        </span>
+      {coverage?.gaps.map(({ environment, message }) => (
+        <span key={environment.environmentId}>{message}</span>
       ))}
       {duplicateSources.length > 0 ? (
         <span>
@@ -1539,7 +1521,7 @@ function UsageEnvironmentFilter({
   showUsageStatus,
   refreshing,
   duplicateSources,
-  contractMismatches,
+  coverage,
   onOpenModelPrices,
 }: {
   readonly environments: readonly EnvironmentUsageStatus[];
@@ -1549,7 +1531,7 @@ function UsageEnvironmentFilter({
   readonly showUsageStatus: boolean;
   readonly refreshing: boolean;
   readonly duplicateSources: readonly string[];
-  readonly contractMismatches: MergedUsage["contractMismatches"];
+  readonly coverage: ReturnType<typeof usageNotices>["coverage"];
   readonly onOpenModelPrices: () => void;
 }) {
   const allSelected = selectedEnvironmentIds === null;
@@ -1558,9 +1540,7 @@ function UsageEnvironmentFilter({
     : selectedEnvironments.length === 1
       ? selectedEnvironments[0]!.label
       : tn(selectedEnvironments.length, "{count} environment", "{count} environments");
-  const hasIssue =
-    selectedEnvironments.some((environment) => environment.error !== null) ||
-    contractMismatches.length > 0;
+  const hasIssue = coverage !== null;
 
   return (
     <Menu>
@@ -1646,11 +1626,7 @@ function UsageEnvironmentFilter({
           </p>
         ) : null}
         {showUsageStatus ? (
-          <UsageCoverageNotice
-            environments={selectedEnvironments}
-            duplicateSources={duplicateSources}
-            contractMismatches={contractMismatches}
-          />
+          <UsageCoverageNotice duplicateSources={duplicateSources} coverage={coverage} />
         ) : null}
         <MenuSeparator />
         <MenuItem onClick={onOpenModelPrices}>

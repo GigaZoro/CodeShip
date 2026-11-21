@@ -1,8 +1,11 @@
 import { expect, it } from "vite-plus/test";
 
-import { buildChartDays } from "../apps/mobile/src/features/usage/usageChartData";
+import { buildChartDays, usageChartTotals } from "../apps/mobile/src/features/usage/usageChartData";
 import { UsageAggregator } from "../apps/server/src/usage/usageAggregation";
-import { buildChart } from "../apps/web/src/components/usage/UsageProviderChart";
+import {
+  buildChart,
+  usageChartPeriodIndex,
+} from "../apps/web/src/components/usage/UsageProviderChart";
 import { EnvironmentId, USAGE_CONTRACT_VERSION } from "../packages/contracts/src/index";
 import { enumerateHourStarts, makeWindow } from "../packages/shared/src/usageFormat";
 import { mergeUsage } from "../packages/shared/src/usageMerge";
@@ -77,17 +80,13 @@ it("plots the server's unaligned hourly bucket keys on web and mobile", () => {
   const hours = enumerateHourStarts(sinceTime, untilTime);
   const web = buildChart(
     hours,
-    new Map(merged.hourly.map((hour) => [hour.hourStart, hour])),
+    usageChartPeriodIndex(merged.daily, merged.hourly, "hour"),
     "tokens",
     ["codex"],
     new Set(),
     "bar",
   );
-  const mobile = buildChartDays(
-    hours,
-    merged.hourly.map((hour) => ({ ...hour, day: hour.hourStart })),
-    "tokens",
-  );
+  const mobile = buildChartDays(hours, usageChartTotals(merged, true), "tokens");
   expect(hours).toHaveLength(24);
   expect(web.bars.map(({ period }) => period)).toEqual(buckets.map(({ hourStart }) => hourStart));
   expect(mobile.filter(({ total }) => total > 0).map(({ day }) => day)).toEqual(

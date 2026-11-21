@@ -22,6 +22,7 @@ import { t } from "../lib/i18n";
 import {
   equalUsageStatuses,
   isKeptUsage,
+  nextUsageRequestWindow,
   settleUsageSnapshot,
   usageWindowKey,
   type EnvironmentUsageStatus,
@@ -89,17 +90,21 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
 export function useUsage(
   input: UsageSummaryInput,
   selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null = null,
+  active = true,
 ) {
-  const environments = useAtomValue(usageByWindowAtom(usageWindowKey(input)));
+  const [requestedWindow, setRequestedWindow] = useState(input);
+  const environments = useAtomValue(usageByWindowAtom(usageWindowKey(requestedWindow)));
   const selectedEnvironments =
     selectedEnvironmentIds === null
       ? environments
       : environments.filter(({ environmentId }) => selectedEnvironmentIds.has(environmentId));
   const [previous, setPrevious] = useState<UsageSnapshot | null>(null);
-  const shown = settleUsageSnapshot(previous, input, environments, selectedEnvironments);
+  const shown = settleUsageSnapshot(previous, requestedWindow, environments, selectedEnvironments);
   if (shown !== previous) setPrevious(shown);
+  const nextWindow = nextUsageRequestWindow(requestedWindow, input, selectedEnvironments, active);
+  if (nextWindow !== requestedWindow) setRequestedWindow(nextWindow);
 
-  const refresh = (nextInput = input) =>
+  const refresh = (nextInput = requestedWindow) =>
     refreshUsage({
       registry: appAtomRegistry,
       server: serverEnvironment,
@@ -115,6 +120,7 @@ export function useUsage(
     });
 
   return {
+    requestedWindow,
     environments,
     selectedEnvironments,
     shown,

@@ -11,14 +11,20 @@ import {
   usageEnvironmentError,
 } from "@t3tools/client-runtime/state/usage-progress";
 import { UsageShareBar } from "../components/usage/UsageShareBar";
+import { makeWindow } from "@t3tools/shared/usageFormat";
 import { expect, it, vi } from "vite-plus/test";
 
 import { render } from "../../test/render";
 import { useUsage, type EnvironmentUsageStatus } from "./usage";
 
-const state = vi.hoisted(() => ({ environments: [] as readonly EnvironmentUsageStatus[] }));
+const state = vi.hoisted(() => ({
+  environments: [] as readonly EnvironmentUsageStatus[],
+  query: null as null | ((atom: object) => readonly EnvironmentUsageStatus[]),
+}));
 
-vi.mock("@effect/atom-react", () => ({ useAtomValue: () => state.environments }));
+vi.mock("@effect/atom-react", () => ({
+  useAtomValue: (atom: object) => state.query?.(atom) ?? state.environments,
+}));
 vi.mock("@t3tools/client-runtime/state/usage", () => ({
   needsCursorKeychainAccess: () => false,
   refreshUsage: vi.fn(),
@@ -31,6 +37,7 @@ vi.mock("./server", () => ({ serverEnvironment: {} }));
 vi.mock("./session", () => ({ environmentSession: {}, readEnvironmentScope: vi.fn() }));
 
 function setup() {
+  state.query = null;
   const window: UsageSummaryInput = {
     sinceDay: UsageDay.make("2026-10-16"),
     untilDay: UsageDay.make("2026-10-23"),
@@ -93,6 +100,51 @@ function setup() {
   state.environments = [answered];
   return { window, answered, summary };
 }
+
+it("publishes 65-second hourly scans before catching up on the first and subsequent ticks", async () => {
+  const { answered, summary } = setup();
+  const time = (seconds: number) =>
+    makeWindow(1, new Date(Date.parse("2026-11-21T18:56:00Z") + seconds * 1000), "hour");
+  const pending = [{ ...answered, summary: null, isPending: true }];
+  const requests = new Map<object, readonly EnvironmentUsageStatus[]>();
+  state.query = (atom) => {
+    if (!requests.has(atom)) requests.set(atom, pending);
+    return requests.get(atom)!;
+  };
+  const complete = (index: number, window: UsageSummaryInput, tokens: number) => {
+    const atom = [...requests.keys()][index]!;
+    requests.set(atom, [
+      {
+        ...answered,
+        summary: {
+          ...summary,
+          ...window,
+          buckets: summary.buckets.map((bucket) => ({
+            ...bucket,
+            day: window.sinceDay,
+            hourStart: window.sinceTime!,
+            totals: { ...bucket.totals, uncachedInputTokens: tokens },
+          })),
+        },
+      },
+    ]);
+  };
+  await using screen = await render(<UsageProbe window={time(0)} />);
+  await screen.rerender(<UsageProbe window={time(60)} />);
+  expect(requests.size).toBe(1);
+  complete(0, time(0), 100);
+  await screen.rerender(<UsageProbe window={time(65)} />);
+  await expect.element(screen.getByText("100 tokens")).toBeVisible();
+  expect(requests.size).toBe(2);
+
+  await screen.rerender(<UsageProbe window={time(120)} />);
+  expect(requests.size).toBe(2);
+  complete(1, time(65), 200);
+  await screen.rerender(<UsageProbe window={time(130)} />);
+  await expect.element(screen.getByText("200 tokens")).toBeVisible();
+  expect(requests.size).toBe(3);
+  await expect.element(screen.getByText(/Showing previous usage/)).not.toBeInTheDocument();
+});
 
 function UsageProbe({
   window,

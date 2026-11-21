@@ -1,11 +1,14 @@
 import { Notice } from "../../components/ui/Notice";
 import { useUsageNow } from "../../lib/clock";
+import { useAppForeground } from "../../lib/appState";
 import {
   mergeAnsweredUsage,
   retainedUsageLabel,
   refreshingUsageProviders,
   usageEnvironmentError,
   usageNotices,
+  usageWindowKey,
+  type UsageProviderRow,
 } from "@t3tools/client-runtime/state/usage-progress";
 import { Button } from "../../components/ui/Button";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -36,6 +39,7 @@ import {
   formatUsageContractMismatch,
   formatUsd,
   makeWindow,
+  usageEmptyMessage,
 } from "@t3tools/shared/usageFormat";
 import {
   createContext,
@@ -67,7 +71,7 @@ import { Menu } from "../../components/ui/Menu";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
-import type { UsageChartMetric } from "./usageChartData";
+import { usageChartEmptyMessage, usageChartTotals, type UsageChartMetric } from "./usageChartData";
 import { PROVIDER_LABEL, useProviderColors, useUsageMixColors } from "./usageProviders";
 import { t, msg } from "../../lib/i18n";
 
@@ -131,14 +135,14 @@ function UsageScreen(props: {
   const wide = width >= WIDE_WIDTH;
   const [windowDays, selectWindow] = useState(30);
   const resolution = windowDays === 1 ? "hour" : "day";
-  const now = useUsageNow(isFocused && !showingLimits);
+  const foreground = useAppForeground();
+  const advanceWindow = isFocused && foreground && !showingLimits;
+  const now = useUsageNow(advanceWindow);
   const window = makeWindow(windowDays, new Date(now), resolution);
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
-  const { shown, showingKept, environments, selectedEnvironments, refresh } = useUsage(
-    window,
-    selectedEnvironmentIds,
-  );
+  const { requestedWindow, shown, showingKept, environments, selectedEnvironments, refresh } =
+    useUsage(window, selectedEnvironmentIds, advanceWindow);
   const merged = shown?.merged ?? EMPTY_USAGE;
   const shownWindow = shown?.window ?? window;
   const shownEnvironments = shown?.environments ?? selectedEnvironments;
@@ -159,14 +163,7 @@ function UsageScreen(props: {
     isPast24Hours && shownWindow.sinceTime !== undefined && shownWindow.untilTime !== undefined
       ? enumerateHourStarts(shownWindow.sinceTime, shownWindow.untilTime)
       : days;
-  const chartTotals: readonly DailyTotals[] = isPast24Hours
-    ? merged.hourly.map((hour) => ({
-        day: hour.hourStart,
-        costUsd: hour.costUsd,
-        totalTokens: hour.totalTokens,
-        byProvider: hour.byProvider,
-      }))
-    : merged.daily;
+  const chartTotals = usageChartTotals(merged, isPast24Hours);
 
   const [refreshingUsage, setRefreshingUsage] = useState(false);
   const refreshingRef = useRef(false);
@@ -182,12 +179,16 @@ function UsageScreen(props: {
     refreshing: refreshingUsage,
     providerLabel,
   });
+  const rollingRefresh =
+    shown?.settled === true &&
+    !showingKept &&
+    usageWindowKey(shownWindow) !== usageWindowKey(requestedWindow);
   const refreshWindow = () => {
     if (refreshingRef.current) return;
     refreshingRef.current = true;
     setRefreshingUsage(true);
     if (Platform.OS === "ios") AccessibilityInfo.announceForAccessibility(t("Updating…"));
-    void refresh(window).finally(() => {
+    void refresh(requestedWindow).finally(() => {
       refreshingRef.current = false;
       setRefreshingUsage(false);
     });
@@ -451,7 +452,11 @@ function UsageScreen(props: {
                     <UsageUpdating
                       dimmed={showingKept}
                       announce={progress.announcement !== null}
-                      label={progress.label ?? (showingKept ? t("Updating…") : null)}
+                      label={
+                        rollingRefresh && !refreshingUsage
+                          ? null
+                          : (progress.label ?? (showingKept ? t("Updating…") : null))
+                      }
                     >
                       {wide ? (
                         <View className="flex-row gap-6">
@@ -672,16 +677,17 @@ function ChartCard(props: {
 }) {
   const { merged, metric } = props;
   const colors = useProviderColors();
-  const hasActivity = props.daily.some((period) => period.totalTokens > 0);
+  const emptyMessage = usageChartEmptyMessage(props.daily, merged, metric);
   const [fillHeight, setFillHeight] = useState(0);
   const height = props.fill ? Math.max(fillHeight, props.height) : props.height;
-  const chart = hasActivity ? (
-    <UsageDailyChart days={props.days} daily={props.daily} metric={metric} height={height} />
-  ) : (
-    <View style={{ height }} className="items-center justify-center">
-      <Text className="text-base text-foreground-muted">{t("No activity in this window.")}</Text>
-    </View>
-  );
+  const chart =
+    emptyMessage === null ? (
+      <UsageDailyChart days={props.days} daily={props.daily} metric={metric} height={height} />
+    ) : (
+      <View style={{ height }} className="items-center justify-center">
+        <Text className="text-base text-foreground-muted">{emptyMessage}</Text>
+      </View>
+    );
 
   return (
     <View
@@ -757,7 +763,7 @@ function UsageSummary(props: { readonly merged: MergedUsage; readonly metric: Us
 }
 
 function ProviderSection(props: {
-  readonly providers: MergedUsage["providers"];
+  readonly providers: readonly UsageProviderRow[];
   readonly refreshingProviders: ReadonlySet<UsageProviderKind>;
   readonly metric: UsageChartMetric;
   readonly cursorAccessEnvironments: readonly EnvironmentUsageStatus[];
@@ -773,7 +779,9 @@ function ProviderSection(props: {
 
   // Hermes lacks toSorted.
   const ordered = [...providers].sort((a, b) =>
-    metric === "cost" ? b.costUsd - a.costUsd : b.totalTokens - a.totalTokens,
+    metric === "cost"
+      ? (b.totals?.costUsd ?? 0) - (a.totals?.costUsd ?? 0)
+      : (b.totals?.totalTokens ?? 0) - (a.totals?.totalTokens ?? 0),
   );
   const rows: Array<
     | { readonly kind: "usage"; readonly provider: (typeof ordered)[number] }
@@ -810,7 +818,8 @@ function ProviderSection(props: {
           );
         }
         const provider = row.provider;
-        const share = metric === "cost" ? provider.costShare : provider.tokenShare;
+        const totals = provider.totals;
+        const share = metric === "cost" ? (totals?.costShare ?? 0) : (totals?.tokenShare ?? 0);
         return (
           <View
             key={provider.provider}
@@ -843,9 +852,11 @@ function ProviderSection(props: {
                     : "text-lg tabular-nums text-foreground"
                 }
               >
-                {metric === "cost"
-                  ? formatUsd(provider.costUsd)
-                  : formatTokens(provider.totalTokens)}
+                {totals === null
+                  ? "–"
+                  : metric === "cost"
+                    ? formatUsd(totals.costUsd)
+                    : formatTokens(totals.totalTokens)}
               </UsageFigure>
             </View>
             {props.compact ? null : (
@@ -858,15 +869,17 @@ function ProviderSection(props: {
               </View>
             )}
             <Text className="text-sm text-foreground-muted">
-              {metric === "cost"
-                ? t("{share} of cost · {tokens} tokens", {
-                    share: formatPercent(share),
-                    tokens: formatTokens(provider.totalTokens),
-                  })
-                : t("{share} of tokens · {cost}", {
-                    share: formatPercent(share),
-                    cost: formatUsd(provider.costUsd),
-                  })}
+              {totals === null
+                ? "–"
+                : metric === "cost"
+                  ? t("{share} of cost · {tokens} tokens", {
+                      share: formatPercent(share),
+                      tokens: formatTokens(totals.totalTokens),
+                    })
+                  : t("{share} of tokens · {cost}", {
+                      share: formatPercent(share),
+                      cost: formatUsd(totals.costUsd),
+                    })}
             </Text>
           </View>
         );
@@ -963,13 +976,13 @@ function CostSection(props: { readonly merged: MergedUsage; readonly wide: boole
     { label: t("Fast"), value: speedCost.fast, color: colors.fast },
     { label: t("Ultrafast"), value: speedCost.ultrafast, color: colors.ultrafast },
   ];
-  if (props.merged.costUsd <= 0) return null;
+  const emptyMessage = usageEmptyMessage(props.merged, "cost");
 
   return (
     <SettingsSection title={t("Cost")}>
       <View className={props.wide ? "flex-row" : undefined}>
         <View className={props.wide ? "min-w-0 flex-1" : undefined}>
-          <ShareBar label={t("By type")} segments={byType} />
+          <ShareBar label={t("By type")} segments={byType} emptyMessage={emptyMessage} />
         </View>
         {speedCost.fast + speedCost.ultrafast > 0 ? (
           <View
@@ -995,9 +1008,9 @@ function ShareBar(props: {
   readonly label: string;
   readonly segments: readonly { label: string; value: number; color: string }[];
   readonly aside?: string;
+  readonly emptyMessage?: string;
 }) {
   const visible = props.segments.filter((segment) => segment.value > 0);
-  if (visible.length === 0) return null;
 
   return (
     <View className="gap-3 p-4">
@@ -1007,15 +1020,21 @@ function ShareBar(props: {
           <Text className="text-sm tabular-nums text-foreground-muted">{props.aside}</Text>
         ) : null}
       </View>
-      <View className="h-2 flex-row gap-0.5">
-        {visible.map((segment) => (
-          <View
-            key={segment.label}
-            className="h-full rounded-sm"
-            style={{ flex: segment.value, backgroundColor: segment.color }}
-          />
-        ))}
-      </View>
+      {visible.length === 0 ? (
+        <Text className="text-xs text-foreground-muted">{props.emptyMessage}</Text>
+      ) : (
+        <>
+          <View className="h-2 flex-row gap-0.5">
+            {visible.map((segment) => (
+              <View
+                key={segment.label}
+                className="h-full rounded-sm"
+                style={{ flex: segment.value, backgroundColor: segment.color }}
+              />
+            ))}
+          </View>
+        </>
+      )}
       <View className="flex-row flex-wrap gap-x-4 gap-y-1.5">
         {visible.map((segment) => (
           <View key={segment.label} className="flex-row items-center gap-1.5">

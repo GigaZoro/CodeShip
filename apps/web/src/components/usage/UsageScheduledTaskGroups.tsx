@@ -6,7 +6,7 @@ import {
 } from "@t3tools/client-runtime/scheduled-task-groups";
 import { formatCount, formatUsd } from "@t3tools/shared/usageFormat";
 import type { AtomRegistry } from "effect/reactivity";
-import { useContext } from "react";
+import { useContext, useState } from "react";
 
 import { t, tn } from "~/i18n";
 import { cn } from "../../lib/utils";
@@ -33,10 +33,12 @@ export function refreshScheduledTaskGroupUsage(
 
 /** What each group of scheduled tasks ran and cost in the period the page shows. */
 export function UsageScheduledTaskGroups({
+  selectionKey,
   period,
   environments,
   readOnly,
 }: {
+  readonly selectionKey: string;
   readonly period: UsageSummaryInput;
   readonly readOnly: boolean;
   readonly environments: readonly EnvironmentUsageStatus[];
@@ -57,6 +59,23 @@ export function UsageScheduledTaskGroups({
   const range = scheduledTaskStatsRange(period);
   const input = range ?? { since: period.sinceDay };
   const results = useScheduledTaskStats(range === null ? [] : supportedIds, input);
+  const loading =
+    readOnly || results.some((result) => result.stats === null && result.error === null);
+  const answered = results.some((result) => result.stats !== null);
+  const rows = scheduledTaskGroupUsage(
+    results.flatMap((result) => (result.stats === null ? [] : [result.stats])),
+  ).filter((row) => row.runs > 0);
+  const key = JSON.stringify([selectionKey, supportedIds.toSorted()]);
+  const [last, setLast] = useState<{ readonly key: string; readonly rows: typeof rows } | null>(
+    null,
+  );
+  if (last !== null && last.key !== key) setLast(null);
+  else if (!loading && answered && JSON.stringify(last?.rows) !== JSON.stringify(rows)) {
+    setLast({ key, rows });
+  }
+  const retained = readOnly || last?.key !== key ? undefined : last.rows;
+  const displayedRows = (loading || !answered) && retained !== undefined ? retained : rows;
+  const showLoading = loading && retained === undefined && (readOnly || !answered);
   if (connected.length === 0 || range === null) return null;
 
   const failures = results.flatMap((result) =>
@@ -72,12 +91,6 @@ export function UsageScheduledTaskGroups({
           },
         ],
   );
-  const loading = results.some((result) => result.stats === null && result.error === null);
-  const rows = scheduledTaskGroupUsage(
-    results.flatMap((result) => (result.stats === null ? [] : [result.stats])),
-  ).filter((row) => row.runs > 0);
-  const answered = results.some((result) => result.stats !== null);
-
   return (
     <section className="flex flex-col gap-3" aria-busy={loading}>
       <div className="flex flex-col gap-1">
@@ -125,19 +138,19 @@ export function UsageScheduledTaskGroups({
         </div>
       ))}
 
-      {loading && !answered ? (
+      {showLoading ? (
         <p role="status" className="text-sm text-muted-foreground">
           {t("Loading…")}
         </p>
-      ) : rows.length === 0 ? (
-        answered ? (
+      ) : displayedRows.length === 0 ? (
+        answered || retained !== undefined ? (
           <p className="py-2 text-sm text-muted-foreground">
             {t("No scheduled task runs in this period.")}
           </p>
         ) : null
       ) : (
         <div className="overflow-x-auto">
-          <table className={cn("w-full text-sm", loading && "opacity-64")}>
+          <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border text-right text-xs text-muted-foreground">
                 <th className="w-full py-2 text-left font-normal">{t("Group")}</th>
@@ -148,7 +161,7 @@ export function UsageScheduledTaskGroups({
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {displayedRows.map((row) => (
                 <tr
                   key={row.key ?? "none"}
                   className="border-b border-border/50 text-right text-muted-foreground tabular-nums"

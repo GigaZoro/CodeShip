@@ -15,13 +15,14 @@ import { act, fakeTimers, render } from "../../../test/render";
 import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 import "../../index.css";
 import { UsagePage } from "./UsagePage";
+import { UsageProviderChart } from "./UsageProviderChart";
 
 const state = vi.hoisted(() => ({
   now: 0,
   windowDays: 1 as 1 | 7,
   realClock: false,
   requests: new Set<string>(),
-  response: "ready" as "ready" | "waiting" | "provisional" | "empty",
+  response: "ready" as "ready" | "waiting" | "provisional" | "empty" | "revoked" | "cursorPending",
   secondEnvironment: null as "ready" | "incompatible" | "sourceFailure" | null,
   costUsd: 0,
   totalTokens: 100,
@@ -68,6 +69,7 @@ vi.mock("../../state/usage", async () => {
       const shown = settleUsageSnapshot(state.previous, window, environments, environments);
       state.previous = shown;
       return {
+        requestedWindow: window,
         environments,
         selectedEnvironments: environments,
         shown,
@@ -80,7 +82,7 @@ vi.mock("../../state/usage", async () => {
 
 function reading(window: UsageSummaryInput, response = state.response): EnvironmentUsageStatus {
   const summary: UsageSummary | null =
-    response === "waiting"
+    response === "waiting" || response === "revoked"
       ? null
       : {
           ...window,
@@ -132,15 +134,31 @@ function reading(window: UsageSummaryInput, response = state.response): Environm
           pricing: { status: "cached", source: "test", fetchedAt: null, knownModels: 0 },
           scanDurationMs: 1,
         };
+  const cursor: UsageSummary | null =
+    response === "cursorPending" && summary !== null
+      ? {
+          ...summary,
+          sources: [
+            ...summary.sources,
+            {
+              ...summary.sources[0]!,
+              fingerprint: { ...summary.sources[0]!.fingerprint, provider: "cursor" as const },
+              scannedFiles: 0,
+              distinctSessions: 0,
+              refreshing: true,
+            },
+          ],
+        }
+      : summary;
   return {
     environmentId: EnvironmentId.make("desk"),
     label: "Desk",
     isConnected: true,
-    canReadDiagnostics: true,
+    canReadDiagnostics: response !== "revoked",
     needsCursorKeychainAccess: false,
-    error: null,
-    isPending: response === "waiting" || response === "provisional",
-    summary,
+    error: response === "revoked" ? "Diagnostics access was revoked." : null,
+    isPending: response === "waiting" || response === "provisional" || response === "cursorPending",
+    summary: cursor,
   };
 }
 
@@ -157,6 +175,7 @@ function otherReading(
     summary: {
       ...summary,
       contractVersion: response === "incompatible" ? 0 : summary.contractVersion,
+      buckets: summary.buckets.map((bucket) => ({ ...bucket, model: "laptop-model" })),
       sources: summary.sources.map((source) => ({
         ...source,
         fingerprint: { ...source.fingerprint, hostId: "laptop" },
@@ -338,11 +357,131 @@ it("reports live compatibility and source failures beside the saved total", asyn
     )
     .toBeVisible();
   await expect.element(figures).toBeVisible();
+  await screen.getByRole("button", { name: /All environments/ }).click();
+  await expect
+    .element(page.getByRole("menu").getByText(/Showing its last compatible values/))
+    .toBeVisible();
+  await expect
+    .element(page.getByRole("menu").getByText(/is excluded from totals/))
+    .not.toBeInTheDocument();
+  await userEvent.keyboard("{Escape}");
 
   state.secondEnvironment = "sourceFailure";
   await update();
   await expect.element(screen.getByText("Cursor fetch failed")).toBeVisible();
   await expect.element(figures).toBeVisible();
+});
+
+it("closes the open model and removes its figures when diagnostics access is revoked", async () => {
+  setup();
+  state.secondEnvironment = "ready";
+  await using screen = await render(<Screen />);
+  await screen.getByRole("button", { name: "usage-test-model" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect.element(dialog.getByRole("button", { name: "Set price" })).toBeEnabled();
+  state.response = "revoked";
+  await update();
+  await expect.element(dialog).not.toBeInTheDocument();
+  await expect.element(screen.getByRole("button", { name: "laptop-model" })).toBeVisible();
+});
+
+it("shows an incompatible environment notice while the first scan is pending", async () => {
+  setup();
+  state.response = "waiting";
+  state.secondEnvironment = "incompatible";
+  await using screen = await render(<Screen />);
+  await expect.element(screen.getByText("Loading usage…")).toBeInTheDocument();
+  await expect.element(screen.getByText("Totals leave out Laptop")).toBeVisible();
+});
+
+it("shows unknown values while Cursor has no first reading", async () => {
+  setup();
+  state.response = "cursorPending";
+  await using screen = await render(<Screen />);
+  const cursor = screen.getByRole("group", { name: "Cursor" });
+  await expect.element(cursor.getByText("–", { exact: true }).first()).toBeVisible();
+  await expect.element(cursor.getByText("0", { exact: true })).not.toBeInTheDocument();
+  await expect.element(cursor.getByText(/0%/)).not.toBeInTheDocument();
+});
+
+it("pauses the rolling window in a hidden tab and catches up when it becomes visible", async () => {
+  setup();
+  state.realClock = true;
+  using _clock = fakeTimers();
+  vi.setSystemTime(state.now);
+  using visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  await using screen = await render(<Screen />);
+  await expect.element(screen.getByRole("button", { name: "usage-test-model" })).toBeVisible();
+  const requests = state.requests.size;
+  await act(() => {
+    visibility.mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await act(() => vi.advanceTimersByTimeAsync(180_000));
+  expect(state.requests.size).toBe(requests);
+  await act(() => {
+    visibility.mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  expect(state.requests.size).toBe(requests + 1);
+});
+
+it("keeps refreshing chart strokes and bars above 3:1 in both themes", async () => {
+  const wasDark = document.documentElement.classList.contains("dark");
+  using _theme = {
+    [Symbol.dispose]: () => document.documentElement.classList.toggle("dark", wasDark),
+  };
+  const day = "2026-11-21";
+  const data = {
+    chartType: "area" as const,
+    providers: ["cursor"] as const,
+    loadingProviders: new Set(["cursor"] as const),
+    days: [day],
+    daily: [
+      {
+        day,
+        costUsd: 1,
+        totalTokens: 100,
+        byProvider: new Map([["cursor" as const, { costUsd: 1, totalTokens: 100 }]]),
+      },
+    ],
+    hours: [],
+    hourly: [],
+    metric: "cost" as const,
+    referenceTime: undefined,
+    resolution: "day" as const,
+    timeZone: "UTC",
+    hour12: true,
+  };
+  await using screen = await render(
+    <main className="bg-background">
+      <UsageProviderChart {...data} />
+    </main>,
+  );
+  for (const chartType of ["area", "bar"] as const) {
+    await screen.rerender(
+      <main className="bg-background">
+        <UsageProviderChart {...data} chartType={chartType} />
+      </main>,
+    );
+    const series = screen.container.querySelector(
+      chartType === "area" ? "path[stroke-dasharray]" : 'rect[fill="#8b8b8b"]',
+    )!;
+    expect(series).not.toBeNull();
+    await expect.element(screen.getByText("Updating Cursor…")).toBeVisible();
+    for (const dark of [false, true]) {
+      document.documentElement.classList.toggle("dark", dark);
+      const style = getComputedStyle(series);
+      const canvas = colorLuminance(
+        getComputedStyle(screen.getByRole("main").element()).backgroundColor,
+      );
+      const value = colorLuminance(chartType === "area" ? style.stroke : style.fill);
+      expect(style.opacity).toBe("1");
+      expect(
+        (Math.max(canvas, value) + 0.05) / (Math.min(canvas, value) + 0.05),
+      ).toBeGreaterThanOrEqual(3);
+    }
+  }
 });
 
 it("stops advancing the requested period on Limits and catches up on Usage", async () => {

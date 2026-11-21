@@ -19,6 +19,7 @@ import {
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
+  findLimitAccountWindow,
   elapsedShare,
   limitsFreshness,
   exhaustedUsageWindow,
@@ -900,7 +901,7 @@ describe("pools", () => {
       }),
     );
 
-    expect(healthy).toEqual(["codex:a@example.com", "codex:b@example.com"]);
+    expect(healthy).toEqual(["codex:a@example.com:work", "codex:b@example.com:work"]);
     expect(failed).toEqual(healthy);
   });
 
@@ -916,24 +917,42 @@ describe("pools", () => {
       driver: native.driver,
       usageLimits: native.usageLimits!,
     };
-    const reports = (providers: ServerProvider[], accounts: (typeof hub)[]) =>
-      collectLimitAccounts(
-        new Map([
-          [
-            EnvironmentId.make("desk"),
-            {
-              ...laptop,
-              serverConfig: { providers, usageLimitSources: [{ ...source, accounts }] },
+    const reports = (providers: ServerProvider[], accounts: (typeof hub)[], error?: string) =>
+      new Map([
+        [
+          EnvironmentId.make("desk"),
+          {
+            ...laptop,
+            serverConfig: {
+              providers,
+              usageLimitSources: [{ ...source, accounts, ...(error ? { error } : {}) }],
             },
-          ],
-        ]),
-      );
+          },
+        ],
+      ]);
     const both = reports([native], [hub]);
-    const nativeOnly = reports([native], []);
-    const hubOnly = reports([], [hub]);
-    expect(both.map(({ key }) => key)).toEqual(["codex:a@example.com"]);
-    expect(nativeOnly.map(({ key }) => key)).toEqual(both.map(({ key }) => key));
-    expect(hubOnly.map(({ key }) => key)).toEqual(both.map(({ key }) => key));
+    const known = limitAccountWorkspaces(both);
+    const work = "codex:a@example.com:work";
+    const lookup = (live: typeof both, key = work) =>
+      findLimitAccountWindow(
+        collectLimitPools(collectLimitAccounts(live, limitAccountWorkspaces(live, known)), now),
+        key,
+        window.id,
+        window.kind,
+      );
+    expect(lookup(both)?.account.key).toBe(work);
+    expect(lookup(reports([native], [], "Hub temporarily unavailable"))?.account.key).toBe(work);
+    expect(lookup(reports([], [hub]))?.account.key).toBe(work);
+    // A successful snapshot replaces the hub's evidence. An absent hub retires it too.
+    const personal = { ...hub, id: "personal.json", workspaceId: "personal" };
+    expect(lookup(reports([native], [personal]))).toBeNull();
+    expect(lookup(reports([native], [personal]), "codex:a@example.com:personal")?.account.key).toBe(
+      "codex:a@example.com:personal",
+    );
+    expect(lookup(reports([native], []))).toBeNull();
+    expect(lookup(reports([native], []), "codex:a@example.com")?.account.key).toBe(
+      "codex:a@example.com",
+    );
   });
 
   it("keeps workspace keys when one workspace stops reporting for a shared email", () => {
@@ -1061,7 +1080,7 @@ describe("pools", () => {
       ]);
     const unrelated = provider({ instanceId: ProviderInstanceId.make("codex-2") });
     expect(collectLimitAccounts(withOther(unrelated)).map((account) => account.key)).toEqual([
-      "claudeAgent:same@example.com",
+      "claudeAgent:same@example.com:org-a",
     ]);
     const unreadable = provider({
       ...native,

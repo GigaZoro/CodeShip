@@ -24,6 +24,7 @@ import { environmentSession, readEnvironmentScope } from "./session";
 import {
   equalUsageStatuses,
   isKeptUsage,
+  nextUsageRequestWindow,
   settleUsageSnapshot,
   usageWindowKey,
   type EnvironmentUsageStatus,
@@ -96,8 +97,10 @@ export function useUsage(
   input: UsageSummaryInput,
   selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null = null,
   hiddenProviders: readonly UsageProviderKind[] = [],
+  active = true,
 ) {
-  const environments = useAtomValue(usageByWindowAtom(usageWindowKey(input)));
+  const [requestedWindow, setRequestedWindow] = useState(input);
+  const environments = useAtomValue(usageByWindowAtom(usageWindowKey(requestedWindow)));
   const selectedEnvironments =
     selectedEnvironmentIds === null
       ? environments
@@ -105,14 +108,16 @@ export function useUsage(
   const [previous, setPrevious] = useState<UsageSnapshot | null>(null);
   const shown = settleUsageSnapshot(
     previous,
-    input,
+    requestedWindow,
     environments,
     selectedEnvironments,
     hiddenProviders,
   );
   if (shown !== previous) setPrevious(shown);
+  const nextWindow = nextUsageRequestWindow(requestedWindow, input, selectedEnvironments, active);
+  if (nextWindow !== requestedWindow) setRequestedWindow(nextWindow);
 
-  const refresh = (nextInput = input) =>
+  const refresh = (nextInput = requestedWindow) =>
     refreshUsage({
       registry: appAtomRegistry,
       server: serverEnvironment,
@@ -128,6 +133,7 @@ export function useUsage(
     });
 
   return {
+    requestedWindow,
     environments,
     selectedEnvironments,
     shown,

@@ -16,6 +16,7 @@ import {
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
+  findLimitAccountWindow,
   cursorUsageWindowDetails,
   describeAccountFailover,
   displayLimitWindows,
@@ -788,13 +789,16 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
   const workspaces = useAtomValue(accountWorkspacesAtom);
   const accounts = collectLimitAccounts(selected, workspaces);
   const now = useUsageLimitNow();
-  const account = accounts.find((candidate) => candidate.key === accountKey);
-  const pool = collectLimitPools(accounts, now)
-    .find((candidate) => candidate.driver === account?.driver)
-    ?.windows.find((candidate) => candidate.id === windowId && candidate.kind === windowKind);
-  const window = pool?.members.find((member) => member.account.key === accountKey)?.window;
+  const detail = findLimitAccountWindow(
+    collectLimitPools(accounts, now),
+    accountKey,
+    windowId,
+    windowKind,
+  );
+  const account = detail?.account;
+  const window = detail?.window;
   const evenPace = window ? paceRemainingPercent(window, now) : null;
-  const reset = pool?.resets.find((candidate) => candidate.member.account.key === accountKey);
+  const reset = detail?.reset;
   const [revealed, setRevealed] = useState(false);
   return (
     <SettingsScreen title={t("Account")}>

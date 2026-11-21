@@ -1,6 +1,7 @@
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import type { UsageProviderKind } from "@t3tools/contracts";
 import { useLayoutEffect, useRef, useState } from "react";
+import { updatingProvidersLabel } from "@t3tools/client-runtime/state/usage-progress";
 
 import type { DailyTotals, HourlyTotals } from "@t3tools/shared/usageMerge";
 import {
@@ -477,13 +478,9 @@ export function UsageProviderChart({
   hour12,
 }: UsageProviderChartProps) {
   const periods = resolution === "hour" ? hours : days;
-  const totals: readonly (DailyTotals | HourlyTotals)[] = resolution === "hour" ? hourly : daily;
-  const byPeriod = new Map(
-    totals.map((entry) => ["hourStart" in entry ? entry.hourStart : entry.day, entry]),
-  );
   const { columns, scale, paths, stepX, offsetX, bars } = buildChart(
     periods,
-    byPeriod,
+    usageChartPeriodIndex(daily, hourly, resolution),
     metric,
     providers,
     loadingProviders,
@@ -491,8 +488,7 @@ export function UsageProviderChart({
   );
 
   const toY = (value: number) => valueToY(value, scale.max);
-  const seriesClassName = (loading: boolean) =>
-    cn("transition-opacity", loading && "opacity-40 delay-150");
+  const refreshing = providers.filter((provider) => loadingProviders.has(provider));
   const format = metric === "tokens" ? formatTokens : formatUsd;
   const formatPeriod = (period: string) =>
     resolution === "hour"
@@ -562,15 +558,13 @@ export function UsageProviderChart({
             <rect
               key={`${period}:${provider}`}
               {...rect}
-              className={seriesClassName(loadingProviders.has(provider))}
               fill={PROVIDER_PRESENTATION[provider].color}
             />
           ))}
-          {paths.map(({ provider, loading, area }) => (
+          {paths.map(({ provider, area }) => (
             <path
               key={provider}
               d={area}
-              className={seriesClassName(loading)}
               fill={PROVIDER_PRESENTATION[provider].color}
               fillOpacity={0.12}
             />
@@ -579,16 +573,21 @@ export function UsageProviderChart({
             <path
               key={provider}
               d={line}
-              className={seriesClassName(loading)}
               fill="none"
               stroke={PROVIDER_PRESENTATION[provider].color}
               strokeWidth={2}
+              strokeDasharray={loading ? "4 3" : undefined}
               vectorEffect="non-scaling-stroke"
             />
           ))}
         </UsageChartPlot>
       </div>
 
+      {refreshing.length > 0 ? (
+        <p className="pl-16 text-xs text-muted-foreground">
+          {updatingProvidersLabel(refreshing, (provider) => PROVIDER_PRESENTATION[provider].label)}
+        </p>
+      ) : null}
       <div className="flex justify-between pl-16 text-3xs text-muted-foreground uppercase">
         <span>{periods[0] === undefined ? "" : formatPeriod(periods[0])}</span>
         <span>
@@ -603,5 +602,16 @@ export function UsageProviderChart({
         </span>
       </div>
     </div>
+  );
+}
+
+export function usageChartPeriodIndex(
+  daily: readonly DailyTotals[],
+  hourly: readonly HourlyTotals[],
+  resolution: UsageProviderChartProps["resolution"],
+): ReadonlyMap<string, DailyTotals | HourlyTotals> {
+  const totals: readonly (DailyTotals | HourlyTotals)[] = resolution === "hour" ? hourly : daily;
+  return new Map(
+    totals.map((entry) => ["hourStart" in entry ? entry.hourStart : entry.day, entry]),
   );
 }

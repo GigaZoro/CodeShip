@@ -1,4 +1,4 @@
-import { formatPercent } from "@t3tools/shared/usageFormat";
+import { formatPercent, usageEmptyMessage } from "@t3tools/shared/usageFormat";
 import type { MergedUsage } from "@t3tools/shared/usageMerge";
 import type { ReactNode } from "react";
 
@@ -26,18 +26,6 @@ export function UsageShareBar({
   readonly recordedUsage: Pick<MergedUsage, "records" | "costQuality" | "totalTokens" | "costUsd">;
   readonly metric: "tokens" | "cost";
 }) {
-  const emptyMessage =
-    recordedUsage.records === 0
-      ? t("No activity in this window.")
-      : metric === "tokens"
-        ? recordedUsage.totalTokens === 0
-          ? t("No tokens recorded")
-          : t("No token breakdown available")
-        : recordedUsage.costUsd > 0
-          ? t("No cost breakdown available")
-          : recordedUsage.costQuality.unpricedShare === 1
-            ? t("No priced usage")
-            : t("Priced usage costs $0");
   const visible = segments.filter((segment) => segment.value > 0);
   const total = visible.reduce((sum, segment) => sum + segment.value, 0);
 
@@ -50,7 +38,9 @@ export function UsageShareBar({
       {total <= 0 ? (
         <>
           <div aria-hidden className="h-2 rounded-full bg-muted" />
-          <p className="text-xs text-muted-foreground">{emptyMessage}</p>
+          <p className="text-xs text-muted-foreground">
+            {usageEmptyMessage(recordedUsage, metric)}
+          </p>
         </>
       ) : (
         <>

@@ -193,32 +193,25 @@ export interface UsageSnapshot {
   readonly environments: readonly EnvironmentUsageStatus[];
   readonly merged: ReturnType<typeof mergeAnsweredUsage>;
   readonly hasAnswer: boolean;
-  readonly providers: readonly ProviderTotals[];
+  readonly providers: readonly UsageProviderRow[];
   readonly reservedProviders: ReadonlySet<UsageProviderKind>;
   readonly settled: boolean;
 }
 
+export interface UsageProviderRow {
+  readonly provider: UsageProviderKind;
+  readonly totals: ProviderTotals | null;
+}
+
 function providersWithReservations(
-  active: readonly ProviderTotals[],
+  active: readonly UsageProviderRow[],
   reserved: ReadonlySet<UsageProviderKind>,
-): readonly ProviderTotals[] {
+): readonly UsageProviderRow[] {
   const represented = new Set(active.map(({ provider }) => provider));
   return [
     ...active,
     ...[...reserved].flatMap((provider) =>
-      represented.has(provider)
-        ? []
-        : [
-            {
-              provider,
-              costUsd: 0,
-              totalTokens: 0,
-              records: 0,
-              sessions: 0,
-              costShare: 0,
-              tokenShare: 0,
-            },
-          ],
+      represented.has(provider) ? [] : [{ provider, totals: null }],
     ),
   ];
 }
@@ -237,17 +230,7 @@ export function settleUsageSnapshot(
   if (sameWindow && equalUsageStatuses(previous.environments, selected)) return previous;
 
   const kept =
-    previous?.hasAnswer &&
-    previous.environments.every(
-      (environment) =>
-        !hasCompatibleUsage(environment) ||
-        environments.some(
-          (current) =>
-            current.environmentId === environment.environmentId && current.canReadDiagnostics,
-        ),
-    )
-      ? previous
-      : null;
+    previous !== null && canRetainUsageSnapshot(previous, environments) ? previous : null;
   const pending = selected.filter(
     ({ isConnected, isPending, error }) => error === null && isConnected && isPending,
   );
@@ -302,9 +285,12 @@ export function settleUsageSnapshot(
   if (!sameWindow && kept?.key === key && kept.settled) {
     for (const provider of kept.reservedProviders) reservedProviders.add(provider);
   }
-  const active = merged.providers.filter(
-    ({ costUsd, totalTokens, sessions }) => costUsd > 0 || totalTokens > 0 || sessions > 0,
-  );
+  const active = merged.providers
+    .filter(
+      ({ costUsd, totalTokens, sessions, records }) =>
+        costUsd > 0 || totalTokens > 0 || sessions > 0 || records > 0,
+    )
+    .map((totals) => ({ provider: totals.provider, totals }));
   return {
     key,
     window,
@@ -316,6 +302,39 @@ export function settleUsageSnapshot(
     reservedProviders,
     settled: pending.length === 0,
   };
+}
+
+export function canRetainUsageSnapshot(
+  snapshot: UsageSnapshot,
+  environments: readonly EnvironmentUsageStatus[],
+): boolean {
+  return (
+    snapshot.hasAnswer &&
+    snapshot.environments.every(
+      (environment) =>
+        !hasCompatibleUsage(environment) ||
+        environments.some(
+          (current) =>
+            current.environmentId === environment.environmentId && current.canReadDiagnostics,
+        ),
+    )
+  );
+}
+
+export function nextUsageRequestWindow(
+  current: UsageSummaryInput,
+  latest: UsageSummaryInput,
+  selected: readonly EnvironmentUsageStatus[],
+  active: boolean,
+): UsageSummaryInput {
+  if (usageWindowKey(current) === usageWindowKey(latest)) return current;
+  if (usagePeriodKey(current) !== usagePeriodKey(latest)) return latest;
+  return active &&
+    !selected.some(
+      ({ isConnected, isPending, error }) => isConnected && isPending && error === null,
+    )
+    ? latest
+    : current;
 }
 
 export function usageNotices(
@@ -365,21 +384,23 @@ export function isKeptUsage(
   return snapshot !== null && snapshot.key !== usageSelectionKey(window, selected, hidden);
 }
 
-function usageSelectionKey(
-  window: UsageSummaryInput,
-  selected: readonly EnvironmentUsageStatus[],
-  hidden: readonly UsageProviderKind[],
-): string {
+function usagePeriodKey(window: UsageSummaryInput): string {
   const resolution = window.resolution ?? "day";
   const dayMs = 24 * USAGE_HOUR_MS;
   const days =
     resolution === "hour" && window.sinceTime !== undefined && window.untilTime !== undefined
       ? (Date.parse(window.untilTime) - Date.parse(window.sinceTime)) / dayMs
       : (Date.parse(window.untilDay) - Date.parse(window.sinceDay)) / dayMs + 1;
+  return JSON.stringify([days, resolution, window.timeZone]);
+}
+
+function usageSelectionKey(
+  window: UsageSummaryInput,
+  selected: readonly EnvironmentUsageStatus[],
+  hidden: readonly UsageProviderKind[],
+): string {
   return JSON.stringify([
-    days,
-    resolution,
-    window.timeZone,
+    usagePeriodKey(window),
     selected
       .map(({ environmentId, modelFilter }) => [environmentId, modelFilter] as const)
       .sort(([left], [right]) => left.localeCompare(right)),

@@ -488,21 +488,24 @@ const nativeReport = (provider: ServerProvider): AccountReport => ({
   usageLimits: provider.usageLimits,
 });
 
-export type LimitAccountWorkspaces = ReadonlyMap<string, ReadonlySet<string>>;
+type AccountWorkspace = readonly [login: string, workspace: string];
 
-function accountWorkspaces(reports: Iterable<AccountReport>, previous?: LimitAccountWorkspaces) {
+export interface LimitAccountWorkspaces {
+  readonly byLogin: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly byHub: ReadonlyMap<string, readonly AccountWorkspace[]>;
+}
+
+function accountWorkspace(report: AccountReport): AccountWorkspace[] {
+  const login = accountKey(report.driver, report.email, report.usageLimits);
+  return login && report.workspaceId ? [[login, report.workspaceId]] : [];
+}
+
+function accountWorkspaces(evidence: Iterable<AccountWorkspace>) {
   const workspaces = new Map<string, Set<string>>();
-  for (const report of reports) {
-    const key = accountKey(report.driver, report.email, report.usageLimits);
-    if (key === null) continue;
-    let known = workspaces.get(key);
-    if (known === undefined) {
-      // A failed reporter must not erase known workspace ambiguity for this login.
-      const remembered = previous?.get(key);
-      known = new Set(remembered && remembered.size > 1 ? remembered : []);
-      workspaces.set(key, known);
-    }
-    if (report.workspaceId) known.add(report.workspaceId);
+  for (const [login, workspace] of evidence) {
+    const known = workspaces.get(login);
+    if (known === undefined) workspaces.set(login, new Set([workspace]));
+    else known.add(workspace);
   }
   return workspaces;
 }
@@ -511,21 +514,30 @@ export function limitAccountWorkspaces(
   presentations: LimitPresentations,
   previous?: LimitAccountWorkspaces,
 ): LimitAccountWorkspaces {
-  return accountWorkspaces(
-    [...presentations.values()].flatMap(({ serverConfig }) => [
-      ...(serverConfig?.providers ?? []).filter(({ enabled }) => enabled).map(nativeReport),
-      ...(serverConfig?.usageLimitSources ?? []).flatMap(({ accounts }) => accounts),
-    ]),
-    previous,
-  );
+  const byHub = new Map<string, readonly AccountWorkspace[]>();
+  const native = [...presentations].flatMap(([environmentId, { serverConfig }]) => {
+    for (const source of serverConfig?.usageLimitSources ?? []) {
+      const key = JSON.stringify([environmentId, source.id]);
+      // A successful read replaces evidence, including an empty result. Removed hubs have no entry.
+      byHub.set(
+        key,
+        source.error !== undefined
+          ? (previous?.byHub.get(key) ?? [])
+          : source.accounts.flatMap(accountWorkspace),
+      );
+    }
+    return (serverConfig?.providers ?? [])
+      .filter(({ enabled }) => enabled)
+      .flatMap((provider) => accountWorkspace(nativeReport(provider)));
+  });
+  return { byLogin: accountWorkspaces([...native, ...[...byHub.values()].flat()]), byHub };
 }
 
-function accountKeyResolver(workspaces: LimitAccountWorkspaces, keyByLogin = false) {
+function accountKeyResolver(workspaces: LimitAccountWorkspaces["byLogin"]) {
   return (report: AccountReport): string | null => {
     const key = accountKey(report.driver, report.email, report.usageLimits);
     if (!key) return null;
     const known = workspaces.get(key);
-    if (keyByLogin && (known?.size ?? 0) < 2) return key;
     if (report.workspaceId) return `${key}:${report.workspaceId}`;
     if (!known || known.size === 0) return key;
     return known.size === 1 ? `${key}:${[...known][0]}` : null;
@@ -622,7 +634,7 @@ export function collectLimitAccounts(
       },
     });
   };
-  const resolveKey = accountKeyResolver(workspaces, true);
+  const resolveKey = accountKeyResolver(workspaces.byLogin);
   for (const [environmentId, presentation] of presentations) {
     const label = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
@@ -844,6 +856,30 @@ export function collectLimitPools(
     );
     return { driver, accounts: sorted, windows: poolWindows(sorted, now) };
   });
+}
+
+export function findLimitAccountWindow(
+  pools: readonly LimitPool[],
+  accountKey: string,
+  windowId: string,
+  kind: LimitPoolWindow["kind"],
+) {
+  for (const pool of pools) {
+    for (const window of displayLimitWindows(pool)) {
+      if (window.kind !== kind) continue;
+      const member = window.members.find(
+        ({ account, window: reading }) =>
+          account.key === accountKey && (window.id === windowId || reading.id === windowId),
+      );
+      if (member !== undefined)
+        return {
+          account: member.account,
+          window: member.window,
+          reset: window.resets.find(({ member }) => member.account.key === accountKey),
+        };
+    }
+  }
+  return null;
 }
 
 function accountSortName(account: LimitAccount): string {
@@ -1168,10 +1204,12 @@ export function collectProviderUsageLimits(
   const selected = providers.find((provider) => provider.instanceId === instanceId);
   if (!selected || !hasProviderUsageLimits(selected.driver, providers, sources)) return null;
   const resolveKey = accountKeyResolver(
-    accountWorkspaces([
-      ...providers.filter((provider) => provider.enabled).map(nativeReport),
-      ...sources.flatMap((source) => source.accounts),
-    ]),
+    accountWorkspaces(
+      [
+        ...providers.filter((provider) => provider.enabled).map(nativeReport),
+        ...sources.flatMap((source) => source.accounts),
+      ].flatMap(accountWorkspace),
+    ),
   );
   type NativeSnapshot = { provider: ServerProvider; limits: ServerProviderUsageLimits };
   const nativeByAccount = new Map<

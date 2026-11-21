@@ -9,15 +9,21 @@ import type { Atom } from "effect/reactivity";
 import { useState, useSyncExternalStore } from "react";
 
 import { environmentPresentations } from "../state/presentation";
+import { getDocumentActivity, subscribeDocumentActivity } from "../lib/documentActivity";
 
 const minuteClock = usageClock();
 const subscribeIdle = () => () => {};
+const readVisible = () => getDocumentActivity().visible;
 const accountWorkspacesAtom = usageLimitAccountWorkspacesAtom(
   environmentPresentations.presentationsWithProvidersAtom,
 );
 
 export function useUsageLimitWorkspaces() {
   return useAtomValue(accountWorkspacesAtom);
+}
+
+export function useUsageDocumentVisible(): boolean {
+  return useSyncExternalStore(subscribeDocumentActivity, readVisible, () => true);
 }
 
 export function useUsageNow(active: boolean): number {

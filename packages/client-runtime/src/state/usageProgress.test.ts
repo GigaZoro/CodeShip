@@ -315,7 +315,7 @@ it("shows the first answer and preserves the slow provider row when it settles e
 
     const finished = settleUsageSnapshot(shown, first, [fresh], [fresh]);
     expect(finished?.providers.map(({ provider }) => provider)).toEqual(["codex", "cursor"]);
-    expect(finished?.providers.find(({ provider }) => provider === "cursor")?.sessions).toBe(0);
+    expect(finished?.providers.find(({ provider }) => provider === "cursor")?.totals).toBeNull();
 
     expect(settleUsageSnapshot(finished, first, [provisional], [provisional])).toBe(finished);
   }
