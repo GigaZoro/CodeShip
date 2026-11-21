@@ -1,7 +1,7 @@
 import type { AnyRouter } from "@tanstack/react-router";
 import { describe, expect, it } from "vite-plus/test";
 
-import { useThreadSelectionStore } from "../threadSelectionStore";
+import { publishShownThreadKeys, useThreadSelectionStore } from "../threadSelectionStore";
 import { installChatRouteCommands } from "./chatRouteCommands";
 
 type Match = { readonly routeId: string; readonly pathname: string };
@@ -37,6 +37,7 @@ describe("chat route commands", () => {
     const { router } = routerAt(CHAT);
     using stack = new DisposableStack();
     stack.defer(installChatRouteCommands(router));
+    stack.defer(publishShownThreadKeys(new Set(["env:thread-1"])));
     stack.defer(() => useThreadSelectionStore.getState().clearSelection());
 
     selectThread("env:thread-1");
@@ -46,12 +47,15 @@ describe("chat route commands", () => {
     expect(useThreadSelectionStore.getState().selectedThreadKeys.size).toBe(0);
     // With nothing selected, Escape is left for other handlers.
     expect(pressEscape().defaultPrevented).toBe(false);
+    selectThread("env:folded-thread");
+    expect(pressEscape().defaultPrevented).toBe(false);
   });
 
   it("stays out of the way off the chat route", () => {
     const { router, navigate } = routerAt([{ routeId: "__root__", pathname: "/pair" }]);
     using stack = new DisposableStack();
     stack.defer(installChatRouteCommands(router));
+    stack.defer(publishShownThreadKeys(new Set(["env:thread-1"])));
     stack.defer(() => useThreadSelectionStore.getState().clearSelection());
     selectThread("env:thread-1");
 

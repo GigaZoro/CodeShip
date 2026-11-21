@@ -153,6 +153,7 @@ import {
 import { resolveProjectExpanded, useUiStateStore } from "../uiStateStore";
 import {
   getThreadKeysToDeselectAfterDelete,
+  publishShownThreadKeys,
   useThreadSelectionStore,
 } from "../threadSelectionStore";
 import {
@@ -2530,9 +2531,7 @@ export default function Sidebar({
   })();
 
   const navigateToThread = (threadRef: ScopedThreadRef) => {
-    if (useThreadSelectionStore.getState().selectedThreadKeys.size > 0) {
-      clearSelection();
-    }
+    clearSelection();
     setSelectionAnchor(scopedThreadKey(threadRef));
     if (isMobile) {
       setOpenMobile(false);
@@ -2867,9 +2866,9 @@ export default function Sidebar({
   };
   const contextDragThreads = (): ReadonlyArray<ScopedThreadRef> => {
     const key = contextDragKeyRef.current;
-    if (key === null) return [];
-    const selected = useThreadSelectionStore.getState().selectedThreadKeys;
-    const keys = selected.has(key) ? [...selected] : [key];
+    if (key === null || !threadByKeyRef.current.has(key)) return [];
+    const selected = useThreadSelectionStore.getState().shownSelection();
+    const keys = selected.includes(key) ? selected : [key];
     return keys.flatMap((candidate) => {
       const ref = parseScopedThreadKey(candidate);
       return ref ? [ref] : [];
@@ -2911,7 +2910,7 @@ export default function Sidebar({
   };
   const dndSensors = useSensors(useSensor(SidebarPointerSensor, pointerSensorOptions));
   const sectionByThreadKeyRef = useRef(sectionByThreadKey);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes committed list data to refs read by stable drag and sweep callbacks
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes committed rows for drag, sweep, and selection handlers
   useLayoutEffect(() => {
     projectGroupsRef.current = projectGroups;
     orderedThreadKeysRef.current = orderedThreadKeys;
@@ -2919,6 +2918,7 @@ export default function Sidebar({
     settledThreadKeysRef.current = settledThreadKeys;
     snoozedThreadKeysRef.current = snoozedThreadKeys;
     sectionByThreadKeyRef.current = sectionByThreadKey;
+    return publishShownThreadKeys(isSearchingThreads ? null : threadByKey);
   });
   const startActionSweep = useStableCallback(
     (threadRef: ScopedThreadRef, action: SidebarSweepAction, event: PointerEvent) => {
@@ -3417,10 +3417,7 @@ export default function Sidebar({
     async (position: { x: number; y: number }) => {
       const api = readLocalApi();
       if (!api) return;
-      const selectedThreadKeys = [...useThreadSelectionStore.getState().selectedThreadKeys];
-      const threadKeys = selectedThreadKeys.filter((threadKey) =>
-        threadByKeyRef.current.has(threadKey),
-      );
+      const threadKeys = useThreadSelectionStore.getState().shownSelection();
       if (threadKeys.length === 0) return;
       const count = threadKeys.length;
       // oxlint-disable-next-line react/purity -- runs in an event handler (oxc#27309)
@@ -3758,7 +3755,7 @@ export default function Sidebar({
         );
       }
       removeFromSelection(
-        getThreadKeysToDeselectAfterDelete(selectedThreadKeys, deletedThreadKeys, (threadKey) => {
+        getThreadKeysToDeselectAfterDelete(threadKeys, deletedThreadKeys, (threadKey) => {
           const threadRef = parseScopedThreadKey(threadKey);
           return threadRef !== null && readThreadShell(threadRef) !== null;
         }),
@@ -3823,8 +3820,7 @@ export default function Sidebar({
         const api = readLocalApi();
         if (!api) return;
         const threadKey = scopedThreadKey(threadRef);
-        const selectionState = useThreadSelectionStore.getState();
-        if (selectionState.hasSelection() && selectionState.selectedThreadKeys.has(threadKey)) {
+        if (useThreadSelectionStore.getState().shownSelection().includes(threadKey)) {
           await handleMultiSelectContextMenu(position);
           return;
         }
@@ -4365,7 +4361,9 @@ export default function Sidebar({
                       <Select
                         value={statusFilter}
                         onValueChange={(value) => {
-                          if (value !== null) setStatusFilter(value);
+                          if (value === null || value === statusFilter) return;
+                          clearSelection();
+                          setStatusFilter(value);
                         }}
                       >
                         <SelectTrigger aria-label={t("Filter threads by status")} size="xs">
@@ -4385,7 +4383,9 @@ export default function Sidebar({
                       <Select
                         value={threadSort}
                         onValueChange={(value) => {
-                          if (value !== null) setThreadSort(value);
+                          if (value === null || value === threadSort) return;
+                          clearSelection();
+                          setThreadSort(value);
                         }}
                       >
                         <SelectTrigger aria-label={t("Sort by")} size="xs">
@@ -4414,11 +4414,12 @@ export default function Sidebar({
                               <Checkbox
                                 aria-label={tag}
                                 checked={tagFilter.has(tag)}
-                                onCheckedChange={() =>
+                                onCheckedChange={() => {
+                                  clearSelection();
                                   setSelectedTags((current) =>
                                     toggleThreadTagSelection(current, tag),
-                                  )
-                                }
+                                  );
+                                }}
                               />
                               <span className="truncate">{tag}</span>
                             </label>
@@ -4669,6 +4670,7 @@ export default function Sidebar({
                   size="xs"
                   variant="ghost"
                   onClick={() => {
+                    clearSelection();
                     setStatusFilter("all");
                     setSelectedTags([]);
                   }}
