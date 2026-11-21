@@ -1,3 +1,7 @@
+## 2026-11-24 — A landing's check no longer fails when another check looks at its place in line
+
+- Maintainers: on Windows, `vp run check:changed` in a landing on main could fail with EPERM as it took a free check slot, when another check:changed run was looking at the file that marks the landing's wait. That file now stays in place, like the slot files. No change to the app.
+
 ## 2026-11-24 — Usage stays visible while it updates
 
 - Usage keeps the last complete totals while a new period or filter loads. Background refreshes leave current figures at full opacity.

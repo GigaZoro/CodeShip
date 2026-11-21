@@ -544,7 +544,7 @@ describe("check:changed", () => {
   );
 
   it.effect(
-    "gives the next free slot to the run holding the landing turn ahead of an earlier waiter",
+    "gives the next free slot to the run holding the landing turn ahead of an earlier waiter, while another run looks at its marker",
     () =>
       Effect.gen(function* () {
         const started: Array<string> = [];
@@ -558,13 +558,26 @@ describe("check:changed", () => {
             }),
         });
         const options = { concurrency: 1, timeoutSeconds: 60, slotDirectory: yield* slotDirectory };
+        // Another run's look at the marker: locked when the landing first marks it, and open until the landing ends.
+        const look = yield* Effect.acquireRelease(
+          Effect.sync(
+            () =>
+              new NodeSqlite.DatabaseSync(
+                NodePath.join(options.slotDirectory, "landing-wait.sqlite"),
+              ),
+          ),
+          (db) => Effect.sync(() => db.close()),
+        );
         const holder = yield* runSteps([step("holder", 3)], options).pipe(Effect.forkChild);
         yield* TestClock.adjust("100 millis");
         const earlier = yield* runSteps([step("earlier", 1)], options).pipe(Effect.forkChild);
         yield* TestClock.adjust("100 millis");
+        look.exec("BEGIN EXCLUSIVE;");
         const landing = yield* runSteps([step("landing", 1)], { ...options, landing: true }).pipe(
           Effect.forkChild,
         );
+        yield* TestClock.adjust("100 millis");
+        look.exec("ROLLBACK;");
         for (let second = 0; second < 10; second++) yield* TestClock.adjust("1 second");
         yield* Effect.all([Fiber.join(holder), Fiber.join(earlier), Fiber.join(landing)]);
 
