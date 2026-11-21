@@ -1,3 +1,7 @@
+## 2026-11-21 — check:changed tests changed dependencies
+
+- A changed dependency patch, `patchedDependencies` entry or lockfile version now selects the tests that run that package, so a patch can no longer pass the checks while it breaks a test.
+
 ## 2026-11-21 — A closed pull request settles only where the merge rule is on
 
 - Turning on automatic settlement for one project no longer settles threads in a project that has both settlement rules off because their pull request was closed. A closed pull request now follows the project's "settle when merged" rule.

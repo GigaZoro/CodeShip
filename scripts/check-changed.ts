@@ -513,6 +513,109 @@ export const testsReaching = (input: {
   return [...tests].sort();
 };
 
+const packageName = (specifier: string) =>
+  specifier
+    .split("/")
+    .slice(0, specifier.startsWith("@") ? 2 : 1)
+    .join("/");
+const nameOfKey = (key: string) => key.slice(0, key.indexOf("@", 1));
+
+/** What pnpm-lock.yaml says: each resolved `name@version`, and which package names each name depends on. */
+const parseLock = (text: string) => {
+  const versions = new Set<string>();
+  const dependsOn = new Map<string, Set<string>>();
+  let section = "";
+  let name = "";
+  let inDependencies = false;
+  for (const line of text.split("\n")) {
+    const top = /^(\w+):/.exec(line);
+    if (top) section = top[1]!;
+    if (section !== "snapshots") continue;
+    const entry = /^ {2}'?([^'(\s][^'(]*?)(?:\(.*?)?'?:$/.exec(line);
+    if (entry) {
+      versions.add(entry[1]!);
+      name = nameOfKey(entry[1]!);
+      inDependencies = false;
+      continue;
+    }
+    if (/^ {4}\w+:/.test(line)) inDependencies = /^ {4}(?:optionalD|d)ependencies:/.test(line);
+    else if (inDependencies) {
+      const dependency = /^ {6}'?([^':]+)'?:/.exec(line)?.[1];
+      if (dependency === undefined) continue;
+      const known = dependsOn.get(dependency);
+      if (known === undefined) dependsOn.set(dependency, new Set([name]));
+      else known.add(name);
+    }
+  }
+  return { versions, dependents: dependsOn };
+};
+
+/** `patchedDependencies` of pnpm-workspace.yaml: patch file -> the package name it patches. */
+const patchedPackages = (text: string) => {
+  const patches = new Map<string, string>();
+  let inSection = false;
+  for (const line of text.split("\n")) {
+    if (/^\S/.test(line)) inSection = line.startsWith("patchedDependencies:");
+    const entry = inSection ? /^ {2}"?([^":]+?)"?:\s*"?(\S+?)"?\s*$/.exec(line) : null;
+    if (entry) patches.set(entry[2]!, nameOfKey(entry[1]!));
+  }
+  return patches;
+};
+
+/**
+ * Workspace files that import a changed dependency, or a package that depends on one: a patch, a
+ * `patchedDependencies` entry or a version in pnpm-lock.yaml changes what they run, though no code
+ * file changed. The caller selects their tests as it does for a changed source file.
+ */
+export const dependencyChangeFiles = (input: {
+  readonly changed: ReadonlyArray<string>;
+  readonly before: (file: string) => string;
+  readonly after: (file: string) => string;
+  readonly files: ReadonlySet<string>;
+  readonly read: (file: string) => string;
+}) => {
+  const changed = new Set(input.changed);
+  const lockChanged = changed.has("pnpm-lock.yaml");
+  const patchChanged = input.changed.some((file) => file.startsWith("patches/"));
+  if (!lockChanged && !patchChanged && !changed.has("pnpm-workspace.yaml")) return [];
+
+  const names = new Set<string>();
+  const oldPatches = patchedPackages(input.before("pnpm-workspace.yaml"));
+  const newPatches = patchedPackages(input.after("pnpm-workspace.yaml"));
+  for (const patches of [oldPatches, newPatches]) {
+    for (const [file, name] of patches) {
+      if (changed.has(file) || oldPatches.get(file) !== newPatches.get(file)) names.add(name);
+    }
+  }
+  const lock = parseLock(input.after("pnpm-lock.yaml"));
+  if (lockChanged) {
+    const old = parseLock(input.before("pnpm-lock.yaml")).versions;
+    for (const key of [...old, ...lock.versions]) {
+      if (old.has(key) !== lock.versions.has(key)) names.add(nameOfKey(key));
+    }
+  }
+  const queue = [...names];
+  for (let index = 0; index < queue.length; index += 1) {
+    for (const dependent of lock.dependents.get(queue[index]!) ?? []) {
+      if (!names.has(dependent)) {
+        names.add(dependent);
+        queue.push(dependent);
+      }
+    }
+  }
+
+  return [...input.files]
+    .filter(
+      (file) =>
+        CODE.test(file) &&
+        !file.startsWith(".repos/") &&
+        [...input.read(file).matchAll(PACKAGE_IMPORT)].some(([, specifier]) =>
+          names.has(packageName(specifier!)),
+        ),
+    )
+    .sort();
+};
+
 // A flag wins over its environment variable; either must be a positive integer.
 const override = Effect.fn("checkChanged.override")(function* (
   flagName: string,
@@ -829,6 +932,23 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     }
   }
   const workspaceFiles = new Set([...(yield* lines("ls-files")), ...(yield* untrackedFiles)]);
+  const dependencyInputs = ["pnpm-lock.yaml", "pnpm-workspace.yaml"];
+  const baseText = (file: string) =>
+    git(root, ["show", `${base}:${file}`]).pipe(
+      Effect.map((stdout) => stdout.toString()),
+      Effect.orElseSucceed(() => ""),
+    );
+  const baseTexts = new Map<string, string>();
+  const afterTexts = new Map<string, string>();
+  if (files.some((file) => dependencyInputs.includes(file) || file.startsWith("patches/"))) {
+    for (const file of dependencyInputs) {
+      baseTexts.set(file, yield* baseText(file));
+      afterTexts.set(
+        file,
+        yield* fs.readFileString(inRoot(file)).pipe(Effect.orElseSucceed(() => "")),
+      );
+    }
+  }
   const contents = new Map<string, string>();
   yield* Effect.forEach(
     [...workspaceFiles].filter((file) => CODE.test(file) && !file.startsWith(".repos/")),
@@ -842,6 +962,29 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   );
   for (const test of testsReaching({
     changed: present,
+    files: workspaceFiles,
+    packages,
+    read: (file) => contents.get(file) ?? "",
+  })) {
+    tests.add(test);
+  }
+  const dependencyFiles = dependencyChangeFiles({
+    changed: files,
+    before: (file) => baseTexts.get(file) ?? "",
+    after: (file) => afterTexts.get(file) ?? "",
+    files: workspaceFiles,
+    read: (file) => contents.get(file) ?? "",
+  });
+  for (const file of dependencyFiles) {
+    if (TEST.test(file)) tests.add(file);
+    const dir = path.dirname(file);
+    const prefix = `${path.basename(file).replace(CODE, "")}.`;
+    for (const entry of yield* fs.readDirectory(inRoot(dir))) {
+      if (entry.startsWith(prefix) && TEST.test(entry)) tests.add(path.join(dir, entry));
+    }
+  }
+  for (const test of testsReaching({
+    changed: dependencyFiles,
     files: workspaceFiles,
     packages,
     read: (file) => contents.get(file) ?? "",

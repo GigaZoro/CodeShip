@@ -23,6 +23,7 @@ import {
   argumentBatches,
   comparisonBase,
   defaultConcurrency,
+  dependencyChangeFiles,
   docReaderTests,
   gitLines,
   runSteps,
@@ -383,6 +384,56 @@ describe("check:changed", () => {
       }),
       expected,
     );
+  });
+
+  describe("dependencyChangeFiles", () => {
+    const workspace = (patch: string) => `patchedDependencies:\n  dep-a@1.0.0: patches/${patch}\n`;
+    const lock = (version: string) =>
+      [
+        "snapshots:",
+        "",
+        `  dep-a@${version}:`,
+        "    dependencies:",
+        "      leaf: 1.0.0",
+        "",
+        "  dep-b@1.0.0:",
+        "    dependencies:",
+        "      dep-a: " + version,
+        "",
+      ].join("\n");
+    const sources: Record<string, string> = {
+      "app/use.ts": 'import { b } from "dep-b/sub";\n',
+      "app/use.test.ts": 'import { x } from "./use.ts";\n',
+      "app/other.ts": 'import { y } from "unrelated";\n',
+    };
+    const run = (
+      changed: Array<string>,
+      before: Record<string, string>,
+      after: Record<string, string>,
+    ) =>
+      dependencyChangeFiles({
+        changed,
+        before: (file) => before[file] ?? "",
+        after: (file) => after[file] ?? "",
+        files: new Set(Object.keys(sources)),
+        read: (file) => sources[file] ?? "",
+      });
+
+    it("selects files that import a patched package's dependents when only the patch changes", () => {
+      const same = {
+        "pnpm-workspace.yaml": workspace("dep-a@1.0.0.patch"),
+        "pnpm-lock.yaml": lock("1.0.0"),
+      };
+      assert.deepStrictEqual(run(["patches/dep-a@1.0.0.patch"], same, same), ["app/use.ts"]);
+    });
+
+    it("selects them when a lockfile version changes, and nothing for an unrelated lockfile change", () => {
+      const before = { "pnpm-lock.yaml": lock("1.0.0") };
+      assert.deepStrictEqual(run(["pnpm-lock.yaml"], before, { "pnpm-lock.yaml": lock("1.0.1") }), [
+        "app/use.ts",
+      ]);
+      assert.deepStrictEqual(run(["pnpm-lock.yaml"], before, before), []);
+    });
   });
 
   it.each([
