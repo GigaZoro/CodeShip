@@ -9316,7 +9316,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     ) {
       const { parentProjection, task } = yield* commandTaskRecords(command);
-      if (task.result !== null || task.status !== "pending") return;
+      // A chat closed first keeps its command unstarted, which a start decided before only stops.
+      if (
+        task.result !== null ||
+        task.status !== "pending" ||
+        parentProjection.thread.archivedAt !== null ||
+        parentProjection.thread.deletedAt !== null
+      ) {
+        return;
+      }
       const now = yield* DateTime.now;
       const emitEvent = emit(events, command);
       const { progress: _taskProgress, ...startedTask } = task;

@@ -1121,11 +1121,7 @@ const make = Effect.gen(function* () {
         const waiting = queue.filter((row) => row.thread_id === threadId);
         for (const row of waiting) queue.splice(queue.indexOf(row), 1);
         yield* Effect.forEach(waiting, (row) =>
-          endUnstarted({
-            row,
-            status: "interrupted",
-            result: `Stopped: the chat was ${why}.`,
-          }).pipe(Effect.ignore({ log: true })),
+          endUnstarted({ row, ...chatClosed(why) }).pipe(Effect.ignore({ log: true })),
         );
         return [...watched.values()].filter(
           (row) => row.thread_id === threadId && row.status === "running",
@@ -1139,8 +1135,7 @@ const make = Effect.gen(function* () {
           commandId: CommandId.make(`command:command-task-${why}:${row.task_id}`),
           parentThreadId: threadId,
           taskId: NodeId.make(row.task_id),
-          status: "interrupted",
-          result: `Stopped: the chat was ${why}.`,
+          ...chatClosed(why),
         })
         .pipe(
           Effect.ignore,
@@ -1503,6 +1498,30 @@ const make = Effect.gen(function* () {
     result: `Could not start the command: ${message}`,
   });
 
+  const chatClosed = (why: "archived" | "deleted") => ({
+    status: "interrupted" as const,
+    result: `Stopped: the chat was ${why}.`,
+  });
+
+  /**
+   * Why a queued command must not start, read now; undefined while it may. `end` is what its task
+   * is told, none when the task already has its result.
+   */
+  const notToStart = Effect.fn("CommandRunner.notToStart")(function* (row: CommandRunRow) {
+    const records = yield* threads
+      .getThreadRecords(ThreadId.make(row.thread_id), ["subagents"], {
+        subagentIds: [NodeId.make(row.task_id)],
+      })
+      .pipe(Effect.result);
+    if (records._tag === "Failure") return { end: couldNotStart(records.failure.message) };
+    const { thread, subagents } = records.success;
+    // Its task got its result while it waited, or is gone: nothing is left to start.
+    if (subagents[0] === undefined || subagents[0].result !== null) return {};
+    const closed = closedOf(thread);
+    if (closed === undefined) return undefined;
+    return { end: chatClosed(closed) };
+  });
+
   /**
    * Starts the oldest queued command once this machine has memory for it, one a pass, so each
    * start reads memory after the one before it took its share. Its time limit counts from here.
@@ -1519,40 +1538,10 @@ const make = Effect.gen(function* () {
         if (queue[0] !== next) return;
         // The read took a while, and may have started a process of its own.
         if ((yield* memoryAdmission.shortage) !== null) return;
-        const parentThreadId = ThreadId.make(next.thread_id);
-        const taskId = NodeId.make(next.task_id);
-        const records = yield* threads
-          .getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [taskId] })
-          .pipe(Effect.result);
-        if (records._tag === "Failure") {
-          return yield* dropQueued(next, couldNotStart(records.failure.message));
-        }
-        const { thread, subagents } = records.success;
-        // Its task got its result while it waited, or is gone: nothing is left to start.
-        if (subagents[0] === undefined || subagents[0].result !== null) {
-          return yield* dropQueued(next);
-        }
-        const closed = closedOf(thread);
-        if (closed !== undefined) {
-          return yield* dropQueued(next, {
-            status: "interrupted",
-            result: `Stopped: the chat was ${closed}.`,
-          });
-        }
+        const instead = yield* notToStart(next);
+        if (instead !== undefined) return yield* dropQueued(next, instead.end);
         if (environment._tag === "Failure") {
           return yield* dropQueued(next, couldNotStart(environment.failure.message));
-        }
-        // Its task runs before its command does, so a cancel that lands first keeps it unstarted.
-        const startedTask = yield* threads
-          .dispatch({
-            type: "delegated_task.command.start",
-            commandId: CommandId.make(`command:command-task-start:${taskId}`),
-            parentThreadId,
-            taskId,
-          })
-          .pipe(Effect.result);
-        if (startedTask._tag === "Failure") {
-          return yield* dropQueued(next, couldNotStart(startedTask.failure.message));
         }
         const recorded = yield* recordedClocks;
         const now = DateTime.makeUnsafe(recorded.wall);
@@ -1563,11 +1552,30 @@ const make = Effect.gen(function* () {
           started_at: DateTime.formatIso(now),
           deadline_at: DateTime.formatIso(DateTime.add(now, { milliseconds: limitMs })),
         };
+        // Before its task runs: a server that stops between the two leaves the next one a command
+        // recorded as running that never started, which it ends as it ends any other.
         yield* sql`
           UPDATE command_runs
           SET status = ${row.status}, started_at = ${row.started_at}, deadline_at = ${row.deadline_at}
           WHERE task_id = ${row.task_id}
         `;
+        // Its task runs before its command does. The start is refused once its task has a result
+        // or its chat is closed, so a cancel or a close that lands first keeps it unstarted.
+        const startedTask = yield* threads
+          .dispatch({
+            type: "delegated_task.command.start",
+            commandId: CommandId.make(`command:command-task-start:${next.task_id}`),
+            parentThreadId: ThreadId.make(next.thread_id),
+            taskId: NodeId.make(next.task_id),
+          })
+          .pipe(Effect.result);
+        if (startedTask._tag === "Failure") {
+          const refused = yield* notToStart(next);
+          return yield* dropQueued(
+            next,
+            refused === undefined ? couldNotStart(startedTask.failure.message) : refused.end,
+          );
+        }
         queue.shift();
         const notStarted = yield* startRecorded(row, recorded, environment.success);
         if (notStarted !== undefined) yield* endUnstarted({ row, ...couldNotStart(notStarted) });
@@ -1693,7 +1701,7 @@ const make = Effect.gen(function* () {
               return yield* failure("orchestration_error", "The command was not recorded.");
             }
             /** Ends a task whose command never started, with nothing left to wake its thread for. */
-            const unstarted = (message: string, status: "failed" | "interrupted" = "failed") =>
+            const unstarted = ({ status, result: message }: Omit<UnstartedEnd, "row">) =>
               threads
                 .dispatch({
                   type: "delegated_task.command.complete",
@@ -1728,7 +1736,7 @@ const make = Effect.gen(function* () {
                 })
                 .pipe(Effect.result);
               if (records._tag === "Failure") {
-                return yield* unstarted(`Could not start the command: ${records.failure.message}`);
+                return yield* unstarted(couldNotStart(records.failure.message));
               }
               const { thread, subagents } = records.success;
               // Cancelled, or its first request could not start it: the task already says why.
@@ -1736,7 +1744,7 @@ const make = Effect.gen(function* () {
               if (endedWith != null) return yield* failure("orchestration_error", endedWith);
               const closed = closedOf(thread);
               if (closed !== undefined) {
-                return yield* unstarted(`Stopped: the chat was ${closed}.`, "interrupted");
+                return yield* unstarted(chatClosed(closed));
               }
               const clocks = yield* recordedClocks;
               const now = DateTime.makeUnsafe(clocks.wall);
@@ -1778,7 +1786,7 @@ const make = Effect.gen(function* () {
                 )
               `.pipe(Effect.result);
               if (inserted._tag === "Failure") {
-                return yield* unstarted(`Could not start the command: ${inserted.failure.message}`);
+                return yield* unstarted(couldNotStart(inserted.failure.message));
               }
               if (startEnv === undefined) {
                 queue.push(row);
@@ -1786,7 +1794,7 @@ const make = Effect.gen(function* () {
               }
               const notStarted = yield* startRecorded(row, clocks, startEnv);
               if (notStarted !== undefined) {
-                return yield* unstarted(`Could not start the command: ${notStarted}`);
+                return yield* unstarted(couldNotStart(notStarted));
               }
               return result(taskId);
             }).pipe(
@@ -1856,21 +1864,6 @@ const make = Effect.gen(function* () {
     return recovered;
   });
 
-  /** Ends the task of a command whose chat was closed while no server ran. */
-  const interruptClosed = (task: ProjectionStore.ProjectionOpenCommandTask) =>
-    task.threadClosed === null
-      ? Effect.void
-      : threads
-          .dispatch({
-            type: "delegated_task.command.complete",
-            commandId: CommandId.make(`command:command-task-${task.threadClosed}:${task.taskId}`),
-            parentThreadId: task.parentThreadId,
-            taskId: task.taskId,
-            status: "interrupted",
-            result: `Stopped: the chat was ${task.threadClosed}.`,
-          })
-          .pipe(Effect.ignore);
-
   /** What one record an earlier server left needs, given its task if that is still open. */
   const adoptRow = Effect.fn("CommandRunner.adoptRow")(function* (
     stored: CommandRunRow,
@@ -1878,12 +1871,14 @@ const make = Effect.gen(function* () {
   ) {
     if (stored.status === "queued") {
       // It waits again, unless its task got its result or its chat was closed meanwhile.
-      if (task !== undefined && task.threadClosed === null) {
+      if (task === undefined) {
+        return yield* sql`DELETE FROM command_runs WHERE task_id = ${stored.task_id}`;
+      }
+      if (task.threadClosed === null) {
         queue.push(stored);
         return;
       }
-      if (task !== undefined) yield* interruptClosed(task);
-      return yield* sql`DELETE FROM command_runs WHERE task_id = ${stored.task_id}`;
+      return yield* endUnstarted({ row: stored, ...chatClosed(task.threadClosed) });
     }
     const row = stored.pid === null ? yield* recoverPid(stored) : stored;
     if (row === undefined) return;
@@ -1898,7 +1893,17 @@ const make = Effect.gen(function* () {
     }
     if (task === undefined || task.threadClosed !== null) {
       // Its task got its result while no server ran (a cancel), or its chat was closed.
-      if (task !== undefined) yield* interruptClosed(task);
+      if (task?.threadClosed != null) {
+        yield* threads
+          .dispatch({
+            type: "delegated_task.command.complete",
+            commandId: CommandId.make(`command:command-task-${task.threadClosed}:${row.task_id}`),
+            parentThreadId: task.parentThreadId,
+            taskId: task.taskId,
+            ...chatClosed(task.threadClosed),
+          })
+          .pipe(Effect.ignore);
+      }
       yield* killTree(row);
       const now = yield* nowIso;
       return yield* settle({ ...row, status: "stopped", ended_at: now, delivered_at: now });
@@ -1942,8 +1947,9 @@ const make = Effect.gen(function* () {
         (row) => row.task_id,
       ),
     );
+    // Read again: a task adoption just told is no longer open, though its record may be gone.
     yield* Effect.forEach(
-      open.filter((task) => !known.has(task.taskId)),
+      (yield* projections.getOpenCommandTasks).filter((task) => !known.has(task.taskId)),
       ({ parentThreadId, taskId }) =>
         threads
           .dispatch({
