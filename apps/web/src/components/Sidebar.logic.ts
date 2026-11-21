@@ -994,7 +994,7 @@ export function capSidebarFolderThreads<T>(
   if (overflow.length <= 1) return all;
   const reveal = Math.max(0, (revealTo ?? limit) - visible.length);
   if (reveal === 0) return { visible, overflow };
-  if (reveal >= overflow.length) return all;
+  if (reveal >= overflow.length - 1) return all;
   const folded = overflow.slice(reveal);
   const foldedSet = new Set(folded);
   return { visible: threads.filter((thread) => !foldedSet.has(thread)), overflow: folded };

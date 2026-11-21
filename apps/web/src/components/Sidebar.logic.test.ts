@@ -1760,6 +1760,11 @@ describe("capSidebarFolderThreads", () => {
     });
     // Folding one thread would only swap it for a "Show 1 more" row.
     expect(capSidebarFolderThreads(ids, 3, keep)).toEqual({ visible: ids, overflow: [] });
+    expect(capSidebarFolderThreads(ids, 1, keep, 3)).toEqual({
+      visible: ["a", "b", "e"],
+      overflow: ["c", "d"],
+    });
+    expect(capSidebarFolderThreads(ids, 1, keep, 4)).toEqual({ visible: ids, overflow: [] });
   });
 });
 

@@ -46,7 +46,9 @@ const REASON_ICON = {
 /** Listed threads already passed the snooze and settle checks, so only the kind of wait is left. */
 function needsYouReasonOf(thread: EnvironmentThreadShell): NeedsYouReason {
   const status = resolveThreadStatus(thread);
-  return status === "ready" || status === "working" || status === "waiting" ? "failed" : status;
+  return status === "approval" || status === "input" || status === "request" || status === "limited"
+    ? status
+    : "failed";
 }
 
 function firstLine(text: string): string {
