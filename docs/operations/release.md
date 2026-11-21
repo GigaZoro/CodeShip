@@ -58,6 +58,11 @@ the version.
   - stable releases are aliased to the `latest` hosted app channel
   - nightly releases are aliased to the `nightly` hosted app channel
 - Signing is optional and auto-detected per platform from secrets.
+- Each build job installs before it signs. It stages the CLI archive and the desktop app first,
+  before any signing secret is in a step's environment or any certificate or key is on the runner,
+  and those installs take exactly the root `pnpm-lock.yaml` versions for that platform. Only then do
+  the package steps import certificates and keys, and they sign and package the staged files
+  without installing anything. `scripts/release-desktop-workflow.test.ts` keeps that order.
 
 ## Releasing from a fork
 

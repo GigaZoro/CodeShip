@@ -990,6 +990,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         );
         const error = yield* preflightWindowsDesktopBuild({
           arch: "x64",
+          phase: "all",
           bundlesWslRuntime: true,
         }).pipe(
           Effect.provide(
@@ -1031,6 +1032,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
         yield* preflightWindowsDesktopBuild({
           arch: "x64",
+          phase: "all",
           bundlesWslRuntime: true,
         }).pipe(
           Effect.provide(
@@ -1051,6 +1053,32 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.notInclude(commands, "powershell.exe");
       }),
     ),
+  );
+
+  it.effect("packages a finished stage without the Windows build toolchain", () =>
+    Effect.gen(function* () {
+      const commands: string[] = [];
+      const spawner = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          const childProcess = command as unknown as { readonly command: string };
+          commands.push(childProcess.command);
+          return Effect.succeed(mockProcess(childProcess.command === "tar.exe" ? 0 : 1));
+        }),
+      );
+
+      yield* preflightWindowsDesktopBuild({
+        arch: "x64",
+        phase: "package",
+        bundlesWslRuntime: true,
+      }).pipe(
+        Effect.provide(
+          Layer.merge(spawner, ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+        ),
+      );
+
+      assert.deepStrictEqual(commands, ["tar.exe"]);
+    }),
   );
 
   it.effect("rejects a PATH-discovered Python executable that is not Python 3", () =>
@@ -1079,6 +1107,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         );
         const error = yield* preflightWindowsDesktopBuild({
           arch: "x64",
+          phase: "all",
           bundlesWslRuntime: false,
         }).pipe(
           Effect.provide(

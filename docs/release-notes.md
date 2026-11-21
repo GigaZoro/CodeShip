@@ -1,3 +1,9 @@
+## 2026-11-21 — Release builds install only locked versions, before signing
+
+- Release builds of the desktop app, its Windows server sidecar and the CLI archive install exactly the dependency versions in the repository's lockfile and fail on any it does not hold, instead of resolving new versions from the registry while building a release.
+- Those installs now finish before any signing certificate or key reaches the build machine, and signing works only on what they staged.
+- When Electron's own download did not finish, the fallback download is checked against the SHA-256 that Electron publishes before it is unpacked.
+
 ## 2026-11-21 — Start a worktree from a branch that exists only on the remote
 
 - Creating a worktree on a new branch from a base that exists only on the remote, such as a branch pushed from another machine and never checked out here, now starts from the remote copy instead of failing with "git worktree add failed".

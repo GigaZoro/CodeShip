@@ -2194,24 +2194,31 @@ function windowsVswherePrerequisiteScript(arch: typeof BuildArch.Type): string {
 }
 
 export const preflightWindowsDesktopBuild = Effect.fn("preflightWindowsDesktopBuild")(
-  function* (input: { readonly arch: typeof BuildArch.Type; readonly bundlesWslRuntime: boolean }) {
+  function* (input: {
+    readonly arch: typeof BuildArch.Type;
+    readonly phase: StagePhase;
+    readonly bundlesWslRuntime: boolean;
+  }) {
     const rustTarget = resolveResourceMonitorRustTargets("win", input.arch)[0]!;
-    const reuseResourceMonitor = yield* Config.Boolean(
-      "T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR",
-    ).pipe(Config.withDefault(false));
-    const python = yield* resolvePythonForNodeGyp();
+    // Packaging builds and installs nothing; it only reads the bundled WSL runtime.
+    const stages = input.phase !== "package";
+    const buildsResourceMonitor =
+      stages &&
+      !(yield* Config.Boolean("T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR").pipe(
+        Config.withDefault(false),
+      ));
+    const hasPython = !stages || (yield* resolvePythonForNodeGyp()) !== undefined;
     const checks = yield* Effect.all(
       {
-        rust: reuseResourceMonitor
-          ? Effect.succeed(true)
-          : Effect.all([
+        rust: buildsResourceMonitor
+          ? Effect.all([
               desktopBuildProbeSucceeds(ChildProcess.make("cargo", ["--version"]), "cargo"),
               rustTargetIsInstalled(rustTarget),
-            ]).pipe(Effect.map(([cargo, target]) => cargo && target)),
-        python: Effect.succeed(python !== undefined),
-        msvc: reuseResourceMonitor
-          ? Effect.succeed(true)
-          : desktopBuildProbeSucceeds(
+            ]).pipe(Effect.map(([cargo, target]) => cargo && target))
+          : Effect.succeed(true),
+        python: Effect.succeed(hasPython),
+        msvc: buildsResourceMonitor
+          ? desktopBuildProbeSucceeds(
               ChildProcess.make("powershell.exe", [
                 "-NoLogo",
                 "-NoProfile",
@@ -2220,7 +2227,8 @@ export const preflightWindowsDesktopBuild = Effect.fn("preflightWindowsDesktopBu
                 windowsVswherePrerequisiteScript(input.arch),
               ]),
               "Visual Studio Build Tools",
-            ),
+            )
+          : Effect.succeed(true),
         tar: input.bundlesWslRuntime
           ? desktopBuildProbeSucceeds(ChildProcess.make("tar.exe", ["--version"]), "tar")
           : Effect.succeed(true),
@@ -3761,15 +3769,18 @@ const preflightDesktopBuild = Effect.fn("preflightDesktopBuild")(function* (
   options: ResolvedBuildOptions,
 ) {
   const hostPlatform = yield* HostProcess.Platform;
-  if (hostPlatform === "linux" && options.platform === "linux") {
+  // The Linux and macOS checks cover only tools the stage phase uses.
+  const stages = options.phase !== "package";
+  if (stages && hostPlatform === "linux" && options.platform === "linux") {
     yield* preflightLinuxDesktopBuild(options.arch);
   }
-  if (hostPlatform === "darwin" && options.platform === "mac") {
+  if (stages && hostPlatform === "darwin" && options.platform === "mac") {
     yield* preflightMacDesktopBuild(options.arch);
   }
   if (hostPlatform === "win32" && options.platform === "win") {
     yield* preflightWindowsDesktopBuild({
       arch: options.arch,
+      phase: options.phase,
       bundlesWslRuntime: bundlesWslRuntime({
         platform: options.platform,
         runtimeArchivePath: options.wslRuntime,

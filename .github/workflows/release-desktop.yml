@@ -175,10 +175,10 @@ jobs:
         env:
           pnpm_config_cache_dir: ${{ runner.temp }}/pnpm-metadata
 
-      # The CLI archive and the staged app install without a lockfile, so they
-      # ask the registry about every package and fetch platform packages the
-      # workspace store lacks. They share this registry metadata and store. A
-      # new week starts cold, which bounds how stale cached ranges can get.
+      # The CLI archive and the staged app install the root lockfile's versions,
+      # including platform packages the workspace store lacks, into a store of
+      # their own that this cache keeps. A new week starts cold, which bounds
+      # how much unused content the cache carries.
       - name: Resolve staged install cache
         id: stage_pnpm
         shell: bash
@@ -358,6 +358,102 @@ jobs:
           T3CODE_TELEMETRY_CHANNEL: ${{ github.repository == 'pingdotgg/t3code' && inputs.release_channel || 'dev' }}
         run: node apps/server/scripts/cli.ts build-exe --verbose ${{ inputs.platform == 'win' && format('--target win-{0}', inputs.arch) || '' }}
 
+      - name: Stage resource monitor for the CLI archive
+        if: inputs.cli_archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary_name="t3-resource-monitor"
+          if [[ "${{ inputs.platform }}" == "win" ]]; then
+            binary_name="${binary_name}.exe"
+          fi
+          target_dir="$RUNNER_TEMP/cli-resource-monitor/${{ inputs.resource_key }}"
+          mkdir -p "$target_dir"
+          cp "native/resource-monitor/target/${{ inputs.rust_target }}/release/${binary_name}" "$target_dir/$binary_name"
+
+      - uses: ./.github/actions/setup-apt-mirrors
+        if: inputs.platform == 'linux'
+
+      # The Linux archive ships libatomic.so.1 and points t3's RUNPATH at it.
+      - name: Install patchelf
+        if: inputs.cli_archive && inputs.platform == 'linux'
+        shell: bash
+        run: command -v patchelf || { sudo apt-get update && sudo apt-get install -y patchelf; }
+
+      # Every install and stage step runs before signing material reaches this
+      # runner and without signing secrets, so no dependency's install script
+      # can read them. The package steps below sign only what the stages built
+      # (scripts/lib/stage-dir.ts); scripts/release-desktop-workflow.test.ts
+      # keeps that order.
+      - name: Stage CLI archive
+        if: inputs.cli_archive
+        shell: bash
+        env:
+          pnpm_config_cache_dir: ${{ steps.stage_pnpm.outputs.dir }}/cache
+          pnpm_config_store_dir: ${{ steps.stage_pnpm.outputs.dir }}/store
+          pnpm_config_prefer_offline: "true"
+        run: |
+          node scripts/build-cli-archive.ts \
+            --phase stage \
+            --stage-dir "$RUNNER_TEMP/cli-archive-stage" \
+            --platform "${{ inputs.platform }}" \
+            --arch "${{ inputs.arch }}" \
+            --version "${{ inputs.version }}" \
+            --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor"
+
+      - name: Install Linux desktop build libraries
+        if: inputs.platform == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config
+          if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
+              sudo apt-get install -y imagemagick
+          fi
+
+          if command -v magick >/dev/null 2>&1; then
+              magick -version
+          else
+              convert -version
+          fi
+
+      - name: Stage desktop artifact
+        shell: bash
+        env:
+          # pnpm only goes to the registry for packages or versions the cache lacks.
+          pnpm_config_cache_dir: ${{ steps.stage_pnpm.outputs.dir }}/cache
+          pnpm_config_store_dir: ${{ steps.stage_pnpm.outputs.dir }}/store
+          pnpm_config_prefer_offline: "true"
+          T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: true
+          T3CODE_DESKTOP_REUSE_LINUX_CAPTURE_HELPERS: ${{ steps.capture_helper_cache.outputs.cache-hit == 'true' }}
+        run: |
+          vp run dist:desktop:artifact \
+            --phase stage \
+            --stage-dir "$RUNNER_TEMP/desktop-artifact-stage" \
+            --platform "${{ inputs.platform }}" \
+            --target "${{ inputs.target }}" \
+            --arch "${{ inputs.arch }}" \
+            --build-version "${{ inputs.version }}" \
+            --skip-build \
+            --verbose
+
+      # Warm installs only touch the store index, so new content means a fetch.
+      - name: Check staged install cache for new content
+        id: stage_pnpm_changed
+        shell: bash
+        run: |
+          dir="${{ steps.stage_pnpm.outputs.dir }}"
+          new=$(find "$dir/cache/v12" "$dir/store/v11/files" -type f -newer "$RUNNER_TEMP/desktop-stage-pnpm.marker" 2>/dev/null | wc -l | tr -d ' ')
+          echo "Staged installs added $new cached files."
+          echo "changed=$([[ "$new" -gt 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Save staged install cache
+        if: steps.stage_pnpm_changed.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ steps.stage_pnpm.outputs.dir }}
+          key: ${{ steps.stage_pnpm_cache.outputs.cache-primary-key }}
+
       - name: Import macOS signing certificate for the CLI archive
         if: inputs.cli_archive && inputs.platform == 'mac'
         shell: bash
@@ -389,35 +485,10 @@ jobs:
           echo "T3CODE_CLI_MAC_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
           echo "macOS CLI signing enabled."
 
-      - name: Stage resource monitor for the CLI archive
-        if: inputs.cli_archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          binary_name="t3-resource-monitor"
-          if [[ "${{ inputs.platform }}" == "win" ]]; then
-            binary_name="${binary_name}.exe"
-          fi
-          target_dir="$RUNNER_TEMP/cli-resource-monitor/${{ inputs.resource_key }}"
-          mkdir -p "$target_dir"
-          cp "native/resource-monitor/target/${{ inputs.rust_target }}/release/${binary_name}" "$target_dir/$binary_name"
-
-      - uses: ./.github/actions/setup-apt-mirrors
-        if: inputs.platform == 'linux'
-
-      # The Linux archive ships libatomic.so.1 and points t3's RUNPATH at it.
-      - name: Install patchelf
-        if: inputs.cli_archive && inputs.platform == 'linux'
-        shell: bash
-        run: command -v patchelf || { sudo apt-get update && sudo apt-get install -y patchelf; }
-
-      - name: Build CLI archive
+      - name: Package CLI archive
         if: inputs.cli_archive
         shell: bash
         env:
-          pnpm_config_cache_dir: ${{ steps.stage_pnpm.outputs.dir }}/cache
-          pnpm_config_store_dir: ${{ steps.stage_pnpm.outputs.dir }}/store
-          pnpm_config_prefer_offline: "true"
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -435,10 +506,11 @@ jobs:
             export APPLE_API_KEY="$key_path"
           fi
           node scripts/build-cli-archive.ts \
+            --phase package \
+            --stage-dir "$RUNNER_TEMP/cli-archive-stage" \
             --platform "${{ inputs.platform }}" \
             --arch "${{ inputs.arch }}" \
             --version "${{ inputs.version }}" \
-            --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" \
             --output-dir release-cli
 
       - name: Smoke-test CLI archive
@@ -453,22 +525,6 @@ jobs:
           name: cli-${{ inputs.platform }}-${{ inputs.arch }}
           path: release-cli/*
           if-no-files-found: error
-
-      - name: Install Linux desktop build libraries
-        if: inputs.platform == 'linux'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsecret-1-dev pkg-config
-          if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
-              sudo apt-get install -y imagemagick
-          fi
-
-          if command -v magick >/dev/null 2>&1; then
-              magick -version
-          else
-              convert -version
-          fi
 
       # The WSL backend runs the Linux CLI archive inside the distro, so the
       # Windows desktop embeds the same-arch archive the release attaches.
@@ -531,15 +587,9 @@ jobs:
           name: cli-linux-${{ inputs.arch }}
           path: wsl-runtime
 
-      - name: Build desktop artifact
+      - name: Package desktop artifact
         shell: bash
         env:
-          # pnpm only goes to the registry for packages or versions the cache lacks.
-          pnpm_config_cache_dir: ${{ steps.stage_pnpm.outputs.dir }}/cache
-          pnpm_config_store_dir: ${{ steps.stage_pnpm.outputs.dir }}/store
-          pnpm_config_prefer_offline: "true"
-          T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: true
-          T3CODE_DESKTOP_REUSE_LINUX_CAPTURE_HELPERS: ${{ steps.capture_helper_cache.outputs.cache-hit == 'true' }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -559,16 +609,14 @@ jobs:
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
         run: |
           args=(
+            --phase package
+            --stage-dir "$RUNNER_TEMP/desktop-artifact-stage"
             --platform "${{ inputs.platform }}"
             --target "${{ inputs.target }}"
             --arch "${{ inputs.arch }}"
             --build-version "${{ inputs.version }}"
-            --skip-build
             --verbose
           )
-          if [[ -n "${{ inputs.verify_runner }}" ]]; then
-            args+=(--keep-stage)
-          fi
 
           has_all() {
             for value in "$@"; do
@@ -647,23 +695,6 @@ jobs:
 
           vp run dist:desktop:artifact "${args[@]}"
 
-      # Warm installs only touch the store index, so new content means a fetch.
-      - name: Check staged install cache for new content
-        id: stage_pnpm_changed
-        shell: bash
-        run: |
-          dir="${{ steps.stage_pnpm.outputs.dir }}"
-          new=$(find "$dir/cache/v12" "$dir/store/v11/files" -type f -newer "$RUNNER_TEMP/desktop-stage-pnpm.marker" 2>/dev/null | wc -l | tr -d ' ')
-          echo "Staged installs added $new cached files."
-          echo "changed=$([[ "$new" -gt 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-
-      - name: Save staged install cache
-        if: steps.stage_pnpm_changed.outputs.changed == 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ${{ steps.stage_pnpm.outputs.dir }}
-          key: ${{ steps.stage_pnpm_cache.outputs.cache-primary-key }}
-
       # A build can package fine and still not open (a missing module in the
       # backend or the bundle). This launches the app from the shipped
       # AppImage or DMG.
@@ -704,8 +735,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p verify
-          unpacked=$(ls -d "${TMPDIR:-/tmp}"/t3code-desktop-${{ inputs.platform }}-stage-*/app/dist/"$UNPACKED_DIR")
-          tar -C "$(dirname "$unpacked")" -cf verify/unpacked.tar "$(basename "$unpacked")"
+          tar -C "$RUNNER_TEMP/desktop-artifact-stage/app/dist" -cf verify/unpacked.tar "$UNPACKED_DIR"
           esbuild=scripts/node_modules/.bin/esbuild
           banner="import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);"
           # build-desktop-artifact.ts's own import.meta.main guard must not run
