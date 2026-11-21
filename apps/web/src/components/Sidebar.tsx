@@ -139,6 +139,7 @@ import {
   useAcknowledgeThreadWoke,
   useThreadActions,
 } from "../hooks/useThreadActions";
+import { useReopenLastArchivedThread } from "../hooks/useReopenLastArchivedThread";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useOrderWhileOpen } from "../hooks/useOrderWhileOpen";
 import { useProjectPin } from "../hooks/useProjectGroupUpdate";
@@ -1433,6 +1434,7 @@ export default function Sidebar({
     archiveThread,
     deleteThread,
   } = useThreadActions();
+  const reopenLastArchivedThread = useReopenLastArchivedThread();
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -3974,6 +3976,12 @@ export default function Sidebar({
         navigateToThreadKey(next === null ? null : threadShellKey(next));
         return;
       }
+      if (command === "thread.reopenLastArchived") {
+        event.preventDefault();
+        event.stopPropagation();
+        void reopenLastArchivedThread();
+        return;
+      }
       const traversalDirection = threadTraversalDirectionFromCommand(command);
       if (traversalDirection !== null) {
         navigateToThreadKey(
@@ -3995,6 +4003,7 @@ export default function Sidebar({
     keybindings,
     navigateToThread,
     needsYouNowThreads,
+    reopenLastArchivedThread,
     orderedThreadKeys,
     routeRowThreadKey,
     routeThreadRef,

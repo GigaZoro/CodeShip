@@ -143,6 +143,26 @@ function filterLegacyPage(
   );
 }
 
+/** The most recently archived thread across environments, by the server's archive order. */
+export function latestArchivedThread(
+  snapshots: ReadonlyArray<ArchivedSnapshotEntry>,
+): { readonly environmentId: EnvironmentId; readonly thread: OrchestrationV2ThreadShell } | null {
+  let latest: {
+    environmentId: EnvironmentId;
+    thread: OrchestrationV2ThreadShell;
+    key: ArchiveRowKey;
+  } | null = null;
+  for (const { environmentId, snapshot } of snapshots) {
+    for (const thread of snapshot.threads) {
+      const key = archiveRowKey(thread);
+      if (latest === null || compareArchiveRows(key, latest.key) < 0) {
+        latest = { environmentId, thread, key };
+      }
+    }
+  }
+  return latest === null ? null : { environmentId: latest.environmentId, thread: latest.thread };
+}
+
 interface EnvironmentPages {
   readonly environmentId: EnvironmentId;
   readonly projects: ReadonlyArray<OrchestrationProjectShell>;

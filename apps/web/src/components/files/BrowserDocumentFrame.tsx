@@ -67,6 +67,7 @@ const HTML_RENDER_SHORTCUT_COMMANDS: ReadonlySet<KeybindingCommand> = new Set([
   "thread.previous",
   "thread.next",
   "thread.nextNeedsYou",
+  "thread.reopenLastArchived",
   ...THREAD_JUMP_KEYBINDING_COMMANDS,
   ...MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
 ]);
