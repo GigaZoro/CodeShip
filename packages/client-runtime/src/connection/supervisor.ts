@@ -41,7 +41,9 @@ import {
 import { t } from "@t3tools/shared/i18n";
 
 const RETRY_BASE_DELAY_MS = 1_000;
-const RETRY_MAX_DELAY_MS = 300_000;
+// Nothing tells a client that a host is back, so a machine that returns waits
+// up to this long for the client's next try.
+const RETRY_MAX_DELAY_MS = 30_000;
 // A cold server with a large database can take longer than 15 seconds to
 // answer, and that is not a reason to drop a working connection.
 const CONNECTION_ESTABLISHMENT_TIMEOUT = "15 seconds";

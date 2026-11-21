@@ -25,6 +25,10 @@
 - Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
 - A landing that joins the queue comes after every landing it finds waiting there, even when that landing's machine clock runs ahead; landings that join at the same moment, before either can see the other, go in the order of their machines' clocks. A queue of any length keeps moving, and a waiter reads a bounded part of it per poll. Entries origin will not delete block no one and are reported once: a crashed lander's, or a waiter's own old names, which no longer keep it from a free lease, and the waiter keeps renewing its entry, so it keeps its place. A landing whose entry origin refused joins again behind the landings that came meanwhile. A lander whose take reached origin while its answer was lost keeps the turn instead of waiting behind itself, unless the lease expired before the take was confirmed, and its checks get the time that lease has left.
 
+## 2026-11-21 — A machine that comes back reconnects without a click
+
+- A linked machine that was away for a while (shut down, asleep, without power, or restarting for an update) could stay **Reconnecting** in the sidebar for up to 5 minutes after it was back, because the wait between tries grew to 5 minutes. While the app is open, it now waits at most 30 seconds after a failed try before trying again, so such a machine reconnects without a click on **Reconnect**.
+
 ## 2026-11-21 — A finished subagent no longer opens pull requests from its own worktree
 
 - When a subagent that has its own worktree delivers its result, T3.CodeShip keeps it active while it has unmerged work but no longer looks up or opens a pull request for it. The agent that started the subagent decides how that work lands.

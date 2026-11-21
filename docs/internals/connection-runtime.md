@@ -11,10 +11,13 @@ several views need the same environment.
 The [supervisor](../../packages/client-runtime/src/connection/supervisor.ts) owns
 transport retry policy; resolving an endpoint and opening an RPC session are single
 attempts. Transient failures retry with jittered exponential backoff, capped at
-five minutes, that resets only after a connection stays up. Without jitter, every
-client of a restarted server reconnects in the same second; with a short cap, a
-client that can never connect retries all day. Offline states and authentication
-failures wait for a wakeup instead of spending attempts on unchanged conditions.
+30 seconds, that resets only after a connection stays up. Without jitter, every
+client of a restarted server reconnects in the same second. Nothing tells the
+client that a host is back, so a machine that returns after a shutdown, sleep,
+or update restart waits up to the cap for the next try. Over T3 Connect, each
+try against a machine that stays away is usually one relay request. Offline
+states and authentication failures wait for a wakeup instead of spending
+attempts on unchanged conditions.
 
 Foregrounding, a network change, an explicit retry, and an offline report probe
 the established session, and only a failed probe reconnects. Offline reports are
