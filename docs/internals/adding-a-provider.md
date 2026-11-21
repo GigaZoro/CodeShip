@@ -102,7 +102,8 @@ produce catches them.
   [`processGroup.ts`](../../packages/shared/src/processGroup.ts), whose holder keeps the number
   reserved until the last signal. The holder runs in the leader's session but outside its process
   tree, so a provider that stops a tree walks parent links, never a session; a group that must stay
-  ours across a server restart is held through `HoldThroughFifo`.
+  ours across a server restart is held through `HoldThroughFifo`, and a later server stops it only
+  through `stopFifoHolderGroup`, which has the holder signal its group.
 - **Usage limits are not generic failures.** Classify quota and rate-limit errors as `usage_limit`
   with a reset time when the provider gives one, so the thread shows Limited and can resume.
 - **Paths and environment.** Test a symlinked workspace, such as macOS `/tmp`; an agent that

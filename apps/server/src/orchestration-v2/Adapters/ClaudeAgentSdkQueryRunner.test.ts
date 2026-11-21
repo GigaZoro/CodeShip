@@ -538,6 +538,9 @@ it.effect.each([
   ),
 );
 
+/** Bash's own defaults: exported, they make `holdProcessGroup` start a command unheld. */
+const UNHOLDABLE_SHELLOPTS = "braceexpand:hashall:interactive-comments";
+
 function fakeClaudeCli(script: string): string {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-cli-"));
   const cli = NodePath.join(dir, "claude");
@@ -545,7 +548,7 @@ function fakeClaudeCli(script: string): string {
   return cli;
 }
 
-const openFakeCli = (cli: string) =>
+const openFakeCli = (cli: string, env?: NodeJS.ProcessEnv) =>
   Effect.gen(function* () {
     const runner = yield* ClaudeAgentSdkQueryRunner;
     return yield* runner.open({
@@ -557,13 +560,17 @@ const openFakeCli = (cli: string) =>
         tools: [],
         permissionMode: "default",
         pathToClaudeCodeExecutable: cli,
+        ...(env === undefined ? {} : { env }),
       },
     });
   });
 
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI process", () => {
   // The leftover child holds a FIFO open; its death produces EOF without polling.
-  it.effect("stops what the CLI left running when the session closes", () =>
+  it.effect.each([
+    ["held where it can be", undefined],
+    ["unheld", { ...process.env, SHELLOPTS: UNHOLDABLE_SHELLOPTS }],
+  ] as const)("stops what the CLI left running when the session closes, %s", ([, env]) =>
     Effect.gen(function* () {
       const cli = fakeClaudeCli(
         [
@@ -589,7 +596,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
       alive.resume();
 
       const stopped = yield* Deferred.make<string>();
-      const session = yield* openFakeCli(cli).pipe(
+      const session = yield* openFakeCli(cli, env).pipe(
         Effect.provide(
           realQueryRunner.pipe(
             Layer.provide(
@@ -661,7 +668,11 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
 
   // The CLI keeps running its turn after its pipes close, so a server that
   // crashed would leave it working next to the session it resumes.
-  it.effect("stops the CLI when the server that started it goes away", () =>
+  it.effect.each([
+    ["held where it can be", process.env],
+    // Bash cannot pass an exported SHELLOPTS on as given, so nothing holds the group.
+    ["unheld", { ...process.env, SHELLOPTS: UNHOLDABLE_SHELLOPTS }],
+  ] as const)("stops the CLI when the server that started it goes away, %s", ([, env]) =>
     Effect.gen(function* () {
       const cli = fakeClaudeCli(['dir=$(dirname "$0")', 'sleep 600 > "$dir/alive"'].join("\n"));
       const dir = NodePath.dirname(cli);
@@ -670,7 +681,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
         command: cli,
         args: [],
         cwd: dir,
-        env: process.env,
+        env,
         // @effect-diagnostics-next-line abortControllerInEffect:off - This crash fixture closes pipes itself; aborting on test teardown raises an unrelated process error.
         signal: new AbortController().signal,
       }) as NodeChildProcess.ChildProcess;
@@ -694,10 +705,21 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
     }),
   );
 
-  it.effect("sends no SIGKILL at the CLI's exit to a group number it no longer holds", () =>
+  it.effect("sends no signal at the CLI's exit to a group number nothing keeps", () =>
     Effect.gen(function* () {
       const freed = yield* watchFreedGroupSignals;
-      const cli = fakeClaudeCli("echo started\nexec sleep 600");
+      // Exits once SIGUSR1 ended the rest of its group and it reaped them, freeing the number.
+      const cli = fakeClaudeCli(
+        [
+          "exec python3 -c '",
+          "import os, signal",
+          "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})",
+          'print("started", flush=True)',
+          "signal.sigwait({signal.SIGUSR1})",
+          "os.waitpid(-1, 0)",
+          "'",
+        ].join("\n"),
+      );
       const dir = NodePath.dirname(cli);
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
@@ -708,8 +730,9 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
           command: cli,
           args: [],
           cwd: dir,
-          env: process.env,
-          // @effect-diagnostics-next-line abortControllerInEffect:off - The CLI ends by its group's SIGKILL, not by an abort.
+          // Unheld, so the group's other member is the CLI's child.
+          env: { ...process.env, SHELLOPTS: UNHOLDABLE_SHELLOPTS },
+          // @effect-diagnostics-next-line abortControllerInEffect:off - The CLI exits by itself, not by an abort.
           signal: new AbortController().signal,
         },
         () => exitHandled.resolve(),
@@ -717,8 +740,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
       const started = new Promise<void>((resolve) => child.stdout!.once("data", () => resolve()));
       yield* Effect.promise(() => started);
 
-      // Something else ended the CLI's group, as `kill 0` from one of its tools would.
-      ownProcessGroup(child, undefined).signal("SIGKILL");
+      ownProcessGroup(child, undefined).signal("SIGUSR1");
       yield* Effect.promise(() => exitHandled.promise);
 
       assert.deepEqual(freed.signals(), []);

@@ -211,8 +211,11 @@ const start = ({ id, command, args, options, holderFd, outputs, inputs, encoding
   };
   children.set(id, entry);
   if (entry.held) {
+    // The parent ends a stopped worker's referenced children itself once their holder is gone.
     const lost = () => {
+      if (!entry.held) return;
       entry.held = false;
+      if (children.has(id)) post({ type: "unheld", id });
     };
     // Read only to learn of the holder's end.
     holder.on("end", lost).on("close", lost).on("error", lost).resume();
@@ -396,6 +399,7 @@ type WorkerEvent =
       readonly code: number | null;
       readonly signal: string | null;
     }
+  | { readonly type: "unheld"; readonly id: number }
   | {
       readonly type: "done";
       readonly id: number;
@@ -439,8 +443,9 @@ interface RemoteChild {
   readonly connection: Connection;
   readonly command: ChildProcess.StandardCommand;
   readonly kills: Kills;
-  // A holder keeps the group's number past the leader's exit and ends the group if the worker stops.
-  readonly held: boolean;
+  // A holder keeps the group's number past the leader's exit and ends the group if the worker stops,
+  // until the worker reports that it ended.
+  held: boolean;
   // Logs through the spawning fiber's logger a failure no fiber awaits, as after its worker stopped.
   readonly report: (error: PlatformError.PlatformError) => void;
   readonly exit: Deferred.Deferred<ExitStatus, PlatformError.PlatformError>;
@@ -762,6 +767,9 @@ const receive = (connection: Connection, event: WorkerEvent) => {
         unhold(connection);
       }
       retire(child);
+      return;
+    case "unheld":
+      child.held = false;
       return;
   }
 };

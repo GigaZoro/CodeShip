@@ -12,11 +12,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
-import {
-  isFifoHolderHeld,
-  releaseFifoHolder,
-  signalProcessGroup,
-} from "@t3tools/shared/processGroup";
+import { signalProcessGroup, stopFifoHolderGroup } from "@t3tools/shared/processGroup";
 
 const ProcessIdentity = Schema.Struct({ pid: Schema.Int, startTime: Schema.String });
 type ProcessIdentity = typeof ProcessIdentity.Type;
@@ -38,12 +34,25 @@ const OpenCodeServerEntryJson = Schema.fromJsonString(OpenCodeServerEntry);
 const decodeEntry = Schema.decodeUnknownOption(OpenCodeServerEntryJson);
 const encodeEntry = Schema.encodeEffect(OpenCodeServerEntryJson);
 
+/**
+ * Written before a held server spawns, so its group can be stopped before it is recorded. Its
+ * holder's FIFO has the same name with `HOLDER_SUFFIX`.
+ */
+const OpenCodeServerLaunch = Schema.Struct({
+  version: Schema.Literal(1),
+  stateDir: Schema.String,
+  owner: ProcessIdentity,
+});
+const OpenCodeServerLaunchJson = Schema.fromJsonString(OpenCodeServerLaunch);
+const decodeLaunch = Schema.decodeUnknownOption(OpenCodeServerLaunchJson);
+const encodeLaunch = Schema.encodeEffect(OpenCodeServerLaunchJson);
+
 export class OpenCodeServerLedger extends Context.Service<
   OpenCodeServerLedger,
   {
     /**
      * A FIFO path for `HoldThroughFifo`, removed when the scope closes, so that a later server can
-     * stop the group if this one crashes.
+     * stop the group if this one crashes, also before `track` recorded it.
      */
     readonly holderFifo: Effect.Effect<string | undefined, never, Scope.Scope>;
     readonly track: (server: {
@@ -58,6 +67,7 @@ export class OpenCodeServerLedger extends Context.Service<
 const ENTRY_DIRECTORY = "opencode-servers";
 const ENTRY_FILE = /^\d+\.json$/;
 const HOLDER_SUFFIX = ".hold";
+const LAUNCH_SUFFIX = ".launch.json";
 const STOP_POLL_INTERVAL = "50 millis";
 const STOP_POLL_ATTEMPTS = 40;
 
@@ -217,26 +227,38 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
   const removeHolder = (holder: string | undefined) =>
     holder === undefined ? Effect.void : fs.remove(holder, { force: true });
 
-  const holderFifo: OpenCodeServerLedger["Service"]["holderFifo"] = recordable
-    ? Effect.acquireRelease(
-        fs.makeDirectory(directory, { recursive: true }).pipe(
-          Effect.andThen(crypto.randomUUIDv4()),
-          Effect.map((id) => path.join(directory, `${id}${HOLDER_SUFFIX}`)),
-        ),
-        (holder) =>
-          removeHolder(holder).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Could not remove an OpenCode server's holder FIFO", { cause }),
+  // Without an owner to record, a FIFO no later server could tell from a live one's goes unheld.
+  const holderFifo: OpenCodeServerLedger["Service"]["holderFifo"] =
+    recordable && owner !== undefined
+      ? Effect.acquireRelease(
+          Effect.gen(function* () {
+            yield* fs.makeDirectory(directory, { recursive: true });
+            const id = path.join(directory, yield* crypto.randomUUIDv4());
+            yield* writeFileStringAtomically({
+              filePath: `${id}${LAUNCH_SUFFIX}`,
+              contents: yield* encodeLaunch({ version: 1, stateDir: input.stateDir, owner }),
+            }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.provideService(Path.Path, path),
+            );
+            return id;
+          }),
+          (id) =>
+            removeHolder(`${id}${HOLDER_SUFFIX}`).pipe(
+              Effect.andThen(fs.remove(`${id}${LAUNCH_SUFFIX}`, { force: true })),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Could not remove an OpenCode server's holder FIFO", { cause }),
+              ),
             ),
+        ).pipe(
+          Effect.map((id) => `${id}${HOLDER_SUFFIX}`),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not prepare to hold an OpenCode server's process group", {
+              cause,
+            }).pipe(Effect.as(undefined)),
           ),
-      ).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Could not prepare to hold an OpenCode server's process group", {
-            cause,
-          }).pipe(Effect.as(undefined)),
-        ),
-      )
-    : Effect.undefined;
+        )
+      : Effect.undefined;
 
   const track: OpenCodeServerLedger["Service"]["track"] = Effect.fn("OpenCodeServerLedger.track")(
     function* (server) {
@@ -294,32 +316,17 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
     ),
   );
 
-  const stopHeldOrphan = Effect.fn("OpenCodeServerLedger.stopHeldOrphan")(function* (
-    entry: OpenCodeServerEntry,
-    holder: string,
-  ) {
-    if (groupExists(entry.pgid)) {
-      yield* Effect.logInfo("Stopping an OpenCode server left by a previous T3.CodeShip server", {
-        pid: entry.pgid,
-        port: entry.port,
-      });
-      signalGroup(entry.pgid, "SIGTERM");
-      for (let attempt = 0; groupExists(entry.pgid) && attempt < STOP_POLL_ATTEMPTS; attempt++) {
-        yield* Effect.sleep(STOP_POLL_INTERVAL);
-      }
-      if (groupExists(entry.pgid)) signalGroup(entry.pgid, "SIGKILL");
-    }
-    releaseFifoHolder(holder);
-  });
-
-  // While its holder keeps the number, every member of the group is the server's, also one it
-  // started after the signal. Otherwise only a recorded member with the same pid, start time,
+  // A holder that keeps the number stops the group itself, so no signal of this server can reach
+  // a group that took the number. Otherwise only a recorded member with the same pid, start time,
   // group, and full command line proves the group is still the one recorded.
   const stopOrphan = Effect.fn("OpenCodeServerLedger.stopOrphan")(function* (
     entry: OpenCodeServerEntry,
   ) {
-    if (entry.holder !== undefined && isFifoHolderHeld(entry.holder)) {
-      return yield* stopHeldOrphan(entry, entry.holder);
+    if (entry.holder !== undefined && stopFifoHolderGroup(entry.holder)) {
+      return yield* Effect.logInfo(
+        "Stopping an OpenCode server left by a previous T3.CodeShip server",
+        { pid: entry.pgid, port: entry.port },
+      );
     }
     const observed = yield* observe(entry.pid);
     if (
@@ -379,11 +386,41 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
       ),
   );
 
+  // A launch its server never recorded, or whose record went with the server: only its holder
+  // knows the group, and stops it.
+  const reapLaunch = Effect.fn("OpenCodeServerLedger.reapLaunch")(
+    function* (launchPath: string) {
+      const launch = decodeLaunch(yield* fs.readFileString(launchPath));
+      if (Option.isSome(launch) && launch.value.stateDir === input.stateDir) {
+        if (yield* isRunning(launch.value.owner)) return;
+        const holder = `${launchPath.slice(0, -LAUNCH_SUFFIX.length)}${HOLDER_SUFFIX}`;
+        if (stopFifoHolderGroup(holder)) {
+          yield* Effect.logInfo(
+            "Stopping an OpenCode server a previous T3.CodeShip server left unrecorded",
+          );
+        }
+        yield* removeHolder(holder);
+      }
+      yield* fs.remove(launchPath, { force: true });
+    },
+    (effect, launchPath) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Could not clean up an OpenCode server launch", { launchPath, cause }),
+        ),
+      ),
+  );
+
   const reapOrphans = Effect.gen(function* () {
     const names = yield* fs.readDirectory(directory).pipe(Effect.orElseSucceed(() => []));
     yield* Effect.forEach(
       names.filter((name) => ENTRY_FILE.test(name)),
       (name) => reapEntry(path.join(directory, name)),
+      { concurrency: "unbounded", discard: true },
+    );
+    yield* Effect.forEach(
+      names.filter((name) => name.endsWith(LAUNCH_SUFFIX)),
+      (name) => reapLaunch(path.join(directory, name)),
       { concurrency: "unbounded", discard: true },
     );
   });
