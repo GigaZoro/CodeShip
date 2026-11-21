@@ -19,6 +19,10 @@ const {
   verifyPush,
 } = require("./landing-turn.cjs");
 
+const QUEUE_PREFIX = "refs/heads/landing-lease/queue/";
+const QUEUE_REFRESH_MS = 60_000;
+const QUEUE_STALE_MS = 3 * 60_000;
+
 // `land` runs git itself, so its rebase needs an identity on a runner without one. A hook exports GIT_DIR
 // and GIT_INDEX_FILE. Git for Windows opens /dev/null, not os.devNull (\\.\nul).
 for (const name of Object.keys(process.env)) if (/^GIT_/i.test(name)) delete process.env[name];
@@ -234,6 +238,193 @@ test("a waiting lander takes the turn over from a holder whose lease expired, an
       () => acquire({ cwd: holder, remote: origin, maxWaitMs: 0, sleep: () => {} }),
       /still holds/,
     );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the first lander in the queue takes the released turn even when a later lander polls first", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const holder = clone("holder");
+    const first = clone("first");
+    const later = clone("later");
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    const epoch = Date.parse("2026-01-01T00:00:00Z");
+    let time = 0;
+    const clock = () => time;
+    const now = () => epoch + time;
+    const turn = acquire({
+      cwd: first,
+      remote: origin,
+      clock,
+      now,
+      sleep: () => {
+        time += 1;
+        // Let the later lander poll after release while the first lander is still paused.
+        assert.throws(
+          () =>
+            acquire({
+              cwd: later,
+              remote: origin,
+              clock,
+              now,
+              maxWaitMs: 1,
+              sleep: () => {
+                time += 1;
+                release({ cwd: holder, remote: origin }, held);
+              },
+            }),
+          /timed out waiting for main's landing queue/,
+        );
+      },
+    });
+
+    assert.equal(git(origin, "rev-parse", LEASE_REF), turn);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a crashed lander blocks the next waiter until its entry is observed unchanged for the stale window", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const crashed = clone("crashed");
+    const waiter = clone("waiter");
+    const epoch = Date.parse("2026-01-01T00:00:00Z");
+    const ref = `${QUEUE_PREFIX}crashed.1`;
+    const sha = git(
+      crashed,
+      "commit-tree",
+      "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+      "-m",
+      JSON.stringify({
+        kind: "land",
+        host: "fixture",
+        run_id: "crashed",
+        waiting_since: new Date(epoch - 1).toISOString(),
+      }),
+    );
+    git(crashed, "push", "-q", "origin", `${sha}:${ref}`);
+
+    let time = 0;
+    const pauses = [QUEUE_STALE_MS - 1, QUEUE_STALE_MS];
+    const turn = acquire({
+      cwd: waiter,
+      remote: origin,
+      clock: () => time,
+      // The other machine's wall clock is far behind, but the entry starts out fresh to this waiter.
+      now: () => epoch + time,
+      sleep: () => {
+        assert.equal(git(origin, "for-each-ref", LEASE_REF), "");
+        assert.equal(git(origin, "rev-parse", ref), sha);
+        time = pauses.shift();
+        assert.notEqual(time, undefined, "waited after the entry went stale");
+      },
+    });
+
+    assert.equal(time, QUEUE_STALE_MS, "took the turn before the stale window elapsed");
+    assert.equal(git(origin, "rev-parse", LEASE_REF), turn);
+    assert.equal(git(origin, "for-each-ref", QUEUE_PREFIX), "");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a heartbeat replaces the ref without changing its commit, and a failed delete pauses the waiter", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const holder = clone("holder");
+    const waiter = clone("waiter");
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    const refs = () =>
+      git(origin, "for-each-ref", "--format=%(refname) %(objectname)", QUEUE_PREFIX)
+        .split("\n")
+        .map((row) => row.split(" "));
+    let time = 0;
+    let original;
+    const pauses = [
+      () => {
+        const [[ref, sha]] = refs();
+        assert.ok(sha, "published an entry");
+        original = { ref, sha, lock: path.join(origin, `${ref}.lock`) };
+        fs.writeFileSync(original.lock, "");
+        release({ cwd: holder, remote: origin }, held);
+      },
+      () => {
+        const [[oldRef, oldSha], [newRef, newSha]] = refs();
+        assert.equal(oldRef, original.ref);
+        assert.notEqual(newRef, oldRef);
+        assert.equal(oldSha, original.sha);
+        assert.equal(newSha, original.sha);
+        assert.equal(git(origin, "for-each-ref", LEASE_REF), "");
+        fs.rmSync(original.lock);
+      },
+    ];
+
+    const turn = acquire({
+      cwd: waiter,
+      remote: origin,
+      clock: () => time,
+      sleep: () => {
+        time += QUEUE_REFRESH_MS;
+        pauses.shift()();
+      },
+    });
+
+    assert.equal(pauses.length, 0);
+    assert.equal(git(origin, "rev-parse", LEASE_REF), turn);
+    assert.equal(git(origin, "for-each-ref", QUEUE_PREFIX), "");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a lander removes its queue entry whether it takes the turn or ends its wait", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const holder = clone("holder");
+    const waiter = clone("waiter");
+    const refs = () => git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX);
+    const epoch = Date.parse("2026-01-01T00:00:00Z");
+    const options = { cwd: waiter, remote: origin, now: () => epoch };
+    const stopped = new Error("stopped waiting");
+    const leaseLock = path.join(origin, `${LEASE_REF}.lock`);
+
+    for (const outcome of ["timeout", "remote failure", "unexpected error", "acquired"]) {
+      const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+      let time = 0;
+      let queued;
+      const wait = () =>
+        acquire({
+          ...options,
+          clock: () => time,
+          maxWaitMs: outcome === "timeout" ? 1 : undefined,
+          failingMs: 0,
+          sleep: () => {
+            queued = refs();
+            time += 1;
+            if (outcome === "unexpected error") throw stopped;
+            if (outcome === "remote failure") {
+              release({ cwd: holder, remote: origin }, held);
+              fs.writeFileSync(leaseLock, "");
+            }
+            if (outcome === "acquired") release({ cwd: holder, remote: origin }, held);
+          },
+        });
+
+      if (outcome === "timeout") assert.throws(wait, /still holds/);
+      if (outcome === "remote failure") {
+        assert.throws(wait, /git push failed/);
+        fs.rmSync(leaseLock);
+      }
+      if (outcome === "unexpected error") assert.throws(wait, (error) => error === stopped);
+      if (outcome === "acquired") assert.equal(wait(), git(origin, "rev-parse", LEASE_REF));
+      assert.ok(queued?.startsWith(QUEUE_PREFIX), outcome);
+      assert.equal(refs(), "", outcome);
+      if (outcome === "timeout" || outcome === "unexpected error")
+        release({ cwd: holder, remote: origin }, held);
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
