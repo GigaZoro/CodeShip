@@ -54,3 +54,10 @@ export function announce(message: string, source?: string) {
 export function cancelAnnouncement(source: string) {
   pending = pending.filter((entry) => entry.source !== source);
 }
+
+/** Browser tests share this module's state across tests; each starts with nothing queued or spoken. */
+export function resetAnnouncements() {
+  clearTimeout(flushTimer);
+  pending = [];
+  for (const region of regions ?? []) region.textContent = "";
+}
