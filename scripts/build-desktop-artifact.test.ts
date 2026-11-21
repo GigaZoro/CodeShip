@@ -1890,6 +1890,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             mockUpdates: Option.none(),
             mockUpdateServerPort: Option.none(),
             wslRuntime: Option.none(),
+            phase: Option.none(),
+            stageDir: Option.none(),
           }),
         );
 
@@ -1914,6 +1916,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         mockUpdates: Option.some(false),
         mockUpdateServerPort: Option.none(),
         wslRuntime: Option.none(),
+        phase: Option.none(),
+        stageDir: Option.none(),
       }).pipe(
         Effect.provide(
           ConfigProvider.layer(
@@ -1935,6 +1939,64 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(resolved.signed, false);
       assert.equal(resolved.verbose, false);
       assert.equal(resolved.mockUpdates, false);
+    }),
+  );
+
+  it.effect.each([
+    {
+      name: "a stage phase without --stage-dir",
+      phase: "stage",
+      stageDir: undefined,
+      signed: false,
+      wslRuntime: undefined,
+      error: "StageDirRequiredError",
+    },
+    {
+      name: "a package phase without --stage-dir",
+      phase: "package",
+      stageDir: undefined,
+      signed: false,
+      wslRuntime: undefined,
+      error: "StageDirRequiredError",
+    },
+    {
+      name: "a signed stage phase",
+      phase: "stage",
+      stageDir: "stage",
+      signed: true,
+      wslRuntime: undefined,
+      error: "DesktopStagePhaseOptionError",
+    },
+    {
+      name: "a stage phase that would drop the WSL runtime",
+      phase: "stage",
+      stageDir: "stage",
+      signed: false,
+      wslRuntime: "t3-linux-x64.tar.gz",
+      error: "DesktopStagePhaseOptionError",
+    },
+  ] as const)("rejects $name", ({ phase, stageDir, signed, wslRuntime, error }) =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.flip(
+        resolveBuildOptions({
+          platform: Option.some("win"),
+          target: Option.none(),
+          arch: Option.some("x64"),
+          buildVersion: Option.none(),
+          outputDir: Option.none(),
+          skipBuild: Option.none(),
+          keepStage: Option.none(),
+          signed: Option.some(signed),
+          verbose: Option.none(),
+          mockUpdates: Option.none(),
+          mockUpdateServerPort: Option.none(),
+          wslRuntime: Option.fromUndefinedOr(wslRuntime),
+          phase: Option.some(phase),
+          stageDir: Option.fromUndefinedOr(stageDir),
+        }),
+      );
+
+      assert.equal(failure._tag, error);
     }),
   );
 });

@@ -43,6 +43,13 @@ import {
 import { loadRepoEnv } from "./lib/public-config.ts";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import {
+  StageDirRequiredError,
+  StagePhase,
+  markStageComplete,
+  prepareStageDir,
+  requireCompletedStage,
+} from "./lib/stage-dir.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -198,6 +205,8 @@ interface BuildCliInput {
   readonly mockUpdates: Option.Option<boolean>;
   readonly mockUpdateServerPort: Option.Option<number>;
   readonly wslRuntime: Option.Option<string>;
+  readonly phase: Option.Option<StagePhase>;
+  readonly stageDir: Option.Option<string>;
 }
 
 function detectHostBuildPlatform(hostPlatform: string): typeof BuildPlatform.Type | undefined {
@@ -344,6 +353,15 @@ export class BuildCommandFailedError extends Schema.TaggedError<BuildCommandFail
     ].filter((section): section is string => section !== undefined);
     const outputSuffix = outputSections.length > 0 ? `\n\n${outputSections.join("\n\n")}` : "";
     return `Command exited with non-zero exit code (${this.exitCode})${outputSuffix}`;
+  }
+}
+
+class DesktopStagePhaseOptionError extends Schema.TaggedError<DesktopStagePhaseOptionError>()(
+  "DesktopStagePhaseOptionError",
+  { option: Schema.Literals(["--signed", "--mock-updates", "--wsl-runtime"]) },
+) {
+  override get message(): string {
+    return `${this.option} changes only packaging, so the stage phase would drop it. Pass it to --phase package.`;
   }
 }
 
@@ -551,17 +569,6 @@ export class BundledClientAssetsMissingError extends Schema.TaggedError<BundledC
     const preview = this.missingFiles.slice(0, 6).join(", ");
     const suffix = this.missingFiles.length > 6 ? ` (+${this.missingFiles.length - 6} more)` : "";
     return `Bundled client references missing files in ${this.indexPath}: ${preview}${suffix}. Rebuild web/server artifacts.`;
-  }
-}
-
-export class UnsupportedDesktopBuildPlatformError extends Schema.TaggedError<UnsupportedDesktopBuildPlatformError>()(
-  "UnsupportedDesktopBuildPlatformError",
-  {
-    platform: Schema.String,
-  },
-) {
-  override get message(): string {
-    return `Unsupported platform '${this.platform}'.`;
   }
 }
 
@@ -976,15 +983,17 @@ interface ResolvedBuildOptions {
   readonly mockUpdates: boolean;
   readonly mockUpdateServerPort: number | undefined;
   readonly wslRuntime: string | undefined;
+  readonly phase: StagePhase;
+  /** Undefined only for phase "all", which then stages in a temporary directory. */
+  readonly stageDir: string | undefined;
 }
 
+/** The signing fields (build, t3codeWebAuthn, t3codeAppleTeamSigned) are added by the package phase. */
 interface StagePackageJson {
   readonly name: string;
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
-  readonly t3codeWebAuthn?: MacWebAuthnEntitlements;
-  readonly t3codeAppleTeamSigned?: boolean;
   readonly private: true;
   readonly packageManager: string;
   readonly description: string;
@@ -992,7 +1001,6 @@ interface StagePackageJson {
   readonly homepage: string;
   readonly author: string;
   readonly main: string;
-  readonly build: Record<string, unknown>;
   readonly dependencies: Record<string, unknown>;
   readonly devDependencies: {
     readonly electron: string;
@@ -1891,6 +1899,26 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const wslRuntime =
     Option.getOrUndefined(input.wslRuntime) ?? Option.getOrUndefined(env.wslRuntime);
 
+  const phase = Option.getOrElse(input.phase, (): StagePhase => "all");
+  const stageDir = Option.getOrUndefined(
+    Option.map(input.stageDir, (dir) => path.resolve(repoRoot, dir)),
+  );
+  if (phase !== "all" && stageDir === undefined) {
+    return yield* new StageDirRequiredError({ phase });
+  }
+  if (phase === "stage") {
+    const packagingOption = signed
+      ? "--signed"
+      : mockUpdates
+        ? "--mock-updates"
+        : wslRuntime !== undefined
+          ? "--wsl-runtime"
+          : undefined;
+    if (packagingOption) {
+      return yield* new DesktopStagePhaseOptionError({ option: packagingOption });
+    }
+  }
+
   return {
     platform,
     target,
@@ -1904,6 +1932,8 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     mockUpdates,
     mockUpdateServerPort,
     wslRuntime,
+    phase,
+    stageDir,
   } satisfies ResolvedBuildOptions;
 });
 
@@ -3727,12 +3757,9 @@ export const validateMacPackagedPayload = Effect.fn("desktopArtifact.validateMac
   },
 );
 
-const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(function* (
+const preflightDesktopBuild = Effect.fn("preflightDesktopBuild")(function* (
   options: ResolvedBuildOptions,
 ) {
-  const repoRoot = yield* RepoRoot;
-  const path = yield* Path.Path;
-  const fs = yield* FileSystem.FileSystem;
   const hostPlatform = yield* HostProcess.Platform;
   if (hostPlatform === "linux" && options.platform === "linux") {
     yield* preflightLinuxDesktopBuild(options.arch);
@@ -3749,18 +3776,47 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       }),
     });
   }
+});
+
+const desktopStageMarker = (
+  options: ResolvedBuildOptions,
+  appVersion: string,
+  commitHash: string,
+): Record<string, string> => ({
+  platform: options.platform,
+  arch: options.arch,
+  target: options.target,
+  version: appVersion,
+  commitHash,
+});
+
+const resolveDesktopStageRoot = Effect.fn("resolveDesktopStageRoot")(function* (
+  options: ResolvedBuildOptions,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  if (options.stageDir === undefined) {
+    const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
+    return yield* mkdir({ prefix: `t3code-desktop-${options.platform}-stage-` });
+  }
+  if (options.phase !== "package") {
+    yield* prepareStageDir(options.stageDir);
+  }
+  return options.stageDir;
+});
+
+/** Builds and installs everything that ships; runs without signing credentials. */
+const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
+  options: ResolvedBuildOptions,
+  stageRoot: string,
+) {
+  const repoRoot = yield* RepoRoot;
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
   const workspaceConfig = yield* readWorkspaceConfig();
   const workspaceCatalog = workspaceConfig.catalog ?? {};
   const workspaceOverrides = workspaceConfig.overrides ?? {};
   const workspacePatchedDependencies = workspaceConfig.patchedDependencies ?? {};
   const workspaceAllowBuilds = workspaceConfig.allowBuilds ?? {};
-
-  const platformConfig = PLATFORM_CONFIG[options.platform];
-  if (!platformConfig) {
-    return yield* new UnsupportedDesktopBuildPlatformError({
-      platform: options.platform,
-    });
-  }
 
   const electronVersion = desktopPackageJson.dependencies.electron;
 
@@ -3806,10 +3862,6 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   const appVersion = options.version ?? serverPackageJson.version;
   const iconAssets = resolveDesktopBuildIconAssets(appVersion);
   const commitHash = yield* resolveGitCommitHash(repoRoot);
-  const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
-  const stageRoot = yield* mkdir({
-    prefix: `t3code-desktop-${options.platform}-stage-`,
-  });
 
   const stageAppDir = path.join(stageRoot, "app");
   const stageResourcesDir = path.join(stageAppDir, "apps/desktop/resources");
@@ -3964,45 +4016,6 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   const stageProdResourcesDir = path.join(stageAppDir, "apps/desktop/prod-resources");
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
 
-  const configuredMacPasskeySigning =
-    options.platform === "mac" && options.signed
-      ? yield* Effect.try({
-          try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
-          catch: MacPasskeySigningConfigurationResolutionError.fromCause,
-        })
-      : undefined;
-  const macPasskeySigning = configuredMacPasskeySigning
-    ? {
-        ...configuredMacPasskeySigning,
-        provisioningProfilePath: path.resolve(
-          repoRoot,
-          configuredMacPasskeySigning.provisioningProfilePath,
-        ),
-      }
-    : undefined;
-  const macEntitlementsPath = macPasskeySigning
-    ? path.join(stageAppDir, "entitlements.mac.plist")
-    : undefined;
-  let macWebAuthn: MacWebAuthnEntitlements | undefined;
-  if (macPasskeySigning && macEntitlementsPath) {
-    if (!(yield* fs.exists(macPasskeySigning.provisioningProfilePath))) {
-      return yield* new MacProvisioningProfileNotFoundError({
-        provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
-      });
-    }
-    macWebAuthn = resolveMacWebAuthnEntitlements(
-      yield* fs.readFileString(macPasskeySigning.provisioningProfilePath),
-      macPasskeySigning,
-    );
-    yield* Effect.log(
-      `[desktop-artifact] In-app browser passkeys: Touch ID ${macWebAuthn.touchIdKeychainAccessGroup ? "enabled" : "disabled"}, browser passkeys ${macWebAuthn.browserPasskeys ? "enabled" : "disabled"}.`,
-    );
-    yield* fs.writeFileString(
-      macEntitlementsPath,
-      renderMacPasskeyEntitlements(macPasskeySigning, macWebAuthn),
-    );
-  }
-
   const stageDependencies =
     options.platform === "win"
       ? { ...resolvedDesktopRuntimeDependencies }
@@ -4026,10 +4039,6 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
-    // Read by apps/desktop/src/preview/Passkeys.ts; must match the signed entitlements.
-    ...(macWebAuthn ? { t3codeWebAuthn: macWebAuthn } : {}),
-    // Read by apps/desktop/src/app/DesktopClerk.ts; self-signed and ad hoc builds have no Team ID.
-    ...(options.platform === "mac" ? { t3codeAppleTeamSigned: options.signed } : {}),
     private: true,
     packageManager: rootPackageJson.packageManager,
     description:
@@ -4038,22 +4047,6 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     homepage: "https://t3.codes",
     author: "T3 Tools",
     main: "apps/desktop/dist-electron/boot.cjs",
-    build: yield* createBuildConfig(
-      options.platform,
-      options.target,
-      appVersion,
-      options.signed,
-      options.mockUpdates,
-      options.mockUpdateServerPort,
-      macPasskeySigning && macEntitlementsPath
-        ? {
-            entitlementsPath: macEntitlementsPath,
-            provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
-          }
-        : undefined,
-      bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
-      options.arch,
-    ),
     dependencies: stageDependencies,
     devDependencies: {
       electron: electronVersion,
@@ -4112,6 +4105,100 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     ),
     path.join(stageProdResourcesDir, "cursor-sdk"),
   );
+  yield* markStageComplete(stageRoot, desktopStageMarker(options, appVersion, commitHash));
+});
+
+/** Signs and packages a finished stage; the only phase that reads signing credentials. */
+const packageDesktopApp = Effect.fn("packageDesktopApp")(function* (
+  options: ResolvedBuildOptions,
+  stageRoot: string,
+) {
+  const repoRoot = yield* RepoRoot;
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  const hostPlatform = yield* HostProcess.Platform;
+  const appVersion = options.version ?? serverPackageJson.version;
+  yield* requireCompletedStage(
+    stageRoot,
+    desktopStageMarker(options, appVersion, yield* resolveGitCommitHash(repoRoot)),
+  );
+  const stageAppDir = path.join(stageRoot, "app");
+  const stageDistDir = path.join(stageAppDir, "dist");
+  // A retried package phase must not copy what an earlier attempt left in dist.
+  yield* fs.remove(stageDistDir, { recursive: true, force: true });
+
+  const configuredMacPasskeySigning =
+    options.platform === "mac" && options.signed
+      ? yield* Effect.try({
+          try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
+          catch: MacPasskeySigningConfigurationResolutionError.fromCause,
+        })
+      : undefined;
+  const macPasskeySigning = configuredMacPasskeySigning
+    ? {
+        ...configuredMacPasskeySigning,
+        provisioningProfilePath: path.resolve(
+          repoRoot,
+          configuredMacPasskeySigning.provisioningProfilePath,
+        ),
+      }
+    : undefined;
+  const macEntitlementsPath = macPasskeySigning
+    ? path.join(stageAppDir, "entitlements.mac.plist")
+    : undefined;
+  let macWebAuthn: MacWebAuthnEntitlements | undefined;
+  if (macPasskeySigning && macEntitlementsPath) {
+    if (!(yield* fs.exists(macPasskeySigning.provisioningProfilePath))) {
+      return yield* new MacProvisioningProfileNotFoundError({
+        provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
+      });
+    }
+    macWebAuthn = resolveMacWebAuthnEntitlements(
+      yield* fs.readFileString(macPasskeySigning.provisioningProfilePath),
+      macPasskeySigning,
+    );
+    yield* Effect.log(
+      `[desktop-artifact] In-app browser passkeys: Touch ID ${macWebAuthn.touchIdKeychainAccessGroup ? "enabled" : "disabled"}, browser passkeys ${macWebAuthn.browserPasskeys ? "enabled" : "disabled"}.`,
+    );
+    yield* fs.writeFileString(
+      macEntitlementsPath,
+      renderMacPasskeyEntitlements(macPasskeySigning, macWebAuthn),
+    );
+  }
+
+  const stagePackageJsonPath = path.join(stageAppDir, "package.json");
+  const stagedPackageJson = yield* decodeReleasePackageManifest(
+    yield* fs.readFileString(stagePackageJsonPath),
+  );
+  // Undefined fields drop out of the JSON, which also clears what an earlier attempt wrote.
+  const packagedPackageJson = {
+    ...stagedPackageJson,
+    // Read by apps/desktop/src/preview/Passkeys.ts; must match the signed entitlements.
+    t3codeWebAuthn: macWebAuthn,
+    // Read by apps/desktop/src/app/DesktopClerk.ts; self-signed and ad hoc builds have no Team ID.
+    t3codeAppleTeamSigned: options.platform === "mac" ? options.signed : undefined,
+    build: yield* createBuildConfig(
+      options.platform,
+      options.target,
+      appVersion,
+      options.signed,
+      options.mockUpdates,
+      options.mockUpdateServerPort,
+      macPasskeySigning && macEntitlementsPath
+        ? {
+            entitlementsPath: macEntitlementsPath,
+            provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
+          }
+        : undefined,
+      bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
+      options.arch,
+    ),
+  };
+  yield* fs.writeFileString(
+    stagePackageJsonPath,
+    `${yield* encodeJsonString(packagedPackageJson)}\n`,
+  );
+
   if (
     options.wslRuntime !== undefined &&
     bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime })
@@ -4182,7 +4269,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     "electron-builder",
     "--projectDir",
     stageAppDir,
-    platformConfig.cliFlag,
+    PLATFORM_CONFIG[options.platform].cliFlag,
     `--${options.arch}`,
     "--publish",
     "never",
@@ -4195,12 +4282,11 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       shell: builderCommand.shell,
     }),
     {
-      label: `vp exec --filter @t3tools/desktop -- electron-builder --projectDir ${stageAppDir} ${platformConfig.cliFlag} --${options.arch} --publish never`,
+      label: `vp exec --filter @t3tools/desktop -- electron-builder --projectDir ${stageAppDir} ${PLATFORM_CONFIG[options.platform].cliFlag} --${options.arch} --publish never`,
       verbose: options.verbose,
     },
   );
 
-  const stageDistDir = path.join(stageAppDir, "dist");
   if (!(yield* fs.exists(stageDistDir))) {
     return yield* new DesktopBuildDistDirectoryMissingError({
       distPath: stageDistDir,
@@ -4250,7 +4336,15 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   options: ResolvedBuildOptions,
 ) {
   const repoRoot = yield* RepoRoot;
-  return yield* withDesktopBuildLock(repoRoot, buildDesktopArtifactUnlocked(options));
+  return yield* withDesktopBuildLock(
+    repoRoot,
+    Effect.gen(function* () {
+      yield* preflightDesktopBuild(options);
+      const stageRoot = yield* resolveDesktopStageRoot(options);
+      if (options.phase !== "package") yield* stageDesktopApp(options, stageRoot);
+      if (options.phase !== "stage") yield* packageDesktopApp(options, stageRoot);
+    }),
+  );
 });
 
 export const copyDesktopBuildArtifacts = Effect.fn("copyDesktopBuildArtifacts")(function* (
@@ -4345,6 +4439,18 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   wslRuntime: Flag.String("wsl-runtime").pipe(
     Flag.withDescription(
       "Path to the Linux CLI release archive (t3-<version>-linux-x64.tar.gz) to embed as the WSL runtime of a Windows build (env: T3CODE_DESKTOP_WSL_RUNTIME).",
+    ),
+    Flag.optional,
+  ),
+  phase: Flag.Literals("phase", StagePhase.literals).pipe(
+    Flag.withDescription(
+      "all (default) stages and packages; stage builds and installs without signing; package signs and packages a finished --stage-dir.",
+    ),
+    Flag.optional,
+  ),
+  stageDir: Flag.String("stage-dir").pipe(
+    Flag.withDescription(
+      "Directory the stage phase fills (it must be empty) and the package phase reads. The build never removes it.",
     ),
     Flag.optional,
   ),

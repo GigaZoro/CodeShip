@@ -30,6 +30,13 @@ import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-package
 import { signWithJsign } from "./lib/windows-jsign.ts";
 import { windowsSystemTar } from "./lib/windows-tar.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import {
+  StageDirRequiredError,
+  StagePhase,
+  markStageComplete,
+  prepareStageDir,
+  requireCompletedStage,
+} from "./lib/stage-dir.ts";
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64"]);
@@ -466,18 +473,34 @@ const signWindowsExecutable = Effect.fn("signWindowsExecutable")(function* (
   yield* Effect.log("[cli-archive] Signed t3.exe (Azure Trusted Signing).");
 });
 
-const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
+interface CliArchiveInput {
   readonly platform: BuildPlatform;
   readonly arch: BuildArch;
   readonly version: string;
   readonly outputDir: string;
   readonly resourceMonitorDir: Option.Option<string>;
-}) {
+  readonly phase: Option.Option<StagePhase>;
+  readonly stageDir: Option.Option<string>;
+}
+
+const cliExecutableName = (platform: BuildPlatform) => (platform === "win" ? "t3.exe" : "t3");
+
+const cliStageMarker = (input: CliArchiveInput): Record<string, string> => ({
+  platform: input.platform,
+  arch: input.arch,
+  version: input.version,
+});
+
+/** Copies and installs everything the archive ships; runs without signing credentials. */
+const stageCliArchive = Effect.fn("stageCliArchive")(function* (
+  input: CliArchiveInput,
+  stageRoot: string,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repoRoot = yield* RepoRoot;
   const serverDir = path.join(repoRoot, "apps/server");
-  const executableName = input.platform === "win" ? "t3.exe" : "t3";
+  const executableName = cliExecutableName(input.platform);
   // tsdown suffixes cross-built executables; prefer the exact target over the plain host build.
   const targetKey = `${input.platform === "mac" ? "darwin" : input.platform}-${input.arch}`;
   const targetExecutable = path.join(
@@ -509,7 +532,6 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   );
 
   const stem = cliArchiveStem(input.version, input.platform, input.arch);
-  const stageRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-archive-" });
   const contentDir = path.join(stageRoot, stem);
   yield* fs.makeDirectory(contentDir, { recursive: true });
 
@@ -534,6 +556,22 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
     const bytes = yield* fs.readFile(executablePath);
     yield* Effect.try(() => assertLinuxArm64PageCompatibility(bytes));
   }
+  yield* markStageComplete(stageRoot, cliStageMarker(input));
+});
+
+/** Signs a finished stage and archives it; the only phase that reads signing credentials. */
+const packageCliArchive = Effect.fn("packageCliArchive")(function* (
+  input: CliArchiveInput,
+  stageRoot: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const repoRoot = yield* RepoRoot;
+  yield* requireCompletedStage(stageRoot, cliStageMarker(input));
+  const hostPlatform = yield* HostProcess.Platform;
+  const stem = cliArchiveStem(input.version, input.platform, input.arch);
+  const contentDir = path.join(stageRoot, stem);
+  const executablePath = path.join(contentDir, cliExecutableName(input.platform));
   if (input.platform === "mac") {
     yield* signMacArchiveContents({ repoRoot, contentDir, executablePath });
   } else if (input.platform === "win") {
@@ -583,6 +621,24 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   return archivePath;
 });
 
+const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: CliArchiveInput) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const phase = Option.getOrElse(input.phase, (): StagePhase => "all");
+  const stageDir = Option.getOrUndefined(Option.map(input.stageDir, (dir) => path.resolve(dir)));
+  if (phase !== "all" && stageDir === undefined) {
+    return yield* new StageDirRequiredError({ phase });
+  }
+  const stageRoot = stageDir ?? (yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-archive-" }));
+  if (phase !== "package") {
+    if (stageDir !== undefined) yield* prepareStageDir(stageDir);
+    yield* stageCliArchive(input, stageRoot);
+  }
+  if (phase !== "stage") {
+    yield* packageCliArchive(input, stageRoot);
+  }
+});
+
 const command = Command.make(
   "build-cli-archive",
   {
@@ -595,6 +651,18 @@ const command = Command.make(
     resourceMonitorDir: Flag.String("resource-monitor-dir").pipe(
       Flag.withDescription(
         "Directory laid out like dist/resource-monitor (defaults to apps/server/dist/resource-monitor).",
+      ),
+      Flag.optional,
+    ),
+    phase: Flag.Literals("phase", StagePhase.literals).pipe(
+      Flag.withDescription(
+        "all (default) stages and packages; stage copies and installs without signing; package signs and archives a finished --stage-dir.",
+      ),
+      Flag.optional,
+    ),
+    stageDir: Flag.String("stage-dir").pipe(
+      Flag.withDescription(
+        "Directory the stage phase fills (it must be empty) and the package phase reads. The build never removes it.",
       ),
       Flag.optional,
     ),
