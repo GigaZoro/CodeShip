@@ -1738,15 +1738,36 @@ describe.skipIf(isWindowsHost)("a wave of lost commands", () => {
   });
 });
 
-/** Whether `pid` is still running once it has had a moment to end after being stopped. */
-const stillRunning = (pid: number) =>
+/** A process as a test command records it: its PID and creation FILETIME (UTC). */
+interface RecordedProcess {
+  readonly pid: number;
+  readonly created: string;
+}
+
+// PowerShell that records the process `$p` as `readRecordedProcess` reads it.
+const recordProcess = (file: string, process: string) =>
+  `Set-Content -LiteralPath '${file}' -Value ('{0} {1}' -f ${process}.Id, ${process}.StartTime.ToFileTimeUtc())`;
+
+const readRecordedProcess = (file: string): RecordedProcess => {
+  const match = /^(\d+) (\d+)$/.exec(NodeFS.readFileSync(file, "utf8").trim());
+  if (!match) throw new Error(`${file} does not record a process as "<pid> <creation time>"`);
+  return { pid: Number.parseInt(match[1]!, 10), created: match[2]! };
+};
+
+/**
+ * Whether the recorded process is still running once it has had `waitMs` to end after being
+ * stopped; a survivor is stopped. Windows reuses a PID soon after its process ends, so the
+ * creation time tells the recorded process from a later one with its PID.
+ */
+const survived = ({ pid, created }: RecordedProcess, waitMs = 10_000) =>
   NodeChildProcess.execFileSync(
     "powershell.exe",
     [
       "-NoProfile",
       "-NonInteractive",
       "-Command",
-      `Wait-Process -Id ${pid} -Timeout 10 -ErrorAction SilentlyContinue; if (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { 'alive' } else { 'gone' }`,
+      `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; ` +
+        `if ($p -and $p.StartTime.ToFileTimeUtc() -eq ${created} -and -not $p.WaitForExit(${waitMs})) { $p.Kill(); 'alive' } else { 'gone' }`,
     ],
     { encoding: "utf8" },
   ).trim() === "alive";
@@ -3816,6 +3837,29 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
 
 // A Windows wrapper that ended leaves what it started running under a dead parent pid.
 describe.runIf(isWindowsHost)("Windows only", () => {
+  it("a survivor check takes a later process with the recorded PID for another process", () => {
+    const folder = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-survivor-"));
+    const file = NodePath.join(folder, "child.pid");
+    let child: RecordedProcess | undefined;
+    try {
+      NodeChildProcess.execFileSync("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$p = Start-Process -PassThru -WindowStyle Hidden -FilePath ping.exe -ArgumentList '-n','300','127.0.0.1'; ${recordProcess(file, "$p")}`,
+      ]);
+      child = readRecordedProcess(file);
+      // The same PID with another creation time, as when Windows has given the PID to a new process.
+      assert.isFalse(survived({ pid: child.pid, created: `${BigInt(child.created) + 1n}` }, 0));
+      assert.isTrue(isProcessAlive(child.pid));
+      assert.isTrue(survived(child, 0));
+      assert.isFalse(survived(child));
+    } finally {
+      if (child) survived(child, 0);
+      NodeFS.rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
   it.layer(layerTest, { excludeTestServices: true })("Windows launch timeouts", (it) => {
     it.effect.each(["cancelled", "sharing-error"] as const)(
       "writes a %s gate failure to the command log",
@@ -4282,7 +4326,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
               childPidFile = NodePath.join(shim, "child.pid");
               NodeFS.writeFileSync(
                 NodePath.join(shim, "git.cmd"),
-                `@powershell.exe -NoProfile -NonInteractive -Command "Set-Content -LiteralPath '${childPidFile}' -Value $PID; Start-Sleep 300"\r\n`,
+                `@powershell.exe -NoProfile -NonInteractive -Command "$p = Get-Process -Id $PID; ${recordProcess(childPidFile, "$p")}; Start-Sleep 300"\r\n`,
               );
               return {
                 ...without(inherited, ["PATH", "HOME"]),
@@ -4291,10 +4335,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
               };
             },
           );
-          const childPid = Number.parseInt(NodeFS.readFileSync(childPidFile, "utf8"), 10);
-          const left = stillRunning(childPid);
-          if (left) process.kill(childPid); // still runs here
-          assert.isFalse(left);
+          assert.isFalse(survived(readRecordedProcess(childPidFile)));
           assert.include(lines[0] ?? "", "did not answer within 10 s");
           assert.isTrue(isFolder(lines.at(-1), workspace), `${lines.at(-1)} is not the workspace`);
           assert.equal(row?.exit_code, 0);
@@ -4335,15 +4376,12 @@ describe.runIf(isWindowsHost)("Windows only", () => {
             runner.run(callerOf(chat.threadId), {
               command:
                 "$p = Start-Process -PassThru -WindowStyle Hidden -FilePath ping.exe -ArgumentList '-n','300','127.0.0.1'; " +
-                "Set-Content -LiteralPath child.pid -Value $p.Id; Set-Content -LiteralPath ready -Value 1; Start-Sleep 300",
+                `${recordProcess("child.pid", "$p")}; Set-Content -LiteralPath ready -Value 1; Start-Sleep 300`,
             }),
           );
           yield* awaitFile(NodePath.join(chat.workspace, "ready"));
-          const childPid = Number.parseInt(
-            NodeFS.readFileSync(NodePath.join(chat.workspace, "child.pid"), "utf8"),
-            10,
-          );
-          assert.isTrue(isProcessAlive(childPid));
+          const child = readRecordedProcess(NodePath.join(chat.workspace, "child.pid"));
+          assert.isTrue(isProcessAlive(child.pid));
           // Only the wrapper, as a stop cut by a restart leaves it.
           // oxlint-disable-next-line t3code/no-raw-taskkill -- this stops the wrapper alone on purpose
           NodeChildProcess.execFileSync("taskkill", [
@@ -4368,7 +4406,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
             ),
           );
           assert.equal((yield* commandRow(started.taskId))?.status, cancelled ? "stopped" : "lost");
-          assert.isFalse(stillRunning(childPid));
+          assert.isFalse(survived(child));
         }),
       );
     },
