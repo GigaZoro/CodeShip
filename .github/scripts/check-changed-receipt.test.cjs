@@ -121,6 +121,19 @@ test("computing the working tree writes no objects to the repository", () =>
     assert.equal(git("write-tree"), tree);
   }));
 
+test("the working tree is computed when git add warns about each file, past 1 MiB in all", () =>
+  withRoot((root) => {
+    const { work, git, write } = fixture(root);
+    // With autocrlf, add warns about each file with LF line ends in its working copy.
+    git("config", "core.autocrlf", "true");
+    for (let index = 0; index < 5000; index += 1) {
+      write(`lf/${String(index).padStart(4, "0")}-${"x".repeat(140)}.txt`, "lf\n");
+    }
+    const tree = workingTree(work);
+    git("-c", "core.safecrlf=false", "add", "--all");
+    assert.equal(git("write-tree"), tree);
+  }));
+
 test("a pass covers the push only when it compared against the commit main is at", () =>
   withRoot((root) => {
     const { work, git, write, commit, base } = fixture(root);

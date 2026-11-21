@@ -5,7 +5,7 @@ const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
+const { GIT_OUTPUT_MAX_BYTES, REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
 
 const RECEIPT_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -16,6 +16,7 @@ const git = (cwd, args, env = process.env) =>
     cwd,
     env: { ...env, ...REAL_HISTORY_ENV },
     encoding: "utf8",
+    maxBuffer: GIT_OUTPUT_MAX_BYTES,
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
 

@@ -28,6 +28,7 @@ test("checks actual git history and fails closed when the base cannot be read", 
     fs.mkdirSync(path.join(root, ".github/scripts"), { recursive: true });
     fs.mkdirSync(path.join(root, "docs"));
     fs.copyFileSync(__dirname + "/release-notes.cjs", root + "/.github/scripts/release-notes.cjs");
+    fs.copyFileSync(__dirname + "/git-history.cjs", root + "/.github/scripts/git-history.cjs");
     const git = (...args) => execFileSync("git", args, { cwd: root, stdio: "pipe" });
     const run = (...args) =>
       spawnSync(process.execPath, [".github/scripts/release-notes.cjs", ...args], {
@@ -65,6 +66,17 @@ test("checks actual git history and fails closed when the base cannot be read", 
     fs.writeFileSync(path.join(root, "docs/release-notes.md"), old);
     assert.equal(run("check", "HEAD~1", "HEAD").status, 0);
     assert.equal(run("check", "HEAD", "HEAD").status, 1);
+    // Notes past execFileSync's 1 MiB default, read from both commits.
+    const history = notes(
+      ...Array.from({ length: 3000 }, (_, index) =>
+        entry("2026-11-04", `Earlier change ${index} ${"x".repeat(200)}`),
+      ),
+    );
+    fs.writeFileSync(path.join(root, "docs/release-notes.md"), history);
+    commit();
+    fs.writeFileSync(path.join(root, "docs/release-notes.md"), `${latest}\n${history}`);
+    commit();
+    assert.equal(run("check", "HEAD~1", "HEAD").status, 0);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -254,6 +266,7 @@ test("git rebases a shipment over another one's notes through the configured mer
     fs.mkdirSync(path.join(root, ".github/scripts"), { recursive: true });
     fs.mkdirSync(path.join(root, "docs"));
     fs.copyFileSync(__dirname + "/release-notes.cjs", root + "/.github/scripts/release-notes.cjs");
+    fs.copyFileSync(__dirname + "/git-history.cjs", root + "/.github/scripts/git-history.cjs");
     fs.copyFileSync(__dirname + "/../../.gitattributes", root + "/.gitattributes");
     const notesFile = path.join(root, "docs/release-notes.md");
     const git = (...args) =>
@@ -297,6 +310,7 @@ test("git rebases a shipment over another one's notes through the configured mer
 const withScript = (dir) => {
   fs.mkdirSync(path.join(dir, ".github/scripts"), { recursive: true });
   fs.copyFileSync(__dirname + "/release-notes.cjs", dir + "/.github/scripts/release-notes.cjs");
+  fs.copyFileSync(__dirname + "/git-history.cjs", dir + "/.github/scripts/git-history.cjs");
   fs.copyFileSync(__dirname + "/../../.gitattributes", dir + "/.gitattributes");
   return dir;
 };

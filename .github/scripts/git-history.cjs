@@ -8,8 +8,9 @@ const REAL_HISTORY_ENV = Object.freeze({
   GIT_GRAFT_FILE: "/dev/null/grafts",
 });
 
-// `ls-files -v` prints 2 MB for this repository, past spawnSync's 1 MiB default.
-const LS_FILES_MAX_BYTES = 256 * 1024 * 1024;
+// Past spawnSync's and execFileSync's 1 MiB default: Git prints a line per path for `ls-files`, `status` and a merge's
+// conflicts, where this repository's paths alone take 2 MB, and `show` prints the release notes, which grow each day.
+const GIT_OUTPUT_MAX_BYTES = 256 * 1024 * 1024;
 
 /**
  * Tracked files marked assume-unchanged (lowercase tag) or skip-worktree (`S`): `status` does not list their edits, so
@@ -19,7 +20,7 @@ function markedFiles(cwd) {
   const listed = spawnSync("git", ["-C", cwd, "ls-files", "-v"], {
     encoding: "utf8",
     env: { ...process.env, ...REAL_HISTORY_ENV },
-    maxBuffer: LS_FILES_MAX_BYTES,
+    maxBuffer: GIT_OUTPUT_MAX_BYTES,
     windowsHide: true,
   });
   if (listed.error) throw listed.error;
@@ -30,4 +31,4 @@ function markedFiles(cwd) {
     .map((line) => line.slice(2));
 }
 
-module.exports = { REAL_HISTORY_ENV, markedFiles };
+module.exports = { GIT_OUTPUT_MAX_BYTES, REAL_HISTORY_ENV, markedFiles };

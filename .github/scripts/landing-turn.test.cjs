@@ -15,6 +15,7 @@ const {
   land,
   overlappingWorktrees,
   main,
+  pushChecked,
   release,
   tryAcquire,
   verifyPush,
@@ -385,10 +386,9 @@ test("a lander's release notes go among the ones main gained meanwhile by date, 
     const seed = path.join(root, "seed");
     fs.mkdirSync(path.join(seed, ".github/scripts"), { recursive: true });
     fs.mkdirSync(path.join(seed, "docs"));
-    fs.copyFileSync(
-      path.join(__dirname, "release-notes.cjs"),
-      path.join(seed, ".github/scripts/release-notes.cjs"),
-    );
+    for (const file of ["release-notes.cjs", "git-history.cjs"]) {
+      fs.copyFileSync(path.join(__dirname, file), path.join(seed, ".github/scripts", file));
+    }
     ship(seed, shipped);
     git(seed, "push", "-q", "origin", "HEAD:main");
     const lander = clone("lander");
@@ -434,15 +434,24 @@ test("a lander with uncommitted files, failing checks or a conflict with main do
     commit(dir, "change.txt");
     const before = git(origin, "rev-parse", "main");
 
-    fs.writeFileSync(path.join(dir, "scratch.txt"), "scratch\n");
+    // Status lists each file, which takes these past spawnSync's 1 MiB default.
+    const scratch = Array.from(
+      { length: 8000 },
+      (_, index) => `scratch-${String(index).padStart(4, "0")}-${"x".repeat(140)}.txt`,
+    );
+    for (const file of scratch) fs.writeFileSync(path.join(dir, file), "scratch\n");
     const uncommitted = land({
       cwd: dir,
       remote: origin,
       check: () => assert.fail("checked a tree it cannot push"),
     });
     assert.equal(uncommitted.status, "uncommitted");
+    assert.deepEqual(
+      uncommitted.files,
+      scratch.map((file) => `?? ${file}`),
+    );
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
-    fs.rmSync(path.join(dir, "scratch.txt"));
+    for (const file of scratch) fs.rmSync(path.join(dir, file));
 
     // Before it waits behind another lander's turn.
     const holder = clone("holder");
@@ -1581,6 +1590,45 @@ test("a lander stops when its checkout is switched while it fetches a main that 
   }
 });
 
+test("a push of a commit checked elsewhere lands that commit, and stops when its checkout left it", () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const sync = clone("sync");
+    commit(sync, "synced.txt");
+    const checked = git(sync, "rev-parse", "HEAD");
+    const main = git(sync, "rev-parse", "HEAD~1");
+    // The checked tree on main's commit, so a pass for the checked tree covers it too.
+    const sibling = git(sync, "commit-tree", "HEAD^{tree}", "-p", main, "-m", "sibling");
+    const push = () => pushChecked({ cwd: sync, remote: origin, head: checked });
+    // Git hands pre-push each ref as `<source> <sha> <destination> <sha>`: a source of `HEAD` would push
+    // whatever the checkout is on when git reads it, after the check above.
+    const hooks = path.join(root, "sync-hooks");
+    fs.mkdirSync(hooks);
+    fs.writeFileSync(path.join(hooks, "pre-push"), "#!/bin/sh\ncat >> ../pre-push.txt\n", {
+      mode: 0o755,
+    });
+    git(sync, "config", "core.hooksPath", hooks);
+    git(sync, "reset", "-q", "--hard", sibling);
+    assert.throws(push, /the checkout moved off/);
+    assert.equal(git(origin, "rev-parse", "main"), main);
+    assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+    git(sync, "reset", "-q", "--hard", checked);
+    push();
+    assert.equal(git(origin, "rev-parse", "main"), checked);
+    const pushedToMain = fs
+      .readFileSync(path.join(root, "pre-push.txt"), "utf8")
+      .split("\n")
+      .map((line) => line.split(" "))
+      .filter((fields) => fields[2] === "refs/heads/main");
+    assert.deepEqual(
+      pushedToMain.map((fields) => fields[0]),
+      [checked],
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a lander gives up on a fetch of main that stops answering", () => {
   const { root, git, clone, commit } = setup();
   try {
@@ -1647,7 +1695,7 @@ test("a command given an argument it does not take is refused before it takes th
     assert.deepEqual(
       errors,
       Array(6).fill(
-        "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push | verify <remote>",
+        "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | verify <remote>",
       ),
     );
     assert.equal(git(origin, "rev-parse", "main"), main_);

@@ -19,7 +19,7 @@ type Refusal = readonly [argv: ReadonlyArray<string>, status: number, diagnostic
 
 const unknownOption = (name: string) => "Unknown option '" + name + "'";
 const landingUsage =
-  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push | verify <remote>";
+  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | verify <remote>";
 const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
   "./lib/run-cached-test-group.ts": [
     [[], 1, "A cached test group requires at least one test file"],
@@ -50,7 +50,7 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
   "../.github/scripts/landing-turn.cjs": [
     [["land", UNREAD], 2, landingUsage],
     [["land-rebased", "--base", "0".repeat(40), "--head", UNREAD], 2, landingUsage],
-    [["push", UNREAD], 2, landingUsage],
+    [["push"], 2, landingUsage],
     [["verify", "origin", UNREAD], 2, landingUsage],
   ],
   "../.github/scripts/release-notes.cjs": [
@@ -350,7 +350,12 @@ function commandPath(file: string, sandbox: string): string {
   if (file !== releaseNotes) return NodePath.join(root, path);
   const target = NodePath.join(sandbox, path);
   NodeFS.mkdirSync(NodePath.dirname(target), { recursive: true });
-  NodeFS.copyFileSync(NodePath.join(root, path), target);
+  for (const script of [NodePath.basename(path), "git-history.cjs"]) {
+    NodeFS.copyFileSync(
+      NodePath.join(root, NodePath.dirname(path), script),
+      NodePath.join(NodePath.dirname(target), script),
+    );
+  }
   return target;
 }
 

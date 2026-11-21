@@ -1,6 +1,7 @@
 const { execFileSync, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { GIT_OUTPUT_MAX_BYTES } = require("./git-history.cjs");
 
 const NOTES_PATH = "docs/release-notes.md";
 // .gitattributes names this driver for NOTES_PATH. `configure`, which `vp i` runs, sets it for manual rebases and
@@ -226,7 +227,12 @@ function configureMergeDriver(root) {
 
 function readNotesAt(root, ref) {
   if (!ref) return null;
-  const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+  const git = (...args) =>
+    execFileSync("git", args, {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: GIT_OUTPUT_MAX_BYTES,
+    }).trim();
   const commit = git("rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`);
   if (!git("ls-tree", "--name-only", commit, "--", NOTES_PATH)) return null;
   return git("show", `${commit}:${NOTES_PATH}`);

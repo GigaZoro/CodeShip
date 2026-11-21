@@ -2,7 +2,7 @@
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
-const { REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
+const { GIT_OUTPUT_MAX_BYTES, REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
 const { createQueueWaiter } = require("./lease-queue.cjs");
 const path = require("node:path");
 const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs");
@@ -31,9 +31,8 @@ function git(cwd, args, { env, config = [], allowFailure = false, timeoutMs } = 
   const result = spawnSync("git", ["-C", cwd, ...flags, ...args], {
     encoding: "utf8",
     env: { ...process.env, ...REAL_HISTORY_ENV, ...env },
+    maxBuffer: GIT_OUTPUT_MAX_BYTES,
     timeout: timeoutMs,
-    // Default 1 MiB: another worktree's branch can change tens of thousands of files, and an overflow aborts the landing.
-    maxBuffer: 1024 * 1024 * 1024,
     windowsHide: true,
   });
   // A call that ran out of time is a failed one; like any failed push, it may still have changed origin.
@@ -290,6 +289,23 @@ function withTurn(options, run) {
   }
 }
 
+/**
+ * Pushes `head`, a commit verified against main's current commit elsewhere (the upstream sync). The push is a
+ * fast-forward, so it takes the turn alone and a main that moved makes git refuse it.
+ */
+function pushChecked({ cwd, remote, head }) {
+  withTurn({ cwd, remote }, (turn) => {
+    // A checkout that left the commit during the wait is being changed by something else.
+    if (git(cwd, ["rev-parse", "HEAD"]).stdout !== head) {
+      throw new Error(`landing turn: the checkout moved off ${head} while it waited for the turn.`);
+    }
+    git(cwd, ["push", "--quiet", remote, `${head}:refs/heads/main`], {
+      env: { [TURN_ENV]: turn },
+      timeoutMs: MAIN_CALL_MS,
+    });
+  });
+}
+
 /** The pre-push check: a push to main must come from the lander whose lease the remote holds. */
 function verifyPush({ cwd, remote, env = process.env, refs }) {
   const toMain = refs.some((ref) => ref === "refs/heads/main");
@@ -488,8 +504,8 @@ function land({
 // How many arguments each command takes: an argument `land` does not take, such as a mistyped flag, must not start
 // a real landing.
 const USAGE =
-  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push | verify <remote>";
-const ARGUMENTS = { land: 0, "land-rebased": 4, push: 0, verify: 1 };
+  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | verify <remote>";
+const ARGUMENTS = { land: 0, "land-rebased": 4, verify: 1 };
 
 function main(argv, { cwd = process.cwd() } = {}) {
   const [command, ...rest] = argv;
@@ -560,15 +576,8 @@ function main(argv, { cwd = process.cwd() } = {}) {
     console.log(JSON.stringify(result));
     return result.status === "landed" ? 0 : 1;
   }
-  // push: for a tree that was verified against main's current commit elsewhere (the upstream sync). The push is
-  // a fast-forward, so the push takes the turn alone and a main that moved makes git refuse it.
-  withTurn({ cwd, remote: "origin" }, (turn) => {
-    git(cwd, ["push", "--quiet", "origin", "HEAD:refs/heads/main"], {
-      env: { [TURN_ENV]: turn },
-      timeoutMs: MAIN_CALL_MS,
-    });
-  });
-  return 0;
+  console.error(USAGE);
+  return 2;
 }
 
 if (require.main === module) {
@@ -590,6 +599,7 @@ module.exports = {
   release,
   acquire,
   withTurn,
+  pushChecked,
   verifyPush,
   land,
   overlappingWorktrees,

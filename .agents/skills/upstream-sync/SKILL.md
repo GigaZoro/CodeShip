@@ -76,8 +76,9 @@ repair that touches it.
    (Settings → General → Language → Pseudo, dev builds only): untranslated text shows up
    without the `⟦…⟧` brackets.
 4. Land it the way the developer asks. Every push to `main` publishes a release. To land on `main`,
-   run `node scripts/upstream-sync.ts land`: it pushes only a fast-forward of the base you
-   verified, merges a main that moved at most twice (each time asking for the checks again), and
-   holds, naming the files, when main conflicts or the bounds run out.
+   run `node scripts/upstream-sync.ts land`: it pushes only the commit `check` last passed for,
+   as a fast-forward of the base that pass ran against, merges a main that moved into that commit
+   at most twice without moving the checkout (each time the sync fast-forwards to the merge and
+   checks again), and holds, naming the files, when main conflicts or the bounds run out.
    [automations/upstream-sync.md](../../../automations/upstream-sync.md) says what to do with each
    answer.

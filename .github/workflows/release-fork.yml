@@ -66,6 +66,7 @@ jobs:
             /.env.example
             /docs/release-notes.md
             /.github/scripts/fork-release.cjs
+            /.github/scripts/git-history.cjs
             /.github/scripts/release-notes.cjs
           sparse-checkout-cone-mode: false
 
@@ -236,6 +237,7 @@ jobs:
           sparse-checkout: |
             /docs/release-notes.md
             /.github/scripts/fork-release.cjs
+            /.github/scripts/git-history.cjs
             /.github/scripts/release-notes.cjs
             /scripts/install.sh
           sparse-checkout-cone-mode: false
