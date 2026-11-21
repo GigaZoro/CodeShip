@@ -1975,6 +1975,20 @@ export const installStagedDependencies = Effect.fn("installStagedDependencies")(
   yield* runStageVp(input, STAGE_INSTALL_ARGS);
 });
 
+// Dependency install scripts run in the stage; whichever step installs, they never see a signing,
+// notarization or registry credential.
+const CREDENTIAL_ENV_NAME = /^(?:CSC_|WIN_CSC_|APPLE_|AZURE_|MACOS_)|SECRET|PASSWORD|TOKEN|_KEY$/iu;
+
+export const stageInstallEnv = (
+  source: Readonly<Record<string, string | undefined>>,
+): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(source).filter(
+      (entry): entry is [string, string] =>
+        entry[1] !== undefined && !CREDENTIAL_ENV_NAME.test(entry[0]),
+    ),
+  );
+
 const runStageVp = Effect.fn("runStageVp")(function* (
   stage: { readonly stageDir: string; readonly label: string; readonly verbose: boolean },
   args: ReadonlyArray<string>,
@@ -1984,6 +1998,8 @@ const runStageVp = Effect.fn("runStageVp")(function* (
     ChildProcess.make(command.command, command.args, {
       cwd: stage.stageDir,
       shell: command.shell,
+      env: stageInstallEnv(process.env),
+      extendEnv: false,
     }),
     { label: `vp ${args.join(" ")} (${stage.label})`, verbose: stage.verbose },
   );

@@ -941,6 +941,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            vi.stubEnv("AZURE_CLIENT_SECRET", "fixture-secret");
+            vi.stubEnv("NODE_AUTH_TOKEN", "fixture-token");
+          }),
+          () => Effect.sync(() => vi.unstubAllEnvs()),
+        );
         const repoRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-stage-lockfile-" });
         const stageDir = path.join(repoRoot, "stage");
         const stageLockfile = path.join(stageDir, "pnpm-lock.yaml");
@@ -948,9 +955,20 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         yield* fs.writeFileString(path.join(repoRoot, "pnpm-lock.yaml"), ROOT_LOCKFILE_FIXTURE);
         const ran: string[] = [];
         const seeds: string[] = [];
+        const credentials: string[] = [];
         const spawner = ChildProcessSpawner.make((command) => {
-          const { args } = command as unknown as { readonly args: ReadonlyArray<string> };
+          const { args, options } = command as unknown as ChildProcess.StandardCommand;
           ran.push(args.join(" "));
+          // Without extendEnv a given env replaces the inherited one; without env the child inherits.
+          const env =
+            options.env === undefined
+              ? process.env
+              : options.extendEnv === true
+                ? { ...process.env, ...options.env }
+                : options.env;
+          credentials.push(
+            ...["AZURE_CLIENT_SECRET", "NODE_AUTH_TOKEN"].filter((name) => name in env),
+          );
           return (
             args.includes("--lockfile-only")
               ? fs.readFileString(stageLockfile).pipe(
@@ -974,6 +992,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
         assert.deepStrictEqual(seeds, [ROOT_LOCKFILE_FIXTURE]);
         assert.deepStrictEqual(ran, commands);
+        assert.deepStrictEqual(credentials, []);
         if (drift === undefined) {
           assert.isTrue(Result.isSuccess(result));
         } else {
