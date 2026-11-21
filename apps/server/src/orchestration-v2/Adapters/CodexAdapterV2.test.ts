@@ -4934,6 +4934,39 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       );
     },
   );
+  it.effect("a run-scoped Stop leaves another run's settled command running", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeCodexReplayHarness(backgroundExecTranscript);
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-codex-bg-independent"),
+            text: BG_PROMPT,
+          }),
+        );
+        yield* harness.firstTerminal;
+        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+
+        // A later run on the same provider thread owns only its own turn; the transcript has no terminate.
+        const laterTurn = ProviderTurnId.make("independent-run-turn");
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: laterTurn,
+          requestRuntimeRestart: true,
+          ownedProviderTurnIds: [laterTurn],
+        });
+        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        assert.lengthOf(harness.terminalEvents(), 1);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
   it.effect("stops a completed run's background command without a client-supplied run", () => {
     const transcript = makeBackgroundStopTranscript(true);
     return Effect.scoped(

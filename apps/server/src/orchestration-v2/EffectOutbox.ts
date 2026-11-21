@@ -47,6 +47,8 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("provider-turn.interrupt"),
     stopRunIds: Schema.optional(Schema.Array(RunId)),
+    /** A run-scoped Stop reaches only these turns of the provider thread. */
+    ownedProviderTurnIds: Schema.optional(Schema.Array(ProviderTurnId)),
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,

@@ -68,6 +68,8 @@ export interface ProviderTurnControlServiceV2Shape {
     readonly providerSessionId: ProviderSessionId;
     readonly providerThreadId: ProviderThreadId;
     readonly providerTurnId: ProviderTurnId;
+    /** Set by a run-scoped Stop: settled turns of other runs on this provider thread keep their work. */
+    readonly ownedProviderTurnIds?: ReadonlyArray<ProviderTurnId>;
   }) => Effect.Effect<
     void | ProviderAdapter.ProviderAdapterV2SubagentOutcome,
     ProviderTurnControlError
@@ -245,6 +247,9 @@ export const layer: Layer.Layer<
               providerThread: loaded.providerThread,
               providerTurnId: loaded.providerTurn.id,
               requestRuntimeRestart: true,
+              ...(input.ownedProviderTurnIds === undefined
+                ? {}
+                : { ownedProviderTurnIds: input.ownedProviderTurnIds }),
             })
             .pipe(
               Effect.catchTags({
