@@ -154,6 +154,16 @@ the task holds a completed result, the follower settles it through the same link
 a queued message or a pending request, since settling would hide or cancel them,
 and a refused settle is left to auto-settlement there.
 
+A task completed here first still owes a stop there, which the follower sends
+and records (`stoppedThere`). A cancel, a failed launch or a Stop of the whole
+parent thread stops the whole thread there, as its Stop button does. A Stop of
+only the parent's run records `stopScope: "run"`: the follower then interrupts
+the task's own run there with `withWork`, so the runs its results woke and their
+delegated tasks stop too, while a run someone asked for there since keeps
+running. The launch attaches its run to the task even when the Stop came first.
+A task recorded without its run (an older peer's launch) stops the thread's
+first run, which its launch started.
+
 A task with `isolation: "worktree"` branches its child's worktree there from the
 parent checkout's HEAD commit, passed as a SHA `baseRef` with `startFromOrigin`.
 The other machine can only fetch a pushed commit, so `RemoteDelegation` refuses an

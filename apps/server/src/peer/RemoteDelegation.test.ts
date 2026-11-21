@@ -136,6 +136,10 @@ interface BoxThread {
   readonly interrupted: Ref.Ref<number>;
   /** What each interrupt or stop there did, once per command id. */
   readonly stops: Ref.Ref<ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks">>;
+  /** The run and scope each interrupt there named, once per command id. */
+  readonly interruptedRuns: Ref.Ref<
+    ReadonlyArray<{ readonly runId: RunId | undefined; readonly withWork: boolean | undefined }>
+  >;
   /** The launch starts no run, as one recorded before its run was kept. */
   readonly runless: Ref.Ref<boolean>;
   /** Completed on the first interrupt there. */
@@ -193,6 +197,9 @@ const makeBoxThread = Effect.gen(function* () {
     gone: yield* Ref.make(false),
     interrupted: yield* Ref.make(0),
     stops: yield* Ref.make<ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks">>([]),
+    interruptedRuns: yield* Ref.make<
+      ReadonlyArray<{ readonly runId: RunId | undefined; readonly withWork: boolean | undefined }>
+    >([]),
     runless: yield* Ref.make(false),
     interruptedOnce: yield* Deferred.make<void>(),
     finished: yield* Deferred.make<void>(),
@@ -329,10 +336,15 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
           };
     });
   // One record per command id, as its receipt replays a repeat.
-  const recordStop = (commandId: string, kind: "interrupt" | "thread.stop" | "delegated-tasks") =>
+  const recordStop = (
+    commandId: string,
+    kind: "interrupt" | "thread.stop" | "delegated-tasks",
+    recordFirst: Effect.Effect<void> = Effect.void,
+  ) =>
     Effect.gen(function* () {
       if (interrupts.has(`${kind}:${commandId}`)) return;
       interrupts.add(`${kind}:${commandId}`);
+      yield* recordFirst;
       yield* Ref.update(thread.stops, (seen) => [...seen, kind]);
       if (kind !== "delegated-tasks") {
         yield* Ref.update(thread.interrupted, (count) => count + 1);
@@ -491,7 +503,14 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
         };
       }),
     interruptThread: (input) =>
-      recordStop(input.commandId, "interrupt").pipe(
+      recordStop(
+        input.commandId,
+        "interrupt",
+        Ref.update(thread.interruptedRuns, (seen) => [
+          ...seen,
+          { runId: input.runId, withWork: input.withWork },
+        ]),
+      ).pipe(
         Effect.as({
           type: "interrupt_requested",
           runId: runOf("running").id,
@@ -2409,6 +2428,119 @@ it.effect.each([
         expect(yield* Ref.get(thread.settles)).toEqual(
           settled ? [delegated.remoteChild.threadId] : [],
         );
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a Stop of the parent's run stops only the task's run there, not a follow-up there", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const retries = yield* steppedRetries;
+      const a = yield* makeLaptop(database, offers).pipe(
+        Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
+      );
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      // The box sleeps as soon as the task is there, which holds its follower's stop back.
+      yield* Ref.set(
+        thread.afterLaunch,
+        Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere")),
+      );
+      const delegated = yield* delegateToBox(a);
+      yield* Queue.take(retries.failed);
+      // Only the run that delegated the task is stopped here.
+      yield* a.threads.stopDelegatedTasks({
+        threadId: parentThreadId,
+        commandId: CommandId.make("command:stop:laptop-parent-run"),
+        parentRunId,
+      });
+      expect(yield* taskResult(a, delegated.taskId)).toMatchObject({ status: "interrupted" });
+
+      // Before the stop gets there, the task's run ends there and someone starts a follow-up.
+      yield* Ref.set(thread.status, "completed");
+      yield* Ref.set(thread.laterRun, "running");
+      yield* Ref.set(b.descriptor, box);
+      yield* Queue.offer(retries.retry, undefined);
+      yield* stoppedThere(a, delegated.taskId, null);
+      // The stop names the task's own run and its work, so the follow-up keeps running.
+      expect(yield* Ref.get(thread.stops)).toEqual(["interrupt"]);
+      expect(yield* Ref.get(thread.interruptedRuns)).toEqual([{ runId: boxRunId, withWork: true }]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a Stop of the parent's run during the launch stops the run the launch started", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      // The parent's run is stopped after the task is recorded, before its launch returns its run.
+      yield* Ref.set(
+        thread.afterLaunch,
+        a.threads
+          .stopDelegatedTasks({
+            threadId: parentThreadId,
+            commandId: CommandId.make("command:stop:laptop-parent-run-during-launch"),
+            parentRunId,
+          })
+          .pipe(Effect.orDie, Effect.asVoid),
+      );
+      const delegated = yield* delegateToBox(a);
+      expect(yield* taskResult(a, delegated.taskId)).toMatchObject({ status: "interrupted" });
+
+      const task = yield* stoppedThere(a, delegated.taskId, null);
+      expect(yield* Ref.get(thread.stops)).toEqual(["interrupt"]);
+      expect(yield* Ref.get(thread.interruptedRuns)).toEqual([{ runId: boxRunId, withWork: true }]);
+      expect(task?.remoteChild).toMatchObject({ runId: boxRunId, stopScope: "run" });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "a Stop of the parent's run reaches the first run there of a task recorded without it",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        // The launch answers without its run, as an older box does; the run starts there anyway.
+        yield* Ref.set(thread.runless, true);
+        yield* Ref.set(thread.afterLaunch, Ref.set(thread.runless, false));
+        const delegated = yield* delegateToBox(a);
+        // A later run there, asked for by someone else, is not the task's.
+        yield* Ref.set(thread.laterRun, "running");
+        yield* a.threads.stopDelegatedTasks({
+          threadId: parentThreadId,
+          commandId: CommandId.make("command:stop:laptop-parent-run-runless"),
+          parentRunId,
+        });
+
+        const task = yield* stoppedThere(a, delegated.taskId, null);
+        expect(yield* Ref.get(thread.stops)).toEqual(["interrupt"]);
+        expect(yield* Ref.get(thread.interruptedRuns)).toEqual([
+          { runId: boxRunId, withWork: true },
+        ]);
+        expect(task?.remoteChild?.runId).toBeUndefined();
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

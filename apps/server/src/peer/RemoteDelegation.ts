@@ -478,8 +478,9 @@ const make = Effect.gen(function* () {
             ),
           ),
         );
-      // The follower waits on this run once it knows it; a failure here leaves it on the
-      // thread's latest run, which is the run it launched.
+      // The follower waits on this run once it knows it, and a Stop here during the launch
+      // stops it there. A failure here leaves the wait on the thread's latest run, which is the
+      // run it launched, and the stop on the thread's first.
       if (launched.runId !== null) {
         yield* threads
           .dispatch({
@@ -576,6 +577,46 @@ const make = Effect.gen(function* () {
         clientRequestId: `${key}:${remote.threadId}`,
       })
       .pipe(Effect.asVoid);
+
+  /**
+   * Stops only the task's own run there with the work it started (its delegated tasks and the
+   * runs their results woke), as a Stop of the run here that delegated the task stops a child
+   * here: a run someone asked for there since keeps running. A task recorded without its run
+   * resolves it as the thread's first run, which its launch started.
+   */
+  const stopRunThere = Effect.fn("RemoteDelegation.stopRunThere")(function* (
+    scope: ThreadScope,
+    remote: OrchestrationV2RemoteTaskChild,
+    key: string,
+    taskId: NodeId,
+  ) {
+    let runId = remote.runId;
+    if (runId === undefined) {
+      const read = yield* forwarding.readThread(scope, remote.environmentId, {
+        threadId: remote.threadId,
+        limit: 1,
+        maxCharsPerItem: 1,
+        runLimit: 50,
+      });
+      // Nothing has run there, so nothing is left to stop.
+      if (read.thread.runCount === 0) return;
+      runId = read.recentRuns?.find((run) => run.ordinal === 1)?.runId;
+      if (runId === undefined) {
+        // Stopping the whole thread instead would stop the runs others asked for there.
+        return yield* Effect.logError("remote-delegation.stop-run-unknown", {
+          taskId,
+          threadId: remote.threadId,
+          runCount: read.thread.runCount,
+        });
+      }
+    }
+    yield* forwarding.interruptThread(scope, remote.environmentId, {
+      threadId: remote.threadId,
+      runId,
+      withWork: true,
+      clientRequestId: `${key}:${remote.threadId}`,
+    });
+  });
 
   /**
    * The last reply `runId` gave on the task's thread there, which is its
@@ -801,7 +842,11 @@ const make = Effect.gen(function* () {
           remote.stoppedThere !== true)
       ) {
         const key = remote.stopCount === undefined ? "stop" : `stop-${remote.stopCount}`;
-        yield* stopThere(scope, remote, key).pipe(
+        yield* (
+          remote.stopScope === "run"
+            ? stopRunThere(scope, remote, key, taskId)
+            : stopThere(scope, remote, key)
+        ).pipe(
           // Its thread there now runs above what this side may touch, say
           // because the parent here was lowered since; no retry changes that.
           Effect.catchIf(isModeRefusal, (error) =>

@@ -836,6 +836,35 @@ function restartChainRunIds(
 }
 
 /**
+ * A run with the work it started: its restart chain, the runs its delegated tasks' results
+ * woke, and in turn theirs. A run someone else asked for, steered results included, is not part.
+ */
+function runWithWorkRunIds(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  messages: ReadonlyArray<Pick<OrchestrationV2ConversationMessage, "id" | "delegatedCompletion">>,
+  run: OrchestrationV2Run,
+): ReadonlySet<RunId> {
+  const wokenBy = new Map(
+    messages.flatMap((message) =>
+      message.delegatedCompletion === undefined
+        ? []
+        : [[message.id, message.delegatedCompletion.parentRunId] as const],
+    ),
+  );
+  const work = new Set(restartChainRunIds(runs, run));
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const candidate of runs) {
+      const source = candidate.restartContinuationOfRunId ?? wokenBy.get(candidate.userMessageId);
+      if (work.has(candidate.id) || source === undefined || !work.has(source)) continue;
+      work.add(candidate.id);
+      grew = true;
+    }
+  }
+  return work;
+}
+
+/**
  * The child runs a delegated task owns. A follow-up owns the runs bound to it, restart
  * continuations included. The task the chat was forked from owns the runs no follow-up claimed
  * until its result; a run requested after that is independent of it.
@@ -9143,7 +9172,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (task.result !== null) {
       // A Stop or cancel here that lost the race to the result still owes its stop.
       if (command.stoppedThere === undefined) {
-        return yield* emitRemoteStopOwed(events, command, task, task.remoteChild!);
+        return yield* emitRemoteStopOwed(
+          events,
+          command,
+          task,
+          task.remoteChild!,
+          command.stopScope,
+        );
       }
       const owesStop =
         task.status === "cancelled" ||
@@ -9174,7 +9209,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       events,
       parentProjection,
       task,
-      updatedTask: { ...task, remoteChild },
+      updatedTask: {
+        ...task,
+        remoteChild:
+          command.stopScope === undefined
+            ? remoteChild
+            : { ...remoteChild!, stopScope: command.stopScope },
+      },
     });
   });
 
@@ -9528,8 +9569,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Delegated task ${command.taskId} is not a remote task of thread ${command.parentThreadId}.`,
       });
     }
-    // The first run named stands, and a finished task has no use for one.
-    if (task.result !== null || task.remoteChild.runId !== undefined) return;
+    // The first run named stands. A task stopped during its launch still owes that run its stop.
+    if (task.remoteChild.runId !== undefined) return;
     const now = yield* DateTime.now;
     yield* emit(
       events,
@@ -9557,7 +9598,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     >,
     task: OrchestrationV2Subagent,
     remoteChild: OrchestrationV2RemoteTaskChild,
+    stopScope?: "run",
   ) {
+    // A stop of the whole thread there that is still owed is not narrowed to one run.
+    const owesThreadStop =
+      remoteChild.stopScope === undefined &&
+      remoteChild.stoppedThere !== true &&
+      (remoteChild.stoppedThere === false ||
+        task.status === "cancelled" ||
+        task.status === "interrupted");
+    const { stopScope: _previousScope, ...unscoped } = remoteChild;
     const now = yield* DateTime.now;
     yield* emit(
       events,
@@ -9572,7 +9622,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       payload: {
         ...task,
         remoteChild: {
-          ...remoteChild,
+          ...unscoped,
+          ...(stopScope === undefined || owesThreadStop ? {} : { stopScope }),
           stoppedThere: false,
           stopCount: (remoteChild.stopCount ?? 0) + 1,
         },
@@ -13455,6 +13506,93 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return outcome;
   });
 
+  /**
+   * `run.interrupt` with `withWork`: the run and the work it started. Of its work runs, the one
+   * still running or owed a restart is interrupted as its own Stop would; the pending results of
+   * all of them are disposed and their delegated tasks stopped. A run someone else asked for,
+   * and its work, keeps running.
+   */
+  const dispatchRunInterruptWithWork = Effect.fn("Orchestrator.dispatchRunInterruptWithWork")(
+    function* (
+      command: Extract<OrchestrationV2Command, { readonly type: "run.interrupt" }>,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+      effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    ) {
+      const { runs, messages, subagents } = yield* loadProjectionForCommand(
+        command,
+        ["runs", "messages", "subagents"],
+        { messageRoles: ["user"] },
+      );
+      const selectedRun = runs.find((candidate) => candidate.id === command.runId);
+      // The run's own interrupt reports a run it cannot reach.
+      if (selectedRun === undefined) return yield* dispatchRunInterrupt(command, events, effects);
+      const workRunIds = runWithWorkRunIds(
+        runs,
+        messages,
+        latestRestartContinuation(runs, selectedRun),
+      );
+      const members = runs
+        .filter((candidate) => workRunIds.has(candidate.id))
+        .toSorted((a, b) => b.ordinal - a.ordinal);
+      let running = members.find(
+        (candidate) =>
+          isActiveRun(candidate) ||
+          (candidate.status === "queued" && candidate.restartContinuationOfRunId !== undefined),
+      );
+      for (const candidate of members) {
+        if (running !== undefined) break;
+        if (
+          isOrchestrationV2TerminalRunStatus(candidate.status) &&
+          (yield* canAutomaticallyContinueRun(candidate, runs, "pending-restart").pipe(
+            mapDispatchError(command),
+          ))
+        ) {
+          running = candidate;
+        }
+      }
+      const interrupted = yield* dispatchRunInterrupt(
+        running === undefined ? command : { ...command, runId: running.id },
+        events,
+        effects,
+      );
+      const now = yield* DateTime.now;
+      for (const parentRunId of workRunIds) {
+        const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+        const cohort = projection.runs.find(
+          (candidate) => candidate.id === parentRunId,
+        )?.delegatedCompletion;
+        const owesResult = projection.subagents.some(
+          (task) =>
+            task.origin === "app_owned" &&
+            task.runId === parentRunId &&
+            task.completionDelivery?.state !== "acknowledged" &&
+            task.completionDelivery?.state !== "delivered" &&
+            task.completionDelivery?.state !== "disposed",
+        );
+        if (!owesResult && (cohort?.delivery ?? null) === null) continue;
+        yield* disposeDelegatedCompletionCohort({
+          command,
+          events,
+          projection,
+          parentRunId,
+          disposition: "stopped",
+          now,
+        });
+      }
+      return {
+        delegatedTaskRunIds: new Set([
+          ...(interrupted?.delegatedTaskRunIds ?? []),
+          ...subagents.flatMap((task) =>
+            task.runId !== null && workRunIds.has(task.runId) && isAppOwnedTaskWork(task)
+              ? [task.runId]
+              : [],
+          ),
+        ]),
+        cancelUnsettledEffects: interrupted?.cancelUnsettledEffects,
+      };
+    },
+  );
+
   /** Writes a parent's app-owned task, and sets its node and turn items to the task's status. */
   const writeAppOwnedTask = Effect.fn("Orchestrator.writeAppOwnedTask")(function* (input: {
     readonly command: Extract<
@@ -15154,7 +15292,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           );
           break;
         }
-        const outcome = yield* dispatchRunInterrupt(command, events, effects);
+        const outcome =
+          command.withWork === true && command.onlyIfActive === true
+            ? yield* dispatchRunInterruptWithWork(command, events, effects)
+            : yield* dispatchRunInterrupt(command, events, effects);
         cancelUnsettledEffects = outcome?.cancelUnsettledEffects;
         const parentRunIds = outcome?.delegatedTaskRunIds;
         if (parentRunIds !== undefined && parentRunIds.size > 0) {

@@ -282,7 +282,11 @@ stays for the worker to settle. A queued message that has not started is refused
 (`onlyIfActive`, used by the MCP tool) reaches a completed run only through a pending
 restart: a queued continuation, a delayed retry, or a wake a session release or a
 process that ended is about to enqueue. Lost work a user's session close recorded
-enqueues no wake, so that run counts as terminal.
+enqueues no wake, so that run counts as terminal. With `withWork` as well, an ended
+run still reaches the work it started: the runs its delegated tasks' results woke,
+whose latest running one is interrupted, and the delegated tasks and pending results
+of all of them. A run someone else asked for keeps its own work. A linked machine
+sends this for a task there whose parent run here was stopped.
 
 ## Resumption
 
