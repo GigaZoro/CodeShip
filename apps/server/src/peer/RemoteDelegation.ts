@@ -426,7 +426,7 @@ const make = Effect.gen(function* () {
       }
       // A replayed key follows its task where it was recorded; a launch elsewhere has no follower.
       if (
-        taskEvent === undefined &&
+        recorded.replayed === true &&
         existing?.remoteChild !== undefined &&
         existing.remoteChild.environmentId !== target.environmentId
       ) {
@@ -437,7 +437,7 @@ const make = Effect.gen(function* () {
       }
       // A replayed request whose task already has its result (its thread was found gone, or it
       // ended) has nothing to launch.
-      if (taskEvent === undefined && existing?.result != null) return { taskId };
+      if (recorded.replayed === true && existing?.result != null) return { taskId };
       const launched = yield* forwarding
         .call(scope, ProjectToolkit.tools.t3_thread_launch, target.environmentId, {
           ...where,

@@ -279,6 +279,11 @@ describe("OrchestratorMcpService", () => {
           contextTransfers: [],
           subagents: [task],
         } as unknown as OrchestrationV2ThreadProjection;
+        const continuation: Record<string, unknown> = {
+          id: RunId.make("run:mcp-restart-later"),
+          ordinal: 2,
+          status: "running",
+        };
         const childProjection = {
           thread: { id: childThreadId, title: "Child" },
           runs: [
@@ -288,7 +293,7 @@ describe("OrchestratorMcpService", () => {
               status: "cancelled",
               delegatedTaskId: taskId,
             },
-            { id: RunId.make("run:mcp-restart-later"), ordinal: 2, status: "running" },
+            continuation,
           ],
           contextTransfers: [],
           messages: [],
@@ -347,16 +352,17 @@ describe("OrchestratorMcpService", () => {
           const settled = yield* service.taskStatus(scope, taskId);
           assert.equal(settled.status, "cancelled");
           assert.equal(yield* Ref.get(dispatched), 1);
-          // The parent counts review rounds from its record, so a review waits for it.
+          // The parent counts review rounds from its record, so a review's answer, a continuation's
+          // included, waits for it.
           task.review = { part: 1, round: 1 };
-          assert.equal((yield* service.taskStatus(scope, taskId)).workState, "working");
-          Object.assign(task, {
-            status: "cancelled",
-            result: "Child task ended with status cancelled.",
-          });
+          continuation.status = "completed";
+          const heldReview = yield* service.taskStatus(scope, taskId);
+          assert.equal(heldReview.workState, "working");
+          assert.isNull(heldReview.latestTerminalSummary);
+          Object.assign(task, { status: "completed", result: "Found no defects." });
           const recorded = yield* service.taskStatus(scope, taskId);
-          assert.equal(recorded.status, "cancelled");
-          assert.equal(recorded.summary, "Child task ended with status cancelled.");
+          assert.equal(recorded.status, "completed");
+          assert.equal(recorded.summary, "Found no defects.");
         }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
       }),
   );

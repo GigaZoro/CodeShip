@@ -2045,14 +2045,18 @@ const make = Effect.gen(function* () {
             : undefined) ??
           null);
     const resultTransfer = taskResultTransfer(parentProjection, childProjection, task) ?? null;
-    const terminalStatus = terminalRun === undefined ? null : taskStatusForRun(terminalRun);
-    const latestTerminalSummary = canExposeTaskRunResult(terminalRun)
-      ? terminalRun.id === childRun?.id
+    // A held result stays hidden in every field, a continuation run's included.
+    const shownTerminalRun = heldForParentRecord ? undefined : terminalRun;
+    const terminalStatus =
+      shownTerminalRun === undefined ? null : taskStatusForRun(shownTerminalRun);
+    const latestTerminalSummary = canExposeTaskRunResult(shownTerminalRun)
+      ? shownTerminalRun.id === childRun?.id
         ? derivedResult
-        : subagentResultForRun(childProjection, terminalRun).text
+        : subagentResultForRun(childProjection, shownTerminalRun).text
       : null;
     const resultContextTransferId = resultTransfer?.id ?? null;
-    const latestTerminalResultContextTransferId = resultTransferForRun(terminalRun)?.id ?? null;
+    const latestTerminalResultContextTransferId =
+      resultTransferForRun(shownTerminalRun)?.id ?? null;
     const modelSelection = childRun?.modelSelection ??
       childControls.thread.modelSelection ?? {
         instanceId: task.providerInstanceId,
@@ -2077,7 +2081,7 @@ const make = Effect.gen(function* () {
       options: modelSelection.options ?? [],
       summary: derivedResult,
       resultContextTransferId,
-      latestTerminalRunId: terminalRun?.id ?? null,
+      latestTerminalRunId: shownTerminalRun?.id ?? null,
       latestTerminalStatus:
         terminalStatus !== null && isTerminalTaskStatus(terminalStatus) ? terminalStatus : null,
       latestTerminalSummary: latestTerminalSummary === derivedResult ? null : latestTerminalSummary,

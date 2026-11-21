@@ -272,8 +272,9 @@ has no completed review join that round, so parallel reviewers of one diff share
 it. A review that would be round 4 is refused with `review_round_limit`, quoting
 the review rule that a third round still finding blocking defects means re-plan
 or split the change. A call with `newReviewPart`, one line saying how the change
-was re-planned or split, starts round 1 of a new part instead; reviewers of that
-part join its first round only while it is unanswered and with the same line.
+was re-planned or split, starts round 1 of a new part instead. While that round
+is unanswered, more reviewers of the part join it by repeating the same line or
+leaving `newReviewPart` out; a different line starts another part.
 A round counts once the parent records a completed review, so a review task
 reports no result before that record. Follow-up work in a reviewer's thread is
 not a round. The count and the reason live on each review task's record in the
