@@ -1,4 +1,8 @@
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 const { dispatchOutput, releaseMacosRun } = require("./release-macos-run.cjs");
 
@@ -44,7 +48,10 @@ const dispatchStep = (overrides = {}) => ({
   ...overrides,
 });
 
-/** A fake gh: the release run's jobs, the publish job's log and the runs it may print, recording every call. */
+/**
+ * A fake gh: the release run's jobs, the publish job's log (an Error fails that call) and the runs it may print,
+ * recording every call.
+ */
 function fixture({
   status = "completed",
   job = {},
@@ -77,7 +84,10 @@ function fixture({
   const gh = (args) => {
     calls.push(args);
     assert.deepEqual(args.slice(args.indexOf("-R"), args.indexOf("-R") + 2), ["-R", REPOSITORY]);
-    if (args.includes("--log")) return log;
+    if (args.includes("--log")) {
+      if (log instanceof Error) throw log;
+      return log;
+    }
     const id = args[2];
     if (id === "44919164430") {
       return JSON.stringify({
@@ -241,11 +251,61 @@ test("anything that leaves the run uncertain is unverified, never guessed", () =
     assert.deepEqual(fixture(options).result(), { outcome: "unverified", reason, release }, reason);
 });
 
-test("a gh failure is not an outcome the function makes up", () => {
-  assert.throws(
-    () => fixture({ log: jobLog({ printed: [RUN_URL(44919000000)] }) }).result(),
-    /HTTP 404/,
+test("a gh failure is unverified, with the release run and its attempt wherever gh failed", () => {
+  // After the release run's lookup, its own URL and attempt.
+  assert.equal(
+    JSON.stringify(fixture({ log: jobLog({ printed: [RUN_URL(44919000000)] }) }).result()),
+    JSON.stringify({
+      outcome: "unverified",
+      reason: "gh run view 44919000000 failed: HTTP 404",
+      release,
+    }),
   );
+  assert.deepEqual(fixture({ log: new Error("gh run view --job failed: HTTP 502") }).result(), {
+    outcome: "unverified",
+    reason: "gh run view --job failed: HTTP 502",
+    release,
+  });
+  // When the lookup itself fails, the run's URL from the repository and its id, the attempt unknown.
+  const lookup = releaseMacosRun(REPOSITORY, "44919164430", () => {
+    throw new Error("gh run view 44919164430 failed: HTTP 502");
+  });
+  assert.equal(
+    JSON.stringify(lookup),
+    JSON.stringify({
+      outcome: "unverified",
+      reason: "gh run view 44919164430 failed: HTTP 502",
+      release: `${RUN_URL(44919164430)} (attempt unknown)`,
+    }),
+  );
+  for (const answer of ["not json", "{}", '{"status":"completed","attempt":"2"}']) {
+    const unread = releaseMacosRun(REPOSITORY, "44919164430", () => answer);
+    assert.equal(unread.outcome, "unverified", answer);
+    assert.equal(unread.release, `${RUN_URL(44919164430)} (attempt unknown)`, answer);
+  }
+});
+
+test("the command prints the same JSON line when gh cannot run at all", () => {
+  // A PATH with no gh on it fails the first lookup, as a missing or broken gh would.
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), "no-gh-"));
+  try {
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !/^path$/i.test(key)),
+    );
+    const run = spawnSync(
+      process.execPath,
+      [path.join(__dirname, "release-macos-run.cjs"), REPOSITORY, "44919164430"],
+      { encoding: "utf8", env: { ...env, PATH: empty } },
+    );
+    assert.equal(run.status, 0, run.stderr);
+    const output = JSON.parse(run.stdout);
+    assert.deepEqual(Object.keys(output), ["outcome", "reason", "release"]);
+    assert.equal(output.outcome, "unverified");
+    assert.match(output.reason, /ENOENT/);
+    assert.equal(output.release, `${RUN_URL(44919164430)} (attempt unknown)`);
+  } finally {
+    fs.rmSync(empty, { recursive: true, force: true });
+  }
 });
 
 test("the dispatch output reads the version from the step's env and the run from its own output", () => {
