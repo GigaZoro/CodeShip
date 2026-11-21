@@ -18,7 +18,9 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
@@ -455,70 +457,87 @@ it.effect("cancels a stale waiting run when no checkpoint capture can finish it"
   }).pipe(Effect.provide(layer));
 });
 
-it.effect("reads and commits each thread under its command lock at shutdown", () =>
-  Effect.gen(function* () {
-    const threadId = ThreadId.make("thread_shutdown_locked");
-    const threadCommands = yield* KeyedLock.make<ThreadId>();
-    const lockedAt = yield* Ref.make<ReadonlyArray<string>>([]);
-    const record = (step: string) =>
-      threadCommands.activeKeys.pipe(
-        Effect.flatMap((keys) =>
-          Ref.update(lockedAt, (steps) => (keys.includes(threadId) ? [...steps, step] : steps)),
+it.effect(
+  "reads and commits each thread under its command lock at shutdown, skipping a busy one",
+  () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread_shutdown_locked");
+      const threadCommands = yield* KeyedLock.make<ThreadId>();
+      const lockedAt = yield* Ref.make<ReadonlyArray<string>>([]);
+      const record = (step: string) =>
+        threadCommands.activeKeys.pipe(
+          Effect.flatMap((keys) =>
+            Ref.update(lockedAt, (steps) => (keys.includes(threadId) ? [...steps, step] : steps)),
+          ),
+        );
+      const projection = {
+        thread: { id: threadId },
+        runtimeRequests: [],
+        providerSessions: [],
+        providerThreads: [],
+        providerTurns: [],
+        runs: [
+          {
+            id: RunId.make("run_shutdown_locked"),
+            status: "running",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          },
+        ],
+        attempts: [],
+        nodes: [],
+        subagents: [],
+        messages: [],
+        turnItems: [],
+      } as unknown as OrchestrationV2ThreadProjection;
+      const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.succeed(ThreadCommandExecutor.ThreadCommandExecutor, threadCommands),
+            ServerSettings.layerTest(),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getRecoveryThreadIds: () => Effect.succeed([threadId]),
+              // Shutdown does not drain admitted commands, which plan from this read under the lock.
+              getRuntimeRecoveryProjection: () => record("read").pipe(Effect.as(projection)),
+            }),
+            Layer.mock(EventSink.EventSinkV2)({
+              lastCommittedAt: Effect.succeed(null),
+              commitCommand: () =>
+                record("commit").pipe(
+                  Effect.as({ committed: true, cancelledEffectCount: 0 } as never),
+                ),
+            }),
+            IdAllocator.layer,
+            Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
+              runRecoveryOnce: Effect.succeed(false),
+            }),
+            Layer.mock(EffectOutbox.EffectOutboxV2)({
+              listByCommandId: () => Effect.succeed([]),
+              reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+            }),
+          ),
         ),
       );
-    const projection = {
-      thread: { id: threadId },
-      runtimeRequests: [],
-      providerSessions: [],
-      providerThreads: [],
-      providerTurns: [],
-      runs: [
-        {
-          id: RunId.make("run_shutdown_locked"),
-          status: "running",
-          providerInstanceId: ProviderInstanceId.make("codex"),
-        },
-      ],
-      attempts: [],
-      nodes: [],
-      subagents: [],
-      messages: [],
-      turnItems: [],
-    } as unknown as OrchestrationV2ThreadProjection;
-    const recovery = yield* ProviderRuntimeRecovery.make.pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          Layer.succeed(ThreadCommandExecutor.ThreadCommandExecutor, threadCommands),
-          ServerSettings.layerTest(),
-          Layer.mock(ProjectionStore.ProjectionStoreV2)({
-            getRecoveryThreadIds: () => Effect.succeed([threadId]),
-            // Shutdown does not drain admitted commands, which plan from this read under the lock.
-            getRuntimeRecoveryProjection: () => record("read").pipe(Effect.as(projection)),
-          }),
-          Layer.mock(EventSink.EventSinkV2)({
-            lastCommittedAt: Effect.succeed(null),
-            commitCommand: () =>
-              record("commit").pipe(
-                Effect.as({ committed: true, cancelledEffectCount: 0 } as never),
-              ),
-          }),
-          IdAllocator.layer,
-          Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
-            runRecoveryOnce: Effect.succeed(false),
-          }),
-          Layer.mock(EffectOutbox.EffectOutboxV2)({
-            listByCommandId: () => Effect.succeed([]),
-            reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
-          }),
-        ),
-      ),
-    );
 
-    const summary = yield* recovery.reconcile("shutdown");
+      const held = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const busyCommand = yield* threadCommands
+        .withLock(
+          threadId,
+          Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        )
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(held);
+      // Shutdown never drains the command holding the lock, so waiting on it would stall shutdown.
+      assert.equal((yield* recovery.reconcile("shutdown")).terminalizedRuns, 0);
+      assert.deepEqual(yield* Ref.get(lockedAt), []);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(busyCommand);
 
-    assert.equal(summary.terminalizedRuns, 1);
-    assert.deepEqual(yield* Ref.get(lockedAt), ["read", "commit"]);
-  }),
+      const summary = yield* recovery.reconcile("shutdown");
+
+      assert.equal(summary.terminalizedRuns, 1);
+      assert.deepEqual(yield* Ref.get(lockedAt), ["read", "commit"]);
+    }),
 );
 
 it.effect("tells the thread a running run stopped when the server went down", () => {
