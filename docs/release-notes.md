@@ -1,3 +1,7 @@
+## 2026-11-21 — The ACP terminal kill test expects SIGTERM on Windows too
+
+- Maintainers: Effect's kill now ends a Windows process through Node's own handle, which reports the signal, so a killed ACP terminal command reports `SIGTERM` on Windows as it does elsewhere. The terminal kill test still expected no signal there and failed on every Windows run; it now expects `SIGTERM` on every platform. No change to the app.
+
 ## 2026-11-21 — `check:changed` keeps its pace on a busy Windows machine
 
 - Maintainers: on Windows, `check:changed` no longer starts PowerShell after each git call to end what git started once git has exited. It still ends the process tree of every check step, and of a git call that is killed or that leaves a process holding its output. Each walk took about 1.7 s on a machine at full CPU load, and a run makes 18 git calls one after another, so each `check-changed.test.ts` launcher test took 48 to 58 s there, close to the 60 s test limit, which a landing could then fail on load alone. They now take 16 to 24 s.
