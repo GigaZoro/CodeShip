@@ -3453,6 +3453,11 @@ const ELECTRON_PLATFORM_NAMES = {
   linux: "linux",
   win: "win32",
 } as const satisfies Record<typeof BuildPlatform.Type, string>;
+/** Mac App Store targets unpack Electron's own mas build. */
+const electronPlatformName = (platform: typeof BuildPlatform.Type, target: string) =>
+  platform === "mac" && (target === "mas" || target === "mas-dev")
+    ? "mas"
+    : ELECTRON_PLATFORM_NAMES[platform];
 const decodeElectronPackageManifest = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
 );
@@ -3506,6 +3511,7 @@ export const stageElectronDist = Effect.fn("stageElectronDist")(function* (input
   readonly electronPackageDir: string;
   readonly version: string;
   readonly platform: typeof BuildPlatform.Type;
+  readonly target: string;
   readonly arch: typeof BuildArch.Type;
   readonly distDir: string;
   readonly download: ReturnType<typeof downloadElectronArchive>;
@@ -3526,7 +3532,7 @@ export const stageElectronDist = Effect.fn("stageElectronDist")(function* (input
   yield* fs.makeDirectory(input.distDir, { recursive: true });
   // electron-builder unpacks each architecture of a universal app from its own zip.
   for (const arch of input.arch === "universal" ? (["x64", "arm64"] as const) : [input.arch]) {
-    const archiveName = `electron-v${input.version}-${ELECTRON_PLATFORM_NAMES[input.platform]}-${arch}.zip`;
+    const archiveName = `electron-v${input.version}-${electronPlatformName(input.platform, input.target)}-${arch}.zip`;
     const expected = checksums[archiveName];
     if (expected === undefined) {
       return yield* new ElectronDistStageError({
@@ -4414,6 +4420,7 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
     electronPackageDir,
     version: electronVersion,
     platform: options.platform,
+    target: options.target,
     arch: options.arch,
     distDir: path.join(stageRoot, ELECTRON_DIST_DIR),
     download: downloadElectronArchive(options.verbose),

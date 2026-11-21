@@ -2126,13 +2126,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
   const stageElectronFixture = Effect.fn("stageElectronFixture")(function* (
     zipBytes: (archiveName: string) => Uint8Array,
+    { target, electronPlatform } = { target: "dmg", electronPlatform: "darwin" },
   ) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-electron-dist-" });
     const electronPackageDir = path.join(root, "electron");
     const archiveNames = ["x64", "arm64"].map(
-      (arch) => `electron-v${desktopElectronVersion}-darwin-${arch}.zip`,
+      (arch) => `electron-v${desktopElectronVersion}-${electronPlatform}-${arch}.zip`,
     );
     const published = (archiveName: string) => new TextEncoder().encode(archiveName);
     yield* fs.makeDirectory(electronPackageDir);
@@ -2157,6 +2158,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         electronPackageDir,
         version: desktopElectronVersion,
         platform: "mac",
+        target,
         arch: "universal",
         distDir,
         download: (_version, archiveName, destination) =>
@@ -2166,24 +2168,35 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     return { exit, distDir, archiveNames, published };
   });
 
-  it.effect("stages the Electron zip of each architecture a universal app unpacks", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const { exit, distDir, archiveNames, published } = yield* stageElectronFixture(
-          (archiveName) => new TextEncoder().encode(archiveName),
-        );
+  it.effect("stages the Electron zip of each architecture the target unpacks", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      for (const variant of [
+        { target: "dmg", electronPlatform: "darwin" },
+        { target: "mas", electronPlatform: "mas" },
+      ]) {
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const { exit, distDir, archiveNames, published } = yield* stageElectronFixture(
+              (archiveName) => new TextEncoder().encode(archiveName),
+              variant,
+            );
 
-        assert.isTrue(Exit.isSuccess(exit));
-        assert.deepStrictEqual(
-          (yield* fs.readDirectory(distDir)).toSorted(),
-          archiveNames.toSorted(),
+            assert.isTrue(Exit.isSuccess(exit), variant.target);
+            assert.deepStrictEqual(
+              (yield* fs.readDirectory(distDir)).toSorted(),
+              archiveNames.toSorted(),
+            );
+            for (const name of archiveNames) {
+              assert.deepStrictEqual(
+                yield* fs.readFile(NodePath.join(distDir, name)),
+                published(name),
+              );
+            }
+          }),
         );
-        for (const name of archiveNames) {
-          assert.deepStrictEqual(yield* fs.readFile(NodePath.join(distDir, name)), published(name));
-        }
-      }),
-    ),
+      }
+    }),
   );
 
   it.effect("rejects an Electron zip whose SHA-256 differs from the locked electron package", () =>
