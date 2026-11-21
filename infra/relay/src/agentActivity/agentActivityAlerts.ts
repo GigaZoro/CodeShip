@@ -1,3 +1,5 @@
+import type { ThreadNotificationLevel } from "@t3tools/contracts";
+import { shouldNotifyThread } from "@t3tools/shared/threadNotifications";
 import type {
   RelayAgentActivityAggregateRow,
   RelayAgentActivityAggregateState,
@@ -45,7 +47,7 @@ function isAttentionPhase(phase: string): boolean {
   return phase === "waiting_for_approval" || phase === "waiting_for_input";
 }
 
-function alertAllowedForPhase(
+function globalAllowsPhase(
   preferences: RelayAgentAwarenessPreferences | null,
   phase: string,
 ): boolean {
@@ -64,6 +66,25 @@ function alertAllowedForPhase(
   }
 }
 
+function alertAllowedForPhase(
+  preferences: RelayAgentAwarenessPreferences | null,
+  row: { readonly phase: string; readonly notificationLevel?: ThreadNotificationLevel },
+  push = false,
+): boolean {
+  const kind =
+    row.phase === "completed"
+      ? "completion"
+      : isAttentionPhase(row.phase) || row.phase === "failed"
+        ? "input"
+        : "other";
+  return shouldNotifyThread(
+    (!push || preferences?.notificationsEnabled === true) &&
+      globalAllowsPhase(preferences, row.phase),
+    row.notificationLevel,
+    kind,
+  );
+}
+
 // A missing baseline is a replay, not a transition that should buzz the phone.
 export function attentionTransitionRows(input: TransitionInput) {
   if (input.previousAggregate === null) return [];
@@ -74,7 +95,7 @@ export function attentionTransitionRows(input: TransitionInput) {
     (row) =>
       isAttentionPhase(row.phase) &&
       !previouslyAttention.has(rowKey(row)) &&
-      alertAllowedForPhase(input.preferences, row.phase),
+      alertAllowedForPhase(input.preferences, row),
   );
 }
 
@@ -107,7 +128,7 @@ export function terminalTransitionRows(
     input.includeUnobserved,
   ).filter((row) => {
     return (
-      alertAllowedForPhase(input.preferences, row.phase) &&
+      alertAllowedForPhase(input.preferences, row) &&
       isFreshTerminalNotification(row.updatedAt, input.nowMs)
     );
   });
@@ -143,18 +164,18 @@ export function alertForTerminalAggregate(input: {
 }): AgentActivityAlert | null {
   const row = input.aggregate?.activities[0];
   if (!row || (row.phase !== "completed" && row.phase !== "failed")) return null;
-  return alertAllowedForPhase(input.preferences, row.phase) ? alertForActivityRows([row]) : null;
+  return alertAllowedForPhase(input.preferences, row) ? alertForActivityRows([row]) : null;
 }
 
 export function shouldAlertForActivity(input: {
   readonly phase: RelayAgentActivityAggregateRow["phase"];
+  readonly notificationLevel?: ThreadNotificationLevel;
   readonly updatedAt: string;
   readonly preferences: RelayAgentAwarenessPreferences | null;
   readonly nowMs: number;
 }): boolean {
   return (
-    input.preferences?.notificationsEnabled === true &&
-    alertAllowedForPhase(input.preferences, input.phase) &&
+    alertAllowedForPhase(input.preferences, input, true) &&
     ((input.phase !== "completed" && input.phase !== "failed") ||
       isFreshTerminalNotification(input.updatedAt, input.nowMs))
   );

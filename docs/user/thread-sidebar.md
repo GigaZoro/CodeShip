@@ -360,6 +360,17 @@ A scheduled task's **Group** is the folder its chats go in, so every chat a task
 it already started and the chat it sends to, except those you moved to another folder yourself. See
 [Group scheduled tasks](#group-scheduled-tasks).
 
+## Mute, follow, or color-code a thread
+
+Open the thread’s action menu on web or desktop, or long-press its row on mobile.
+Under **Notifications**, choose **Mute** to silence that thread or **Follow** to
+get alerts when it finishes or needs your input, even when your usual notification
+settings would skip the alert. Choose **Default** to use your usual settings.
+System notification permissions still apply.
+
+Under **Color**, pick a marker for the thread row or choose **None** to remove it.
+The notification choice and color sync to clients connected to the same environment.
+
 ## When a machine is offline
 
 When a machine sleeps or loses its connection, its threads stay in the list with the last status

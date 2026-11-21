@@ -207,10 +207,11 @@ const make = Effect.gen(function* () {
         "relay.agent_activity.phase": input.state?.phase ?? "deleted",
       });
       if (input.state) {
+        const { silent: _silent, ...state } = input.state;
         // Retain terminal rows until cron pruning so completed threads remain visible alongside active ones.
         yield* rows.upsert({
           environmentPublicKey: input.environmentPublicKey,
-          state: input.state,
+          state,
         });
       } else {
         yield* rows.remove({
@@ -219,6 +220,8 @@ const make = Effect.gen(function* () {
           threadId: input.threadId,
         });
       }
+
+      if (input.state?.silent === true) return { ok: true, deliveries: [] };
 
       const deliveryUsers = yield* links.listDeliveryUsersForEnvironment({
         environmentId: input.environmentId,

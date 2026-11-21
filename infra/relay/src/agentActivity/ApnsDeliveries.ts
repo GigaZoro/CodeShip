@@ -196,9 +196,6 @@ function notificationForAggregate(input: {
     return null;
   }
   const preferences = parsePreferences(input.target.preferences_json);
-  if (!preferences?.notificationsEnabled) {
-    return null;
-  }
   const activity = input.aggregate.activities[0];
   if (!activity) {
     return null;
@@ -540,6 +537,7 @@ const make = Effect.gen(function* () {
     readonly threadId: string;
     readonly phase: RelayAgentActivityAggregateState["activities"][number]["phase"];
     readonly updatedAt: string;
+    readonly notificationLevel?: RelayAgentActivityAggregateState["activities"][number]["notificationLevel"];
   }) {
     return yield* activityRows
       .getForUserThread({
@@ -552,7 +550,8 @@ const make = Effect.gen(function* () {
           (current) =>
             current !== null &&
             current.phase === input.phase &&
-            current.updatedAt === input.updatedAt,
+            current.updatedAt === input.updatedAt &&
+            current.notificationLevel === input.notificationLevel,
         ),
         Effect.catchCause((cause) =>
           Effect.logWarning("agent-activity state recheck failed; allowing queued delivery", {
@@ -581,7 +580,8 @@ const make = Effect.gen(function* () {
           return (
             current !== undefined &&
             current.phase === row.phase &&
-            current.updatedAt === row.updatedAt
+            current.updatedAt === row.updatedAt &&
+            current.notificationLevel === row.notificationLevel
           );
         });
       }),
@@ -607,6 +607,9 @@ const make = Effect.gen(function* () {
       threadId: input.notification.threadId,
       phase: input.notification.phase,
       updatedAt: input.notification.updatedAt,
+      ...(input.notification.notificationLevel === undefined
+        ? {}
+        : { notificationLevel: input.notification.notificationLevel }),
     });
   });
 
@@ -689,21 +692,29 @@ const make = Effect.gen(function* () {
     if (alert) {
       const preferences = parsePreferences(currentTarget.preferences_json);
       const previousAggregate = parseAggregate(currentTarget.last_aggregate_json);
-      alert =
-        !preferences?.notificationsEnabled || !aggregate
-          ? null
-          : (alertForAttentionTransition({
-              previousAggregate,
-              nextAggregate: aggregate,
-              preferences,
-            }) ??
-            alertForNewlyTerminal({
-              previousAggregate,
-              nextAggregate: aggregate,
-              preferences,
-              nowMs: now.epochMilliseconds,
-              includeUnobserved: true,
-            }));
+      const aggregateForAlerts =
+        aggregate && preferences?.notificationsEnabled !== true
+          ? {
+              ...aggregate,
+              activities: aggregate.activities.filter((row) =>
+                shouldAlertForActivity({ ...row, nowMs: now.epochMilliseconds, preferences }),
+              ),
+            }
+          : aggregate;
+      alert = !aggregateForAlerts
+        ? null
+        : (alertForAttentionTransition({
+            previousAggregate,
+            nextAggregate: aggregateForAlerts,
+            preferences,
+          }) ??
+          alertForNewlyTerminal({
+            previousAggregate,
+            nextAggregate: aggregateForAlerts,
+            preferences,
+            nowMs: now.epochMilliseconds,
+            includeUnobserved: true,
+          }));
     }
     if (
       aggregate !== null &&

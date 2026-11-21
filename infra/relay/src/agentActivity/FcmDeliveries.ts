@@ -80,12 +80,21 @@ export function androidAlertForAggregate(input: {
   readonly preferences: RelayAgentAwarenessPreferences;
   readonly nowMs: number;
 }) {
-  if (!input.preferences.notificationsEnabled) return null;
-  const attention = attentionTransitionRows(input);
+  const nextAggregate = {
+    ...input.nextAggregate,
+    activities: input.nextAggregate.activities.filter((row) =>
+      shouldAlertForActivity({
+        ...row,
+        preferences: input.preferences,
+        nowMs: input.nowMs,
+      }),
+    ),
+  };
+  const attention = attentionTransitionRows({ ...input, nextAggregate });
   const activities =
     attention.length > 0
       ? attention
-      : terminalTransitionRows({ ...input, includeUnobserved: true });
+      : terminalTransitionRows({ ...input, nextAggregate, includeUnobserved: true });
   const first = activities[0];
   const alert = alertForActivityRows(activities);
   if (!first || !alert) return null;
@@ -214,7 +223,7 @@ const make = Effect.gen(function* () {
       let alert: ReturnType<typeof androidAlertForState | typeof androidAlertForAggregate> = null;
       // Deletions update the card but must not consume another thread's pending completion alert.
       let acknowledgeAggregate = job.state !== null || job.replay === true || aggregate === null;
-      if (job.state && preferences.value.notificationsEnabled) {
+      if (job.state) {
         const state = yield* rows.getForUserThread({
           userId: job.userId,
           environmentId: job.state.environmentId,

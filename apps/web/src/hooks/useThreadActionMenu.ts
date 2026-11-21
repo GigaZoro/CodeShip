@@ -1,3 +1,10 @@
+import {
+  threadPreferenceCommand,
+  threadPreferenceMenuItems,
+} from "@t3tools/client-runtime/thread-preferences";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { serverEnvironment } from "../state/server";
+import { randomUUID } from "../lib/utils";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { t } from "~/i18n";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
@@ -98,6 +105,10 @@ export function useThreadActionMenu(input: {
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const setPreferences = useOrchestrationCommand(
+    threadEnvironment.setPreferences,
+    t("Failed to update thread preferences"),
+  );
   const folderActions = useThreadFolderActions();
   const handleNewThread = useNewThreadHandler();
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
@@ -163,6 +174,11 @@ export function useThreadActionMenu(input: {
         canShareWithGuest,
         canTurnIntoProject: canTurnThreadIntoProject(threadRef),
         folders: readThreadFolderMenuState([threadRef]),
+        preferenceItems: threadPreferenceMenuItems(
+          thread,
+          appAtomRegistry.get(serverEnvironment.configValueAtom(threadRef.environmentId))
+            ?.environment.capabilities,
+        ),
       });
       const clicked = await settlePromise(() => api.contextMenu.show(items, position));
       if (clicked._tag === "Failure" || clicked.value === null) return;
@@ -175,6 +191,11 @@ export function useThreadActionMenu(input: {
           t("Thread action unavailable"),
           new Error(t("This connection cannot change threads.")),
         );
+        return;
+      }
+      const preference = threadPreferenceCommand(action, threadRef.threadId, randomUUID);
+      if (preference) {
+        await setPreferences({ environmentId: threadRef.environmentId, input: preference });
         return;
       }
       if (isThreadFolderMenuAction(action)) {

@@ -100,6 +100,16 @@ describe("shared agent activity policy", () => {
         preferences: { ...preferences, notifyOnCompletion: false },
       }),
     ).toBe(false);
-    expect(shouldAlertForActivity({ ...input, nowMs: 180_000 })).toBe(false);
+    expect(shouldAlertForActivity({ ...input, notificationLevel: "muted" })).toBe(false);
+    expect(
+      shouldAlertForActivity({
+        ...input,
+        notificationLevel: "following",
+        preferences: { ...preferences, notifyOnCompletion: false },
+      }),
+    ).toBe(true);
+    expect(
+      shouldAlertForActivity({ ...input, notificationLevel: "following", nowMs: 180_000 }),
+    ).toBe(false);
   });
 });

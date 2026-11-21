@@ -4,6 +4,7 @@ import {
   type OrchestrationV2ThreadShell,
   type Project,
   type ThreadId,
+  type ThreadNotificationLevel,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -24,6 +25,7 @@ export interface AgentAwarenessState {
   readonly projectTitle: string;
   readonly threadTitle: string;
   readonly phase: AgentAwarenessPhase;
+  readonly notificationLevel?: ThreadNotificationLevel;
   readonly headline: string;
   readonly detail?: string;
   readonly modelTitle: string;
@@ -49,6 +51,7 @@ export interface ProjectThreadAwarenessV2Input {
     | "id"
     | "lineage"
     | "latestRunStopRequested"
+    | "notificationLevel"
     | "modelSelection"
     | "pendingBackgroundTasks"
     | "pendingRuntimeRequest"
@@ -73,6 +76,7 @@ export function projectThreadAwarenessV2(
   // A snoozed thread's completion stays quiet, as on web; a request or failure still wakes it.
   if (
     phase === "completed" &&
+    thread.notificationLevel !== "following" &&
     thread.snoozedUntil != null &&
     DateTime.toEpochMillis(thread.snoozedUntil) > input.nowMs
   ) {
@@ -98,6 +102,9 @@ export function projectThreadAwarenessV2(
     projectTitle: project.title,
     threadTitle: thread.title,
     phase,
+    ...(thread.notificationLevel === undefined || thread.notificationLevel === "default"
+      ? {}
+      : { notificationLevel: thread.notificationLevel }),
     headline: headlineForPhase(phase),
     ...(detail === undefined ? {} : { detail }),
     modelTitle: thread.modelSelection.model,

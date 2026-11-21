@@ -92,6 +92,7 @@ function shouldPublishAgentAwarenessEvent(
     case "thread.unarchived":
     case "thread.deleted":
     case "thread.metadata-updated":
+    case "thread.notification-level-updated":
     case "thread.pull-request-link-updated":
     case "thread.pull-request-synced":
     case "thread.settled":
@@ -114,6 +115,7 @@ function shouldPublishAgentAwarenessEvent(
     case "thread.unpinned":
     case "thread.pin-reordered":
     case "thread.active-reordered":
+    case "thread.color-updated":
     case "thread.tags-updated":
     case "thread.folder-updated":
     case "thread.artifacts-updated":
@@ -165,7 +167,7 @@ function agentAwarenessPublishIdentity(state: RelayAgentActivityState | null): s
   if (state === null) {
     return "null";
   }
-  const { updatedAt: _updatedAt, ...meaningfulState } = state;
+  const { updatedAt: _updatedAt, notificationLevel: _level, ...meaningfulState } = state;
   return JSON.stringify(meaningfulState);
 }
 
@@ -379,7 +381,16 @@ export const make = Effect.gen(function* () {
   const cloudLinkKeyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
   const startedAt = (yield* DateTime.now).epochMilliseconds;
   const catchUpRequests = yield* Queue.dropping<void>(1);
-  const publishedStateByThreadRef = yield* Ref.make(new Map<ThreadId, string>());
+  const publishedStateByThreadRef = yield* Ref.make(
+    new Map<
+      ThreadId,
+      {
+        readonly identity: string;
+        readonly notificationLevel: RelayAgentActivityState["notificationLevel"];
+        readonly updatedAt: string;
+      }
+    >(),
+  );
 
   const readSecretString = (name: string) =>
     secrets
@@ -552,7 +563,14 @@ export const make = Effect.gen(function* () {
     ) {
       if (Option.isNone(thread) || !terminalWorkSinceStart(thread.value, startedAt)) return;
     }
-    if (publishedStateByThread.get(threadId) === publishIdentity) {
+    const previous = publishedStateByThread.get(threadId);
+    const sameActivity =
+      snapshot.state !== null &&
+      previous?.identity === publishIdentity &&
+      previous.updatedAt === snapshot.state.updatedAt;
+    const metadataOnly =
+      sameActivity && previous.notificationLevel !== snapshot.state?.notificationLevel;
+    if (previous?.identity === publishIdentity && !metadataOnly) {
       // Clear moot deadlines so later transient nulls cannot skip their deferral window.
       publishConfirmDeadlines.delete(threadId);
       heldCompletions.delete(threadId);
@@ -568,9 +586,8 @@ export const make = Effect.gen(function* () {
     // Confirm completion: a run can end moments before its continuation starts, and the relay
     // alerts on every move into completed.
     const requiresConfirmation =
-      (snapshot.state === null &&
-        publishedStateByThread.get(threadId) !== agentAwarenessPublishIdentity(null)) ||
-      snapshot.state?.phase === "completed";
+      (snapshot.state === null && previous !== undefined) ||
+      (snapshot.state?.phase === "completed" && !metadataOnly);
     if (requiresConfirmation) {
       if (snapshot.state?.phase === "completed") heldCompletions.add(threadId);
       const deadline = publishConfirmDeadlines.get(threadId);
@@ -620,7 +637,11 @@ export const make = Effect.gen(function* () {
         heldCompletions.delete(threadId);
         publishConfirmDeadlines.set(threadId, nowMs + 5_000);
         yield* Ref.update(publishedStateByThreadRef, (publishedStates) =>
-          new Map(publishedStates).set(threadId, agentAwarenessPublishIdentity(completion)),
+          new Map(publishedStates).set(threadId, {
+            identity: agentAwarenessPublishIdentity(completion),
+            notificationLevel: completion.notificationLevel,
+            updatedAt: completion.updatedAt,
+          }),
         );
         yield* schedulePublishConfirm(threadId);
         return;
@@ -645,7 +666,7 @@ export const make = Effect.gen(function* () {
 
     yield* publishState({
       projectId: snapshot.projectId,
-      state: snapshot.state,
+      state: metadataOnly && snapshot.state ? { ...snapshot.state, silent: true } : snapshot.state,
       reason: snapshot.reason,
     }).pipe(withRelayClientTracing);
     publishConfirmDeadlines.delete(threadId);
@@ -655,7 +676,11 @@ export const make = Effect.gen(function* () {
       if (snapshot.state === null) {
         nextPublishedStates.delete(threadId);
       } else {
-        nextPublishedStates.set(threadId, publishIdentity);
+        nextPublishedStates.set(threadId, {
+          identity: publishIdentity,
+          notificationLevel: snapshot.state.notificationLevel,
+          updatedAt: snapshot.state.updatedAt,
+        });
       }
       return nextPublishedStates;
     });

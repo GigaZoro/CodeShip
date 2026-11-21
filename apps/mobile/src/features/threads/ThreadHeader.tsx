@@ -1,3 +1,5 @@
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+import { useThreadPreferenceMenu } from "./useThreadPreferenceMenu";
 import { useMemo } from "react";
 import { AppBar } from "../../components/ui/AppBar";
 import { ScreenHeaderButton } from "../../components/ui/ScreenHeaderButton";
@@ -11,6 +13,7 @@ import { t } from "../../lib/i18n";
 
 export function ThreadHeader(
   props: Parameters<typeof useThreadHeaderOptions>[0] & {
+    readonly thread?: EnvironmentThreadShell;
     readonly hasThreadCwd: boolean;
     readonly hasWorkspaceRoot: boolean;
     readonly fileInspectorSupported: boolean;
@@ -25,6 +28,7 @@ export function ThreadHeader(
     useAdaptiveWorkspaceLayout();
   const { onOpenTerminal, onMergeBack, mergingBack } = props.gitControls;
   const native = useThreadHeaderOptions(props);
+  const preferences = useThreadPreferenceMenu(props.thread);
   const androidHeaderActions = useMemo<ReadonlyArray<AppBarAction>>(() => {
     const actions: AppBarAction[] = [];
     if (props.onReturnToThread) {
@@ -103,6 +107,28 @@ export function ThreadHeader(
       }
       onBack={layout.usesSplitView ? undefined : goBack}
       actions={androidHeaderActions}
+      menus={
+        preferences.items.length === 0
+          ? undefined
+          : [
+              {
+                title: t("Thread preferences"),
+                icon: "ellipsis.circle",
+                items: preferences.items.map((item) => ({
+                  id: item.id,
+                  title: item.label,
+                  items: item.children.map((child) => ({
+                    id: child.id,
+                    title: child.label,
+                    selected: child.checked,
+                    onPress: () => {
+                      preferences.select(child.id);
+                    },
+                  })),
+                })),
+              },
+            ]
+      }
       hideBottomBorder
       compact={composerKeyboardActive}
     />

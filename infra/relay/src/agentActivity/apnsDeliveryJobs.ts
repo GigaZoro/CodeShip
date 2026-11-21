@@ -1,6 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no createHmac or timingSafeEqual.
 import * as NodeCrypto from "node:crypto";
 
+import { ThreadNotificationLevel } from "@t3tools/contracts";
 import {
   RelayAgentActivityAggregateState,
   RelayAgentAwarenessPhase,
@@ -35,6 +36,7 @@ export const ApnsNotificationPayload = Schema.Struct({
   threadId: Schema.String,
   deepLink: Schema.String,
   phase: Schema.optional(RelayAgentAwarenessPhase),
+  notificationLevel: Schema.optionalKey(ThreadNotificationLevel),
   updatedAt: Schema.optional(Schema.String),
 });
 export type ApnsNotificationPayload = typeof ApnsNotificationPayload.Type;

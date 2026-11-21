@@ -1069,6 +1069,7 @@ function ThreadRouteContent(
           header={
             props.inspectorPresentation ? null : (
               <ThreadHeader
+                thread={selectedThread}
                 title={selectedThread.title}
                 subtitle={headerSubtitle}
                 headerColor={headerColor}

@@ -39,6 +39,9 @@ function aggregateRowForState(state: RelayAgentActivityState) {
     threadTitle: state.threadTitle,
     modelTitle: state.modelTitle,
     phase: state.phase,
+    ...(state.notificationLevel === undefined
+      ? {}
+      : { notificationLevel: state.notificationLevel }),
     status: statusForPhase(state.phase),
     updatedAt: state.updatedAt,
     deepLink: state.deepLink,
