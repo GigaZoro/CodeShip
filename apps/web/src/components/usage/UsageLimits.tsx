@@ -401,16 +401,13 @@ export function ResetCredits({
   );
 }
 
-/** Advance now only on explicit refresh to avoid page repaints from ticking. */
 export function UsageLimitsSection({
   selectedEnvironmentIds,
   hiddenProviders,
-  now,
   cursorPrompt,
 }: {
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
-  readonly now: number;
   readonly cursorPrompt?: ReactNode;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
@@ -459,8 +456,7 @@ export function UsageLimitsSection({
   return (
     <UsageLimitsPooled
       presentations={selected}
-      now={now}
-      failover={collectAccountFailover(selected, now)}
+      getFailover={(now) => collectAccountFailover(selected, now)}
       cursorPrompt={cursorPrompt}
       {...(emptyMessage === undefined ? {} : { emptyMessage })}
     />

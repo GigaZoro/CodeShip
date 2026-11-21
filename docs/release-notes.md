@@ -1,3 +1,8 @@
+## 2026-11-21 — Usage stays visible while it updates
+
+- Usage keeps the last complete totals while a new period or filter loads. Background refreshes leave current figures at full opacity.
+- Usage periods advance automatically. Limit countdowns and pace marks update on the Usage screen and sidebar, and account bars keep their order across resets.
+
 ## 2026-11-21 — Start a worktree from a branch that exists only on the remote
 
 - Creating a worktree on a new branch from a base that exists only on the remote, such as a branch pushed from another machine and never checked out here, now starts from the remote copy instead of failing with "git worktree add failed".

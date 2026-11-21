@@ -154,3 +154,39 @@ export function deadlineStore(deadlineMs: number | null): DeadlineStore {
   };
   return store;
 }
+
+/** Usage reads one wall clock, with an extra notification when an account resets mid-minute. */
+export function usageClock(resetTimes: readonly number[] = []): ClockStore<number> {
+  const resets = [...new Set(resetTimes.filter(Number.isFinite))].sort((a, b) => a - b);
+  return {
+    getSnapshot: () => {
+      const minute = Date.parse(`${minuteTick.getSnapshot()}:00Z`);
+      const now = Date.now();
+      return resets.findLast((reset) => reset <= now && reset > minute) ?? minute;
+    },
+    subscribe: (listener) => {
+      const releaseMinute = minuteTick.subscribe(listener);
+      let releaseReset: (() => void) | undefined;
+      const subscribeToNextReset = () => {
+        const now = Date.now();
+        const next = resets.find((reset) => reset > now);
+        if (next === undefined) return;
+        const deadline = deadlineStore(next);
+        const advance = () => {
+          releaseReset?.();
+          subscribeToNextReset();
+        };
+        releaseReset = deadline.subscribe(() => {
+          advance();
+          listener();
+        });
+        if (deadline.getSnapshot()) advance();
+      };
+      subscribeToNextReset();
+      return () => {
+        releaseMinute();
+        releaseReset?.();
+      };
+    },
+  };
+}

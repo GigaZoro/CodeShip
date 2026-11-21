@@ -1,3 +1,4 @@
+import { useUsageNow } from "../../hooks/useUsageNow";
 import { useAtomValue } from "@effect/atom-react";
 import {
   collectLimitAccounts,
@@ -17,9 +18,11 @@ import { providerClients } from "../settings/providerDriverMeta";
 import type { ProgressRingTone } from "../ui/progress-ring";
 import { t, tn } from "~/i18n";
 
-export function useLimitPools(now: number) {
+export function useLimitPools() {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
-  return collectLimitPools(collectLimitAccounts(presentations), now);
+  const accounts = collectLimitAccounts(presentations);
+  const now = useUsageNow(accounts);
+  return { pools: collectLimitPools(accounts, now), now };
 }
 
 export function limitTone(remainingPercent: number): ProgressRingTone {

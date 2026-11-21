@@ -13,7 +13,7 @@ import {
   ShapesIcon,
 } from "lucide-react";
 import { tightestLimitWindow } from "@t3tools/shared/usageLimits";
-import { memo, useState, type ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
 import { isElectron } from "../../env";
@@ -82,7 +82,6 @@ function SidebarNavRailItem({
   label,
   tooltip = label,
   badge,
-  onTooltipOpenChange,
   isActive,
   onClick,
 }: {
@@ -90,13 +89,12 @@ function SidebarNavRailItem({
   label: string;
   tooltip?: ReactNode;
   badge?: ReactNode;
-  onTooltipOpenChange?: (open: boolean) => void;
   isActive: boolean;
   onClick: () => void;
 }) {
   return (
     <SidebarMenuItem>
-      <Tooltip onOpenChange={onTooltipOpenChange}>
+      <Tooltip>
         <TooltipTrigger
           render={
             <SidebarMenuButton
@@ -147,9 +145,7 @@ function SidebarNavRailUsageItem({
 }) {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const shortcut = shortcutLabelForCommand(keybindings, "usage.open");
-  // Reset countdowns read the clock when the summary opens instead of ticking.
-  const [now, setNow] = useState(() => Date.now());
-  const pools = useLimitPools(now);
+  const { pools, now } = useLimitPools();
   const tightest = tightestLimitWindow(pools);
   if (!tightest) {
     return (
@@ -178,9 +174,6 @@ function SidebarNavRailUsageItem({
         percent: window.remainingPercent,
       })}
       tooltip={<UsageLimitsGlance pools={pools} now={now} shortcut={shortcut} />}
-      onTooltipOpenChange={(open) => {
-        if (open) setNow(Date.now());
-      }}
       isActive={isActive}
       onClick={onClick}
     />

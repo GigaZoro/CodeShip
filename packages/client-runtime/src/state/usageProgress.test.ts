@@ -1,4 +1,5 @@
 import {
+  EnvironmentId,
   USAGE_CONTRACT_VERSION,
   UsageDay,
   type UsageProviderKind,
@@ -6,7 +7,14 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { usageEnvironmentProgress, usageLoadingState, usageProgress } from "./usageProgress.ts";
+import {
+  isKeptUsage,
+  settleUsageSnapshot,
+  usageEnvironmentProgress,
+  usageGaps,
+  usageProgress,
+  type EnvironmentUsageStatus,
+} from "./usageProgress.ts";
 
 function summary(refreshing: readonly UsageProviderKind[] = []): UsageSummary {
   return {
@@ -53,28 +61,28 @@ function environment(
 const options = { providerLabel: (provider: UsageProviderKind) => `${provider} label` };
 
 describe("usageProgress", () => {
-  it("undims once one device answers and names the slow one", () => {
+  it("names the environments that are still updating", () => {
     const waiting = [environment("a", { isPending: true }), environment("b", { isPending: true })];
     expect(usageProgress(waiting, options)).toEqual({
-      dimmed: true,
+      announcement: null,
       label: "Updating 2 environments…",
     });
     expect(
       usageProgress([environment("a"), ...waiting.slice(1), environment("c")], options),
-    ).toEqual({ dimmed: false, label: "Updating b…" });
+    ).toEqual({ announcement: null, label: "Updating b…" });
     expect(
       usageProgress(
         [environment("a"), environment("b", { summary: null, isPending: true })],
         options,
       ),
-    ).toEqual({ dimmed: false, label: "Updating b…" });
+    ).toEqual({ announcement: null, label: "Updating b…" });
   });
 
-  it("names a slow source without dimming once its environment answers from cache", () => {
+  it("names a slow source once its environment answers from cache", () => {
     const partway = environment("a", { isPending: true, summary: summary(["cursor"]) });
     expect(usageEnvironmentProgress(partway)).toEqual({ phase: "partway", providers: ["cursor"] });
     expect(usageProgress([partway, environment("b")], options)).toEqual({
-      dimmed: false,
+      announcement: null,
       label: "Updating cursor label…",
     });
     expect(
@@ -82,9 +90,9 @@ describe("usageProgress", () => {
         [partway, environment("b", { isPending: true, summary: summary(["cursor", "grok"]) })],
         options,
       ),
-    ).toEqual({ dimmed: false, label: "Updating 2 providers…" });
+    ).toEqual({ announcement: null, label: "Updating 2 providers…" });
     expect(usageProgress([{ ...partway, isPending: false }], options)).toEqual({
-      dimmed: false,
+      announcement: null,
       label: null,
     });
   });
@@ -95,7 +103,7 @@ describe("usageProgress", () => {
       environment("failed", { error: "Offline", summary: null }),
     ];
     expect(usageProgress([environment("a"), ...ignored], options)).toEqual({
-      dimmed: false,
+      announcement: null,
       label: null,
     });
     expect(
@@ -103,18 +111,133 @@ describe("usageProgress", () => {
         [environment("a"), ...ignored, environment("slow", { summary: null, isPending: true })],
         options,
       ),
-    ).toEqual({ dimmed: false, label: "Updating slow…" });
+    ).toEqual({ announcement: null, label: "Updating slow…" });
     expect(usageEnvironmentProgress(ignored[0]!)).toEqual({ phase: "inactive" });
   });
 });
 
-describe("usageLoadingState", () => {
-  it("ignores environments that cannot answer and settles once all have", () => {
-    const state = usageLoadingState([
-      environment("a"),
-      environment("b", { summary: null, isConnected: false }),
-      environment("c", { summary: null, error: "Offline" }),
-    ]);
-    expect(state).toEqual({ partial: false, everyProvider: false, providers: new Set() });
+describe("settleUsageSnapshot", () => {
+  it("shows the newly selected period's cached answer while it refreshes", () => {
+    const currentSummary = summary();
+    const cachedSummary = { ...currentSummary, sinceDay: UsageDay.make("2026-08-07") };
+    const current = {
+      ...environment("a", { summary: currentSummary }),
+      environmentId: EnvironmentId.make("a"),
+      canReadDiagnostics: true,
+      needsCursorKeychainAccess: false,
+    };
+    const previous = settleUsageSnapshot(null, currentSummary, [current], [current]);
+    const cached = { ...current, summary: cachedSummary, isPending: true };
+
+    const shown = settleUsageSnapshot(previous, cachedSummary, [cached], [cached]);
+
+    expect(shown?.window.sinceDay).toBe(cachedSummary.sinceDay);
+    expect(settleUsageSnapshot(shown, cachedSummary, [cached], [cached])).toBe(shown);
   });
+});
+
+function status(
+  label: string,
+  overrides: Partial<EnvironmentUsageStatus> = {},
+): EnvironmentUsageStatus {
+  return {
+    ...environment(label),
+    environmentId: EnvironmentId.make(label.toLowerCase()),
+    canReadDiagnostics: true,
+    needsCursorKeychainAccess: false,
+    ...overrides,
+  };
+}
+
+it("settles connected usage when another selected environment is still connecting", () => {
+  const ready = status("Ready");
+  const connecting = status("Connecting", {
+    canReadDiagnostics: false,
+    isConnected: false,
+    isPending: true,
+    summary: null,
+  });
+  const selected = [ready, connecting];
+
+  const shown = settleUsageSnapshot(null, summary(), selected, selected);
+
+  expect(shown?.environments).toEqual(selected);
+  expect(usageGaps(shown?.environments ?? [], [])?.title).toBe("Totals leave out Connecting");
+});
+
+it("marks the previous totals as kept while a model filter changes the request", () => {
+  const window = summary();
+  const original = status("Desk", {
+    summary: {
+      ...window,
+      buckets: [
+        {
+          day: window.sinceDay,
+          provider: "codex",
+          model: "included",
+          totals: {
+            uncachedInputTokens: 100,
+            cachedInputTokens: 0,
+            cacheCreationTokens: 0,
+            outputTokens: 0,
+            reasoningTokens: 0,
+          },
+          costUsd: 0,
+          cacheSavingsUsd: 0,
+          costSource: "unpriced",
+          records: 1,
+          unpricedRecords: 1,
+          sessions: 1,
+        },
+      ],
+    },
+  });
+  const previous = settleUsageSnapshot(null, window, [original], [original]);
+  const pending = {
+    ...original,
+    modelFilter: { exclude: [{ model: "included" }] },
+    summary: null,
+    isPending: true,
+  };
+  const kept = settleUsageSnapshot(previous, window, [pending], [pending]);
+
+  expect(kept?.merged.totalTokens).toBe(100);
+  expect(isKeptUsage(kept, window, [pending])).toBe(true);
+
+  const answered = { ...pending, summary: window, isPending: false };
+  const shown = settleUsageSnapshot(kept, window, [answered], [answered]);
+
+  expect(shown?.merged.totalTokens).toBe(0);
+  expect(isKeptUsage(shown, window, [answered])).toBe(false);
+});
+
+it("names missing and saved environments in a mixed usage result", () => {
+  const notice = usageGaps(
+    [
+      status("Ready"),
+      status("Missing", { error: "Scan failed.", summary: null }),
+      status("Saved", { error: "Scan failed." }),
+    ],
+    [],
+  );
+
+  expect(notice?.title).toBe("Totals leave out Missing");
+  expect(notice?.gaps.map(({ message }) => message)).toEqual([
+    "Missing: Scan failed.",
+    "Saved: Scan failed. Showing its last values.",
+  ]);
+});
+
+it("keeps two consecutive background refetches quiet and announces a manual refresh", () => {
+  const ready = environment("Desk");
+  const refetching = { ...ready, isPending: true };
+  const progress = [ready, refetching, ready, refetching, ready].map((entry) =>
+    usageProgress([entry], options),
+  );
+
+  expect(progress.map(({ label }) => label)).toEqual([null, "Updating…", null, "Updating…", null]);
+  expect(progress.map(({ announcement }) => announcement)).toEqual([null, null, null, null, null]);
+  expect(usageProgress([refetching], { ...options, refreshing: true }).announcement).toBe(
+    "Updating…",
+  );
 });

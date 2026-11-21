@@ -808,21 +808,8 @@ export function collectLimitPools(
     else byDriver.set(account.driver, [account]);
   }
   return [...byDriver].map(([driver, members]) => {
-    const orderWindow = members
-      .flatMap((account) => account.limits.windows)
-      .sort((left, right) => WINDOW_KIND_ORDER[left.kind] - WINDOW_KIND_ORDER[right.kind])[0];
-    const orderReset = (account: LimitAccount) => {
-      const window = account.limits.windows.find(
-        (window) => orderWindow && poolKey(driver, window) === poolKey(driver, orderWindow),
-      );
-      return (
-        (window ? resetMillis(poolMember(account, window, now).window) : null) ??
-        Number.POSITIVE_INFINITY
-      );
-    };
     const sorted = [...members].sort(
       (left, right) =>
-        orderReset(left) - orderReset(right) ||
         accountSortName(left).localeCompare(accountSortName(right)) ||
         left.key.localeCompare(right.key),
     );
@@ -950,6 +937,15 @@ export function limitsNotice(limits: ServerProviderUsageLimits): string | null {
 
 export function remainingPercent(window: ServerProviderUsageWindow): number {
   return Math.round(100 - Math.max(0, Math.min(100, window.usedPercent)));
+}
+
+export function limitResetTimes(accounts: readonly LimitAccount[]): number[] {
+  return accounts.flatMap((account) =>
+    account.limits.windows.flatMap((window) => {
+      const reset = resetMillis(window);
+      return reset === null ? [] : [reset];
+    }),
+  );
 }
 
 function resetMillis(window: ServerProviderUsageWindow): number | null {

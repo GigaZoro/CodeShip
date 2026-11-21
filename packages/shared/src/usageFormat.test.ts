@@ -7,6 +7,7 @@ import {
   formatDateTimeShort,
   formatHourShort,
   makeWindow,
+  usageWindowLabel,
   usageSourceMessages,
 } from "./usageFormat.ts";
 
@@ -171,19 +172,40 @@ describe("hourly usage formatting", () => {
     );
   });
 
-  it("builds an exact minute-aligned 24-hour request", () => {
-    const window = makeWindow(1, new Date("2026-08-11T12:37:42.123Z"), "hour");
-
-    expect(window.resolution).toBe("hour");
-    expect(window.sinceTime).toBe("2026-08-10T12:37:00.000Z");
-    expect(window.untilTime).toBe("2026-08-11T12:37:00.000Z");
-  });
+  it.each([1, 7])(
+    "includes the current hour in a %i-day hourly request without a future bucket",
+    (days) => {
+      const now = new Date("2026-08-11T12:45:00.000Z");
+      const window = makeWindow(days, now, "hour");
+      const boundaryDay = days === 1 ? "2026-08-10" : "2026-08-04";
+      const records = [
+        `${boundaryDay}T12:59:59.999Z`,
+        `${boundaryDay}T13:00:00.000Z`,
+        "2026-08-11T12:20:00.000Z",
+        "2026-08-11T13:00:00.000Z",
+      ];
+      const [since, until] = [Date.parse(window.sinceTime!), Date.parse(window.untilTime!)];
+      expect(
+        records.filter((record) => since <= Date.parse(record) && Date.parse(record) < until),
+      ).toEqual([records[1], records[2]]);
+      const starts = enumerateHourStarts(window.sinceTime!, window.untilTime!);
+      expect(starts).toHaveLength(days * 24);
+      expect(starts.at(-1)).toBe("2026-08-11T12:00:00.000Z");
+      expect(usageWindowLabel({ ...window, timeZone: "UTC" }, false)).toBe(
+        `Aug ${days === 1 ? 10 : 4}, 13:00 to Aug 11, 12:00`,
+      );
+      expect(makeWindow(days, new Date("2026-08-11T12:59:00.000Z"), "hour")).toEqual(window);
+      expect(makeWindow(days, new Date("2026-08-11T13:00:00.000Z"), "hour").untilTime).toBe(
+        "2026-08-11T14:00:00.000Z",
+      );
+    },
+  );
 
   it("builds a seven-day hourly request across a daylight-saving transition", () => {
     const window = makeWindow(7, new Date("2026-11-04T12:37:42.123Z"), "hour");
 
-    expect(window.sinceTime).toBe("2026-10-28T12:37:00.000Z");
-    expect(window.untilTime).toBe("2026-11-04T12:37:00.000Z");
+    expect(window.sinceTime).toBe("2026-10-28T13:00:00.000Z");
+    expect(window.untilTime).toBe("2026-11-04T13:00:00.000Z");
     expect(enumerateHourStarts(window.sinceTime!, window.untilTime!)).toHaveLength(168);
   });
 

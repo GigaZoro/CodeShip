@@ -5,9 +5,9 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { CHATGPT_USAGE_URL } from "@t3tools/shared/usageLimits";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
-import { render } from "../../../test/render";
+import { act, fakeTimers, render } from "../../../test/render";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
 import { AccountFailoverNotice } from "./UsageLimitsStatus";
 
@@ -84,9 +84,7 @@ describe("UsageLimitsPooled ChatGPT usage card", () => {
         },
       ],
     ]);
-    await using screen = await render(
-      <UsageLimitsPooled presentations={presentations} now={Date.parse(checkedAt)} />,
-    );
+    await using screen = await render(<UsageLimitsPooled presentations={presentations} />);
 
     await expect.element(screen.getByRole("heading", { name: "Codex" })).toBeVisible();
     await expect
@@ -95,4 +93,60 @@ describe("UsageLimitsPooled ChatGPT usage card", () => {
     await expect.element(screen.getByText("ChatGPT Work")).toBeVisible();
     await expect.element(screen.getByText("ChatGPT Personal")).toBeVisible();
   });
+});
+
+function accountReadings(...accounts: readonly (readonly [string, string])[]) {
+  return new Map([
+    [
+      EnvironmentId.make("desk"),
+      {
+        entry: { target: { label: "Desk" } },
+        serverConfig: {
+          providers: accounts.map(([name, resetsAt]) => ({
+            ...managedChatGpt(name.toLowerCase(), name),
+            usageLimits: {
+              checkedAt,
+              windows: [
+                {
+                  id: "primary",
+                  kind: "session" as const,
+                  label: "5-hour",
+                  usedPercent: 20,
+                  windowDurationMins: 300,
+                  resetsAt,
+                },
+              ],
+            },
+          })),
+        },
+      },
+    ],
+  ]);
+}
+
+it("updates the limit countdown at the minute and reset boundaries", async () => {
+  using _timers = fakeTimers();
+  vi.setSystemTime(new Date(checkedAt));
+  const presentations = accountReadings(["Alpha", "2026-10-25T16:01:30.000Z"]);
+  await using screen = await render(<UsageLimitsPooled presentations={presentations} />);
+  const segment = screen.getByRole("button", { name: /Alpha: 80% left/ });
+  await expect.element(segment).toHaveAccessibleName(/1m/);
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  await expect.element(segment).toHaveAccessibleName(/Resets momentarily/);
+  await act(() => vi.advanceTimersByTimeAsync(30_000));
+  await expect.element(segment).toHaveAccessibleName(/resets now/);
+});
+
+it("keeps pooled account columns stable when the reset order changes", async () => {
+  const early = "2026-10-25T17:00:00.000Z";
+  const late = "2026-10-25T18:00:00.000Z";
+  await using screen = await render(
+    <UsageLimitsPooled presentations={accountReadings(["Alpha", early], ["Beta", late])} />,
+  );
+  const alpha = screen.getByRole("button", { name: /Alpha: 80% left/ });
+  await expect.element(alpha).toHaveStyle("grid-column: 1");
+  await screen.rerender(
+    <UsageLimitsPooled presentations={accountReadings(["Alpha", late], ["Beta", early])} />,
+  );
+  await expect.element(alpha).toHaveStyle("grid-column: 1");
 });

@@ -1,3 +1,4 @@
+import { useUsageNow } from "../../hooks/useUsageNow";
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
@@ -23,7 +24,10 @@ import {
 import {
   updatingProvidersLabel,
   usageEnvironmentProgress,
-  usageLoadingState,
+  mergeAnsweredUsage,
+  retainedUsageLabel,
+  usageEnvironmentError,
+  usageProgress,
 } from "@t3tools/client-runtime/state/usage-progress";
 
 import {
@@ -59,6 +63,7 @@ import {
   formatUsd,
   makeWindow,
   usageSourceMessages,
+  usageWindowLabel,
 } from "@t3tools/shared/usageFormat";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Button, InlineButton } from "../ui/button";
@@ -130,23 +135,11 @@ const providerLabel = (provider: UsageProviderKind) => PROVIDER_PRESENTATION[pro
 
 type UsageBreakdown = "model" | "time";
 
-function usageLoading(
-  showingKept: boolean,
-  selectedEnvironments: Parameters<typeof usageLoadingState>[0],
-  refreshingUsage: boolean,
-  hiddenProviders: ReadonlySet<UsageProviderKind>,
-) {
-  if (showingKept) {
-    return { partial: true, everyProvider: true, providers: new Set<UsageProviderKind>() };
-  }
-  const state = usageLoadingState(selectedEnvironments, refreshingUsage);
-  const providers = new Set([...state.providers].filter((p) => !hiddenProviders.has(p)));
-  return {
-    partial: state.everyProvider || providers.size > 0,
-    everyProvider: state.everyProvider,
-    providers,
-  };
-}
+const EMPTY_USAGE = mergeAnsweredUsage([]);
+const skeletonProvidersAtom = Atom.make<readonly UsageProviderKind[]>([]).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("usage:skeleton-providers"),
+);
 
 /** Keep dialog selection outside UsagePage so opening/closing rerenders only its host. */
 const selectedUsageModelKeyAtom = Atom.make<string | null>(null).pipe(
@@ -199,18 +192,9 @@ export function UsagePage() {
     });
     return shortcut ? `${t(option.label)} (${shortcut})` : t(option.label);
   };
-  const [windowSelection, setWindowSelection] = useState(() => ({
-    days: preferences.windowDays,
-    window: makeWindow(
-      preferences.windowDays,
-      undefined,
-      usageResolution(preferences.windowDays, preferences.weekResolution),
-    ),
-  }));
   const metric = preferences.metric;
   const showingLimits = metric === "limits";
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [limitsNow, setLimitsNow] = useState(() => Date.now());
   const [limitsRefreshFailures, setLimitsRefreshFailures] = useState<ReadonlySet<EnvironmentId>>(
     () => new Set(),
   );
@@ -221,21 +205,41 @@ export function UsagePage() {
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const hiddenProviders = new Set(preferences.hiddenProviders);
-  const { days: windowDays, window } = windowSelection;
+  const windowDays = preferences.windowDays;
+  const resolution = usageResolution(windowDays, preferences.weekResolution);
+  const now = useUsageNow();
+  const window = makeWindow(windowDays, new Date(now), resolution);
   const chartType = preferences.chartType ?? "area";
-  const {
-    merged: answeredUsage,
-    environments,
-    selectedEnvironments,
-    shown,
-    isPartial,
-    refresh,
-  } = useUsage(window, selectedEnvironmentIds, hiddenProviders);
-  const merged = shown?.merged ?? answeredUsage;
+  const { environments, selectedEnvironments, shown, showingKept, refresh } = useUsage(
+    window,
+    selectedEnvironmentIds,
+    preferences.hiddenProviders,
+  );
+  const merged = shown?.merged ?? EMPTY_USAGE;
+  const shownEnvironments = shown?.environments ?? selectedEnvironments;
   const shownWindow = shown?.window ?? window;
   const shownHourly = shownWindow.resolution === "hour";
   const refreshingUsage = isRefreshing && !showingLimits;
-  const showingKept = shown !== null && shown.window !== window;
+  const progress = usageProgress(selectedEnvironments, {
+    refreshing: refreshingUsage,
+    providerLabel,
+  });
+  const activeProviders = providersWithUsage(merged.providers);
+  const shownHiddenProviders = shown?.hiddenProviders ?? hiddenProviders;
+  const shownCursorAccess = shownHiddenProviders.has("cursor")
+    ? []
+    : cursorKeychainAccessEnvironments(shownEnvironments);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retain the provider footprint across Usage visits
+  useEffect(() => {
+    const previous = appAtomRegistry.get(skeletonProvidersAtom);
+    if (
+      activeProviders.length > 0 &&
+      (previous.length !== activeProviders.length ||
+        previous.some((provider, index) => provider !== activeProviders[index]))
+    ) {
+      appAtomRegistry.set(skeletonProvidersAtom, activeProviders);
+    }
+  }, [activeProviders]);
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
   const presentationsWithProviders = useAtomValue(
     environmentPresentations.presentationsWithProvidersAtom,
@@ -259,17 +263,9 @@ export function UsagePage() {
   const selectWindow = (days: number) => {
     if (!isUsageWindowDays(days)) return;
     updatePreferences({ windowDays: days });
-    setWindowSelection({
-      days,
-      window: makeWindow(days, undefined, usageResolution(days, preferences.weekResolution)),
-    });
   };
   const selectWeekResolution = (weekResolution: "day" | "hour") => {
     updatePreferences({ weekResolution });
-    setWindowSelection({
-      days: windowDays,
-      window: makeWindow(windowDays, undefined, usageResolution(windowDays, weekResolution)),
-    });
   };
   const chartControls = (
     <div className="flex flex-wrap items-center gap-2">
@@ -300,11 +296,9 @@ export function UsagePage() {
     </div>
   );
   const selectMetric = (nextMetric: UsageMetric) => {
-    if (nextMetric === "limits") setLimitsNow(Date.now());
     updatePreferences({ metric: nextMetric });
   };
   const refreshLimits = (automatic = false, afterPending = false) =>
-    // Settled so the timestamp still advances when a refresh throws.
     settlePromise(() =>
       Promise.all(
         Array.from(presentations, async ([environmentId, presentation]) => {
@@ -328,7 +322,6 @@ export function UsagePage() {
         }),
       ),
     ).then((result) => {
-      setLimitsNow(Date.now());
       if (!AsyncResult.isSuccess(result)) throw Cause.squash(result.cause);
       const outcomes = result.value.filter((outcome) => outcome !== undefined);
       setLimitsRefreshFailures((previous) => {
@@ -380,19 +373,6 @@ export function UsagePage() {
       });
       return;
     }
-    const nextWindow = makeWindow(
-      windowDays,
-      undefined,
-      usageResolution(windowDays, preferences.weekResolution),
-    );
-    if (
-      nextWindow.sinceDay !== window.sinceDay ||
-      nextWindow.untilDay !== window.untilDay ||
-      nextWindow.sinceTime !== window.sinceTime ||
-      nextWindow.untilTime !== window.untilTime
-    ) {
-      setWindowSelection({ days: windowDays, window: nextWindow });
-    }
     const statsEnvironmentIds = selectedEnvironments
       .filter(
         (environment) =>
@@ -402,8 +382,8 @@ export function UsagePage() {
       .map((environment) => environment.environmentId);
     refreshingRef.current = true;
     setIsRefreshing(true);
-    void refresh(nextWindow).finally(() => {
-      refreshScheduledTaskGroupUsage(appAtomRegistry, statsEnvironmentIds, nextWindow);
+    void refresh(window).finally(() => {
+      refreshScheduledTaskGroupUsage(appAtomRegistry, statsEnvironmentIds, window);
       refreshingRef.current = false;
       setIsRefreshing(false);
     });
@@ -438,23 +418,14 @@ export function UsagePage() {
       ? []
       : enumerateHourStarts(shownWindow.sinceTime, shownWindow.untilTime);
   const showChatGptSharing =
-    !hiddenProviders.has("codex") &&
+    !shownHiddenProviders.has("codex") &&
     [...presentationsWithProviders].some(
       ([id, presentation]) =>
-        (selectedEnvironmentIds === null || selectedEnvironmentIds.has(id)) &&
+        shownEnvironments.some((environment) => environment.environmentId === id) &&
         (presentation.serverConfig?.providers ?? []).some(usesChatGptSharing),
     );
 
-  const windowLabel =
-    shownHourly && shownWindow.sinceTime !== undefined && shownWindow.untilTime !== undefined
-      ? t("{from} to {to}", {
-          from: formatDateTimeShort(shownWindow.sinceTime, shownWindow.timeZone, hour12),
-          to: formatDateTimeShort(shownWindow.untilTime, shownWindow.timeZone, hour12),
-        })
-      : t("{from} to {to}", {
-          from: formatDayShort(shownWindow.sinceDay),
-          to: formatDayShort(shownWindow.untilDay),
-        });
+  const windowLabel = usageWindowLabel(window, hour12);
   const topbarContent = (
     <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 @4xl/usage-header:flex">
       <WorkspaceBreadcrumb ariaLabel={t("Usage breadcrumb")} className="min-w-0">
@@ -470,9 +441,8 @@ export function UsagePage() {
             onSelectionChange={setSelectedEnvironmentIds}
             showUsageStatus={!showingLimits}
             refreshing={refreshingUsage}
-            isPartial={isPartial}
-            duplicateSources={merged.duplicateSources}
-            contractMismatches={merged.contractMismatches}
+            duplicateSources={showingKept ? [] : merged.duplicateSources}
+            contractMismatches={showingKept ? [] : merged.contractMismatches}
             onOpenModelPrices={() => setPriceDialog({})}
           />
         </WorkspaceBreadcrumbItem>
@@ -612,6 +582,11 @@ export function UsagePage() {
 
         <ScrollArea className="min-h-0 flex-1">
           <WorkspacePageContainer width="wide">
+            {!showingLimits ? (
+              <span role="status" className="sr-only">
+                {progress.announcement}
+              </span>
+            ) : null}
             {selectedEnvironments.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 {environments.length === 0
@@ -664,7 +639,6 @@ export function UsagePage() {
                 <UsageLimitsSection
                   selectedEnvironmentIds={selectedEnvironmentIds}
                   hiddenProviders={hiddenProviders}
-                  now={limitsNow}
                   cursorPrompt={
                     cursorAccessEnvironments.length > 0 ? (
                       <CursorEnableLimits
@@ -679,11 +653,8 @@ export function UsagePage() {
                 />
               </>
             ) : shown === null ? (
-              <UsageSkeleton />
-            ) : !canReadDiagnostics ||
-              selectedEnvironments.every(
-                (environment) => environment.error !== null && environment.summary === null,
-              ) ? (
+              <UsageSkeleton hiddenProviders={hiddenProviders} />
+            ) : shownEnvironments.every(({ summary }) => summary === null) ? (
               // Nothing to show at all: an empty overview would read as zero spend.
               <div
                 role="status"
@@ -694,7 +665,7 @@ export function UsagePage() {
                     {selectedEnvironments.length > 1
                       ? t("{environment}: ", { environment: environment.label })
                       : null}
-                    {environment.error}
+                    {usageEnvironmentError(environment)}
                   </p>
                 ))}
                 {canReadDiagnostics ? (
@@ -710,10 +681,15 @@ export function UsagePage() {
               </div>
             ) : (
               <>
+                {showingKept && shown !== null ? (
+                  <p className="text-xs text-muted-foreground">
+                    {retainedUsageLabel(shown, hour12)}
+                  </p>
+                ) : null}
                 <UsageGapsNotice
-                  environments={selectedEnvironments}
+                  environments={shownEnvironments}
                   contractMismatches={merged.contractMismatches}
-                  retrying={refreshingUsage}
+                  retrying={refreshingUsage || showingKept}
                   onRetry={refreshWindow}
                 />
                 <UsageOverview
@@ -725,11 +701,12 @@ export function UsagePage() {
                   days={days}
                   hours={hours}
                   showingKept={showingKept}
+                  progressLabel={progress.label ?? (showingKept ? t("Updating…") : null)}
                   metric={metric === "tokens" ? "tokens" : "cost"}
-                  selectedEnvironments={selectedEnvironments}
-                  hiddenProviders={hiddenProviders}
-                  refreshingUsage={refreshingUsage}
-                  cursorAccessEnvironments={cursorAccessEnvironments}
+                  selectedEnvironments={shownEnvironments}
+                  hiddenProviders={shownHiddenProviders}
+                  activeProviders={activeProviders}
+                  cursorAccessEnvironments={shownCursorAccess}
                   showChatGptSharing={showChatGptSharing}
                   onCursorEnabled={() => {
                     void refresh();
@@ -744,10 +721,10 @@ export function UsagePage() {
           </WorkspacePageContainer>
         </ScrollArea>
       </div>
-      {showingLimits ? null : (
+      {showingLimits || showingKept ? null : (
         <UsageModelDialogHost
           models={merged.models}
-          environments={selectedEnvironments}
+          environments={shownEnvironments}
           metric={metric === "tokens" ? "tokens" : "cost"}
           chartWindow={{
             chartType,
@@ -782,12 +759,13 @@ function UsageOverview({
   days,
   hours,
   showingKept,
+  progressLabel,
   chartType,
   chartControls,
   metric,
   selectedEnvironments,
   hiddenProviders,
-  refreshingUsage,
+  activeProviders,
   cursorAccessEnvironments,
   showChatGptSharing,
   onCursorEnabled,
@@ -803,10 +781,11 @@ function UsageOverview({
   readonly days: readonly string[];
   readonly hours: readonly string[];
   readonly showingKept: boolean;
+  readonly progressLabel: string | null;
   readonly metric: "tokens" | "cost";
   readonly selectedEnvironments: readonly EnvironmentUsageStatus[];
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
-  readonly refreshingUsage: boolean;
+  readonly activeProviders: readonly UsageProviderKind[];
   readonly cursorAccessEnvironments: readonly EnvironmentUsageStatus[];
   readonly showChatGptSharing: boolean;
   readonly onCursorEnabled: () => void;
@@ -815,22 +794,8 @@ function UsageOverview({
   readonly onBreakdownChange: (breakdown: UsageBreakdown) => void;
 }) {
   const shownHourly = shownWindow.resolution === "hour";
-  const loading = usageLoading(showingKept, selectedEnvironments, refreshingUsage, hiddenProviders);
-  // Copy the primitive; JSX reads of loading.partial would merge all derivations into one compiler cache
-  // scope.
-  const loadingPartial = loading.partial === true;
-  const loadingProviders = new Set(
-    PROVIDER_ORDER.filter((provider) => loading.everyProvider || loading.providers.has(provider)),
-  );
-  const providersWithData = new Set(providersWithUsage(merged.providers));
-  // Only loading.providers excludes hidden providers without data. Filter a fresh array so the compiler can
-  // cache independently.
-  const activeProviders = [...PROVIDER_ORDER].filter(
-    (provider) => providersWithData.has(provider) || loading.providers.has(provider),
-  );
-  const chartLoadingProviders = new Set(
-    activeProviders.filter((provider) => loadingProviders.has(provider)),
-  );
+  const loadingPartial = showingKept;
+  const loadingProviders = new Set<UsageProviderKind>(showingKept ? activeProviders : []);
   const sourceMessages = usageSourceMessages(
     selectedEnvironments.flatMap(
       (environment) =>
@@ -868,7 +833,7 @@ function UsageOverview({
   return (
     <div aria-busy={loadingPartial} className="flex flex-col gap-6">
       {sourceMessages.map((message) => (
-        <p key={message} className="mb-4 text-sm text-muted-foreground">
+        <p key={message} role="status" className="mb-4 text-sm text-muted-foreground">
           {message}
         </p>
       ))}
@@ -883,8 +848,8 @@ function UsageOverview({
             >
               {metric === "cost" ? formatUsd(merged.costUsd) : formatTokens(merged.totalTokens)}
             </span>
-            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-              <span>
+            <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+              <span className="shrink-0">
                 <span className={figureClass(loadingPartial)}>
                   {tn(merged.sessions, "{count} session", "{count} sessions", {
                     count: formatCount(merged.sessions),
@@ -908,13 +873,14 @@ function UsageOverview({
                   </PopoverPopup>
                 </Popover>
               )}
+              <span className="min-w-0 truncate">{progressLabel}</span>
             </span>
           </div>
 
           {showChatGptSharing ? (
             <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
               <span>{t("ChatGPT shared usage")}</span>
-              <ChatGptUsageButton size="xs" />
+              <ChatGptUsageButton size="xs" disabled={showingKept} />
             </div>
           ) : null}
 
@@ -927,6 +893,7 @@ function UsageOverview({
                   label={row.environment.label}
                   showEnvironment={selectedEnvironments.length > 1}
                   onEnabled={onCursorEnabled}
+                  disabled={showingKept}
                 />
               );
             }
@@ -938,7 +905,6 @@ function UsageOverview({
               count: formatCount(providerSessions),
             });
             const providerLoading = loadingProviders.has(provider);
-            const awaitingData = providerLoading && !providersWithData.has(provider);
             return (
               <div key={provider} className="flex flex-col gap-1">
                 <div className="flex items-baseline justify-between gap-4">
@@ -957,7 +923,6 @@ function UsageOverview({
                         className={cn(
                           "shrink-0 whitespace-nowrap text-2xs text-muted-foreground tabular-nums",
                           figureClass(providerLoading),
-                          awaitingData && "invisible",
                         )}
                       >
                         {sessionLabel}
@@ -970,20 +935,12 @@ function UsageOverview({
                       figureClass(providerLoading),
                     )}
                   >
-                    {awaitingData
-                      ? "-"
-                      : metric === "cost"
-                        ? formatUsd(totals?.costUsd ?? 0)
-                        : formatTokens(totals?.totalTokens ?? 0)}
+                    {metric === "cost"
+                      ? formatUsd(totals?.costUsd ?? 0)
+                      : formatTokens(totals?.totalTokens ?? 0)}
                   </span>
                 </div>
-                <span
-                  className={cn(
-                    "text-xs text-muted-foreground",
-                    figureClass(providerLoading),
-                    awaitingData && "invisible",
-                  )}
-                >
+                <span className={cn("text-xs text-muted-foreground", figureClass(providerLoading))}>
                   {metric === "cost"
                     ? t("{percent} of cost · {tokens} tokens", {
                         percent: formatPercent(share),
@@ -1015,7 +972,7 @@ function UsageOverview({
           <UsageProviderChart
             chartType={chartType}
             providers={activeProviders}
-            loadingProviders={chartLoadingProviders}
+            loadingProviders={loadingProviders}
             days={days}
             daily={merged.daily}
             hours={hours}
@@ -1060,40 +1017,38 @@ function UsageOverview({
         </div>
       </section>
 
-      {merged.totalTokens > 0 ? (
-        <section
-          className={cn("grid gap-x-12 gap-y-8 lg:grid-cols-2", figureClass(loadingPartial))}
-        >
-          {metric === "tokens" ? (
+      <section className={cn("grid gap-x-12 gap-y-8 lg:grid-cols-2", figureClass(loadingPartial))}>
+        {metric === "tokens" ? (
+          <UsageShareBar
+            label={t("Tokens by type")}
+            segments={tokenTypeSegments(merged)}
+            format={formatTokens}
+          />
+        ) : (
+          <>
             <UsageShareBar
-              label={t("Tokens by type")}
-              segments={tokenTypeSegments(merged)}
-              format={formatTokens}
+              label={t("Cost by type")}
+              segments={costTypeSegments(merged.categoryCost)}
+              format={formatUsd}
+              recordedUsage={merged}
             />
-          ) : (
-            <>
+            {merged.speedCost.fast + merged.speedCost.ultrafast > 0 ? (
               <UsageShareBar
-                label={t("Cost by type")}
-                segments={costTypeSegments(merged.categoryCost)}
+                label={t("Cost by speed")}
+                segments={speedCostSegments(merged.speedCost)}
                 format={formatUsd}
+                aside={<SpeedPremium premiumUsd={merged.speedCost.premium} />}
               />
-              {merged.speedCost.fast + merged.speedCost.ultrafast > 0 ? (
-                <UsageShareBar
-                  label={t("Cost by speed")}
-                  segments={speedCostSegments(merged.speedCost)}
-                  format={formatUsd}
-                  aside={<SpeedPremium premiumUsd={merged.speedCost.premium} />}
-                />
-              ) : null}
-            </>
-          )}
-        </section>
-      ) : null}
+            ) : null}
+          </>
+        )}
+      </section>
 
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-sm font-medium text-foreground">{t("Breakdown")}</h2>
           <ToggleGroup
+            disabled={showingKept}
             aria-label={t("Usage breakdown")}
             variant="segmented"
             value={[breakdown]}
@@ -1149,6 +1104,7 @@ function UsageOverview({
                       <td className="py-2.5 text-left whitespace-normal">
                         <button
                           type="button"
+                          disabled={showingKept}
                           onClick={() => onSelectModel(key)}
                           className={cn(
                             // The ring sits on the overlay that spans the row, so focus shows on the whole row.
@@ -1278,7 +1234,11 @@ function UsageOverview({
         )}
       </section>
 
-      <UsageScheduledTaskGroups period={shownWindow} environments={selectedEnvironments} />
+      <UsageScheduledTaskGroups
+        period={shownWindow}
+        environments={selectedEnvironments}
+        readOnly={showingKept}
+      />
     </div>
   );
 }
@@ -1291,12 +1251,14 @@ function CursorEnableButton({
   onEnabled,
   tooltip,
   buttonText,
+  disabled = false,
 }: {
   readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly onEnabled: () => void;
   readonly tooltip: boolean;
   readonly buttonText?: string;
+  readonly disabled?: boolean;
 }) {
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
     label: "enable Cursor account usage",
@@ -1313,7 +1275,7 @@ function CursorEnableButton({
   };
   const button = tooltip ? (
     <InlineButton
-      disabled={pending}
+      disabled={pending || disabled}
       aria-busy={pending}
       aria-label={t("Enable Cursor usage from {environment}", { environment: label })}
       onClick={() => void enable()}
@@ -1324,7 +1286,7 @@ function CursorEnableButton({
     <Button
       size="sm"
       variant="outline"
-      disabled={pending}
+      disabled={pending || disabled}
       aria-busy={pending}
       aria-label={t("Enable Cursor usage from {environment}", { environment: label })}
       onClick={() => void enable()}
@@ -1346,10 +1308,12 @@ function CursorEnableRow({
   label,
   showEnvironment,
   onEnabled,
+  disabled,
 }: {
   readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly showEnvironment: boolean;
+  readonly disabled: boolean;
   readonly onEnabled: () => void;
 }) {
   // oxlint-disable-next-line t3code/no-untranslated-text -- product name plus the environment label, which reads the same in every language
@@ -1369,6 +1333,7 @@ function CursorEnableRow({
         environmentId={environmentId}
         label={label}
         onEnabled={onEnabled}
+        disabled={disabled}
         tooltip
       />
     </div>
@@ -1510,7 +1475,6 @@ function UsageEnvironmentFilter({
   onSelectionChange,
   showUsageStatus,
   refreshing,
-  isPartial,
   duplicateSources,
   contractMismatches,
   onOpenModelPrices,
@@ -1521,7 +1485,6 @@ function UsageEnvironmentFilter({
   readonly onSelectionChange: (ids: ReadonlySet<EnvironmentId> | null) => void;
   readonly showUsageStatus: boolean;
   readonly refreshing: boolean;
-  readonly isPartial: boolean;
   readonly duplicateSources: readonly string[];
   readonly contractMismatches: MergedUsage["contractMismatches"];
   readonly onOpenModelPrices: () => void;
@@ -1619,11 +1582,6 @@ function UsageEnvironmentFilter({
             {t("No environments connected.")}
           </p>
         ) : null}
-        {showUsageStatus && isPartial ? (
-          <p className="px-2 py-2 text-xs text-muted-foreground">
-            {t("Totals are partial while selected environments scan.")}
-          </p>
-        ) : null}
         {showUsageStatus ? (
           <UsageCoverageNotice
             environments={selectedEnvironments}
@@ -1700,7 +1658,14 @@ function UsageProviderFilter({
   );
 }
 
-function UsageSkeleton() {
+function UsageSkeleton({
+  hiddenProviders,
+}: {
+  readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
+}) {
+  const providers = useAtomValue(skeletonProvidersAtom).filter(
+    (provider) => !hiddenProviders.has(provider),
+  );
   return (
     <>
       <span role="status" className="sr-only">
@@ -1712,7 +1677,7 @@ function UsageSkeleton() {
             <Skeleton className="h-10 w-36" />
             <Skeleton className="h-4 w-32" />
           </div>
-          {PROVIDER_ORDER.map((provider) => (
+          {providers.map((provider) => (
             <div key={provider} className="flex flex-col gap-1">
               <div className="flex min-h-5 items-center justify-between gap-4">
                 <span className="flex items-center gap-2">

@@ -5,6 +5,8 @@ import {
   type UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
+import { retainedUsageLabel } from "@t3tools/client-runtime/state/usage-progress";
+import { UsageShareBar } from "../components/usage/UsageShareBar";
 import { expect, it, vi } from "vite-plus/test";
 
 import { render } from "../../test/render";
@@ -35,8 +37,42 @@ function setup() {
     contractVersion: USAGE_CONTRACT_VERSION,
     ...window,
     readAt: "2026-10-23T12:00:00.000Z",
-    buckets: [],
-    sources: [],
+    buckets: [
+      {
+        day: window.sinceDay,
+        provider: "codex",
+        model: "test",
+        totals: {
+          uncachedInputTokens: 100,
+          cachedInputTokens: 0,
+          cacheCreationTokens: 0,
+          outputTokens: 0,
+          reasoningTokens: 0,
+        },
+        costUsd: 0,
+        cacheSavingsUsd: 0,
+        costSource: "unpriced",
+        records: 1,
+        unpricedRecords: 1,
+        sessions: 1,
+      },
+    ],
+    sources: [
+      {
+        fingerprint: {
+          hostId: "test",
+          provider: "codex",
+          resolvedHomePath: "/transcripts",
+          volumeId: "1",
+        },
+        status: "ok",
+        scannedFiles: 1,
+        skippedFiles: 0,
+        malformedRecords: 0,
+        distinctSessions: 1,
+        message: null,
+      },
+    ],
     pricing: { status: "cached", source: "test", fetchedAt: null, knownModels: 0 },
     scanDurationMs: 0,
   };
@@ -51,11 +87,17 @@ function setup() {
     needsCursorKeychainAccess: false,
   };
   state.environments = [answered];
-  return { window, answered };
+  return { window, answered, summary };
 }
 
-function UsageProbe({ window }: { readonly window: UsageSummaryInput }) {
-  const usage = useUsage(window);
+function UsageProbe({
+  window,
+  selection,
+}: {
+  readonly window: UsageSummaryInput;
+  readonly selection?: ReadonlySet<EnvironmentId>;
+}) {
+  const usage = useUsage(window, selection);
   return (
     <>
       <output>
@@ -64,42 +106,85 @@ function UsageProbe({ window }: { readonly window: UsageSummaryInput }) {
           : `${usage.shown.window.resolution ?? "day"} usage: ${usage.selectedEnvironments[0]?.error ?? "ready"}`}
       </output>
       <output>{usage.shown?.window.sinceDay ?? "No shown window"}</output>
+      {usage.shown === null ? null : <p>{usage.shown.merged.totalTokens} tokens</p>}
+      {usage.showingKept && usage.shown !== null ? <p>{retainedUsageLabel(usage.shown)}</p> : null}
     </>
   );
 }
 
-it.each(["day", "hour"] as const)(
-  "drops the previous view when switching from %s resolution, including on failure",
-  async (resolution) => {
-    const { window, answered } = setup();
-    const initial = { ...window, resolution };
-    await using screen = await render(<UsageProbe window={initial} />);
-    await expect.element(screen.getByText(`${resolution} usage: ready`)).toBeVisible();
-
-    const next = { ...window, resolution: resolution === "day" ? "hour" : "day" } as const;
-    state.environments = [{ ...answered, summary: null, isPending: true }];
-    await screen.rerender(<UsageProbe window={next} />);
-    await expect.element(screen.getByText("Loading usage")).toBeVisible();
-
-    state.environments = [{ ...answered, summary: null, error: "unavailable" }];
-    await screen.rerender(<UsageProbe window={next} />);
-    await expect.element(screen.getByText(`${next.resolution} usage: unavailable`)).toBeVisible();
-
-    state.environments = [answered];
-    await screen.rerender(<UsageProbe window={next} />);
-    await expect.element(screen.getByText(`${next.resolution} usage: ready`)).toBeVisible();
-  },
-);
-
-it("keeps the previous view while another window of the same resolution loads", async () => {
+it("keeps the previous resolution until both environments settle", async () => {
   const { window, answered } = setup();
+  const other = { ...answered, environmentId: EnvironmentId.make("other"), label: "Other" };
+  state.environments = [answered, other];
   await using screen = await render(<UsageProbe window={window} />);
   await expect.element(screen.getByText("day usage: ready")).toBeVisible();
 
-  state.environments = [{ ...answered, summary: null, isPending: true }];
-  await screen.rerender(
-    <UsageProbe window={{ ...window, sinceDay: UsageDay.make("2026-10-01") }} />,
-  );
+  const next = { ...window, resolution: "hour" } as const;
+  state.environments = [answered, { ...other, summary: null, isPending: true }];
+  await screen.rerender(<UsageProbe window={next} />);
   await expect.element(screen.getByText("day usage: ready")).toBeVisible();
-  await expect.element(screen.getByText("2026-10-16")).toBeVisible();
+
+  state.environments = [answered, { ...other, summary: null, error: "unavailable" }];
+  await screen.rerender(<UsageProbe window={next} />);
+  await expect.element(screen.getByText("hour usage: ready")).toBeVisible();
+});
+
+it("labels whose figures are retained when switching environments and never keeps an empty selection", async () => {
+  const { window, answered, summary } = setup();
+  const other = {
+    ...answered,
+    environmentId: EnvironmentId.make("other"),
+    label: "Other",
+    summary: null,
+    isPending: true,
+  };
+  state.environments = [answered, other];
+  const testSelection = new Set([answered.environmentId]);
+  const otherSelection = new Set([other.environmentId]);
+  await using screen = await render(<UsageProbe window={window} selection={testSelection} />);
+  await expect.element(screen.getByText("100 tokens")).toBeVisible();
+
+  await screen.rerender(<UsageProbe window={window} selection={otherSelection} />);
+  await expect
+    .element(screen.getByText(/Showing previous usage for Test · Oct 16 to Oct 23/))
+    .toBeVisible();
+  await expect.element(screen.getByText("100 tokens")).toBeVisible();
+
+  await screen.rerender(<UsageProbe window={window} selection={new Set()} />);
+  await screen.rerender(<UsageProbe window={window} selection={otherSelection} />);
+  await expect.element(screen.getByText("Loading usage")).toBeVisible();
+  await expect.element(screen.getByText("0 tokens", { exact: true })).not.toBeInTheDocument();
+
+  state.environments = [
+    answered,
+    {
+      ...other,
+      isPending: false,
+      summary: {
+        ...summary,
+        buckets: summary.buckets.map((bucket) => ({
+          ...bucket,
+          totals: { ...bucket.totals, uncachedInputTokens: 25 },
+        })),
+      },
+    },
+  ];
+  await screen.rerender(<UsageProbe window={window} selection={otherSelection} />);
+  await expect.element(screen.getByText("25 tokens")).toBeVisible();
+  await expect.element(screen.getByText(/Showing previous usage/)).not.toBeInTheDocument();
+});
+
+it("shows no priced usage when recorded tokens have zero cost", async () => {
+  setup();
+  await using screen = await render(
+    <UsageShareBar
+      label="Cost by type"
+      segments={[]}
+      format={String}
+      recordedUsage={{ totalTokens: 100, sessions: 1 }}
+    />,
+  );
+
+  await expect.element(screen.getByText("No priced usage")).toBeVisible();
+  await expect.element(screen.getByText("No activity in this window.")).not.toBeInTheDocument();
 });

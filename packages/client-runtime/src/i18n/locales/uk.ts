@@ -4518,6 +4518,8 @@ const catalog: MessageCatalog = {
   "Could not refresh guide": "Не вдалося оновити посібник",
   "Could not refresh models": "Не вдалося оновити моделі",
   "Could not refresh plugins": "Не вдалося оновити плагіни",
+  "Could not refresh this usage source. Showing its last values.":
+    "Не вдалося оновити це джерело даних про використання. Показано останні збережені значення.",
   "Could not regenerate title": "Не вдалося перегенерувати назву",
   "Could not register the capture shortcut.": "Не вдалося зареєструвати скорочення захоплення.",
   "Could not release the account": "Не вдалося розблокувати обліковий запис",
@@ -8019,6 +8021,7 @@ const catalog: MessageCatalog = {
   "No prefix": "Без префікса",
   "No preview for this file": "Для цього файлу немає попереднього перегляду",
   "No preview yet": "Попереднього перегляду ще немає",
+  "No priced usage": "Немає використання з відомою вартістю",
   "No process resource samples found for this window.":
     "Для цього проміжку вибірок ресурсів процесів не знайдено.",
   "No project": "Немає проєкту",
@@ -11113,6 +11116,8 @@ const catalog: MessageCatalog = {
   "Showing archived threads for": "Показано архівні чати для",
   "Showing diagnostics for": "Показано діагностику для",
   "Showing latest {count} commits": "Показано останні коміти: {count}",
+  "Showing previous usage for {environments} · {period}":
+    "Попередні дані про використання для {environments} · {period}",
   "Showing tasks for": "Показано завдання для",
   "Showing the first {count} files.": "Показано перші {count} файлів.",
   "Showing the first 1,024 columns. Source and Save retain every column.":
@@ -13460,8 +13465,6 @@ const catalog: MessageCatalog = {
     "Сумарна резидентна пам’ять живих дочірніх процесів поточного процесу сервера. Оболонка застосунку для комп’ютера та інші батьківські процеси не враховуються.",
   "Total time": "Загальний час",
   Totals: "Підсумки",
-  "Totals are partial while selected environments scan.":
-    "Підсумки неповні, поки вибрані середовища скануються.",
   "Totals include all changes.": "Підсумки враховують усі зміни.",
   "Totals leave out {count} environments": "Підсумки не враховують середовища: {count}",
   "Totals leave out {environment}": "Підсумки не враховують {environment}",

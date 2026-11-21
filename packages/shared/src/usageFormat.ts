@@ -267,6 +267,24 @@ export function formatRelativeHourShort(
   return formatDateTimeShort(hourStart, timeZone, hour12);
 }
 
+export function usageWindowLabel(window: UsageSummaryInput, hour12 = true): string {
+  const { sinceTime, untilTime, timeZone } = window;
+  if (window.resolution === "hour" && sinceTime !== undefined && untilTime !== undefined) {
+    return t("{from} to {to}", {
+      from: formatDateTimeShort(sinceTime, timeZone, hour12),
+      to: formatDateTimeShort(
+        new Date(Date.parse(untilTime) - HOUR_MS).toISOString(),
+        timeZone,
+        hour12,
+      ),
+    });
+  }
+  return t("{from} to {to}", {
+    from: formatDayShort(window.sinceDay),
+    to: formatDayShort(window.untilDay),
+  });
+}
+
 export function makeWindow(
   days: number,
   now = new Date(),
@@ -292,13 +310,13 @@ export function makeWindow(
   }
   const untilDay = format.format(now);
   if (resolution === "hour") {
-    const untilTimeMs = Math.floor(now.getTime() / 60_000) * 60_000;
+    const untilTimeMs = (Math.floor(now.getTime() / HOUR_MS) + 1) * HOUR_MS;
     const sinceTimeMs = untilTimeMs - days * 24 * HOUR_MS;
     const sinceTime = new Date(sinceTimeMs);
     const untilTime = new Date(untilTimeMs);
     return {
       sinceDay: UsageDay.make(format.format(sinceTime)),
-      untilDay: UsageDay.make(format.format(untilTime)),
+      untilDay: UsageDay.make(format.format(new Date(untilTimeMs - 1))),
       timeZone,
       resolution,
       sinceTime: sinceTime.toISOString(),

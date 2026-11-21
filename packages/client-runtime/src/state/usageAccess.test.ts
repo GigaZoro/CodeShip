@@ -8,7 +8,11 @@ describe("resolveUsageAccess", () => {
     "reports %s connections without a session instead of keeping totals pending",
     (connectionPhase) => {
       expect(
-        resolveUsageAccess({ connectionPhase, session: null, hasSessionError: false }),
+        resolveUsageAccess({
+          connection: { phase: connectionPhase, error: null },
+          session: null,
+          hasSessionError: false,
+        }),
       ).toEqual({
         canReadDiagnostics: false,
         isPending: false,
@@ -21,15 +25,33 @@ describe("resolveUsageAccess", () => {
     "waits for a session check while %s",
     (connectionPhase) => {
       expect(
-        resolveUsageAccess({ connectionPhase, session: null, hasSessionError: false }),
+        resolveUsageAccess({
+          connection: { phase: connectionPhase, error: null },
+          session: null,
+          hasSessionError: false,
+        }),
       ).toEqual({ canReadDiagnostics: false, isPending: true, error: null });
     },
   );
 
+  it("settles a failed connection attempt while the environment keeps retrying", () => {
+    expect(
+      resolveUsageAccess({
+        connection: { phase: "reconnecting", error: "Connection refused" },
+        session: null,
+        hasSessionError: false,
+      }),
+    ).toEqual({
+      canReadDiagnostics: false,
+      isPending: false,
+      error: "This environment is not connected.",
+    });
+  });
+
   it("preserves a known grant so disconnected usage can retain its cached summary", () => {
     expect(
       resolveUsageAccess({
-        connectionPhase: "offline",
+        connection: { phase: "offline", error: null },
         session: { authenticated: true, scopes: [AuthDiagnosticsReadScope] },
         hasSessionError: false,
       }),
@@ -38,7 +60,7 @@ describe("resolveUsageAccess", () => {
 
   it("distinguishes a failed check from a resolved grant without diagnostics access", () => {
     const denied = resolveUsageAccess({
-      connectionPhase: "connected",
+      connection: { phase: "connected", error: null },
       session: {
         authenticated: true,
         scopes: [AuthOrchestrationReadScope],
@@ -47,7 +69,7 @@ describe("resolveUsageAccess", () => {
       hasSessionError: false,
     });
     const failed = resolveUsageAccess({
-      connectionPhase: "connected",
+      connection: { phase: "connected", error: null },
       session: null,
       hasSessionError: true,
     });

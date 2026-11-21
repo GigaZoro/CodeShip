@@ -1,3 +1,4 @@
+import { useUsageNow } from "../../hooks/useUsageNow";
 import type { EnvironmentId, ProviderDriverKind } from "@t3tools/contracts";
 import {
   type AccountFailoverEntry,
@@ -857,21 +858,21 @@ function ProviderSection({
 
 export function UsageLimitsPooled({
   presentations,
-  now,
-  failover = [],
+  getFailover,
   cursorPrompt,
   emptyMessage = t("No provider on the selected environments reports subscription limits."),
 }: {
   readonly presentations: Parameters<typeof collectLimitAccounts>[0];
-  readonly now: number;
-  /** Account switching per environment and provider, shown under each provider's limits. */
-  readonly failover?: readonly AccountFailoverEntry[];
+  readonly getFailover?: (now: number) => readonly AccountFailoverEntry[];
   readonly cursorPrompt?: ReactNode;
   readonly emptyMessage?: string;
 }) {
   const [segmentPopover] = useState(() => PopoverCreateHandle<SegmentPayload>());
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
-  const pools = collectLimitPools(collectLimitAccounts(presentations), now);
+  const accounts = collectLimitAccounts(presentations);
+  const now = useUsageNow(accounts);
+  const pools = collectLimitPools(accounts, now);
+  const failover = getFailover?.(now) ?? [];
   const notices = collectLimitNotices(presentations);
   const externalLinks = collectExternalUsageLinks(presentations);
   const environments = new Map(

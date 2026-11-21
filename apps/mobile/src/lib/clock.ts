@@ -1,5 +1,6 @@
-import { deadlineStore, minuteTick } from "@t3tools/client-runtime/clock";
-import { useState, useSyncExternalStore } from "react";
+import { deadlineStore, minuteTick, usageClock } from "@t3tools/client-runtime/clock";
+import { limitResetTimes, type LimitAccount } from "@t3tools/shared/usageLimits";
+import { useMemo, useState, useSyncExternalStore } from "react";
 
 /** Re-renders once when `deadlineMs` (epoch ms) is reached; `null` never passes. */
 export function useDeadlinePassed(deadlineMs: number | null): boolean {
@@ -35,4 +36,14 @@ export function useNowMinuteMs(): number {
   return minuteTickToEpochMs(
     useSyncExternalStore(minuteTick.subscribe, minuteTick.getSnapshot, minuteTick.getSnapshot),
   );
+}
+
+const minuteClock = usageClock();
+
+export function useUsageNow(accounts?: readonly LimitAccount[]): number {
+  const clock = useMemo(
+    () => (accounts === undefined ? minuteClock : usageClock(limitResetTimes(accounts))),
+    [accounts],
+  );
+  return useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getSnapshot);
 }

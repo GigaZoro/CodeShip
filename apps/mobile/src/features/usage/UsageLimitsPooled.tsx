@@ -1,3 +1,4 @@
+import { useUsageNow } from "../../lib/clock";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -397,7 +398,6 @@ function PoolWindowCard({
       windowId: pool.id,
       windowKind: pool.kind,
       environmentIds,
-      now,
     });
   const summary = (
     <>
@@ -609,13 +609,11 @@ function PoolWindowCard({
 }
 
 export function UsageLimitsSection({
-  now,
   failedLabels,
   selectedEnvironmentIds,
   cursorPrompt,
   wide = false,
 }: {
-  readonly now: number;
   readonly failedLabels: readonly string[];
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly cursorPrompt?: ReactNode;
@@ -626,7 +624,9 @@ export function UsageLimitsSection({
     selectedEnvironmentIds === null
       ? presentations
       : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
-  const pools = collectLimitPools(collectLimitAccounts(selected), now);
+  const accounts = collectLimitAccounts(selected);
+  const now = useUsageNow(accounts);
+  const pools = collectLimitPools(accounts, now);
   const failover = collectAccountFailover(selected, now);
   const notices = collectLimitNotices(selected);
   const externalLinks = collectExternalUsageLinks(selected);
@@ -759,13 +759,12 @@ type AccountScreenProps = StaticScreenProps<{
   windowId: string;
   windowKind: LimitPoolWindow["kind"];
   environmentIds: readonly string[] | null;
-  now: number;
 }>;
 
 export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
   const insets = useSafeAreaInsets();
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
-  const { accountKey, windowId, windowKind, environmentIds, now } = route.params;
+  const { accountKey, windowId, windowKind, environmentIds } = route.params;
   const selectedIds =
     environmentIds === null ? null : new Set(environmentIds.map((id) => EnvironmentId.make(id)));
   const selected =
@@ -773,6 +772,7 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
       ? presentations
       : new Map([...presentations].filter(([id]) => selectedIds.has(id)));
   const accounts = collectLimitAccounts(selected);
+  const now = useUsageNow(accounts);
   const account = accounts.find((candidate) => candidate.key === accountKey);
   const pool = collectLimitPools(accounts, now)
     .find((candidate) => candidate.driver === account?.driver)

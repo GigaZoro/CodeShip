@@ -1,4 +1,14 @@
-import type { UsageProviderKind, UsageSummary } from "@t3tools/contracts";
+import {
+  USAGE_CONTRACT_VERSION,
+  type EnvironmentId,
+  type UsageBucket,
+  type UsageModelFilter,
+  type UsageProviderKind,
+  type UsageSummary,
+  type UsageSummaryInput,
+} from "@t3tools/contracts";
+import { formatUsageContractMismatch, usageWindowLabel } from "@t3tools/shared/usageFormat";
+import { mergeUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
 import { t } from "@t3tools/shared/i18n";
 
 interface UsageProgressEnvironment {
@@ -55,9 +65,8 @@ export function usageProgress(
   const providers = [
     ...new Set(progress.flatMap((entry) => (entry.phase === "partway" ? entry.providers : []))),
   ];
-  const answered = progress.some(({ phase }) => phase === "partway" || phase === "ready");
   return {
-    dimmed: !answered && progress.some(({ phase }) => phase === "stale"),
+    announcement: refreshing ? t("Updating…") : null,
     label:
       waiting.length === 0
         ? providers.length === 0
@@ -71,17 +80,218 @@ export function usageProgress(
   };
 }
 
-export function usageLoadingState(
-  environments: readonly UsageProgressEnvironment[],
-  refreshing = false,
+export interface EnvironmentUsageStatus extends UsageProgressEnvironment {
+  readonly environmentId: EnvironmentId;
+  readonly canReadDiagnostics: boolean;
+  readonly needsCursorKeychainAccess: boolean;
+  readonly modelFilter?: UsageModelFilter | undefined;
+}
+
+export function equalUsageStatuses(
+  left: readonly EnvironmentUsageStatus[],
+  right: readonly EnvironmentUsageStatus[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((env, index) => {
+      const other = right[index]!;
+      return (
+        env.environmentId === other.environmentId &&
+        env.label === other.label &&
+        env.summary === other.summary &&
+        env.isPending === other.isPending &&
+        env.isConnected === other.isConnected &&
+        env.error === other.error &&
+        env.canReadDiagnostics === other.canReadDiagnostics &&
+        env.needsCursorKeychainAccess === other.needsCursorKeychainAccess &&
+        JSON.stringify(env.modelFilter) === JSON.stringify(other.modelFilter)
+      );
+    })
+  );
+}
+
+export function usageWindowKey(input: UsageSummaryInput): string {
+  return JSON.stringify({
+    sinceDay: input.sinceDay,
+    untilDay: input.untilDay,
+    timeZone: input.timeZone,
+    resolution: input.resolution,
+    sinceTime: input.sinceTime,
+    untilTime: input.untilTime,
+  });
+}
+
+export function mergeAnsweredUsage(
+  environments: readonly EnvironmentUsageStatus[],
+  keepBucket?: (bucket: UsageBucket) => boolean,
 ) {
-  const providers = new Set<UsageProviderKind>();
-  let everyProvider = false;
-  for (const environment of environments) {
-    const progress = usageEnvironmentProgress(environment, refreshing);
-    if (progress.phase === "loading" || progress.phase === "stale") everyProvider = true;
-    if (progress.phase === "partway")
-      for (const provider of progress.providers) providers.add(provider);
-  }
-  return { partial: everyProvider || providers.size > 0, everyProvider, providers };
+  return mergeUsage(
+    environments.flatMap(({ environmentId, label, summary }) =>
+      summary === null
+        ? []
+        : [
+            {
+              environmentId,
+              label,
+              summary:
+                keepBucket === undefined
+                  ? summary
+                  : { ...summary, buckets: summary.buckets.filter(keepBucket) },
+            },
+          ],
+    ),
+    USAGE_CONTRACT_VERSION,
+  );
+}
+
+export interface UsageSnapshot {
+  readonly key: string;
+  readonly window: UsageSummaryInput;
+  readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
+  readonly environments: readonly EnvironmentUsageStatus[];
+  readonly merged: ReturnType<typeof mergeAnsweredUsage>;
+}
+
+export function settleUsageSnapshot(
+  previous: UsageSnapshot | null,
+  window: UsageSummaryInput,
+  environments: readonly EnvironmentUsageStatus[],
+  selected: readonly EnvironmentUsageStatus[],
+  hidden: readonly UsageProviderKind[] = [],
+): UsageSnapshot | null {
+  if (selected.length === 0) return null;
+  const key = usageSelectionKey(window, selected, hidden);
+  const kept =
+    previous?.environments.some(({ summary }) => summary !== null) &&
+    previous.environments.every(
+      (environment) =>
+        environment.summary === null ||
+        environments.some(
+          (current) =>
+            current.environmentId === environment.environmentId && current.canReadDiagnostics,
+        ),
+    )
+      ? previous
+      : null;
+  if (
+    selected.some(
+      ({ summary, isConnected, isPending, error }) =>
+        error === null && isConnected && isPending && (summary === null || kept?.key === key),
+    )
+  )
+    return kept;
+  if (kept?.key === key && equalUsageStatuses(kept.environments, selected)) return kept;
+  const hiddenProviders = new Set(hidden);
+  return {
+    key,
+    window,
+    environments: selected,
+    hiddenProviders,
+    merged: mergeAnsweredUsage(
+      hiddenProviders.size === 0
+        ? selected
+        : selected.map((environment) =>
+            environment.summary === null
+              ? environment
+              : {
+                  ...environment,
+                  summary: {
+                    ...environment.summary,
+                    buckets: environment.summary.buckets.filter(
+                      (bucket) => !hiddenProviders.has(bucket.provider),
+                    ),
+                    sources: environment.summary.sources.filter(
+                      (source) => !hiddenProviders.has(source.fingerprint.provider),
+                    ),
+                  },
+                },
+          ),
+    ),
+  };
+}
+
+export function isKeptUsage(
+  snapshot: UsageSnapshot | null,
+  window: UsageSummaryInput,
+  selected: readonly EnvironmentUsageStatus[],
+  hidden: readonly UsageProviderKind[] = [],
+): boolean {
+  return snapshot !== null && snapshot.key !== usageSelectionKey(window, selected, hidden);
+}
+
+function usageSelectionKey(
+  window: UsageSummaryInput,
+  selected: readonly EnvironmentUsageStatus[],
+  hidden: readonly UsageProviderKind[],
+): string {
+  return JSON.stringify([
+    usageWindowKey(window),
+    selected
+      .map(({ environmentId, modelFilter }) => [environmentId, modelFilter] as const)
+      .sort(([left], [right]) => left.localeCompare(right)),
+    [...hidden].sort(),
+  ]);
+}
+
+export function retainedUsageLabel(snapshot: UsageSnapshot, hour12?: boolean): string {
+  return t("Showing previous usage for {environments} · {period}", {
+    environments: snapshot.environments
+      .filter(({ summary }) => summary !== null)
+      .map(({ label }) => label)
+      .join(", "),
+    period: usageWindowLabel(snapshot.window, hour12),
+  });
+}
+
+export function usageEnvironmentError(environment: EnvironmentUsageStatus): string | null {
+  return (
+    environment.error ?? (environment.isConnected ? null : t("This environment is not connected."))
+  );
+}
+
+export function usageGaps(
+  environments: readonly EnvironmentUsageStatus[],
+  contractMismatches: MergedUsage["contractMismatches"],
+) {
+  const mismatchById = new Map(
+    contractMismatches.map((mismatch) => [mismatch.environmentId, mismatch]),
+  );
+  const gaps = environments.flatMap((environment) => {
+    const mismatch = mismatchById.get(environment.environmentId);
+    if (mismatch !== undefined) {
+      return [
+        {
+          environment,
+          message: formatUsageContractMismatch(environment.label, mismatch),
+          excluded: true,
+          retryable: false,
+        },
+      ];
+    }
+    const error = usageEnvironmentError(environment);
+    if (error === null) return [];
+    const stale = environment.summary !== null;
+    return [
+      {
+        environment,
+        message: stale
+          ? t("{environment}: {error} Showing its last values.", {
+              environment: environment.label,
+              error,
+            })
+          : t("{environment}: {error}", { environment: environment.label, error }),
+        excluded: !stale,
+        retryable: environment.canReadDiagnostics && environment.isConnected,
+      },
+    ];
+  });
+  if (gaps.length === 0) return null;
+  const excluded = gaps.filter((gap) => gap.excluded);
+  const title =
+    excluded.length === 0
+      ? t("Some totals may be out of date")
+      : excluded.length === 1
+        ? t("Totals leave out {environment}", { environment: excluded[0]!.environment.label })
+        : t("Totals leave out {count} environments", { count: excluded.length });
+  return { title, gaps };
 }

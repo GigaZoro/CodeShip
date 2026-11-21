@@ -35,8 +35,10 @@ export function refreshScheduledTaskGroupUsage(
 export function UsageScheduledTaskGroups({
   period,
   environments,
+  readOnly,
 }: {
   readonly period: UsageSummaryInput;
+  readonly readOnly: boolean;
   readonly environments: readonly EnvironmentUsageStatus[];
 }) {
   const registry = useContext(RegistryContext);
@@ -108,6 +110,7 @@ export function UsageScheduledTaskGroups({
           <Button
             size="xs"
             variant="outline"
+            disabled={readOnly}
             onClick={() =>
               registry.refresh(
                 serverEnvironment.scheduledTaskStats({

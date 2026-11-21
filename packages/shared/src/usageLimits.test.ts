@@ -1272,7 +1272,7 @@ describe("pooled account columns", () => {
     expect(accounts).toEqual(snapshot);
   });
 
-  it("keeps session columns across rows with opposite reset and usage orders", () => {
+  it("keeps account columns across rows with opposite reset and usage orders", () => {
     const accounts = [
       account("a", [
         { ...weekly, usedPercent: 80, resetsAt: "2026-09-05T12:00:00.000Z" },
@@ -1284,10 +1284,10 @@ describe("pooled account columns", () => {
       ]),
     ];
     const [pool] = collectLimitPools(accounts, now);
-    expect(pool!.accounts.map((account) => account.key)).toEqual(["b", "a"]);
+    expect(pool!.accounts.map((account) => account.key)).toEqual(["a", "b"]);
     expect(keys(pool!)).toEqual([
-      ["b", "a"],
-      ["b", "a"],
+      ["a", "b"],
+      ["a", "b"],
     ]);
     expect(pool!.windows[1]!.resets.map((reset) => reset.member.account.key)).toEqual(["a", "b"]);
     expect(pool!.windows[1]!.remainingPercent).toBe(50);
@@ -1327,7 +1327,7 @@ describe("pooled account columns", () => {
     },
   );
 
-  it("orders by usable session refill and clears suppression after a fresh weekly reading", () => {
+  it("keeps account order when a fresh weekly reading clears session suppression", () => {
     const blocked = account("blocked", [
       { ...window, resetsAt: "2026-09-03T13:00:00.000Z" },
       { ...weekly, usedPercent: 100, resetsAt: "2026-09-03T15:00:00.000Z" },
@@ -1344,7 +1344,7 @@ describe("pooled account columns", () => {
       },
     };
     const [after] = collectLimitPools([refreshed, available], now);
-    expect(after!.accounts.map((account) => account.key)).toEqual(["blocked", "available"]);
+    expect(after!.accounts.map((account) => account.key)).toEqual(["available", "blocked"]);
     expect(after!.windows[0]!.remainingPercent).toBe(60);
     expect(after!.windows[0]!.resets[0]).toMatchObject({
       at: Date.parse("2026-09-03T13:00:00.000Z"),
@@ -1395,7 +1395,7 @@ describe("pooled account columns", () => {
     },
   );
 
-  it("falls back to weekly resets when no account reports a session", () => {
+  it("keeps weekly-only accounts in name order, with reset times still chronological", () => {
     const [pool] = collectLimitPools(
       [
         account("a", [{ ...weekly, resetsAt: "2026-09-06T12:00:00.000Z" }]),
@@ -1403,7 +1403,8 @@ describe("pooled account columns", () => {
       ],
       now,
     );
-    expect(keys(pool!)).toEqual([["b", "a"]]);
+    expect(keys(pool!)).toEqual([["a", "b"]]);
+    expect(pool!.windows[0]!.resets.map((reset) => reset.member.account.key)).toEqual(["b", "a"]);
   });
 });
 
