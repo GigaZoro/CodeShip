@@ -1019,6 +1019,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           verbose: false,
         }).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          // On Windows `vp` resolves to a shell command line; the spawner above reads plain args.
+          Effect.provideService(HostProcess.Platform, "linux"),
           Effect.result,
         );
 
