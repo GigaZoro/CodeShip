@@ -1,3 +1,7 @@
+## 2026-11-24 — A landing takes over a turn its lander left on the same machine
+
+- Maintainers: a lander records the landing lease it takes in its clone's Git folder, and on Linux a lander waiting in another worktree of that clone takes the turn over once that lander has exited in the same kernel boot and PID namespace with no push to main in flight, instead of waiting up to three hours for its lease to expire. `node .github/scripts/landing-turn.cjs holder` prints the current lease and, when a worktree of this clone took it, the checkout and process that hold it.
+
 ## 2026-11-24 — The upstream sync lands the commit it verified
 
 - Maintainers: `node scripts/upstream-sync.ts check` records the commit its pass covered, and `land` pushes only that commit and reports it. Both refuse a checkout with uncommitted or untracked files, and `check` one that does not hold the upstream merge, such as one reset to main or a commit with the merge's files on main's commit.

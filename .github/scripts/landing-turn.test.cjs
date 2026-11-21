@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  BOOT_ID,
   LEASE_REF,
   LEASE_RESERVE_MS,
   LEASE_TTL_MS,
@@ -16,6 +17,7 @@ const {
   overlappingWorktrees,
   main,
   pushChecked,
+  processHost,
   release,
   tryAcquire,
   verifyPush,
@@ -234,6 +236,44 @@ function stderrOf(run) {
   } finally {
     process.stderr.write = write;
   }
+}
+
+// Only Linux's /proc tells a lander's kernel boot and PID namespace, so only there does a waiter take a lease over.
+const TAKES_OVER = processHost() !== null;
+
+// Takes the lease in a process of its own, which exits without giving it back.
+function takeAndExit(cwd, remote) {
+  const taken = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      "const [script, cwd, remote] = process.argv.slice(1);" +
+        'process.stdout.write(require(script).tryAcquire({ cwd, remote, runId: "gone" }) ?? "");',
+      path.join(__dirname, "landing-turn.cjs"),
+      cwd,
+      remote,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(taken.status, 0, taken.stderr);
+  return taken.stdout;
+}
+
+/** Copies the lander's record when origin receives its push to main, which is what a waiter reads then. */
+function watchPushRecord(git, origin, lander) {
+  const hooks = path.join(origin, "hooks");
+  const seen = path.join(origin, "seen-record");
+  const records = path.join(lander, ".git", "landing-turn");
+  fs.mkdirSync(hooks, { recursive: true });
+  git(origin, "config", "core.hooksPath", hooks);
+  fs.writeFileSync(
+    path.join(hooks, "pre-receive"),
+    "#!/bin/sh\nwhile read old new ref; do\n" +
+      `  [ "$ref" = refs/heads/main ] && cat "${records.replaceAll("\\", "/")}"/* > "${seen.replaceAll("\\", "/")}"\n` +
+      "done\nexit 0\n",
+    { mode: 0o755 },
+  );
+  return () => JSON.parse(fs.readFileSync(seen, "utf8"));
 }
 
 test("a second lander cannot push to main while the first holds the turn, and the first checks under it only against a main that moved during its wait", () => {
@@ -1123,6 +1163,184 @@ test("a lander removes its queue entry whether it takes the turn or ends its wai
   }
 });
 
+test(
+  "a waiter in a worktree of the lander's clone takes over a lease whose lander exited, and waits out one it cannot prove abandoned",
+  {
+    skip: !TAKES_OVER,
+  },
+  (t) => {
+    const { root, origin, git, clone } = setup();
+    try {
+      const checkout = clone("checkout");
+      // Another worktree of the same clone, as each landing in CodeShip has.
+      const sibling = path.join(root, "sibling");
+      git(checkout, "worktree", "add", "-q", "--detach", sibling);
+      const records = path.join(checkout, ".git", "landing-turn");
+      const lease = () => git(origin, "for-each-ref", "--format=%(objectname)", LEASE_REF);
+      const wait = () => tryAcquire({ cwd: sibling, remote: origin, runId: "waiter" });
+
+      takeAndExit(checkout, origin);
+      const taken = wait();
+      assert.equal(lease(), taken);
+      assert.deepEqual(fs.readdirSync(records), [taken]);
+      release({ cwd: sibling, remote: origin }, taken);
+      assert.deepEqual(fs.readdirSync(records), []);
+
+      // A lander that runs, one whose push to main may be in flight, one in another machine, boot or PID namespace, and
+      // one whose record cannot be read may each still push.
+      const live = tryAcquire({ cwd: checkout, remote: origin, runId: "live" });
+      assert.equal(wait(), null);
+      release({ cwd: checkout, remote: origin }, live);
+      const exited = takeAndExit(checkout, origin);
+      const record = path.join(records, exited);
+      const written = fs.readFileSync(record, "utf8");
+      const { host } = JSON.parse(written);
+      const boot = fs.readFileSync(BOOT_ID, "utf8").trim();
+      for (const unproven of [
+        JSON.stringify({ ...JSON.parse(written), pushing: true }),
+        JSON.stringify({ ...JSON.parse(written), host: "another machine" }),
+        JSON.stringify({ ...JSON.parse(written), host: host.replace(boot, "another boot") }),
+        "{",
+      ]) {
+        fs.writeFileSync(record, unproven);
+        assert.equal(wait(), null, unproven);
+      }
+      // The lander marks a push and exits between the waiter's read of its record and the probe.
+      fs.writeFileSync(record, written);
+      const probe = process.kill;
+      t.mock.method(process, "kill", (pid, signal) => {
+        fs.writeFileSync(record, JSON.stringify({ ...JSON.parse(written), pushing: true }));
+        return probe.call(process, pid, signal);
+      });
+      assert.equal(wait(), null);
+      t.mock.restoreAll();
+      fs.writeFileSync(record, written);
+      const retaken = wait();
+      assert.equal(lease(), retaken);
+      assert.deepEqual(fs.readdirSync(records), [retaken]);
+      release({ cwd: sibling, remote: origin }, retaken);
+
+      // A folder where the record should be leaves the lease to expire, and neither it nor another folder stops a take.
+      const blocked = path.join(records, takeAndExit(checkout, origin));
+      fs.rmSync(blocked);
+      fs.mkdirSync(blocked);
+      fs.mkdirSync(path.join(records, "other"));
+      assert.equal(wait(), null);
+      const future = Date.parse("2100-01-01T00:00:00Z");
+      const late = tryAcquire({ cwd: sibling, remote: origin, runId: "waiter", now: () => future });
+      assert.deepEqual([lease(), fs.readdirSync(records)], [late, [late]]);
+      release({ cwd: sibling, remote: origin }, late);
+
+      const away = takeAndExit(clone("elsewhere"), origin);
+      assert.deepEqual([wait(), lease()], [null, away]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "a waiter whose /proc shows no boot id it can use waits for the lease to expire, and still takes a free one",
+  {
+    skip: !TAKES_OVER,
+  },
+  (t) => {
+    const { root, origin, git, clone } = setup();
+    try {
+      const checkout = clone("checkout");
+      const sibling = path.join(root, "sibling");
+      git(checkout, "worktree", "add", "-q", "--detach", sibling);
+      const records = path.join(checkout, ".git", "landing-turn");
+      const lease = () => git(origin, "for-each-ref", "--format=%(objectname)", LEASE_REF);
+      const wait = () => tryAcquire({ cwd: sibling, remote: origin, runId: "waiter" });
+      const read = fs.readFileSync;
+      const bootReads = (boot) =>
+        t.mock.method(fs, "readFileSync", (file, ...rest) =>
+          file === BOOT_ID ? boot() : read.call(fs, file, ...rest),
+        );
+      const locked = () => {
+        throw Object.assign(new Error(`EACCES: permission denied, open '${BOOT_ID}'`), {
+          code: "EACCES",
+        });
+      };
+
+      // An exited lander that, like this waiter, read an empty boot id.
+      const exited = takeAndExit(checkout, origin);
+      const record = path.join(records, exited);
+      const blank = `${os.hostname()}  ${fs.readlinkSync("/proc/self/ns/pid")}`;
+      fs.writeFileSync(
+        record,
+        JSON.stringify({ ...JSON.parse(read(record, "utf8")), host: blank }),
+      );
+      for (const boot of [() => "", () => "not a boot id", locked]) {
+        bootReads(boot);
+        assert.equal(wait(), null);
+        t.mock.restoreAll();
+      }
+      release({ cwd: checkout, remote: origin }, exited);
+
+      bootReads(locked);
+      const free = wait();
+      t.mock.restoreAll();
+      const { host } = JSON.parse(read(path.join(records, free), "utf8"));
+      assert.deepEqual([lease(), host], [free, os.hostname()]);
+      release({ cwd: sibling, remote: origin }, free);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test("the holder command shows the lease and, when a worktree of this clone took it, its lander and whether it is gone", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const checkout = clone("checkout");
+    const sibling = path.join(root, "sibling");
+    git(checkout, "worktree", "add", "-q", "--detach", sibling);
+    const holderOf = (cwd) => {
+      const shown = spawnSync(
+        process.execPath,
+        [path.join(__dirname, "landing-turn.cjs"), "holder"],
+        {
+          cwd,
+          encoding: "utf8",
+        },
+      );
+      assert.equal(shown.status, 0, shown.stderr);
+      return JSON.parse(shown.stdout);
+    };
+
+    assert.deepEqual(holderOf(sibling), { lease: null, local: null });
+    const live = tryAcquire({ cwd: checkout, remote: origin, runId: "live" });
+    const running = holderOf(sibling);
+    assert.deepEqual(
+      [
+        running.lease,
+        running.run_id,
+        running.local.pid,
+        running.local.checkout,
+        running.local.gone,
+      ],
+      [live, "live", process.pid, checkout, false],
+    );
+    release({ cwd: checkout, remote: origin }, live);
+
+    const exited = takeAndExit(checkout, origin);
+    const gone = holderOf(sibling);
+    assert.deepEqual(
+      [gone.lease, gone.local.checkout, gone.local.gone],
+      [exited, checkout, TAKES_OVER],
+    );
+    release({ cwd: checkout, remote: origin }, exited);
+
+    const away = takeAndExit(clone("elsewhere"), origin);
+    const elsewhere = holderOf(checkout);
+    assert.deepEqual([elsewhere.lease, elsewhere.local], [away, null]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a waiting lander waits through failed reads of origin, and only failures that go on or come from its checkout end its wait", () => {
   const { root, origin, git, clone } = setup();
   try {
@@ -1253,6 +1471,13 @@ test("a take whose push fails or times out is the lander's when origin took it, 
       () => acquire({ cwd: lander, remote: "origin", maxWaitMs: 0 }),
       /git push failed/,
     );
+    // Either take may have reached origin, so its record stays until a later take finds it past the lease's lifetime.
+    const records = path.join(lander, ".git", "landing-turn");
+    assert.equal(fs.readdirSync(records).length, 2);
+    git(lander, "config", "--unset", "remote.origin.pushurl");
+    const later = Date.parse("2100-01-01T00:00:00Z");
+    const taken = tryAcquire({ cwd: lander, remote: origin, runId: "later", now: () => later });
+    assert.deepEqual(fs.readdirSync(records), [taken]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1445,6 +1670,7 @@ test("a lander whose main stays still checks once, before its wait, and holds th
     const holder = clone("holder");
     const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
     const checks = [];
+    const pushRecord = watchPushRecord(git, origin, dir);
     const result = land({
       cwd: dir,
       remote: origin,
@@ -1456,6 +1682,8 @@ test("a lander whose main stays still checks once, before its wait, and holds th
     });
     assert.equal(result.status, "landed");
     assert.deepEqual(checks, [[null, git(holder, "rev-parse", "HEAD")]]);
+    // A waiter that read the record while git pushed saw the push in flight.
+    assert.equal(pushRecord().pushing, true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1590,7 +1818,7 @@ test("a lander stops when its checkout is switched while it fetches a main that 
   }
 });
 
-test("a push of a commit checked elsewhere lands that commit, and stops when its checkout left it", () => {
+test("a push of a commit checked elsewhere lands that commit while its record shows the push, and stops when its checkout left it", (t) => {
   const { root, origin, git, clone, commit } = setup();
   try {
     const sync = clone("sync");
@@ -1613,8 +1841,25 @@ test("a push of a commit checked elsewhere lands that commit, and stops when its
     assert.equal(git(origin, "rev-parse", "main"), main);
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
     git(sync, "reset", "-q", "--hard", checked);
+    const pushRecord = watchPushRecord(git, origin, sync);
+    // Once main took the push, a record the lander cannot write must not turn the landing into a failure.
+    const rename = fs.renameSync;
+    t.mock.method(fs, "renameSync", (from, to) => {
+      if (fs.existsSync(to) && JSON.parse(fs.readFileSync(to, "utf8")).pushing) {
+        throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      }
+      return rename(from, to);
+    });
     push();
-    assert.equal(git(origin, "rev-parse", "main"), checked);
+    t.mock.restoreAll();
+    assert.deepEqual(
+      [
+        git(origin, "rev-parse", "main"),
+        pushRecord().pushing,
+        fs.readdirSync(path.join(sync, ".git", "landing-turn")),
+      ],
+      [checked, true, []],
+    );
     const pushedToMain = fs
       .readFileSync(path.join(root, "pre-push.txt"), "utf8")
       .split("\n")
@@ -1695,7 +1940,7 @@ test("a command given an argument it does not take is refused before it takes th
     assert.deepEqual(
       errors,
       Array(6).fill(
-        "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | verify <remote>",
+        "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | holder | verify <remote>",
       ),
     );
     assert.equal(git(origin, "rev-parse", "main"), main_);

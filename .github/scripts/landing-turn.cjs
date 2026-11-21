@@ -2,9 +2,10 @@
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { GIT_OUTPUT_MAX_BYTES, REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
 const { createQueueWaiter } = require("./lease-queue.cjs");
-const path = require("node:path");
 const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs");
 
 const LEASE_REF = "refs/heads/landing-lease/main";
@@ -79,6 +80,114 @@ function readHolder({ cwd, remote, callMs = LEASE_CALL_MS }, sha) {
   }
 }
 
+/** The landers of the leases taken from this clone, in its own Git folder, so no machine or path reaches origin. */
+function holderDir(cwd) {
+  const common = git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).stdout;
+  return path.join(common, "landing-turn");
+}
+
+function holderFile(cwd, sha) {
+  return path.join(holderDir(cwd), sha);
+}
+
+const BOOT_ID = "/proc/sys/kernel/random/boot_id";
+const BOOT_UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+/** What /proc gives where it is missing or locked down: nothing to prove a process gone by, so leases only expire. */
+const NO_PROC = new Set(["ENOENT", "EACCES", "EPERM"]);
+
+/**
+ * This hostname, kernel boot and PID namespace, or null when /proc cannot tell the last two, including a boot id that
+ * is not one. A process id recorded under another one says nothing about this one: two machines can share a hostname,
+ * a clone and a namespace's inode number.
+ */
+function processHost() {
+  try {
+    const boot = fs.readFileSync(BOOT_ID, "utf8").trim();
+    if (!BOOT_UUID.test(boot)) return null;
+    return `${os.hostname()} ${boot} ${fs.readlinkSync("/proc/self/ns/pid")}`;
+  } catch (error) {
+    if (NO_PROC.has(error?.code)) return null;
+    throw error;
+  }
+}
+
+/** `pushing`: the lander's push to main may be in flight, and a git push goes on after its lander dies. */
+function recordHolder(cwd, sha, { pushing = false } = {}) {
+  const file = holderFile(cwd, sha);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  // Without /proc, the hostname alone: `holder` shows it, and no waiter takes the lease over.
+  const record = { pid: process.pid, host: processHost() ?? os.hostname(), checkout: cwd, pushing };
+  // Renamed into place, so a waiter never reads half a record.
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(record));
+  fs.renameSync(`${file}.tmp`, file);
+}
+
+/** Recursive, so whatever stands at the record's path, a folder included, cannot keep a lease from being taken. */
+function forgetHolder(cwd, sha) {
+  fs.rmSync(holderFile(cwd, sha), { recursive: true, force: true });
+}
+
+/**
+ * Removes the records of leases past their lifetime, such as one a waiter in another clone took over or a take whose
+ * outcome origin never showed. A record is written before its lease, so a live lease's record is never this old.
+ */
+function pruneHolders(cwd, now) {
+  const dir = holderDir(cwd);
+  if (!fs.existsSync(dir)) return;
+  for (const name of fs.readdirSync(dir)) {
+    const file = path.join(dir, name);
+    const stat = fs.statSync(file, { throwIfNoEntry: false });
+    if (stat && stat.mtimeMs < now - LEASE_TTL_MS)
+      fs.rmSync(file, { recursive: true, force: true });
+  }
+}
+
+/** The record at `file`: null when there is none, `problem` when it cannot be read or names no process. */
+function readRecord(file) {
+  let record;
+  try {
+    record = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    return { problem: `cannot read ${file}: ${error.message}` };
+  }
+  if (!Number.isInteger(record?.pid) || record.pid <= 0 || typeof record.host !== "string") {
+    return { problem: `${file} names no process` };
+  }
+  return record;
+}
+
+/** A lander this waiter may prove gone: recorded under the waiter's own processHost, with no push to main in flight. */
+function provable(record, here) {
+  return here !== null && !record.problem && record.pushing === false && record.host === here;
+}
+
+/**
+ * The lander of lease `sha` when a worktree of this clone took it, else null. `gone` is true only for a lander in this
+ * Linux boot and PID namespace that has exited with no push to main in flight; a record this waiter cannot read, or one
+ * from elsewhere, leaves the lease to expire.
+ */
+function localHolder(cwd, sha) {
+  const file = holderFile(cwd, sha);
+  const record = readRecord(file);
+  if (record === null) return null;
+  const here = processHost();
+  if (!provable(record, here)) return { ...record, gone: false };
+  try {
+    // The pre-push hook loads this script without packages, so it keeps @t3tools/shared/processProbe's rule here:
+    // only ESRCH proves the lander gone. A reused process id makes a waiter wait for the lease to expire instead.
+    // oxlint-disable-next-line t3code/no-raw-process-probe -- a CommonJS script that loads no package
+    process.kill(record.pid, 0);
+    return { ...record, gone: false };
+  } catch (error) {
+    if (error?.code !== "ESRCH") return { ...record, gone: false };
+  }
+  // The lander may have marked a push between the read and the probe. Gone now, it writes no more.
+  const final = readRecord(file);
+  const gone = final !== null && provable(final, here) && final.pid === record.pid;
+  return { ...(final ?? record), gone };
+}
+
 /**
  * Moves origin's lease from `from` to `to` (null: no lease). A push git reports failed may still have reached origin,
  * or lost the race to another lander, so origin's lease afterwards decides. False when another lander moved it.
@@ -105,19 +214,28 @@ function readLease(lease, now) {
   if (!held) return { held, liveRunId: null };
   const holder = readHolder(lease, held);
   // A lease nobody can read is one nobody can release, so it expires like any other.
-  const live = holder !== null && Date.parse(holder.expires_at) > now();
+  const live =
+    holder !== null &&
+    Date.parse(holder.expires_at) > now() &&
+    localHolder(lease.cwd, held)?.gone !== true;
   return { held, liveRunId: live ? holder.run_id : null };
 }
 
 /**
- * Takes the lease when it is free or expired. Returns the lease commit, or null while another lander holds it.
+ * Takes the lease when it is free, expired, or held by a lander `localHolder` finds gone. Returns the lease commit,
+ * or null while another lander holds it.
  * `runId` names one wait: a live lease that carries it is that wait's own, as when a take reached origin although its
  * push reported a failure.
  */
 function tryAcquire({ runId, now = Date.now, canTake = () => true, ...lease }) {
   const { held, liveRunId } = readLease(lease, now);
-  if (liveRunId !== null) return liveRunId === runId ? held : null;
+  if (liveRunId !== null) {
+    if (liveRunId !== runId) return null;
+    recordHolder(lease.cwd, held);
+    return held;
+  }
   if (!canTake() || (held && !moveLease(lease, held, null))) return null;
+  if (held) forgetHolder(lease.cwd, held);
   const acquiredAt = now();
   const expiresAt = acquiredAt + LEASE_TTL_MS;
   const sha = landingCommit(lease.cwd, {
@@ -126,7 +244,12 @@ function tryAcquire({ runId, now = Date.now, canTake = () => true, ...lease }) {
     expires_at: new Date(expiresAt).toISOString(),
   });
   // A push that creates the ref is atomic: when two landers race, the remote takes one and refuses the other.
-  if (!moveLease(lease, null, sha)) return null;
+  pruneHolders(lease.cwd, acquiredAt);
+  recordHolder(lease.cwd, sha);
+  if (!moveLease(lease, null, sha)) {
+    forgetHolder(lease.cwd, sha);
+    return null;
+  }
   // A take confirmed only after its lease ran out holds no turn; the next take goes through the queue again.
   return expiresAt > now() ? sha : null;
 }
@@ -159,7 +282,9 @@ function release(
   const started = clock();
   for (let first = true; ; first = false) {
     try {
+      // False when a waiter took over a lease that had expired; either way it is no longer this lander's.
       moveLease(lease, sha, null);
+      forgetHolder(lease.cwd, sha);
       return;
     } catch (error) {
       if (!(error instanceof RemoteFailure) || clock() - started >= failingMs) {
@@ -219,7 +344,10 @@ function acquire({
         if (tookMaybe) {
           const { held, liveRunId } = readLease(options, now);
           tookMaybe = false;
-          if (liveRunId === runId) return held;
+          if (liveRunId === runId) {
+            recordHolder(cwd, held);
+            return held;
+          }
         }
         firstInQueue = queue.poll();
         polled = true;
@@ -290,6 +418,15 @@ function withTurn(options, run) {
 }
 
 /**
+ * Pushes `ref` under `turn`. A git push goes on after its lander dies, and one that failed may still land, so the
+ * lander's record shows the push in flight until it gives the turn back, and no waiter takes the turn over meanwhile.
+ */
+function pushUnderTurn({ cwd, remote, ref, turn, timeoutMs }) {
+  recordHolder(cwd, turn, { pushing: true });
+  git(cwd, ["push", "--quiet", remote, ref], { env: { [TURN_ENV]: turn }, timeoutMs });
+}
+
+/**
  * Pushes `head`, a commit verified against main's current commit elsewhere (the upstream sync). The push is a
  * fast-forward, so it takes the turn alone and a main that moved makes git refuse it.
  */
@@ -299,10 +436,7 @@ function pushChecked({ cwd, remote, head }) {
     if (git(cwd, ["rev-parse", "HEAD"]).stdout !== head) {
       throw new Error(`landing turn: the checkout moved off ${head} while it waited for the turn.`);
     }
-    git(cwd, ["push", "--quiet", remote, `${head}:refs/heads/main`], {
-      env: { [TURN_ENV]: turn },
-      timeoutMs: MAIN_CALL_MS,
-    });
+    pushUnderTurn({ cwd, remote, ref: `${head}:refs/heads/main`, turn, timeoutMs: MAIN_CALL_MS });
   });
 }
 
@@ -493,10 +627,7 @@ function land({
         return { status: "check-failed" };
       }
     }
-    git(cwd, ["push", "--quiet", remote, `${tip}:refs/heads/${branch}`], {
-      env: { [TURN_ENV]: turn },
-      timeoutMs: mainCallMs,
-    });
+    pushUnderTurn({ cwd, remote, ref: `${tip}:refs/heads/${branch}`, turn, timeoutMs: mainCallMs });
     return { status: "landed", commit: tip };
   });
 }
@@ -504,8 +635,8 @@ function land({
 // How many arguments each command takes: an argument `land` does not take, such as a mistyped flag, must not start
 // a real landing.
 const USAGE =
-  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | verify <remote>";
-const ARGUMENTS = { land: 0, "land-rebased": 4, verify: 1 };
+  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | holder | verify <remote>";
+const ARGUMENTS = { land: 0, "land-rebased": 4, holder: 0, verify: 1 };
 
 function main(argv, { cwd = process.cwd() } = {}) {
   const [command, ...rest] = argv;
@@ -576,6 +707,13 @@ function main(argv, { cwd = process.cwd() } = {}) {
     console.log(JSON.stringify(result));
     return result.status === "landed" ? 0 : 1;
   }
+  if (command === "holder") {
+    // `local` is null when no worktree of this clone took the lease, and `gone` says whether a waiter here takes it.
+    const sha = remoteLease({ cwd, remote: "origin" });
+    const lease = sha && readHolder({ cwd, remote: "origin" }, sha);
+    console.log(JSON.stringify({ lease: sha, ...lease, local: sha && localHolder(cwd, sha) }));
+    return 0;
+  }
   console.error(USAGE);
   return 2;
 }
@@ -590,6 +728,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  BOOT_ID,
   LEASE_REF,
   TURN_ENV,
   LEASE_TTL_MS,
@@ -604,4 +743,5 @@ module.exports = {
   land,
   overlappingWorktrees,
   main,
+  processHost,
 };
