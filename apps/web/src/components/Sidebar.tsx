@@ -6,6 +6,7 @@ import {
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import {
   matchesAnyThreadTag,
+  threadTagFilterOptions,
   toggleThreadTagSelection,
 } from "@t3tools/client-runtime/state/thread-tag-filter";
 import {
@@ -1797,6 +1798,7 @@ export default function Sidebar({
       hiddenScheduledTaskThreadKeysAtom(taskEnvironmentIdsKey),
     ),
   );
+  const tagFilterOptions = threadTagFilterOptions(availableTags, selectedTags);
   const routeRowThreadKey =
     routeThreadRef === null
       ? null
@@ -4410,11 +4412,11 @@ export default function Sidebar({
                         {t("Choose Default sorting to manually arrange active threads.")}
                       </p>
                     )}
-                    {availableTags.length > 0 ? (
+                    {tagFilterOptions.length > 0 ? (
                       <fieldset className="px-2.5 pt-2 text-xs text-muted-foreground">
                         <legend>{t("Filter by tags")}</legend>
                         <div className="max-h-28 overflow-y-auto">
-                          {availableTags.map((tag) => (
+                          {tagFilterOptions.map((tag) => (
                             <label key={tag} className="flex min-h-6 min-w-0 items-center gap-2">
                               <Checkbox
                                 aria-label={tag}

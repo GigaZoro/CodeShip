@@ -3,7 +3,10 @@ import {
   ThreadListStatusFilter,
 } from "@t3tools/client-runtime/state/thread-status";
 import { THREAD_LIST_SORT_LABELS, ThreadListSort } from "@t3tools/client-runtime/state/thread-sort";
-import { toggleThreadTagSelection } from "@t3tools/client-runtime/state/thread-tag-filter";
+import {
+  threadTagFilterOptions,
+  toggleThreadTagSelection,
+} from "@t3tools/client-runtime/state/thread-tag-filter";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { offersSidebarMachineGrouping, type SidebarGrouping } from "@t3tools/contracts/settings";
 import type { MenuAction } from "@react-native-menu/menu";
@@ -53,7 +56,7 @@ export function tagFilterMenuItems(available: readonly string[], selected: reado
       title: t("All tags"),
       state: selected.length === 0 ? ("on" as const) : ("off" as const),
     },
-    ...available.map((tag) => ({
+    ...threadTagFilterOptions(available, selected).map((tag) => ({
       id: `tags:toggle:${tag}`,
       title: tag,
       state: selectedSet.has(tag) ? ("on" as const) : ("off" as const),

@@ -193,6 +193,15 @@ export function matchesAnyThreadTag(
   return selected.size === 0 || tags?.some((tag) => selected.has(tag)) === true;
 }
 
+/** Selected tags no loaded thread carries stay listed after the rest, so each can be turned off. */
+export function threadTagFilterOptions(
+  available: readonly string[],
+  selected: readonly string[],
+): readonly string[] {
+  const missing = selected.filter((tag) => !available.includes(tag));
+  return missing.length === 0 ? available : [...available, ...missing];
+}
+
 export function toggleThreadTagSelection(
   selected: readonly string[],
   tag: string,

@@ -8,6 +8,7 @@ import {
   NO_HIDDEN_THREADS,
   parseThreadTag,
   threadTagBlock,
+  threadTagFilterOptions,
   threadTagMenuEntries,
   toggleThreadTagSelection,
   visibleLinkedThreads,
@@ -147,6 +148,12 @@ it("validates edits and matches any selected tag by exact spelling", () => {
   expect(matchesAnyThreadTag(undefined, new Set(selected))).toBe(false);
   expect(toggleThreadTagSelection(selected, "UI")).toEqual(["release:next"]);
   expect(matchesAnyThreadTag(undefined, new Set())).toBe(true);
+});
+
+it("keeps a selected tag in the filter picker after its last thread drops it", () => {
+  expect(threadTagFilterOptions(["bug", "ui"], ["ui"])).toEqual(["bug", "ui"]);
+  expect(threadTagFilterOptions(["bug"], ["gone", "bug", "old"])).toEqual(["bug", "gone", "old"]);
+  expect(threadTagFilterOptions([], ["gone"])).toEqual(["gone"]);
 });
 
 describe("threadTagMenuEntries", () => {
