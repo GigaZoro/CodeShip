@@ -1420,6 +1420,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       readonly options: {
         readonly cwd?: string;
         readonly env?: Readonly<Record<string, string | undefined>>;
+        readonly extendEnv?: boolean;
       };
     }> = [];
     const spawnerLayer = Layer.succeed(
@@ -1464,7 +1465,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           ),
         );
         assert.equal(primaryProbe.options.cwd, fixture.packagedAppDir);
-        assert.equal(primaryProbe.options.env?.NODE_PATH, "");
+        assert.isFalse(primaryProbe.options.extendEnv);
+        assert.notProperty(primaryProbe.options.env, "NODE_PATH");
       }),
     ).pipe(
       Effect.provide(
@@ -1513,9 +1515,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it.effect("skips the primary native probe for cross-architecture Windows payloads", () => {
     const commands: Array<{
       readonly command: string;
-      readonly options: {
-        readonly env?: Readonly<Record<string, string | undefined>>;
-      };
+      readonly args: ReadonlyArray<string>;
     }> = [];
     const spawnerLayer = Layer.succeed(
       ChildProcessSpawner.ChildProcessSpawner,
@@ -1544,7 +1544,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.isTrue(
           commands.some(
             (command) =>
-              command.command === process.execPath && command.options.env?.NODE_PATH === "",
+              command.command === process.execPath &&
+              command.args.includes("--no-global-search-paths"),
           ),
         );
       }),

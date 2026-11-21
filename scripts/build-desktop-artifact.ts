@@ -50,6 +50,7 @@ import {
   markStageComplete,
   prepareStageDir,
   requireCompletedStage,
+  stageCommitMarker,
 } from "./lib/stage-dir.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -3909,16 +3910,17 @@ const preflightDesktopBuild = Effect.fn("preflightDesktopBuild")(function* (
   }
 });
 
-const desktopStageMarker = (
+const desktopStageMarker = Effect.fn("desktopStageMarker")(function* (
   options: ResolvedBuildOptions,
   appVersion: string,
-  commitHash: string,
-): Record<string, string> => ({
-  platform: options.platform,
-  arch: options.arch,
-  target: options.target,
-  version: appVersion,
-  commitHash,
+) {
+  return {
+    platform: options.platform,
+    arch: options.arch,
+    target: options.target,
+    version: appVersion,
+    ...(yield* stageCommitMarker(options.phase, yield* RepoRoot)),
+  };
 });
 
 const resolveDesktopStageRoot = Effect.fn("resolveDesktopStageRoot")(function* (
@@ -4235,7 +4237,7 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
     ),
     path.join(stageProdResourcesDir, "cursor-sdk"),
   );
-  yield* markStageComplete(stageRoot, desktopStageMarker(options, appVersion, commitHash));
+  yield* markStageComplete(stageRoot, yield* desktopStageMarker(options, appVersion));
 });
 
 /** Signs and packages a finished stage; the only phase that reads signing credentials. */
@@ -4248,10 +4250,7 @@ const packageDesktopApp = Effect.fn("packageDesktopApp")(function* (
   const fs = yield* FileSystem.FileSystem;
   const hostPlatform = yield* HostProcess.Platform;
   const appVersion = options.version ?? serverPackageJson.version;
-  yield* requireCompletedStage(
-    stageRoot,
-    desktopStageMarker(options, appVersion, yield* resolveGitCommitHash(repoRoot)),
-  );
+  yield* requireCompletedStage(stageRoot, yield* desktopStageMarker(options, appVersion));
   const stageAppDir = path.join(stageRoot, "app");
   const stageDistDir = path.join(stageAppDir, "dist");
   // A retried package phase must not copy what an earlier attempt left in dist.

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
+// @effect-diagnostics nodeBuiltinImport:off - FileSystem.copy resolves relative symlinks to absolute ones; the archive needs them verbatim.
 /** Runtime archives must run without host Node, npm, or compilers. */
+import * as NodeFSP from "node:fs/promises";
+
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Config from "effect/Config";
@@ -35,6 +38,7 @@ import {
   markStageComplete,
   prepareStageDir,
   requireCompletedStage,
+  stageCommitMarker,
 } from "./lib/stage-dir.ts";
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -482,10 +486,16 @@ interface CliArchiveInput {
 
 const cliExecutableName = (platform: BuildPlatform) => (platform === "win" ? "t3.exe" : "t3");
 
-const cliStageMarker = (input: CliArchiveInput): Record<string, string> => ({
-  platform: input.platform,
-  arch: input.arch,
-  version: input.version,
+const cliStageMarker = Effect.fn("cliStageMarker")(function* (input: CliArchiveInput) {
+  return {
+    platform: input.platform,
+    arch: input.arch,
+    version: input.version,
+    ...(yield* stageCommitMarker(
+      Option.getOrElse(input.phase, (): StagePhase => "all"),
+      yield* RepoRoot,
+    )),
+  };
 });
 
 /** Copies and installs everything the archive ships; runs without signing credentials. */
@@ -553,7 +563,7 @@ const stageCliArchive = Effect.fn("stageCliArchive")(function* (
     const bytes = yield* fs.readFile(executablePath);
     yield* Effect.try(() => assertLinuxArm64PageCompatibility(bytes));
   }
-  yield* markStageComplete(stageRoot, cliStageMarker(input));
+  yield* markStageComplete(stageRoot, yield* cliStageMarker(input));
 });
 
 /** Signs a finished stage and archives it; the only phase that reads signing credentials. */
@@ -564,10 +574,28 @@ const packageCliArchive = Effect.fn("packageCliArchive")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repoRoot = yield* RepoRoot;
-  yield* requireCompletedStage(stageRoot, cliStageMarker(input));
+  yield* requireCompletedStage(stageRoot, yield* cliStageMarker(input));
   const hostPlatform = yield* HostProcess.Platform;
   const stem = cliArchiveStem(input.version, input.platform, input.arch);
-  const contentDir = path.join(stageRoot, stem);
+  // Signing rewrites binaries in place, so each attempt signs a fresh copy and a retry starts from the staged bytes.
+  const packageRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-package-" });
+  const contentDir = path.join(packageRoot, stem);
+  yield* Effect.tryPromise({
+    try: () =>
+      NodeFSP.cp(path.join(stageRoot, stem), contentDir, {
+        recursive: true,
+        verbatimSymlinks: true,
+        preserveTimestamps: true,
+      }),
+    catch: (cause) =>
+      PlatformError.systemError({
+        _tag: "Unknown",
+        module: "FileSystem",
+        method: "cp",
+        pathOrDescriptor: path.join(stageRoot, stem),
+        cause,
+      }),
+  });
   const executablePath = path.join(contentDir, cliExecutableName(input.platform));
   if (input.platform === "mac") {
     yield* signMacArchiveContents({ repoRoot, contentDir, executablePath });
@@ -587,7 +615,7 @@ const packageCliArchive = Effect.fn("packageCliArchive")(function* (
   if (input.platform === "win" && hostPlatform !== "win32") {
     yield* runCommand(
       ChildProcess.make("zip", ["-q", "-r", "-X", path.resolve(archivePath), stem], {
-        cwd: stageRoot,
+        cwd: packageRoot,
       }),
       "zip",
     );
@@ -596,7 +624,15 @@ const packageCliArchive = Effect.fn("packageCliArchive")(function* (
     // the Git Bash shell CI uses, a bare `tar` is GNU tar, which neither
     // writes zip nor accepts a drive-letter path.
     yield* runCommand(
-      ChildProcess.make(windowsSystemTar(), ["-a", "-c", "-f", archivePath, "-C", stageRoot, stem]),
+      ChildProcess.make(windowsSystemTar(), [
+        "-a",
+        "-c",
+        "-f",
+        archivePath,
+        "-C",
+        packageRoot,
+        stem,
+      ]),
       "tar (zip)",
     );
   } else {
@@ -607,7 +643,7 @@ const packageCliArchive = Effect.fn("packageCliArchive")(function* (
         "-czf",
         archivePath,
         "-C",
-        stageRoot,
+        packageRoot,
         stem,
       ]),
       "tar (gzip)",

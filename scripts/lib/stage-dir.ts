@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 export const StagePhase = Schema.Literals(["all", "stage", "package"]);
 export type StagePhase = typeof StagePhase.Type;
@@ -49,6 +50,41 @@ class StageMismatchError extends Schema.TaggedError<StageMismatchError>()("Stage
     return `Stage directory '${this.stageDir}' was staged with ${this.field}=${this.staged ?? "<unset>"}, but packaging asked for ${this.field}=${this.requested ?? "<unset>"}.`;
   }
 }
+
+class StageCommitUnresolvedError extends Schema.TaggedError<StageCommitUnresolvedError>()(
+  "StageCommitUnresolvedError",
+  { repoRoot: Schema.String, detail: Schema.String },
+) {
+  override get message(): string {
+    return `A split stage and package build records the commit it built from, but \`git rev-parse --verify HEAD\` in '${this.repoRoot}' ${this.detail}. Build from a git checkout.`;
+  }
+}
+
+const FULL_COMMIT_HASH = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+/** Split phases run in separate steps, so their marker pins the commit both built from; phase "all" never leaves its process. */
+export const stageCommitMarker = Effect.fn("stageCommitMarker")(function* (
+  phase: StagePhase,
+  repoRoot: string,
+) {
+  if (phase === "all") return {};
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const output = yield* spawner
+    .string(ChildProcess.make("git", ["rev-parse", "--verify", "HEAD"], { cwd: repoRoot }))
+    .pipe(
+      Effect.mapError(
+        (cause) => new StageCommitUnresolvedError({ repoRoot, detail: `failed: ${cause.message}` }),
+      ),
+    );
+  const commit = output.trim().toLowerCase();
+  if (!FULL_COMMIT_HASH.test(commit)) {
+    return yield* new StageCommitUnresolvedError({
+      repoRoot,
+      detail: `printed '${output.trim()}' instead of a full commit hash`,
+    });
+  }
+  return { commit };
+});
 
 export const prepareStageDir = Effect.fn("prepareStageDir")(function* (stageDir: string) {
   const fs = yield* FileSystem.FileSystem;

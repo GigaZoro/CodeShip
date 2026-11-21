@@ -9,6 +9,7 @@ import {
   markStageComplete,
   prepareStageDir,
   requireCompletedStage,
+  stageCommitMarker,
 } from "./stage-dir.ts";
 
 const STAGED = { platform: "mac", arch: "arm64", version: "1.2.3" };
@@ -52,6 +53,33 @@ it.layer(NodeServices.layer)("stage directories", (it) => {
         const failure = yield* Effect.flip(requireCompletedStage(root, STAGED));
 
         assert.equal(failure._tag, error);
+      }),
+    ),
+  );
+
+  it.effect("pins the full commit only for a split build", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const repoRoot = path.resolve(import.meta.dirname, "../..");
+
+      assert.deepStrictEqual(yield* stageCommitMarker("all", repoRoot), {});
+      const marker: Record<string, string | undefined> = yield* stageCommitMarker(
+        "stage",
+        repoRoot,
+      );
+      assert.match(marker.commit ?? "", /^[0-9a-f]{40}$/);
+    }),
+  );
+
+  it.effect("refuses a split build outside a git checkout", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-stage-commit-" });
+
+        const failure = yield* Effect.flip(stageCommitMarker("package", root));
+
+        assert.equal(failure._tag, "StageCommitUnresolvedError");
       }),
     ),
   );
