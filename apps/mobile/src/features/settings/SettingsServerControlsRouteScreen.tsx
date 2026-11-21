@@ -747,7 +747,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       subtitle={managedSubtitle(
                         "automatedStartMemoryGuard",
                         t(
-                          "Scheduled tasks, delegated tasks and the emulators agents open wait while this machine is short of memory. Chats you start always run.",
+                          "Scheduled tasks, delegated tasks, the commands agents run and the emulators they open wait while this machine is short of memory. Chats you start always run.",
                         ),
                       )}
                       value={

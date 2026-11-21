@@ -10523,8 +10523,8 @@ const catalog: MessageCatalog = {
   "scheduled tasks model": "модель запланованих завдань",
   "Scheduled tasks model": "Модель запланованих завдань",
   "Scheduled tasks model not saved": "Модель запланованих завдань не збережено",
-  "Scheduled tasks, delegated tasks and the emulators agents open wait while this machine is short of memory. Chats you start always run.":
-    "Заплановані й делеговані завдання та емулятори, які відкривають агенти, чекають, поки цій машині бракує пам’яті. Чати, які ви запускаєте, працюють завжди.",
+  "Scheduled tasks, delegated tasks, the commands agents run and the emulators they open wait while this machine is short of memory. Chats you start always run.":
+    "Заплановані й делеговані завдання, команди, які запускають агенти, та емулятори, які вони відкривають, чекають, поки цій машині бракує пам’яті. Чати, які ви запускаєте, працюють завжди.",
   "Scheduled tasks: {count} tasks' last runs failed": {
     one: "Заплановані завдання: останній запуск {count} завдання не вдався",
     few: "Заплановані завдання: останні запуски {count} завдань не вдалися",

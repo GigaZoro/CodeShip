@@ -458,6 +458,75 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
+  it.effect("reports a command that waits for memory as queued, saying why", () =>
+    Effect.gen(function* () {
+      const parentThreadId = ThreadId.make("thread:mcp-queued-command");
+      const taskId = NodeId.make("node:mcp-queued-command");
+      const waiting = "Queued until this machine has memory for it: 1 GiB of 8 GiB is available.";
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: () =>
+            Effect.succeed({
+              thread: { id: parentThreadId },
+              runs: [],
+              contextTransfers: [],
+              subagents: [
+                {
+                  id: taskId,
+                  threadId: parentThreadId,
+                  origin: "app_owned",
+                  childThreadId: null,
+                  command: {
+                    command: "vp run typecheck",
+                    cwd: "/repo",
+                    logPath: "/logs/output.log",
+                    timeoutMinutes: 60,
+                  },
+                  driver: "command",
+                  providerInstanceId: ProviderInstanceId.make("codex"),
+                  model: null,
+                  status: "pending",
+                  progress: waiting,
+                  result: null,
+                  completionDelivery: { state: "pending" },
+                },
+              ],
+            } as unknown as OrchestrationV2ThreadProjection),
+        }),
+        ServerSettings.layerTest(),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([]),
+        }),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      const scope: McpInvocationScope = {
+        environmentId: EnvironmentId.make("environment:mcp-queued-command"),
+        requestNamespace: "provider-session:mcp-queued-command",
+        thread: {
+          threadId: parentThreadId,
+          providerSessionId: "provider-session:mcp-queued-command",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+        client: undefined,
+        capabilities: new Set(["orchestration"]),
+        issuedAt: 1,
+      };
+
+      const status = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+        Effect.flatMap((service) => service.taskStatus(scope, taskId)),
+        Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))),
+      );
+      assert.equal(status.status, "queued");
+      assert.equal(status.workState, "working");
+      assert.equal(status.summary, waiting);
+    }),
+  );
+
   it.effect("does not dispose delivery when a nonterminal task has no active child run", () =>
     Effect.gen(function* () {
       const parentThreadId = ThreadId.make("thread:mcp-cancel-parent");

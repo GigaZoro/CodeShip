@@ -9,6 +9,10 @@
 - Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
 - A landing that joins the queue comes after every landing it finds waiting there, even when that landing's machine clock runs ahead; landings that join at the same moment, before either can see the other, go in the order of their machines' clocks. A queue of any length keeps moving, and a waiter reads a bounded part of it per poll. Entries origin will not delete block no one and are reported once: a crashed lander's, or a waiter's own old names, which no longer keep it from a free lease, and the waiter keeps renewing its entry, so it keeps its place. A landing whose entry origin refused joins again behind the landings that came meanwhile. A lander whose take reached origin while its answer was lost keeps the turn instead of waiting behind itself, unless the lease expired before the take was confirmed, and its checks get the time that lease has left.
 
+## 2026-11-21 — Commands wait for memory before they start
+
+- `t3_command_run` now waits until the machine has memory for a command before it starts it, as scheduled runs, delegated tasks and emulators already do. Before, every command started at once, so when many resumed chats started commands together after a restart, their shell wrappers alone could use up the free memory. A waiting command is never refused: commands start in the order they were asked for, `task_status` reports them as queued with the reason, each time limit counts from when the command starts, and a waiting command keeps its place through a restart. The **Wait for memory before automated starts** setting in **Settings → Maintenance & about → Background activity** covers them too.
+
 ## 2026-11-21 — Claude uses fewer tokens for one-off text generation
 
 - On Claude versions that support safe mode, thread titles, commit messages and other one-off generations skip your personal `CLAUDE.md` and plugins. Account launch settings still apply.

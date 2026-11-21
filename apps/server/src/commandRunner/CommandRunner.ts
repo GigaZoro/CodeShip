@@ -5,6 +5,7 @@ import * as NodeOS from "node:os";
 
 import {
   CommandId,
+  type ModelSelection,
   NodeId,
   ORCHESTRATOR_MCP_COMMAND_DEFAULT_TIMEOUT_MINUTES,
   ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
@@ -12,6 +13,8 @@ import {
   type OrchestratorMcpRunCommandInput,
   type OrchestratorMcpRunCommandResult,
   ProviderDriverKind,
+  type ProviderInstanceId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
@@ -51,6 +54,7 @@ import { escapePowerShellStringLiteral } from "../process/externalLauncher.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import { forkParked } from "../serverActivation.ts";
 import { readProcessStartedAt } from "../serverRuntimeState.ts";
 import {
@@ -161,10 +165,11 @@ const POSIX_WRAPPER = [
 type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
 
 /**
- * `lost`: it vanished without an exit status. `stopped`: its task got a result elsewhere
- * (task_cancel, Stop, archive), so the runner stopped it.
+ * `queued`: it waits for memory to start, with no process yet. `lost`: it vanished without an
+ * exit status. `stopped`: its task got a result elsewhere (task_cancel, Stop, archive), so the
+ * runner stopped it.
  */
-type CommandRunStatus = "running" | "exited" | "timed_out" | "lost" | "stopped";
+type CommandRunStatus = "queued" | "running" | "exited" | "timed_out" | "lost" | "stopped";
 
 interface CommandRunRow {
   readonly task_id: string;
@@ -172,6 +177,8 @@ interface CommandRunRow {
   readonly run_id: string;
   readonly label: string | null;
   readonly command: string;
+  /** The shell it asked for; null is the platform's own. */
+  readonly shell: "bash" | null;
   readonly cwd: string;
   readonly directory: string;
   /** Null from its record until its process starts. */
@@ -181,6 +188,7 @@ interface CommandRunRow {
   readonly unit: string | null;
   readonly status: CommandRunStatus;
   readonly exit_code: number | null;
+  /** When it started, so its time limit counts from there; while queued, when it was queued. */
   readonly started_at: string;
   readonly deadline_at: string;
   readonly ended_at: string | null;
@@ -481,6 +489,7 @@ const make = Effect.gen(function* () {
   const windows = platform === "win32";
   const hostEnv = yield* HostProcess.Environment;
   const watchInterval = yield* WatchInterval;
+  const memoryAdmission = yield* MemoryAdmission.MemoryAdmission;
 
   const commandsDir = path.join(logsDir, "commands");
   const hostCommandEnv = Object.fromEntries(
@@ -492,6 +501,8 @@ const make = Effect.gen(function* () {
   const watched = new Map<string, CommandRunRow>();
   /** Watched commands whose start read could not tell wrapper from pid reuse; each check asks again. */
   const unconfirmed = new Set<string>();
+  /** Commands waiting for memory to start, oldest first. Changed under the lock. */
+  const queue: Array<CommandRunRow> = [];
   /** Every change to a watched command, so its process is stopped or delivered once. */
   const lock = yield* Semaphore.make(1);
   /** Open once start() has adopted the commands an earlier server left, so run() never races it. */
@@ -871,7 +882,7 @@ const make = Effect.gen(function* () {
     `;
     const spans = (yield* sql<{ readonly started_at: string; readonly ended_at: string | null }>`
       SELECT started_at, ended_at FROM command_runs
-      WHERE started_at <= ${isoAt(Math.max(...times))}
+      WHERE status <> 'queued' AND started_at <= ${isoAt(Math.max(...times))}
         AND (ended_at IS NULL OR ended_at > ${isoAt(Math.min(...times) - window)})
     `).map((row) => ({
       start: Date.parse(row.started_at),
@@ -1045,12 +1056,19 @@ const make = Effect.gen(function* () {
   /**
    * The task got its result elsewhere: a cancel, Stop, or the thread archived. It is recorded as
    * delivered only once its process is gone, so a server that stops meanwhile leaves the next one
-   * to stop it. The kill runs outside the lock, which it would hold for its grace period.
+   * to stop it. The kill runs outside the lock, which it would hold for its grace period. A queued
+   * command has nothing to stop, so its record goes.
    */
   const stopForTask = (taskId: string) =>
     lock
       .withPermits(1)(
         Effect.gen(function* () {
+          const waiting = queue.findIndex((row) => row.task_id === taskId);
+          if (waiting >= 0) {
+            queue.splice(waiting, 1);
+            yield* sql`DELETE FROM command_runs WHERE task_id = ${taskId}`;
+            return undefined;
+          }
           const row = watched.get(taskId);
           if (row === undefined || row.status !== "running") return undefined;
           const stopped: CommandRunRow = { ...row, status: "stopped", ended_at: yield* nowIso };
@@ -1078,11 +1096,12 @@ const make = Effect.gen(function* () {
     why: "archived" | "deleted",
   ) {
     const running = yield* lock.withPermits(1)(
-      Effect.sync(() =>
-        [...watched.values()].filter(
+      Effect.sync(() => [
+        ...queue.filter((row) => row.thread_id === threadId),
+        ...[...watched.values()].filter(
           (row) => row.thread_id === threadId && row.status === "running",
         ),
-      ),
+      ]),
     );
     yield* Effect.forEach(running, (row) =>
       threads
@@ -1131,9 +1150,12 @@ const make = Effect.gen(function* () {
    * On Linux under systemd it also leaves the server's cgroup, in the agents slice.
    */
   const launch = Effect.fn("CommandRunner.launch")(function* (
-    directory: string,
-    { command, shell }: Pick<OrchestratorMcpRunCommandInput, "command" | "shell">,
-    cwd: string,
+    {
+      directory,
+      command,
+      shell,
+      cwd,
+    }: Pick<CommandRunRow, "directory" | "command" | "shell" | "cwd">,
     /** The command's whole environment, as the calling agent's own shell commands get it. */
     commandEnv: Readonly<Record<string, string>>,
   ) {
@@ -1157,7 +1179,7 @@ const make = Effect.gen(function* () {
           path.join(directory, PID_FILE),
           path.join(directory, IDENTITY_FILE),
           ...prefix,
-          resolveCommandShell(platform, env, shell).path,
+          resolveCommandShell(platform, env, shell ?? undefined).path,
           "-c",
           command,
         ],
@@ -1277,6 +1299,247 @@ const make = Effect.gen(function* () {
     };
   });
 
+  /**
+   * The whole environment the agent's own shell commands get, read for the thread's folder, where
+   * its session read its settings, though the command's `cwd` may differ.
+   */
+  const commandEnvironment = Effect.fn("CommandRunner.commandEnvironment")(function* (
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    folder: string,
+    modelSelection: ModelSelection,
+  ) {
+    const instance = yield* providerInstances.getInstance(providerInstanceId);
+    // A turned-off instance never resolved its secrets, so its environment would lack them.
+    if (instance === undefined || !instance.enabled) {
+      return yield* failure(
+        "provider_unavailable",
+        "This agent's provider is turned off or not running, so the environment its shell commands get is unknown.",
+      );
+    }
+    const agentShellEnv =
+      instance.shellEnvironment === undefined
+        ? hostCommandEnv
+        : yield* instance.shellEnvironment(folder, hostCommandEnv, modelSelection).pipe(
+            Effect.tapError((cause) =>
+              Effect.logWarning("command-runner.shell-environment-failed", {
+                parentThreadId: threadId,
+                cause,
+              }),
+            ),
+            Effect.mapError((cause) =>
+              failure(
+                "provider_unavailable",
+                `Could not read the environment this agent's shell commands get. ${cause.detail}`,
+              ),
+            ),
+          );
+    return overrideEnvironment(
+      agentShellEnv,
+      { [PortScanner.AGENT_THREAD_ENV]: threadId },
+      platform,
+    );
+  });
+
+  /** Why a new command waits to start, or undefined when it starts at once. */
+  const waitingReason = Effect.gen(function* () {
+    const shortage = yield* memoryAdmission.shortage;
+    const limit = "Its time limit counts from when it starts.";
+    if (shortage !== null) {
+      return `Queued until this machine has memory for it: ${MemoryAdmission.describeMemoryShortage(shortage)}. ${limit}`;
+    }
+    // Commands queued before it start first.
+    return queue.length === 0
+      ? undefined
+      : `Queued behind commands that wait for memory to start. ${limit}`;
+  });
+
+  const closedOf = (thread: {
+    readonly deletedAt: object | null;
+    readonly archivedAt: object | null;
+  }) =>
+    thread.deletedAt !== null ? "deleted" : thread.archivedAt !== null ? "archived" : undefined;
+
+  /**
+   * The wall clock between two monotonic reads, each pair read in one step so no pause falls
+   * between its reads: the wall clock then falls behind by at least any step back between the
+   * record and the launch's return.
+   */
+  const recordedClocks = Clock.clockWith((clock) =>
+    Effect.sync(() => {
+      const monotonic = clock.monotonicTimeNanosUnsafe();
+      return { monotonic, wall: clock.currentTimeMillisUnsafe() };
+    }),
+  );
+
+  /**
+   * Starts a command whose record says it runs, recorded at `recorded`, and watches it. One that
+   * cannot start loses its record, and the reason comes back.
+   */
+  const startRecorded = Effect.fn("CommandRunner.startRecorded")(function* (
+    row: CommandRunRow,
+    recorded: Effect.Success<typeof recordedClocks>,
+    commandEnv: Readonly<Record<string, string>>,
+  ) {
+    const started = yield* fs
+      .makeDirectory(row.directory, { recursive: true })
+      .pipe(Effect.andThen(launch(row, commandEnv)), Effect.result);
+    if (started._tag === "Failure") {
+      yield* sql`DELETE FROM command_runs WHERE task_id = ${row.task_id}`.pipe(
+        Effect.ignore({ log: true }),
+      );
+      return started.failure.message;
+    }
+    const { pid, unit, identity } = started.success;
+    const returned = yield* Clock.clockWith((clock) =>
+      Effect.sync(() => {
+        const wall = clock.currentTimeMillisUnsafe();
+        return { wall, monotonic: clock.monotonicTimeNanosUnsafe() };
+      }),
+    );
+    const tookMs = Number(returned.monotonic - recorded.monotonic) / 1_000_000;
+    // A step back stamps a wrapper that started before it up to this late, and one that started
+    // after it up to this early.
+    const lagMs = Math.max(0, Math.ceil(tookMs - (returned.wall - recorded.wall)));
+    const launched: CommandRunRow = {
+      ...row,
+      pid,
+      // Taken before the read, which can take seconds and find a later process.
+      process_identity:
+        identity ??
+        launchIdentity(
+          yield* identityOf(pid),
+          { from: recorded.wall - lagMs, to: returned.wall + lagMs },
+          platform,
+        ),
+      unit,
+      last_alive_at: yield* nowIso,
+    };
+    watched.set(row.task_id, launched);
+    // Its pid file names it to the next server if this write is lost.
+    yield* writeRow(launched).pipe(Effect.ignore({ log: true }));
+    return undefined;
+  });
+
+  /** The environment a queued command starts with, read as its request read it. */
+  const queuedEnvironment = Effect.fn("CommandRunner.queuedEnvironment")(function* (
+    row: CommandRunRow,
+  ) {
+    const threadId = ThreadId.make(row.thread_id);
+    const records = yield* threads.getThreadRecords(threadId, ["runs"], {
+      runIds: [RunId.make(row.run_id)],
+    });
+    const parentRun = records.runs[0];
+    if (parentRun === undefined) {
+      return yield* failure("parent_not_active", "The run that asked for the command is gone.");
+    }
+    const project = yield* projects.getById(records.thread.projectId).pipe(
+      Effect.map(Option.getOrUndefined),
+      Effect.orElseSucceed(() => undefined),
+    );
+    return yield* commandEnvironment(
+      threadId,
+      parentRun.providerInstanceId,
+      records.thread.worktreePath ?? project?.workspaceRoot ?? row.cwd,
+      parentRun.modelSelection,
+    );
+  });
+
+  /** Ends the task of a queued command that could not start; its agent is woken with why. */
+  const endUnstarted = (row: CommandRunRow, status: "failed" | "interrupted", result: string) =>
+    threads
+      .dispatch({
+        type: "delegated_task.command.complete",
+        commandId: CommandId.make(`command:command-task-unstarted:${row.task_id}`),
+        parentThreadId: ThreadId.make(row.thread_id),
+        taskId: NodeId.make(row.task_id),
+        status,
+        result,
+      })
+      .pipe(Effect.ignore({ log: true }));
+
+  /** Takes the oldest queued command off for good, ending its task with `outcome` when given. */
+  const dropQueued = Effect.fn("CommandRunner.dropQueued")(function* (
+    row: CommandRunRow,
+    outcome?: { readonly status: "failed" | "interrupted"; readonly result: string },
+  ) {
+    queue.shift();
+    if (outcome !== undefined) yield* endUnstarted(row, outcome.status, outcome.result);
+    yield* sql`DELETE FROM command_runs WHERE task_id = ${row.task_id}`;
+  });
+
+  /**
+   * Starts the oldest queued command once this machine has memory for it, one a pass, so each
+   * start reads memory after the one before it took its share. Its time limit counts from here.
+   */
+  const startQueued = Effect.fn("CommandRunner.startQueued")(function* () {
+    const next = queue[0];
+    if (next === undefined || (yield* memoryAdmission.shortage) !== null) return;
+    // Outside the lock, which a slow read of the agent's environment would hold.
+    const environment = yield* queuedEnvironment(next).pipe(Effect.result);
+    yield* lock.withPermits(1)(
+      Effect.gen(function* () {
+        // A cancel, Stop or close took it off meanwhile; the next pass looks again.
+        if (queue[0] !== next) return;
+        const parentThreadId = ThreadId.make(next.thread_id);
+        const taskId = NodeId.make(next.task_id);
+        const records = yield* threads
+          .getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [taskId] })
+          .pipe(Effect.result);
+        if (records._tag === "Failure") {
+          return yield* dropQueued(next, {
+            status: "failed",
+            result: `Could not start the command: ${records.failure.message}`,
+          });
+        }
+        const { thread, subagents } = records.success;
+        // Its task got its result while it waited, or is gone: nothing is left to start.
+        if (subagents[0] === undefined || subagents[0].result !== null)
+          return yield* dropQueued(next);
+        const closed = closedOf(thread);
+        if (closed !== undefined) {
+          return yield* dropQueued(next, {
+            status: "interrupted",
+            result: `Stopped: the chat was ${closed}.`,
+          });
+        }
+        if (environment._tag === "Failure") {
+          return yield* dropQueued(next, {
+            status: "failed",
+            result: `Could not start the command: ${environment.failure.message}`,
+          });
+        }
+        const recorded = yield* recordedClocks;
+        const now = DateTime.makeUnsafe(recorded.wall);
+        const limitMs = Date.parse(next.deadline_at) - Date.parse(next.started_at);
+        const row: CommandRunRow = {
+          ...next,
+          status: "running",
+          started_at: DateTime.formatIso(now),
+          deadline_at: DateTime.formatIso(DateTime.add(now, { milliseconds: limitMs })),
+        };
+        yield* sql`
+          UPDATE command_runs
+          SET status = ${row.status}, started_at = ${row.started_at}, deadline_at = ${row.deadline_at}
+          WHERE task_id = ${row.task_id}
+        `;
+        queue.shift();
+        yield* threads
+          .dispatch({
+            type: "delegated_task.command.start",
+            commandId: CommandId.make(`command:command-task-start:${taskId}`),
+            parentThreadId,
+            taskId,
+          })
+          .pipe(Effect.ignore({ log: true }));
+        const notStarted = yield* startRecorded(row, recorded, environment.success);
+        if (notStarted !== undefined) {
+          yield* endUnstarted(row, "failed", `Could not start the command: ${notStarted}`);
+        }
+      }),
+    );
+  });
+
   const run: CommandRunner["Service"]["run"] = Effect.fn("CommandRunner.run")(
     function* (scope, input) {
       yield* Deferred.await(adopted);
@@ -1316,38 +1579,11 @@ const make = Effect.gen(function* () {
         Effect.orElseSucceed(() => false),
       );
       if (!isFolder) return yield* failure("invalid_request", `No folder at ${cwd}.`);
-      // Read for the thread's folder, where the agent's own session read its settings, though `cwd` may differ.
-      const instance = yield* providerInstances.getInstance(scope.thread.providerInstanceId);
-      // A turned-off instance never resolved its secrets, so its environment would lack them.
-      if (instance === undefined || !instance.enabled) {
-        return yield* failure(
-          "provider_unavailable",
-          "This agent's provider is turned off or not running, so the environment its shell commands get is unknown.",
-        );
-      }
-      const agentShellEnv =
-        instance.shellEnvironment === undefined
-          ? hostCommandEnv
-          : yield* instance
-              .shellEnvironment(base ?? cwd, hostCommandEnv, parentRun.modelSelection)
-              .pipe(
-                Effect.tapError((cause) =>
-                  Effect.logWarning("command-runner.shell-environment-failed", {
-                    parentThreadId: scope.thread.threadId,
-                    cause,
-                  }),
-                ),
-                Effect.mapError((cause) =>
-                  failure(
-                    "provider_unavailable",
-                    `Could not read the environment this agent's shell commands get. ${cause.detail}`,
-                  ),
-                ),
-              );
-      const commandEnv = overrideEnvironment(
-        agentShellEnv,
-        { [PortScanner.AGENT_THREAD_ENV]: scope.thread.threadId },
-        platform,
+      const commandEnv = yield* commandEnvironment(
+        scope.thread.threadId,
+        scope.thread.providerInstanceId,
+        base ?? cwd,
+        parentRun.modelSelection,
       );
       const timeoutMinutes =
         input.timeoutMinutes ?? ORCHESTRATOR_MCP_COMMAND_DEFAULT_TIMEOUT_MINUTES;
@@ -1372,6 +1608,8 @@ const make = Effect.gen(function* () {
         timeoutMinutes,
         next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
       });
+      // Read before the task is recorded, so a command that waits is recorded waiting.
+      const waiting = yield* waitingReason;
       // A request cancelled in here would leave a task, or a command, that nothing watches.
       return yield* Effect.uninterruptible(
         Effect.gen(function* () {
@@ -1386,6 +1624,7 @@ const make = Effect.gen(function* () {
               driver: COMMAND_DRIVER,
               providerInstanceId: scope.thread.providerInstanceId,
               command: { command: input.command, cwd, logPath, timeoutMinutes },
+              ...(waiting === undefined ? {} : { waiting }),
             })
             .pipe(
               Effect.tapError((cause) =>
@@ -1454,37 +1693,25 @@ const make = Effect.gen(function* () {
                 // Cancelled, or its first request could not start it: the task already says why.
                 const endedWith = subagents[0]?.result;
                 if (endedWith != null) return yield* failure("orchestration_error", endedWith);
-                const closed =
-                  thread.deletedAt !== null
-                    ? "deleted"
-                    : thread.archivedAt !== null
-                      ? "archived"
-                      : undefined;
+                const closed = closedOf(thread);
                 if (closed !== undefined) {
                   return yield* unstarted(`Stopped: the chat was ${closed}.`, "interrupted");
                 }
-                // Each pair is read in one step, so no pause falls between its reads, and the
-                // monotonic reads enclose the wall ones: the wall clock then falls behind by at
-                // least any step back between the record and the launch's return.
-                const recorded = yield* Clock.clockWith((clock) =>
-                  Effect.sync(() => {
-                    const monotonic = clock.monotonicTimeNanosUnsafe();
-                    return { monotonic, wall: clock.currentTimeMillisUnsafe() };
-                  }),
-                );
-                const now = DateTime.makeUnsafe(recorded.wall);
+                const clocks = yield* recordedClocks;
+                const now = DateTime.makeUnsafe(clocks.wall);
                 const row: CommandRunRow = {
                   task_id: taskId,
                   thread_id: scope.thread.threadId,
                   run_id: parentRun.id,
                   label: input.label ?? null,
                   command: input.command,
+                  shell: input.shell ?? null,
                   cwd,
                   directory,
                   pid: null,
                   process_identity: null,
                   unit: null,
-                  status: "running",
+                  status: waiting === undefined ? "running" : "queued",
                   exit_code: null,
                   started_at: DateTime.formatIso(now),
                   deadline_at: DateTime.formatIso(DateTime.add(now, { minutes: timeoutMinutes })),
@@ -1497,67 +1724,31 @@ const make = Effect.gen(function* () {
                 };
                 // Recorded before it starts, so a server that stops in between leaves the next one
                 // a record to adopt it by, never a command nothing watches.
-                const recordedRow = yield* fs.makeDirectory(directory, { recursive: true }).pipe(
-                  Effect.andThen(
-                    sql`
-                INSERT INTO command_runs (
-                  task_id, thread_id, run_id, label, command, cwd, directory, pid,
-                  process_identity, unit, status, exit_code, started_at, deadline_at, ended_at,
-                  delivered_at
-                ) VALUES (
-                  ${row.task_id}, ${row.thread_id}, ${row.run_id}, ${row.label}, ${row.command},
-                  ${row.cwd}, ${row.directory}, ${row.pid}, ${row.process_identity}, ${row.unit},
-                  ${row.status}, ${row.exit_code}, ${row.started_at}, ${row.deadline_at},
-                  ${row.ended_at}, ${row.delivered_at}
-                )
-              `,
-                  ),
-                  Effect.result,
-                );
-                if (recordedRow._tag === "Failure") {
+                const inserted = yield* sql`
+                  INSERT INTO command_runs (
+                    task_id, thread_id, run_id, label, command, shell, cwd, directory, pid,
+                    process_identity, unit, status, exit_code, started_at, deadline_at, ended_at,
+                    delivered_at
+                  ) VALUES (
+                    ${row.task_id}, ${row.thread_id}, ${row.run_id}, ${row.label}, ${row.command},
+                    ${row.shell}, ${row.cwd}, ${row.directory}, ${row.pid}, ${row.process_identity},
+                    ${row.unit}, ${row.status}, ${row.exit_code}, ${row.started_at},
+                    ${row.deadline_at}, ${row.ended_at}, ${row.delivered_at}
+                  )
+                `.pipe(Effect.result);
+                if (inserted._tag === "Failure") {
                   return yield* unstarted(
-                    `Could not start the command: ${recordedRow.failure.message}`,
+                    `Could not start the command: ${inserted.failure.message}`,
                   );
                 }
-                const started = yield* launch(directory, input, cwd, commandEnv).pipe(
-                  Effect.result,
-                );
-                if (started._tag === "Failure") {
-                  yield* sql`DELETE FROM command_runs WHERE task_id = ${taskId}`.pipe(
-                    Effect.ignore({ log: true }),
-                  );
-                  return yield* unstarted(
-                    `Could not start the command: ${started.failure.message}`,
-                  );
+                if (row.status === "queued") {
+                  queue.push(row);
+                  return result(taskId);
                 }
-                const { pid, unit, identity } = started.success;
-                const returned = yield* Clock.clockWith((clock) =>
-                  Effect.sync(() => {
-                    const wall = clock.currentTimeMillisUnsafe();
-                    return { wall, monotonic: clock.monotonicTimeNanosUnsafe() };
-                  }),
-                );
-                const tookMs = Number(returned.monotonic - recorded.monotonic) / 1_000_000;
-                // A step back stamps a wrapper that started before it up to this late, and one that
-                // started after it up to this early.
-                const lagMs = Math.max(0, Math.ceil(tookMs - (returned.wall - recorded.wall)));
-                const launched: CommandRunRow = {
-                  ...row,
-                  pid,
-                  // Taken before the read, which can take seconds and find a later process.
-                  process_identity:
-                    identity ??
-                    launchIdentity(
-                      yield* identityOf(pid),
-                      { from: recorded.wall - lagMs, to: returned.wall + lagMs },
-                      platform,
-                    ),
-                  unit,
-                  last_alive_at: yield* nowIso,
-                };
-                watched.set(taskId, launched);
-                // Its pid file names it to the next server if this write is lost.
-                yield* writeRow(launched).pipe(Effect.ignore({ log: true }));
+                const notStarted = yield* startRecorded(row, clocks, commandEnv);
+                if (notStarted !== undefined) {
+                  return yield* unstarted(`Could not start the command: ${notStarted}`);
+                }
                 return result(taskId);
               }),
             )
@@ -1627,11 +1818,35 @@ const make = Effect.gen(function* () {
     return recovered;
   });
 
+  /** Ends the task of a command whose chat was closed while no server ran. */
+  const interruptClosed = (task: ProjectionStore.ProjectionOpenCommandTask) =>
+    task.threadClosed === null
+      ? Effect.void
+      : threads
+          .dispatch({
+            type: "delegated_task.command.complete",
+            commandId: CommandId.make(`command:command-task-${task.threadClosed}:${task.taskId}`),
+            parentThreadId: task.parentThreadId,
+            taskId: task.taskId,
+            status: "interrupted",
+            result: `Stopped: the chat was ${task.threadClosed}.`,
+          })
+          .pipe(Effect.ignore);
+
   /** What one record an earlier server left needs, given its task if that is still open. */
   const adoptRow = Effect.fn("CommandRunner.adoptRow")(function* (
     stored: CommandRunRow,
     task: ProjectionStore.ProjectionOpenCommandTask | undefined,
   ) {
+    if (stored.status === "queued") {
+      // It waits again, unless its task got its result or its chat was closed meanwhile.
+      if (task !== undefined && task.threadClosed === null) {
+        queue.push(stored);
+        return;
+      }
+      if (task !== undefined) yield* interruptClosed(task);
+      return yield* sql`DELETE FROM command_runs WHERE task_id = ${stored.task_id}`;
+    }
     const row = stored.pid === null ? yield* recoverPid(stored) : stored;
     if (row === undefined) return;
     if (row.status === "stopped") {
@@ -1645,18 +1860,7 @@ const make = Effect.gen(function* () {
     }
     if (task === undefined || task.threadClosed !== null) {
       // Its task got its result while no server ran (a cancel), or its chat was closed.
-      if (task?.threadClosed != null) {
-        yield* threads
-          .dispatch({
-            type: "delegated_task.command.complete",
-            commandId: CommandId.make(`command:command-task-${task.threadClosed}:${row.task_id}`),
-            parentThreadId: task.parentThreadId,
-            taskId: task.taskId,
-            status: "interrupted",
-            result: `Stopped: the chat was ${task.threadClosed}.`,
-          })
-          .pipe(Effect.ignore);
-      }
+      if (task !== undefined) yield* interruptClosed(task);
       yield* killTree(row);
       const now = yield* nowIso;
       return yield* settle({ ...row, status: "stopped", ended_at: now, delivered_at: now });
@@ -1677,8 +1881,8 @@ const make = Effect.gen(function* () {
 
   /**
    * Picks up what an earlier server left: commands to watch again, ends to deliver, stops to
-   * finish, and tasks whose command never got its record (the server stopped between the two),
-   * which are lost.
+   * finish, commands still waiting for memory, in the order they were queued, and tasks whose
+   * command never got its record (the server stopped between the two), which are lost.
    */
   const adopt = Effect.gen(function* () {
     const open = yield* projections.getOpenCommandTasks;
@@ -1686,7 +1890,7 @@ const make = Effect.gen(function* () {
       open.map((task) => [task.taskId, task]),
     );
     const rows = yield* sql<CommandRunRow>`
-      SELECT * FROM command_runs WHERE delivered_at IS NULL
+      SELECT * FROM command_runs WHERE delivered_at IS NULL ORDER BY rowid
     `;
     yield* Effect.forEach(rows, (row) =>
       adoptRow(row, openById.get(row.task_id)).pipe(
@@ -1805,6 +2009,7 @@ const make = Effect.gen(function* () {
         yield* Effect.forkScoped(pruned.pipe(Effect.delay(RETENTION_INTERVAL), Effect.forever));
         yield* watchOnce.pipe(
           Effect.ignoreCause({ log: true }),
+          Effect.andThen(startQueued().pipe(Effect.ignoreCause({ log: true }))),
           Effect.repeat(Schedule.spaced(watchInterval)),
         );
       }).pipe(Effect.ignoreCause({ log: true })),

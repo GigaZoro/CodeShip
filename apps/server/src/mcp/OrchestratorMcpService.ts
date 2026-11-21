@@ -2199,7 +2199,9 @@ const make = Effect.gen(function* () {
   ): Effect.fn.Return<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure> {
     const status: OrchestratorMcpDelegateTaskResult["status"] =
       task.result === null
-        ? "running"
+        ? task.status === "pending"
+          ? "queued"
+          : "running"
         : task.status === "completed" ||
             task.status === "failed" ||
             task.status === "cancelled" ||
@@ -2263,7 +2265,7 @@ const make = Effect.gen(function* () {
       hasPendingChildRuns: false,
       providerInstanceId: task.providerInstanceId,
       model: task.model,
-      summary: task.result,
+      summary: task.result ?? (status === "queued" ? (task.progress ?? null) : null),
       resultContextTransferId: null,
       latestTerminalRunId: null,
       latestTerminalStatus: terminal

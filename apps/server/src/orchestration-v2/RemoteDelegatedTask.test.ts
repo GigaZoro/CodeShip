@@ -369,6 +369,71 @@ it.layer(layerTest)("a command task", (it) => {
     }),
   );
 
+  it.effect(
+    "waits with its reason until it starts, and a start after its result records nothing",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const parent = yield* seedLiveParent("command-waiting");
+        const waiting = "Queued until this machine has memory for it.";
+        yield* orchestrator.dispatch({
+          type: "delegated_task.command.request",
+          commandId: CommandId.make("command:command-run:command-waiting"),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          title: "Checks",
+          driver: ProviderDriverKind.make("command"),
+          providerInstanceId: instanceId,
+          command,
+          waiting,
+        });
+        const recorded = yield* orchestrator.getThreadProjection(parent.threadId);
+        const task = recorded.subagents[0]!;
+        const itemOf = (projection: typeof recorded) =>
+          projection.turnItems.find(
+            (candidate) => candidate.type === "subagent" && candidate.subagentId === task.id,
+          );
+        assert.equal(task.status, "pending");
+        assert.equal(task.progress, waiting);
+        assert.isNull(task.startedAt);
+        assert.equal(itemOf(recorded)?.status, "pending");
+
+        const start = (key: string) =>
+          orchestrator.dispatch({
+            type: "delegated_task.command.start",
+            commandId: CommandId.make(`command:command-start:${key}`),
+            parentThreadId: parent.threadId,
+            taskId: task.id,
+          });
+        yield* start("first");
+        const started = yield* orchestrator.getThreadProjection(parent.threadId);
+        const running = started.subagents.find((candidate) => candidate.id === task.id);
+        assert.equal(running?.status, "running");
+        assert.notProperty(running, "progress");
+        assert.isNotNull(running?.startedAt);
+        const runningItem = itemOf(started);
+        assert.equal(runningItem?.status, "running");
+        assert.notProperty(runningItem, "progress");
+
+        yield* orchestrator.dispatch({
+          type: "delegated_task.command.complete",
+          commandId: CommandId.make("command:command-complete:command-waiting"),
+          parentThreadId: parent.threadId,
+          taskId: task.id,
+          status: "cancelled",
+          result: "Cancelled.",
+        });
+        // The runner's start can lose the race to a cancel.
+        yield* start("late").pipe(Effect.ignore);
+        const settled = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+          (candidate) => candidate.id === task.id,
+        );
+        assert.equal(settled?.status, "cancelled");
+        assert.equal(settled?.result, "Cancelled.");
+      }),
+  );
+
   it.effect("keeps its parent completed when checkpoint capture lands before its result", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

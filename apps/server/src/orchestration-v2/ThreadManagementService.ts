@@ -130,6 +130,7 @@ function existingThreadIdsForCommand(
     case "delegated_task.remote.stop":
     case "delegated_task.remote.attach-run":
     case "delegated_task.command.request":
+    case "delegated_task.command.start":
     case "delegated_task.command.complete":
       return [command.parentThreadId];
     case "thread.created.record":

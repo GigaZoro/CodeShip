@@ -3818,7 +3818,8 @@ const OrchestrationV2InternalCommand = Schema.Union([
   /**
    * Records a `t3_command_run` command on the thread that runs it: the task, its node and its
    * turn item, as a remote task is recorded. The ids derive from `commandId`, so a retry records
-   * nothing new.
+   * nothing new. With `waiting`, the command has not started: the task is recorded pending with
+   * that text as its progress, until `delegated_task.command.start`.
    */
   Schema.Struct({
     type: Schema.Literal("delegated_task.command.request"),
@@ -3830,6 +3831,14 @@ const OrchestrationV2InternalCommand = Schema.Union([
     driver: ProviderDriverKind,
     providerInstanceId: ProviderInstanceId,
     command: OrchestrationV2TaskCommand,
+    waiting: Schema.optional(TrimmedNonEmptyString),
+  }),
+  /** Records that a command recorded as waiting has started. A settled task records nothing. */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.command.start"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
   }),
   /**
    * Records how a command ended. Its thread wakes exactly as for any delegated task; the first

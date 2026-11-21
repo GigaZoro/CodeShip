@@ -362,8 +362,12 @@ memory. A scheduled run is skipped, and **Run history** names the reading. A
 time. Memory is read again after a run condition answers, and a run that waited
 for the network to read its prompt file fails if memory went short meanwhile.
 A task an agent delegates is refused, so the agent does the work in its own
-chat, and an emulator or simulator an agent asks to start stays off. Chats you
-start, **Run now** and webhook runs always start.
+chat, and an emulator or simulator an agent asks to start stays off. A command
+an agent runs with `t3_command_run` is never refused: it waits its turn and
+starts once memory frees up, in the order the commands were asked for, and
+`task_status` reports it as queued with the reason. Its time limit counts from
+when it starts, and it keeps its place through a restart. Chats you start,
+**Run now** and webhook runs always start.
 
 Chats that continue by themselves after a restart, a network outage or a usage
 limit resume one at a time, each once the one before it has reached its agent,

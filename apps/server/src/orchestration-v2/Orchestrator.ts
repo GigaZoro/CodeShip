@@ -715,6 +715,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "delegated_task.remote.stop":
     case "delegated_task.remote.attach-run":
     case "delegated_task.command.request":
+    case "delegated_task.command.start":
     case "delegated_task.command.complete":
     case "delegated_task.wake-policy":
     case "delegated_task.completion-delivery.acknowledge":
@@ -9170,6 +9171,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandId: command.commandId,
       });
       const title = command.title ?? null;
+      const status = command.waiting === undefined ? "running" : "pending";
+      const startedAt = command.waiting === undefined ? now : null;
+      const progress = command.waiting === undefined ? {} : { progress: command.waiting };
       const common = {
         threadId: command.parentThreadId,
         runId: parentRun.id,
@@ -9189,14 +9193,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           parentNodeId: command.parentNodeId,
           rootNodeId: parentRun.rootNodeId,
           kind: "subagent",
-          status: "running",
+          status,
           countsForRun: false,
           providerThreadId: null,
           providerTurnId: null,
           nativeItemRef: null,
           runtimeRequestId: null,
           checkpointScopeId: null,
-          startedAt: now,
+          startedAt,
           completedAt: null,
         },
       });
@@ -9221,9 +9225,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           model: null,
           // The agent's turn has usually ended by the time a command does.
           completionWake: "always",
-          status: "running",
+          status,
+          ...progress,
           result: null,
-          startedAt: now,
+          startedAt,
           completedAt: null,
           updatedAt: now,
         },
@@ -9241,9 +9246,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           nativeItemRef: null,
           parentItemId: null,
           ordinal: yield* nextTurnItemOrdinal(parentProjection),
-          status: "running",
+          status,
           title: title ?? command.command.command,
-          startedAt: now,
+          startedAt,
           completedAt: null,
           updatedAt: now,
           type: "subagent",
@@ -9254,9 +9259,103 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           childThreadId: null,
           command: command.command,
           prompt: command.command.command,
+          ...progress,
           result: null,
         },
       });
+    },
+  );
+
+  /** The command task's records that its start and its end change. */
+  const commandTaskRecords = Effect.fn("orchestrationV2.dispatch.commandTaskRecords")(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "delegated_task.command.start" | "delegated_task.command.complete" }
+    >,
+  ) {
+    const parentProjection = yield* projectionStore
+      .getThreadRecords(
+        command.parentThreadId,
+        ["runs", "messages", "subagents", "providerTurns", "nodes", "turnItems"],
+        {
+          turnItemTypes: ["subagent"],
+          messageRoles: ["user"],
+          omitSettledSubagents: { except: [command.taskId] },
+          nodeIds: [command.taskId],
+          turnItemNodeIds: [command.taskId],
+        },
+      )
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.parentThreadId, cause }),
+        ),
+      );
+    const task = parentProjection.subagents.find(
+      (candidate) =>
+        candidate.id === command.taskId &&
+        candidate.origin === "app_owned" &&
+        candidate.command !== undefined,
+    );
+    if (task === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Task ${command.taskId} is not a command of thread ${command.parentThreadId}.`,
+      });
+    }
+    return { parentProjection, task };
+  });
+
+  /** Records that a waiting command started: its task, node and turn item become running. */
+  const dispatchCommandTaskStart = Effect.fn("orchestrationV2.dispatch.commandTaskStart")(
+    function* (
+      command: Extract<
+        OrchestrationV2InternalCommand,
+        { readonly type: "delegated_task.command.start" }
+      >,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      const { parentProjection, task } = yield* commandTaskRecords(command);
+      if (task.result !== null || task.status !== "pending") return;
+      const now = yield* DateTime.now;
+      const emitEvent = emit(events, command);
+      const { progress: _taskProgress, ...startedTask } = task;
+      yield* emitEvent({
+        type: "subagent.updated",
+        threadId: command.parentThreadId,
+        ...(task.runId === null ? {} : { runId: task.runId }),
+        nodeId: task.id,
+        driver: task.driver,
+        occurredAt: now,
+        payload: { ...startedTask, status: "running", startedAt: now, updatedAt: now },
+      });
+      const node = parentProjection.nodes.find((candidate) => candidate.id === task.id);
+      if (node !== undefined) {
+        yield* emitEvent({
+          type: "node.updated",
+          threadId: command.parentThreadId,
+          ...(node.runId === null ? {} : { runId: node.runId }),
+          nodeId: node.id,
+          driver: task.driver,
+          occurredAt: now,
+          payload: { ...node, status: "running", startedAt: now },
+        });
+      }
+      const item = parentProjection.turnItems.find(
+        (candidate) => candidate.type === "subagent" && candidate.subagentId === task.id,
+      );
+      if (item?.type === "subagent") {
+        const { progress: _itemProgress, ...startedItem } = item;
+        yield* emitEvent({
+          type: "turn-item.updated",
+          threadId: command.parentThreadId,
+          ...(item.runId === null ? {} : { runId: item.runId }),
+          ...(item.nodeId === null ? {} : { nodeId: item.nodeId }),
+          driver: task.driver,
+          occurredAt: now,
+          payload: { ...startedItem, status: "running", startedAt: now, updatedAt: now },
+        });
+      }
     },
   );
 
@@ -9269,36 +9368,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       >,
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     ) {
-      const parentProjection = yield* projectionStore
-        .getThreadRecords(
-          command.parentThreadId,
-          ["runs", "messages", "subagents", "providerTurns", "nodes", "turnItems"],
-          {
-            turnItemTypes: ["subagent"],
-            messageRoles: ["user"],
-            omitSettledSubagents: { except: [command.taskId] },
-            nodeIds: [command.taskId],
-            turnItemNodeIds: [command.taskId],
-          },
-        )
-        .pipe(
-          Effect.mapError(
-            (cause) => new OrchestratorProjectionError({ threadId: command.parentThreadId, cause }),
-          ),
-        );
-      const task = parentProjection.subagents.find(
-        (candidate) =>
-          candidate.id === command.taskId &&
-          candidate.origin === "app_owned" &&
-          candidate.command !== undefined,
-      );
-      if (task === undefined) {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: `Task ${command.taskId} is not a command of thread ${command.parentThreadId}.`,
-        });
-      }
+      const { parentProjection, task } = yield* commandTaskRecords(command);
       if (task.result !== null) return;
       yield* recordAppOwnedTaskResult({
         command,
@@ -15009,6 +15079,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "delegated_task.command.request":
         yield* dispatchCommandTaskRequest(command, events);
+        break;
+      case "delegated_task.command.start":
+        yield* dispatchCommandTaskStart(command, events);
         break;
       case "delegated_task.command.complete":
         yield* dispatchCommandTaskComplete(command, events);

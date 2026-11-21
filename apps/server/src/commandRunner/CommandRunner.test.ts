@@ -14,6 +14,7 @@ import {
   NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type MemoryShortage,
   type ThreadId,
 } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
@@ -53,6 +54,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as CommandRunner from "./CommandRunner.ts";
 import { ENDED_IDENTITY, identityWindow } from "./processIdentity.ts";
 
@@ -355,6 +357,7 @@ const layerTest = Layer.mergeAll(
   ProcessRunner.layer,
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-command-runner-" }),
   NodeCrypto.layer,
+  MemoryAdmission.layerTest(),
 ).pipe(Layer.provideMerge(layerOrchestration), Layer.provideMerge(NodeServices.layer));
 
 /** One server's life: a fresh runner that picks up what an earlier one left, until `use` ends. */
@@ -451,6 +454,7 @@ const commandRow = (taskId: string) =>
       readonly pid: number | null;
       readonly process_identity: string | null;
       readonly started_at: string;
+      readonly deadline_at: string;
       readonly delivered_at: string | null;
       readonly last_alive_at: string | null;
       readonly probe_error: string | null;
@@ -458,8 +462,8 @@ const commandRow = (taskId: string) =>
       readonly lost_output: string | null;
       readonly directory: string;
     }>`
-      SELECT status, exit_code, pid, process_identity, started_at, delivered_at, last_alive_at,
-        probe_error, lost_reason, lost_output, directory
+      SELECT status, exit_code, pid, process_identity, started_at, deadline_at, delivered_at,
+        last_alive_at, probe_error, lost_reason, lost_output, directory
       FROM command_runs WHERE task_id = ${taskId}
     `;
     return rows[0];
@@ -2453,5 +2457,134 @@ describe.runIf(isWindowsHost)("Windows only", () => {
         }),
       );
     },
+  );
+});
+
+/** A machine short of memory until `clear`; each read of it is offered to `reads`. */
+const shortMemory = Effect.gen(function* () {
+  let shortage: MemoryShortage | null = {
+    kind: "available",
+    totalBytes: 8 * 1024 ** 3,
+    availableBytes: 1024 ** 3,
+    reserveBytes: 2 * 1024 ** 3,
+  };
+  const reads = yield* Queue.unbounded<MemoryShortage | null>();
+  const read = Effect.sync(() => shortage).pipe(Effect.tap((seen) => Queue.offer(reads, seen)));
+  return {
+    reads,
+    clear: Effect.sync(() => {
+      shortage = null;
+    }),
+    on: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(
+        Effect.provideService(MemoryAdmission.MemoryAdmission, {
+          shortage: read,
+          shortageOn: () => read,
+        }),
+      ),
+  };
+});
+
+const MEMORY_WAIT =
+  /^Queued until this machine has memory for it: 1 GiB of 8 GiB is available, under the 2 GiB reserve\. Its time limit counts from when it starts\.$/;
+
+it.layer(layerTest, { excludeTestServices: true })("a command waiting for memory", (it) => {
+  it.effect.skipIf(isWindowsHost)(
+    "starts nothing while memory is short, says so in its task, then starts the waiting commands in order, each time limit counted from its start",
+    () =>
+      Effect.gen(function* () {
+        const first = yield* liveChat("command-memory-first");
+        const second = yield* liveChat("command-memory-second");
+        const memory = yield* shortMemory;
+        const [one, two, queued] = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const one = yield* runner.run(callerOf(first.threadId), {
+              command: "echo first",
+              timeoutMinutes: 5,
+            });
+            const two = yield* runner.run(callerOf(second.threadId), { command: "echo second" });
+            // A pass that read the shortage after both were queued started neither.
+            yield* Queue.clear(memory.reads);
+            yield* Queue.take(memory.reads);
+            const queued = (yield* commandRow(one.taskId))!;
+            assert.equal(queued.status, "queued");
+            assert.isNull(queued.pid);
+            assert.isFalse(NodeFS.existsSync(NodePath.join(NodePath.dirname(one.logPath), "pid")));
+            assert.equal((yield* commandRow(two.taskId))?.status, "queued");
+            const waiting = yield* taskOf(first.threadId, one.taskId);
+            assert.equal(waiting?.status, "pending");
+            assert.match(waiting?.progress ?? "", MEMORY_WAIT);
+            yield* memory.clear;
+            yield* wakesOf([first.threadId, second.threadId]);
+            return [one, two, queued] as const;
+          }),
+        ).pipe(memory.on);
+        const ran = (yield* commandRow(one.taskId))!;
+        const ranAfter = (yield* commandRow(two.taskId))!;
+        assert.isAbove(Date.parse(ran.started_at), Date.parse(queued.started_at));
+        assert.isAbove(Date.parse(ranAfter.started_at), Date.parse(ran.started_at));
+        assert.equal(Date.parse(ran.deadline_at) - Date.parse(ran.started_at), 5 * 60_000);
+        const task = yield* taskOf(first.threadId, one.taskId);
+        assert.equal(task?.status, "completed");
+        assert.notProperty(task, "progress");
+        assert.match(task?.result ?? "", /Last output:\nfirst\n/);
+        assert.match((yield* taskOf(second.threadId, two.taskId))?.result ?? "", /second/);
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "keeps a waiting command waiting through a restart, ahead of the ones queued after it",
+    () =>
+      Effect.gen(function* () {
+        const first = yield* liveChat("command-memory-restart-first");
+        const second = yield* liveChat("command-memory-restart-second");
+        const memory = yield* shortMemory;
+        const one = yield* withServer((runner) =>
+          runner.run(callerOf(first.threadId), { command: "echo first" }),
+        ).pipe(memory.on);
+        const two = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const two = yield* runner.run(callerOf(second.threadId), { command: "echo second" });
+            assert.equal((yield* commandRow(one.taskId))?.status, "queued");
+            yield* memory.clear;
+            yield* wakesOf([first.threadId, second.threadId]);
+            return two;
+          }),
+        ).pipe(memory.on);
+        const ran = (yield* commandRow(one.taskId))!;
+        assert.isAbove(
+          Date.parse((yield* commandRow(two.taskId))!.started_at),
+          Date.parse(ran.started_at),
+        );
+        assert.match(
+          (yield* taskOf(first.threadId, one.taskId))?.result ?? "",
+          /Last output:\nfirst\n/,
+        );
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)("never starts a waiting command whose task was cancelled", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("command-memory-cancelled");
+      const other = yield* liveChat("command-memory-cancelled-other");
+      const memory = yield* shortMemory;
+      const cancelled = yield* withServer((runner) =>
+        Effect.gen(function* () {
+          const cancelled = yield* runner.run(callerOf(chat.threadId), {
+            command: "echo > started",
+          });
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          yield* orchestrator.dispatch(cancellationOf(chat.threadId, cancelled.taskId));
+          yield* memory.clear;
+          // It starts after the cancelled one would have.
+          yield* runner.run(callerOf(other.threadId), { command: "echo other" });
+          yield* nextWake(other.threadId);
+          return cancelled;
+        }),
+      ).pipe(memory.on);
+      assert.isUndefined(yield* commandRow(cancelled.taskId));
+      assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "started")));
+      assert.equal((yield* taskOf(chat.threadId, cancelled.taskId))?.status, "cancelled");
+    }),
   );
 });
