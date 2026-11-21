@@ -2544,6 +2544,12 @@ it.effect.each([
     startFromOrigin: false,
     origin: true,
   },
+  {
+    name: "is a commit the origin does not have",
+    baseRef: "0123456789abcdef0123456789abcdef01234567",
+    startFromOrigin: true,
+    origin: true,
+  },
 ])("refuses a new worktree whose base ref $name", (testCase) =>
   Effect.gen(function* () {
     const harness = makeHarness({
@@ -2552,6 +2558,7 @@ it.effect.each([
         resolveWorktreeBaseRemote: () =>
           Effect.succeed(testCase.origin ? { remoteName: "origin", branchName: "main" } : null),
         hasRefNamed: () => Effect.succeed(false),
+        fetchRemote: () => Effect.void,
       },
     });
     yield* Effect.gen(function* () {

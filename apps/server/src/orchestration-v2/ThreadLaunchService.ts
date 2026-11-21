@@ -302,9 +302,10 @@ const make = Effect.gen(function* () {
       // `git worktree add` reads `-` as the previous checkout.
       if (yield* git.hasCommit({ cwd, refName: baseRef === "-" ? "@{-1}" : baseRef }))
         return undefined;
+      // A commit names no remote branch, so after the fetch it is here or in no remote.
       if (strategy.startFromOrigin === true && isCommitSha(baseRef)) {
         yield* fetchCommitFromOrigin(cwd, baseRef);
-        if (yield* git.hasCommit({ cwd, refName: baseRef })) return undefined;
+        return (yield* git.hasCommit({ cwd, refName: baseRef })) ? undefined : project;
       }
       if (
         strategy.startFromOrigin === true &&
