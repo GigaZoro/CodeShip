@@ -1,3 +1,7 @@
+## 2026-11-21 — Relay install tests run on Windows
+
+- The relay client install and version-selection tests build every path with the Path service and the host's PATH delimiter, so they run on Windows hosts instead of being skipped.
+
 ## 2026-11-21 — Auto mode review target keeps only supported options
 
 - Auto mode's independent review target now lists only the options its model currently offers, so a stored option such as Codex `serviceTier` no longer makes the review delegate fail with "Unknown option".
