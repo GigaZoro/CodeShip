@@ -96,11 +96,14 @@ and `install.sh` for Linux servers. Its Linux installers are not published.
 
 The macOS arm64 app (DMG and the zip updates use) comes from `release-fork-macos.yml` (**Release
 (fork) macOS**), which the release starts once it is published, because GitHub can run short of
-hosted macOS runners for hours and Windows and Linux do not need one. Until it attaches the app and
-its `latest-mac.yml`, the release serves the previous release's `latest-mac.yml` with its file
-links pointing back at that release, so Macs stay on the build they have instead of failing their
-update check. Only one macOS build runs at a time; a newer release's waiting build replaces an
-older one's.
+hosted macOS runners for hours and Windows and Linux do not need one. It runs at the release's tag
+and refuses any other ref, so the workflows and actions that hold the macOS signing secrets are
+the ones of the commit the release was built from. Before signing, it checks the release's
+recorded producer run and artifact ID, verifies the downloaded archive's SHA-256 digest, and
+checks the version inside the bundle. Until it attaches the app and its `latest-mac.yml`, the
+release serves the previous release's `latest-mac.yml` with links pointing back at that release.
+Macs stay on their existing build and update checks keep working. Only one macOS build runs at a
+time, and a newer release's waiting build replaces an older one's.
 
 The release is marked latest in the fork's own repository, with the updater manifests, so
 desktop apps built by that workflow offer each new release through the update button. The server,
@@ -120,12 +123,14 @@ Builds use the public T3 Connect identifiers in `.env.example`. Releases also fa
 outside the build: a job waiting for a GitHub-hosted runner is cancelled after about 15 minutes
 without one, and GitHub outages make downloads such as Electron's time out for hours.
 `release-fork-retry.yml` reruns a failed release's failed jobs while its commit is still the head of
-`main`, and a failed macOS build's while its release is still the latest: right away while the only
+`main`, and a failed macOS build's while it runs at the latest release's tag: right away while the only
 failures are jobs that never got a runner, otherwise twice right away and then from its half-hourly
 schedule, which GitHub often delays by hours. The schedule also starts a release when the head of
 `main` has no run at all, and a macOS build when the latest release has none. Past 24 attempts it
 fails the scheduled run. To repair one by hand, rerun the failed run, or run **Release (fork)
-macOS** with the release's version and the id of the **Release (fork)** run that published it.
+macOS** at the tag `v<version>`, with the version and the publishing **Release (fork)** run ID
+recorded in the release body. The catch-up job reads that same record. A release without a recorded
+bundle cannot start a new macOS build through these workflows.
 
 - **One-time setup.** Forks start with Actions disabled; enable them in the fork's Actions tab.
   Most other workflows ask for upstream's Blacksmith runners, which a fork does not have, so their
