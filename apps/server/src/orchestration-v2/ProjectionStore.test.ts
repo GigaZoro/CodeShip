@@ -8519,6 +8519,78 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  it.effect(
+    "reads a runless thread's pending background work the same in the shell and settlement",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const threadId = ThreadId.make("thread:runless-background");
+        const providerThreadId = ProviderThreadId.make("provider-thread:runless-background");
+        const at = DateTime.makeUnsafe("2026-09-28T12:00:00.000Z");
+        yield* store.apply({
+          id: EventId.make("event:runless-background:thread"),
+          type: "thread.created",
+          threadId,
+          occurredAt: at,
+          payload: {
+            createdBy: "user",
+            creationSource: "web",
+            id: threadId,
+            projectId: ProjectId.make("project:runless-background"),
+            title: "Runless",
+            providerInstanceId,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: null,
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+            forkedFrom: null,
+            createdAt: at,
+            updatedAt: at,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+        });
+        yield* store.apply({
+          id: EventId.make("event:runless-background:provider-thread"),
+          type: "provider-thread.updated",
+          threadId,
+          driver,
+          providerInstanceId,
+          occurredAt: at,
+          payload: {
+            id: providerThreadId,
+            driver,
+            providerInstanceId,
+            providerSessionId: null,
+            appThreadId: threadId,
+            ownerNodeId: null,
+            nativeThreadRef: null,
+            nativeConversationHeadRef: null,
+            status: "idle" as const,
+            firstRunOrdinal: 1,
+            lastRunOrdinal: 1,
+            handoffIds: [],
+            forkedFrom: null,
+            pendingBackgroundTasks: [
+              { taskId: "watch", kind: "monitor" as const, awaited: true as const },
+            ],
+            createdAt: at,
+            updatedAt: at,
+          },
+        });
+        const shell = yield* store.getThreadShell(threadId);
+        const [candidate] = yield* store.getSettlementCandidates(threadId);
+        assert.deepEqual(candidate?.pendingBackgroundTasks, shell?.pendingBackgroundTasks);
+        assert.equal(shell?.pendingBackgroundTasks?.length, 1);
+      }),
+  );
+
   it.effect("dates a completion released by held background work at the release", () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;

@@ -2147,6 +2147,37 @@ function shellFromState(input: {
   };
 }
 
+// The thread shell and settlement candidates both read this, so a runless thread's background
+// work cannot count in one and not the other.
+function pendingBackgroundTasksForThread(input: {
+  readonly thread: OrchestrationV2AppThread;
+  readonly latestRunId: RunId | null;
+  readonly latestRunStatus: OrchestrationV2ShellThreadStatus;
+  readonly hasActiveRun: boolean;
+  readonly providerThreadsByThreadId: ReadonlyMap<
+    ThreadId,
+    ReadonlyArray<OrchestrationV2ThreadProjection["providerThreads"][number]>
+  >;
+  readonly pendingTurnItemsByThreadId: ReadonlyMap<
+    ThreadId,
+    ReadonlyArray<OrchestrationV2TurnItem>
+  >;
+}) {
+  const { thread, latestRunId, latestRunStatus } = input;
+  return derivePendingBackgroundWork({
+    latestRun:
+      latestRunId === null || latestRunStatus === "idle"
+        ? null
+        : { id: latestRunId, ordinal: 0, status: latestRunStatus },
+    providerThreads: input.providerThreadsByThreadId.get(thread.id) ?? [],
+    turnItems: input.pendingTurnItemsByThreadId.get(thread.id) ?? [],
+    activeProviderThreadId: thread.activeProviderThreadId,
+    hasActiveRun: input.hasActiveRun,
+    holdsWorkWithoutRun: latestRunId === null,
+    pullRequests: thread.pullRequests,
+  });
+}
+
 export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> = Layer.effect(
   ProjectionStoreV2,
   Effect.gen(function* () {
@@ -7391,17 +7422,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   activityRunStartedAt: null,
                   pendingRuntimeRequest: null,
                   pendingGuestMessageCount: pendingGuestMessageCount(thread.guestShare),
-                  pendingBackgroundTasks: derivePendingBackgroundWork({
-                    latestRun:
-                      latestRunId === null || status === "idle"
-                        ? null
-                        : { id: latestRunId, ordinal: 0, status },
-                    providerThreads: providerThreadsByThreadId.get(thread.id) ?? [],
-                    turnItems: pendingTurnItemsByThreadId.get(thread.id) ?? [],
-                    activeProviderThreadId: thread.activeProviderThreadId,
+                  pendingBackgroundTasks: pendingBackgroundTasksForThread({
+                    thread,
+                    latestRunId,
+                    latestRunStatus: status,
                     hasActiveRun: false,
-                    holdsWorkWithoutRun: latestRunId === null,
-                    pullRequests: thread.pullRequests,
+                    providerThreadsByThreadId,
+                    pendingTurnItemsByThreadId,
                   }),
                 } satisfies ProjectionSettlementCandidate;
               }),
@@ -7674,23 +7701,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             latestRunModelSelectionJson = row.blocking_run_model_selection_json;
           }
         }
-        const pendingBackgroundTasks = [
-          ...derivePendingBackgroundWork({
-            latestRun:
-              latestRunId === null || latestRunStatus === "idle"
-                ? null
-                : {
-                    id: latestRunId,
-                    ordinal: 0,
-                    status: latestRunStatus,
-                  },
-            providerThreads: providerThreadsByThreadId.get(thread.id) ?? [],
-            turnItems: pendingTurnItemsByThreadId.get(thread.id) ?? [],
-            activeProviderThreadId: thread.activeProviderThreadId,
-            hasActiveRun: row.active_run_id !== null,
-            pullRequests: thread.pullRequests,
-          }),
-        ];
+        const pendingBackgroundTasks = pendingBackgroundTasksForThread({
+          thread,
+          latestRunId,
+          latestRunStatus,
+          hasActiveRun: row.active_run_id !== null,
+          providerThreadsByThreadId,
+          pendingTurnItemsByThreadId,
+        });
         return {
           thread,
           latestRunId,
