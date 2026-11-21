@@ -143,19 +143,20 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+const UPTIME_SCRIPT = `ObjC.import("Foundation"); String(Math.floor($.NSProcessInfo.processInfo.systemUptime * 1000))`;
+
 /**
- * Milliseconds the machine has been awake, for a span inside one process. On macOS performance.now() counts sleep, and a
- * Mac asleep with its lid closed wakes for seconds without a network; NSProcessInfo.systemUptime is the time awake since
- * boot. Linux's monotonic clock stops while it sleeps too; Windows hosts stay awake.
+ * NSProcessInfo.systemUptime in milliseconds: the time a Mac has been awake since boot. The read's timeout counts sleep,
+ * so a read the Mac slept through times out when it wakes; a second read tells that apart from a reader that hangs.
  */
-function awakeNow() {
-  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime; tests pass awakeClock.
-  if (process.platform !== "darwin") return performance.now();
-  const script = `ObjC.import("Foundation"); String(Math.floor($.NSProcessInfo.processInfo.systemUptime * 1000))`;
-  const result = spawnSync("/usr/bin/osascript", ["-l", "JavaScript", "-e", script], {
-    encoding: "utf8",
-    timeout: 5000,
-  });
+function macAwakeMs(spawn = spawnSync) {
+  const read = () =>
+    spawn("/usr/bin/osascript", ["-l", "JavaScript", "-e", UPTIME_SCRIPT], {
+      encoding: "utf8",
+      timeout: 5000,
+    });
+  let result = read();
+  if (result.error?.code === "ETIMEDOUT") result = read();
   const match = /^(\d+)\s*$/.exec(result.stdout ?? "");
   if (result.status !== 0 || !match) {
     throw new Error(
@@ -163,6 +164,16 @@ function awakeNow() {
     );
   }
   return Number(match[1]);
+}
+
+/**
+ * Milliseconds the machine has been awake, for a span inside one process. On macOS performance.now() counts sleep, and a
+ * Mac asleep with its lid closed wakes for seconds without a network. Linux's monotonic clock stops while it sleeps;
+ * Windows' performance counter does not, so a Windows host that sleeps still counts its sleep.
+ */
+function awakeNow() {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime; tests pass awakeClock.
+  return process.platform === "darwin" ? macAwakeMs() : performance.now();
 }
 
 /**
@@ -365,6 +376,7 @@ module.exports = {
   tryAcquire,
   release,
   acquire,
+  macAwakeMs,
   withTurn,
   verifyPush,
   land,

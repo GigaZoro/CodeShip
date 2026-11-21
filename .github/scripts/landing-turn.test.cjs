@@ -13,6 +13,7 @@ const {
   checkBudgetSeconds,
   acquire,
   land,
+  macAwakeMs,
   release,
   tryAcquire,
   verifyPush,
@@ -347,6 +348,30 @@ test("a waiting lander waits through failed reads of origin, and only failures t
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a Mac's awake clock is read again when the Mac slept through a read, and a reader that fails again throws", () => {
+  const timedOut = {
+    status: null,
+    stdout: "",
+    stderr: "",
+    error: Object.assign(new Error("spawnSync /usr/bin/osascript ETIMEDOUT"), {
+      code: "ETIMEDOUT",
+    }),
+  };
+  const reads =
+    (...results) =>
+    () =>
+      results.shift() ?? assert.fail("read the clock once more than expected");
+  assert.equal(
+    macAwakeMs(reads(timedOut, { status: 0, stdout: "153885715\n", stderr: "" })),
+    153885715,
+  );
+  assert.throws(() => macAwakeMs(reads(timedOut, timedOut)), /systemUptime failed: .*ETIMEDOUT/);
+  assert.throws(
+    () => macAwakeMs(reads({ status: 1, stdout: "", stderr: "execution error: -2700" })),
+    /systemUptime failed: execution error: -2700/,
+  );
 });
 
 test("a waiting lander that cannot fetch the holder's lease leaves it in place", () => {
