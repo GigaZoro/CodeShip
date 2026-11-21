@@ -1,3 +1,7 @@
+## 2026-11-21 — Weekly library upgrades are ready
+
+- A weekly task is ready to move every library, Node, pnpm, Electron, the Rust crates' dependencies and the GitHub Actions to their newest stable releases, the day after the sync from T3 Code. It takes only releases at least 3 days old, reads every changed install script before it runs, ports local patches, and lands only after the full checks and two reviewers pass. The mobile app's native packages keep following T3 Code, and a version it cannot take yet is recorded as a hold and retried every week. No change to the app.
+
 ## 2026-11-21 — Chats that resume by themselves wait for memory and start one at a time
 
 - After a restart, every chat it cut resumed at once, which could overload the machine: one had 1.7 GiB free 13 minutes after it started. Chats that continue by themselves after a restart, a network outage or a usage limit now resume one at a time, the chat that stopped first first, each once the one before it has reached its agent, and none starts while memory is short (**Settings → Maintenance & about → Background activity**). A waiting chat says **Waiting for memory** and keeps its place through another restart; a message you send in it starts it at once. Chats you start are never held.
