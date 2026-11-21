@@ -473,24 +473,35 @@ jobs:
         env:
           CSC_LINK: ${{ inputs.platform == 'mac' && secrets.CSC_LINK || '' }}
           CSC_KEY_PASSWORD: ${{ inputs.platform == 'mac' && secrets.CSC_KEY_PASSWORD || '' }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          APPLE_API_KEY: ${{ inputs.platform == 'mac' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_KEY_ID: ${{ inputs.platform == 'mac' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ inputs.platform == 'mac' && secrets.APPLE_API_ISSUER || '' }}
+          AZURE_TENANT_ID: ${{ inputs.platform == 'win' && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_CLIENT_ID: ${{ inputs.platform == 'win' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ inputs.platform == 'win' && secrets.AZURE_CLIENT_SECRET || '' }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ inputs.platform == 'win' && secrets.AZURE_TRUSTED_SIGNING_ENDPOINT || '' }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ inputs.platform == 'win' && secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME || '' }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ inputs.platform == 'win' && secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME || '' }}
         run: |
           set -euo pipefail
           # Later steps run the archive and the app, so the identity and the notarization key
           # exist only while this step signs.
           signing_dir=""
           keychain=""
+          user_keychains() { security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//'; }
+          # Runs every removal however one fails, and fails the step when one did.
           cleanup() {
-            if [[ -n "$keychain" ]]; then security delete-keychain "$keychain"; fi
-            if [[ -n "$signing_dir" ]]; then rm -rf "$signing_dir"; fi
+            local rc=$? entry
+            if [[ -n "$signing_dir" ]]; then
+              if command -v security >/dev/null; then
+                while IFS= read -r entry; do
+                  if [[ "$entry" == "$signing_dir"/* ]]; then security delete-keychain "$entry" || rc=1; fi
+                done < <(user_keychains)
+                if [[ -n "$keychain" && -e "$keychain" ]]; then security delete-keychain "$keychain" || rc=1; fi
+              fi
+              rm -rf "$signing_dir" || rc=1
+            fi
+            exit "$rc"
           }
           trap cleanup EXIT
           if [[ "${{ inputs.platform }}" == "mac" ]]; then
@@ -507,7 +518,9 @@ jobs:
               security import "$cert_path" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
               rm -f "$cert_path"
               security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
-              security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+              search_list=()
+              while IFS= read -r entry; do search_list+=("$entry"); done < <(user_keychains)
+              security list-keychains -d user -s "$keychain" ${search_list[@]+"${search_list[@]}"}
               identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)"
               if [[ -z "$identity" ]]; then
                 echo "No Developer ID Application identity found in CSC_LINK." >&2
@@ -609,33 +622,50 @@ jobs:
       - name: Package desktop artifact
         shell: bash
         env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          CSC_LINK: ${{ inputs.platform == 'mac' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ inputs.platform == 'mac' && secrets.CSC_KEY_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ inputs.platform == 'mac' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_KEY_ID: ${{ inputs.platform == 'mac' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ inputs.platform == 'mac' && secrets.APPLE_API_ISSUER || '' }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
-          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
-          MACOS_SELF_SIGNED_CERTIFICATE: ${{ secrets.MACOS_SELF_SIGNED_CERTIFICATE }}
-          MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD }}
+          MACOS_PROVISIONING_PROFILE: ${{ inputs.platform == 'mac' && secrets.MACOS_PROVISIONING_PROFILE || '' }}
+          MACOS_SELF_SIGNED_CERTIFICATE: ${{ inputs.platform == 'mac' && secrets.MACOS_SELF_SIGNED_CERTIFICATE || '' }}
+          MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD: ${{ inputs.platform == 'mac' && secrets.MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD || '' }}
           T3CODE_CLERK_PASSKEY_RP_DOMAINS: ${{ vars.CLERK_PASSKEY_RP_DOMAINS }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
-          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
+          AZURE_TENANT_ID: ${{ inputs.platform == 'win' && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_CLIENT_ID: ${{ inputs.platform == 'win' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ inputs.platform == 'win' && secrets.AZURE_CLIENT_SECRET || '' }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ inputs.platform == 'win' && secrets.AZURE_TRUSTED_SIGNING_ENDPOINT || '' }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ inputs.platform == 'win' && secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME || '' }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ inputs.platform == 'win' && secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME || '' }}
+          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ inputs.platform == 'win' && secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME || '' }}
         run: |
           # The launch check after this step runs the app, so the notarization key, the profile
-          # and the self-signed keychain exist only while this step signs.
+          # and every keychain, electron-builder's own included, exist only while this step signs.
           signing_dir=""
           keychain=""
+          user_keychains() { security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//'; }
+          # Runs every removal however one fails, and fails the step when one did.
           cleanup() {
-            if [[ -n "$keychain" ]]; then security delete-keychain "$keychain"; fi
-            if [[ -n "$signing_dir" ]]; then rm -rf "$signing_dir"; fi
+            local rc=$? entry
+            if [[ -n "$signing_dir" ]]; then
+              if command -v security >/dev/null; then
+                while IFS= read -r entry; do
+                  if [[ "$entry" == "$signing_dir"/* ]]; then security delete-keychain "$entry" || rc=1; fi
+                done < <(user_keychains)
+                if [[ -n "$keychain" && -e "$keychain" ]]; then security delete-keychain "$keychain" || rc=1; fi
+              fi
+              rm -rf "$signing_dir" || rc=1
+            fi
+            exit "$rc"
           }
           trap cleanup EXIT
+          signing_dir="$(mktemp -d "$RUNNER_TEMP/desktop-signing.XXXXXX")"
+          # electron-builder writes its CSC_LINK keychain and certificate here. It trusts an
+          # unpacked tool in its cache by file count, so it starts from a cache no earlier step filled.
+          export APP_BUILDER_TMP_DIR="$signing_dir/tmp"
+          export ELECTRON_BUILDER_CACHE="$signing_dir/electron-builder-cache"
+          mkdir "$APP_BUILDER_TMP_DIR" "$ELECTRON_BUILDER_CACHE"
 
           args=(
             --phase package
@@ -663,7 +693,6 @@ jobs:
                 exit 1
               fi
 
-              signing_dir="$(mktemp -d "$RUNNER_TEMP/desktop-signing.XXXXXX")"
               key_path="$signing_dir/AuthKey_${APPLE_API_KEY_ID}.p8"
               printf '%s' "$APPLE_API_KEY" > "$key_path"
               export APPLE_API_KEY="$key_path"
@@ -677,7 +706,6 @@ jobs:
               echo "macOS signing enabled."
               args+=(--signed)
             elif has_all "$MACOS_SELF_SIGNED_CERTIFICATE" "$MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD"; then
-              signing_dir="$(mktemp -d "$RUNNER_TEMP/desktop-signing.XXXXXX")"
               keychain_password="$(openssl rand -hex 16)"
               echo "::add-mask::$keychain_password"
               cert_path="$signing_dir/t3-self-signed.p12"
@@ -689,7 +717,9 @@ jobs:
               security import "$cert_path" -k "$keychain" -P "$MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
               security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
               # codesign finds no identity in a keychain outside the search list, even with --keychain.
-              security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+              search_list=()
+              while IFS= read -r entry; do search_list+=("$entry"); done < <(user_keychains)
+              security list-keychains -d user -s "$keychain" ${search_list[@]+"${search_list[@]}"}
               rm -f "$cert_path"
               # Untrusted identities are listed with -p codesigning but not with -v.
               identity="$(security find-identity -p codesigning "$keychain" | sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) .*/\1/p' | head -n 1)"
