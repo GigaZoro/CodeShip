@@ -4,7 +4,6 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   isThreadWaitingOnWork,
   matchesThreadListStatus,
-  resolveThreadListStatus,
   resolveThreadStatus,
 } from "./threadStatus.ts";
 
@@ -18,7 +17,12 @@ describe("resolveThreadStatus", () => {
     updatedAt: "2026-03-09T10:00:00.000Z",
   };
 
-  const idle = { hasPendingApprovals: false, hasPendingUserInput: false, runtime: null };
+  const idle = {
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    runtime: null,
+    latestRun: null,
+  };
 
   it("prioritizes awaiting input over a running runtime, below approval", () => {
     expect(
@@ -74,7 +78,7 @@ describe("resolveThreadStatus", () => {
       latestRun: { status: "failed" as const, completedAt: "2026-03-09T10:00:00.000Z" },
       lastVisitedAt: "2026-03-09T09:00:00.000Z",
     };
-    expect(resolveThreadListStatus(agentStarted)).toBe("failed");
+    expect(resolveThreadStatus(agentStarted)).toBe("failed");
     expect(matchesThreadListStatus(agentStarted, "failed")).toBe(true);
     expect(matchesThreadListStatus(agentStarted, "unread")).toBe(false);
     expect(

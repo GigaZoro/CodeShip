@@ -6,7 +6,6 @@ import {
 } from "@t3tools/client-runtime/state/models";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
-import { threadFailureStatus } from "@t3tools/client-runtime/state/thread-inbox";
 import {
   resolveThreadStatus,
   THREAD_STATUS_DISPLAY,
@@ -288,7 +287,7 @@ export function startThreadNotifications(
         continue;
       }
       const thread = presentThreadShell(environmentId, rawThread, subagentRequest);
-      const status = threadFailureStatus(thread) ?? resolveThreadStatus(thread);
+      const status = resolveThreadStatus(thread);
       const attention =
         status === "input" ||
         status === "request" ||

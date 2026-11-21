@@ -1,5 +1,5 @@
 import {
-  resolveThreadListStatus,
+  resolveThreadStatus,
   THREAD_STATUS_DISPLAY,
   type ThreadStatus,
   type ThreadStatusDisplayKey,
@@ -1063,7 +1063,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const selected = props.selected === true;
   const rowAppearance = getThreadListV2RowAppearance(theme, sidebarPane, selected);
 
-  const status = resolveThreadListStatus(thread);
+  const status = resolveThreadStatus(thread);
   const isUnread = status === "ready" && threadHasUnseenCompletion(thread);
   const workingLabel = STATUS_LABEL_BY_STATUS[status];
   const showsWoke = status === "ready" && props.wokeAt !== null;

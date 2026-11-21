@@ -4,11 +4,7 @@ import * as DateTime from "effect/DateTime";
 import { threadRuntimeIsActive, type EnvironmentThreadShell } from "./models.ts";
 import { toSortableTimestamp } from "./threadSort.ts";
 import { effectiveSnoozed, type ThreadSnoozeShell } from "./threadSettled.ts";
-import {
-  resolveThreadStatus,
-  threadFailureFromStatus,
-  type ThreadStatusInput,
-} from "./threadStatus.ts";
+import { resolveThreadStatus, type ThreadStatusInput } from "./threadStatus.ts";
 
 type WorkingThreadInput = Pick<
   EnvironmentThreadShell,
@@ -58,19 +54,12 @@ export function threadAwaitsUser(
 /** Why a thread cannot go on without the user. */
 export type NeedsYouReason = "approval" | "input" | "request" | "failed" | "limited";
 
-type FailureInput = ThreadStatusInput & Pick<EnvironmentThreadShell, "latestRun">;
-
-/**
- * A run that stopped on an error: the thread's own failure, or a latest run that failed while
- * the session itself idled on. Notifications and Needs you both count these.
- */
-export function threadFailureStatus(thread: FailureInput): "failed" | "limited" | null {
-  return threadFailureFromStatus(resolveThreadStatus(thread), thread.latestRun);
-}
-
-export type NeedsYouInput = FailureInput &
+export type NeedsYouInput = ThreadStatusInput &
   ThreadSnoozeShell &
-  Pick<EnvironmentThreadShell, "createdBy" | "settledOverride" | "updatedAt" | "laterAt"> &
+  Pick<
+    EnvironmentThreadShell,
+    "createdBy" | "settledOverride" | "updatedAt" | "laterAt" | "latestRun"
+  > &
   Partial<Pick<EnvironmentThreadShell, "limitRecovery">>;
 
 /**
@@ -92,18 +81,17 @@ export function threadNeedsYouReason(
 ): NeedsYouReason | null {
   const status = resolveThreadStatus(thread);
   if (status === "approval" || status === "input" || status === "request") return status;
-  const failure = threadFailureFromStatus(status, thread.latestRun);
-  if (failure === null || !failureWaitsOnUser(thread)) return null;
+  if ((status !== "failed" && status !== "limited") || !failureWaitsOnUser(thread)) return null;
   if (effectiveSnoozed(thread, options)) return null;
   const recovery = thread.limitRecovery;
   if (
-    failure === "limited" &&
+    status === "limited" &&
     recovery?.autoResume === true &&
     recovery.runId === thread.latestRun?.runId
   ) {
     return null;
   }
-  return failure;
+  return status;
 }
 
 /** When the thread started waiting on the user, in epoch milliseconds. */
@@ -141,11 +129,9 @@ export function collectNeedsYouThreads<
       sinceByThread.set(thread, threadNeedsYouSince(thread, reason));
       continue;
     }
-    if (
-      thread.snoozedUntil != null &&
-      failureWaitsOnUser(thread) &&
-      threadFailureStatus(thread) !== null
-    ) {
+    if (thread.snoozedUntil != null && failureWaitsOnUser(thread)) {
+      const status = resolveThreadStatus(thread);
+      if (status !== "failed" && status !== "limited") continue;
       const wakeAt = Date.parse(thread.snoozedUntil);
       if (wakeAt > Date.parse(options.now) && (nextChangeAt === null || wakeAt < nextChangeAt)) {
         nextChangeAt = wakeAt;

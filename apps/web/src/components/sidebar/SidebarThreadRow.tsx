@@ -1,4 +1,4 @@
-import { resolveThreadListStatus } from "@t3tools/client-runtime/state/thread-status";
+import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { resolveThreadRowStatus, ThreadRowStatusContent } from "./threadRowStatus";
 import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
@@ -801,7 +801,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     ? resolveThreadCurrentPullRequestLink(thread.pullRequests)
     : null;
 
-  const status = resolveThreadListStatus(thread);
+  const status = resolveThreadStatus(thread);
   const isUnread =
     status !== "failed" &&
     status !== "limited" &&

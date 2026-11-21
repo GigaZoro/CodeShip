@@ -26,7 +26,9 @@ export type ThreadStatusInput = Pick<
   | "pendingGuestMessageCount"
   | "runtime"
   | "blockedOnThreadWait"
->;
+> & {
+  readonly latestRun: Pick<NonNullable<EnvironmentThreadShell["latestRun"]>, "status"> | null;
+};
 
 export function resolveThreadStatus(thread: ThreadStatusInput): ThreadStatus {
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
@@ -54,15 +56,7 @@ export function resolveThreadStatus(thread: ThreadStatusInput): ThreadStatus {
   if (thread.runtime?.status === "failed") {
     return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
   }
-  return "ready";
-}
-
-export function threadFailureFromStatus(
-  status: ThreadStatus,
-  latestRun: Pick<NonNullable<EnvironmentThreadShell["latestRun"]>, "status"> | null,
-): "failed" | "limited" | null {
-  if (status === "failed" || status === "limited") return status;
-  return status === "ready" && latestRun?.status === "failed" ? "failed" : null;
+  return thread.latestRun?.status === "failed" ? "failed" : "ready";
 }
 
 /**
@@ -149,20 +143,7 @@ type ThreadCompletionInput = {
   readonly lastVisitedAt?: string | null | undefined;
 };
 
-type ThreadListStatusInput = ThreadStatusInput &
-  ThreadCompletionInput & {
-    readonly latestRun: Pick<
-      NonNullable<EnvironmentThreadShell["latestRun"]>,
-      "completedAt" | "status"
-    > | null;
-  };
-
-export function resolveThreadListStatus(
-  thread: ThreadStatusInput & Pick<ThreadListStatusInput, "latestRun">,
-): ThreadStatus {
-  const status = resolveThreadStatus(thread);
-  return threadFailureFromStatus(status, thread.latestRun) ?? status;
-}
+type ThreadListStatusInput = ThreadStatusInput & ThreadCompletionInput;
 
 export function hasUnseenCompletion(thread: ThreadCompletionInput): boolean {
   if (!thread.latestRun?.completedAt) return false;
@@ -199,7 +180,7 @@ export function resolveProjectThreadState(
   thread: ThreadListStatusInput,
   flags: Parameters<typeof classifyThreadStatus>[2] = {},
 ): ProjectThreadState {
-  return classifyThreadStatus(resolveThreadListStatus(thread), thread, flags);
+  return classifyThreadStatus(resolveThreadStatus(thread), thread, flags);
 }
 
 export function matchesThreadListStatus(
@@ -208,7 +189,7 @@ export function matchesThreadListStatus(
   flags: Parameters<typeof classifyThreadStatus>[2] = {},
 ): boolean {
   if (filter === "all") return true;
-  const status = resolveThreadListStatus(thread);
+  const status = resolveThreadStatus(thread);
   if (filter === "failed") return status === "failed";
   return classifyThreadStatus(status, thread, flags) === (filter === "unread" ? "done" : filter);
 }

@@ -11,10 +11,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import {
-  threadFailureStatus,
-  type NeedsYouReason,
-} from "@t3tools/client-runtime/state/thread-inbox";
+import type { NeedsYouReason } from "@t3tools/client-runtime/state/thread-inbox";
 import {
   resolveThreadStatus,
   THREAD_STATUS_DISPLAY,
@@ -49,8 +46,7 @@ const REASON_ICON = {
 /** Listed threads already passed the snooze and settle checks, so only the kind of wait is left. */
 function needsYouReasonOf(thread: EnvironmentThreadShell): NeedsYouReason {
   const status = resolveThreadStatus(thread);
-  if (status === "approval" || status === "input" || status === "request") return status;
-  return threadFailureStatus(thread) ?? "failed";
+  return status === "ready" || status === "working" || status === "waiting" ? "failed" : status;
 }
 
 function firstLine(text: string): string {
