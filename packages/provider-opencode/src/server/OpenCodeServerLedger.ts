@@ -236,6 +236,13 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
   const removeHolder = (holder: string | undefined) =>
     holder === undefined ? Effect.void : fs.remove(holder, { force: true });
 
+  // A launch opens its FIFO before it checks its claim, so once the claim is gone a holder that
+  // does not answer never will, and the launch exits before its server runs.
+  const stopHeld = (holder: string) =>
+    fs
+      .remove(`${holder.slice(0, -HOLDER_SUFFIX.length)}${LAUNCH_SUFFIX}`, { force: true })
+      .pipe(Effect.map(() => stopFifoHolderGroup(holder)));
+
   // Without an owner to record, a FIFO no later server could tell from a live one's goes unheld.
   const holderFifo: OpenCodeServerLedger["Service"]["holderFifo"] =
     recordable && owner !== undefined
@@ -331,7 +338,7 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
   const stopOrphan = Effect.fn("OpenCodeServerLedger.stopOrphan")(function* (
     entry: OpenCodeServerEntry,
   ) {
-    if (entry.holder !== undefined && stopFifoHolderGroup(entry.holder)) {
+    if (entry.holder !== undefined && (yield* stopHeld(entry.holder))) {
       return yield* Effect.logInfo(
         "Stopping an OpenCode server left by a previous T3.CodeShip server",
         { pid: entry.pgid, port: entry.port },
@@ -379,12 +386,12 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
 
   const reapEntry = Effect.fn("OpenCodeServerLedger.reapEntry")(
     function* (entryPath: string) {
+      // Another home can share this directory through a link; its own servers reap its records.
       const entry = decodeEntry(yield* fs.readFileString(entryPath));
-      if (Option.isSome(entry) && entry.value.stateDir === input.stateDir) {
-        if (yield* isRunning(entry.value.owner)) return;
-        yield* stopOrphan(entry.value);
-        yield* removeHolder(entry.value.holder);
-      }
+      if (Option.isNone(entry) || entry.value.stateDir !== input.stateDir) return;
+      if (yield* isRunning(entry.value.owner)) return;
+      yield* stopOrphan(entry.value);
+      yield* removeHolder(entry.value.holder);
       yield* fs.remove(entryPath, { force: true });
     },
     (effect, entryPath) =>
@@ -397,7 +404,7 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
 
   // The FIFO of a launch whose claim is gone. A holder that reads it started before the claim went.
   const stopUnclaimed = Effect.fn("OpenCodeServerLedger.stopUnclaimed")(function* (holder: string) {
-    if (stopFifoHolderGroup(holder)) {
+    if (yield* stopHeld(holder)) {
       yield* Effect.logInfo(
         "Stopping an OpenCode server a previous T3.CodeShip server left unrecorded",
       );
@@ -406,15 +413,16 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
   });
 
   // A launch its server never recorded, or whose record went with the server: only its holder
-  // knows the group, and stops it. Its record goes first, so a launch still starting never runs.
+  // knows the group, and stops it. A record's reap can take the launch first.
   const reapLaunch = Effect.fn("OpenCodeServerLedger.reapLaunch")(
     function* (launchPath: string) {
-      const launch = decodeLaunch(yield* fs.readFileString(launchPath));
-      if (Option.isNone(launch) || launch.value.stateDir !== input.stateDir) {
-        return yield* fs.remove(launchPath, { force: true });
-      }
+      const contents = yield* fs
+        .readFileString(launchPath)
+        .pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.undefined));
+      if (contents === undefined) return;
+      const launch = decodeLaunch(contents);
+      if (Option.isNone(launch) || launch.value.stateDir !== input.stateDir) return;
       if (yield* isRunning(launch.value.owner)) return;
-      yield* fs.remove(launchPath, { force: true });
       yield* stopUnclaimed(`${launchPath.slice(0, -LAUNCH_SUFFIX.length)}${HOLDER_SUFFIX}`);
     },
     (effect, launchPath) =>

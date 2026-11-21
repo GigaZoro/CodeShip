@@ -29,10 +29,7 @@ export const identityTime = (identity: string | null): number | undefined => {
   return Number.isFinite(ms) ? ms : undefined;
 };
 
-/**
- * When the process an identity names started, as closely as it tells. A window's ends are wall-clock
- * reads, which a clock set back between them leaves in either order.
- */
+/** When the process an identity names started, as closely as it tells. */
 export const identityWindow = (
   identity: string | null,
 ): { readonly from: number; readonly to: number } | undefined => {
@@ -41,7 +38,7 @@ export const identityWindow = (
   if (identity === null || !identity.startsWith(WINDOW_PREFIX)) return undefined;
   const [from, to] = identity.slice(WINDOW_PREFIX.length).split(":").map(Number);
   return from !== undefined && to !== undefined && Number.isFinite(from) && Number.isFinite(to)
-    ? { from: Math.min(from, to), to: Math.max(from, to) }
+    ? { from, to }
     : undefined;
 };
 

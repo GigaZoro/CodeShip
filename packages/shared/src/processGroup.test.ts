@@ -566,6 +566,37 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32" || !holds)(
         }).pipe(Effect.scoped),
     );
 
+    // No later process could reach such a holder to stop the group, as it reaches one by its FIFO.
+    it.live("where its FIFO cannot be made, a holder ends a claimed group at its pipe's EOF", () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir;
+        const claim = NodePath.join(dir, "launch");
+        writeFile(claim, "", 0o600);
+        const held = holdProcessGroup(
+          { command: "sh", args: ["-c", "sleep 600 & wait"] },
+          { fd: 3, beacon: 4, fifo: NodePath.join(dir, "missing", "holder"), claim },
+        )!;
+        const child = NodeChildProcess.spawn(held.command, held.args, {
+          detached: true,
+          stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"],
+        });
+        const exit = exited(child);
+        // Its unreaped leader keeps the number, and a SIGTERM its holder sent wins over this one.
+        const kill = () => {
+          if (child.exitCode === null && child.signalCode === null) {
+            errorCode(() => signalProcessGroup(child.pid!, "SIGKILL"));
+          }
+        };
+        yield* Effect.addFinalizer(() => Effect.sync(kill));
+        const holderGone = closed(holderPipe(child, 4).resume());
+        holderPipe(child, 3).end();
+        yield* holderGone;
+
+        kill();
+        expect(yield* exit).toBe("SIGTERM");
+      }).pipe(Effect.scoped),
+    );
+
     it.live.each([
       { case: "ends the group at EOF", spare: false, ended: "SIGKILL" },
       { case: "spares a group it was told to at EOF", spare: true, ended: "SIGTERM" },

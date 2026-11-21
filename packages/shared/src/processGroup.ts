@@ -347,6 +347,7 @@ export interface FifoHold {
   /**
    * A file that must exist once the FIFO is open, or the launch exits before its command runs. A
    * process that removes it and then finds no reader on the FIFO knows the command will not run.
+   * Where no FIFO can be made, the holder ends the group once `fd` ends.
    */
   readonly claim?: string | undefined;
 }
@@ -471,7 +472,11 @@ const holderScript = (
     // Checked after the open: a `stopFifoHolderGroup` sent after the claim went reaches this
     // reader, and one that found no reader came before this check.
     if (options.claim !== undefined) setup.push(`[ -e ${quote(options.claim)} ] || exit`);
-    job = `while read -r -u ${fd} m; do case $m in q) exit;; k) ${endGroupAfter(FIFO_HOLDER_STOP_SECONDS)}; exit;; esac; done`;
+    const stop = endGroupAfter(FIFO_HOLDER_STOP_SECONDS);
+    // Only the caller's pipe ends, as no FIFO could be made: no later process can reach a claimed
+    // launch's holder, so it ends the group itself.
+    const atEof = options.claim === undefined ? "" : `; ${stop}`;
+    job = `while read -r -u ${fd} m; do case $m in q) exit;; k) ${stop}; exit;; esac; done${atEof}`;
   } else {
     job =
       options.endGroupAfterSeconds === undefined

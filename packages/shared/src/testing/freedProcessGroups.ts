@@ -91,9 +91,12 @@ export const AWAIT_HOLDER_PYTHON = [
   "    else: select.select([ended], [], [])",
 ].join("\n");
 
-/** Whether this host can hold a group's number at all: it has bash and an init that reaps orphans. */
-export const hostHoldsProcessGroups = () =>
-  holdProcessGroup({ command: "/bin/sh", args: [], env: {} }, { fd: 3 }) !== undefined;
+/**
+ * Whether this host can hold the group of a command started with `env`: it has bash and an init
+ * that reaps orphans, and bash passes `env` on as given.
+ */
+export const hostHoldsProcessGroups = (env: NodeJS.ProcessEnv = {}) =>
+  holdProcessGroup({ command: "/bin/sh", args: [], env }, { fd: 3 }) !== undefined;
 
 const WORKER_RECORD = "T3_TEST_FREED_GROUP_SIGNALS";
 

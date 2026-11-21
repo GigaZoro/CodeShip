@@ -84,7 +84,7 @@ const execFileThrows = (error: Error) =>
   );
 
 // Where a POSIX host holds no group, nothing may signal one once its leader exited.
-const unheldPosix = !isWindowsHost && !hostHoldsProcessGroups();
+const unheldPosix = !isWindowsHost && !hostHoldsProcessGroups(process.env);
 
 describe("WorkerProcessSpawner", () => {
   it.live("relays stdin, output and the exit code", () =>
@@ -382,6 +382,33 @@ describe("WorkerProcessSpawner", () => {
       }).pipe(Effect.scoped, Effect.provide(layer)),
     );
 
+    // Its holder reads EOF on the stopped worker's pipes and ends the group while it keeps the
+    // number; only it knows when the number stops being ours.
+    it.live.skipIf(unheldPosix)(
+      "of a referenced child ends through its holder with a stopped worker",
+      () =>
+        Effect.gen(function* () {
+          const pipe = yield* processPipe;
+          const reports =
+            "const s = require('node:net').connect(process.argv[1], () => s.write(String(process.pid)));" +
+            " s.on('error', () => {}); setInterval(() => {}, 1000);";
+          yield* ChildProcess.make(process.execPath, ["-e", reports, pipe.path], quiet);
+          const pid = yield* pipe.started;
+          const kill = yield* Effect.acquireRelease(
+            Effect.sync(() => vi.spyOn(process, "kill")),
+            (spy) => Effect.sync(() => spy.mockRestore()),
+          );
+
+          yield* WorkerProcessSpawner.__testing.stopWorker;
+
+          yield* pipe.ended;
+          assert.notInclude(
+            kill.mock.calls.map(([target]) => target),
+            -pid,
+          );
+        }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+
     // The command ends its holder, then reports; nothing else ends it once the worker stopped.
     it.live("of a referenced child whose holder ended ends with a stopped worker", () =>
       Effect.gen(function* () {
@@ -399,6 +426,7 @@ describe("WorkerProcessSpawner", () => {
         ].join("\n");
         yield* ChildProcess.make("python3", ["-c", losesHolder, pipe.path], quiet);
         yield* pipe.started;
+        yield* WorkerProcessSpawner.settle;
 
         yield* WorkerProcessSpawner.__testing.stopWorker;
 
