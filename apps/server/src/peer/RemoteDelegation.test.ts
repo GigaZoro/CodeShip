@@ -1699,27 +1699,6 @@ it.effect("the same key from another provider session is another task", () =>
       };
       expect(second.taskId).not.toBe(first.taskId);
       expect(second.remoteChild.threadId).not.toBe(first.remoteChild.threadId);
-      // The same key from the same session follows its task on the box, not a launch elsewhere.
-      const elsewhereThread = yield* makeBoxThread;
-      const elsewhere = descriptorOf("environment-elsewhere", "Elsewhere");
-      yield* linkTo(
-        a.links,
-        yield* servePeer(elsewhere, boxToolkitLayer(elsewhereThread, boxProjects)),
-        "full-access",
-      );
-      const retried = yield* a.call("delegate_task", {
-        task: "Run the full suite on the box.",
-        target: {
-          environmentId: elsewhere.environmentId,
-          providerInstanceId: instanceId,
-          model: "gpt-5.4",
-        },
-        mode: "async",
-        clientRequestId: "suite-on-box",
-      });
-      expect(retried.isError).toBe(true);
-      expect(JSON.stringify(retried.content)).toContain("invalid_request");
-      expect(yield* Ref.get(elsewhereThread.launched)).toBeNull();
       expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(2);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),

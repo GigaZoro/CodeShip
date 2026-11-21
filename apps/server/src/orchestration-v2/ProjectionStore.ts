@@ -552,7 +552,7 @@ export interface ProjectionStoreV2Shape {
   ) => Effect.Effect<ProjectionTimelinePage, ProjectionStoreV2Error>;
   readonly getMessageCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
   readonly getSubagentCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
-  /** The thread's latest review round, and whether any of its reviewers has completed. */
+  /** The thread's latest review round, and whether a reviewer in it has answered. */
   readonly getLatestReviewRound: (
     threadId: ThreadId,
   ) => Effect.Effect<ProjectionReviewRound | null, ProjectionStoreV2Error>;
@@ -6221,15 +6221,24 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.map((rows) => rows[0]?.count ?? 0),
         Effect.mapError(controlReadError(threadId)),
       );
+    // A reviewer's answer is readable in its own thread as soon as its run completes, before the
+    // parent records it, so that run answers the round. A reviewer in another environment has no
+    // thread here; the parent's record answers its round.
     const getLatestReviewRound: ProjectionStoreV2Shape["getLatestReviewRound"] = (threadId) =>
       sql<{ part: number; round: number; newPartReason: string | null; answered: number }>`
         SELECT
-          json_extract(payload_json, '$.review.part') AS part,
-          json_extract(payload_json, '$.review.round') AS round,
-          MAX(json_extract(payload_json, '$.review.newPartReason')) AS newPartReason,
-          MAX(status = 'completed') AS answered
-        FROM orchestration_v2_projection_subagents
-        WHERE thread_id = ${threadId} AND json_type(payload_json, '$.review') IS NOT NULL
+          json_extract(reviewer.payload_json, '$.review.part') AS part,
+          json_extract(reviewer.payload_json, '$.review.round') AS round,
+          MAX(json_extract(reviewer.payload_json, '$.review.newPartReason')) AS newPartReason,
+          MAX(
+            reviewer.status = 'completed' OR EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_runs AS run
+              WHERE run.thread_id = reviewer.child_thread_id AND run.status = 'completed'
+            )
+          ) AS answered
+        FROM orchestration_v2_projection_subagents AS reviewer
+        WHERE reviewer.thread_id = ${threadId}
+          AND json_type(reviewer.payload_json, '$.review') IS NOT NULL
         GROUP BY part, round
         ORDER BY part DESC, round DESC
         LIMIT 1`.pipe(

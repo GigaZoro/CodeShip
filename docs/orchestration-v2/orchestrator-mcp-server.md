@@ -275,11 +275,14 @@ or split the change. A call with `newReviewPart`, one line saying how the change
 was re-planned or split, starts round 1 of a new part instead. While that round
 is unanswered, more reviewers of the part join it by repeating the same line or
 leaving `newReviewPart` out; a different line starts another part.
-A round counts once the parent records a completed review, so a review task
-reports no result before that record. Follow-up work in a reviewer's thread is
-not a round. The count and the reason live on each review task's record in the
-parent's projection, so compaction and restarts keep them, and a refusal records
-no receipt, so the same `clientRequestId` can retry with `newReviewPart`.
+A round is answered once a run in one of its reviewers' threads completes, since
+its answer can be read there before the parent records it; a failed or cancelled
+reviewer leaves it open for a retry. A reviewer in another environment answers
+its round when this environment records its result. Follow-up work in a
+reviewer's thread is not a round of its own. The count and the reason live on
+each review task's record in the parent's projection, so compaction and restarts
+keep them, and a refusal records no receipt, so the same `clientRequestId` can
+retry with `newReviewPart`.
 A follow-up that needs the same child's conversation goes through `t3_thread_send`
 on its `childThreadId`. After the original task completes, that follow-up runs as a
 fresh task in the child thread; it does not reopen the completed task or change its

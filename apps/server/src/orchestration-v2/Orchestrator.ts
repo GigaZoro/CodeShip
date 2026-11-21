@@ -8670,7 +8670,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       completionDelivery: { state: "pending", observedByRunId: null },
       status: run.status === "queued" ? (run.queueHeld === true ? "idle" : "pending") : "running",
       progress: undefined,
-      // A message to a reviewer is not a review round; counting it could answer a failed one.
+      // A message to a reviewer is not a review round of its own.
       review: undefined,
       result: null,
       startedAt: now,

@@ -3,12 +3,16 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
+  EventId,
+  MessageId,
   type OrchestrationV2DelegatedReviewRequest,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -20,6 +24,7 @@ import type { SqlError } from "effect/sql/SqlError";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import { seedLiveParent as seedLiveParentThread } from "./testkit/LiveParentThread.ts";
@@ -79,6 +84,67 @@ const requestReview = (
       ...(review === null ? {} : { review }),
     }),
   );
+
+/** A reviewer in this environment, with a thread of its own. */
+const requestLocalReview = (parent: Parent, key: string) =>
+  Orchestrator.OrchestratorV2.use((orchestrator) =>
+    orchestrator.dispatch({
+      type: "delegated_task.request",
+      createdBy: "agent",
+      creationSource: "mcp",
+      commandId: CommandId.make(`command:review:${key}`),
+      parentThreadId: parent.threadId,
+      parentRunId: parent.runId,
+      parentNodeId: parent.rootNodeId,
+      task: `Review the diff (${key}).`,
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      review: {},
+    }),
+  );
+
+/**
+ * Ends the run at `ordinal` in a local reviewer's thread, adding it as a continuation when the
+ * thread has no such run yet. The parent records nothing until its worker runs.
+ */
+const endReviewerRun = (
+  parent: Parent,
+  key: string,
+  ordinal: number,
+  status: "completed" | "failed",
+) =>
+  Effect.gen(function* () {
+    const threadId = (yield* taskFor(parent, key)).childThreadId!;
+    const { runs } = yield* Orchestrator.OrchestratorV2.use((orchestrator) =>
+      orchestrator.getThreadProjection(threadId),
+    );
+    const now = yield* DateTime.now;
+    const run = runs.find((candidate) => candidate.ordinal === ordinal) ?? {
+      ...runs.at(-1)!,
+      id: RunId.make(`run:${key}:${ordinal}`),
+      ordinal,
+      userMessageId: MessageId.make(`message:${key}:${ordinal}`),
+      requestedAt: now,
+      startedAt: now,
+    };
+    yield* EventSink.EventSinkV2.use((sink) =>
+      sink.write({
+        commandId: CommandId.make(`command:reviewer-run:${key}:${ordinal}`),
+        events: [
+          {
+            id: EventId.make(`event:reviewer-run:${key}:${ordinal}`),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload: { ...run, status, completedAt: now },
+          },
+        ],
+      }),
+    );
+  });
 
 /** The task a request started, with its place in the parent's review count. */
 const taskFor = (parent: Parent, key: string) =>
@@ -157,6 +223,29 @@ it.layer(layerFor(SqlitePersistence.layerMemory))("delegated review rounds", (it
         round: 2,
       });
     }),
+  );
+
+  it.effect(
+    "count a round answered once a reviewer's run completes, before the parent records it",
+    () =>
+      Effect.gen(function* () {
+        const parent = yield* seedLiveParent("answered-in-its-thread");
+        yield* requestLocalReview(parent, "reviewer");
+        yield* endReviewerRun(parent, "reviewer", 1, "failed");
+        yield* requestReview(parent, "retry-after-a-failure");
+        assert.deepEqual((yield* taskFor(parent, "retry-after-a-failure")).review, {
+          part: 1,
+          round: 1,
+        });
+
+        yield* endReviewerRun(parent, "reviewer", 2, "completed");
+        assert.notEqual((yield* taskFor(parent, "reviewer")).status, "completed");
+        yield* requestReview(parent, "after-the-continuation");
+        assert.deepEqual((yield* taskFor(parent, "after-the-continuation")).review, {
+          part: 1,
+          round: 2,
+        });
+      }),
   );
 
   it.effect("start a part split off while a round is open, shared by its reviewers", () =>

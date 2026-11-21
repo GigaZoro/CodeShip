@@ -1999,16 +1999,14 @@ const make = Effect.gen(function* () {
       messages: [...childControls.messages, ...resultRecords.messages],
       turnItems: resultRecords.turnItems,
     };
-    // The review count reads the parent's record, so a review reports no result before it.
-    const heldForParentRecord =
+    const heldForRestart =
       task.result === null &&
       taskWorkState === "result_available" &&
-      (task.review !== undefined ||
-        (yield* threadManagement
-          .delegatedTaskResultPending(task.childThreadId, childRun?.delegatedTaskId)
-          .pipe(Effect.mapError(threadManagementFailure))));
+      (yield* threadManagement
+        .delegatedTaskResultPending(task.childThreadId, childRun?.delegatedTaskId)
+        .pipe(Effect.mapError(threadManagementFailure)));
     const workState =
-      task.result !== null ? "result_available" : heldForParentRecord ? "working" : taskWorkState;
+      task.result !== null ? "result_available" : heldForRestart ? "working" : taskWorkState;
     const status =
       task.result !== null
         ? taskStatusForRun(
@@ -2045,18 +2043,14 @@ const make = Effect.gen(function* () {
             : undefined) ??
           null);
     const resultTransfer = taskResultTransfer(parentProjection, childProjection, task) ?? null;
-    // A held result stays hidden in every field, a continuation run's included.
-    const shownTerminalRun = heldForParentRecord ? undefined : terminalRun;
-    const terminalStatus =
-      shownTerminalRun === undefined ? null : taskStatusForRun(shownTerminalRun);
-    const latestTerminalSummary = canExposeTaskRunResult(shownTerminalRun)
-      ? shownTerminalRun.id === childRun?.id
+    const terminalStatus = terminalRun === undefined ? null : taskStatusForRun(terminalRun);
+    const latestTerminalSummary = canExposeTaskRunResult(terminalRun)
+      ? terminalRun.id === childRun?.id
         ? derivedResult
-        : subagentResultForRun(childProjection, shownTerminalRun).text
+        : subagentResultForRun(childProjection, terminalRun).text
       : null;
     const resultContextTransferId = resultTransfer?.id ?? null;
-    const latestTerminalResultContextTransferId =
-      resultTransferForRun(shownTerminalRun)?.id ?? null;
+    const latestTerminalResultContextTransferId = resultTransferForRun(terminalRun)?.id ?? null;
     const modelSelection = childRun?.modelSelection ??
       childControls.thread.modelSelection ?? {
         instanceId: task.providerInstanceId,
@@ -2081,7 +2075,7 @@ const make = Effect.gen(function* () {
       options: modelSelection.options ?? [],
       summary: derivedResult,
       resultContextTransferId,
-      latestTerminalRunId: shownTerminalRun?.id ?? null,
+      latestTerminalRunId: terminalRun?.id ?? null,
       latestTerminalStatus:
         terminalStatus !== null && isTerminalTaskStatus(terminalStatus) ? terminalStatus : null,
       latestTerminalSummary: latestTerminalSummary === derivedResult ? null : latestTerminalSummary,
