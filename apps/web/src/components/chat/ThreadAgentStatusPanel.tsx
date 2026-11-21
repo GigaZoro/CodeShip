@@ -169,7 +169,8 @@ export function ThreadAgentStatusPanel(props: {
               {activity.text}
             </TooltipTrigger>
             <TooltipPopup side="left" variant="code">
-              {activity.text}
+              {/* A script's line breaks and quoted spacing are part of the command. */}
+              <span className="whitespace-pre-wrap">{activity.text}</span>
             </TooltipPopup>
           </Tooltip>
         ) : (

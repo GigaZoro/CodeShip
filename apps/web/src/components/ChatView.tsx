@@ -266,6 +266,7 @@ import {
   useQuietThreadProjection,
   useThreadUpdatedAt,
   useThreadLastVisitedAt,
+  useThreadPendingSubagentRequest,
   useQuietThreadVisibleTurnItems,
   useThreadStatus,
   useThreadHistory,
@@ -506,12 +507,14 @@ export default function ChatView(props: ChatViewProps) {
   const fallbackDetailRef = serverThreadShell === null ? routeThreadDetailRef : null;
   const fallbackUpdatedAt = useThreadUpdatedAt(fallbackDetailRef);
   const fallbackLastVisitedAt = useThreadLastVisitedAt(fallbackDetailRef);
+  const fallbackSubagentRequest = useThreadPendingSubagentRequest(fallbackDetailRef);
   const serverThread =
     serverThreadShell !== null || serverProjection === null || fallbackUpdatedAt === null
       ? serverThreadShell
       : presentThreadShellFromProjection(environmentId, threadId, serverProjection, {
           updatedAt: fallbackUpdatedAt,
           lastVisitedAt: fallbackLastVisitedAt,
+          pendingSubagentRequest: fallbackSubagentRequest,
         });
   const promptRef = useRef("");
   const localComposerRef = useRef<ChatComposerHandle | null>(null);

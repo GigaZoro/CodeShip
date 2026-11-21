@@ -79,20 +79,29 @@ export function SubagentRowDetail(props: {
   const progress = isOrchestrationV2WorkActive(props.status)
     ? props.progress?.slice(0, 240).replace(/\s+/gu, " ").trim()
     : undefined;
-  const parts = [
+  const metadata = [
     props.effort ? `${modelLabel} · ${props.effort}` : modelLabel,
     ...(props.machineLabel === undefined ? [] : [t("on {label}", { label: props.machineLabel })]),
-    progress || props.outcome,
-  ].filter((part): part is string => Boolean(part));
+    progress,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
+  // Progress is the newest news and may be cut; the short status otherwise always shows.
+  const outcome = progress ? "" : props.outcome;
   return (
     <span
       id={props.id}
       className={cn(
-        "block truncate text-left text-2xs font-normal leading-4",
+        "flex min-w-0 text-left text-2xs font-normal leading-4",
         props.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
       )}
     >
-      {parts.join(" · ")}
+      {metadata === "" ? null : <span className="min-w-0 truncate">{metadata}</span>}
+      {outcome === "" ? null : (
+        <span className="shrink-0 whitespace-pre">
+          {metadata === "" ? outcome : ` · ${outcome}`}
+        </span>
+      )}
     </span>
   );
 }

@@ -1,7 +1,7 @@
 ## 2026-11-21 — Thread details show what the agent is doing
 
 - The thread details card now leads with information instead of buttons. A new **Agent status** section shows whether the agent is working, waiting for you or for a subagent's approval or answer, queued, stopped, reverted or at a usage limit, for how long, on which model and effort, and the full command or the edit it is running now. Context and usage meters follow it.
-- Subagent rows show the model and effort, and what each one is doing while it runs or how it ended. **Your prompts** shows how long each prompt's work took, ticking while it runs, and marks stopped or failed work; a steer gets its own time.
+- Subagent rows show the model and effort, and what each one is doing while it runs or how it ended.
 - A new **Machine load** section shows CPU, memory, swap and disk for the machine the thread runs on, like the Machines page.
 - The machine, branch and open-in controls stay folded until you open them, and fold again when you switch threads. **Git actions** and **Ask the agent** are off by default; turn them back on from **Choose what to show**.
 - Manual steps no longer appear under Needs you or in the details card. They stay on the **Manual steps** page in the sidebar rail, which now has the **Sign in to all** button.

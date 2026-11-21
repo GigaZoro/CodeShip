@@ -28,8 +28,9 @@ import {
 import * as DateTime from "effect/DateTime";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
+import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 import type { Thread } from "../types";
-import { makeThreadFixture } from "../test-fixtures";
+import { makeThreadFixture, makeThreadProjectionFixture } from "../test-fixtures";
 import {
   getAntigravitySendBlockReason,
   resolveComposerProviderSelection,
@@ -44,6 +45,7 @@ import {
   deriveComposerSendState,
   deriveLockedProvider,
   hasServerAcknowledgedLocalDispatch,
+  presentThreadShellFromProjection,
 } from "./ChatView.logic";
 
 const environmentId = EnvironmentId.make("environment-local");
@@ -954,5 +956,20 @@ describe("deriveWorkspaceMutationId", () => {
     expect(deriveWorkspaceMutationId([item("reply", "assistant_message", "completed")], null)).toBe(
       null,
     );
+  });
+});
+
+describe("presentThreadShellFromProjection", () => {
+  it("keeps the approval a subagent's shell rolls up to a thread opened before its own shell", () => {
+    const projection = makeThreadProjectionFixture();
+    const shell = presentThreadShellFromProjection(
+      environmentId,
+      projection.thread.id,
+      projection,
+      { updatedAt: projection.updatedAt, lastVisitedAt: null, pendingSubagentRequest: "approval" },
+    );
+
+    expect(shell.pendingSubagentRequest).toBe("approval");
+    expect(resolveThreadStatus(shell)).toBe("approval");
   });
 });

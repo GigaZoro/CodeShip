@@ -3,7 +3,6 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useLayoutEffect, useRef } from "react";
 
 import { cn } from "../../lib/utils";
-import { useQuietThreadProjection } from "../../state/entities";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
@@ -13,49 +12,17 @@ import {
   useTimelineOutline,
 } from "./timelineOutlineStore";
 import { t } from "~/i18n";
-import { AgentElapsed } from "./AgentElapsed";
-import { deriveThreadPromptTimings, type ThreadPromptTiming } from "./threadPromptTimings";
 
 // One prompt is the whole thread, so there is nothing to move between.
 const OUTLINE_MIN_PROMPTS = 2;
-
-const NO_PROMPT_TIMINGS: ReadonlyMap<string, ThreadPromptTiming> = new Map();
-
-function PromptMeta({ timing }: { readonly timing: ThreadPromptTiming }) {
-  const outcomeLabel =
-    timing.outcome === "stopped" ? t("Stopped") : timing.outcome === "failed" ? t("Failed") : null;
-  return (
-    <span className="ml-auto flex shrink-0 items-center gap-1 pl-2 text-2xs font-normal text-muted-foreground">
-      {outcomeLabel === null ? null : (
-        <span className={timing.outcome === "failed" ? "text-error-foreground" : undefined}>
-          {outcomeLabel}
-        </span>
-      )}
-      <AgentElapsed
-        agent={{
-          status: timing.outcome === "running" ? "running" : "completed",
-          startedAt: timing.startedAt,
-          completedAt: timing.completedAt,
-        }}
-        compact
-      />
-    </span>
-  );
-}
 
 /** The prompts sent in this thread, one line each; selecting one scrolls the timeline to it. */
 export function ThreadOutlinePanel(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
-  const threadRef = scopeThreadRef(props.environmentId, props.threadId);
-  const threadKey = scopedThreadKey(threadRef);
+  const threadKey = scopedThreadKey(scopeThreadRef(props.environmentId, props.threadId));
   const outline = useTimelineOutline(threadKey);
-  // Timing comes from the run records, which hold for every prompt however much of the timeline is
-  // loaded or expanded; the quiet projection keeps this still while a reply streams.
-  const structure = useQuietThreadProjection(threadRef);
-  const timings =
-    structure === null ? NO_PROMPT_TIMINGS : deriveThreadPromptTimings(structure.projection);
   const listRef = useRef<HTMLOListElement | null>(null);
   const currentId = outline?.currentId ?? null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the on-screen prompt visible inside the outline's own scroll area as the timeline scrolls
@@ -85,7 +52,6 @@ export function ThreadOutlinePanel(props: {
         {outline.prompts.map((prompt) => {
           const current = prompt.id === currentId;
           const text = outlinePromptText(prompt.text);
-          const timing = timings.get(prompt.id);
           return (
             <li key={prompt.id} data-outline-prompt={prompt.id}>
               <Tooltip>
@@ -117,7 +83,6 @@ export function ThreadOutlinePanel(props: {
                   >
                     {text.length > 0 ? text : t("Attachment")}
                   </span>
-                  {timing === undefined ? null : <PromptMeta timing={timing} />}
                 </TooltipTrigger>
                 {/* The row shows a few words; this shows the rest of the prompt's opening. */}
                 {text.length > 0 ? (

@@ -13,7 +13,11 @@ import type { SetStateAction } from "react";
 import { applyClaudePromptEffortPrefix, resolvePromptInjectedEffort } from "@t3tools/shared/model";
 import { getProviderModelCapabilities } from "../providerModels";
 import { sanitizeThreadErrorMessage } from "@t3tools/client-runtime/errors";
-import type { EnvironmentThread, ThreadStructure } from "@t3tools/client-runtime/state/shell";
+import type {
+  EnvironmentThread,
+  PendingSubagentRequest,
+  ThreadStructure,
+} from "@t3tools/client-runtime/state/shell";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -1411,7 +1415,8 @@ export function sendTitleFallbackLabels(snapshot: ComposerSendSnapshot) {
 
 /**
  * A thread shell built from its loaded detail, for direct links that hydrate the detail first.
- * `updatedAt` and `lastVisitedAt` are passed live: the thread structure leaves them out.
+ * `updatedAt`, `lastVisitedAt` and the subagent request rolled up from the children's shells are
+ * passed live: the thread structure leaves them out.
  */
 export function presentThreadShellFromProjection(
   environmentId: EnvironmentId,
@@ -1420,6 +1425,7 @@ export function presentThreadShellFromProjection(
   live: {
     readonly updatedAt: ThreadProjection["updatedAt"];
     readonly lastVisitedAt: ThreadProjection["thread"]["lastVisitedAt"];
+    readonly pendingSubagentRequest: PendingSubagentRequest | null;
   },
 ) {
   const { updatedAt, lastVisitedAt } = live;
@@ -1429,34 +1435,38 @@ export function presentThreadShellFromProjection(
     projection.runtimeRequests.findLast((request) => request.status === "pending") ?? null;
   // Direct links can hydrate detail before the thread enters the shell index.
   return {
-    ...presentThreadShell(environmentId, {
-      ...projection.thread,
-      lastVisitedAt,
-      latestRunId: latestRun?.runId ?? null,
-      activeRunId: runtime?.activeRunId ?? null,
-      status: runtime?.status ?? "idle",
-      pendingRuntimeRequest,
-      latestVisibleMessage: null,
-      latestUserMessageAt:
-        projection.messages.findLast((message) => message.role === "user")?.updatedAt ?? null,
-      hasActionableProposedPlan: projection.plans.some(
-        (plan) => plan.kind === "proposed_plan" && plan.status === "active",
-      ),
-      providerInstanceHistory: [
-        ...new Set(
-          projection.providerThreads
-            .filter((thread) => thread.appThreadId === threadId && thread.ownerNodeId === null)
-            .map((thread) => thread.providerInstanceId),
+    ...presentThreadShell(
+      environmentId,
+      {
+        ...projection.thread,
+        lastVisitedAt,
+        latestRunId: latestRun?.runId ?? null,
+        activeRunId: runtime?.activeRunId ?? null,
+        status: runtime?.status ?? "idle",
+        pendingRuntimeRequest,
+        latestVisibleMessage: null,
+        latestUserMessageAt:
+          projection.messages.findLast((message) => message.role === "user")?.updatedAt ?? null,
+        hasActionableProposedPlan: projection.plans.some(
+          (plan) => plan.kind === "proposed_plan" && plan.status === "active",
         ),
-      ],
-      goal:
-        projection.providerThreads.find(
-          (thread) => thread.id === projection.thread.activeProviderThreadId,
-        )?.goal ?? null,
-      itemCount: projection.turnItems.length,
-      visibleItemCount: projection.visibleTurnItems.length,
-      updatedAt,
-    }),
+        providerInstanceHistory: [
+          ...new Set(
+            projection.providerThreads
+              .filter((thread) => thread.appThreadId === threadId && thread.ownerNodeId === null)
+              .map((thread) => thread.providerInstanceId),
+          ),
+        ],
+        goal:
+          projection.providerThreads.find(
+            (thread) => thread.id === projection.thread.activeProviderThreadId,
+          )?.goal ?? null,
+        itemCount: projection.turnItems.length,
+        visibleItemCount: projection.visibleTurnItems.length,
+        updatedAt,
+      },
+      live.pendingSubagentRequest,
+    ),
     latestRun,
     runtime,
   };

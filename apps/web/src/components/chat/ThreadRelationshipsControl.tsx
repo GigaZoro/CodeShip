@@ -210,10 +210,15 @@ function relationshipThreadTitle(input: {
 }
 
 /** The full title, since the row truncates it, with what a click does. */
-function LineageTooltipContent(props: { readonly title: string; readonly hint: string }) {
+function LineageTooltipContent(props: {
+  readonly title: string;
+  readonly status?: string | undefined;
+  readonly hint: string;
+}) {
   return (
     <>
       <span className="block font-medium">{props.title}</span>
+      {props.status === undefined ? null : <span className="block">{props.status}</span>}
       <span className="block text-muted-foreground">{props.hint}</span>
     </>
   );
@@ -357,6 +362,7 @@ function RemoteSubagentRow(props: {
         <TooltipPopup side="left">
           <LineageTooltipContent
             title={title}
+            status={threadRelationshipStatusLabel(status)}
             hint={
               environment === null
                 ? t("Runs on {label}. Connect to it to open the thread there.", {
