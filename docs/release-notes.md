@@ -1,3 +1,7 @@
+## 2026-11-21 — Every checkout runs the tracked push gate again
+
+- The machine configuration listed its Git settings twice, so only the second list applied and the machine check stopped pointing `core.hooksPath` at the tracked hooks in `.vite-hooks`. One list now holds both settings, so the check sets the hooks path and the one-day prune window on every machine.
+
 ## 2026-11-21 — Organize tasks into folders from Scheduled
 
 - In **Scheduled**, open a task’s menu and choose **Move to folder** to file it in an existing or new folder. You can also create an empty folder from the **Scheduled tasks** page.
