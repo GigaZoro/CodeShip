@@ -1,3 +1,7 @@
+## 2026-11-25 — Scheduled runs report blocked work as failed
+
+- A scheduled run's agent can now report how its occurrence ended. If a required step could not be done, the run shows as failed in the schedule's history and status instead of succeeded. A run with nothing to do stays successful, and the first report of a run is final.
+
 ## 2026-11-25 — Landings finish on a Mac left alone
 
 - A landing keeps a Mac from idle-sleeping until it ends, so checks no longer time out while a Mac on battery sleeps.

@@ -3157,3 +3157,103 @@ it.effect(
       );
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
+
+it.effect("an agent's report decides its occurrence, once, and only for its own chat", () =>
+  Effect.gen(function* () {
+    const project = ProjectId.make("project:reported");
+    const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ManagedPolicy.layerTest(),
+          ServerSettings.layerTest(),
+          MemoryAdmission.layerTest(),
+          Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            sendToThread: () => Effect.succeed({} as never),
+          }),
+          layerSharedTaskDependencies(),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+            namedProjectsRoot: "/projects",
+            isScratchProject: () => Effect.succeed(false),
+          }),
+          NodeCrypto.layer,
+          Scheduler.layer,
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const make = (id: string, threadId: string) =>
+        service.upsert(
+          {
+            id: ScheduledTaskId.make(id),
+            title: id,
+            prompt: "Check",
+            enabled: true,
+            schedule: { type: "interval", everyMs: 60_000 },
+            projectId: project,
+            threadId: ThreadId.make(threadId),
+            workspaceStrategy: { type: "root" },
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+          },
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+      const blocked = yield* make("task:blocked", "thread:blocked");
+      const noop = yield* make("task:noop", "thread:noop");
+      yield* service.runNow({ id: blocked.task.id });
+      yield* service.runNow({ id: noop.task.id });
+
+      yield* service.reportRunResult({
+        threadId: ThreadId.make("thread:blocked"),
+        outcome: "incomplete",
+        summary: "Chrome failed before sign-in; 0 of 14 courses checked",
+      });
+      yield* service.reportRunResult({
+        threadId: ThreadId.make("thread:noop"),
+        outcome: "completed",
+        summary: "Nothing new in any course",
+      });
+      const later = yield* Effect.flip(
+        service.reportRunResult({
+          threadId: ThreadId.make("thread:blocked"),
+          outcome: "completed",
+          summary: "A later turn says all is well",
+        }),
+      );
+      const stranger = yield* Effect.flip(
+        service.reportRunResult({
+          threadId: ThreadId.make("thread:unrelated"),
+          outcome: "incomplete",
+          summary: "Not a scheduled chat",
+        }),
+      );
+
+      const { tasks } = yield* service.list({ resolveModels: false });
+      const statusOf = (id: string) => tasks.find((task) => task.id === id)?.lastRunStatus;
+      const runOf = (id: string) =>
+        service.listRuns({ id: ScheduledTaskId.make(id) }).pipe(Effect.map(({ runs }) => runs[0]));
+      const blockedRun = yield* runOf("task:blocked");
+      assert.deepEqual(
+        {
+          blocked: statusOf("task:blocked"),
+          noop: statusOf("task:noop"),
+          blockedRun: [blockedRun?.outcome, blockedRun?.error],
+          noopRun: (yield* runOf("task:noop"))?.outcome,
+          later: later.message,
+          stranger: stranger.message,
+        },
+        {
+          blocked: "failed",
+          noop: "succeeded",
+          blockedRun: ["failed", "Chrome failed before sign-in; 0 of 14 courses checked"],
+          noopRun: "succeeded",
+          later: "This run already reported its result.",
+          stranger: "This chat is not a scheduled task run.",
+        },
+      );
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);

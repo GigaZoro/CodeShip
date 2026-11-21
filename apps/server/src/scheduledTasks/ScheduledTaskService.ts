@@ -612,6 +612,16 @@ export class ScheduledTaskService extends Context.Service<
     readonly applyShared: (
       input: ScheduledTaskApplySharedInput,
     ) => Effect.Effect<ScheduledTaskApplySharedResult, ScheduledTaskError>;
+    /**
+     * The agent of a scheduled run reports how that occurrence ended. The occurrence is the thread's
+     * latest run; its report is final, so a later turn or chat cannot change it. `incomplete` makes
+     * the occurrence failed, and the task's last run too while it is still the latest.
+     */
+    readonly reportRunResult: (input: {
+      readonly threadId: ThreadId;
+      readonly outcome: "completed" | "incomplete";
+      readonly summary: string;
+    }) => Effect.Effect<ScheduledTaskId, ScheduledTaskError>;
     /** Deletes only tasks that still target this thread, including their webhook deliveries. */
     readonly deleteForThread: (threadId: ThreadId) => Effect.Effect<void, ScheduledTaskError>;
     /** Points tasks bound to these threads at the project the threads moved to. */
@@ -5677,6 +5687,69 @@ export const layer = Layer.effect(
         Effect.as({ id: input.id }),
       );
 
+    const reportRunResult: ScheduledTaskService["Service"]["reportRunResult"] = Effect.fn(
+      "ScheduledTaskService.reportRunResult",
+    )(function* (input) {
+      const taskId = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const [run] = yield* sql<{
+              readonly run_id: string;
+              readonly task_id: ScheduledTaskId;
+              readonly started_at: string;
+              readonly outcome: string;
+              readonly reported_outcome: string | null;
+            }>`
+              SELECT run_id, task_id, started_at, outcome, reported_outcome
+              FROM scheduled_task_runs
+              WHERE thread_id = ${input.threadId} AND outcome <> 'skipped'
+              ORDER BY started_at DESC
+              LIMIT 1
+            `;
+            if (run === undefined) {
+              return yield* taskError("This chat is not a scheduled task run.", {});
+            }
+            if (run.reported_outcome !== null) {
+              return yield* taskError("This run already reported its result.", {
+                taskId: run.task_id,
+              });
+            }
+            if (run.outcome === "running") {
+              return yield* taskError("The run is still being recorded. Report again shortly.", {
+                taskId: run.task_id,
+              });
+            }
+            const failed = input.outcome === "incomplete";
+            yield* sql`
+              UPDATE scheduled_task_runs
+              SET reported_outcome = ${input.outcome},
+                  reported_summary = ${input.summary},
+                  outcome = ${failed ? "failed" : run.outcome},
+                  error = CASE WHEN ${failed ? 1 : 0} = 1 THEN ${input.summary} ELSE error END
+              WHERE run_id = ${run.run_id}
+            `;
+            if (failed) {
+              yield* sql`
+                UPDATE scheduled_tasks
+                SET last_run_status = 'failed', last_run_error = ${input.summary}
+                WHERE task_id = ${run.task_id} AND last_run_at = ${run.started_at}
+                  AND last_run_status = 'succeeded'
+              `;
+            }
+            return run.task_id;
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            isScheduledTaskError(cause)
+              ? cause
+              : taskError("Could not record the run's reported result.", { cause }),
+          ),
+        );
+      yield* notifyChanged;
+      return taskId;
+    });
+
     const deleteForThread = Effect.fn("ScheduledTaskService.deleteForThread")(function* (
       threadId: ThreadId,
     ) {
@@ -6773,6 +6846,7 @@ export const layer = Layer.effect(
       knownMachineIds,
       claimOccurrence,
       deleteForThread,
+      reportRunResult,
       moveThreadTasks,
       runNow,
       liveRuns,

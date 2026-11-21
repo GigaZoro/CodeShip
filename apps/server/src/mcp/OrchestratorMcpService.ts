@@ -41,6 +41,8 @@ import {
   type OrchestratorMcpSharedScheduledTasksResult,
   type OrchestratorMcpClaimScheduledTaskOccurrenceInput,
   type OrchestratorMcpClaimScheduledTaskOccurrenceResult,
+  type OrchestratorMcpReportScheduledRunInput,
+  type OrchestratorMcpReportScheduledRunResult,
   type OrchestratorMcpScheduledTask,
   type OrchestratorMcpScheduleTaskInput,
   type OrchestratorMcpScheduleTaskResult,
@@ -251,6 +253,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpClaimScheduledTaskOccurrenceInput,
   ) => Effect.Effect<OrchestratorMcpClaimScheduledTaskOccurrenceResult, OrchestratorMcpFailure>;
+  readonly reportScheduledRun: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpReportScheduledRunInput,
+  ) => Effect.Effect<OrchestratorMcpReportScheduledRunResult, OrchestratorMcpFailure>;
   readonly updateScheduledTask: (
     scope: McpInvocationScope,
     input: OrchestratorMcpUpdateScheduledTaskInput,
@@ -2992,6 +2998,24 @@ const make = Effect.gen(function* () {
             ),
           );
         return { holder };
+      },
+    ),
+    reportScheduledRun: Effect.fn("OrchestratorMcpService.reportScheduledRun")(
+      function* (scope, input) {
+        if (scope.thread === undefined) {
+          return yield* failure(
+            "capability_denied",
+            "Only the chat of a scheduled run can report its result.",
+          );
+        }
+        const scheduledTaskId = yield* scheduledTasks
+          .reportRunResult({ threadId: scope.thread.threadId, ...input })
+          .pipe(
+            Effect.mapError((error) =>
+              failure("invalid_request", `Could not report the run: ${error.message}`),
+            ),
+          );
+        return { scheduledTaskId, outcome: input.outcome };
       },
     ),
     updateScheduledTask: Effect.fn("OrchestratorMcpService.updateScheduledTask")(

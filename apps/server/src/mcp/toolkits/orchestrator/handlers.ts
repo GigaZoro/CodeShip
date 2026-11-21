@@ -131,6 +131,13 @@ const handlers = {
       }),
     { linkedCallers: "allowed" },
   ),
+  report_scheduled_run: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+      return yield* service.reportScheduledRun(scope, input);
+    }),
+  ),
   t3_shared_settings: McpToolAccess.reads(() =>
     Effect.gen(function* () {
       const shared = yield* SharedSettings.SharedSettings;

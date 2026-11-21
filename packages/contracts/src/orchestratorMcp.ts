@@ -1153,6 +1153,24 @@ export const OrchestratorMcpClaimScheduledTaskOccurrenceResult = Schema.Struct({
 export type OrchestratorMcpClaimScheduledTaskOccurrenceResult =
   typeof OrchestratorMcpClaimScheduledTaskOccurrenceResult.Type;
 
+/**
+ * What a scheduled run's agent reports about its own occurrence: `completed` when the work was done
+ * or verified to need none, `incomplete` when a required step could not be done.
+ */
+export const OrchestratorMcpReportScheduledRunInput = Schema.Struct({
+  outcome: Schema.Literals(["completed", "incomplete"]),
+  summary: TrimmedNonEmptyString.check(Schema.isMaxLength(1000)),
+});
+export type OrchestratorMcpReportScheduledRunInput =
+  typeof OrchestratorMcpReportScheduledRunInput.Type;
+
+export const OrchestratorMcpReportScheduledRunResult = Schema.Struct({
+  scheduledTaskId: ScheduledTaskId,
+  outcome: Schema.Literals(["completed", "incomplete"]),
+});
+export type OrchestratorMcpReportScheduledRunResult =
+  typeof OrchestratorMcpReportScheduledRunResult.Type;
+
 /** For a linked machine: the shared settings this machine knows, so it can catch up with no client open. */
 export const OrchestratorMcpSharedSettingsResult = Schema.Struct({
   versions: Schema.Array(SharedSettingVersion),
