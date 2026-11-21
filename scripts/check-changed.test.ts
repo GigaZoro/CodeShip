@@ -437,6 +437,27 @@ describe("check:changed", () => {
   });
 
   it.each([
+    "infra/task-cache/scripts/install.ts",
+    "infra/tool/scripts/added.mts",
+    ".github/scripts/added.cjs",
+  ])("selects a test that declares a runtime input matching %s", (changed) => {
+    const test = "scripts/command-arguments.test.ts";
+    const sources = new Map([
+      [test, NodeFS.readFileSync(new URL("./command-arguments.test.ts", import.meta.url), "utf8")],
+      [changed, "export const command = 1;"],
+    ]);
+    assert.deepStrictEqual(
+      testsReaching({
+        changed: [changed],
+        files: new Set(sources.keys()),
+        packages: [],
+        read: (file) => sources.get(file) ?? "",
+      }),
+      [test],
+    );
+  });
+
+  it.each([
     "packages/shared/src/testing/longTempDir.ts",
     "packages/shared/src/testing/providerEnv.ts",
   ])("tests every package when the shared test setup file %s changes", (file) => {

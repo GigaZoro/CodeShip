@@ -407,6 +407,8 @@ const isTestSupport = (file: string) => {
   );
 };
 // Relative paths in any string count, so `new URL("./x.ndjson", import.meta.url)` reaches data files.
+// Tests that enumerate inputs at runtime can declare relative path patterns.
+const TEST_INPUT = /^\s*\/\/\s*@test-input\s+(\.{1,2}\/\S+)\s*$/gm;
 const RELATIVE_REFERENCE = /["'`](\.\.?\/[^"'`\s$]+)["'`]/g;
 const PACKAGE_IMPORT = /\b(?:from|import|import\s*\(|vi\.mock\()\s*["']([^"'./][^"']*)["']/g;
 const RE_EXPORT =
@@ -465,6 +467,7 @@ export const testsReaching = (input: {
     return resolvePath(NodePath.posix.join(pkg.dir, target));
   };
 
+  const tests = new Set<string>();
   const importers = new Map<string, Array<string>>();
   const testsByDir = new Map<string, Array<string>>();
   for (const file of input.files) {
@@ -476,6 +479,14 @@ export const testsReaching = (input: {
       else known.push(file);
     }
     const text = input.read(file);
+    if (TEST.test(file)) {
+      for (const [, pattern] of text.matchAll(TEST_INPUT)) {
+        const glob = NodePath.posix.join(NodePath.posix.dirname(file), pattern!);
+        if (input.changed.some((changed) => NodePath.posix.matchesGlob(changed, glob))) {
+          tests.add(file);
+        }
+      }
+    }
     const targets = new Set([
       ...[...text.matchAll(RELATIVE_REFERENCE)].map(([, specifier]) =>
         resolvePath(NodePath.posix.join(NodePath.posix.dirname(file), specifier!)),
@@ -495,7 +506,6 @@ export const testsReaching = (input: {
     input.read(file).replace(COMMENT, "").replace(RE_EXPORT, "").trim().length === 0;
   const queue = input.changed.filter((file) => !isBarrel(file));
   const seen = new Set(queue);
-  const tests = new Set<string>();
   for (let index = 0; index < queue.length; index += 1) {
     for (const importer of importers.get(queue[index]!) ?? []) {
       if (seen.has(importer)) continue;
