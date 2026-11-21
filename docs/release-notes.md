@@ -276,6 +276,13 @@
 - Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
 - A landing that joins the queue comes after every landing it finds waiting there, even when that landing's machine clock runs ahead; landings that join at the same moment, before either can see the other, go in the order of their machines' clocks. A queue of any length keeps moving, and a waiter reads a bounded part of it per poll. Entries origin will not delete block no one and are reported once: a crashed lander's, or a waiter's own old names, which no longer keep it from a free lease, and the waiter keeps renewing its entry, so it keeps its place. A landing whose entry origin refused joins again behind the landings that came meanwhile. A lander whose take reached origin while its answer was lost keeps the turn instead of waiting behind itself, unless the lease expired before the take was confirmed, and its checks get the time that lease has left.
 
+## 2026-11-21 — Worktree helpers in another repository on a linked machine start from its default branch
+
+- `delegate_task` with `isolation: "worktree"`, a linked environment, and `target.projectId` naming a project of another repository there now starts the helper in a new worktree of that project from its default branch. Before, it passed your thread's commit, which that repository cannot have, and the launch failed with only "git worktree add failed". A project of your thread's repository still branches from your pushed commit.
+- A new worktree from a commit that neither the checkout nor its remote has is now refused before the thread is created, naming the commit, instead of failing later while the worktree is prepared.
+- A worktree from a missing commit now reports it as a missing ref (`ref_not_found`).
+- A local Git failure CodeShip cannot classify now ends its message with Git's last error lines, with quoted values, URLs, and paths replaced, so the failure can be traced without exposing names.
+
 ## 2026-11-21 — The ACP terminal kill test expects SIGTERM on Windows too
 
 - Maintainers: Effect's kill now ends a Windows process through Node's own handle, which reports the signal, so a killed ACP terminal command reports `SIGTERM` on Windows as it does elsewhere. The terminal kill test still expected no signal there and failed on every Windows run; it now expects `SIGTERM` on every platform. No change to the app.

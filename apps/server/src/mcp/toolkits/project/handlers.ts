@@ -434,7 +434,10 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   t3_project_read: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const projects = yield* access;
-      const result = yield* projects.getById(input.projectId).pipe(Effect.mapError(unavailable));
+      // Resolved like the list: a linked environment checks it holds the caller's repository.
+      const result = yield* projects
+        .getWithRepositoryIdentity(input.projectId)
+        .pipe(Effect.mapError(unavailable));
       if (Option.isNone(result))
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",

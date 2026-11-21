@@ -132,6 +132,10 @@ export class ProjectService extends Context.Service<
       options?: { readonly includeDeleted?: boolean },
     ) => Effect.Effect<Option.Option<Project>, ProjectOperationError>;
     readonly snapshot: Effect.Effect<ProjectSnapshot, ProjectOperationError>;
+    /** One active project with its repository identity resolved, as `listPage` gives each. */
+    readonly getWithRepositoryIdentity: (
+      projectId: ProjectId,
+    ) => Effect.Effect<Option.Option<Project>, ProjectOperationError>;
     /**
      * A page of active projects in creation order, each with its repository
      * identity resolved, so a caller can match projects by repository.
@@ -572,21 +576,28 @@ export const make = Effect.gen(function* () {
     } satisfies ProjectSnapshot;
   });
 
+  // Hydration reads the enrichment cache, which is blank until it warms.
+  const withRepositoryIdentity = (project: Project): Effect.Effect<Project> =>
+    project.repositoryIdentity != null
+      ? Effect.succeed(project)
+      : projectEnrichment
+          .readRepositoryIdentity(project.workspaceRoot)
+          .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity })));
+
+  const getWithRepositoryIdentity: ProjectService["Service"]["getWithRepositoryIdentity"] =
+    Effect.fn("ProjectService.getWithRepositoryIdentity")(function* (projectId) {
+      const project = yield* getById(projectId);
+      return Option.isNone(project)
+        ? project
+        : Option.some(yield* withRepositoryIdentity(project.value));
+    });
+
   const listPage: ProjectService["Service"]["listPage"] = Effect.fn("ProjectService.listPage")(
     function* ({ cursor, limit }) {
       const rows = (yield* listRows).filter((project) => project.deletedAt === null);
       const projects = yield* Effect.forEach(
         rows.slice(cursor, cursor + limit),
-        (row) =>
-          hydrate(row).pipe(
-            Effect.filterOrElse(
-              (project) => project.repositoryIdentity !== null,
-              (project) =>
-                projectEnrichment
-                  .readRepositoryIdentity(project.workspaceRoot)
-                  .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity }))),
-            ),
-          ),
+        (row) => hydrate(row).pipe(Effect.flatMap(withRepositoryIdentity)),
         { concurrency: 8 },
       );
       return { projects, nextCursor: cursor + limit < rows.length ? cursor + limit : null };
@@ -601,6 +612,7 @@ export const make = Effect.gen(function* () {
     getById,
     getByWorkspaceRoot,
     snapshot,
+    getWithRepositoryIdentity,
     listPage,
     getShell,
     listShells,

@@ -52,7 +52,6 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
-import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
@@ -148,7 +147,6 @@ const make = Effect.gen(function* () {
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const projects = yield* ProjectService.ProjectService;
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
-  const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const crypto = yield* Crypto.Crypto;
@@ -167,6 +165,14 @@ const make = Effect.gen(function* () {
       .getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [taskId] })
       .pipe(Effect.map(({ thread, subagents }) => ({ thread, task: subagents[0] })));
 
+  const parentIdentity = (projectId: ProjectId) =>
+    projects.getWithRepositoryIdentity(projectId).pipe(
+      Effect.map((project) =>
+        Option.isNone(project) ? null : (project.value.repositoryIdentity ?? null),
+      ),
+      Effect.orElseSucceed(() => null),
+    );
+
   /**
    * Where the task runs there: the project the caller named, the peer's own No project for a
    * thread in No project (it has no repository to match), else the peer's project with this
@@ -180,14 +186,7 @@ const make = Effect.gen(function* () {
   ) {
     if (requested !== undefined) return { projectId: requested } as const;
     if (yield* managedFolders.isScratchProject(parentProjectId)) return { scratch: true } as const;
-    const here = yield* projects.getById(parentProjectId).pipe(
-      Effect.map(Option.getOrUndefined),
-      Effect.orElseSucceed(() => undefined),
-    );
-    // The project's own identity is a one-minute cache that reads blank when
-    // cold, so resolve it here, as the other side's t3_project_list does.
-    const identity =
-      here === undefined ? null : yield* repositoryIdentities.resolve(here.workspaceRoot);
+    const identity = yield* parentIdentity(parentProjectId);
     if (identity === null) {
       return yield* new OrchestratorMcpFailure({
         code: "target_required",
@@ -306,12 +305,40 @@ const make = Effect.gen(function* () {
       Effect.orDie,
     );
 
+  /**
+   * A new worktree there. Only a project of this thread's repository can fetch its commit, so a
+   * named project of another repository starts from its own default branch.
+   */
+  const remoteWorktree = Effect.fn("RemoteDelegation.remoteWorktree")(function* (
+    scope: ThreadScope,
+    environmentId: EnvironmentId,
+    parent: { readonly projectId: ProjectId; readonly worktreePath: string | null },
+    requested: ProjectId | undefined,
+  ) {
+    if (requested !== undefined) {
+      const identity = yield* parentIdentity(parent.projectId);
+      if (identity === null) return { type: "worktree" } as const;
+      const there = yield* forwarding.call(
+        scope,
+        ProjectToolkit.tools.t3_project_read,
+        environmentId,
+        { projectId: requested },
+      );
+      if (repositoryMatchRank(identity, there.repositoryIdentity) === -1) {
+        return { type: "worktree" } as const;
+      }
+    }
+    return yield* parentCommitWorktree(parent);
+  });
+
   const delegate: RemoteDelegation["Service"]["delegate"] = Effect.fn("RemoteDelegation.delegate")(
     function* (scope, parent, input, { key, commandId }) {
       const taskId = derive.delegatedTaskNode({ commandId });
       const { target } = input;
       const workspaceStrategy =
-        input.isolation === "worktree" ? yield* parentCommitWorktree(parent.thread) : undefined;
+        input.isolation === "worktree"
+          ? yield* remoteWorktree(scope, target.environmentId, parent.thread, target.projectId)
+          : undefined;
       // The provider and model inherit as they do for a task here. Another
       // provider there has no model to inherit, so the caller names one.
       const inherited = parent.thread.modelSelection;

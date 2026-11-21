@@ -66,7 +66,6 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as ProjectService from "../project/ProjectService.ts";
-import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -341,6 +340,8 @@ const boxToolkitLayer = (
   }: BoxSetup = {},
 ) => {
   const interrupts = new Set<string>();
+  const projectById = (projectId: ProjectId) =>
+    Effect.succeed(Option.fromNullishOr(projects.find(({ id }) => id === projectId)));
   const shellOf = (threadId: ThreadId) => {
     const input = launches.get(threadId)?.input;
     return Effect.succeed(
@@ -678,7 +679,14 @@ const boxToolkitLayer = (
         ensureScratchProject: Effect.succeed({ projectId: boxScratchProject }),
       }),
     ),
-    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+    // A worktree that names no base starts from the box's default branch.
+    Layer.provide(
+      Layer.mock(GitVcsDriver.GitVcsDriver)({
+        resolvePrimaryRemoteName: () => Effect.succeed("origin"),
+        resolveDefaultBranchName: () => Effect.succeed("main"),
+        resolveCommit: () => Effect.succeed({ commitSha: "f".repeat(40) } as never),
+      }),
+    ),
     Layer.provide(Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({})),
     Layer.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-remote-delegation-box-" }).pipe(
@@ -696,7 +704,8 @@ const boxToolkitLayer = (
     Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
     Layer.provide(
       Layer.mock(ProjectService.ProjectService)({
-        getById: () => Effect.succeedNone,
+        getById: projectById,
+        getWithRepositoryIdentity: projectById,
         // More than a page, so finding the project with this repository pages.
         listPage: ({ cursor, limit }) =>
           Effect.succeed({
@@ -784,11 +793,15 @@ const makeLaptop = (
           Layer.provideMerge(PeerForwarding.layer),
           Layer.provide(
             Layer.mock(ProjectService.ProjectService)({
-              // A cold enrichment cache: the project itself reports no identity yet.
               getById: () =>
                 Effect.succeedSome({
                   workspaceRoot: "/home/me/app",
                   repositoryIdentity: null,
+                } as never),
+              getWithRepositoryIdentity: () =>
+                Effect.succeedSome({
+                  workspaceRoot: "/home/me/app",
+                  repositoryIdentity: identity,
                 } as never),
             }),
           ),
@@ -796,11 +809,6 @@ const makeLaptop = (
             Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
               namedProjectsRoot: "/p",
               isScratchProject: (projectId) => Effect.succeed(projectId === laptopScratchProject),
-            }),
-          ),
-          Layer.provide(
-            Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
-              resolve: (cwd) => Effect.succeed(cwd === "/home/me/app" ? identity : null),
             }),
           ),
         ),
@@ -1816,32 +1824,61 @@ it.effect("a driver the box has no instance of is refused with the box's instanc
 
 const parentCommit = "0123456789abcdef0123456789abcdef01234567";
 
-it.effect("starts a task there in a new worktree from the parent's pushed commit", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const thread = yield* makeBoxThread;
-      const b = yield* serveBox(thread);
-      const offers = yield* SubscriptionRef.make<
-        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-      >([]);
-      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const a = yield* makeLaptop(database, offers);
-      yield* linkTo(a.links, b, "auto");
-      yield* seedParent(a);
+/** A project there of another repository, which cannot fetch this thread's commit. */
+const otherRepository: Project = {
+  ...boxProjects.at(-1)!,
+  id: ProjectId.make("project:box-tools"),
+  title: "tools",
+  workspaceRoot: "/srv/tools",
+  repositoryIdentity: {
+    canonicalKey: "github.com/acme/tools",
+    locator: {
+      source: "git-remote",
+      remoteName: "origin",
+      remoteUrl: "git@github.com:acme/tools.git",
+    },
+  },
+};
 
-      const result = yield* a.call("delegate_task", {
-        task: "Run the suite on the box.",
-        target: { environmentId: box.environmentId },
-        isolation: "worktree",
-      });
-      expect(result.isError, JSON.stringify(result.content)).toBe(false);
-      expect((yield* Ref.get(thread.launched))?.workspaceStrategy).toEqual({
-        type: "worktree",
-        baseRef: parentCommit,
-        startFromOrigin: true,
-      });
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+it.effect.each([
+  { project: "found by repository", projectId: undefined, baseRef: parentCommit },
+  { project: "named, of this repository", projectId: boxProject, baseRef: parentCommit },
+  {
+    project: "named, of another repository",
+    projectId: otherRepository.id,
+    baseRef: "origin/main",
+  },
+])(
+  "starts a task there in a new worktree of a project $project from $baseRef",
+  ({ projectId, baseRef }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread, [...boxProjects, otherRepository]);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "auto");
+        yield* seedParent(a);
+
+        const result = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          target: {
+            environmentId: box.environmentId,
+            ...(projectId === undefined ? {} : { projectId }),
+          },
+          isolation: "worktree",
+        });
+        expect(result.isError, JSON.stringify(result.content)).toBe(false);
+        expect((yield* Ref.get(thread.launched))?.workspaceStrategy).toEqual({
+          type: "worktree",
+          baseRef,
+          startFromOrigin: true,
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("refuses worktree isolation for a commit that is not pushed, naming it", () =>
