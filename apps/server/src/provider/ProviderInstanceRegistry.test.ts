@@ -624,7 +624,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
               status: "available",
               configFolder: {
                 kind: "path",
-                path: namesIgnoreCase ? "/srv/claude-lower" : ownHome("lowercase"),
+                path: namesIgnoreCase ? path.resolve("/srv/claude-lower") : ownHome("lowercase"),
               },
             },
             {
