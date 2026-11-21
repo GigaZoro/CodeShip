@@ -220,12 +220,12 @@ describe("scan cache round trip", () => {
       const restored = decodeScanCache(JSON.parse(JSON.stringify(legacy)), TEST_FORMAT_MAP);
       expect(restored.get("/gone.jsonl")).toEqual({
         ...original.get("/gone.jsonl"),
-        size: -1,
+        needsReparse: true,
         position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
       });
       expect(restored.get("/gone-codex.jsonl")).toEqual({
         ...original.get("/gone-codex.jsonl"),
-        size: -1,
+        needsReparse: true,
         position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
       });
       expect(restored.get("/clean-codex.jsonl")).toEqual(
@@ -233,7 +233,7 @@ describe("scan cache round trip", () => {
           ? cleanCodex
           : {
               ...cleanCodex,
-              size: -1,
+              needsReparse: true,
               position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
             },
       );
@@ -242,7 +242,7 @@ describe("scan cache round trip", () => {
           ? original.get("/gone-pi.jsonl")
           : {
               ...original.get("/gone-pi.jsonl"),
-              size: -1,
+              needsReparse: true,
               position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
             },
       );
@@ -256,9 +256,12 @@ describe("scan cache round trip", () => {
     const restored = decodeScanCache(JSON.parse(JSON.stringify(v9)), TEST_FORMAT_MAP);
     expect(restored.get("/claude.jsonl")).toEqual({
       ...original.get("/claude.jsonl"),
-      size: -1,
+      needsReparse: true,
       position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
     });
+    expect(
+      decodeScanCache(JSON.parse(makeScanCacheWriter()(restored, {})), TEST_FORMAT_MAP),
+    ).toEqual(restored);
   });
 
   it("rewrites only changed entries and still restores the whole cache", () => {

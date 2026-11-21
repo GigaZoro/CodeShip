@@ -31,6 +31,7 @@ const SPEEDS: readonly UsageSpeed[] = ["standard", "fast", "ultrafast"];
 
 export interface CachedFile {
   readonly size: number;
+  readonly needsReparse?: true;
   readonly mtimeMs: number;
   readonly provider: UsageProviderKind;
   readonly records: readonly UsageRecord[];
@@ -61,6 +62,7 @@ type SerializedRecord = readonly [
 
 interface SerializedFile {
   readonly s: number;
+  readonly nr?: true;
   readonly m: number;
   readonly p: UsageProviderKind;
   readonly r: readonly SerializedRecord[];
@@ -121,6 +123,7 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
   ];
   return {
     s: entry.size,
+    ...(entry.needsReparse ? { nr: true } : {}),
     m: entry.mtimeMs,
     p: entry.provider,
     r: entry.records.map(serializeRecord),
@@ -293,14 +296,15 @@ export function decodeScanCache(
     // Keep history for deleted rollouts, but re-parse incompatible reducer state.
     // v9 repairs skipped initial Codex requests; clean v8 entries can still resume.
     // v10 adds Claude advisor calls, which no older Claude entry holds.
-    const legacy =
+    const needsReparse =
+      entry.nr === true ||
       (entry.p === "claude" && version < 10) ||
       (format.state !== undefined &&
         (version < 6 ||
           (entry.p === "codex" && (version < 8 || (version < 9 && malformedRecords > 0)))));
     // A corrupt state disqualifies the entry: resuming with it would attach
     // appended usage to the wrong model or replay fork-copied history.
-    if (!legacy && !isValidState.get(entry.p)?.(entry.cs)) continue;
+    if (!needsReparse && !isValidState.get(entry.p)?.(entry.cs)) continue;
 
     const provider = entry.p;
     const records = decodeRecords(entry.r, provider);
@@ -308,13 +312,14 @@ export function decodeScanCache(
     if (records === null || tailRecords === null) continue;
 
     cache.set(path, {
-      size: legacy ? -1 : entry.s,
+      size: entry.s,
+      ...(needsReparse ? { needsReparse: true } : {}),
       mtimeMs: entry.m,
       provider,
       records,
       tailRecords,
       malformedRecords,
-      position: legacy
+      position: needsReparse
         ? { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null }
         : {
             resumeOffset: entry.o,

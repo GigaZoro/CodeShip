@@ -33,6 +33,7 @@ import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { formatMalformedUsageWarning } from "@t3tools/shared/usageFormat";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { acquireFileLock } from "../provider/FileLock.ts";
 import { BUILT_IN_USAGE_DRIVERS, type BuiltInUsageReadersEnv } from "../provider/builtInDrivers.ts";
 import type { ProviderDriver } from "@t3tools/provider-core/server/driver";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
@@ -196,6 +197,9 @@ export const make = Effect.gen(function* () {
   const sourceCache = new Map<string, typeof CachedSource.Type>();
   let cacheDirty = false;
   let cacheWritable = true;
+  let cacheReadIncomplete = false;
+  const updatedFiles = new Set<string>();
+  const updatedSources = new Set<string>();
   const isWithinDirectory = (filePath: string, dir: string) => {
     const relative = path.relative(dir, filePath);
     return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
@@ -391,6 +395,7 @@ export const make = Effect.gen(function* () {
             : currentVolumeId;
         if (previous?.dir !== dir || previous.volumeId !== volumeId) {
           sourceCache.set(sourceKey, { dir, volumeId });
+          updatedSources.add(sourceKey);
           cacheDirty = true;
         }
         const key = `${provider}\0${dir}`;
@@ -409,7 +414,7 @@ export const make = Effect.gen(function* () {
   });
 
   const writeScanCache = makeScanCacheWriter();
-  const legacyNames = fileSystem.readDirectory(config.stateDir).pipe(
+  const listLegacyCaches = fileSystem.readDirectory(config.stateDir).pipe(
     Effect.map((names) =>
       names.filter((name) =>
         LEGACY_SCAN_CACHE_FILE_NAMES.some(
@@ -418,216 +423,246 @@ export const make = Effect.gen(function* () {
         ),
       ),
     ),
-    Effect.orElseSucceed((): string[] => []),
+    Effect.catchIf(
+      (error) => error.reason._tag === "NotFound",
+      () => Effect.succeed([]),
+    ),
   );
+  const reportSavedUsageGap = Effect.fn("UsageService.reportSavedUsageGap")(function* (
+    file: string,
+    cause: unknown,
+  ) {
+    cacheReadIncomplete = true;
+    yield* Effect.logError("Could not read some saved transcript usage", { path: file, cause });
+  });
+  const lockFailure = (cause: unknown) =>
+    new UsageReadError({
+      reason: "scanFailed",
+      detail: "Saved transcript usage could not be locked.",
+      cause,
+    });
+  const withCacheLock = <A, E, R>(task: Effect.Effect<A, E, R>) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* fileSystem
+          .makeDirectory(config.stateDir, { recursive: true })
+          .pipe(Effect.mapError(lockFailure));
+        const compromised = yield* Deferred.make<never, UsageReadError>();
+        yield* acquireFileLock(scanCachePath, {
+          realpath: false,
+          stale: 120_000,
+          update: 10_000,
+          retries: { retries: 80, factor: 1, minTimeout: 500, maxTimeout: 500 },
+          onCompromised: (cause) => Deferred.fail(compromised, lockFailure(cause)),
+        }).pipe(Effect.mapError(lockFailure));
+        return yield* Effect.raceFirst(task, Deferred.await(compromised));
+      }),
+    );
+
+  const readDocument = (filePath: string) =>
+    fileSystem
+      .stat(filePath)
+      .pipe(
+        Effect.flatMap((info) =>
+          info.type === "File" ? fileSystem.readFileString(filePath) : Effect.succeed(null),
+        ),
+      );
+  const decodeDocument = Effect.fn("UsageService.decodeScanCache")(function* (raw: string | null) {
+    const document =
+      raw === null ? null : yield* decodeScanCacheFile(raw).pipe(Effect.orElseSucceed(() => null));
+    const version = Option.getOrUndefined(decodeCacheVersion(document))?.version;
+    const shape = decodeCacheShape(document);
+    const entries = decodeScanCache(document, transcriptFormats);
+    const rows = decodeSourceRows(document);
+    const sources = new Map<string, typeof CachedSource.Type>();
+    const sourceRows = Option.getOrUndefined(rows)?.sources ?? {};
+    for (const [key, row] of Object.entries(sourceRows)) {
+      const parsed = decodeCachedSource(row);
+      if (Option.isSome(parsed)) sources.set(key, parsed.value);
+    }
+    const fileRows = decodeFileRows(document);
+    const entriesDropped = Option.isSome(fileRows)
+      ? Object.keys(fileRows.value.files).length - entries.size
+      : null;
+    const sourcesDropped = Option.isSome(rows)
+      ? Object.keys(sourceRows).length - sources.size
+      : null;
+    const complete = Option.isSome(shape) && entriesDropped === 0 && sourcesDropped === 0;
+    return { version, entries, sources, complete, entriesDropped, sourcesDropped };
+  });
+  const mergeSources = (sources: ReadonlyMap<string, typeof CachedSource.Type>) => {
+    let changed = false;
+    for (const [key, source] of sources) {
+      if (!sourceCache.has(key)) {
+        sourceCache.set(key, source);
+        changed = true;
+      }
+    }
+    return changed;
+  };
+  const unreadableName = Effect.fn("UsageService.unreadableCachePath")(function* (file: string) {
+    const id = yield* crypto.randomUUIDv4();
+    return path.join(config.stateDir, `.usage-cache-unreadable-${id}-${path.basename(file)}`);
+  });
+  const syncCacheFile = (file: string) =>
+    Effect.scoped(Effect.flatMap(fileSystem.open(file, { flag: "r+" }), (handle) => handle.sync));
+  const syncCacheDirectory =
+    HostProcess.Platform.defaultValue() === "win32"
+      ? Effect.void
+      : Effect.scoped(Effect.flatMap(fileSystem.open(config.stateDir), (handle) => handle.sync));
+  const logCacheError = (
+    file: string,
+    version: number | undefined,
+    entriesDropped: number | null,
+    sourcesDropped: number | null,
+    cause?: unknown,
+  ) =>
+    Effect.logError("Keeping an incomplete Usage cache", {
+      path: file,
+      version: version ?? null,
+      entriesDropped,
+      sourcesDropped,
+      cause,
+    });
+
+  const readCurrent = readDocument(scanCachePath).pipe(
+    Effect.asSome,
+    Effect.catchIf(
+      (error) => error.reason._tag === "NotFound",
+      () => Effect.succeedNone,
+    ),
+  );
+  const sameFileState = (a: CachedFile, b: CachedFile) =>
+    a.mtimeMs === b.mtimeMs && a.size === b.size;
+  const isLaterFileState = (a: CachedFile, b: CachedFile) =>
+    a.mtimeMs > b.mtimeMs || (a.mtimeMs === b.mtimeMs && a.size > b.size);
 
   const ensureScanCacheLoaded = yield* Effect.cached(
-    Effect.gen(function* () {
-      const readDocument = (filePath: string) =>
-        fileSystem
-          .stat(filePath)
-          .pipe(
-            Effect.flatMap((info) =>
-              info.type === "File" ? fileSystem.readFileString(filePath) : Effect.succeed(null),
-            ),
-          );
-      const decodeDocument = Effect.fn("UsageService.decodeScanCache")(function* (
-        raw: string | null,
-      ) {
-        const document =
-          raw === null
-            ? null
-            : yield* decodeScanCacheFile(raw).pipe(Effect.orElseSucceed(() => null));
-        const version = Option.getOrUndefined(decodeCacheVersion(document))?.version;
-        const shape = decodeCacheShape(document);
-        const entries = decodeScanCache(document, transcriptFormats);
-        const rows = decodeSourceRows(document);
-        const sources = new Map<string, typeof CachedSource.Type>();
-        const sourceRows = Option.getOrUndefined(rows)?.sources ?? {};
-        for (const [key, row] of Object.entries(sourceRows)) {
-          const parsed = decodeCachedSource(row);
-          if (Option.isSome(parsed)) sources.set(key, parsed.value);
-        }
-        const fileRows = decodeFileRows(document);
-        const entriesDropped = Option.isSome(fileRows)
-          ? Object.keys(fileRows.value.files).length - entries.size
-          : null;
-        const sourcesDropped = Option.isSome(rows)
-          ? Object.keys(sourceRows).length - sources.size
-          : null;
-        const complete = Option.isSome(shape) && entriesDropped === 0 && sourcesDropped === 0;
-        return { version, entries, sources, complete, entriesDropped, sourcesDropped };
-      });
-      const mergeSources = (sources: ReadonlyMap<string, typeof CachedSource.Type>) => {
-        let changed = false;
-        for (const [key, source] of sources) {
-          if (!sourceCache.has(key)) {
-            sourceCache.set(key, source);
-            changed = true;
-          }
-        }
-        return changed;
-      };
-      const unreadableName = Effect.fn("UsageService.unreadableCachePath")(function* (
-        file: string,
-      ) {
-        const id = yield* crypto.randomUUIDv4();
-        return path.join(config.stateDir, `.usage-cache-unreadable-${id}-${path.basename(file)}`);
-      });
-      const syncCacheFile = (file: string) =>
-        Effect.scoped(
-          Effect.flatMap(fileSystem.open(file, { flag: "r+" }), (handle) => handle.sync),
-        );
-      const syncCacheDirectory =
-        HostProcess.Platform.defaultValue() === "win32"
-          ? Effect.void
-          : Effect.scoped(
-              Effect.flatMap(fileSystem.open(config.stateDir), (handle) => handle.sync),
-            );
-      const logCacheError = (
-        file: string,
-        version: number | undefined,
-        entriesDropped: number | null,
-        sourcesDropped: number | null,
-        cause?: unknown,
-      ) =>
-        Effect.logError("Keeping an incomplete Usage cache", {
-          path: file,
-          version: version ?? null,
-          entriesDropped,
-          sourcesDropped,
-          cause,
-        });
-
-      const current = yield* readDocument(scanCachePath).pipe(
-        Effect.asSome,
-        Effect.catchIf(
-          (error) => error.reason._tag === "NotFound",
-          () => Effect.succeedNone,
-        ),
-        Effect.result,
-      );
-      let rewriteCurrent = false;
-      if (current._tag === "Failure") {
-        cacheWritable = false;
-        yield* logCacheError(scanCachePath, undefined, null, null, current.failure);
-        return;
-      }
-      if (Option.isSome(current.success)) {
-        const raw = current.success.value;
-        const decoded = yield* decodeDocument(raw);
-        if (raw === null || (decoded.version ?? 0) > USAGE_SCAN_CACHE_VERSION) {
+    withCacheLock(
+      Effect.gen(function* () {
+        const current = yield* readCurrent.pipe(Effect.result);
+        let rewriteCurrent = false;
+        if (current._tag === "Failure") {
           cacheWritable = false;
-          yield* logCacheError(
-            scanCachePath,
-            decoded.version,
-            decoded.entriesDropped,
-            decoded.sourcesDropped,
-          );
+          yield* logCacheError(scanCachePath, undefined, null, null, current.failure);
           return;
         }
-        for (const [file, entry] of decoded.entries) fileCache.set(file, entry);
-        mergeSources(decoded.sources);
-        if (!decoded.complete) {
-          yield* logCacheError(
-            scanCachePath,
-            decoded.version,
-            decoded.entriesDropped,
-            decoded.sourcesDropped,
-          );
-          const backup = yield* unreadableName(scanCachePath);
-          const copied = yield* fileSystem.copyFile(scanCachePath, backup).pipe(
-            Effect.andThen(syncCacheFile(backup)),
-            Effect.andThen(syncCacheDirectory),
-            Effect.tapError((error) =>
-              logCacheError(
-                backup,
-                decoded.version,
-                decoded.entriesDropped,
-                decoded.sourcesDropped,
-                error,
-              ),
-            ),
-            Effect.isSuccess,
-          );
-          if (!copied) {
+        if (Option.isSome(current.success)) {
+          const raw = current.success.value;
+          const decoded = yield* decodeDocument(raw);
+          if (raw === null || (decoded.version ?? 0) > USAGE_SCAN_CACHE_VERSION) {
             cacheWritable = false;
-            return;
-          }
-          rewriteCurrent = true;
-          cacheDirty = true;
-        }
-      }
-
-      const claims: { readonly path: string; readonly unreadablePath?: string }[] = [];
-      const oldNames = yield* legacyNames;
-      for (const legacy of LEGACY_SCAN_CACHE_FILE_NAMES) {
-        for (const name of oldNames.filter((name) => name.endsWith(legacy))) {
-          const original = path.join(config.stateDir, name);
-          const claim =
-            name === legacy
-              ? path.join(
-                  config.stateDir,
-                  `${LEGACY_CLAIM_PREFIX}${yield* crypto.randomUUIDv4()}-${name}`,
-                )
-              : original;
-          if (
-            claim !== original &&
-            !(yield* fileSystem.rename(original, claim).pipe(Effect.isSuccess))
-          )
-            continue;
-          const raw = yield* readDocument(claim).pipe(Effect.result);
-          if (raw._tag === "Failure") {
-            yield* logCacheError(claim, undefined, null, null, raw.failure);
-            continue;
-          }
-          const decoded = yield* decodeDocument(raw.success);
-          for (const [file, entry] of decoded.entries) {
-            const previous = fileCache.get(file);
-            // At the same mtime, growth implies a later append. Equal bytes prefer the newer format read first.
-            if (
-              previous === undefined ||
-              entry.mtimeMs > previous.mtimeMs ||
-              (entry.mtimeMs === previous.mtimeMs && entry.size > previous.size)
-            ) {
-              fileCache.set(file, entry);
-              cacheDirty = true;
-            }
-          }
-          if (mergeSources(decoded.sources)) cacheDirty = true;
-          if (decoded.complete) {
-            claims.push({ path: claim });
-          } else {
             yield* logCacheError(
-              claim,
+              scanCachePath,
               decoded.version,
               decoded.entriesDropped,
               decoded.sourcesDropped,
             );
-            claims.push({ path: claim, unreadablePath: yield* unreadableName(claim) });
+            return;
+          }
+          for (const [file, entry] of decoded.entries) fileCache.set(file, entry);
+          mergeSources(decoded.sources);
+          if (!decoded.complete) {
+            yield* logCacheError(
+              scanCachePath,
+              decoded.version,
+              decoded.entriesDropped,
+              decoded.sourcesDropped,
+            );
+            const backup = yield* unreadableName(scanCachePath);
+            const copied = yield* fileSystem.copyFile(scanCachePath, backup).pipe(
+              Effect.andThen(syncCacheFile(backup)),
+              Effect.andThen(syncCacheDirectory),
+              Effect.tapError((error) =>
+                logCacheError(
+                  backup,
+                  decoded.version,
+                  decoded.entriesDropped,
+                  decoded.sourcesDropped,
+                  error,
+                ),
+              ),
+              Effect.isSuccess,
+            );
+            if (!copied) {
+              cacheWritable = false;
+              return;
+            }
+            rewriteCurrent = true;
+            cacheDirty = true;
           }
         }
-      }
-      if (claims.length === 0 && !rewriteCurrent) return;
-      // Persist salvaged rows before moving archives out of the next startup's inputs.
-      yield* Effect.gen(function* () {
-        const contents = writeScanCache(fileCache, { sources: Object.fromEntries(sourceCache) });
-        yield* writeCacheFile(scanCachePath, contents);
-        yield* syncCacheFile(scanCachePath);
-        yield* syncCacheDirectory;
-        cacheDirty = false;
-        for (const claim of claims) {
-          yield* claim.unreadablePath === undefined
-            ? fileSystem.remove(claim.path, { force: true })
-            : fileSystem.rename(claim.path, claim.unreadablePath);
+
+        const claims: { readonly path: string; readonly unreadablePath?: string }[] = [];
+        const oldNames = yield* listLegacyCaches.pipe(
+          Effect.catch((cause) => reportSavedUsageGap(config.stateDir, cause).pipe(Effect.as([]))),
+        );
+        for (const legacy of LEGACY_SCAN_CACHE_FILE_NAMES) {
+          for (const name of oldNames.filter((name) => name.endsWith(legacy))) {
+            const original = path.join(config.stateDir, name);
+            const claim =
+              name === legacy
+                ? path.join(
+                    config.stateDir,
+                    `${LEGACY_CLAIM_PREFIX}${yield* crypto.randomUUIDv4()}-${name}`,
+                  )
+                : original;
+            if (claim !== original) {
+              const claimed = yield* fileSystem.rename(original, claim).pipe(Effect.result);
+              if (claimed._tag === "Failure") {
+                yield* reportSavedUsageGap(original, claimed.failure);
+                continue;
+              }
+            }
+            const raw = yield* readDocument(claim).pipe(Effect.result);
+            if (raw._tag === "Failure") {
+              yield* reportSavedUsageGap(claim, raw.failure);
+              continue;
+            }
+            const decoded = yield* decodeDocument(raw.success);
+            for (const [file, entry] of decoded.entries) {
+              const previous = fileCache.get(file);
+              // At the same mtime, growth implies a later append. Equal bytes prefer the newer format read first.
+              if (previous === undefined || isLaterFileState(entry, previous)) {
+                fileCache.set(file, entry);
+                cacheDirty = true;
+              }
+            }
+            if (mergeSources(decoded.sources)) cacheDirty = true;
+            if (decoded.complete) {
+              claims.push({ path: claim });
+            } else {
+              yield* logCacheError(
+                claim,
+                decoded.version,
+                decoded.entriesDropped,
+                decoded.sourcesDropped,
+              );
+              claims.push({ path: claim, unreadablePath: yield* unreadableName(claim) });
+            }
+          }
         }
-      }).pipe(
-        Effect.tapError((error) =>
-          logCacheError(scanCachePath, USAGE_SCAN_CACHE_VERSION, null, null, error),
-        ),
-        Effect.ignore,
-      );
-    }).pipe(
+        if (claims.length === 0 && !rewriteCurrent) return;
+        // Persist salvaged rows before moving archives out of the next startup's inputs.
+        yield* Effect.gen(function* () {
+          const contents = writeScanCache(fileCache, { sources: Object.fromEntries(sourceCache) });
+          yield* writeCacheFile(scanCachePath, contents);
+          yield* syncCacheFile(scanCachePath);
+          yield* syncCacheDirectory;
+          cacheDirty = false;
+          for (const claim of claims) {
+            yield* claim.unreadablePath === undefined
+              ? fileSystem.remove(claim.path, { force: true })
+              : fileSystem.rename(claim.path, claim.unreadablePath);
+          }
+        }).pipe(
+          Effect.tapError((error) =>
+            logCacheError(scanCachePath, USAGE_SCAN_CACHE_VERSION, null, null, error),
+          ),
+          Effect.ignore,
+        );
+      }),
+    ).pipe(
       Effect.mapError(
         (cause) =>
           new UsageReadError({
@@ -639,28 +674,67 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("UsageService.loadScanCache"),
     ),
   );
-  yield* legacyNames.pipe(
-    Effect.flatMap((names) => (names.length > 0 ? ensureScanCacheLoaded : Effect.void)),
+  yield* listLegacyCaches.pipe(
+    Effect.result,
+    Effect.flatMap((listed) =>
+      listed._tag === "Failure" || listed.success.length > 0 ? ensureScanCacheLoaded : Effect.void,
+    ),
     Effect.forkIn(scope),
   );
 
   const persistLock = yield* Semaphore.make(1);
 
-  // Clear dirty before encoding to retain concurrent changes; restore it on failure for retry.
   const persistCaches = Effect.gen(function* () {
-    if (cacheWritable && cacheDirty) {
-      cacheDirty = false;
-      yield* Effect.sync(() =>
-        writeScanCache(fileCache, { sources: Object.fromEntries(sourceCache) }),
-      ).pipe(
-        Effect.flatMap((contents) => writeCacheFile(scanCachePath, contents)),
-        Effect.catchCause(() =>
-          Effect.sync(() => {
-            cacheDirty = true;
-          }),
-        ),
-      );
-    }
+    if (!cacheWritable || !cacheDirty) return;
+    yield* withCacheLock(
+      Effect.gen(function* () {
+        const document = yield* readCurrent;
+        const disk = Option.isSome(document) ? yield* decodeDocument(document.value) : undefined;
+        if (disk !== undefined && !disk.complete) {
+          yield* logCacheError(
+            scanCachePath,
+            disk.version,
+            disk.entriesDropped,
+            disk.sourcesDropped,
+          );
+          return;
+        }
+        const cutoff =
+          (yield* Clock.currentTimeMillis) - CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+        const files = disk?.entries ?? new Map<string, CachedFile>();
+        const sources = disk?.sources ?? new Map<string, typeof CachedSource.Type>();
+        for (const [file, local] of fileCache) {
+          const persisted = files.get(file);
+          if (
+            persisted === undefined ||
+            isLaterFileState(local, persisted) ||
+            (sameFileState(local, persisted) &&
+              !local.needsReparse &&
+              (persisted.needsReparse || updatedFiles.has(file)))
+          )
+            files.set(file, local);
+        }
+        for (const [key, source] of sourceCache) {
+          if (!sources.has(key) || updatedSources.has(key)) sources.set(key, source);
+        }
+        pruneScanCache(files, cutoff);
+        const contents = writeScanCache(files, { sources: Object.fromEntries(sources) });
+        const writtenFiles = new Set(updatedFiles);
+        const writtenSources = new Set(updatedSources);
+        updatedFiles.clear();
+        updatedSources.clear();
+        cacheDirty = false;
+        yield* writeCacheFile(scanCachePath, contents).pipe(
+          Effect.onError(() =>
+            Effect.sync(() => {
+              for (const file of writtenFiles) updatedFiles.add(file);
+              for (const key of writtenSources) updatedSources.add(key);
+              cacheDirty = true;
+            }),
+          ),
+        );
+      }),
+    ).pipe(Effect.catch((cause) => logCacheError(scanCachePath, undefined, null, null, cause)));
   }).pipe(persistLock.withPermit, Effect.withSpan("UsageService.persistCaches"));
 
   const pendingPersists = new Set<Fiber.Fiber<void>>();
@@ -698,6 +772,7 @@ export const make = Effect.gen(function* () {
     // at one directory, a hit parsed by the other parser must not be reused.
     if (
       cached &&
+      !cached.needsReparse &&
       cached.size === size &&
       cached.mtimeMs === mtimeMs &&
       cached.provider === provider
@@ -714,7 +789,10 @@ export const make = Effect.gen(function* () {
     // Only a strictly grown file may resume. Same size with a new mtime, or
     // a shrunken file, means rewritten content; re-parse it whole.
     const resumeFrom =
-      cached !== undefined && cached.provider === provider && size > cached.size
+      cached !== undefined &&
+      !cached.needsReparse &&
+      cached.provider === provider &&
+      size > cached.size
         ? cached.position
         : undefined;
 
@@ -858,6 +936,7 @@ export const make = Effect.gen(function* () {
           Effect.map(({ records, malformedRecords, failed, update }) => {
             onProgress();
             if (update !== undefined) {
+              updatedFiles.add(file.path);
               fileCache.set(file.path, {
                 ...update,
                 records: correctedBatch(update.records),
@@ -1207,8 +1286,10 @@ export const make = Effect.gen(function* () {
         },
       ] of scannedDirs.entries()) {
         const { scannedFiles, skippedFiles, malformedRecords, sessionIds } = counts[index]!;
-        const sourceMessage =
-          message ?? (files === null ? "No transcript directory on this environment." : null);
+        const savedUsageGap = cacheReadIncomplete && transcriptFormats.has(provider);
+        const sourceMessage = savedUsageGap
+          ? [message, "Some saved usage could not be read."].filter(Boolean).join(" ")
+          : (message ?? (files === null ? "No transcript directory on this environment." : null));
         sources.push({
           fingerprint: {
             hostId: sourceHostId ?? hostId,
@@ -1217,13 +1298,15 @@ export const make = Effect.gen(function* () {
             volumeId,
           },
           status:
-            files === null && scannedFiles === 0
-              ? "missing"
-              : malformedRecords > 0
-                ? status === undefined || status === "ok"
-                  ? "partial"
-                  : status
-                : (status ?? "ok"),
+            savedUsageGap && (status === undefined || status === "ok" || status === "missing")
+              ? "partial"
+              : files === null && scannedFiles === 0
+                ? "missing"
+                : malformedRecords > 0
+                  ? status === undefined || status === "ok"
+                    ? "partial"
+                    : status
+                  : (status ?? "ok"),
           scannedFiles,
           skippedFiles,
           malformedRecords,
@@ -1298,6 +1381,7 @@ export const make = Effect.gen(function* () {
         const records = correctedBatch(entry.records);
         const tailRecords = correctedBatch(entry.tailRecords);
         if (records === entry.records && tailRecords === entry.tailRecords) continue;
+        updatedFiles.add(filePath);
         fileCache.set(filePath, { ...entry, records, tailRecords });
         cacheDirty = true;
       }
