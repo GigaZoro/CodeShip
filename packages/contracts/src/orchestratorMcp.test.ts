@@ -24,6 +24,18 @@ describe("orchestrator MCP contracts", () => {
     };
     expect(decodeInterruptResult(result)).toEqual(result);
   });
+  it("carries an interrupt's outcome, and still reads results from servers without it", () => {
+    const ended = {
+      threadId: "thread-restart",
+      runId: "run-source",
+      status: "completed",
+      outcome: "already_terminal",
+    };
+    expect(decodeInterruptResult(ended)).toEqual(ended);
+    expect(() => decodeInterruptResult({ ...ended, outcome: "stopped" })).toThrow();
+    const older = { threadId: "thread-restart", runId: null, status: "no_active_run" };
+    expect(decodeInterruptResult(older)).toEqual(older);
+  });
   it("decodes cross-provider delegated task requests and durable results", () => {
     const request = decodeDelegateTaskInput({
       task: "Inspect the workspace and report the result.",

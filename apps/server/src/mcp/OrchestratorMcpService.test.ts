@@ -6176,7 +6176,8 @@ describe("OrchestratorMcpService thread stop", () => {
             const child = yield* delegateChild(threadId, "owned child");
             const grandchild = yield* delegateChild(child, "owned grandchild");
             yield* send("restart", "queue_after_active");
-            const [, source, restart] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+            const [ended, source, restart] = (yield* orchestrator.getThreadProjection(threadId))
+              .runs;
             yield* endParentRun(source!);
             yield* projections.apply({
               id: EventId.make("queued-restart"),
@@ -6193,6 +6194,7 @@ describe("OrchestratorMcpService thread stop", () => {
               clientRequestId: "interrupt-chain",
             });
             assert.equal(result.status, "interrupt_requested");
+            assert.equal(result.outcome, "interrupt_requested");
             yield* worker.drain();
             for (const id of [child, grandchild]) {
               assert.equal(
@@ -6200,6 +6202,23 @@ describe("OrchestratorMcpService thread stop", () => {
                 "interrupted",
               );
             }
+            assert.equal(
+              (yield* orchestrator.getThreadProjection(independent)).runs[0]?.status,
+              "starting",
+            );
+            // A run that ended reports it; its awaited background work is Stop's to end.
+            const endedResult = yield* service.interruptThread(client, {
+              threadId,
+              runId: ended!.id,
+              clientRequestId: "interrupt-ended",
+            });
+            assert.deepEqual(endedResult, {
+              threadId,
+              runId: ended!.id,
+              status: "completed",
+              outcome: "already_terminal",
+            });
+            yield* worker.drain();
             assert.equal(
               (yield* orchestrator.getThreadProjection(independent)).runs[0]?.status,
               "starting",
@@ -6232,6 +6251,7 @@ describe("OrchestratorMcpService thread stop", () => {
             threadId,
             runId: runningRun.id,
             status: "interrupt_requested",
+            outcome: "interrupt_requested",
           });
         }).pipe(Effect.provide(layerTest));
       }),

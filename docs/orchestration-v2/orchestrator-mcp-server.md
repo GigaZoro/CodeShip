@@ -553,13 +553,27 @@ Interrupts a selected run through the V2 `run.interrupt` command. An explicit
 `runId` follows its restart chain, including a queued continuation or a delayed
 retry. Cancelling a pending restart also interrupts provider work and settles
 delegated work owned by that chain. A terminal run with no pending restart
-returns `already_terminal`. Without `runId`, the tool selects the newest
-active run and returns `no_active_run` when the thread has none.
+is not changed. Without `runId`, the tool selects the newest active run.
 After the interrupt commits, the worker stops the chain's app-owned commands
 and child runs, including their delegated descendants. A follow-up admitted
 under another owner survives, even when it reuses the same child thread.
 Force stop uses the same cascade when it dispatches a run interrupt.
-Pass `stop: true` to stop the whole thread and its delegated work across runs.
+Pass `stop: true` to stop the whole thread and its delegated work across runs,
+including background work a completed run still awaits.
+
+The result names the run the interrupt reached in `runId`, and the requested
+ID in `requestedRunId` when they differ. `outcome` says what the call did:
+
+| `outcome`             | Meaning                                     | `status`                         |
+| --------------------- | ------------------------------------------- | -------------------------------- |
+| `interrupt_requested` | The run's interrupt was recorded.           | `interrupt_requested`            |
+| `already_terminal`    | The run had ended with no pending restart.  | The run's terminal status        |
+| `no_active_run`       | No `runId` was given and no run was active. | `no_active_run`, `runId` is null |
+
+The outcome is resolved under the thread's command lock and stored with the
+command's receipt. Sending the same `clientRequestId` again reports the stored
+outcome, even after the run changed. Servers from before this field omit
+`outcome`; read `status` there.
 
 ## Delegated Task Lifecycle
 

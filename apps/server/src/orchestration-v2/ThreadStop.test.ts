@@ -1387,18 +1387,39 @@ it.effect(
           pendingBackgroundTasks: [{ kind: "background_task", taskId: "awaited" }],
         },
       });
-      const interrupted = yield* threads.interruptThread({
-        projectId: before.thread.projectId,
+      const interrupt = () =>
+        threads.interruptThread({
+          projectId: before.thread.projectId,
+          threadId,
+          runId: source.id,
+          commandId: CommandId.make("mcp-interrupt"),
+        });
+      const terminal = { type: "already_terminal", runId: source.id, status: "completed" } as const;
+      const first = yield* interrupt();
+      assert.equal(first.type, "already_terminal");
+      // A manual retry reopens the same run; a replay still reports what the request did then.
+      yield* projections.apply({
+        type: "run.updated",
         threadId,
-        runId: source.id,
-        commandId: CommandId.make("mcp-interrupt"),
+        id: EventId.make("source-retried"),
+        occurredAt,
+        payload: { ...source, startedAt: occurredAt, completedAt: null, status: "running" },
       });
-      assert.equal(interrupted.type, "already_terminal");
+      const replayed = yield* interrupt();
+      assert.equal(replayed.type, "already_terminal");
+      assert.deepEqual([first, replayed], [terminal, terminal]);
       assert.isFalse(
         (yield* orchestrator.getThreadProjection(threadId)).turnItems.some(
           (item) => item.type === "run_interrupt_request",
         ),
       );
+      yield* projections.apply({
+        type: "run.updated",
+        threadId,
+        id: EventId.make("source-completed-again"),
+        occurredAt,
+        payload: { ...source, startedAt: occurredAt, completedAt: occurredAt, status: "completed" },
+      });
       const messageId = MessageId.make("recovery-message");
       yield* orchestrator.dispatch({
         type: "message.dispatch",

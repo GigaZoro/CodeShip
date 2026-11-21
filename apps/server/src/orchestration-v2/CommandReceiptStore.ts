@@ -1,4 +1,11 @@
-import { CommandId, NonNegativeInt, ProjectId, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  NonNegativeInt,
+  OrchestrationV2RunStatus,
+  ProjectId,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -40,6 +47,26 @@ export type CommandReceiptStoreV2Error = typeof CommandReceiptStoreV2Error.Type;
 export const CommandReceiptV2Status = Schema.Literals(["accepted", "rejected"]);
 export type CommandReceiptV2Status = typeof CommandReceiptV2Status.Type;
 
+/**
+ * What a run interrupt resolved under its command lock: the run it reached and whether it
+ * requested an interrupt or found the run already ended. A replay reports it unchanged.
+ */
+export const CommandResultV2 = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("run.interrupt"),
+    outcome: Schema.Literal("interrupt_requested"),
+    runId: RunId,
+    runStatus: OrchestrationV2RunStatus,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("run.interrupt"),
+    outcome: Schema.Literal("already_terminal"),
+    runId: RunId,
+    runStatus: Schema.Literals(["completed", "failed", "cancelled", "interrupted", "rolled_back"]),
+  }),
+]);
+export type CommandResultV2 = typeof CommandResultV2.Type;
+
 export const CommandReceiptV2 = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
@@ -48,6 +75,7 @@ export const CommandReceiptV2 = Schema.Struct({
   resultSequence: NonNegativeInt,
   status: CommandReceiptV2Status,
   error: Schema.NullOr(Schema.String),
+  result: Schema.optional(CommandResultV2),
 });
 export type CommandReceiptV2 = typeof CommandReceiptV2.Type;
 
@@ -86,10 +114,13 @@ export class CommandReceiptStoreV2 extends Context.Service<
   CommandReceiptStoreV2Shape
 >()("t3/orchestration-v2/CommandReceiptStore/CommandReceiptStoreV2") {}
 
+const CommandResultJson = Schema.fromJsonString(CommandResultV2);
+const encodeResult = Schema.encodeSync(CommandResultJson);
 const decodeReceipt = Schema.decodeUnknownEffect(
   CommandReceiptV2.mapFields((fields) => ({
     ...fields,
     acceptedAt: Schema.DateTimeUtcFromString,
+    result: Schema.optional(CommandResultJson),
   })),
 );
 const decodeProjectReceipt = Schema.decodeUnknownEffect(
@@ -108,6 +139,7 @@ function fromApplicationReceipt(receipt: OrchestrationCommandReceipts.Orchestrat
     resultSequence: receipt.resultSequence,
     status: receipt.status,
     error: receipt.error,
+    ...(receipt.result === null ? {} : { result: receipt.result }),
   });
 }
 
@@ -124,6 +156,8 @@ function toApplicationReceipt(
     resultSequence: receipt.resultSequence,
     status: receipt.status,
     error: receipt.error,
+    result:
+      "result" in receipt && receipt.result !== undefined ? encodeResult(receipt.result) : null,
   };
 }
 

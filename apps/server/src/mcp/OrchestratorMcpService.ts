@@ -4426,10 +4426,12 @@ const make = Effect.gen(function* () {
               event.payload.type === "run_interrupt_request" &&
               event.payload.providerTurnId !== null),
         )?.event.runId;
+        const outcome = interrupted === undefined ? "no_active_run" : "interrupt_requested";
         return {
           threadId: input.threadId,
           runId: interrupted ?? null,
-          status: interrupted === undefined ? "no_active_run" : "interrupt_requested",
+          status: outcome,
+          outcome,
         } satisfies OrchestratorMcpThreadInterruptResult;
       }
       const result = yield* threadManagement
@@ -4459,13 +4461,15 @@ const make = Effect.gen(function* () {
           threadId: input.threadId,
           runId: null,
           status: "no_active_run",
+          outcome: "no_active_run",
         } satisfies OrchestratorMcpThreadInterruptResult;
       }
       return {
         threadId: input.threadId,
-        runId: result.run.id,
-        status: result.type === "already_terminal" ? result.run.status : "interrupt_requested",
-        ...(input.runId !== undefined && input.runId !== result.run.id
+        runId: result.runId,
+        status: result.type === "already_terminal" ? result.status : "interrupt_requested",
+        outcome: result.type,
+        ...(input.runId !== undefined && input.runId !== result.runId
           ? { requestedRunId: input.runId }
           : {}),
       } satisfies OrchestratorMcpThreadInterruptResult;
