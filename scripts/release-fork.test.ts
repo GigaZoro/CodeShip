@@ -28,6 +28,39 @@ const readWorkflow = (file: string) =>
     NodeFS.readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), "utf8"),
   );
 
+const readRepoFile = (path: string) =>
+  NodeFS.readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+
+const ACTION_AT_COMMIT = /^[\w.-]+\/[\w.-]+(?:\/[\w./-]+)?@[0-9a-f]{40}$/;
+
+/**
+ * Every action the workflows run, following local actions and reusable workflows,
+ * that is not pinned to a commit with its version in a comment.
+ */
+function unpinnedActions(roots: ReadonlyArray<string>, read: (path: string) => string) {
+  const pending = [...roots];
+  const seen = new Set<string>();
+  const unpinned: string[] = [];
+  while (pending.length > 0) {
+    const path = pending.pop()!;
+    if (seen.has(path)) continue;
+    seen.add(path);
+    read(path)
+      .split("\n")
+      .forEach((line, index) => {
+        const match = /^\s*(?:-\s+)?uses:\s*["']?([^\s"']+)["']?(.*)$/.exec(line);
+        if (!match) return;
+        const [, ref = "", comment = ""] = match;
+        if (ref.startsWith("./.github/workflows/")) pending.push(ref.slice(2));
+        else if (ref.startsWith("./")) pending.push(`${ref.slice(2)}/action.yml`);
+        else if (!ACTION_AT_COMMIT.test(ref) || !/^\s+#\s*\S/.test(comment)) {
+          unpinned.push(`${path}:${index + 1} ${ref}`);
+        }
+      });
+  }
+  return { seen: [...seen], unpinned };
+}
+
 const runnersOf = (job: WorkflowJob) =>
   [job["runs-on"], job.with?.runner, job.with?.verify_runner].filter(
     (runner) => typeof runner === "string",
@@ -157,6 +190,33 @@ describe("fork release", () => {
       );
       for (const url of update.downloads) expect(server.files.has(url.pathname)).toBe(true);
     }
+  });
+
+  // These jobs publish the release and hold its signing secrets, and a tag or branch can be moved to other code.
+  it("pins every action the release runs to a commit", () => {
+    const release = unpinnedActions(
+      [".github/workflows/release-fork.yml", ".github/workflows/release-fork-macos.yml"],
+      readRepoFile,
+    );
+    expect(release.seen).toEqual(
+      expect.arrayContaining([
+        ".github/workflows/release-desktop.yml",
+        ".github/actions/setup-ci-deps/action.yml",
+      ]),
+    );
+    expect(release.unpinned).toEqual([]);
+
+    const fixture = [
+      "steps:",
+      "  - uses: actions/checkout@v6",
+      "  - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3",
+      "  - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6",
+      "  # - uses: actions/checkout@main",
+    ].join("\n");
+    expect(unpinnedActions(["w.yml"], () => fixture).unpinned).toEqual([
+      "w.yml:2 actions/checkout@v6",
+      "w.yml:3 softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3",
+    ]);
   });
 
   it("reads only plain public T3 Connect values", () => {
