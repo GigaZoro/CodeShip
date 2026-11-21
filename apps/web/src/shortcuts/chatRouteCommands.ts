@@ -186,6 +186,8 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
       onKeyDown: (event) => {
         if (event.key !== "Escape") return false;
         const selection = useThreadSelectionStore.getState();
+        // A plain click leaves only an anchor, which the next Shift-click ranges from.
+        if (selection.selectedThreadKeys.size === 0) return false;
         const hadShownSelection = selection.shownSelection().length > 0;
         selection.clearSelection();
         if (!hadShownSelection) return false;

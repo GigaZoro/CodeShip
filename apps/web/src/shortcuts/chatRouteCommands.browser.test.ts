@@ -45,10 +45,14 @@ describe("chat route commands", () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(useThreadSelectionStore.getState().selectedThreadKeys.size).toBe(0);
-    // With nothing selected, Escape is left for other handlers.
+    // With nothing selected, Escape is left for other handlers and keeps the range anchor.
+    useThreadSelectionStore.getState().setAnchor("env:thread-1");
     expect(pressEscape().defaultPrevented).toBe(false);
+    expect(useThreadSelectionStore.getState().anchorThreadKey).toBe("env:thread-1");
+    // A selection a filter hides is dropped without taking Escape.
     selectThread("env:folded-thread");
     expect(pressEscape().defaultPrevented).toBe(false);
+    expect(useThreadSelectionStore.getState().selectedThreadKeys.size).toBe(0);
   });
 
   it("stays out of the way off the chat route", () => {
