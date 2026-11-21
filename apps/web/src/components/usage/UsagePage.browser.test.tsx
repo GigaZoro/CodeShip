@@ -1,5 +1,12 @@
+import { RegistryContext } from "@effect/atom-react";
+import { AtomRegistry } from "effect/reactivity";
 import {
+  AuthDiagnosticsReadScope,
+  AuthSettingsWriteScope,
+  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   USAGE_CONTRACT_VERSION,
   type UsageSummary,
   type UsageSummaryInput,
@@ -20,6 +27,12 @@ import { UsageProviderChart } from "./UsageProviderChart";
 import { PROVIDER_ORDER } from "./usageProviders";
 
 const state = vi.hoisted(() => ({
+  cursorSetup: null as null | {
+    readonly reader: "reading" | "unavailable";
+    readonly canEnable: boolean;
+  },
+  usageCalls: new Set<string>(),
+  startOnLimits: false,
   now: 0,
   windowDays: 1 as 1 | 7,
   realClock: false,
@@ -63,9 +76,66 @@ vi.mock("../../hooks/useUsageNow", async (importOriginal) => {
 });
 vi.mock("./usagePagePreferences", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./usagePagePreferences")>()),
-  readUsagePagePreferences: () => ({ metric: "tokens", windowDays: state.windowDays }),
+  readUsagePagePreferences: () => ({
+    metric: state.startOnLimits ? "limits" : "tokens",
+    windowDays: state.windowDays,
+  }),
 }));
-vi.mock("../../state/usage", async () => {
+vi.mock("../../state/presentation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../state/presentation")>();
+  const { Atom } = await import("effect/reactivity");
+  return {
+    ...actual,
+    environmentPresentations: {
+      ...actual.environmentPresentations,
+      presentationsAtom: Atom.make((get) =>
+        state.cursorSetup === null
+          ? get(actual.environmentPresentations.presentationsAtom)
+          : cursorPresentations(),
+      ),
+    },
+  };
+});
+vi.mock("../../state/session", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../state/session")>();
+  const { AsyncResult, Atom } = await import("effect/reactivity");
+  return {
+    ...actual,
+    environmentSession: {
+      ...actual.environmentSession,
+      sessionStateAtom: (id: EnvironmentId) =>
+        state.cursorSetup === null
+          ? actual.environmentSession.sessionStateAtom(id)
+          : Atom.make(
+              AsyncResult.success({
+                authenticated: true,
+                scopes: [
+                  AuthDiagnosticsReadScope,
+                  ...(state.cursorSetup.canEnable ? [AuthSettingsWriteScope] : []),
+                ],
+              }),
+            ),
+    },
+  };
+});
+vi.mock("../../state/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../state/server")>();
+  const { Atom, AsyncResult } = await import("effect/reactivity");
+  const { cursorUsageAccess } = await import("@t3tools/client-runtime/state/usage");
+  return {
+    ...actual,
+    serverEnvironment: {
+      ...actual.serverEnvironment,
+      cursorUsageAccessAtom: (id: EnvironmentId) => Atom.make(cursorUsageAccess(cursorConfig(id))),
+      usageSummary: (request: { environmentId: EnvironmentId; input: UsageSummaryInput }) => {
+        state.usageCalls.add(request.environmentId);
+        return Atom.make(AsyncResult.success(reading(request.input, "ready").summary!));
+      },
+    },
+  };
+});
+vi.mock("../../state/usage", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../state/usage")>();
   const { useSyncExternalStore } = await import("react");
   const subscribe = (listener: () => void) => {
     state.listeners.add(listener);
@@ -86,7 +156,10 @@ vi.mock("../../state/usage", async () => {
     useUsage: (
       window: UsageSummaryInput,
       selectedIds: ReadonlySet<EnvironmentId> | null = null,
+      hidden?: Parameters<typeof actual.useUsage>[2],
+      options?: Parameters<typeof actual.useUsage>[3],
     ) => {
+      if (state.cursorSetup !== null) return actual.useUsage(window, selectedIds, hidden, options);
       useSyncExternalStore(subscribe, revision);
       state.requests.add(usageWindowKey(window));
       const other =
@@ -243,6 +316,9 @@ function otherReading(
 }
 
 function setup(windowDays: 1 | 7 = 1) {
+  state.cursorSetup = null;
+  state.usageCalls.clear();
+  state.startOnLimits = false;
   state.now = new Date(2026, 10, 21, 23, windowDays === 1 ? 56 : 59).getTime();
   state.windowDays = windowDays;
   state.realClock = false;
@@ -264,6 +340,108 @@ async function update() {
     for (const listener of state.listeners) listener();
   });
 }
+
+function cursorPresentations() {
+  return new Map([
+    [
+      EnvironmentId.make("desk"),
+      {
+        entry: { target: { label: "Desk" } },
+        connection: { phase: "connected", error: null },
+        serverConfig: null,
+      },
+    ],
+    [
+      EnvironmentId.make("laptop"),
+      {
+        entry: { target: { label: "Laptop" } },
+        connection: { phase: "connected", error: null },
+        serverConfig: null,
+      },
+    ],
+  ]);
+}
+
+function cursorConfig(id: EnvironmentId) {
+  const desk = id === "desk";
+  const reader = state.cursorSetup?.reader ?? "unavailable";
+  return {
+    settings: DEFAULT_SERVER_SETTINGS,
+    providers: [
+      {
+        instanceId: ProviderInstanceId.make("cursor"),
+        driver: ProviderDriverKind.make("cursor"),
+        enabled: true,
+        installed: true,
+        status: "ready" as const,
+        version: null,
+        auth: { status: "authenticated" as const },
+        checkedAt: "2026-11-21T23:59:00Z",
+        models: [],
+        slashCommands: [],
+        skills: [],
+        cursorAccountHistory: desk ? ("keychainOff" as const) : reader,
+        ...(desk || !state.cursorSetup?.canEnable
+          ? {}
+          : {
+              usageLimits: {
+                checkedAt: "2026-11-21T23:59:00Z",
+                windows:
+                  reader === "reading"
+                    ? []
+                    : [
+                        {
+                          id: "totalPercentUsed",
+                          kind: "monthly" as const,
+                          label: "Total",
+                          usedPercent: 25,
+                        },
+                      ],
+                ...(reader === "reading"
+                  ? { unavailable: { reason: "probeFailed" as const } }
+                  : {}),
+              },
+            }),
+      },
+    ],
+  };
+}
+
+it.each([
+  ["keeps the action with token-only Linux quota", "unavailable", true, true],
+  ["hides the action for a Linux history reader whose quota failed", "reading", true, false],
+  ["hides the action on a read-only connection", "unavailable", false, false],
+] as const)(
+  "%s in the production web Usage and Limits views",
+  async (_name, reader, canEnable, showAction) => {
+    setup();
+    state.startOnLimits = true;
+    state.cursorSetup = { reader, canEnable };
+    const registry = AtomRegistry.make();
+    using _registry = { [Symbol.dispose]: () => registry.dispose() };
+    await using screen = await render(
+      <RegistryContext value={registry}>
+        <UsagePage />
+      </RegistryContext>,
+    );
+    await expect
+      .element(screen.getByRole("button", { name: "Refresh limits" }).first())
+      .toBeVisible();
+    const action = screen.getByRole("button", { name: "Enable Cursor usage from Desk" });
+    expect(state.usageCalls.size).toBe(0);
+    expect(action.query() !== null).toBe(showAction);
+    await act(() => {
+      globalThis.window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "t", code: "KeyT", cancelable: true }),
+      );
+    });
+    await expect
+      .element(screen.getByRole("button", { name: "Refresh usage" }).first())
+      .toBeVisible();
+    expect(state.usageCalls).toEqual(new Set(["desk", "laptop"]));
+    expect(action.query() !== null).toBe(showAction);
+  },
+);
 
 function Screen() {
   return (

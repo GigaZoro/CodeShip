@@ -1,9 +1,12 @@
-import type {
-  EnvironmentId,
-  ServerConfig,
-  UsageModelFilter,
-  UsageSummary,
-  UsageSummaryInput,
+import {
+  AuthSettingsWriteScope,
+  sessionGrantsScope,
+  type EnvironmentId,
+  type ServerConfig,
+  type SessionGrantInput,
+  type UsageModelFilter,
+  type UsageSummary,
+  type UsageSummaryInput,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Atom, type AtomRegistry } from "effect/reactivity";
@@ -15,48 +18,53 @@ import type { createServerEnvironmentAtoms } from "./server.ts";
 
 const isEnvironmentRpcUnavailable = Schema.is(EnvironmentRpcUnavailableError);
 
-export function cursorUsageAccess(
-  config: Pick<ServerConfig, "providers" | "settings" | "usageLimitSources"> | null,
-) {
+export function cursorUsageAccess(config: Pick<ServerConfig, "providers" | "settings"> | null) {
   const cursor =
     config?.providers.filter((provider) => provider.driver === "cursor" && provider.enabled) ?? [];
   const ready = cursor.filter((provider) => provider.status === "ready");
-  const canEnable = config?.settings.cursorKeychainUsageEnabled === false;
-  const reports = [
-    ...cursor,
-    ...(config?.usageLimitSources ?? []).flatMap(({ accounts }) =>
-      accounts.filter(({ driver }) => driver === "cursor"),
-    ),
-  ];
+  const history = cursor.some(({ cursorAccountHistory }) => cursorAccountHistory === "reading")
+    ? ("reading" as const)
+    : ready.some(({ cursorAccountHistory }) => cursorAccountHistory === "keychainOff")
+      ? ("keychainOff" as const)
+      : cursor.some(({ cursorAccountHistory }) => cursorAccountHistory !== undefined)
+        ? ("unavailable" as const)
+        : undefined;
   return {
-    keychain:
-      canEnable &&
-      ready.some(({ cursorKeychainUsageAvailable }) => cursorKeychainUsageAvailable === true)
-        ? ("available" as const)
-        : canEnable &&
-            ready.some(
-              ({ cursorKeychainUsageAvailable }) => cursorKeychainUsageAvailable === undefined,
-            )
-          ? ("legacy" as const)
-          : ("unavailable" as const),
-    readsCursorAccount: reports.some(
-      ({ usageLimits }) =>
-        usageLimits !== undefined &&
-        usageLimits.unavailable === undefined &&
-        usageLimits.windows.length > 0,
-    ),
+    history,
+    legacyCanEnable:
+      history === undefined &&
+      ready.length > 0 &&
+      config?.settings.cursorKeychainUsageEnabled === false,
   };
 }
 
-export function needsCursorKeychainAccess(
-  access: ReturnType<typeof cursorUsageAccess>,
-  summary: UsageSummary | null,
-): boolean {
-  return (
-    access.keychain === "available" ||
-    (access.keychain === "legacy" &&
-      summary?.sources.some(({ action }) => action === "enableCursorKeychain") === true)
-  );
+export function resolveCursorUsageAccess({
+  access,
+  summary,
+  session,
+  isConnected,
+}: {
+  readonly access: ReturnType<typeof cursorUsageAccess>;
+  readonly summary: UsageSummary | null;
+  readonly session: SessionGrantInput | null;
+  readonly isConnected: boolean;
+}) {
+  return {
+    readsCursorAccount:
+      access.history === "reading" ||
+      (access.history === undefined &&
+        summary?.sources.some(
+          ({ fingerprint }) =>
+            fingerprint.provider === "cursor" && fingerprint.hostId === "cursor.com",
+        ) === true),
+    needsCursorKeychainAccess:
+      isConnected &&
+      session !== null &&
+      sessionGrantsScope(session, AuthSettingsWriteScope) &&
+      (access.history === "keychainOff" ||
+        (access.legacyCanEnable &&
+          summary?.sources.some(({ action }) => action === "enableCursorKeychain") === true)),
+  };
 }
 
 /**
@@ -65,19 +73,11 @@ export function needsCursorKeychainAccess(
  */
 export function cursorKeychainAccessEnvironments<
   E extends {
-    readonly summary: UsageSummary | null;
     readonly needsCursorKeychainAccess: boolean;
     readonly readsCursorAccount?: boolean;
   },
 >(environments: readonly E[]): readonly E[] {
-  const hasCursorAccount = environments.some(
-    (environment) =>
-      environment.readsCursorAccount ||
-      environment.summary?.sources.some(
-        (source) =>
-          source.fingerprint.provider === "cursor" && source.fingerprint.hostId === "cursor.com",
-      ),
-  );
+  const hasCursorAccount = environments.some((environment) => environment.readsCursorAccount);
   return hasCursorAccount
     ? []
     : environments.filter((environment) => environment.needsCursorKeychainAccess);

@@ -1,4 +1,15 @@
-import { EnvironmentId, USAGE_CONTRACT_VERSION, type UsageSummaryInput } from "@t3tools/contracts";
+import { RegistryContext } from "@effect/atom-react";
+import { AtomRegistry } from "effect/reactivity";
+import {
+  AuthDiagnosticsReadScope,
+  AuthSettingsWriteScope,
+  DEFAULT_SERVER_SETTINGS,
+  EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  USAGE_CONTRACT_VERSION,
+  type UsageSummaryInput,
+} from "@t3tools/contracts";
 import {
   settleUsageSnapshot,
   settleUsageScanFailures,
@@ -15,6 +26,11 @@ import { UsageRouteScreen } from "./UsageRouteScreen";
 const { Contents, state } = vi.hoisted(() => ({
   Contents: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   state: {
+    cursorSetup: null as null | {
+      readonly reader: "reading" | "unavailable";
+      readonly canEnable: boolean;
+    },
+    usageCalls: new Set<EnvironmentId>(),
     tab: "usage" as string | undefined,
     live: [] as readonly EnvironmentUsageStatus[],
     shown: null as UsageSnapshot | null,
@@ -61,7 +77,11 @@ vi.mock("../../components/ui/Notice", () => ({
   Notice: ({ message }: { message: string }) => <p role="status">{message}</p>,
 }));
 vi.mock("../../components/ui/Button", () => ({
-  Button: ({ label }: { label: string }) => <button type="button">{label}</button>,
+  Button: ({ label, accessibilityLabel }: { label: string; accessibilityLabel?: string }) => (
+    <button type="button" aria-label={accessibilityLabel}>
+      {label}
+    </button>
+  ),
 }));
 vi.mock("../../components/ui/AppActivityIndicator", () => ({ AppActivityIndicator: () => null }));
 vi.mock("../../components/ui/AppText", () => ({ AppText: Contents }));
@@ -123,7 +143,8 @@ vi.mock("../settings/components/SettingsSection", () => ({
 vi.mock("../settings/appearance/AppearancePreferencesProvider", () => ({
   useAppearancePreferences: () => ({ themeAppearance: "light" }),
 }));
-vi.mock("../../state/usage", async () => {
+vi.mock("../../state/usage", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../state/usage")>();
   const { useSyncExternalStore } = await import("react");
   const subscribe = (listener: () => void) => {
     state.listeners.add(listener);
@@ -135,8 +156,9 @@ vi.mock("../../state/usage", async () => {
     useUsage: (
       window: UsageSummaryInput,
       selected: ReadonlySet<EnvironmentId> | null,
-      options?: { enabled?: boolean },
+      options?: Parameters<typeof actual.useUsage>[2],
     ) => {
+      if (state.cursorSetup !== null) return actual.useUsage(window, selected, options);
       useSyncExternalStore(subscribe, () => state.revision);
       state.readsEnabled.push(options?.enabled);
       const selectedEnvironments =
@@ -171,10 +193,74 @@ vi.mock("../../state/usage", async () => {
   };
 });
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
-vi.mock("../../state/server", () => ({ serverEnvironment: {} }));
+vi.mock("../../state/server", async () => {
+  const { Atom, AsyncResult } = await import("effect/reactivity");
+  const { cursorUsageAccess } = await import("@t3tools/client-runtime/state/usage");
+  return {
+    serverEnvironment: {
+      usageModelFilterAtom: () => Atom.make(undefined),
+      cursorUsageAccessAtom: (id: EnvironmentId) => Atom.make(cursorUsageAccess(cursorConfig(id))),
+      usageSummary: ({
+        environmentId,
+        input,
+      }: {
+        environmentId: EnvironmentId;
+        input: UsageSummaryInput;
+      }) => {
+        state.usageCalls.add(environmentId);
+        return Atom.make(AsyncResult.success({ ...observedSummary(), ...input }));
+      },
+    },
+  };
+});
+vi.mock("../../state/atom-registry", () => ({ appAtomRegistry: {} }));
+vi.mock("../../state/presentation", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return {
+    environmentPresentations: {
+      presentationsAtom: Atom.make(
+        new Map([
+          [
+            EnvironmentId.make("desk"),
+            {
+              entry: { target: { label: "Desk" } },
+              connection: { phase: "connected", error: null },
+            },
+          ],
+          [
+            EnvironmentId.make("laptop"),
+            {
+              entry: { target: { label: "Laptop" } },
+              connection: { phase: "connected", error: null },
+            },
+          ],
+        ]),
+      ),
+    },
+  };
+});
+vi.mock("../../state/session", async () => {
+  const { Atom, AsyncResult } = await import("effect/reactivity");
+  return {
+    environmentSession: {
+      sessionStateAtom: () =>
+        Atom.make(
+          AsyncResult.success({
+            authenticated: true,
+            scopes: [
+              AuthDiagnosticsReadScope,
+              ...(state.cursorSetup?.canEnable ? [AuthSettingsWriteScope] : []),
+            ],
+          }),
+        ),
+    },
+    readEnvironmentScope: () => false,
+  };
+});
 vi.mock("../../lib/appState", () => ({ useAppForeground: () => true }));
 vi.mock("../../lib/i18n", () => ({
-  t: (message: string) => message,
+  t: (message: string, values?: Record<string, string>) =>
+    message.replace(/\{([^}]+)\}/g, (key, name: string) => values?.[name] ?? key),
   msg: (message: string) => message,
 }));
 vi.mock("./ChatGptUsageSummary", () => ({ ChatGptUsageSummary: () => null }));
@@ -188,13 +274,22 @@ vi.mock("./UsageLimitsSection", () => ({
     refresh: state.refreshLimits,
   }),
 }));
-vi.mock("./UsageLimitsPooled", () => ({ UsageLimitsSection: () => <p>Limits overview</p> }));
+vi.mock("./UsageLimitsPooled", () => ({
+  UsageLimitsSection: ({ cursorPrompt }: { cursorPrompt?: ReactNode }) => (
+    <div>
+      <p>Limits overview</p>
+      {cursorPrompt}
+    </div>
+  ),
+}));
 
 function setup(tab: string | undefined = "usage") {
   const react = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
   const wasActEnvironment = react.IS_REACT_ACT_ENVIRONMENT;
   react.IS_REACT_ACT_ENVIRONMENT = true;
   state.tab = tab;
+  state.cursorSetup = null;
+  state.usageCalls.clear();
   state.live = [];
   state.shown = null;
   state.scanFailures = null;
@@ -209,16 +304,22 @@ function setup(tab: string | undefined = "usage") {
   state.usageRefreshingEnvironmentIds.clear();
   const container = document.createElement("div");
   const root = createRoot(container);
+  const registry = AtomRegistry.make();
   return {
     container,
     render: () =>
       act(() => {
         state.revision += 1;
         for (const listener of state.listeners) listener();
-        root.render(<UsageRouteScreen />);
+        root.render(
+          <RegistryContext value={registry}>
+            <UsageRouteScreen />
+          </RegistryContext>,
+        );
       }),
     async [Symbol.asyncDispose]() {
       await act(() => root.unmount());
+      registry.dispose();
       if (wasActEnvironment === undefined) delete react.IS_REACT_ACT_ENVIRONMENT;
       else react.IS_REACT_ACT_ENVIRONMENT = wasActEnvironment;
     },
@@ -353,6 +454,73 @@ function observedSummary(contractVersion: number = USAGE_CONTRACT_VERSION) {
     scanDurationMs: 0,
   };
 }
+
+function cursorConfig(id: EnvironmentId) {
+  const desk = id === "desk";
+  const reader = state.cursorSetup?.reader ?? "unavailable";
+  return {
+    settings: DEFAULT_SERVER_SETTINGS,
+    providers: [
+      {
+        instanceId: ProviderInstanceId.make("cursor"),
+        driver: ProviderDriverKind.make("cursor"),
+        enabled: true,
+        installed: true,
+        status: "ready" as const,
+        version: null,
+        auth: { status: "authenticated" as const },
+        checkedAt: "2026-11-21T23:59:00Z",
+        models: [],
+        slashCommands: [],
+        skills: [],
+        cursorAccountHistory: desk ? ("keychainOff" as const) : reader,
+        ...(desk || !state.cursorSetup?.canEnable
+          ? {}
+          : {
+              usageLimits: {
+                checkedAt: "2026-11-21T23:59:00Z",
+                windows:
+                  reader === "reading"
+                    ? []
+                    : [
+                        {
+                          id: "totalPercentUsed",
+                          kind: "monthly" as const,
+                          label: "Total",
+                          usedPercent: 25,
+                        },
+                      ],
+                ...(reader === "reading"
+                  ? { unavailable: { reason: "probeFailed" as const } }
+                  : {}),
+              },
+            }),
+      },
+    ],
+  };
+}
+
+it.each([
+  ["keeps the action with token-only Linux quota", "unavailable", true, true],
+  ["hides the action for a Linux history reader whose quota failed", "reading", true, false],
+  ["hides the action on a read-only connection", "unavailable", false, false],
+] as const)(
+  "%s in the production mobile Usage and Limits views",
+  async (_name, reader, canEnable, showAction) => {
+    await using screen = setup("limits");
+    state.cursorSetup = { reader, canEnable };
+    const action = () =>
+      screen.container.querySelector('button[aria-label="Enable Cursor usage from Desk"]');
+    await screen.render();
+    expect(screen.container.textContent).toContain("Limits overview");
+    expect(state.usageCalls.size).toBe(0);
+    expect(action() !== null).toBe(showAction);
+    state.tab = "usage";
+    await screen.render();
+    expect(state.usageCalls).toEqual(new Set(["desk", "laptop"]));
+    expect(action() !== null).toBe(showAction);
+  },
+);
 
 function menuEnvironment(container: HTMLElement, id: string): HTMLButtonElement {
   return container.querySelector<HTMLButtonElement>(`[data-environment="${id}"]`)!;

@@ -49,6 +49,39 @@ const invalid = (reason: string) => Effect.fail(new CursorAccountUsageInvalidErr
 
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
+const readFileAccessToken = Effect.fn("CursorAccountUsage.readFileAccessToken")(function* (
+  path: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.readFileString(path).pipe(
+    Effect.flatMap(decodeJson),
+    Effect.map((credentials) => object(credentials).accessToken),
+  );
+});
+
+const cursorAccountSubject = Effect.fn("CursorAccountUsage.accountSubject")(function* (
+  accessToken: string,
+) {
+  const payload = Base64Url.decodeString(accessToken.split(".")[1] ?? "");
+  if (Result.isFailure(payload)) return yield* invalid("Invalid authentication");
+  const subject = object(
+    yield* decodeJson(payload.success).pipe(Effect.catch(() => invalid("Invalid authentication"))),
+  ).sub;
+  if (typeof subject !== "string" || !subject || !subject.split("|").at(-1))
+    return yield* invalid("Invalid authentication");
+  return subject;
+});
+
+export const hasCursorHistoryFileCredentials = Effect.fn("CursorAccountUsage.hasFileCredentials")(
+  function* (path: string) {
+    const token = yield* readFileAccessToken(path);
+    if (typeof token !== "string" || !token) return false;
+    yield* cursorAccountSubject(token);
+    return true;
+  },
+  Effect.orElseSucceed(() => false),
+);
+
 const pageRequestBody = (page: number, pageSize: number, sinceMs: number, endDate: number) =>
   JSON.stringify({ page, pageSize, startDate: String(sinceMs), endDate: String(endDate) });
 
@@ -104,7 +137,6 @@ export const readCursorAccountUsage = Effect.fn("readCursorAccountUsage")(functi
   never,
   FileSystem.FileSystem | Crypto.Crypto | HttpClient.HttpClient
 > {
-  const fileSystem = yield* FileSystem.FileSystem;
   const httpClient = yield* HttpClient.HttpClient;
   const credential = yield* Effect.result<
     unknown,
@@ -113,15 +145,8 @@ export const readCursorAccountUsage = Effect.fn("readCursorAccountUsage")(functi
     | CursorKeychain.CursorKeychainTimeoutError
     | CursorKeychain.CursorKeychainReadError
     | CursorAccountUsageInvalidError,
-    never
-  >(
-    typeof credentialSource === "string"
-      ? fileSystem.readFileString(credentialSource).pipe(
-          Effect.flatMap(decodeJson),
-          Effect.map((credentials) => object(credentials).accessToken),
-        )
-      : keychainToken,
-  );
+    FileSystem.FileSystem
+  >(typeof credentialSource === "string" ? readFileAccessToken(credentialSource) : keychainToken);
   if (Result.isFailure(credential)) {
     const cause = credential.failure;
     const missing =
@@ -155,16 +180,8 @@ export const readCursorAccountUsage = Effect.fn("readCursorAccountUsage")(functi
   }
   let accountKey: string | null = null;
   const read = Effect.gen(function* () {
-    const payload = Base64Url.decodeString(accessToken.split(".")[1] ?? "");
-    if (Result.isFailure(payload)) return yield* invalid("Invalid authentication");
-    const subject = object(
-      yield* decodeJson(payload.success).pipe(
-        Effect.catch(() => invalid("Invalid authentication")),
-      ),
-    ).sub;
-    if (typeof subject !== "string" || !subject) return yield* invalid("Invalid authentication");
-    const userId = subject.split("|").at(-1);
-    if (!userId) return yield* invalid("Invalid authentication");
+    const subject = yield* cursorAccountSubject(accessToken);
+    const userId = subject.split("|").at(-1)!;
     accountKey = yield* accountHash(subject);
     if (!Number.isFinite(sinceMs) || !Number.isFinite(endDate) || sinceMs < 0 || sinceMs > endDate)
       return yield* invalid("Invalid date window");

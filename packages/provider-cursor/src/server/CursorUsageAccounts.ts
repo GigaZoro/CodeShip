@@ -59,6 +59,29 @@ export function cursorHistoryCredentials(
   return platform === "darwin" && store !== "file" ? "keychain" : "file";
 }
 
+export function cursorHistoryAuthPath(
+  path: Path.Path,
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+  home: string,
+): string {
+  const userHome =
+    (platform === "win32" ? environment["USERPROFILE"] : environment["HOME"]) || home;
+  if (platform === "darwin") return path.join(userHome, ".cursor", "auth.json");
+  if (platform === "win32")
+    return path.join(
+      environment["APPDATA"] || path.join(userHome, "AppData", "Roaming"),
+      "Cursor",
+      "auth.json",
+    );
+  const configHome = environment["XDG_CONFIG_HOME"]?.trim();
+  return path.join(
+    configHome && path.isAbsolute(configHome) ? configHome : path.join(userHome, ".config"),
+    "cursor",
+    "auth.json",
+  );
+}
+
 const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -254,21 +277,7 @@ const make = Effect.gen(function* () {
   const scan: CursorUsageAccounts["Service"]["scan"] = Effect.fn("CursorUsageAccounts.scan")(
     function* ({ keychainUsageEnabled, windowStartMs, retentionCutoffMs, awaitRefresh }) {
       const home = yield* HostProcess.HomeDirectory;
-      const userHome =
-        (platform === "win32" ? hostEnvironment["USERPROFILE"] : hostEnvironment["HOME"]) || home;
-      const configHome = hostEnvironment["XDG_CONFIG_HOME"]?.trim();
-      const cursorHome =
-        platform === "darwin"
-          ? path.join(userHome, "Library", "Application Support")
-          : platform === "win32"
-            ? hostEnvironment["APPDATA"] || path.join(userHome, "AppData", "Roaming")
-            : configHome && path.isAbsolute(configHome)
-              ? configHome
-              : path.join(userHome, ".config");
-      const authPath =
-        platform === "darwin"
-          ? path.join(userHome, ".cursor", "auth.json")
-          : path.join(cursorHome, platform === "win32" ? "Cursor" : "cursor", "auth.json");
+      const authPath = cursorHistoryAuthPath(path, platform, hostEnvironment, home);
       const credentials = cursorHistoryCredentials(platform, hostEnvironment);
       if (credentials === "keychain" && !keychainUsageEnabled) {
         return [

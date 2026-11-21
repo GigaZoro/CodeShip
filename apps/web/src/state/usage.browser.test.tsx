@@ -12,22 +12,16 @@ import {
   usageEnvironmentError,
   usageNotices,
 } from "@t3tools/client-runtime/state/usage-progress";
-import {
-  cursorKeychainAccessEnvironments,
-  usageRefreshingEnvironmentIdsAtom,
-} from "@t3tools/client-runtime/state/usage";
+import { usageRefreshingEnvironmentIdsAtom } from "@t3tools/client-runtime/state/usage";
 import { UsageShareBar } from "../components/usage/UsageShareBar";
 import { UsageGapsNotice } from "../components/usage/UsageGapsNotice";
 import { makeWindow } from "@t3tools/shared/usageFormat";
 import { expect, it, vi } from "vite-plus/test";
-import { AtomRegistry } from "effect/reactivity";
 
 import { render } from "../../test/render";
 import { useUsage, type EnvironmentUsageStatus } from "./usage";
-import { serverEnvironment } from "./server";
 
 const state = vi.hoisted(() => ({
-  cursorKeychain: false,
   environments: [] as readonly EnvironmentUsageStatus[],
   query: null as null | ((atom: object) => readonly EnvironmentUsageStatus[]),
 }));
@@ -68,8 +62,8 @@ vi.mock("./server", async () => {
     serverEnvironment: {
       cursorUsageAccessAtom: () =>
         Atom.make({
-          keychain: state.cursorKeychain ? "available" : "unavailable",
-          readsCursorAccount: false,
+          history: undefined,
+          legacyCanEnable: false,
         }),
       usageSummary: vi.fn(() => Atom.make(AsyncResult.initial())),
       usageModelFilterAtom: () => Atom.make(undefined),
@@ -93,7 +87,6 @@ vi.mock("./session", async () => {
 });
 
 function setup() {
-  state.cursorKeychain = false;
   state.query = null;
   const window: UsageSummaryInput = {
     sinceDay: UsageDay.make("2026-10-16"),
@@ -348,38 +341,6 @@ it("reports only the new period's failures on web while retaining the previous f
   await screen.rerender(<ScopedUsage window={month} />);
   await expect.element(screen.getByText(/Monthly scan failed/)).toBeVisible();
   await expect.element(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
-});
-
-it("offers Keychain access on a cold web Limits visit without requesting a usage summary", async () => {
-  const { window } = setup();
-  state.cursorKeychain = true;
-  const registry = AtomRegistry.make();
-  using _cleanup = { [Symbol.dispose]: () => registry.dispose() };
-  state.query = (atom) =>
-    registry.get(atom as Parameters<typeof registry.get>[0]) as readonly EnvironmentUsageStatus[];
-  const summary = vi.mocked(serverEnvironment.usageSummary);
-  summary.mockClear();
-  function View({ limits }: { readonly limits: boolean }) {
-    const usage = useUsage(window, null, [], { enabled: !limits });
-    return (
-      <div>
-        {cursorKeychainAccessEnvironments(usage.selectedEnvironments).map(
-          ({ label, environmentId }) => (
-            <button key={environmentId} type="button">
-              Enable Cursor usage from {label}
-            </button>
-          ),
-        )}
-      </div>
-    );
-  }
-  await using screen = await render(<View limits />);
-  await expect
-    .element(screen.getByRole("button", { name: "Enable Cursor usage from Desk" }))
-    .toBeVisible();
-  expect(summary).not.toHaveBeenCalled();
-  await screen.rerender(<View limits={false} />);
-  expect(summary).toHaveBeenCalledOnce();
 });
 
 it("keeps the previous resolution until both environments settle", async () => {

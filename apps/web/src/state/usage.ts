@@ -3,11 +3,12 @@ import { t } from "~/i18n";
 import {
   AuthDiagnosticsReadScope,
   type EnvironmentId,
+  type UsageSummary,
   type UsageProviderKind,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
 import {
-  needsCursorKeychainAccess,
+  resolveCursorUsageAccess,
   refreshUsage,
   usageRefreshingEnvironmentIdsAtom,
   usageSummaryInput,
@@ -46,14 +47,22 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
     for (const [environmentId, presentation] of presentations) {
       const isConnected = presentation.connection.phase === "connected";
       const sessionResult = get(environmentSession.sessionStateAtom(environmentId));
+      const session = AsyncResult.getOrElse(sessionResult, () => null);
       const access = resolveUsageAccess({
         connection: presentation.connection,
-        session: AsyncResult.getOrElse(sessionResult, () => null),
+        session,
         hasSessionError: sessionResult._tag === "Failure",
       });
       const modelFilter =
         input === null ? undefined : get(serverEnvironment.usageModelFilterAtom(environmentId));
       const cursor = get(serverEnvironment.cursorUsageAccessAtom(environmentId));
+      const cursorAccess = (summary: UsageSummary | null) =>
+        resolveCursorUsageAccess({
+          access: cursor,
+          summary,
+          session: sessionResult._tag === "Failure" ? null : session,
+          isConnected: presentation.connection.phase === "connected",
+        });
       if (input === null || !access.canReadDiagnostics) {
         statuses.push({
           environmentId,
@@ -62,10 +71,7 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
           ...access,
           modelFilter,
           summary: null,
-          readsCursorAccount: cursor.readsCursorAccount,
-          needsCursorKeychainAccess:
-            presentation.connection.phase === "connected" &&
-            needsCursorKeychainAccess(cursor, null),
+          ...cursorAccess(null),
         });
         continue;
       }
@@ -90,10 +96,7 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
               })
             : null,
         summary,
-        readsCursorAccount: cursor.readsCursorAccount,
-        needsCursorKeychainAccess:
-          presentation.connection.phase === "connected" &&
-          needsCursorKeychainAccess(cursor, summary),
+        ...cursorAccess(summary),
       });
     }
     return statuses;

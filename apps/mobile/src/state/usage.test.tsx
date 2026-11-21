@@ -10,20 +10,14 @@ import {
   usageNotices,
   type EnvironmentUsageStatus,
 } from "@t3tools/client-runtime/state/usage-progress";
-import {
-  cursorKeychainAccessEnvironments,
-  usageRefreshingEnvironmentIdsAtom,
-} from "@t3tools/client-runtime/state/usage";
+import { usageRefreshingEnvironmentIdsAtom } from "@t3tools/client-runtime/state/usage";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
 import { useUsage } from "./usage";
-import { serverEnvironment } from "./server";
 import { makeWindow } from "@t3tools/shared/usageFormat";
-import { AtomRegistry } from "effect/reactivity";
 
 const state = vi.hoisted(() => ({
-  cursorKeychain: false,
   environments: [] as readonly EnvironmentUsageStatus[],
   query: null as ((atom: object) => readonly EnvironmentUsageStatus[]) | null,
 }));
@@ -59,8 +53,8 @@ vi.mock("./server", async () => {
     serverEnvironment: {
       cursorUsageAccessAtom: () =>
         Atom.make({
-          keychain: state.cursorKeychain ? "available" : "unavailable",
-          readsCursorAccount: false,
+          history: undefined,
+          legacyCanEnable: false,
         }),
       usageSummary: vi.fn(() => Atom.make(AsyncResult.initial())),
       usageModelFilterAtom: () => Atom.make(undefined),
@@ -104,7 +98,6 @@ function mountUsageProbe() {
   const container = document.createElement("div");
   const root = createRoot(container);
   state.query = null;
-  state.cursorKeychain = false;
   return {
     container,
     root,
@@ -308,36 +301,4 @@ it("reports only the new period's failures on mobile while retaining the previou
   await act(() => screen.root.render(<ScopedUsage period={month} />));
   expect(screen.container.textContent).toContain("Monthly scan failed");
   expect(screen.container.querySelector("button")?.textContent).toBe("Retry");
-});
-
-it("offers Keychain access on a cold mobile Limits visit without a transcript scan", async () => {
-  const registry = AtomRegistry.make();
-  using _cleanup = { [Symbol.dispose]: () => registry.dispose() };
-  await using screen = mountUsageProbe();
-  state.cursorKeychain = true;
-  state.query = (atom) =>
-    registry.get(atom as Parameters<typeof registry.get>[0]) as readonly EnvironmentUsageStatus[];
-  const summary = vi.mocked(serverEnvironment.usageSummary);
-  summary.mockClear();
-  function View({ limits }: { readonly limits: boolean }) {
-    const usage = useUsage(window, null, { enabled: !limits });
-    return (
-      <div>
-        {cursorKeychainAccessEnvironments(usage.selectedEnvironments).map(
-          ({ label, environmentId }) => (
-            <button key={environmentId} type="button">
-              Enable Cursor usage from {label}
-            </button>
-          ),
-        )}
-      </div>
-    );
-  }
-  await act(() => screen.root.render(<View limits />));
-  expect(screen.container.querySelector("button")?.textContent).toBe(
-    "Enable Cursor usage from Desk",
-  );
-  expect(summary).not.toHaveBeenCalled();
-  await act(() => screen.root.render(<View limits={false} />));
-  expect(summary).toHaveBeenCalledOnce();
 });

@@ -831,10 +831,12 @@ export function displayLimitWindows(pool: LimitPool) {
  * The window closest to running out across providers. Session and weekly allowances gate work, so a
  * provider's monthly spend cap or one-off quota counts only when it reports neither.
  */
-export function tightestLimitWindow(pools: readonly LimitPool[]) {
+export function tightestLimitWindow(pools: readonly LimitPool[], now = -Infinity) {
   let tightest: { readonly pool: LimitPool; readonly window: LimitPoolWindow } | null = null;
   for (const pool of pools) {
-    const windows = displayLimitWindows(pool);
+    const windows = displayLimitWindows(pool).filter(({ members }) =>
+      members.some(({ window }) => (resetMillis(window) ?? Infinity) > now),
+    );
     const gating = windows.filter(
       (window) => window.kind === "session" || window.kind === "weekly",
     );

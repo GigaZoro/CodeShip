@@ -9,7 +9,11 @@ import type { Atom } from "effect/reactivity";
 import { useState, useSyncExternalStore } from "react";
 
 import { environmentPresentations } from "../state/presentation";
-import { getDocumentActivity, subscribeDocumentActivity } from "../lib/documentActivity";
+import {
+  getDocumentActivity,
+  subscribeDocumentActivity,
+  subscribeDocumentReturn,
+} from "../lib/documentActivity";
 
 const minuteClock = usageClock();
 const subscribeIdle = () => () => {};
@@ -41,5 +45,13 @@ export function useUsageLimitNow(
   const clocks = useAtomValue(usageLimitClockAtom(presentations));
   const visible = useUsageDocumentVisible();
   const clock = includeMinutes && visible ? clocks.countdown : clocks.resets;
-  return useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getSnapshot);
+  const subscribe = (listener: () => void) => {
+    const unsubscribe = clock.subscribe(listener);
+    const unsubscribeResume = subscribeDocumentReturn(clock.refresh);
+    return () => {
+      unsubscribeResume();
+      unsubscribe();
+    };
+  };
+  return useSyncExternalStore(subscribe, clock.getSnapshot, clock.getSnapshot);
 }

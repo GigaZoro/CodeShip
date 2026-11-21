@@ -1,4 +1,5 @@
 import {
+  AuthSettingsWriteScope,
   EnvironmentId,
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
@@ -18,7 +19,7 @@ import type { EnvironmentPresentation } from "../connection/presentation.ts";
 import {
   cursorKeychainAccessEnvironments,
   cursorUsageAccess,
-  needsCursorKeychainAccess,
+  resolveCursorUsageAccess,
   refreshUsage,
   refreshUsageLimits,
   usageRefreshingEnvironmentIdsAtom,
@@ -277,46 +278,22 @@ describe("Cursor account usage access", () => {
     skills: [],
   });
 
-  it("uses the server's capability and current setting without a summary and supports older Usage responses", () => {
-    const config = { settings: DEFAULT_SERVER_SETTINGS, providers: [cursor("ready")] };
-    const legacy = cursorUsageAccess(config);
-    expect(needsCursorKeychainAccess(legacy, cursorPrompt)).toBe(true);
-    expect(needsCursorKeychainAccess(legacy, null)).toBe(false);
-    expect(needsCursorKeychainAccess(cursorUsageAccess(null), cursorPrompt)).toBe(false);
-    const provider = { ...cursor("ready"), cursorKeychainUsageAvailable: true };
-    const available = { ...config, providers: [provider] };
-    expect(needsCursorKeychainAccess(cursorUsageAccess(available), null)).toBe(true);
-    expect(
-      needsCursorKeychainAccess(
-        cursorUsageAccess({
-          ...available,
-          settings: { ...config.settings, cursorKeychainUsageEnabled: true },
-        }),
-        cursorPrompt,
-      ),
-    ).toBe(false);
-    expect(
-      needsCursorKeychainAccess(
-        cursorUsageAccess({
-          ...config,
-          providers: [{ ...cursor("error"), cursorKeychainUsageAvailable: true }],
-        }),
-        cursorPrompt,
-      ),
-    ).toBe(false);
-    expect(
-      needsCursorKeychainAccess(
-        cursorUsageAccess({
-          ...config,
-          providers: [{ ...provider, cursorKeychainUsageAvailable: false }],
-        }),
-        cursorPrompt,
-      ),
-    ).toBe(false);
-  });
+  const access = (provider: ServerProvider, summary: UsageSummary | null) =>
+    resolveCursorUsageAccess({
+      access: cursorUsageAccess({ settings: DEFAULT_SERVER_SETTINGS, providers: [provider] }),
+      summary,
+      isConnected: true,
+      session: { authenticated: true, scopes: [AuthSettingsWriteScope] },
+    });
 
-  it("stops offering access once any environment reads the Cursor account", () => {
-    const off = { summary: cursorPrompt, needsCursorKeychainAccess: true };
+  it("uses legacy summary hints only for a server without a history status", () => {
+    const ready = cursor("ready");
+    expect(access(ready, cursorPrompt).needsCursorKeychainAccess).toBe(true);
+    expect(access(ready, null).needsCursorKeychainAccess).toBe(false);
+    expect(
+      access({ ...ready, cursorAccountHistory: "unavailable" }, cursorPrompt)
+        .needsCursorKeychainAccess,
+    ).toBe(false);
     const account: UsageSummary = {
       ...summary,
       sources: [
@@ -336,30 +313,14 @@ describe("Cursor account usage access", () => {
         },
       ],
     };
-    expect(cursorKeychainAccessEnvironments([off, off])).toEqual([off, off]);
+
+    const off = access({ ...ready, cursorAccountHistory: "keychainOff" }, null);
+    expect(cursorKeychainAccessEnvironments([off, access(ready, account)])).toEqual([]);
     expect(
       cursorKeychainAccessEnvironments([
         off,
-        { summary: account, needsCursorKeychainAccess: false },
+        access({ ...ready, cursorAccountHistory: "unavailable" }, account),
       ]),
-    ).toEqual([]);
-    const { readsCursorAccount } = cursorUsageAccess({
-      settings: DEFAULT_SERVER_SETTINGS,
-      providers: [
-        {
-          ...cursor("ready"),
-          usageLimits: {
-            checkedAt: "2026-09-05T12:00:00.000Z",
-            windows: [{ id: "totalPercentUsed", kind: "monthly", label: "Total", usedPercent: 25 }],
-          },
-        },
-      ],
-    });
-    expect(
-      cursorKeychainAccessEnvironments([
-        { ...off, summary: null, readsCursorAccount: false },
-        { summary: null, needsCursorKeychainAccess: false, readsCursorAccount },
-      ]),
-    ).toEqual([]);
+    ).toEqual([off]);
   });
 });

@@ -56,7 +56,7 @@ export function UsageLimitsGlance({
   readonly accounts: readonly LimitAccount[];
   readonly shortcut?: string | null;
 }) {
-  const now = useUsageLimitNow();
+  const now = useUsageLimitNow(undefined, false);
   const pools = collectLimitPools(accounts, now);
   return (
     <div className="flex w-64 max-w-full flex-col gap-2.5 py-1">
@@ -98,16 +98,7 @@ export function UsageLimitsGlance({
                       {t("{percent}% left", { percent: window.remainingPercent })}
                     </dd>
                     <dd className="text-end text-muted-foreground tabular-nums">
-                      {nextReset ? (
-                        <>
-                          <span className="sr-only">
-                            {t("resets in {duration}", {
-                              duration: formatDuration(nextReset.at - now),
-                            })}
-                          </span>
-                          <span aria-hidden>↻ {formatDuration(nextReset.at - now)}</span>
-                        </>
-                      ) : null}
+                      {nextReset ? <LimitCountdown at={nextReset.at} /> : null}
                     </dd>
                   </Fragment>
                 );
@@ -120,5 +111,17 @@ export function UsageLimitsGlance({
         {shortcut ? t("Click for details ({shortcut})", { shortcut }) : t("Click for details")}
       </p>
     </div>
+  );
+}
+
+function LimitCountdown({ at }: { readonly at: number }) {
+  const now = useUsageLimitNow();
+  if (at <= now) return null;
+  const duration = formatDuration(at - now);
+  return (
+    <>
+      <span className="sr-only">{t("resets in {duration}", { duration })}</span>
+      <span aria-hidden>↻ {duration}</span>
+    </>
   );
 }

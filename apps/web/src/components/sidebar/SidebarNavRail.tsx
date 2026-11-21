@@ -148,7 +148,7 @@ export function SidebarNavRailUsageItem({
   const shortcut = shortcutLabelForCommand(keybindings, "usage.open");
   const accounts = useLimitAccounts();
   const now = useUsageLimitNow(undefined, false);
-  const tightest = tightestLimitWindow(collectLimitPools(accounts, now));
+  const tightest = tightestLimitWindow(collectLimitPools(accounts, now), now);
   if (!tightest) {
     return (
       <SidebarNavRailItem

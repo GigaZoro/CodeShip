@@ -9,6 +9,10 @@ export interface ClockStore<A> {
   readonly getSnapshot: () => A;
 }
 
+interface UsageClockStore extends ClockStore<number> {
+  readonly refresh: () => void;
+}
+
 // setTimeout fires immediately for delays beyond a signed 32-bit int.
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
@@ -159,11 +163,11 @@ export function deadlineStore(deadlineMs: number | null): DeadlineStore {
 export function usageClock(
   resetTimes: readonly number[] = [],
   includeMinutes = true,
-): ClockStore<number> {
+): UsageClockStore {
   const resets = [...new Set(resetTimes.filter(Number.isFinite))].sort((a, b) => a - b);
   const read = () => {
-    const minute = Date.parse(`${minuteTick.getSnapshot()}:00Z`);
     const now = Date.now();
+    const minute = Math.floor(now / 60_000) * 60_000;
     return resets.findLast((reset) => reset <= now && reset > minute) ?? minute;
   };
   let value = read();
@@ -191,6 +195,15 @@ export function usageClock(
   };
   return {
     getSnapshot: () => (listeners.size === 0 ? read() : value),
+    refresh: () => {
+      if (listeners.size === 0) return;
+      const now = Date.now();
+      for (const reset of resets) {
+        if (reset > now) break;
+        deadlines.get(reset)?.store.refresh();
+      }
+      if (includeMinutes) publish();
+    },
     subscribe: (listener) => {
       if (listeners.size === 0) {
         if (includeMinutes) releaseMinute = minuteTick.subscribe(publish);

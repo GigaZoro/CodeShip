@@ -31,7 +31,14 @@ import {
   type LimitPool,
   type LimitPoolWindow,
 } from "@t3tools/shared/usageLimits";
-import { Fragment, type ReactNode, useId, useState, useSyncExternalStore } from "react";
+import {
+  Fragment,
+  type ReactNode,
+  useCallback,
+  useId,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { Linking, Pressable, View } from "react-native";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { Defs, Path, Pattern, Rect, Svg } from "react-native-svg";
@@ -42,7 +49,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { environmentPresentations } from "../../state/presentation";
-import { useAppForeground } from "../../lib/appState";
+import { subscribeAppActive, useAppForeground } from "../../lib/appState";
 import { relativeTime } from "../../lib/time";
 import { CodexLimitsSignIn } from "./CodexLimitsSignIn";
 import { ProviderHolds } from "./ProviderHolds";
@@ -623,7 +630,18 @@ function useUsageLimitNow() {
   const focused = useIsFocused();
   const foreground = useAppForeground();
   const clock = focused && foreground ? clocks.countdown : clocks.resets;
-  return useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getSnapshot);
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const unsubscribe = clock.subscribe(listener);
+      const unsubscribeResume = subscribeAppActive(clock.refresh);
+      return () => {
+        unsubscribeResume();
+        unsubscribe();
+      };
+    },
+    [clock],
+  );
+  return useSyncExternalStore(subscribe, clock.getSnapshot, clock.getSnapshot);
 }
 
 export function UsageLimitsSection({

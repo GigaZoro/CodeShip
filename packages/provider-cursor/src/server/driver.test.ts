@@ -3,6 +3,7 @@ import type { AgentOptions, SDKModel } from "@cursor/sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
+  DEFAULT_SERVER_SETTINGS,
   MessageId,
   NodeId,
   ProjectId,
@@ -17,6 +18,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { vi } from "vite-plus/test";
@@ -72,33 +74,47 @@ const layerTest = TestProviderHost.layer({ runBackgroundWork: false }).pipe(
 );
 
 it.layer(layerTest)("CursorDriver", (it) => {
-  it.effect(
-    "publishes host Keychain eligibility in the provider snapshot without a usage scan",
-    () =>
-      Effect.gen(function* () {
-        const input = {
-          instanceId: ProviderInstanceId.make("cursor-keychain"),
-          displayName: "Cursor",
-          environment: [],
-          enabled: false,
-          config: CursorDriver.defaultConfig(),
-        };
-        for (const [platform, environment, available] of [
-          ["darwin", {}, true],
-          ["linux", {}, false],
-          ["darwin", { AGENT_CLI_CREDENTIAL_STORE: "file" }, false],
-          ["darwin", { AGENT_CLI_CREDENTIAL_STORE: "memory" }, false],
-          ["darwin", { CURSOR_AUTH_TOKEN: "test-token" }, false],
-        ] as const) {
-          const instance = yield* CursorDriver.create(input).pipe(
-            Effect.provideService(HostProcess.Platform, platform),
-            Effect.provideService(HostProcess.Environment, environment),
-          );
-          expect((yield* instance.snapshot.getSnapshot).cursorKeychainUsageAvailable).toBe(
-            available,
-          );
-        }
-      }),
+  it.effect("publishes the actual Cursor history credential state without a usage scan", () =>
+    Effect.gen(function* () {
+      const settings = yield* TestProviderHost.TestProviderHostSettings;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped();
+      yield* fs.makeDirectory(path.join(directory, "cursor"));
+      yield* fs.writeFileString(
+        path.join(directory, "cursor", "auth.json"),
+        JSON.stringify({
+          accessToken: "header.eyJzdWIiOiJjdXJzb3J8Zml4dHVyZSJ9.signature",
+        }),
+      );
+      const input = {
+        instanceId: ProviderInstanceId.make("cursor-keychain"),
+        displayName: "Cursor",
+        environment: [],
+        enabled: false,
+        config: CursorDriver.defaultConfig(),
+      };
+      for (const [platform, environment, enabled, history] of [
+        ["darwin", {}, false, "keychainOff"],
+        ["darwin", {}, true, "reading"],
+        ["linux", { XDG_CONFIG_HOME: directory }, false, "reading"],
+        ["linux", { XDG_CONFIG_HOME: path.join(directory, "missing") }, false, "unavailable"],
+        ["darwin", { AGENT_CLI_CREDENTIAL_STORE: "memory" }, false, "unavailable"],
+        [
+          "linux",
+          { CURSOR_AUTH_TOKEN: "test-token", XDG_CONFIG_HOME: directory },
+          false,
+          "unavailable",
+        ],
+      ] as const) {
+        yield* settings.set({ ...DEFAULT_SERVER_SETTINGS, cursorKeychainUsageEnabled: enabled });
+        const instance = yield* CursorDriver.create(input).pipe(
+          Effect.provideService(HostProcess.Platform, platform),
+          Effect.provideService(HostProcess.Environment, environment),
+        );
+        expect((yield* instance.snapshot.getSnapshot).cursorAccountHistory).toBe(history);
+      }
+    }),
   );
   it.effect(
     "persists browser credentials, uses them for chat, and closes the SDK session on logout",
