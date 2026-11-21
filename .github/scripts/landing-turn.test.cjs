@@ -314,6 +314,7 @@ test("a waiting lander waits through failed reads of origin, and only failures t
           awakeClock: () => awakeMinutes * 60_000,
           sleep: () => {
             awakeMinutes += 6;
+            if (awakeMinutes > 12) assert.fail("waited on after 10 minutes of failures awake");
           },
         }),
       /git ls-remote failed/,

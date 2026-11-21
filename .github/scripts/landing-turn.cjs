@@ -145,26 +145,24 @@ function sleepSync(ms) {
 
 /**
  * Milliseconds the machine has been awake, for a span inside one process. On macOS performance.now() counts sleep, and a
- * Mac asleep with its lid closed wakes for seconds without a network; mach_absolute_time, the second number of
- * kern.monotonicclock_usecs, stops while it sleeps. Linux's monotonic clock stops too; Windows hosts stay awake.
+ * Mac asleep with its lid closed wakes for seconds without a network; NSProcessInfo.systemUptime is the time awake since
+ * boot. Linux's monotonic clock stops while it sleeps too; Windows hosts stay awake.
  */
 function awakeNow() {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime; tests pass awakeClock.
   if (process.platform !== "darwin") return performance.now();
-  const names = ["kern.monotonicclock_usecs", "hw.tbfrequency"];
-  // By its path: launchd jobs and minimal shells run with a PATH that lacks /usr/sbin.
-  const result = spawnSync("/usr/sbin/sysctl", ["-n", ...names], {
+  const script = `ObjC.import("Foundation"); String(Math.floor($.NSProcessInfo.processInfo.systemUptime * 1000))`;
+  const result = spawnSync("/usr/bin/osascript", ["-l", "JavaScript", "-e", script], {
     encoding: "utf8",
     timeout: 5000,
   });
-  const match = /^\d+ (\d+)\s+(\d+)\s*$/.exec(result.stdout ?? "");
-  if (result.status !== 0 || !match || match[2] === "0") {
+  const match = /^(\d+)\s*$/.exec(result.stdout ?? "");
+  if (result.status !== 0 || !match) {
     throw new Error(
-      `sysctl ${names.join(" ")} failed: ${result.error?.message ?? (result.stderr.trim() || result.stdout.trim())}`,
+      `osascript NSProcessInfo.systemUptime failed: ${result.error?.message ?? (result.stderr.trim() || result.stdout.trim())}`,
     );
   }
-  // In BigInt: an Intel Mac counts nanoseconds, past 2^53 after 104 days awake.
-  return Number((BigInt(match[1]) * 1000n) / BigInt(match[2]));
+  return Number(match[1]);
 }
 
 /**
