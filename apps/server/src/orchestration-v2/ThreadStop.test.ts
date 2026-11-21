@@ -1515,6 +1515,78 @@ it.effect(
     }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect.each(["no wake owed", "a wake owed"] as const)(
+  "MCP interrupt of a completed run whose session a user closed leaves its delegate alone unless a producer owes the wake (%s)",
+  (scenario) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const threadId = ThreadId.make(`thread:closed-session-lost-work:${scenario}`);
+      yield* createWatchingThread(threadId, 7);
+      yield* send(threadId, "source", "start_immediately");
+      const childThreadId = yield* delegate(threadId, `delegated task ${scenario}`);
+      const before = yield* orchestrator.getThreadProjection(threadId);
+      const source = before.runs[0]!;
+      const occurredAt = yield* DateTime.now;
+      yield* projections.apply({
+        type: "run.updated",
+        threadId,
+        id: EventId.make(`source-completed:${scenario}`),
+        occurredAt,
+        payload: { ...source, startedAt: occurredAt, completedAt: occurredAt, status: "completed" },
+      });
+      // A user's session close records the native subagent it stopped and enqueues no wake.
+      yield* projections.apply({
+        type: "run.background-work-cancelled",
+        threadId,
+        runId: source.id,
+        providerInstanceId: instanceId,
+        id: EventId.make(`lost-work:${scenario}`),
+        occurredAt,
+        payload: {
+          runId: source.id,
+          restartCancelledBackgroundWork: [
+            { kind: "subagent", label: "native subagent", id: "native-subagent" },
+          ],
+        },
+      });
+      // A process that ended on its own records the same way and enqueues its wake right after.
+      const settle =
+        scenario === "a wake owed" ? yield* outbox.oweRestartWake(source.id) : Effect.void;
+      const childBefore = yield* orchestrator.getThreadProjection(childThreadId);
+      const result = yield* threads.interruptThread({
+        projectId: before.thread.projectId,
+        threadId,
+        runId: source.id,
+        commandId: CommandId.make(`mcp-interrupt:${scenario}`),
+      });
+      yield* settle;
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      const marked = after.turnItems.some(
+        (item) => item.type === "run_interrupt_request" && item.runId === source.id,
+      );
+      if (scenario === "a wake owed") {
+        assert.equal(result.type, "interrupt_requested");
+        assert.isTrue(marked);
+        return;
+      }
+      assert.equal(result.type, "already_terminal");
+      assert.isFalse(marked);
+      const childAfter = yield* orchestrator.getThreadProjection(childThreadId);
+      assert.deepEqual(
+        childAfter.runs.map((run) => run.status),
+        childBefore.runs.map((run) => run.status),
+      );
+      assert.isFalse(childAfter.turnItems.some((item) => item.type === "run_interrupt_request"));
+      assert.deepEqual(
+        after.subagents.map(({ childThreadId, status }) => ({ childThreadId, status })),
+        before.subagents.map(({ childThreadId, status }) => ({ childThreadId, status })),
+      );
+    }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect.each([
   "unrelated with missing session",
   "unrelated with live session",

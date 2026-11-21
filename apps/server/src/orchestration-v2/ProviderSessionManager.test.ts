@@ -67,6 +67,9 @@ const layerTestStores = Layer.merge(EventStore.layer, ProjectionStore.layer).pip
 const layerTestEventSink = EventSink.layer.pipe(
   Layer.provide(Layer.mergeAll(layerTestStores, layerTestDatabase)),
 );
+// Reads the outbox the event sink writes; both share the test database. One instance for the
+// session manager, the ingestor and the test, which counts the wakes the producers owe.
+const layerTestOutbox = EffectOutbox.layer.pipe(Layer.provide(layerTestDatabase));
 const layerFailingReleaseEventSink = Layer.effect(
   EventSink.EventSinkV2,
   Effect.gen(function* () {
@@ -562,6 +565,7 @@ function layerTest(input: {
           getInstance: () => Effect.succeed(undefined),
         }),
         layerConfiguredEventSink,
+        layerTestOutbox,
         IdAllocator.layer,
         layerTestStores,
         ThreadCommandExecutor.layer,
@@ -574,8 +578,7 @@ function layerTest(input: {
   return Layer.mergeAll(
     layerTestStores,
     layerConfiguredEventSink,
-    // Reads the outbox the event sink writes; both share the test database.
-    EffectOutbox.layer.pipe(Layer.provide(layerTestDatabase)),
+    layerTestOutbox,
     IdAllocator.layer,
     layerConfiguredMcpRegistry,
     McpProviderSessions.layer,
@@ -590,6 +593,7 @@ function layerTest(input: {
             Layer.provide(Layer.merge(layerConfiguredEventSink, layerTestStores)),
           ),
           layerConfiguredEventSink,
+          layerTestOutbox,
           IdAllocator.layer,
           layerProviderEventIngestorTest,
           layerConfiguredMcpRegistry,
@@ -2741,6 +2745,8 @@ it.effect.each<ReleasedWorkCase>([
           Option.isSome(yield* outbox.get(EffectOutbox.restartContinuationEffectId(waiting.id))),
           wakes,
         );
+        // Every path settles what the release owed.
+        assert.isFalse(yield* outbox.restartWakeOwed(waiting.id));
       });
 
       yield* effect.pipe(
@@ -2749,9 +2755,12 @@ it.effect.each<ReleasedWorkCase>([
     }),
 );
 
-it.effect(
-  "ProviderSessionManagerV2 records the work a release stops before its session finishes closing",
-  () =>
+it.effect.each([
+  { reason: "idle_timeout", wakes: true },
+  { reason: "manual_shutdown", wakes: false },
+] as const)(
+  "ProviderSessionManagerV2 records the work a release stops before its session finishes closing, owing only a wake it enqueues ($reason)",
+  ({ reason, wakes }) =>
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
       const scopeCloseReached = yield* Deferred.make<void>();
@@ -2761,7 +2770,7 @@ it.effect(
         const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
         const outbox = yield* EffectOutbox.EffectOutboxV2;
         const { threadId, providerSessionId, writeRun, rosters } =
-          yield* openSessionWithBackgroundCommand("provider-session-manager-slow-close", [
+          yield* openSessionWithBackgroundCommand(`provider-session-manager-slow-close:${reason}`, [
             { taskId: "build", kind: "background_task", description: "vp run build" },
           ]);
         const waiting = yield* writeRun(1, "completed");
@@ -2778,7 +2787,7 @@ it.effect(
         const wake = outbox.get(EffectOutbox.restartContinuationEffectId(waiting.id));
 
         const release = yield* manager
-          .release({ providerSessionId, reason: "idle_timeout" })
+          .release({ providerSessionId, reason })
           .pipe(Effect.forkChild);
         yield* Deferred.await(scopeCloseReached);
         // A turn that opens the session while the old one is still closing reads what it stopped.
@@ -2786,14 +2795,17 @@ it.effect(
         assert.deepStrictEqual(yield* lostWork(), [
           { kind: "task", label: "vp run build (id build)", id: "build" },
         ]);
-        // The roster and the wake wait for the close.
+        // The roster and the wake wait for the close. Meanwhile the record is a pending restart
+        // only when the release will enqueue its wake: a requested close enqueues none.
         assert.deepStrictEqual(yield* rosters, [["build"], ["build"]]);
         assert.isTrue(Option.isNone(yield* wake));
+        assert.strictEqual(yield* outbox.restartWakeOwed(waiting.id), wakes);
 
         yield* Deferred.succeed(scopeCloseMayEnd, undefined);
         yield* Fiber.join(release);
         assert.deepStrictEqual(yield* rosters, [[], ["build"]]);
-        assert.isTrue(Option.isSome(yield* wake));
+        assert.strictEqual(Option.isSome(yield* wake), wakes);
+        assert.isFalse(yield* outbox.restartWakeOwed(waiting.id));
         assert.lengthOf((yield* lostWork()) ?? [], 1);
       });
 

@@ -271,6 +271,13 @@ export interface EffectOutboxV2Shape {
   readonly clearCancellation: (effectId: string) => Effect.Effect<void>;
   /** Resolves once the effect is neither pending nor running, or right away when it does not exist. */
   readonly awaitSettled: (effectId: string) => Effect.Effect<void, EffectOutboxError>;
+  /**
+   * A producer that records a run's lost background work and enqueues its restart continuation
+   * afterwards owes that wake meanwhile. Returns the settle, which may run more than once. In this
+   * process only: after a restart, recovery decides each wake again.
+   */
+  readonly oweRestartWake: (sourceRunId: RunId) => Effect.Effect<Effect.Effect<void>>;
+  readonly restartWakeOwed: (sourceRunId: RunId) => Effect.Effect<boolean>;
   readonly reconcileAfterProcessLoss: Effect.Effect<
     { readonly requeued: number; readonly cancelled: number },
     EffectOutboxError
@@ -352,6 +359,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     const available = yield* Queue.dropping<void>(64);
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
     const settledSignals = new Map<string, Deferred.Deferred<void>>();
+    const owedRestartWakes = new Map<RunId, number>();
     const signalSettled = (effectIds: ReadonlyArray<string>) =>
       Effect.forEach(
         effectIds,
@@ -612,6 +620,19 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         }
         yield* signalSettled([effectId]);
       }),
+      oweRestartWake: (sourceRunId) =>
+        Effect.sync(() => {
+          owedRestartWakes.set(sourceRunId, (owedRestartWakes.get(sourceRunId) ?? 0) + 1);
+          let settled = false;
+          return Effect.sync(() => {
+            if (settled) return;
+            settled = true;
+            const remaining = (owedRestartWakes.get(sourceRunId) ?? 1) - 1;
+            if (remaining > 0) owedRestartWakes.set(sourceRunId, remaining);
+            else owedRestartWakes.delete(sourceRunId);
+          });
+        }),
+      restartWakeOwed: (sourceRunId) => Effect.sync(() => owedRestartWakes.has(sourceRunId)),
       reconcileAfterProcessLoss: Effect.gen(function* () {
         const now = DateTime.formatIso(yield* DateTime.now);
         const cancelledRows = yield* sql<{ readonly effect_id: string }>`
