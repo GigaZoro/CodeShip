@@ -805,8 +805,8 @@ const make = Effect.gen(function* () {
   const settling = new Map<NodeId, Deferred.Deferred<void>>();
 
   /**
-   * Ends the task's settle there once its attempt in flight has decided, for a Stop or cancel
-   * here, so neither waits on the back-off and the settle never follows them there.
+   * Ends the task's settle there for a Stop or cancel here, which its follower then sends
+   * there: a settle request already sent decides first, and a read or a back-off is cut short.
    */
   const giveUpSettle = (taskId: NodeId) =>
     Effect.suspend(() => {
@@ -827,50 +827,57 @@ const make = Effect.gen(function* () {
     taskId: NodeId,
     runId: RunId,
   ) {
-    const { task } = yield* readTask(parentThreadId, taskId);
-    if (task?.status !== "completed" || task.remoteChild?.stoppedThere !== true) return;
     const givenUp = yield* Deferred.make<void>();
-    const inFlight = yield* Semaphore.make(1);
-    settling.set(taskId, givenUp);
-    yield* forwarding
-      .readThread(scope, remote.environmentId, {
-        threadId: remote.threadId,
-        limit: 1,
-        runLimit: 1,
-        maxCharsPerItem: 1,
-      })
-      .pipe(
-        Effect.flatMap(({ thread }) =>
-          restsOn(thread, runId)
-            ? forwarding.settleThread(scope, remote.environmentId, remote.threadId)
-            : Effect.void,
-        ),
-        inFlight.withPermits(1),
-        Effect.retry({
-          schedule: settleRetry,
-          while: (error) =>
-            isModeRefusal(error)
-              ? false
-              : finalReason(parentThreadId, taskId, error).pipe(
-                  Effect.map((reason) => reason === undefined),
+    const sending = yield* Semaphore.make(1);
+    yield* Effect.suspend(() => {
+      // Published before the task is read, so a stop owed after that read still gives it up.
+      settling.set(taskId, givenUp);
+      return readTask(parentThreadId, taskId);
+    }).pipe(
+      Effect.flatMap(({ task }) =>
+        task?.status !== "completed" || task.remoteChild?.stoppedThere !== true
+          ? Effect.void
+          : forwarding
+              .readThread(scope, remote.environmentId, {
+                threadId: remote.threadId,
+                limit: 1,
+                runLimit: 1,
+                maxCharsPerItem: 1,
+              })
+              .pipe(
+                Effect.flatMap(({ thread }) =>
+                  restsOn(thread, runId)
+                    ? sending.withPermits(1)(
+                        forwarding.settleThread(scope, remote.environmentId, remote.threadId),
+                      )
+                    : Effect.void,
                 ),
+                Effect.retry({
+                  schedule: settleRetry,
+                  while: (error) =>
+                    isModeRefusal(error)
+                      ? false
+                      : finalReason(parentThreadId, taskId, error).pipe(
+                          Effect.map((reason) => reason === undefined),
+                        ),
+                }),
+                Effect.catch((error) =>
+                  Effect.logWarning(
+                    "A linked environment kept a finished delegated task's thread active",
+                    { taskId, reason: error.message },
+                  ),
+                ),
+                // Given up, it waits for a settle request already sent and keeps the permit,
+                // so no settle reaches there after the stop.
+                Effect.raceFirst(Deferred.await(givenUp).pipe(Effect.andThen(sending.take(1)))),
+              ),
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (settling.get(taskId) === givenUp) settling.delete(taskId);
         }),
-        Effect.catch((error) =>
-          Effect.logWarning("A linked environment kept a finished delegated task's thread active", {
-            taskId,
-            reason: error.message,
-          }),
-        ),
-        // Waits out the attempt in flight, so only a back-off is cut short.
-        Effect.raceFirst(
-          Deferred.await(givenUp).pipe(Effect.andThen(inFlight.withPermits(1)(Effect.void))),
-        ),
-        Effect.ensuring(
-          Effect.sync(() => {
-            if (settling.get(taskId) === givenUp) settling.delete(taskId);
-          }),
-        ),
-      );
+      ),
+    );
   });
 
   /** A task's thread there that ended without a reply. */
@@ -1067,6 +1074,23 @@ const make = Effect.gen(function* () {
       );
     });
 
+  /** A cancel whose write here did not happen fails, so its caller can send it again. */
+  const cancelNotRecorded =
+    (taskId: NodeId) =>
+    <A, E>(write: Effect.Effect<A, E>) =>
+      write.pipe(
+        Effect.tapError((cause) =>
+          Effect.logWarning("remote-delegation.cancel-record-failed", { taskId, cause }),
+        ),
+        Effect.mapError(
+          () =>
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "Unable to record the cancellation.",
+            }),
+        ),
+      );
+
   const cancel: RemoteDelegation["Service"]["cancel"] = Effect.fn("RemoteDelegation.cancel")(
     function* (scope, task, input) {
       const remote = task.remoteChild;
@@ -1076,28 +1100,21 @@ const make = Effect.gen(function* () {
           message: `Delegated task ${task.id} is not remote.`,
         });
       }
-      const { reason } = input;
-      const there = followScope(scope.thread, remote);
       // A later cancel stops what started there since; a retry of this one, nothing new.
       const key = `cancel:${encodeURIComponent(scope.requestNamespace)}:${
         input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie))
       }`;
       if (task.result !== null) {
-        yield* giveUpSettle(task.id);
-        // Best effort: the result stands whether or not the stop gets there.
-        yield* stopThere(there, remote, key, reason).pipe(
-          Effect.andThen(
-            complete(
-              task.threadId,
-              task.id,
-              terminalStatus(task.status),
-              task.result,
-              "stopped",
-              remote.stopCount,
-            ),
-          ),
-          Effect.ignoreCause({ log: true }),
-        );
+        // The result stands, and its thread there owes a stop, which the follower sends after
+        // any settle request it already sent there, as for a Stop here.
+        yield* threads
+          .dispatch({
+            type: "delegated_task.remote.stop",
+            commandId: CommandId.make(`command:remote-task-stop:${task.id}:${key}`),
+            parentThreadId: task.threadId,
+            taskId: task.id,
+          })
+          .pipe(cancelNotRecorded(task.id));
         return {
           taskId: task.id,
           status:
@@ -1106,9 +1123,15 @@ const make = Effect.gen(function* () {
               : "cancelled",
         } satisfies OrchestratorMcpTaskCancelResult;
       }
+      const { reason } = input;
       // A link that is gone or a machine that is down still cancels the task
       // here; its follower keeps trying to stop it there, across restarts.
-      const unstopped = yield* stopThere(there, remote, key, reason).pipe(
+      const unstopped = yield* stopThere(
+        followScope(scope.thread, remote),
+        remote,
+        key,
+        reason,
+      ).pipe(
         Effect.as(undefined),
         Effect.catch((error) => Effect.succeed(error.message)),
       );
@@ -1122,18 +1145,7 @@ const make = Effect.gen(function* () {
           : `${cancelled} It could not be stopped in ${remote.label} and may still run there: ${unstopped}`,
         unstopped === undefined ? "stopped" : undefined,
         remote.stopCount,
-      ).pipe(
-        Effect.tapError((cause) =>
-          Effect.logWarning("remote-delegation.cancel-record-failed", { taskId: task.id, cause }),
-        ),
-        Effect.mapError(
-          () =>
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: "Unable to record the cancellation.",
-            }),
-        ),
-      );
+      ).pipe(cancelNotRecorded(task.id));
       return {
         taskId: task.id,
         status: "cancel_requested",
@@ -1144,7 +1156,7 @@ const make = Effect.gen(function* () {
   const start: RemoteDelegation["Service"]["start"] = () =>
     forkParked(
       Effect.gen(function* () {
-        // A finished task's follower has ended, so a Stop here that owes its
+        // A finished task's follower has ended, so a Stop or cancel here that owes its
         // thread there a stop starts it again, or ends the settle it still waits on.
         // Started before the scan below; a Stop that slips between the two stays
         // owed for the next start.

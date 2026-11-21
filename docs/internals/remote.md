@@ -152,7 +152,10 @@ The child there is a top-level thread, so nobody there owns its end state: once
 the task holds a completed result, the follower settles it through the same link
 (the fence allows the threads a link started). It skips a child with a later run,
 a queued message or a pending request, since settling would hide or cancel them,
-and a refused settle is left to auto-settlement there.
+and a refused settle is left to auto-settlement there. A Stop or cancel here of a
+task that already holds its result owes its thread there a stop
+(`delegated_task.remote.stop`), which the follower sends, so it reaches there after
+any settle request already sent; a settle still reading or backing off is cut short.
 
 A task with `isolation: "worktree"` branches its child's worktree there from the
 parent checkout's HEAD commit, passed as a SHA `baseRef` with `startFromOrigin`.

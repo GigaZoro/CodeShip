@@ -156,6 +156,12 @@ interface BoxThread {
   readonly afterStop: Ref.Ref<Effect.Effect<void>>;
   /** The threads settled there, in order. */
   readonly settles: Ref.Ref<ReadonlyArray<ThreadId>>;
+  /** What the thread there recorded, its stops and settles, in order. */
+  readonly order: Ref.Ref<
+    ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks" | "settle">
+  >;
+  /** Runs once, as the next settle there arrives, before it is recorded. */
+  readonly beforeSettle: Ref.Ref<Effect.Effect<void>>;
   /** Completed on the first settle recorded there. */
   readonly settledOnce: Deferred.Deferred<void>;
   /** Settles there fail this many times first, as on a machine too busy to record them. */
@@ -200,6 +206,10 @@ const makeBoxThread = Effect.gen(function* () {
     afterWait: yield* Ref.make<Effect.Effect<void>>(Effect.void),
     afterStop: yield* Ref.make<Effect.Effect<void>>(Effect.void),
     settles: yield* Ref.make<ReadonlyArray<ThreadId>>([]),
+    order: yield* Ref.make<
+      ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks" | "settle">
+    >([]),
+    beforeSettle: yield* Ref.make<Effect.Effect<void>>(Effect.void),
     settledOnce: yield* Deferred.make<void>(),
     dropSettles: yield* Ref.make(0),
     question: yield* Ref.make(false),
@@ -433,6 +443,7 @@ const boxToolkitLayer = (
       if (interrupts.has(`${kind}:${commandId}`)) return;
       interrupts.add(`${kind}:${commandId}`);
       yield* Ref.update(thread.stops, (seen) => [...seen, kind]);
+      yield* Ref.update(thread.order, (seen) => [...seen, kind]);
       if (kind !== "delegated-tasks") {
         yield* Ref.update(thread.interrupted, (count) => count + 1);
         yield* Deferred.succeed(thread.interruptedOnce, undefined);
@@ -617,7 +628,9 @@ const boxToolkitLayer = (
     organizeThread: (input) => {
       const thread = launches.get(input.threadId)!.state;
       return input.action === "settle"
-        ? Ref.modify(thread.dropSettles, (left) => [left, Math.max(0, left - 1)]).pipe(
+        ? Ref.getAndSet(thread.beforeSettle, Effect.void).pipe(
+            Effect.flatten,
+            Effect.andThen(Ref.modify(thread.dropSettles, (left) => [left, Math.max(0, left - 1)])),
             Effect.flatMap((left) =>
               left > 0
                 ? Effect.fail(
@@ -627,6 +640,9 @@ const boxToolkitLayer = (
                     }),
                   )
                 : Ref.update(thread.settles, (seen) => [...seen, input.threadId]).pipe(
+                    Effect.andThen(
+                      Ref.update(thread.order, (seen) => [...seen, "settle" as const]),
+                    ),
                     Effect.andThen(Deferred.succeed(thread.settledOnce, undefined)),
                     Effect.as({ sequence: 0 }),
                   ),
@@ -2154,6 +2170,7 @@ it.effect("fails the task when the box revokes the link, and cancel interrupts i
       >([]);
       const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
       const a = yield* makeLaptop(database, offers);
+      yield* a.remote.start();
       yield* linkTo(a.links, b, "full-access");
       yield* seedParent(a);
 
@@ -2170,16 +2187,21 @@ it.effect("fails the task when the box revokes the link, and cancel interrupts i
       expect(yield* Ref.get(thread.stops)).toEqual(["thread.stop", "delegated-tasks"]);
       expect(yield* taskResult(a, cancelled.taskId)).toMatchObject({ status: "cancelled" });
 
-      // Cancelling again, once the result is in, still stops what came after it there.
+      // Cancelling again, once the result is in, still stops what came after it there: the
+      // task owes that stop, and its follower sends it.
       const again = yield* a.call("task_cancel", {
         taskId: cancelled.taskId,
         clientRequestId: "cancel-again",
       });
       expect(again.structuredContent).toEqual({ taskId: cancelled.taskId, status: "cancelled" });
+      yield* stoppedThere(a, cancelled.taskId);
       expect(yield* Ref.get(thread.interrupted)).toBe(2);
-      // ...and a retry of that cancel stops nothing new.
+      // ...and a retry of that cancel owes nothing new.
       yield* a.call("task_cancel", { taskId: cancelled.taskId, clientRequestId: "cancel-again" });
-      expect(yield* Ref.get(thread.interrupted)).toBe(2);
+      const retried = yield* a.threads.getThreadRecords(parentThreadId, ["subagents"]);
+      expect(
+        retried.subagents.find((task) => task.id === cancelled.taskId)?.remoteChild,
+      ).toMatchObject({ stoppedThere: true, stopCount: 1 });
 
       // A second task, then the box revokes the link before it ends.
       const revoked = yield* a
@@ -3521,7 +3543,7 @@ it.effect(
 const stoppedThere = (
   laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
   taskId: NodeId,
-  // `null` for a cancel's stop, which carries no count.
+  // `null` for a cancel's stop sent before the result, which carries no count.
   stopCount: number | null = 1,
 ) =>
   laptopEnv.orchestrator
@@ -3674,7 +3696,8 @@ it.effect.each([
           } else if (cancelWhileBackingOff) {
             const cancelled = yield* a.call("task_cancel", { taskId: delegated.taskId });
             expect(cancelled.isError, JSON.stringify(cancelled.content)).toBe(false);
-            // The cancel stops it there itself, so only the ended back-off shows no settle follows.
+            // Its follower sends the cancel's stop once the back-off is cut short, so no settle
+            // follows it.
             yield* Deferred.await(retries.cut);
           } else if (!stopWhileBackingOff) {
             yield* Queue.offer(retries.retry, undefined);
@@ -3682,19 +3705,101 @@ it.effect.each([
         }
         if (settled) yield* Deferred.await(thread.settledOnce);
 
-        // A Stop ends a settle that backs off once its attempt in flight has decided, and is
-        // otherwise followed after the follow that recorded the result, so once its stop is
-        // recorded, no settle there is left to come.
+        // A Stop cuts short a settle's read or back-off, waits for a settle request already sent,
+        // and is otherwise followed after the follow that recorded the result, so once its stop
+        // is recorded, no settle there is left to come. After a cancel's stop it owes the second.
         yield* a.threads.stopDelegatedTasks({
           threadId: parentThreadId,
           commandId: CommandId.make("command:stop:laptop-parent-after-settle"),
         });
-        yield* stoppedThere(a, delegated.taskId);
+        yield* stoppedThere(a, delegated.taskId, cancelWhileBackingOff ? 2 : 1);
         expect(yield* Ref.get(thread.settles)).toEqual(
           settled ? [delegated.remoteChild.threadId] : [],
         );
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a cancel after a settle was sent there stops the thread there after that settle", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* a.remote.start();
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const delegated = yield* delegateToBox(a);
+      const settleSent = yield* Deferred.make<void>();
+      const releaseSettle = yield* Deferred.make<void>();
+      yield* Ref.set(
+        thread.beforeSettle,
+        Deferred.succeed(settleSent, undefined).pipe(Effect.andThen(Deferred.await(releaseSettle))),
+      );
+      yield* Ref.set(thread.reply, "All green.");
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      yield* taskResult(a, delegated.taskId);
+      yield* Deferred.await(settleSent);
+
+      // The cancel returns while that settle is still on its way, and nothing is stopped there yet.
+      const cancelled = yield* TestClock.withLive(
+        a.call("task_cancel", { taskId: delegated.taskId }).pipe(Effect.timeout("10 seconds")),
+      );
+      expect(cancelled.structuredContent).toEqual({
+        taskId: delegated.taskId,
+        status: "completed",
+      });
+      expect(yield* Ref.get(thread.order)).toEqual([]);
+      yield* Deferred.succeed(releaseSettle, undefined);
+      yield* stoppedThere(a, delegated.taskId);
+      expect(yield* Ref.get(thread.order)).toEqual(["settle", "thread.stop", "delegated-tasks"]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a cancel cuts short a settle read that hangs there, and no settle follows it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const retries = yield* steppedRetries;
+      const a = yield* makeLaptop(database, offers).pipe(
+        Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
+      );
+      yield* a.remote.start();
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const delegated = yield* delegateToBox(a);
+      yield* Ref.set(thread.reply, "All green.");
+      yield* Ref.set(thread.dropSettles, 1);
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      yield* taskResult(a, delegated.taskId);
+      // The first settle fails, and its retry hangs reading the thread there.
+      yield* Queue.take(retries.failed);
+      yield* Ref.set(thread.holdRead, true);
+      yield* Queue.offer(retries.retry, undefined);
+      yield* Deferred.await(thread.readStarted);
+
+      yield* TestClock.withLive(
+        a
+          .call("task_cancel", { taskId: delegated.taskId })
+          .pipe(Effect.andThen(stoppedThere(a, delegated.taskId)), Effect.timeout("10 seconds")),
+      );
+      expect(yield* Ref.get(thread.order)).toEqual(["thread.stop", "delegated-tasks"]);
+      yield* Deferred.succeed(thread.releaseRead, undefined);
+      expect(yield* Ref.get(thread.settles)).toEqual([]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("a delayed Stop acknowledgement leaves a newer Stop owed", () =>
