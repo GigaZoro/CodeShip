@@ -1,5 +1,3 @@
-import type { ReactNode } from "react";
-
 import {
   getClientSettings,
   updateClientSettings,
@@ -16,7 +14,7 @@ import {
 import { t } from "~/i18n";
 
 /** Menu body that shows and hides thread details items. The card's context menu and Settings share it. */
-export function ThreadDetailsItemsMenuItems(props: { readonly children?: ReactNode }) {
+export function ThreadDetailsItemsMenuItems() {
   const visibility = useClientSettings(resolveThreadDetailsVisibility);
   return (
     <>
@@ -36,7 +34,6 @@ export function ThreadDetailsItemsMenuItems(props: { readonly children?: ReactNo
           </MenuCheckboxItem>
         ))}
       </MenuGroup>
-      {props.children}
       <MenuSeparator />
       <MenuItem
         disabled={isDefaultThreadDetailsVisibility(visibility)}

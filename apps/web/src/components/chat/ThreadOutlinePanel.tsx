@@ -10,11 +10,35 @@ import {
   outlinePromptText,
   revealTimelinePrompt,
   useTimelineOutline,
+  type TimelineOutlinePrompt,
 } from "./timelineOutlineStore";
 import { t } from "~/i18n";
+import { deriveSubagentElapsedMs } from "@t3tools/shared/orchestrationTiming";
+import { AgentElapsed } from "./AgentElapsed";
 
 // One prompt is the whole thread, so there is nothing to move between.
 const OUTLINE_MIN_PROMPTS = 2;
+
+function PromptMeta({ prompt }: { readonly prompt: TimelineOutlinePrompt }) {
+  const timing = {
+    status: prompt.outcome === "running" ? "running" : "completed",
+    startedAt: prompt.startedAt,
+    completedAt: prompt.completedAt,
+  } as const;
+  if (deriveSubagentElapsedMs(timing, 0) === null) return null;
+  const outcomeLabel =
+    prompt.outcome === "stopped" ? t("Stopped") : prompt.outcome === "failed" ? t("Failed") : null;
+  return (
+    <span className="ml-auto flex shrink-0 items-center gap-1 pl-2 text-2xs font-normal text-muted-foreground">
+      {outcomeLabel === null ? null : (
+        <span className={prompt.outcome === "failed" ? "text-error-foreground" : undefined}>
+          {outcomeLabel}
+        </span>
+      )}
+      <AgentElapsed agent={timing} compact />
+    </span>
+  );
+}
 
 /** The prompts sent in this thread, one line each; selecting one scrolls the timeline to it. */
 export function ThreadOutlinePanel(props: {
@@ -83,6 +107,7 @@ export function ThreadOutlinePanel(props: {
                   >
                     {text.length > 0 ? text : t("Attachment")}
                   </span>
+                  <PromptMeta prompt={prompt} />
                 </TooltipTrigger>
                 {/* The row shows a few words; this shows the rest of the prompt's opening. */}
                 {text.length > 0 ? (

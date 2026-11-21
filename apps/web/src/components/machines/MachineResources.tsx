@@ -19,6 +19,7 @@ import { serverEnvironment } from "../../state/server";
 import { MachineBadge, MachineLastSeen } from "../MachineBadge";
 import type { SidebarMachine } from "../sidebar/SidebarFolderHeader";
 import { machineStateLabel } from "../sidebar/SidebarMachineStrip";
+import { useSidebarMachines } from "../sidebar/useSidebarMachines";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { t } from "~/i18n";
@@ -208,6 +209,18 @@ function subscribeVisibility(onChange: () => void) {
 /** A background tab or minimized window shows nothing, so its machines are not polled. */
 function usePageVisible() {
   return useSyncExternalStore(subscribeVisibility, () => document.visibilityState === "visible");
+}
+
+/** True while the machine is connected and the page is visible, the only time its load is polled. */
+export function useMachineLoadPollable(environmentId: EnvironmentId): boolean {
+  const machine = useSidebarMachines().find((entry) => entry.environmentId === environmentId);
+  const pageVisible = usePageVisible();
+  return machine !== undefined && !machine.disconnected && pageVisible;
+}
+
+/** One machine's meters without the card around them; mount only while it is pollable. */
+export function MachineLoadMeters(props: { readonly environmentId: EnvironmentId }) {
+  return <ConnectedMachineResources environmentId={props.environmentId} />;
 }
 
 export function MachineResourcesCard(props: { readonly machine: SidebarMachine }) {

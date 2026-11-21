@@ -688,19 +688,23 @@ account in **Settings → Browser & devices → Browser profiles** and sign in t
 Claude there. Then pair each assistant with its profile under **Web assistants**
 on the same page. Duet opens at claude.ai, where Anthropic hosts it.
 
-Once a thread has started, the top of the thread details card sums up where it works: the
-machine, the branch and its pull request, and how much changed. Select it to show the workspace and
-Git controls, and again to fold them; each device keeps your choice. Select the pull request number
-to open the pull request. A new thread keeps every control in view, so you can pick where it runs
-before you send it.
+The thread details card shows what is going on rather than a set of buttons. At the top, once a
+thread has started, a summary names the machine, the branch and its pull request, and how much
+changed; select it to show the workspace and Git controls, and again to fold them. They are folded
+whenever you open a thread. **Agent status** shows whether the agent is working, waiting for you,
+stopped or idle, how long the run has taken, the model it uses, and what it is doing now. Below it
+sit the context window, usage limits, the agent's to-do list for the turn it is on, lineage and side
+chats, **Your prompts**, and **Machine load**: CPU, memory and disk of the machine the chat runs
+on. **Your prompts** lists the messages you sent, as far back as the conversation has loaded; the
+one on screen is marked, and selecting one scrolls back to it. A new thread shows only the controls
+for choosing where it runs: the environment and the branch.
 
-While the agent works through a to-do list, the card shows that list for the turn it is on and how
-many steps are done. **Ask the agent** sends a common request as your message: commit and open a
-pull request, run the tests, or review the changes. Add your own requests, and set their order, in
-**Settings → Chat & diffs → Ask the agent**, or with the settings button beside **Ask the agent** in
-the card; the command palette lists them all as **Ask the agent** items for the open thread. While the agent is working, the request waits until it finishes. If you are writing a
-message, the request is added to it instead, for you to send. **Your prompts** lists the messages you sent, as far back as
-the conversation has loaded; the one on screen is marked, and selecting one scrolls back to it.
+**Git actions** and **Ask the agent** are off by default. **Ask the agent** sends a common request
+as your message: commit and open a pull request, run the tests, or review the changes. Add your own
+requests, and set their order, in **Settings → Chat & diffs → Ask the agent**; the command palette
+lists them all as **Ask the agent** items for the open thread. While the agent is working, the
+request waits until it finishes. If you are writing a message, the request is added to it instead,
+for you to send.
 
 To choose what the thread details card shows, right-click the card or open
 **Settings → Chat & diffs → Thread details**. Hidden rows keep their keyboard

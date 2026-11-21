@@ -30,7 +30,6 @@ export const DEVICE_SETTINGS_PROFILE_KEYS = [
   "sidebarProjectGroupingMode",
   "sidebarThreadSortOrder",
   "sidebarWorkingShelfEnabled",
-  "sidebarManualStepsEnabled",
   "confirmQuit",
   "confirmThreadArchive",
   "confirmThreadDelete",

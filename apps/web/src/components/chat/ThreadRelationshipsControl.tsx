@@ -4,7 +4,7 @@ import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { SectionHeaderStatus } from "../ui/collapsible-section-header";
-import { SubagentTooltipContent } from "./SubagentTooltipContent";
+import { resolveSubagentSelection, SubagentTooltipContent } from "./SubagentTooltipContent";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -12,7 +12,10 @@ import {
   projectedSubagentsToRuntime,
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
+import {
+  formatSubagentDisplayTitle,
+  resolveSubagentMetadata,
+} from "@t3tools/client-runtime/state/subagent-display";
 import { deriveProviderSubagentStatus } from "@t3tools/client-runtime/state/thread-execution";
 import {
   deriveThreadRelationshipGraph,
@@ -246,6 +249,42 @@ function currentSubagent<Agent extends RuntimeSubagent>(
   };
 }
 
+/** Model, then what the subagent is doing now or how it ended, under its title. */
+function SubagentRowDetail(props: {
+  readonly agent: Pick<
+    OrchestrationV2Subagent,
+    "model" | "providerInstanceId" | "origin" | "modelSelection" | "status"
+  > & { readonly progress?: string | null | undefined };
+  readonly provider: ServerProvider | undefined;
+  readonly childThread?: OrchestrationV2ThreadShell | null | undefined;
+  readonly outcome: string;
+  readonly machineLabel?: string | undefined;
+}) {
+  const { agent } = props;
+  const { modelLabel } = resolveSubagentMetadata({ model: agent.model, provider: props.provider });
+  const { effort } = resolveSubagentSelection({
+    ...agent,
+    provider: props.provider,
+    childThread: props.childThread ?? undefined,
+  });
+  const progress = agent.progress?.slice(0, 240).replace(/\s+/gu, " ").trim();
+  const parts = [
+    effort ? `${modelLabel} · ${effort}` : modelLabel,
+    ...(props.machineLabel === undefined ? [] : [t("on {label}", { label: props.machineLabel })]),
+    isOrchestrationV2WorkActive(agent.status) ? progress : props.outcome,
+  ].filter((part): part is string => Boolean(part));
+  return (
+    <span
+      className={cn(
+        "block truncate text-left text-2xs font-normal leading-4",
+        agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
+      )}
+    >
+      {parts.join(" · ")}
+    </span>
+  );
+}
+
 /**
  * A task delegated to a linked environment. It has no thread here, so it opens
  * the thread there, when this client is connected to that environment.
@@ -261,12 +300,17 @@ function RemoteSubagentRow(props: {
   const { remoteChild } = props.agent;
   const status = props.agent.status;
   const failed = status === "failed";
+  const timing = {
+    status,
+    startedAt: props.agent.startedAt ? DateTime.formatIso(props.agent.startedAt) : null,
+    completedAt: props.agent.completedAt ? DateTime.formatIso(props.agent.completedAt) : null,
+  };
   const title = relationshipThreadTitle({
     title: props.agent.title ?? t("Subagent"),
     isSubagent: true,
   });
   return (
-    <li className="group relative flex h-8 items-center rounded-lg">
+    <li className="group relative flex min-h-8 items-center rounded-lg">
       <Tooltip>
         <TooltipTrigger
           delay={200}
@@ -275,6 +319,7 @@ function RemoteSubagentRow(props: {
               size="sm"
               variant="ghost"
               part="row"
+              multiline
               aria-disabled={environment === null || undefined}
               onClick={() => {
                 if (environment === null) return;
@@ -299,15 +344,20 @@ function RemoteSubagentRow(props: {
             <span className="block truncate text-left text-sm font-medium leading-4 text-foreground/85">
               {title}
             </span>
+            <SubagentRowDetail
+              agent={props.agent}
+              provider={props.provider}
+              outcome={threadRelationshipStatusLabel(status)}
+              machineLabel={remoteChild.label}
+            />
           </span>
-          <span
-            className={`shrink-0 text-2xs ${failed ? "text-destructive-foreground" : "text-muted-foreground"}`}
-          >
-            {t("on {label} · {status}", {
-              label: remoteChild.label,
-              status: threadRelationshipStatusLabel(status),
-            })}
-          </span>
+          {deriveSubagentElapsedMs(timing, 0) !== null ? (
+            <span
+              className={`shrink-0 text-2xs font-normal tabular-nums ${failed ? "text-destructive-foreground" : "text-muted-foreground"}`}
+            >
+              <AgentElapsed agent={timing} compact />
+            </span>
+          ) : null}
         </TooltipTrigger>
         <TooltipPopup side="left">
           <LineageTooltipContent
@@ -754,6 +804,14 @@ export function ThreadRelationshipsPanel(props: {
           <span className="block truncate text-left text-sm font-medium leading-4 text-foreground/85">
             {threadTitle}
           </span>
+          {agent && !workflowGroup ? (
+            <SubagentRowDetail
+              agent={agent}
+              provider={provider}
+              childThread={node?.thread}
+              outcome={threadRelationshipStatusLabel(rowStatus)}
+            />
+          ) : null}
         </span>
         {agent ? null : (
           <ArrowRightIcon className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
@@ -764,7 +822,8 @@ export function ThreadRelationshipsPanel(props: {
           >
             <AgentElapsed agent={agent} compact />
           </span>
-        ) : !isMergeTarget ? (
+        ) : !isMergeTarget &&
+          !(agent && !workflowGroup && !isOrchestrationV2WorkActive(agent.status)) ? (
           <span
             className={
               workflowGroup
@@ -786,6 +845,7 @@ export function ThreadRelationshipsPanel(props: {
               size="sm"
               variant="ghost"
               part={workflowGroup ? "primary" : "row"}
+              multiline={agent !== undefined && !workflowGroup}
               onClick={() => openThread(threadId)}
             />
           }
@@ -814,7 +874,10 @@ export function ThreadRelationshipsPanel(props: {
       );
     }
     return (
-      <li key={threadId} className="group relative flex h-8 items-center rounded-lg">
+      <li
+        key={threadId}
+        className={cn("group relative flex items-center rounded-lg", agent ? "min-h-8" : "h-8")}
+      >
         {isMergeTarget ? (
           <div className={THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS}>
             <Tooltip>

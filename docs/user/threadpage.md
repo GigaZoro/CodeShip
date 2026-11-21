@@ -75,9 +75,5 @@ Save it in **Settings → Threads → ThreadPage** on one machine. A
 [scheduled task's check](project-settings.md#read-and-write-threadpage-from-a-check) on a machine
 uses that machine's token, so save one wherever such checks run, with **Can add notes** access if a
 check adds notes, or **Can edit and organize** if it changes a thread's description or status. The token stays on its machine and is never sent to apps or checks, and every app
-connected to it shows the list: under Needs you in a chat's
-details column, in the thread list on narrow windows and on mobile, and on the **Manual steps**
-page in the sidebar rail and the command palette. The list never sends notifications. To hide it
-under Needs you and in the thread list, right-click its header and choose **Hide Manual steps**;
-turn it back on with **Manual steps under Needs you** in the thread details' **Choose what to show**
-menu, or in **Settings → General → Manual steps**. The Manual steps page keeps listing them.
+connected to it shows the list: on the **Manual steps** page in the sidebar rail and the command
+palette, and on mobile in the thread list. The list never sends notifications.

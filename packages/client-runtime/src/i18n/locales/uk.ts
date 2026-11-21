@@ -2277,6 +2277,7 @@ const catalog: MessageCatalog = {
   "Agent providers": "Провайдери агентів",
   "Agent session will restart": "Сеанс агента буде перезапущено",
   "Agent sign-in": "Вхід агента",
+  "Agent status": "Стан агента",
   "Agent terminal access": "Доступ агентів до термінала",
   "Agent token": "Токен агента",
   "Agent token · {environment}": "Токен агента · {environment}",
@@ -2406,7 +2407,6 @@ const catalog: MessageCatalog = {
   'An action named "{name}" already exists.': "Дія з назвою «{name}» уже існує.",
   "An agent can do this": "Це може зробити агент",
   "An agent can do this.": "Це може зробити агент.",
-  "An agent can do this. See the review.": "Це може зробити агент. Дивіться рев’ю.",
   "An agent here never gets more there than its own mode here either. Threads it starts there cannot change that environment's own threads, projects or settings.":
     "Агент тут ніколи не матиме там більше прав, ніж його власний режим тут. Чати, які він там запускає, не можуть змінювати чати, проєкти чи налаштування цього середовища.",
   "An agent investigates a T3.CodeShip problem and helps file an issue":
@@ -2537,6 +2537,7 @@ const catalog: MessageCatalog = {
   "Approval from {title}": "Схвалення від {title}",
   "Approval needed": "Потрібне схвалення",
   "Approval needed from {title}": "Потрібне схвалення від {title}",
+  "Approval or answer needed": "Потрібне схвалення або відповідь",
   "Approval pending": "Очікує схвалення",
   "Approval requested": "Запитано схвалення",
   "Approval requests": "Запити на схвалення",
@@ -6332,7 +6333,6 @@ const catalog: MessageCatalog = {
   "Hide limited threads until the limit resets":
     "Приховувати чати з вичерпаним лімітом до його скидання",
   "Hide location of {name}": "Приховати розташування {name}",
-  "Hide Manual steps": "Сховати ручні кроки",
   "Hide model: {provider}, {model}": "Сховати модель: {provider}, {model}",
   "Hide requests": "Приховати запити",
   "Hide routes": "Сховати маршрути",
@@ -7304,6 +7304,7 @@ const catalog: MessageCatalog = {
   Machine: "Комп’ютер",
   "Machine folders still list a project under each machine it is on. This decides how it shows in filters and the project picker.":
     "Папки комп’ютерів, як і раніше, показують проєкт під кожним комп’ютером, де він є. Це визначає, як він відображається у фільтрах і виборі проєкту.",
+  "Machine load": "Навантаження машини",
   "Machine not in this app": "Комп’ютера немає в цьому застосунку",
   "Machine order for {project}": "Порядок комп’ютерів для {project}",
   "Machine over SSH": "Комп’ютер через SSH",
@@ -7370,12 +7371,9 @@ const catalog: MessageCatalog = {
   "Manual only": "Лише вручну",
   "Manual setup": "Налаштування вручну",
   "Manual step": "Ручний крок",
-  "manual steps": "ручні кроки",
   "Manual steps": "Ручні кроки",
   "Manual steps ({count})": "Ручні кроки ({count})",
   "Manual steps breadcrumb": "Навігація ручних кроків",
-  "Manual steps hidden": "Ручні кроки сховано",
-  "Manual steps under Needs you": "Ручні кроки під «Потрібні ви»",
   "Manual steps: {count}": "Ручні кроки: {count}",
   "Manual steps: {count}, {money}": "Ручні кроки: {count}, {money}",
   "Manual steps: {reason}": "Ручні кроки: {reason}",
@@ -8292,7 +8290,6 @@ const catalog: MessageCatalog = {
   "On {host}, open Settings > Sharing & access and turn T3 Connect on.":
     "На {host} відкрийте Налаштування > Спільний доступ і ввімкніть T3 Connect.",
   "on {label}": "на {label}",
-  "on {label} · {status}": "на {label} · {status}",
   "on {machine}": "на {machine}",
   "On {machines}": "На: {machines}",
   "On {name}": "На {name}",
@@ -9590,7 +9587,6 @@ const catalog: MessageCatalog = {
   "Refresh failed. Retry": "Не вдалося оновити. Повторити",
   "Refresh files": "Оновити файли",
   "Refresh limits": "Оновити ліміти",
-  "Refresh manual steps": "Оновити ручні кроки",
   "Refresh monitoring": "Оновити моніторинг",
   "Refresh plugins": "Оновити плагіни",
   "Refresh process diagnostics": "Оновити діагностику процесів",
@@ -11097,8 +11093,6 @@ const catalog: MessageCatalog = {
     "Показувати той самий репозиторій як один проєкт у фільтрах і засобі вибору проєкту та дозволяти новим чатам перемикатися між його комп’ютерами. У теках комп’ютерів він усе одно показується для кожного комп’ютера.",
   "Show the same repository on different machines or paths as one project, in folders, filters, and the project picker.":
     "Показувати той самий репозиторій на різних комп’ютерах або шляхах як один проєкт у теках, фільтрах і засобі вибору проєкту.",
-  "Show the steps only you can do under Needs you. The Manual steps page in the sidebar rail always lists them.":
-    "Показувати кроки, які можете виконати лише ви, під «Потрібні ви». Сторінка «Ручні кроки» в бічній панелі завжди їх показує.",
   "Show thread sidebar": "Показати бічну панель чатів",
   "Show threads": "Показати чати",
   "Show threads from every environment": "Показати чати з усіх середовищ",
@@ -12643,8 +12637,6 @@ const catalog: MessageCatalog = {
   "These ticks are kept here, not on the host": "Ці позначки зберігаються тут, а не на хості",
   "These worktrees may have changes that are not merged yet:":
     "У цих worktree можуть бути ще не злиті зміни:",
-  "They stay on the Manual steps page in the sidebar rail. Show them here again from Details → Choose what to show.":
-    "Вони залишаються на сторінці «Ручні кроки» в бічній панелі. Знову показати їх тут можна в Подробиці → Виберіть, що показувати.",
   Thinking: "Міркує",
   "Third-party notices": "Повідомлення про сторонні компоненти",
   "This {term} has been merged.": "Цей {term} злито.",
@@ -13438,6 +13430,7 @@ const catalog: MessageCatalog = {
   "Too many redirects": "Забагато переспрямувань",
   "Too much context": "Забагато контексту",
   "Too old": "Надто старий",
+  "took {duration}": "тривало {duration}",
   Tool: "Інструмент",
   "Tool call": "Виклик інструмента",
   "Tool call actions": "Дії виклику інструмента",
@@ -13982,6 +13975,7 @@ const catalog: MessageCatalog = {
   "Usage limit reached. Retry after {time}.":
     "Досягнуто ліміту використання. Повторіть після {time}.",
   "Usage limit resets {date}.": "Ліміт використання скидається {date}.",
+  "Usage limit until {time}": "Ліміт використання до {time}",
   "usage limits": "ліміти використання",
   "Usage limits": "Ліміти використання",
   "Usage limits are unavailable for this provider":

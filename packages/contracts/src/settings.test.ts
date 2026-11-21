@@ -334,6 +334,19 @@ describe("ClientSettings notifications", () => {
   });
 });
 
+describe("ClientSettings removed keys", () => {
+  it("decodes stored settings that still carry removed keys and drops them", () => {
+    const settings = decodeStoredClientSettings({
+      sidebarManualStepsEnabled: false,
+      threadDetailsUsageEnabled: true,
+    } as never);
+
+    expect(settings).not.toHaveProperty("sidebarManualStepsEnabled");
+    expect(settings).not.toHaveProperty("threadDetailsUsageEnabled");
+    expect(encodeClientSettings(settings)).not.toHaveProperty("sidebarManualStepsEnabled");
+  });
+});
+
 describe("ClientSettings quit confirmation", () => {
   it.each([
     [true, "hold"],

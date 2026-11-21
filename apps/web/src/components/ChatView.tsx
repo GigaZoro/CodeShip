@@ -4120,6 +4120,10 @@ export default function ChatView(props: ChatViewProps) {
                         }
                       : null
                   }
+                  model={{
+                    label: providerSubagentModelLabel,
+                    effortLabel: providerSubagentEffortLabel,
+                  }}
                   usage={{
                     providerInstanceId: activeProviderInstanceId,
                     providers: providerStatuses,

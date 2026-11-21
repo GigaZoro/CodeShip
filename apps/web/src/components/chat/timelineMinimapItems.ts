@@ -5,7 +5,9 @@ import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
 
-import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
+import { isOrchestrationV2TerminalRunStatus } from "@t3tools/contracts";
+
+import type { MessagesTimelineRow, TimelineLatestRun } from "./MessagesTimeline.logic";
 import { t } from "~/i18n";
 
 export interface TimelineMinimapItem {
@@ -33,6 +35,95 @@ export function deriveTimelineMinimapItems(
     });
   }
   return items;
+}
+
+/** How the work a prompt started ended; null when it ended normally or left no run data. */
+export type TimelinePromptOutcome = "running" | "stopped" | "failed";
+
+export interface TimelinePromptTiming {
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
+  readonly outcome: TimelinePromptOutcome | null;
+}
+
+const NO_PROMPT_TIMING: TimelinePromptTiming = {
+  startedAt: null,
+  completedAt: null,
+  outcome: null,
+};
+
+function rowRunId(row: MessagesTimelineRow) {
+  if (row.kind === "message") return row.message.runId;
+  if (row.kind === "turn-fold" || row.kind === "attempt-fold") return row.runId;
+  return null;
+}
+
+function rowEnd(row: MessagesTimelineRow): string | null {
+  return row.kind === "message" ? row.message.updatedAt : row.createdAt;
+}
+
+/**
+ * Timing for each prompt, from rows the timeline already has: the latest run's own times when it
+ * belongs to the last prompt, else the span from the prompt to the last row before the next one.
+ */
+export function deriveTimelinePromptTimings(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  items: ReadonlyArray<Pick<TimelineMinimapItem, "rowIndex">>,
+  latestRun: TimelineLatestRun | null,
+): TimelinePromptTiming[] {
+  return items.map((item, position) => {
+    const prompt = rows[item.rowIndex];
+    if (prompt?.kind !== "message") return NO_PROMPT_TIMING;
+    const startedAt = prompt.message.createdAt;
+    const end = items[position + 1]?.rowIndex ?? rows.length;
+    const following = rows.slice(item.rowIndex + 1, end);
+
+    const isLatest = position === items.length - 1;
+    if (
+      isLatest &&
+      latestRun !== null &&
+      (prompt.message.runId === latestRun.runId ||
+        following.some((row) => rowRunId(row) === latestRun.runId))
+    ) {
+      const outcome: TimelinePromptOutcome | null = !isOrchestrationV2TerminalRunStatus(
+        latestRun.status,
+      )
+        ? "running"
+        : latestRun.status === "failed"
+          ? "failed"
+          : latestRun.status === "completed"
+            ? null
+            : "stopped";
+      return {
+        startedAt: latestRun.startedAt ?? startedAt,
+        completedAt: outcome === "running" ? null : latestRun.completedAt,
+        outcome,
+      };
+    }
+
+    let completedAt: string | null = null;
+    let stopped = false;
+    for (const row of following) {
+      const rowEndAt = row.kind === "working" || row.kind === "thinking" ? null : rowEnd(row);
+      if (
+        rowEndAt !== null &&
+        (completedAt === null || Date.parse(rowEndAt) > Date.parse(completedAt))
+      ) {
+        completedAt = rowEndAt;
+      }
+      if (
+        row.kind === "event" &&
+        (row.projectedItem.item.type === "run_interrupt_request" ||
+          row.projectedItem.item.type === "run_interrupt_result")
+      ) {
+        stopped = true;
+      }
+    }
+    if (completedAt === null || !(Date.parse(completedAt) >= Date.parse(startedAt))) {
+      return NO_PROMPT_TIMING;
+    }
+    return { startedAt, completedAt, outcome: stopped ? "stopped" : null };
+  });
 }
 
 function resolveFinalAssistantTextForTurn(

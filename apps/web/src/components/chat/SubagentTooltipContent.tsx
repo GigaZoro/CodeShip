@@ -30,6 +30,37 @@ import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { cn } from "~/lib/utils";
 import { deriveProviderInstanceEntries, shouldShowInstanceBadge } from "../../providerInstances";
 
+type SubagentSelectionInput = Pick<
+  Parameters<typeof SubagentTooltipContent>[0],
+  "model" | "providerInstanceId" | "origin" | "modelSelection" | "provider" | "childThread"
+>;
+
+/** The child's saved model selection when it still names the model the subagent reports. */
+export function resolveSubagentSelection(props: SubagentSelectionInput) {
+  const model = props.model?.trim();
+  const modelSlug = props.provider
+    ? resolveSelectableModel(props.provider.driver, model, props.provider.models)
+    : model;
+  const childSelection =
+    props.modelSelection ??
+    (props.origin === "app_owned" ? props.childThread?.modelSelection : undefined);
+  const childModel = props.provider
+    ? (resolveSelectableModel(
+        props.provider.driver,
+        childSelection?.model,
+        props.provider.models,
+      ) ?? childSelection?.model.trim())
+    : childSelection?.model.trim();
+  const matchingSelection =
+    childModel === (modelSlug ?? model) && childSelection?.instanceId === props.providerInstanceId
+      ? childSelection
+      : undefined;
+  const effort = REASONING_EFFORT_OPTION_IDS.map((id) =>
+    getModelSelectionStringOptionValue(matchingSelection, id),
+  ).find(Boolean);
+  return { modelSlug, matchingSelection, effort };
+}
+
 export function SubagentTooltipContent(props: {
   title: string;
   model: string | null;
@@ -52,29 +83,9 @@ export function SubagentTooltipContent(props: {
 }) {
   const { modelLabel, workspace: metadata } = resolveSubagentMetadata(props);
   const preview = subagentDetailPreview(props);
-  const model = props.model?.trim();
-  const modelSlug = props.provider
-    ? resolveSelectableModel(props.provider.driver, model, props.provider.models)
-    : model;
+  const { modelSlug, matchingSelection, effort } = resolveSubagentSelection(props);
   const providerModel = props.provider?.models.find((candidate) => candidate.slug === modelSlug);
-  const childSelection =
-    props.modelSelection ??
-    (props.origin === "app_owned" ? props.childThread?.modelSelection : undefined);
-  const childModel = props.provider
-    ? (resolveSelectableModel(
-        props.provider.driver,
-        childSelection?.model,
-        props.provider.models,
-      ) ?? childSelection?.model.trim())
-    : childSelection?.model.trim();
   const provider = props.provider;
-  const matchingSelection =
-    childModel === (modelSlug ?? model) && childSelection?.instanceId === props.providerInstanceId
-      ? childSelection
-      : undefined;
-  const effort = REASONING_EFFORT_OPTION_IDS.map((id) =>
-    getModelSelectionStringOptionValue(matchingSelection, id),
-  ).find(Boolean);
   const speed = provider
     ? providerModel?.capabilities?.optionDescriptors
         ?.map((descriptor) => {

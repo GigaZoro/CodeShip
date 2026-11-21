@@ -9,7 +9,7 @@ import { useChatCanvas } from "./ChatCanvasContext";
 import { WorkLogBlock } from "./WorkLog";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
-import { deriveTimelineMinimapItems } from "./timelineMinimapItems";
+import { deriveTimelineMinimapItems, deriveTimelinePromptTimings } from "./timelineMinimapItems";
 import {
   type AssistantCitation,
   type EnvironmentId,
@@ -1279,8 +1279,13 @@ const ConversationTimeline = memo(function ConversationTimeline({
       : (minimapItems[minimapCurrentIndex]?.id ?? null);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- mirrors the prompts and the one on screen into the outline store; it skips unchanged writes
   useEffect(() => {
-    publishTimelineOutline(listIdentityKey, minimapItems, outlineCurrentId);
-  }, [listIdentityKey, minimapItems, outlineCurrentId]);
+    const timings = deriveTimelinePromptTimings(rows, minimapItems, latestRun);
+    publishTimelineOutline(
+      listIdentityKey,
+      minimapItems.map((item, index) => ({ ...item, ...timings[index]! })),
+      outlineCurrentId,
+    );
+  }, [listIdentityKey, minimapItems, outlineCurrentId, rows, latestRun]);
 
   useThreadFindPositionReader({
     threadKey: listIdentityKey,
