@@ -49,12 +49,35 @@ function dispatchOutput(log, repository) {
   return { version: versions[0], run: runs[0] };
 }
 
-/** The macOS build the release run `runId` started, as one of the outcomes above. `gh` runs gh and returns stdout. */
+/**
+ * The macOS build the release run `runId` started, as one of the outcomes above, with the release run and its attempt.
+ * `gh` runs gh and returns stdout; a failure of it, or an answer this cannot read, is reported as unverified.
+ */
 function releaseMacosRun(repository, runId, gh) {
   const view = (...args) => gh(["run", "view", ...args, "-R", repository]);
-  const release = JSON.parse(view(runId, "--json", "status,attempt,url,jobs"));
-  const where = `${release.url} (attempt ${release.attempt})`;
-  const answer = (outcome, reason) => ({ outcome, reason, release: where });
+  // Until gh has described the run its attempt is unknown, but its address is not.
+  let where = `https://github.com/${repository}/actions/runs/${runId} (attempt unknown)`;
+  try {
+    const release = JSON.parse(view(runId, "--json", "status,attempt,url,jobs"));
+    const isRun =
+      typeof release?.status === "string" &&
+      Number.isInteger(release.attempt) &&
+      typeof release.url === "string" &&
+      Array.isArray(release.jobs);
+    if (!isRun)
+      throw new Error(
+        `gh's answer for run ${runId} is not a run: ${JSON.stringify(release).slice(0, 200)}`,
+      );
+    where = `${release.url} (attempt ${release.attempt})`;
+    return { ...macosRun(release, repository, view), release: where };
+  } catch (error) {
+    return { outcome: "unverified", reason: error.message, release: where };
+  }
+}
+
+/** The outcome for a release run gh described, reading the job log and the macOS run through `view`. */
+function macosRun(release, repository, view) {
+  const answer = (outcome, reason) => ({ outcome, reason });
   if (release.status !== "completed")
     return answer("pending", `the release run is ${release.status}`);
   const jobs = release.jobs.filter((job) => job.name === PUBLISH_JOB);
@@ -100,12 +123,7 @@ function releaseMacosRun(repository, runId, gh) {
       `run ${output.run} was created at ${macos.createdAt}, outside the dispatch step (${step.startedAt} to ${step.completedAt})`,
     );
   }
-  return {
-    outcome: "dispatched",
-    run: Number(output.run),
-    url: macos.url,
-    release: where,
-  };
+  return { outcome: "dispatched", run: Number(output.run), url: macos.url };
 }
 
 function gh(args) {
@@ -128,13 +146,7 @@ if (require.main === module) {
     );
     process.exit(2);
   }
-  let result;
-  try {
-    result = releaseMacosRun(repository, runId, gh);
-  } catch (error) {
-    result = { outcome: "unverified", reason: error.message, release: `run ${runId}` };
-  }
-  console.log(JSON.stringify(result));
+  console.log(JSON.stringify(releaseMacosRun(repository, runId, gh)));
 }
 
 module.exports = { dispatchOutput, releaseMacosRun };
