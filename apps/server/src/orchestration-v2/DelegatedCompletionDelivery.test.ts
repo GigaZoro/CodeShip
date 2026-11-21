@@ -27,6 +27,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../config.ts";
@@ -3260,6 +3261,69 @@ const layerTestWithOutbox = Layer.merge(
 );
 
 it.layer(layerTestWithOutbox)("a Stop during a delegated continuation's retry backoff", (it) => {
+  it.effect("retries a recovery of the parent's task that fails, and records why", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:recover-fails-parent");
+      const projectId = ProjectId.make("project:recover-fails-parent");
+      const runId = RunId.make("run:recover-fails-parent");
+      const rootNodeId = NodeId.make("node:recover-fails-parent-root");
+      yield* seedParentWithTerminalTask({
+        threadId,
+        projectId,
+        runId,
+        rootNodeId,
+        taskId: NodeId.make("node:recover-fails-parent-settled"),
+        deliveryState: "delivered",
+        now,
+      });
+      const child = yield* seedRestartCancelledChild({
+        parentThreadId: threadId,
+        projectId,
+        parentRunId: runId,
+        rootNodeId,
+        name: "recover-fails-child",
+        completionWake: "always",
+        continuationPending: true,
+        now,
+      });
+      // The restart's continuation ran and declined, leaving the task to its recovery.
+      const continuation = Option.getOrThrow(yield* outbox.claimNext({ workerId: "test-worker" }));
+      yield* outbox.succeed({ effectId: continuation.id, workerId: "test-worker" });
+      const recovery = EffectOutbox.delegatedTaskRecoverEffect({
+        commandId: CommandId.make("command:recover-fails"),
+        threadId: child.childThreadId,
+        sourceRunId: child.childRunId,
+      });
+      yield* outbox.enqueue([recovery]);
+      const task = Effect.map(orchestrator.getThreadProjection(threadId), ({ subagents }) =>
+        subagents.find((row) => row.id === child.taskId),
+      );
+      const withLock = executor.withLock;
+      const parentLockLost: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
+        key,
+        effect,
+      ) => (key === threadId ? Effect.die("parent lock lost") : withLock(key, effect));
+      {
+        using _lockFails = vi.spyOn(executor, "withLock").mockImplementation(parentLockLost);
+        yield* worker.drain();
+      }
+      const failed = Option.getOrThrow(yield* outbox.get(recovery.id));
+      assert.equal(failed.status, "pending");
+      assert.include(failed.lastError ?? "", "parent lock lost");
+      assert.equal((yield* task)?.status, "running");
+
+      yield* TestClock.adjust("1 second");
+      yield* worker.drain();
+      assert.equal(Option.getOrThrow(yield* outbox.get(recovery.id)).status, "succeeded");
+      assert.equal((yield* task)?.status, "cancelled");
+    }),
+  );
+
   it.effect.each(["thread.stop", "run.interrupt"] as const)(
     "gives the parent its result when %s cancels the retry",
     (stop) =>

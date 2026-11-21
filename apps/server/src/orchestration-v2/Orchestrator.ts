@@ -435,7 +435,10 @@ export interface OrchestratorV2DispatchResult {
 export interface OrchestratorV2Shape {
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
   readonly recoverDelegatedTasks: Effect.Effect<void>;
-  readonly recoverDelegatedTask: (threadId: ThreadId, sourceRunId: RunId) => Effect.Effect<void>;
+  readonly recoverDelegatedTask: (
+    threadId: ThreadId,
+    sourceRunId: RunId,
+  ) => Effect.Effect<void, OrchestratorProjectionError>;
   /**
    * Stops an open task's latest child run. Returns the task's child runs whose delegated tasks the
    * caller still stops: all of them for a task with its result.
@@ -15981,9 +15984,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (run.status === "failed" && run.restartContinuationOfRunId !== undefined) {
           yield* threadDispatch.withLock(threadId, retryContinuationStart(threadId, run.id)).pipe(
             Effect.catchCause((cause) =>
-              Effect.logWarning("Failed to schedule a restart continuation retry", {
+              Effect.logError("Failed to schedule a restart continuation retry", {
                 threadId,
                 runId: run.id,
+                taskId: run.delegatedTaskId ?? null,
                 cause,
               }),
             ),
@@ -16012,7 +16016,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           )
           .pipe(
             Effect.catchCause((cause) =>
-              Effect.logWarning("Failed to start the next queued V2 run", { threadId, cause }),
+              Effect.logError("Failed to start the next queued V2 run", {
+                threadId,
+                runId: run.id,
+                cause,
+              }),
             ),
           );
       }
@@ -16027,8 +16035,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     (effect, stored) =>
       effect.pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning("Failed to react to V2 run update", {
+          Effect.logError("Failed to react to V2 run update", {
             threadId: stored.event.threadId,
+            runId: stored.event.type === "run.updated" ? stored.event.payload.id : null,
+            taskId:
+              stored.event.type === "run.updated"
+                ? (stored.event.payload.delegatedTaskId ?? null)
+                : null,
             sequence: stored.sequence,
             cause,
           }),
@@ -16089,9 +16102,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (parentThreadId === undefined) return;
         yield* threadDispatch.withLock(parentThreadId, finalizeAppOwnedSubagent(childThreadId));
       }).pipe(
+        // A stream has nothing durable to fail; startup recovery finalizes the task again.
         Effect.catchCause((cause) =>
-          Effect.logWarning("Failed to finalize a delegated child after its work settled", {
+          Effect.logError("Failed to finalize a delegated child after its work settled", {
             threadId: stored.event.threadId,
+            runId: stored.event.runId ?? null,
+            taskId: stored.event.type === "subagent.updated" ? stored.event.payload.id : null,
             sequence: stored.sequence,
             cause,
           }),
@@ -16117,7 +16133,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               yield* threadDispatch.withLock(parentThreadId, finalizeAppOwnedSubagent(threadId));
             }).pipe(
               Effect.catchCause((cause) =>
-                Effect.logWarning("Failed to recover terminal app-owned subagent", {
+                Effect.logError("Failed to recover terminal app-owned subagent", {
                   childThreadId: threadId,
                   cause,
                 }),
@@ -16127,7 +16143,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       ),
       Effect.catchCause((cause) =>
-        Effect.logWarning("Failed to inspect app-owned subagents during recovery", {
+        Effect.logError("Failed to inspect app-owned subagents during recovery", {
           cause,
         }),
       ),
@@ -16179,7 +16195,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               )
               .pipe(
                 Effect.catchCause((cause) =>
-                  Effect.logWarning("Failed to recover delegated completion delivery", {
+                  Effect.logError("Failed to recover delegated completion delivery", {
                     threadId,
                     cause,
                   }),
@@ -16189,7 +16205,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       ),
       Effect.catchCause((cause) =>
-        Effect.logWarning("Failed to inspect delegated completion delivery during recovery", {
+        Effect.logError("Failed to inspect delegated completion delivery during recovery", {
           cause,
         }),
       ),
@@ -16231,15 +16247,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         finalizeAppOwnedSubagent(threadId, { settledContinuationOf: sourceRunId }),
       );
     },
+    // The durable effect that runs this retries it and records the failure.
     (effect, threadId, _sourceRunId) =>
-      effect.pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Failed to recover delegated task after restart", {
-            childThreadId: threadId,
-            cause,
-          }),
-        ),
-      ),
+      effect.pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))),
   );
 
   const shellProjectionError = (cause: unknown) =>

@@ -135,6 +135,8 @@ export const layerExecutor: Layer.Layer<
                       Effect.catchCause((recoverCause) =>
                         Effect.logError("orchestration-v2.delegated-task-recover-failed", {
                           effectId: effect.id,
+                          threadId: effect.threadId,
+                          runId: sourceRunId,
                           cause: Cause.pretty(recoverCause),
                         }),
                       ),
@@ -151,7 +153,16 @@ export const layerExecutor: Layer.Layer<
             );
           }
           case "delegated-task.recover":
-            return threads.recoverDelegatedTask(effect.threadId, effect.request.sourceRunId);
+            return threads.recoverDelegatedTask(effect.threadId, effect.request.sourceRunId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "provider-session.detach":
             return providerSessions
               .detach({
