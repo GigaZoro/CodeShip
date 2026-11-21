@@ -1,8 +1,6 @@
 import { create } from "zustand";
 
-import type { TimelinePromptTiming } from "./timelineMinimapItems";
-
-export interface TimelineOutlinePrompt extends TimelinePromptTiming {
+export interface TimelineOutlinePrompt {
   readonly id: string;
   /** As sent; the outline shortens it only when it shows it. */
   readonly text: string | null;
@@ -36,7 +34,7 @@ export function outlinePromptText(text: string | null): string {
     .slice(0, OUTLINE_TEXT_LENGTH);
 }
 
-interface TimelinePromptItem extends TimelinePromptTiming {
+interface TimelinePromptItem {
   readonly id: string;
   readonly userText: string | null;
 }
@@ -58,25 +56,12 @@ export function publishTimelineOutline(
     published.prompts.length === items.length &&
     published.prompts.every((prompt, index) => {
       const item = items[index];
-      return (
-        item !== undefined &&
-        prompt.id === item.id &&
-        prompt.text === item.userText &&
-        prompt.startedAt === item.startedAt &&
-        prompt.completedAt === item.completedAt &&
-        prompt.outcome === item.outcome
-      );
+      return item !== undefined && prompt.id === item.id && prompt.text === item.userText;
     })
   ) {
     return;
   }
-  const prompts = items.map((item) => ({
-    id: item.id,
-    text: item.userText,
-    startedAt: item.startedAt,
-    completedAt: item.completedAt,
-    outcome: item.outcome,
-  }));
+  const prompts = items.map((item) => ({ id: item.id, text: item.userText }));
   useTimelineOutlineStore.setState({
     byThreadKey: { ...byThreadKey, [threadKey]: { prompts, currentId } },
   });

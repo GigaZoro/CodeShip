@@ -100,6 +100,8 @@ interface ThreadDetailsPanelProps extends Pick<
   usage: ThreadDetailsUsageInput;
   /** The model and reasoning effort the thread runs on, as the composer labels them. */
   model: { readonly label: string; readonly effortLabel: string | null };
+  /** The thread as the chat shows it; null on a draft. */
+  threadShell: ComponentProps<typeof ThreadAgentStatusPanel>["shell"];
   /** Sends a request to the thread's agent; null hides the actions, as on a draft or before the thread has started. */
   agentActions: {
     readonly onAsk: (prompt: string) => void;
@@ -116,6 +118,8 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   // The card opens information-first: the controls fold again for every thread.
   const threadKey = `${props.environmentId}:${props.threadId}`;
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  // The panel outlives a thread switch, so leaving a thread forgets that it was expanded.
+  if (expandedKey !== null && expandedKey !== threadKey) setExpandedKey(null);
   const controlsExpanded = expandedKey === threadKey;
   // A draft picks its machine and branch here before it is sent, so it keeps those controls open.
   const isDraft = props.draftId !== undefined;
@@ -318,6 +322,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 <ThreadAgentStatusPanel
                   environmentId={props.environmentId}
                   threadId={props.threadId}
+                  shell={props.threadShell}
                   workspaceRoot={props.gitCwd ?? undefined}
                   modelLabel={props.model.label}
                   effortLabel={props.model.effortLabel}

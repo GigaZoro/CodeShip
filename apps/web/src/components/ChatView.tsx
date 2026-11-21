@@ -4124,6 +4124,7 @@ export default function ChatView(props: ChatViewProps) {
                     label: providerSubagentModelLabel,
                     effortLabel: providerSubagentEffortLabel,
                   }}
+                  threadShell={serverThread}
                   usage={{
                     providerInstanceId: activeProviderInstanceId,
                     providers: providerStatuses,

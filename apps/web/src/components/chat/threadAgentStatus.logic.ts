@@ -1,3 +1,4 @@
+import type { ProviderSubagentStatus } from "@t3tools/client-runtime/state/thread-execution";
 import type { OrchestrationV2RunStatus } from "@t3tools/contracts";
 
 export type ThreadAgentStatusKind =
@@ -6,12 +7,14 @@ export type ThreadAgentStatusKind =
   | "queued"
   | "starting"
   | "stopped"
+  | "reverted"
   | "failed"
   | "usageLimit"
   | "idle";
 
 export interface ThreadAgentStatusInput {
   readonly runtimeStatus: OrchestrationV2RunStatus | "idle" | null;
+  /** An approval or answer the thread, or a subagent of it, waits on. */
   readonly needsUser: boolean;
   readonly lastErrorClass: string | null;
   readonly usageLimitResetAt: string | null;
@@ -20,6 +23,8 @@ export interface ThreadAgentStatusInput {
     readonly startedAt: string | null;
     readonly completedAt: string | null;
   } | null;
+  /** A provider-native subagent's own turn; such a thread never gets app runs. */
+  readonly providerSubagent: ProviderSubagentStatus | null;
 }
 
 export interface ThreadAgentStatus {
@@ -32,8 +37,30 @@ export interface ThreadAgentStatus {
   readonly tookMs: number | null;
 }
 
+const ACTIVE_STATUSES: ReadonlySet<ThreadAgentStatusInput["runtimeStatus"]> = new Set([
+  "preparing",
+  "starting",
+  "running",
+  "waiting",
+]);
+
+/** A native subagent's turn read as the run it stands in for. */
+function providerSubagentRun(status: ProviderSubagentStatus) {
+  return {
+    runtimeStatus:
+      status.status === "pending"
+        ? ("running" as const)
+        : status.status === "idle"
+          ? ("completed" as const)
+          : status.status,
+    activityStartedAt: status.startedAt,
+    latestRun: { startedAt: status.startedAt, completedAt: status.completedAt },
+  };
+}
+
 export function deriveThreadAgentStatus(input: ThreadAgentStatusInput): ThreadAgentStatus {
-  const { runtimeStatus } = input;
+  const { runtimeStatus, activityStartedAt, latestRun } =
+    input.providerSubagent === null ? input : providerSubagentRun(input.providerSubagent);
   const pending = (kind: ThreadAgentStatusKind): ThreadAgentStatus => ({
     kind,
     activeSince: null,
@@ -43,11 +70,11 @@ export function deriveThreadAgentStatus(input: ThreadAgentStatusInput): ThreadAg
   });
   const active = (kind: ThreadAgentStatusKind): ThreadAgentStatus => ({
     ...pending(kind),
-    activeSince: input.activityStartedAt ?? input.latestRun?.startedAt ?? null,
+    activeSince: activityStartedAt ?? latestRun?.startedAt ?? null,
   });
   const ended = (kind: ThreadAgentStatusKind): ThreadAgentStatus => {
-    const completedAt = input.latestRun?.completedAt ?? null;
-    const startedMs = Date.parse(input.latestRun?.startedAt ?? "");
+    const completedAt = latestRun?.completedAt ?? null;
+    const startedMs = Date.parse(latestRun?.startedAt ?? "");
     const completedMs = Date.parse(completedAt ?? "");
     return {
       ...pending(kind),
@@ -60,6 +87,11 @@ export function deriveThreadAgentStatus(input: ThreadAgentStatusInput): ThreadAg
     };
   };
 
+  // A request outranks the run's own state: a subagent's approval holds its parent even while the
+  // parent's run is idle.
+  if (input.needsUser) {
+    return ACTIVE_STATUSES.has(runtimeStatus) ? active("waiting") : pending("waiting");
+  }
   switch (runtimeStatus) {
     case "queued":
       return pending("queued");
@@ -68,12 +100,15 @@ export function deriveThreadAgentStatus(input: ThreadAgentStatusInput): ThreadAg
       return active("starting");
     case "running":
     case "waiting":
-      return active(input.needsUser ? "waiting" : "working");
+      return active("working");
     case "failed":
       return ended(input.lastErrorClass === "usage_limit" ? "usageLimit" : "failed");
     case "interrupted":
     case "cancelled":
       return ended("stopped");
+    // The run's completion time is when it was undone, so neither its end nor its length is known.
+    case "rolled_back":
+      return pending("reverted");
     default:
       return ended("idle");
   }

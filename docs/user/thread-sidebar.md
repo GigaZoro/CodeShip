@@ -691,12 +691,15 @@ on the same page. Duet opens at claude.ai, where Anthropic hosts it.
 The thread details card shows what is going on rather than a set of buttons. At the top, once a
 thread has started, a summary names the machine, the branch and its pull request, and how much
 changed; select it to show the workspace and Git controls, and again to fold them. They are folded
-whenever you open a thread. **Agent status** shows whether the agent is working, waiting for you,
-stopped or idle, how long the run has taken, the model it uses, and what it is doing now. Below it
+whenever you open a thread. **Agent status** shows whether the agent is working, waiting for you
+(its own request or a subagent's), stopped, reverted or idle, how long the run has taken, the model
+it uses, and what it is doing now, with the full command it runs. Below it
 sit the context window, usage limits, the agent's to-do list for the turn it is on, lineage and side
 chats, **Your prompts**, and **Machine load**: CPU, memory and disk of the machine the chat runs
 on. **Your prompts** lists the messages you sent, as far back as the conversation has loaded; the
-one on screen is marked, and selecting one scrolls back to it. A new thread shows only the controls
+one on screen is marked, and selecting one scrolls back to it. Each shows how long its work took,
+ticking while it runs, and whether it was stopped or failed; a steer counts from when you sent it.
+Messages that never ran, such as imported history, show no time. A new thread shows only the controls
 for choosing where it runs: the environment and the branch.
 
 **Git actions** and **Ask the agent** are off by default. **Ask the agent** sends a common request

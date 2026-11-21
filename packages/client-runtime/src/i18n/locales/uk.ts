@@ -2537,7 +2537,6 @@ const catalog: MessageCatalog = {
   "Approval from {title}": "Схвалення від {title}",
   "Approval needed": "Потрібне схвалення",
   "Approval needed from {title}": "Потрібне схвалення від {title}",
-  "Approval or answer needed": "Потрібне схвалення або відповідь",
   "Approval pending": "Очікує схвалення",
   "Approval requested": "Запитано схвалення",
   "Approval requests": "Запити на схвалення",

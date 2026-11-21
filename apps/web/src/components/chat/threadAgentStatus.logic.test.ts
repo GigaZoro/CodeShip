@@ -9,6 +9,7 @@ const base: ThreadAgentStatusInput = {
   usageLimitResetAt: null,
   activityStartedAt: null,
   latestRun: null,
+  providerSubagent: null,
 };
 const run = { startedAt: "2026-01-01T10:00:00.000Z", completedAt: "2026-01-01T10:12:00.000Z" };
 
@@ -23,6 +24,11 @@ describe("deriveThreadAgentStatus", () => {
       name: "a pending request means waiting for the user",
       input: { runtimeStatus: "running", needsUser: true, latestRun: run },
       expected: { kind: "waiting", activeSince: run.startedAt, tookMs: null },
+    },
+    {
+      name: "a subagent request holds an idle parent without a clock",
+      input: { runtimeStatus: "completed", needsUser: true, latestRun: run },
+      expected: { kind: "waiting", activeSince: null, finishedAt: null, tookMs: null },
     },
     {
       name: "a waiting run without a request is still working",
@@ -52,6 +58,29 @@ describe("deriveThreadAgentStatus", () => {
     {
       name: "interrupted is stopped",
       input: { runtimeStatus: "interrupted", latestRun: run },
+      expected: { kind: "stopped", tookMs: 12 * 60_000 },
+    },
+    {
+      name: "a rolled back run is reverted, since its end is when it was undone",
+      input: { runtimeStatus: "rolled_back", latestRun: run },
+      expected: { kind: "reverted", finishedAt: null, tookMs: null },
+    },
+    {
+      name: "a native subagent working has the clock of its turn",
+      input: {
+        runtimeStatus: null,
+        providerSubagent: { status: "running", startedAt: run.startedAt, completedAt: null },
+      },
+      expected: { kind: "working", activeSince: run.startedAt },
+    },
+    {
+      name: "a native subagent that finished reports how long its turn took",
+      input: { runtimeStatus: null, providerSubagent: { status: "completed", ...run } },
+      expected: { kind: "idle", finishedAt: run.completedAt, tookMs: 12 * 60_000 },
+    },
+    {
+      name: "a native subagent that stopped",
+      input: { runtimeStatus: null, providerSubagent: { status: "interrupted", ...run } },
       expected: { kind: "stopped", tookMs: 12 * 60_000 },
     },
     {

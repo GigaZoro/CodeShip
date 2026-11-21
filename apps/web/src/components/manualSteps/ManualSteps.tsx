@@ -106,16 +106,21 @@ function DetectedStepRow(props: {
   );
 }
 
+type StartSignInWalk = (entries: ReadonlyArray<DetectedManualStepEntry>) => void;
+
 /** A machine with several sign-ins to do gets one place to walk through all of them. */
-function SignInAllRow(props: { readonly entries: ReadonlyArray<DetectedManualStepEntry> }) {
-  const [open, setOpen] = useState(false);
+function SignInAllRow(props: {
+  readonly entries: ReadonlyArray<DetectedManualStepEntry>;
+  readonly onStart: StartSignInWalk;
+}) {
   const label = t("Sign in to all ({count})", { count: props.entries.length });
+  const start = () => props.onStart(props.entries);
   const handleKeyDown = (event: KeyboardEvent) => {
     if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) {
       return;
     }
     event.preventDefault();
-    setOpen(true);
+    start();
   };
   return (
     <li className="list-none">
@@ -124,22 +129,17 @@ function SignInAllRow(props: { readonly entries: ReadonlyArray<DetectedManualSte
         tabIndex={-1}
         data-sidebar-row={`sign-in-all:${props.entries[0]?.environmentId ?? ""}:${props.entries[0]?.step.machine ?? ""}`}
         aria-label={label}
-        onClick={() => setOpen(true)}
+        onClick={start}
         onKeyDown={handleKeyDown}
         className="flex min-h-8 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 outline-none select-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <span onClick={stopRowActivation}>
-          <Button size="xs" variant="outline" onClick={() => setOpen(true)}>
+          <Button size="xs" variant="outline" onClick={start}>
             <KeyRoundIcon aria-hidden />
             {label}
           </Button>
         </span>
       </div>
-      {open ? (
-        <Suspense fallback={null}>
-          <SignInAllDialog entries={props.entries} onClose={() => setOpen(false)} />
-        </Suspense>
-      ) : null}
     </li>
   );
 }
@@ -208,6 +208,7 @@ function ManualStepsMachineSection(props: {
   readonly reviewEnvironmentId: EnvironmentId | null;
   readonly chatHosts: ReadonlyArray<ManualStepChatHost>;
   readonly selectedThreadId: string | undefined;
+  readonly onStartSignInWalk: StartSignInWalk;
 }) {
   const { group } = props;
   const chatHost = manualStepChatHost(props, group.machine);
@@ -226,7 +227,10 @@ function ManualStepsMachineSection(props: {
           className="mb-3 flex flex-col gap-px rounded-2xl border border-border/70 bg-sidebar p-1.5 text-sidebar-foreground"
         >
           {hasSeveralSignIns(group) ? (
-            <SignInAllRow entries={signInWalkEntries(group.detected)} />
+            <SignInAllRow
+              entries={signInWalkEntries(group.detected)}
+              onStart={props.onStartSignInWalk}
+            />
           ) : null}
           {group.detected.map((entry) => (
             <DetectedStepRow
@@ -258,6 +262,7 @@ function ManualStepsPageList(props: {
   readonly reviewEnvironmentId: EnvironmentId | null;
   readonly chatHosts: ReadonlyArray<ManualStepChatHost>;
   readonly selectedThreadId: string | undefined;
+  readonly onStartSignInWalk: StartSignInWalk;
 }) {
   return (
     <div className="flex flex-col gap-4">
@@ -268,6 +273,7 @@ function ManualStepsPageList(props: {
           reviewEnvironmentId={props.reviewEnvironmentId}
           chatHosts={props.chatHosts}
           selectedThreadId={props.selectedThreadId}
+          onStartSignInWalk={props.onStartSignInWalk}
         />
       ))}
     </div>
@@ -276,6 +282,22 @@ function ManualStepsPageList(props: {
 
 /** The whole list, for the Manual steps page. */
 export function ManualStepsPageContent() {
+  // The walk keeps the sign-ins it started with and lives beside the list, since finishing one
+  // refreshes the list, which can drop the row that opened it.
+  const [signInWalk, setSignInWalk] = useState<ReadonlyArray<DetectedManualStepEntry> | null>(null);
+  return (
+    <>
+      <ManualStepsPageBody onStartSignInWalk={setSignInWalk} />
+      {signInWalk === null ? null : (
+        <Suspense fallback={null}>
+          <SignInAllDialog entries={signInWalk} onClose={() => setSignInWalk(null)} />
+        </Suspense>
+      )}
+    </>
+  );
+}
+
+function ManualStepsPageBody(props: { readonly onStartSignInWalk: StartSignInWalk }) {
   const { state, refresh } = useManualSteps();
   const { step: selectedThreadId } = useSearch({ from: "/_chat/manual-steps" });
   if (state === null) {
@@ -306,6 +328,7 @@ export function ManualStepsPageContent() {
             reviewEnvironmentId={view.reviewEnvironmentId}
             chatHosts={view.chatHosts}
             selectedThreadId={selectedThreadId}
+            onStartSignInWalk={props.onStartSignInWalk}
           />
           <ThreadPageIssueNote view={view} />
         </>

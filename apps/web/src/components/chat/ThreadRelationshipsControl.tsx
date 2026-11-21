@@ -4,7 +4,11 @@ import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { SectionHeaderStatus } from "../ui/collapsible-section-header";
-import { resolveSubagentSelection, SubagentTooltipContent } from "./SubagentTooltipContent";
+import {
+  resolveSubagentSelection,
+  SubagentRowDetail,
+  SubagentTooltipContent,
+} from "./SubagentTooltipContent";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -12,10 +16,7 @@ import {
   projectedSubagentsToRuntime,
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import {
-  formatSubagentDisplayTitle,
-  resolveSubagentMetadata,
-} from "@t3tools/client-runtime/state/subagent-display";
+import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
 import { deriveProviderSubagentStatus } from "@t3tools/client-runtime/state/thread-execution";
 import {
   deriveThreadRelationshipGraph,
@@ -249,8 +250,8 @@ function currentSubagent<Agent extends RuntimeSubagent>(
   };
 }
 
-/** Model, then what the subagent is doing now or how it ended, under its title. */
-function SubagentRowDetail(props: {
+/** The row detail with the effort the child's saved model selection names. */
+function SelectedSubagentRowDetail(props: {
   readonly agent: Pick<
     OrchestrationV2Subagent,
     "model" | "providerInstanceId" | "origin" | "modelSelection" | "status"
@@ -261,27 +262,21 @@ function SubagentRowDetail(props: {
   readonly machineLabel?: string | undefined;
 }) {
   const { agent } = props;
-  const { modelLabel } = resolveSubagentMetadata({ model: agent.model, provider: props.provider });
   const { effort } = resolveSubagentSelection({
     ...agent,
     provider: props.provider,
     childThread: props.childThread ?? undefined,
   });
-  const progress = agent.progress?.slice(0, 240).replace(/\s+/gu, " ").trim();
-  const parts = [
-    effort ? `${modelLabel} · ${effort}` : modelLabel,
-    ...(props.machineLabel === undefined ? [] : [t("on {label}", { label: props.machineLabel })]),
-    isOrchestrationV2WorkActive(agent.status) ? progress : props.outcome,
-  ].filter((part): part is string => Boolean(part));
   return (
-    <span
-      className={cn(
-        "block truncate text-left text-2xs font-normal leading-4",
-        agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
-      )}
-    >
-      {parts.join(" · ")}
-    </span>
+    <SubagentRowDetail
+      model={agent.model}
+      effort={effort}
+      provider={props.provider}
+      status={agent.status}
+      progress={agent.progress}
+      outcome={props.outcome}
+      machineLabel={props.machineLabel}
+    />
   );
 }
 
@@ -344,7 +339,7 @@ function RemoteSubagentRow(props: {
             <span className="block truncate text-left text-sm font-medium leading-4 text-foreground/85">
               {title}
             </span>
-            <SubagentRowDetail
+            <SelectedSubagentRowDetail
               agent={props.agent}
               provider={props.provider}
               outcome={threadRelationshipStatusLabel(status)}
@@ -805,7 +800,7 @@ export function ThreadRelationshipsPanel(props: {
             {threadTitle}
           </span>
           {agent && !workflowGroup ? (
-            <SubagentRowDetail
+            <SelectedSubagentRowDetail
               agent={agent}
               provider={provider}
               childThread={node?.thread}

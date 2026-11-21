@@ -6,6 +6,7 @@ import {
   type ProviderDriverKind,
   type ProviderInstanceId,
   type OrchestrationV2Subagent,
+  isOrchestrationV2WorkActive,
   REASONING_EFFORT_OPTION_IDS,
 } from "@t3tools/contracts";
 import {
@@ -29,6 +30,7 @@ import { MiddleTruncate } from "../ui/middle-truncate";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { cn } from "~/lib/utils";
 import { deriveProviderInstanceEntries, shouldShowInstanceBadge } from "../../providerInstances";
+import { t } from "~/i18n";
 
 type SubagentSelectionInput = Pick<
   Parameters<typeof SubagentTooltipContent>[0],
@@ -59,6 +61,40 @@ export function resolveSubagentSelection(props: SubagentSelectionInput) {
     getModelSelectionStringOptionValue(matchingSelection, id),
   ).find(Boolean);
   return { modelSlug, matchingSelection, effort };
+}
+
+/** Model, then what the subagent is doing now or how it ended, under its title. */
+export function SubagentRowDetail(props: {
+  readonly id?: string | undefined;
+  readonly model: string | null;
+  readonly effort: string | null | undefined;
+  readonly provider: ServerProvider | undefined;
+  readonly status: OrchestrationV2Subagent["status"];
+  readonly progress?: string | null | undefined;
+  /** The status in words, for when the work has ended or reports no progress. */
+  readonly outcome: string;
+  readonly machineLabel?: string | undefined;
+}) {
+  const { modelLabel } = resolveSubagentMetadata({ model: props.model, provider: props.provider });
+  const progress = isOrchestrationV2WorkActive(props.status)
+    ? props.progress?.slice(0, 240).replace(/\s+/gu, " ").trim()
+    : undefined;
+  const parts = [
+    props.effort ? `${modelLabel} · ${props.effort}` : modelLabel,
+    ...(props.machineLabel === undefined ? [] : [t("on {label}", { label: props.machineLabel })]),
+    progress || props.outcome,
+  ].filter((part): part is string => Boolean(part));
+  return (
+    <span
+      id={props.id}
+      className={cn(
+        "block truncate text-left text-2xs font-normal leading-4",
+        props.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
+      )}
+    >
+      {parts.join(" · ")}
+    </span>
+  );
 }
 
 export function SubagentTooltipContent(props: {
