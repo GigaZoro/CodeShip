@@ -3351,6 +3351,107 @@ export const stageWslRuntimeArchive = Effect.fn("stageWslRuntimeArchive")(functi
   );
 });
 
+export const ELECTRON_DIST_DIR = "electron-dist";
+const ELECTRON_PLATFORM_NAMES = {
+  mac: "darwin",
+  linux: "linux",
+  win: "win32",
+} as const satisfies Record<typeof BuildPlatform.Type, string>;
+const decodeElectronPackageManifest = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
+);
+const decodeElectronChecksums = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
+);
+
+export class ElectronDistStageError extends Schema.TaggedError<ElectronDistStageError>()(
+  "ElectronDistStageError",
+  { detail: Schema.String },
+) {
+  override get message(): string {
+    return `Cannot stage Electron for packaging: ${this.detail}`;
+  }
+}
+
+const downloadElectronArchive = (verbose: boolean) =>
+  Effect.fn("downloadElectronArchive")(function* (
+    version: string,
+    archiveName: string,
+    destination: string,
+  ) {
+    // electron-builder honored this mirror when it downloaded Electron itself.
+    const mirror = yield* Config.String("ELECTRON_MIRROR").pipe(
+      Config.withDefault("https://github.com/electron/electron/releases/download"),
+    );
+    const url = `${mirror.replace(/\/+$/, "")}/v${version}/${archiveName}`;
+    yield* runCommand(
+      ChildProcess.make("curl", [
+        "-fsSL",
+        "--retry",
+        "3",
+        "--retry-all-errors",
+        "--connect-timeout",
+        "30",
+        "--max-time",
+        "600",
+        url,
+        "-o",
+        destination,
+      ]),
+      { label: `curl ${url}`, verbose },
+    );
+  });
+
+/**
+ * Packaging unpacks these zips (electronDist) instead of downloading Electron while signing
+ * credentials are loaded. The digests ship inside the electron package the root lockfile pins.
+ */
+export const stageElectronDist = Effect.fn("stageElectronDist")(function* (input: {
+  readonly electronPackageDir: string;
+  readonly version: string;
+  readonly platform: typeof BuildPlatform.Type;
+  readonly arch: typeof BuildArch.Type;
+  readonly distDir: string;
+  readonly download: ReturnType<typeof downloadElectronArchive>;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const installed = yield* decodeElectronPackageManifest(
+    yield* fs.readFileString(path.join(input.electronPackageDir, "package.json")),
+  );
+  if (installed.version !== input.version) {
+    return yield* new ElectronDistStageError({
+      detail: `apps/desktop pins electron ${input.version}, but ${input.electronPackageDir} holds ${installed.version}. Run vp i.`,
+    });
+  }
+  const checksums = yield* decodeElectronChecksums(
+    yield* fs.readFileString(path.join(input.electronPackageDir, "checksums.json")),
+  );
+  yield* fs.makeDirectory(input.distDir, { recursive: true });
+  // electron-builder unpacks each architecture of a universal app from its own zip.
+  for (const arch of input.arch === "universal" ? (["x64", "arm64"] as const) : [input.arch]) {
+    const archiveName = `electron-v${input.version}-${ELECTRON_PLATFORM_NAMES[input.platform]}-${arch}.zip`;
+    const expected = checksums[archiveName];
+    if (expected === undefined) {
+      return yield* new ElectronDistStageError({
+        detail: `electron/checksums.json has no SHA-256 for ${archiveName}.`,
+      });
+    }
+    const archivePath = path.join(input.distDir, archiveName);
+    yield* input.download(input.version, archiveName, archivePath);
+    const hash = NodeCrypto.createHash("sha256");
+    yield* fs
+      .stream(archivePath)
+      .pipe(Stream.runForEach((chunk) => Effect.sync(() => hash.update(chunk))));
+    const actual = hash.digest("hex");
+    if (actual !== expected) {
+      return yield* new ElectronDistStageError({
+        detail: `${archiveName} has SHA-256 ${actual}, but electron/checksums.json lists ${expected}.`,
+      });
+    }
+  }
+});
+
 // Match cliArchiveStem without its circular import. WSL uses the Windows host's architecture.
 export const wslRuntimeArchiveStem = (version: string, arch: typeof BuildArch.Type): string =>
   `t3-${version}-linux-${arch}`;
@@ -4237,6 +4338,26 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
     ),
     path.join(stageProdResourcesDir, "cursor-sdk"),
   );
+  const electronPackageDir = yield* Effect.try({
+    try: () =>
+      path.dirname(
+        NodeModule.createRequire(path.join(repoRoot, "apps/desktop/package.json")).resolve(
+          "electron/package.json",
+        ),
+      ),
+    catch: () =>
+      new ElectronDistStageError({
+        detail: "apps/desktop cannot resolve the electron package. Run vp i.",
+      }),
+  });
+  yield* stageElectronDist({
+    electronPackageDir,
+    version: electronVersion,
+    platform: options.platform,
+    arch: options.arch,
+    distDir: path.join(stageRoot, ELECTRON_DIST_DIR),
+    download: downloadElectronArchive(options.verbose),
+  });
   yield* markStageComplete(stageRoot, yield* desktopStageMarker(options, appVersion));
 });
 
@@ -4306,22 +4427,27 @@ const packageDesktopApp = Effect.fn("packageDesktopApp")(function* (
     t3codeWebAuthn: macWebAuthn,
     // Read by apps/desktop/src/app/DesktopClerk.ts; self-signed and ad hoc builds have no Team ID.
     t3codeAppleTeamSigned: options.platform === "mac" ? options.signed : undefined,
-    build: yield* createBuildConfig(
-      options.platform,
-      options.target,
-      appVersion,
-      options.signed,
-      options.mockUpdates,
-      options.mockUpdateServerPort,
-      macPasskeySigning && macEntitlementsPath
-        ? {
-            entitlementsPath: macEntitlementsPath,
-            provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
-          }
-        : undefined,
-      bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
-      options.arch,
-    ),
+    build: {
+      ...(yield* createBuildConfig(
+        options.platform,
+        options.target,
+        appVersion,
+        options.signed,
+        options.mockUpdates,
+        options.mockUpdateServerPort,
+        macPasskeySigning && macEntitlementsPath
+          ? {
+              entitlementsPath: macEntitlementsPath,
+              provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
+            }
+          : undefined,
+        bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
+        options.arch,
+      )),
+      // The zips the stage verified; without them electron-builder downloads Electron here.
+      electronDist: path.join(stageRoot, ELECTRON_DIST_DIR),
+      afterExtract: path.join(repoRoot, "scripts/electron-after-extract.cjs"),
+    },
   };
   yield* fs.writeFileString(
     stagePackageJsonPath,

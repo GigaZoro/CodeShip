@@ -332,6 +332,11 @@ Release jobs build in two steps so no install runs with signing credentials: `--
 package --stage-dir <dir>` signs and packages that stage for the same platform, arch, target and
 version at the same commit. `scripts/build-cli-archive.ts` takes the same two flags.
 
+Every desktop build stages Electron the same way: it downloads the zip for each target
+architecture into `<stage>/electron-dist` and checks it against the SHA-256 in the locked
+`electron` package's `checksums.json`, and electron-builder unpacks that zip instead of
+downloading its own. `ELECTRON_MIRROR` sets the download host.
+
 ### Prepared server bytecode
 
 Native macOS and Windows desktop artifact builds generate server bytecode with the packaged

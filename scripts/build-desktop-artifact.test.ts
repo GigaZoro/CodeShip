@@ -31,6 +31,8 @@ import {
   readWorkspaceConfig,
   createBuildConfig,
   DESKTOP_FILE_EXCLUSIONS,
+  ELECTRON_DIST_DIR,
+  ElectronDistStageError,
   findStageLockfileDrift,
   installStagedDependencies,
   readPnpmLockfileGraph,
@@ -60,6 +62,7 @@ import {
   WindowsDesktopBuildPrerequisitesMissingError,
   WindowsPackagedPayloadValidationError,
   stageCursorSdkPlatformPackages,
+  stageElectronDist,
   WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT,
   WINDOWS_SERVER_ASAR_IGNORE_GLOBS,
   WINDOWS_SERVER_ASAR_RESOURCE,
@@ -2036,6 +2039,85 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.deepStrictEqual(staged, source);
         const hash = yield* fs.readFileString(hashPath);
         assert.equal(hash, `${NodeCrypto.createHash("sha256").update(source).digest("hex")}\n`);
+      }),
+    ),
+  );
+
+  const stageElectronFixture = Effect.fn("stageElectronFixture")(function* (
+    zipBytes: (archiveName: string) => Uint8Array,
+  ) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-electron-dist-" });
+    const electronPackageDir = path.join(root, "electron");
+    const archiveNames = ["x64", "arm64"].map(
+      (arch) => `electron-v${desktopElectronVersion}-darwin-${arch}.zip`,
+    );
+    const published = (archiveName: string) => new TextEncoder().encode(archiveName);
+    yield* fs.makeDirectory(electronPackageDir);
+    yield* fs.writeFileString(
+      path.join(electronPackageDir, "package.json"),
+      JSON.stringify({ version: desktopElectronVersion }),
+    );
+    yield* fs.writeFileString(
+      path.join(electronPackageDir, "checksums.json"),
+      JSON.stringify(
+        Object.fromEntries(
+          archiveNames.map((name) => [
+            name,
+            NodeCrypto.createHash("sha256").update(published(name)).digest("hex"),
+          ]),
+        ),
+      ),
+    );
+    const distDir = path.join(root, ELECTRON_DIST_DIR);
+    const exit = yield* Effect.exit(
+      stageElectronDist({
+        electronPackageDir,
+        version: desktopElectronVersion,
+        platform: "mac",
+        arch: "universal",
+        distDir,
+        download: (_version, archiveName, destination) =>
+          fs.writeFile(destination, zipBytes(archiveName)).pipe(Effect.orDie),
+      }),
+    );
+    return { exit, distDir, archiveNames, published };
+  });
+
+  it.effect("stages the Electron zip of each architecture a universal app unpacks", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { exit, distDir, archiveNames, published } = yield* stageElectronFixture(
+          (archiveName) => new TextEncoder().encode(archiveName),
+        );
+
+        assert.isTrue(Exit.isSuccess(exit));
+        assert.deepStrictEqual(
+          (yield* fs.readDirectory(distDir)).toSorted(),
+          archiveNames.toSorted(),
+        );
+        for (const name of archiveNames) {
+          assert.deepStrictEqual(yield* fs.readFile(NodePath.join(distDir, name)), published(name));
+        }
+      }),
+    ),
+  );
+
+  it.effect("rejects an Electron zip whose SHA-256 differs from the locked electron package", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { exit } = yield* stageElectronFixture((archiveName) =>
+          new TextEncoder().encode(archiveName.endsWith("arm64.zip") ? "tampered" : archiveName),
+        );
+
+        const error = Option.getOrUndefined(Exit.findErrorOption(exit));
+        assert.instanceOf(error, ElectronDistStageError);
+        assert.include(
+          error.message,
+          `electron-v${desktopElectronVersion}-darwin-arm64.zip has SHA-256`,
+        );
       }),
     ),
   );

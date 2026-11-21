@@ -26,6 +26,9 @@ the version.
   - The version defaults to the one the nightly previewed (`0.0.39-nightly.*` ships as `0.0.39`).
     Pass the `version` input to override it, for example for a minor bump.
   - The stable tag is created on the nightly's commit when the GitHub Release is published.
+  - The run takes its workflow files from `main` and its build scripts from the nightly's commit,
+    so a build flag the workflows pass that those scripts lack fails the build before anything is
+    signed. Publish a newer nightly and promote that one.
   - Pushing a `vX.Y.Z` tag by hand still works and builds exactly the tagged commit. Use it when
     the commit to ship is not the latest nightly, such as a cherry-picked fix on a release branch.
 - Runs lint, typecheck, and tests alongside artifact builds. Publishing waits for every check.
@@ -60,9 +63,14 @@ the version.
 - Signing is optional and auto-detected per platform from secrets.
 - Each build job installs before it signs. It stages the CLI archive and the desktop app first,
   before any signing secret is in a step's environment or any certificate or key is on the runner,
-  and those installs take exactly the root `pnpm-lock.yaml` versions for that platform. Only then do
-  the package steps import certificates and keys, and they sign and package the staged files
-  without installing anything. `scripts/release-desktop-workflow.test.ts` keeps that order.
+  and those installs take exactly the root `pnpm-lock.yaml` versions for that platform. Staging
+  also downloads the Electron zip of each target architecture and checks it against the SHA-256
+  the locked `electron` package lists. Only then do the package steps import certificates and
+  keys, and they sign and package the staged files, unpacking that Electron zip, without
+  installing anything. Code that runs during packaging, such as the bytecode and bundle probes,
+  gets an allowlisted environment without the signing variables. The relay tracing config is
+  downloaded just before the CLI executable build, the one step that reads it, and deleted when
+  that step ends. `scripts/release-desktop-workflow.test.ts` keeps that order.
 
 ## Releasing from a fork
 
