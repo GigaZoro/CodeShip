@@ -752,6 +752,7 @@ function ThreadNavigationSidebarPane(
             snoozePresets={snoozePresetsByEnvironmentId.get(thread.environmentId)}
             pinningSupported={pinningEnvironmentIds.has(thread.environmentId)}
             autoSettleOptOutSupported={autoSettleOptOutEnvironmentIds.has(thread.environmentId)}
+            arrangementSupported={activeReorderEnvironmentIds.has(thread.environmentId)}
             reorderSupported={
               item.item.needsYou !== true &&
               (item.item.pinned

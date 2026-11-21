@@ -260,7 +260,9 @@ Drag within the pinned or active section to change its order. Other rows slide a
 spot where the thread will land. Drops into either section keep the position you choose. On
 mobile, open a thread's menu and choose **Arrange threads**. Drag a handle within or between
 **Pinned** and **Active** to reorder, pin, or unpin. Drop onto the **Settled** divider to
-settle a thread. The dragged card shows the action before you release it. Expand **Snoozed**
+settle a thread. With a sort other than **Default**, the sheet still moves threads between sections
+and reorders **Pinned**. Reordering within **Active** requires manual ordering.
+The dragged card shows the action before you release it. Expand **Snoozed**
 or **Settled** to drag a parked thread back into either live section. Each drop saves; close the sheet to return to the thread list.
 **Move up** and **Move down** are also available in the thread menu. The server
 saves the order, so it survives a refresh and appears on your other connected devices.

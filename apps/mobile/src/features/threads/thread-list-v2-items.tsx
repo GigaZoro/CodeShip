@@ -988,6 +988,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly pinningSupported: boolean;
   readonly autoSettleOptOutSupported: boolean;
   readonly titleRegenerationSupported: boolean;
+  readonly arrangementSupported: boolean;
   readonly reorderSupported?: boolean;
   readonly onMoveThread?: (
     thread: EnvironmentThreadShell,
@@ -1225,11 +1226,18 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     ],
     [snoozePresets],
   );
+  const arrangeMenuItems = useMemo<MenuAction[]>(
+    () =>
+      props.arrangementSupported
+        ? [{ id: "arrange", title: t("Arrange threads…"), image: "line.3.horizontal" }]
+        : [],
+    [props.arrangementSupported],
+  );
   const arrangementMenuItems = useMemo<MenuAction[]>(
     () => [
+      ...arrangeMenuItems,
       ...(props.reorderSupported === true
         ? [
-            { id: "arrange", title: t("Arrange threads…"), image: "line.3.horizontal" },
             {
               id: "move-up",
               title: t("Move up"),
@@ -1253,6 +1261,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         : []),
     ],
     [
+      arrangeMenuItems,
       props.canMoveDown,
       props.canMoveUp,
       props.reorderSupported,
@@ -1402,13 +1411,14 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const snoozedMenuActions = useMemo<MenuAction[]>(
     () => [
       snoozedBaseActions()[0]!,
+      ...arrangeMenuItems,
       ...folderMenuItems,
       ...titleMenuItems,
       ...autoSettleMenuItems,
       legacyBaseActions()[0]!,
       snoozedBaseActions()[1]!,
     ],
-    [autoSettleMenuItems, folderMenuItems, titleMenuItems],
+    [arrangeMenuItems, autoSettleMenuItems, folderMenuItems, titleMenuItems],
   );
   const legacyMenuActions = useMemo<MenuAction[]>(
     () => [
