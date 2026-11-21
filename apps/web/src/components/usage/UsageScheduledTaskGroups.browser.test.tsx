@@ -1,4 +1,9 @@
-import { EnvironmentId, ScheduledTaskId, type ScheduledTaskRunStats } from "@t3tools/contracts";
+import {
+  AuthOrchestrationReadScope,
+  EnvironmentId,
+  ScheduledTaskId,
+  type ScheduledTaskRunStats,
+} from "@t3tools/contracts";
 import { makeWindow } from "@t3tools/shared/usageFormat";
 import { expect, it, vi } from "vite-plus/test";
 import { render } from "../../../test/render";
@@ -9,25 +14,44 @@ const data = vi.hoisted(() => ({
   stats: new Map<string, ScheduledTaskRunStats[] | null>(),
   errors: new Map<string, string>(),
   denied: new Set<string>(),
+  checking: new Set<string>(),
+  requests: new Set<string>(),
 }));
 vi.mock("../../state/environments", () => ({
   useEnvironments: () => ({
     environments: [{ environmentId: "desk" }, { environmentId: "laptop" }],
   }),
 }));
-vi.mock("../../state/session", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../state/session")>()),
-  useEnvironmentsWithScope: (entries: readonly { environmentId: EnvironmentId }[]) =>
-    new Set(entries.map(({ environmentId }) => environmentId).filter((id) => !data.denied.has(id))),
-}));
+vi.mock("../../state/session", async (importOriginal) => {
+  const { AsyncResult, Atom } = await import("effect/reactivity");
+  return {
+    ...(await importOriginal<typeof import("../../state/session")>()),
+    environmentSessionStatesAtom: (key: string) =>
+      Atom.make(
+        key === ""
+          ? []
+          : key.split("\n").map((id) =>
+              data.checking.has(id)
+                ? AsyncResult.initial(true)
+                : AsyncResult.success({
+                    authenticated: true,
+                    scopes: data.denied.has(id) ? [] : [AuthOrchestrationReadScope],
+                  }),
+            ),
+      ),
+  };
+});
 vi.mock("../../state/scheduledTaskStats", () => ({
   supportsScheduledTaskGroups: () => true,
   useScheduledTaskStats: (ids: readonly EnvironmentId[]) =>
-    ids.map((environmentId) => ({
-      environmentId,
-      stats: data.stats.get(environmentId) ?? null,
-      error: data.errors.get(environmentId) ?? null,
-    })),
+    ids.map((environmentId) => {
+      data.requests.add(environmentId);
+      return {
+        environmentId,
+        stats: data.stats.get(environmentId) ?? null,
+        error: data.errors.get(environmentId) ?? null,
+      };
+    }),
 }));
 
 function groups(minutes: number, changed = false, withLaptop = false) {
@@ -63,6 +87,8 @@ function readyStats() {
   data.stats.clear();
   data.errors.clear();
   data.denied.clear();
+  data.checking.clear();
+  data.requests.clear();
   data.stats.set("desk", [
     {
       id: ScheduledTaskId.make("task"),
@@ -100,11 +126,14 @@ it("drops a denied environment's scheduled rows while another read is pending", 
   await expect.element(screen.getByRole("row", { name: /Nightly/ })).toBeVisible();
   await expect.element(screen.getByRole("row", { name: /Laptop jobs/ })).toBeVisible();
 
-  data.stats.clear();
+  data.stats.delete("laptop");
   data.denied.add("desk");
-  data.errors.set("desk", "Missing orchestration:read");
+  data.requests.clear();
   await screen.rerender(groups(1, false, true));
-  await expect.element(screen.getByText(/Missing orchestration:read/)).toBeVisible();
+  await expect
+    .element(screen.getByText(/lacks permission to read scheduled task runs on Desk/))
+    .toBeVisible();
+  expect(data.requests).toEqual(new Set(["laptop"]));
   await expect.element(screen.getByRole("row", { name: /Nightly/ })).not.toBeInTheDocument();
   await expect.element(screen.getByRole("row", { name: /Laptop jobs/ })).toBeVisible();
 
@@ -114,4 +143,19 @@ it("drops a denied environment's scheduled rows while another read is pending", 
   await expect
     .element(screen.getByRole("row", { name: /Nightly|Laptop jobs/ }))
     .not.toBeInTheDocument();
+});
+
+it("waits for the scheduled-task grant before requesting stats or reporting a denial", async () => {
+  readyStats();
+  data.checking.add("desk");
+  await using screen = await render(groups(0));
+  await expect
+    .element(screen.getByText("Checking access to scheduled task runs on Desk…"))
+    .toBeVisible();
+  await expect.element(screen.getByText(/lacks permission/)).not.toBeInTheDocument();
+  expect(data.requests.size).toBe(0);
+  data.checking.clear();
+  await screen.rerender(groups(0));
+  await expect.element(screen.getByRole("row", { name: /Nightly/ })).toBeVisible();
+  expect(data.requests).toEqual(new Set(["desk"]));
 });

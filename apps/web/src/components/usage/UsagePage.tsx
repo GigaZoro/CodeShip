@@ -1586,9 +1586,14 @@ function UsageEnvironmentFilter({
             selectedEnvironmentIds === null ||
             selectedEnvironmentIds.has(environment.environmentId);
           const progress = usageEnvironmentProgress(environment, refreshing);
+          const hasGap = coverage?.gaps.some(
+            (gap) => gap.environment.environmentId === environment.environmentId,
+          );
           const status =
             environment.error !== null
-              ? t("Unavailable")
+              ? hasGap
+                ? t("Unavailable")
+                : environment.error
               : environment.summary !== null &&
                   !isCompatibleUsageContractVersion(
                     environment.summary.contractVersion,
@@ -1621,7 +1626,7 @@ function UsageEnvironmentFilter({
                 {showUsageStatus ? (
                   <span
                     className={cn(
-                      "shrink-0 text-xs text-muted-foreground",
+                      "max-w-60 shrink-0 whitespace-normal text-xs text-muted-foreground",
                       environment.error !== null && "text-destructive-foreground",
                     )}
                   >

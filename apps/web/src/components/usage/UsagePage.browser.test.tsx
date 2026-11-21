@@ -25,7 +25,7 @@ const state = vi.hoisted(() => ({
   realClock: false,
   requests: new Set<string>(),
   response: "ready" as "ready" | "waiting" | "provisional" | "empty" | "revoked" | "cursorPending",
-  secondEnvironment: null as "ready" | "incompatible" | "sourceFailure" | null,
+  secondEnvironment: null as "ready" | "incompatible" | "sourceFailure" | "scanFailure" | null,
   costUsd: 0,
   totalTokens: 100,
   costSource: "unpriced" as "unpriced" | "modelPriced" | "providerReported",
@@ -68,22 +68,29 @@ vi.mock("../../state/usage", async () => {
   } = await import("@t3tools/client-runtime/state/usage-progress");
   return {
     mergeAnsweredUsage,
-    useUsage: (window: UsageSummaryInput) => {
+    useUsage: (
+      window: UsageSummaryInput,
+      selectedIds: ReadonlySet<EnvironmentId> | null = null,
+    ) => {
       useSyncExternalStore(subscribe, revision);
       state.requests.add(usageWindowKey(window));
       const other =
         state.secondEnvironment === null ? [] : [otherReading(window, state.secondEnvironment)];
       const environments = [reading(window), ...other];
-      const shown = settleUsageSnapshot(state.previous, window, environments, environments);
+      const selected =
+        selectedIds === null
+          ? environments
+          : environments.filter(({ environmentId }) => selectedIds.has(environmentId));
+      const shown = settleUsageSnapshot(state.previous, window, environments, selected);
       state.previous = shown;
-      state.failures = settleUsageScanFailures(state.failures, window, environments);
+      state.failures = settleUsageScanFailures(state.failures, window, selected);
       return {
         requestedWindow: window,
         failures: state.failures,
         environments,
-        selectedEnvironments: environments,
+        selectedEnvironments: selected,
         shown,
-        showingKept: isKeptUsage(shown, window, environments),
+        showingKept: isKeptUsage(shown, window, selected),
         refresh: async () => {},
       };
     },
@@ -182,18 +189,22 @@ function otherReading(
     ...other,
     environmentId: EnvironmentId.make("laptop"),
     label: "Laptop",
-    summary: {
-      ...summary,
-      contractVersion: response === "incompatible" ? 0 : summary.contractVersion,
-      buckets: summary.buckets.map((bucket) => ({ ...bucket, model: "laptop-model" })),
-      sources: summary.sources.map((source) => ({
-        ...source,
-        fingerprint: { ...source.fingerprint, hostId: "laptop" },
-        ...(response === "sourceFailure"
-          ? { status: "partial" as const, message: "Cursor fetch failed" }
-          : {}),
-      })),
-    },
+    error: response === "scanFailure" ? "Laptop scan failed" : null,
+    summary:
+      response === "scanFailure"
+        ? null
+        : {
+            ...summary,
+            contractVersion: response === "incompatible" ? 0 : summary.contractVersion,
+            buckets: summary.buckets.map((bucket) => ({ ...bucket, model: "laptop-model" })),
+            sources: summary.sources.map((source) => ({
+              ...source,
+              fingerprint: { ...source.fingerprint, hostId: "laptop" },
+              ...(response === "sourceFailure"
+                ? { status: "partial" as const, message: "Cursor fetch failed" }
+                : {}),
+            })),
+          },
   };
 }
 
@@ -255,6 +266,17 @@ it.each([
   await expect.element(screen.getByText("other-model", { exact: true })).not.toBeInTheDocument();
   await userEvent.keyboard("{Escape}");
   await expect.element(dialog).not.toBeInTheDocument();
+});
+
+it("shows the failed environment's own error after it is unselected", async () => {
+  setup();
+  state.secondEnvironment = "scanFailure";
+  await using screen = await render(<Screen />);
+  await screen.getByRole("button", { name: /All environments/ }).click();
+  const laptop = page.getByRole("menuitemcheckbox", { name: /Laptop/ });
+  await laptop.click();
+  await expect.element(laptop).not.toBeChecked();
+  await expect.element(laptop.getByText("Laptop scan failed")).toBeVisible();
 });
 
 it("clears provider placeholders after a compatible empty window settles", async () => {

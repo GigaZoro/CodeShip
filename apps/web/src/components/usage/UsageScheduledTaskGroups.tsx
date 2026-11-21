@@ -1,4 +1,4 @@
-import { RegistryContext } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
   AuthOrchestrationReadScope,
   type EnvironmentId,
@@ -15,10 +15,15 @@ import { useContext, useState } from "react";
 
 import { t, tn } from "~/i18n";
 import { cn } from "../../lib/utils";
+import { environmentIdsKey } from "../../state/environmentAtomList";
 import { useEnvironments } from "../../state/environments";
 import { supportsScheduledTaskGroups, useScheduledTaskStats } from "../../state/scheduledTaskStats";
 import { serverEnvironment } from "../../state/server";
-import { useEnvironmentsWithScope } from "../../state/session";
+import {
+  environmentSession,
+  environmentSessionStatesAtom,
+  sessionHasScope,
+} from "../../state/session";
 import type { EnvironmentUsageStatus } from "../../state/usage";
 import { Button } from "../ui/button";
 
@@ -33,6 +38,8 @@ export function refreshScheduledTaskGroupUsage(
   const range = scheduledTaskStatsRange(period);
   if (range === null) return;
   for (const environmentId of environmentIds) {
+    const grant = registry.get(environmentSession.sessionStateAtom(environmentId));
+    if (!sessionHasScope(grant, AuthOrchestrationReadScope)) continue;
     registry.refresh(serverEnvironment.scheduledTaskStats({ environmentId, input: range }));
   }
 }
@@ -52,7 +59,6 @@ export function UsageScheduledTaskGroups({
   const registry = useContext(RegistryContext);
   const presentations = useEnvironments().environments;
   const connected = environments.filter((environment) => environment.isConnected);
-  const readable = useEnvironmentsWithScope(connected, AuthOrchestrationReadScope);
   const supportedIds = connected.flatMap((environment) =>
     supportsScheduledTaskGroups(
       presentations.find((entry) => entry.environmentId === environment.environmentId),
@@ -63,9 +69,16 @@ export function UsageScheduledTaskGroups({
   const unsupported = connected.filter(
     (environment) => !supportedIds.includes(environment.environmentId),
   );
+  const grants = useAtomValue(environmentSessionStatesAtom(environmentIdsKey(supportedIds)));
+  const readableIds = supportedIds.filter((_, index) =>
+    sessionHasScope(grants[index]!, AuthOrchestrationReadScope),
+  );
+  const pendingGrants = new Set(
+    supportedIds.filter((_, index) => grants[index]!._tag === "Initial"),
+  );
   const range = scheduledTaskStatsRange(period);
   const input = range ?? { since: period.sinceDay };
-  const results = useScheduledTaskStats(range === null ? [] : supportedIds, input);
+  const results = useScheduledTaskStats(range === null ? [] : readableIds, input);
   const key = JSON.stringify([selectionKey, supportedIds.toSorted()]);
   type Reading = readonly [EnvironmentId, readonly ScheduledTaskRunStats[]];
   const [last, setLast] = useState<{
@@ -76,7 +89,7 @@ export function UsageScheduledTaskGroups({
   const readings = readOnly
     ? []
     : results.flatMap(({ environmentId, stats, error }): Reading[] => {
-        if (error !== null || !readable.has(environmentId)) return [];
+        if (error !== null) return [];
         const available = stats ?? retained.get(environmentId);
         return available === undefined ? [] : [[environmentId, available]];
       });
@@ -85,16 +98,12 @@ export function UsageScheduledTaskGroups({
     (last?.key !== key || JSON.stringify(last.readings) !== JSON.stringify(readings))
   )
     setLast({ key, readings });
-  const loading =
-    readOnly ||
-    results.some(
-      ({ environmentId, stats, error }) =>
-        readable.has(environmentId) && stats === null && error === null,
-    );
+  const loadingStats =
+    readOnly || results.some(({ stats, error }) => stats === null && error === null);
   const displayedRows = scheduledTaskGroupUsage(readings.map(([, stats]) => stats)).filter(
     (row) => row.runs > 0,
   );
-  const showLoading = loading && readings.length === 0;
+  const showLoading = loadingStats && readings.length === 0;
   if (connected.length === 0 || range === null) return null;
 
   const failures = results.flatMap((result) =>
@@ -111,7 +120,7 @@ export function UsageScheduledTaskGroups({
         ],
   );
   return (
-    <section className="flex flex-col gap-3" aria-busy={loading}>
+    <section className="flex flex-col gap-3" aria-busy={loadingStats || pendingGrants.size > 0}>
       <div className="flex flex-col gap-1">
         <h2 className="text-sm font-medium text-foreground">{t("Scheduled task groups")}</h2>
         <p className="text-xs text-muted-foreground">
@@ -126,6 +135,24 @@ export function UsageScheduledTaskGroups({
           })}
         </p>
       ) : null}
+
+      {connected
+        .filter(
+          ({ environmentId }) =>
+            supportedIds.includes(environmentId) && !readableIds.includes(environmentId),
+        )
+        .map(({ environmentId, label }) => (
+          <p key={environmentId} role="status" className="text-xs text-muted-foreground">
+            {pendingGrants.has(environmentId)
+              ? t("Checking access to scheduled task runs on {environment}…", {
+                  environment: label,
+                })
+              : t(
+                  "This connection lacks permission to read scheduled task runs on {environment}.",
+                  { environment: label },
+                )}
+          </p>
+        ))}
 
       {failures.map((failure) => (
         <div
@@ -144,12 +171,7 @@ export function UsageScheduledTaskGroups({
             variant="outline"
             disabled={readOnly}
             onClick={() =>
-              registry.refresh(
-                serverEnvironment.scheduledTaskStats({
-                  environmentId: failure.environmentId,
-                  input,
-                }),
-              )
+              refreshScheduledTaskGroupUsage(registry, [failure.environmentId], period)
             }
           >
             {t("Retry")}

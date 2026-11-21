@@ -3231,6 +3231,8 @@ const catalog: MessageCatalog = {
   "Checked unavailable": "Перевірено, недоступно",
   Checking: "Перевірка",
   "Checking {browser}": "Перевірка {browser}",
+  "Checking access to scheduled task runs on {environment}…":
+    "Перевіряємо доступ до запусків запланованих завдань у середовищі {environment}…",
   "Checking access…": "Перевірка доступу…",
   "Checking Codex.": "Перевірка Codex.",
   "Checking connected environments.": "Перевірка підключених середовищ.",
@@ -4517,6 +4519,7 @@ const catalog: MessageCatalog = {
     "Не вдалося отримати вхід MCP на цьому комп’ютері. Повторіть спробу або вставте адресу перенаправлення.",
   "Could not reconnect environment": "Не вдалося перепідключити середовище",
   "Could not refresh guide": "Не вдалося оновити посібник",
+  "Could not refresh limits.": "Не вдалося оновити ліміти.",
   "Could not refresh models": "Не вдалося оновити моделі",
   "Could not refresh plugins": "Не вдалося оновити плагіни",
   "Could not refresh this usage source. Showing its last values.":
@@ -12830,6 +12833,8 @@ const catalog: MessageCatalog = {
     "Це підключення не має дозволу змінювати налаштування на {environment}.",
   "This connection lacks permission to change these settings.":
     "Це з’єднання не має дозволу змінювати ці налаштування.",
+  "This connection lacks permission to read scheduled task runs on {environment}.":
+    "Це з’єднання не має дозволу на перегляд запусків запланованих завдань у середовищі {environment}.",
   "This connection needs permission to view and manage T3 Connect settings.":
     "Цьому з’єднанню потрібен дозвіл на перегляд і керування налаштуваннями T3 Connect.",
   "This connection needs permission to write source control and add projects.":
@@ -13931,6 +13936,7 @@ const catalog: MessageCatalog = {
   "Updating agent access…": "Оновлення доступу агентів…",
   "Updating capture settings…": "Оновлення налаштувань захоплення…",
   "Updating device hub…": "Оновлення центру пристроїв…",
+  "Updating limits…": "Оновлення лімітів…",
   "updating providers": "оновлення провайдерів",
   "Updating pull requests": "Оновлення пул-реквестів",
   "Updating queued message": "Оновлення повідомлення в черзі",

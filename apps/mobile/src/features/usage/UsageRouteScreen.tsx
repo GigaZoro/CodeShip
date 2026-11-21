@@ -236,9 +236,20 @@ function UsageScreen(props: {
     ...environments.map((environment) => ({
       id: environment.environmentId,
       title: environment.label,
-      subtitle:
-        coverage?.gaps.find((gap) => gap.environment.environmentId === environment.environmentId)
-          ?.message ?? usageEnvironmentStatus(environment, refreshingUsage),
+      subtitle: showingLimits
+        ? !environment.isConnected
+          ? t("Waiting for connection…")
+          : limits.failedIds.has(environment.environmentId)
+            ? t("Could not refresh limits.")
+            : limits.refreshing &&
+                (selectedEnvironmentIds === null ||
+                  selectedEnvironmentIds.has(environment.environmentId))
+              ? t("Updating limits…")
+              : t("Connected")
+        : (coverage?.gaps.find((gap) => gap.environment.environmentId === environment.environmentId)
+            ?.message ??
+          environment.error ??
+          usageEnvironmentStatus(environment, refreshingUsage)),
       state:
         selectedEnvironmentIds === null || selectedEnvironmentIds.has(environment.environmentId)
           ? ("on" as const)

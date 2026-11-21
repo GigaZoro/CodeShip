@@ -355,7 +355,7 @@ export function useRefreshLimits(
   const connectedKey = environmentIdsKey(connectedIds);
   useAtomMount(active && connectedKey !== "" ? limitsAutoRefreshSetAtom(connectedKey) : IDLE_ATOM);
   const failedIds = new Set(
-    useAtomValue(limitsRefreshFailuresAtom(environmentIdsKey(selected.map(([id]) => id)))),
+    useAtomValue(limitsRefreshFailuresAtom(environmentIdsKey(presentations.keys()))),
   );
   const failedLabels = selected
     .filter(([environmentId]) => failedIds.has(environmentId))
@@ -379,6 +379,7 @@ export function useRefreshLimits(
   };
   return {
     refreshing,
+    failedIds,
     failedLabels,
     refresh: refreshManually,
     refreshAfterEnable: () => refresh(true),

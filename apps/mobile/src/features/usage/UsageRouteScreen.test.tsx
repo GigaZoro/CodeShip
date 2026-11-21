@@ -17,6 +17,7 @@ const { Contents, state } = vi.hoisted(() => ({
     live: [] as readonly EnvironmentUsageStatus[],
     shown: null as UsageSnapshot | null,
     readsEnabled: [] as (boolean | undefined)[],
+    failedLimits: new Set<EnvironmentId>(),
     revision: 0,
     listeners: new Set<() => void>(),
   },
@@ -54,10 +55,24 @@ vi.mock("../../components/ui/AppSymbol", () => ({ SymbolView: () => null }));
 vi.mock("../../components/ui/ScreenScrollView", () => ({ ScreenScrollView: Contents }));
 vi.mock("../../components/ui/SegmentedControl", () => ({ SegmentedControl: () => null }));
 vi.mock("../../components/ui/Menu", () => ({
-  Menu: ({ actions }: { actions: readonly { title: string; subtitle?: string }[] }) => (
+  Menu: ({
+    actions,
+    onPressAction,
+  }: {
+    actions: readonly { id: string; title: string; subtitle?: string }[];
+    onPressAction: (event: { nativeEvent: { event: string } }) => void;
+  }) => (
     <div role="menu">
-      {actions.map(({ title, subtitle }) => (
-        <p key={title}>{subtitle}</p>
+      {actions.map(({ id, title, subtitle }) => (
+        <button
+          key={id}
+          data-environment={id}
+          type="button"
+          onClick={() => onPressAction({ nativeEvent: { event: id } })}
+        >
+          {title}
+          <span>{subtitle}</span>
+        </button>
       ))}
     </div>
   ),
@@ -90,7 +105,11 @@ vi.mock("../../state/usage", async () => {
     };
   };
   return {
-    useUsage: (window: UsageSummaryInput, _selected: unknown, options?: { enabled?: boolean }) => {
+    useUsage: (
+      window: UsageSummaryInput,
+      selected: ReadonlySet<EnvironmentId> | null,
+      options?: { enabled?: boolean },
+    ) => {
       useSyncExternalStore(subscribe, () => state.revision);
       state.readsEnabled.push(options?.enabled);
       return {
@@ -99,7 +118,10 @@ vi.mock("../../state/usage", async () => {
         shown: state.shown,
         showingKept: false,
         environments: state.live,
-        selectedEnvironments: state.live,
+        selectedEnvironments:
+          selected === null
+            ? state.live
+            : state.live.filter(({ environmentId }) => selected.has(environmentId)),
         refresh: vi.fn(),
       };
     },
@@ -114,7 +136,9 @@ vi.mock("../../lib/i18n", () => ({
 }));
 vi.mock("./ChatGptUsageSummary", () => ({ ChatGptUsageSummary: () => null }));
 vi.mock("./UsageDailyChart", () => ({ UsageDailyChart: () => null }));
-vi.mock("./UsageLimitsSection", () => ({ useRefreshLimits: () => ({ failedLabels: [] }) }));
+vi.mock("./UsageLimitsSection", () => ({
+  useRefreshLimits: () => ({ failedLabels: [], failedIds: state.failedLimits, refreshing: false }),
+}));
 vi.mock("./UsageLimitsPooled", () => ({ UsageLimitsSection: () => <p>Limits overview</p> }));
 
 function setup(tab: string | undefined = "usage") {
@@ -125,6 +149,7 @@ function setup(tab: string | undefined = "usage") {
   state.live = [];
   state.shown = null;
   state.readsEnabled.length = 0;
+  state.failedLimits.clear();
   const container = document.createElement("div");
   const root = createRoot(container);
   return {
@@ -197,8 +222,49 @@ it("shows live mobile coverage before figures and uses the same message in the m
 
 it("opens the native Limits tab with transcript reads disabled", async () => {
   await using screen = setup("limits");
+  state.live = [
+    liveEnvironment("desk", "Desk"),
+    liveEnvironment("laptop", "Laptop"),
+    { ...liveEnvironment("remote", "Remote"), isConnected: false },
+  ];
+  state.failedLimits.add(EnvironmentId.make("laptop"));
   await screen.render();
   expect(screen.container.textContent).toContain("Limits overview");
   expect(state.readsEnabled).not.toHaveLength(0);
   expect(new Set(state.readsEnabled)).toEqual(new Set([false]));
+  const menu = screen.container.querySelector('[role="menu"]');
+  expect(menu?.querySelector('[data-environment="desk"] span')?.textContent).toBe("Connected");
+  expect(menu?.querySelector('[data-environment="laptop"] span')?.textContent).toBe(
+    "Could not refresh limits.",
+  );
+  expect(menu?.querySelector('[data-environment="remote"] span')?.textContent).toBe(
+    "Waiting for connection…",
+  );
+  expect(menu?.textContent).not.toContain("Loading usage…");
+});
+
+function liveEnvironment(id: string, label: string): EnvironmentUsageStatus {
+  return {
+    environmentId: EnvironmentId.make(id),
+    label,
+    isPending: false,
+    isConnected: true,
+    canReadDiagnostics: true,
+    needsCursorKeychainAccess: false,
+    error: null,
+    summary: null,
+  };
+}
+
+it("keeps an unselected environment's own scan error in the mobile menu", async () => {
+  await using screen = setup();
+  state.live = [
+    liveEnvironment("desk", "Desk"),
+    { ...liveEnvironment("laptop", "Laptop"), error: "Laptop scan failed" },
+  ];
+  await screen.render();
+  const laptop = screen.container.querySelector<HTMLButtonElement>('[data-environment="laptop"]')!;
+  await act(() => laptop.click());
+  expect(laptop.querySelector("span")?.textContent).toBe("Laptop scan failed");
+  expect(screen.container.querySelector('[role="status"]')).toBeNull();
 });
