@@ -365,6 +365,7 @@ export const layerWithOptions = (
   ProviderSessionManagerV2,
   never,
   | CommandOutputHub.CommandOutputHub
+  | EffectOutbox.EffectOutboxV2
   | EventSink.EventSinkV2
   | FileSystem.FileSystem
   | IdAllocator.IdAllocatorV2
@@ -385,6 +386,7 @@ export const layerWithOptions = (
       const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
       const projectService = yield* Effect.serviceOption(ProjectService.ProjectService);
       const eventSink = yield* EventSink.EventSinkV2;
+      const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
       const commandOutput = yield* CommandOutputHub.CommandOutputHub;
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const providerEventIngestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
@@ -934,7 +936,7 @@ export const layerWithOptions = (
             ? undefined
             : lostWorkRecordRun(input.runs, input.providerThread.id));
         if (run === undefined || work.length === 0) {
-          return { events: [], effects: [], recorded: [] };
+          return { events: [], effects: [], wakeRunId: undefined, recorded: [] };
         }
         const { cause, wakes } = RELEASED_BACKGROUND_WORK[input.reason];
         const base = {
@@ -1009,16 +1011,19 @@ export const layerWithOptions = (
                 }),
               ]
             : [],
+          wakeRunId: wake ? run.id : undefined,
           recorded: unrecorded.flatMap((entry) => (entry.id === undefined ? [] : [entry.id])),
         };
       });
 
       // Recorded before the session's scope closes, which can take 30 seconds, so a turn that
       // opens a session meanwhile builds its prompt with it. The roster and the wake wait for the
-      // close: events the closing process already queued could put a cleared roster back.
+      // close: events the closing process already queued could put a cleared roster back. A record
+      // that will wake owes that wake until the roster's write, and the release settles `owedWakes`.
       const recordReleasedBackgroundWork = (
         released: ReadonlyArray<ReleasedBackgroundTasks>,
         reason: ProviderSessionReleaseReason,
+        owedWakes: Array<Effect.Effect<void>>,
       ) =>
         Effect.forEach(released, (entry) =>
           reason === "server_shutdown"
@@ -1044,6 +1049,13 @@ export const layerWithOptions = (
                     now: yield* DateTime.now,
                   });
                   if (record.events.length === 0) return entry;
+                  const settleWake =
+                    record.wakeRunId === undefined
+                      ? Effect.void
+                      : yield* effectOutbox.oweRestartWake(record.wakeRunId).pipe(
+                          Effect.tap((settle) => Effect.sync(() => owedWakes.push(settle))),
+                          Effect.uninterruptible,
+                        );
                   const { committed } = yield* eventSink.writeIfProviderThreadUnchanged({
                     expected: providerThread,
                     events: record.events,
@@ -1051,6 +1063,7 @@ export const layerWithOptions = (
                   if (committed) {
                     return { ...entry, recordedByRelease: new Set(record.recorded) };
                   }
+                  yield* settleWake;
                 }
                 return entry;
               }).pipe(
@@ -1236,6 +1249,7 @@ export const layerWithOptions = (
       // Retry after removal from the live map; later releases cannot clear stale ready sessions and approvals.
       const retryReleaseRecords = (
         input: Omit<Parameters<typeof writeReleaseRecords>[0], "replaced">,
+        owedWakes: ReadonlyArray<Effect.Effect<void>>,
       ) => {
         const providerSessionId = input.entry.runtime.providerSessionId;
         const attempt = Effect.gen(function* () {
@@ -1265,6 +1279,7 @@ export const layerWithOptions = (
             ),
           }),
           Effect.delay("1 second"),
+          Effect.ensuring(Effect.all(owedWakes, { discard: true })),
           FiberSet.run(releaseRecordRetries),
         );
       };
@@ -1391,8 +1406,10 @@ export const layerWithOptions = (
           ([entry, releasedAt]) =>
             Option.match(entry, {
               onNone: () => Effect.void,
-              onSome: (entry) =>
-                Effect.gen(function* () {
+              onSome: (entry) => {
+                const owedWakes: Array<Effect.Effect<void>> = [];
+                let retryOwesWakes = false;
+                return Effect.gen(function* () {
                   const releasedBackgroundTasks = yield* recordReleasedBackgroundWork(
                     yield* readReleasedBackgroundTasks({
                       entry,
@@ -1402,6 +1419,7 @@ export const layerWithOptions = (
                         : { detachedThreadId: input.detachedThreadId }),
                     }),
                     input.reason,
+                    owedWakes,
                   );
                   if (input.cancelIdleFiber !== false) {
                     yield* cancelIdleFiber(entry.idleFiber);
@@ -1431,13 +1449,25 @@ export const layerWithOptions = (
                     writeReleaseRecords({ ...records, replaced: false }),
                   );
                   if (Exit.isFailure(recorded)) {
-                    yield* retryReleaseRecords(records);
+                    yield* Effect.uninterruptible(
+                      Effect.suspend(() => {
+                        retryOwesWakes = true;
+                        return retryReleaseRecords(records, owedWakes);
+                      }),
+                    );
                     return yield* recorded;
                   }
                   if (Option.isSome(closeExit) && Exit.isFailure(closeExit.value)) {
                     return yield* Effect.failCause(closeExit.value.cause);
                   }
                 }).pipe(
+                  // The roster's write enqueued each wake, or nothing will: the retry owns them
+                  // once it starts.
+                  Effect.ensuring(
+                    Effect.suspend(() =>
+                      retryOwesWakes ? Effect.void : Effect.all(owedWakes, { discard: true }),
+                    ),
+                  ),
                   withMetrics({
                     counter: providerSessionsTotal,
                     attributes: {
@@ -1446,7 +1476,8 @@ export const layerWithOptions = (
                       reason: input.reason,
                     },
                   }),
-                ),
+                );
+              },
             }),
           ([entry]) =>
             Option.match(entry, {

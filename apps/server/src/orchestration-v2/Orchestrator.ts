@@ -13999,9 +13999,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (yield* awaitsRestartContinuation(run)) return true;
       if (continuationStartRetryDelayMs(run, { ...records, runs }) !== undefined) return true;
       if (!isSettledRun(run)) return false;
+      // A user's session close records lost work too, with no wake: the record is a pending restart
+      // only while the producer that wrote it still owes the wake.
+      if (scope === "pending-restart") return yield* effectOutbox.restartWakeOwed(run.id);
       if (isRestartContinuationSource(run, records.providerTurns)) return true;
       // A live wait may need recovery at a future shutdown, but it has no restart to interrupt yet.
-      if (scope === "pending-restart") return false;
       const recovery = yield* projectionStore.getRuntimeRecoveryProjection(run.threadId);
       return restartResumeRun(recovery, yield* DateTime.now)?.id === run.id;
     },

@@ -250,6 +250,7 @@ const decodeDomainEvent = Schema.decodeUnknownEffect(OrchestrationV2DomainEvent)
 export const layer: Layer.Layer<
   ProviderEventIngestorV2,
   never,
+  | EffectOutbox.EffectOutboxV2
   | EventSink.EventSinkV2
   | GitVcsDriver.GitVcsDriver
   | IdAllocator.IdAllocatorV2
@@ -260,6 +261,7 @@ export const layer: Layer.Layer<
   ProviderEventIngestorV2,
   Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;
+    const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const git = yield* GitVcsDriver.GitVcsDriver;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -608,6 +610,31 @@ export const layer: Layer.Layer<
       });
     });
 
+    const mayWakeForLostWork = (input: ProviderEventIngestInput) =>
+      input.event.type === "provider_thread.updated" &&
+      input.event.lostBackgroundTasksCause === undefined &&
+      (input.event.lostBackgroundTasks ?? []).some((task) =>
+        isAwaitedWork(cancelledRosterTaskWork(task)),
+      );
+
+    /**
+     * The record commits before its wake, so the outbox counts the wake owed for the whole ingest:
+     * an interrupt meanwhile reaches a pending restart, not work a user's session close ended.
+     */
+    const owingLostWorkWake = <A, E, R>(
+      input: ProviderEventIngestInput,
+      effect: Effect.Effect<A, E, R>,
+    ) => {
+      const sourceRunId = input.runId;
+      return sourceRunId === undefined || !mayWakeForLostWork(input)
+        ? effect
+        : Effect.acquireUseRelease(
+            effectOutbox.oweRestartWake(sourceRunId),
+            () => effect,
+            (settle) => settle,
+          );
+    };
+
     /**
      * Wakes the chat now; restart recovery wakes it too if the server stops before this commits.
      * Only a settled run whose process ended on its own is woken: a Stop was asked for, and a run
@@ -622,14 +649,7 @@ export const layer: Layer.Layer<
       const recorded = storedEvents.find(
         (stored) => stored.event.type === "run.background-work-cancelled",
       );
-      if (
-        recorded?.event.type !== "run.background-work-cancelled" ||
-        input.event.type !== "provider_thread.updated" ||
-        input.event.lostBackgroundTasksCause !== undefined ||
-        !(input.event.lostBackgroundTasks ?? []).some((task) =>
-          isAwaitedWork(cancelledRosterTaskWork(task)),
-        )
-      )
+      if (recorded?.event.type !== "run.background-work-cancelled" || !mayWakeForLostWork(input))
         return;
       const { runId } = recorded.event.payload;
       const { threadId } = recorded.event;
@@ -1059,6 +1079,7 @@ export const layer: Layer.Layer<
                 input.event.type === "app_thread.created"
                   ? threadCommands.withLock(input.event.appThread.id, effect)
                   : effect,
+              (effect) => owingLostWorkWake(input, effect),
             ),
         ),
     });

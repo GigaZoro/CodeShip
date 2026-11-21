@@ -280,6 +280,10 @@ it.effect.each([
             }),
           ]);
         }
+        // The process that lost the work recorded it and owes the wake it is about to enqueue; the
+        // record alone, which a user's session close also leaves, is no pending restart.
+        const settleLostWorkWake =
+          scenario === "lost-work" ? yield* outbox.oweRestartWake(latest.id) : Effect.void;
         const wait = () =>
           service.waitForThread({ projectId, threadId, runId: source.id, timeoutMs: 60_000 });
         const waiting = pending
@@ -371,6 +375,7 @@ it.effect.each([
                 commandId: CommandId.make("interrupt-source"),
               })
               .pipe(Effect.result);
+        yield* settleLostWorkWake;
         if (scenario === "manual" || scenario === "unrelated") {
           expect(Result.isSuccess(result) && result.success).toMatchObject({
             type: "already_terminal",

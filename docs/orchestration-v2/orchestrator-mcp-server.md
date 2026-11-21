@@ -553,7 +553,10 @@ Interrupts a selected run through the V2 `run.interrupt` command. An explicit
 `runId` follows its restart chain, including a queued continuation or a delayed
 retry. Cancelling a pending restart also interrupts provider work and settles
 delegated work owned by that chain. A terminal run with no pending restart
-is not changed. Without `runId`, the tool selects the newest active run.
+is not changed. Work a closed session lost is a pending restart only while the
+server is about to enqueue its wake: after a user's session close, which enqueues
+none, the run reports `already_terminal` and its delegated work keeps running.
+Without `runId`, the tool selects the newest active run.
 After the interrupt commits, the worker stops the chain's app-owned commands
 and child runs, including their delegated descendants. A follow-up admitted
 under another owner survives, even when it reuses the same child thread.

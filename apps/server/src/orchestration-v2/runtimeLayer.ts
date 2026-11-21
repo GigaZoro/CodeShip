@@ -118,6 +118,7 @@ export const layerProjectService = ProjectService.layer.pipe(
 const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      EffectOutbox.layer,
       layerEventSink,
       IdAllocator.layer,
       ProjectionStore.layer,
@@ -147,6 +148,7 @@ const layerProviderSessionManagerProvided = ProviderSessionManager.layer.pipe(
     Layer.mergeAll(
       layerCommandOutputHubProvided,
       ProviderAdapterRegistry.layerFromProviderInstanceRegistry,
+      EffectOutbox.layer,
       layerEventSink,
       IdAllocator.layer,
       layerProviderEventIngestorProvided,

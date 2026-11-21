@@ -272,7 +272,11 @@ on that provider thread when Stop was requested, so when the next message takes 
 provider thread first, settling removes exactly those tasks and keeps the new run's.
 When a session lookup fails, the interrupt is still sent and the work
 stays for the worker to settle. A queued message that has not started is refused;
-`queued-run.cancel` ends it.
+`queued-run.cancel` ends it. An interrupt that targets only active work
+(`onlyIfActive`, used by the MCP tool) reaches a completed run only through a pending
+restart: a queued continuation, a delayed retry, or a wake a session release or a
+process that ended is about to enqueue. Lost work a user's session close recorded
+enqueues no wake, so that run counts as terminal.
 
 ## Resumption
 

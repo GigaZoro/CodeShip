@@ -68,6 +68,8 @@ const layerTestStores = Layer.merge(EventStore.layer, ProjectionStore.layer).pip
 const layerTestEventSink = EventSink.layer.pipe(
   Layer.provide(Layer.mergeAll(layerTestStores, layerTestDatabase)),
 );
+// One outbox for the ingestor and the test: it counts the wakes the ingestor owes.
+const layerTestOutbox = EffectOutbox.layer.pipe(Layer.provide(layerTestDatabase));
 
 const layerGit = GitVcsDriver.layer.pipe(
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "ingestor-git-" })),
@@ -87,6 +89,7 @@ const makeLayerTest = <E>(
     layerTestDatabase,
     layerTestStores,
     layerTestEventSink,
+    layerTestOutbox,
     IdAllocator.layer,
     ThreadCommandExecutor.layer,
     layerGit,
@@ -95,6 +98,7 @@ const makeLayerTest = <E>(
         Layer.mergeAll(
           instances,
           layerTestStores,
+          layerTestOutbox,
           ingestorEventSink,
           IdAllocator.layer,
           ThreadCommandExecutor.layer,
@@ -2518,6 +2522,8 @@ it.effect.each([
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
       const sql = yield* SqlClient.SqlClient;
       const threadEvent = yield* threadCreatedEvent(now);
       const threadId = threadEvent.threadId;
@@ -2586,7 +2592,7 @@ it.effect.each([
           },
         });
       }
-      yield* ingestor.ingestNormalized({
+      const ingest = ingestor.ingestNormalized({
         providerSessionId,
         providerInstanceId: modelSelection.instanceId,
         threadId,
@@ -2622,6 +2628,31 @@ it.effect.each([
           ...(cause === undefined ? {} : { lostBackgroundTasksCause: cause }),
         },
       });
+      if (cause !== undefined) {
+        yield* ingest;
+      } else {
+        // The record commits before the wake, which waits for the thread's lock: an interrupt
+        // meanwhile must see the wake owed, not a record a user's session close left.
+        const held = yield* Deferred.make<void>();
+        const mayEnd = yield* Deferred.make<void>();
+        const holder = yield* threadCommands
+          .withLock(
+            threadId,
+            Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(mayEnd))),
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(held);
+        const afterSequence = yield* eventSink.latestSequence();
+        const ingesting = yield* ingest.pipe(Effect.forkChild);
+        yield* eventSink
+          .stream({ threadId, afterSequence, eventType: "run.background-work-cancelled" })
+          .pipe(Stream.take(1), Stream.runDrain);
+        assert.isTrue(yield* outbox.restartWakeOwed(lostRunId));
+        yield* Deferred.succeed(mayEnd, undefined);
+        yield* Fiber.join(holder);
+        yield* Fiber.join(ingesting);
+      }
+      assert.isFalse(yield* outbox.restartWakeOwed(lostRunId));
 
       const projection = yield* projectionStore.getThreadProjection(threadId);
       assert.deepEqual(projection.runs[0]?.restartCancelledBackgroundWork, [
