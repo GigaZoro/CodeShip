@@ -3,13 +3,13 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import * as NodeUtil from "node:util";
+import { parseCommandLine } from "./lib/command-line.ts";
 
 import { matchesTestPath } from "./lib/cached-tests.ts";
 import { shardedTestFiles } from "./lib/sharded-tests.ts";
 
 const root = NodePath.resolve(import.meta.dirname, "..");
-const { values, positionals } = NodeUtil.parseArgs({
+const { values, positionals, tokens } = parseCommandLine({
   args: process.argv[2] === "--" ? process.argv.slice(3) : process.argv.slice(2),
   allowPositionals: true,
   options: {
@@ -23,6 +23,7 @@ const { values, positionals } = NodeUtil.parseArgs({
   },
 });
 if (values.help) {
+  if (tokens.length !== 1) throw new Error("--help must be used alone.");
   console.log(
     "vp run test:cached [--group-size 1] [--concurrency 1] [--shard index/count] [--uncached file] [test files or directories]",
   );

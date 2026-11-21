@@ -3,7 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import * as NodeUtil from "node:util";
+import { parseCommandLine, positiveInteger } from "./lib/command-line.ts";
 
 const HELP = `Usage:
   node scripts/render-metrics.ts run [--out <file>] [--runs <n>]
@@ -111,23 +111,36 @@ export function renderComparison(before: RenderMetrics, after: RenderMetrics, to
   return lines.join("\n");
 }
 
-if (import.meta.main) {
-  const [command, ...args] = process.argv.slice(2);
-  // parseArgs refuses an option or argument the command does not take, so a mistyped one fails instead of going unread.
-  const compare =
-    command === "compare"
-      ? NodeUtil.parseArgs({
-          args,
-          allowPositionals: true,
-          options: { top: { type: "string", default: "10" } },
-        })
-      : undefined;
+export function parseRenderMetricsArguments(argv: ReadonlyArray<string>) {
+  const [command, ...args] = argv;
   if (command === "run") {
-    const { values } = NodeUtil.parseArgs({
+    const { values } = parseCommandLine({
       args,
       options: { out: { type: "string" }, runs: { type: "string", default: "3" } },
     });
-    const runs = Number(values.runs);
+    return { command, out: values.out, runs: positiveInteger(values.runs, "--runs") } as const;
+  }
+  if (command === "compare") {
+    const { values, positionals } = parseCommandLine({
+      args,
+      allowPositionals: true,
+      options: { top: { type: "string", default: "10" } },
+    });
+    const [before, after, ...unread] = positionals;
+    if (before && after && unread.length === 0) {
+      return { command, before, after, top: positiveInteger(values.top, "--top") } as const;
+    }
+  }
+  if (command === undefined || ((command === "--help" || command === "-h") && args.length === 0)) {
+    return { command: "help" } as const;
+  }
+  throw new Error(HELP);
+}
+
+if (import.meta.main) {
+  const options = parseRenderMetricsArguments(process.argv.slice(2));
+  if (options.command === "run") {
+    const { runs, out } = options;
     const results = Array.from({ length: runs }, runOnce);
     const unstable = nondeterministic(results);
     if (unstable.length) {
@@ -148,18 +161,14 @@ if (import.meta.main) {
       process.exitCode = 1;
     } else {
       const json = JSON.stringify(results[0], null, 2);
-      if (values.out) NodeFS.writeFileSync(values.out, json + "\n");
+      if (out) NodeFS.writeFileSync(out, json + "\n");
       else console.log(json);
       console.error(`${runs} run(s) produced identical counts.`);
     }
-  } else if (compare?.positionals.length === 2) {
-    const [before, after] = compare.positionals as [string, string];
+  } else if (options.command === "compare") {
     const read = (path: string) => JSON.parse(NodeFS.readFileSync(path, "utf8")) as RenderMetrics;
-    console.log(renderComparison(read(before), read(after), Number(compare.values.top)));
-  } else if (command === "--help" || command === "-h" || command === undefined) {
-    console.log(HELP);
+    console.log(renderComparison(read(options.before), read(options.after), options.top));
   } else {
-    console.error(HELP);
-    process.exitCode = 1;
+    console.log(HELP);
   }
 }
