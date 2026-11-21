@@ -3,6 +3,8 @@ import * as NodeChildProcess from "node:child_process";
 
 import * as Effect from "effect/Effect";
 
+import { holdProcessGroup } from "../processGroup.ts";
+
 type Kill = (pid: number, signal?: string | number) => boolean;
 
 /**
@@ -88,6 +90,10 @@ export const AWAIT_HOLDER_PYTHON = [
   "    if sys.platform == 'darwin': ended.control(None, 1)",
   "    else: select.select([ended], [], [])",
 ].join("\n");
+
+/** Whether this host can hold a group's number at all: it has bash and an init that reaps orphans. */
+export const hostHoldsProcessGroups = () =>
+  holdProcessGroup({ command: "/bin/sh", args: [], env: {} }, { fd: 3 }) !== undefined;
 
 const WORKER_RECORD = "T3_TEST_FREED_GROUP_SIGNALS";
 
