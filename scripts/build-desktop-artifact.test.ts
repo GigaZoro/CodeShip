@@ -21,6 +21,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { fromYaml } from "@t3tools/shared/schemaYaml";
+
 import {
   buildDesktopBundles,
   copyDesktopBuildArtifacts,
@@ -71,6 +73,7 @@ import {
   WSL_RUNTIME_ARCHIVE_HASH_NAME,
   WSL_RUNTIME_ARCHIVE_NAME,
   wslRuntimeArchiveStem,
+  writeStageWorkspace,
 } from "./build-desktop-artifact.ts";
 import {
   ReleasePackageManifestError,
@@ -796,6 +799,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       ],
     },
     {
+      name: "a dependency the root lockfile records and the stage drops",
+      stage: { webauthnSnapshot: "electron-webauthn@1.3.1: {}" },
+      drift: ["electron-webauthn@1.3.1 lacks its dependency zod@4.6.5 from pnpm-lock.yaml"],
+    },
+    {
       name: "a patch that differs from the root lockfile",
       stage: { patchHash: "b222" },
       drift: [
@@ -837,6 +845,60 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
       assert.deepStrictEqual(findStageLockfileDrift(root, staged, STAGE_SOURCE_IMPORTERS), drift);
     }),
+  );
+
+  it.effect("gives a stage the root's patches, overrides and package extensions", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const repoRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-stage-workspace-" });
+        const stageDir = path.join(repoRoot, "stage");
+        yield* fs.makeDirectory(path.join(repoRoot, "patches"));
+        yield* fs.makeDirectory(stageDir);
+        yield* fs.writeFileString(path.join(repoRoot, "patches", "node-pty.patch"), "patch\n");
+
+        yield* writeStageWorkspace({
+          repoRoot,
+          stageDir,
+          platform: "mac",
+          arch: "arm64",
+          workspace: {
+            catalog: { "vite-plus": "1.4.0", zod: "4.6.5" },
+            overrides: { zod: "catalog:" },
+            packageExtensions: {
+              "@effect/vitest@*": { dependencies: { "vite-plus": "catalog:" } },
+            },
+            patchedDependencies: { "node-pty@1.2.0-beta.15": "patches/node-pty.patch" },
+            allowBuilds: { "node-pty": true },
+          },
+          nodeLinker: "hoisted",
+        });
+
+        assert.deepStrictEqual(
+          yield* Schema.decodeEffect(fromYaml(Schema.Unknown))(
+            yield* fs.readFileString(path.join(stageDir, "pnpm-workspace.yaml")),
+          ),
+          {
+            supportedArchitectures: { os: ["darwin"], cpu: ["arm64"] },
+            allowBuilds: { "node-pty": true },
+            patchedDependencies: { "node-pty@1.2.0-beta.15": "patches/node-pty.patch" },
+            allowUnusedPatches: true,
+            overrides: {
+              zod: "4.6.5",
+              "electron-webauthn>typescript": "-",
+              "@electron-webauthn/macos>typescript": "-",
+            },
+            packageExtensions: { "@effect/vitest@*": { dependencies: { "vite-plus": "1.4.0" } } },
+            nodeLinker: "hoisted",
+          },
+        );
+        assert.strictEqual(
+          yield* fs.readFileString(path.join(stageDir, "patches", "node-pty.patch")),
+          "patch\n",
+        );
+      }),
+    ),
   );
 
   it.effect("decodes the repo lockfile in the shape the drift check reads", () =>

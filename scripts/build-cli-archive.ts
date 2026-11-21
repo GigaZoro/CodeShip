@@ -18,14 +18,14 @@ import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { fromYaml } from "@t3tools/shared/schemaYaml";
 import rootPackageJson from "../package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
 import {
-  createStageWorkspaceConfig,
   installStagedDependencies,
+  readWorkspaceConfig,
   resolveFffNativeDependencies,
+  writeStageWorkspace,
 } from "./build-desktop-artifact.ts";
 import { assertLinuxArm64PageCompatibility } from "./lib/linux-arm64-sea.ts";
 import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-packages.ts";
@@ -46,26 +46,7 @@ const BuildArch = Schema.Literals(["arm64", "x64"]);
 type BuildPlatform = typeof BuildPlatform.Type;
 type BuildArch = typeof BuildArch.Type;
 
-const WorkspaceConfig = Schema.Struct({
-  catalog: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
-});
-const decodeWorkspaceConfig = Schema.decodeEffect(fromYaml(WorkspaceConfig));
 const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
-const StageWorkspaceConfig = Schema.Struct({
-  supportedArchitectures: Schema.Struct({
-    os: Schema.Array(Schema.String),
-    cpu: Schema.Array(Schema.String),
-    libc: Schema.optional(Schema.Array(Schema.String)),
-  }),
-  allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
-  patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  nodeLinker: Schema.optional(Schema.Literals(["hoisted"])),
-});
-const encodeStageWorkspaceConfig = Schema.encodeEffect(fromYaml(StageWorkspaceConfig));
 
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
@@ -140,9 +121,7 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const workspace = yield* decodeWorkspaceConfig(
-    yield* fs.readFileString(path.join(input.repoRoot, "pnpm-workspace.yaml")),
-  );
+  const workspace = yield* readWorkspaceConfig();
   const catalog = workspace.catalog ?? {};
   const serverDependencies = resolveCatalogDependencies(
     serverPackageJson.dependencies,
@@ -160,7 +139,6 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
     ...selectCliRuntimeExternalDependencies(serverDependencies),
     ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
   };
-  const patchedDependencies = workspace.patchedDependencies ?? {};
 
   yield* fs.writeFileString(
     path.join(input.stageDir, "package.json"),
@@ -172,22 +150,14 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
       dependencies,
     })}\n`,
   );
-  yield* fs.writeFileString(
-    path.join(input.stageDir, "pnpm-workspace.yaml"),
-    yield* encodeStageWorkspaceConfig({
-      ...createStageWorkspaceConfig({
-        platform: input.platform,
-        arch: input.arch,
-        ...(workspace.allowBuilds ? { allowBuilds: workspace.allowBuilds } : {}),
-        patchedDependencies,
-        overrides: resolveCatalogDependencies(workspace.overrides ?? {}, catalog, "apps/server"),
-      }),
-      nodeLinker: "hoisted",
-    }),
-  );
-  if (Object.keys(patchedDependencies).length > 0) {
-    yield* fs.copy(path.join(input.repoRoot, "patches"), path.join(input.stageDir, "patches"));
-  }
+  yield* writeStageWorkspace({
+    repoRoot: input.repoRoot,
+    stageDir: input.stageDir,
+    platform: input.platform,
+    arch: input.arch,
+    workspace,
+    nodeLinker: "hoisted",
+  });
 
   yield* installStagedDependencies({
     repoRoot: input.repoRoot,

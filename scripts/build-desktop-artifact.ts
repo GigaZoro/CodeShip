@@ -77,9 +77,16 @@ const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
 
+// Each dependency field of an extension maps names to specs; a field of another shape fails the decode.
+const PackageExtensions = Schema.Record(
+  Schema.String,
+  Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.String)),
+);
+
 const WorkspaceConfig = Schema.Struct({
   catalog: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  packageExtensions: Schema.optional(PackageExtensions),
   patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
 });
@@ -97,6 +104,7 @@ const StageWorkspaceConfig = Schema.Struct({
   // A stage carries every root patch, so a transitive patched package keeps its patch.
   allowUnusedPatches: Schema.optional(Schema.Boolean),
   overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  packageExtensions: Schema.optional(PackageExtensions),
   nodeLinker: Schema.optional(Schema.Literals(["hoisted"])),
 });
 type StageWorkspaceConfig = typeof StageWorkspaceConfig.Type;
@@ -592,12 +600,12 @@ export class BundledClientAssetsMissingError extends Schema.TaggedError<BundledC
 
 const dependencyResolutionDescriptions = {
   "server-production": "production dependencies",
-  "workspace-overrides": "overrides",
+  "workspace-settings": "overrides and package extensions",
   "desktop-runtime": "desktop runtime dependencies",
 } as const;
 const DependencyResolutionKind = Schema.Literals([
   "server-production",
-  "workspace-overrides",
+  "workspace-settings",
   "desktop-runtime",
 ]);
 
@@ -1626,14 +1634,30 @@ const stageClerkPasskeyNativeBinaries = Effect.fn("stageClerkPasskeyNativeBinari
   }
 });
 
-export function createStageWorkspaceConfig(input: {
+function createStageWorkspaceConfig(input: {
   readonly platform: typeof BuildPlatform.Type;
   readonly arch: typeof BuildArch.Type;
-  readonly allowBuilds?: Record<string, boolean>;
-  readonly patchedDependencies?: Record<string, string>;
-  readonly overrides?: Record<string, string>;
+  readonly workspace: WorkspaceConfig;
 }): StageWorkspaceConfig {
-  const { platform, arch, allowBuilds, patchedDependencies, overrides } = input;
+  const { platform, arch, workspace } = input;
+  const catalog = workspace.catalog ?? {};
+  const allowBuilds = workspace.allowBuilds ?? {};
+  const patchedDependencies = workspace.patchedDependencies ?? {};
+  const packageExtensions = Object.fromEntries(
+    Object.entries(workspace.packageExtensions ?? {}).map(([selector, fields]) => [
+      selector,
+      Object.fromEntries(
+        Object.entries(fields).map(([field, specs]) => [
+          field,
+          resolveCatalogDependencies(
+            specs,
+            catalog,
+            `pnpm-workspace.yaml packageExtensions ${selector}`,
+          ),
+        ]),
+      ),
+    ]),
+  );
   const hostOs = platform === "mac" ? "darwin" : platform === "win" ? "win32" : "linux";
   const hostCpu = arch === "universal" ? ["arm64", "x64"] : [arch];
   // Linux AppImages require glibc native optional dependencies; tell pnpm explicitly.
@@ -1651,13 +1675,55 @@ export function createStageWorkspaceConfig(input: {
 
   return {
     supportedArchitectures,
-    ...(allowBuilds && Object.keys(allowBuilds).length > 0 ? { allowBuilds } : {}),
-    ...(patchedDependencies && Object.keys(patchedDependencies).length > 0
+    ...(Object.keys(allowBuilds).length > 0 ? { allowBuilds } : {}),
+    ...(Object.keys(patchedDependencies).length > 0
       ? { patchedDependencies, allowUnusedPatches: true }
       : {}),
-    overrides: { ...overrides, ...STAGE_PEER_OVERRIDES },
+    overrides: {
+      ...resolveCatalogDependencies(
+        workspace.overrides ?? {},
+        catalog,
+        "pnpm-workspace.yaml overrides",
+      ),
+      ...STAGE_PEER_OVERRIDES,
+    },
+    ...(Object.keys(packageExtensions).length > 0 ? { packageExtensions } : {}),
   };
 }
+
+/**
+ * Gives a stage the root's install settings (build approvals, overrides, package extensions and
+ * every patch), so it resolves the graph pnpm-lock.yaml records.
+ */
+export const writeStageWorkspace = Effect.fn("writeStageWorkspace")(function* (input: {
+  readonly repoRoot: string;
+  readonly stageDir: string;
+  readonly platform: typeof BuildPlatform.Type;
+  readonly arch: typeof BuildArch.Type;
+  readonly workspace: WorkspaceConfig;
+  readonly nodeLinker?: "hoisted";
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const config = yield* Effect.try({
+    try: () => createStageWorkspaceConfig(input),
+    catch: (cause) =>
+      new DesktopBuildDependencyResolutionError({
+        kind: "workspace-settings",
+        manifestPath: "pnpm-workspace.yaml",
+        cause,
+      }),
+  });
+  yield* fs.writeFileString(
+    path.join(input.stageDir, "pnpm-workspace.yaml"),
+    yield* encodeStageWorkspaceConfig(
+      input.nodeLinker === undefined ? config : { ...config, nodeLinker: input.nodeLinker },
+    ),
+  );
+  if (config.patchedDependencies !== undefined) {
+    yield* fs.copy(path.join(input.repoRoot, "patches"), path.join(input.stageDir, "patches"));
+  }
+});
 
 interface PnpmLockfileGraph {
   readonly resolutions: ReadonlyMap<string, Readonly<Record<string, unknown>>>;
@@ -1805,10 +1871,25 @@ const sameResolution = (
   Object.keys(left).length === Object.keys(right).length &&
   Object.entries(left).every(([field, value]) => right[field] === value);
 
+/** Both ways: an edge the stage adds or changes, and one it drops, alter what installs. */
 const differingEdges = (
+  key: string,
   edges: Readonly<Record<string, string>>,
   rootEdges: Readonly<Record<string, string>>,
-) => Object.entries(edges).filter(([child, reference]) => rootEdges[child] !== reference);
+) => [
+  ...Object.entries(edges)
+    .filter(([child, reference]) => rootEdges[child] !== reference)
+    .map(
+      ([child, reference]) =>
+        `${key} depends on ${child}@${reference}, which pnpm-lock.yaml does not`,
+    ),
+  ...Object.entries(rootEdges)
+    .filter(([child]) => edges[child] === undefined)
+    .map(
+      ([child, reference]) =>
+        `${key} lacks its dependency ${child}@${reference} from pnpm-lock.yaml`,
+    ),
+];
 
 /**
  * A stage must install exactly what the root lockfile pins: its direct dependencies
@@ -1853,12 +1934,11 @@ export function findStageLockfileDrift(
       }
       continue;
     }
-    const closest = variants
-      .map((rootEdges) => differingEdges(edges, rootEdges))
-      .reduce((best, differing) => (differing.length < best.length ? differing : best));
-    for (const [child, reference] of closest) {
-      drift.push(`${key} depends on ${child}@${reference}, which pnpm-lock.yaml does not`);
-    }
+    drift.push(
+      ...variants
+        .map((rootEdges) => differingEdges(key, edges, rootEdges))
+        .reduce((best, differing) => (differing.length < best.length ? differing : best)),
+    );
   }
   for (const [key, hash] of stage.patchHashes) {
     if (rootGraph.patchHashes.get(key) !== hash) {
@@ -3517,9 +3597,7 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
   readonly appVersion: string;
   readonly runtimeExternalDependencies: Record<string, string>;
   readonly fffNodeVersion: string;
-  readonly allowBuilds: Record<string, boolean>;
-  readonly patchedDependencies: Record<string, string>;
-  readonly overrides: Record<string, string>;
+  readonly workspace: WorkspaceConfig;
   readonly asarPath: string;
   readonly verbose: boolean;
 }) {
@@ -3546,25 +3624,15 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
     path.join(serverStageDir, "package.json"),
     `${sidecarPackageJsonString}\n`,
   );
-  const sidecarWorkspaceConfig = {
-    ...createStageWorkspaceConfig({
-      platform: "win",
-      arch: input.arch,
-      allowBuilds: input.allowBuilds,
-      patchedDependencies: input.patchedDependencies,
-      overrides: input.overrides,
-    }),
-    // server.asar cannot carry pnpm symlinks or junctions; install physical hoisted dependencies.
-    nodeLinker: "hoisted" as const,
-  };
-  const sidecarWorkspaceConfigString = yield* encodeStageWorkspaceConfig(sidecarWorkspaceConfig);
-  yield* fs.writeFileString(
-    path.join(serverStageDir, "pnpm-workspace.yaml"),
-    sidecarWorkspaceConfigString,
-  );
-  if (Object.keys(input.patchedDependencies).length > 0) {
-    yield* fs.copy(path.join(input.repoRoot, "patches"), path.join(serverStageDir, "patches"));
-  }
+  // server.asar cannot carry pnpm symlinks or junctions; install physical hoisted dependencies.
+  yield* writeStageWorkspace({
+    repoRoot: input.repoRoot,
+    stageDir: serverStageDir,
+    platform: "win",
+    arch: input.arch,
+    workspace: input.workspace,
+    nodeLinker: "hoisted",
+  });
 
   yield* Effect.log("[desktop-artifact] Installing server sidecar runtime externals...");
   yield* installStagedDependencies({
@@ -4048,9 +4116,6 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
   const fs = yield* FileSystem.FileSystem;
   const workspaceConfig = yield* readWorkspaceConfig();
   const workspaceCatalog = workspaceConfig.catalog ?? {};
-  const workspaceOverrides = workspaceConfig.overrides ?? {};
-  const workspacePatchedDependencies = workspaceConfig.patchedDependencies ?? {};
-  const workspaceAllowBuilds = workspaceConfig.allowBuilds ?? {};
 
   const electronVersion = desktopPackageJson.dependencies.electron;
 
@@ -4060,16 +4125,6 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
       manifestPath: "apps/server/package.json",
     });
   }
-
-  const resolvedOverrides = yield* Effect.try({
-    try: () => resolveCatalogDependencies(workspaceOverrides, workspaceCatalog, "apps/desktop"),
-    catch: (cause) =>
-      new DesktopBuildDependencyResolutionError({
-        kind: "workspace-overrides",
-        manifestPath: "pnpm-workspace.yaml",
-        cause,
-      }),
-  });
 
   const resolvedServerDependencies = yield* Effect.try({
     try: () => resolveCatalogDependencies(serverDependencies, workspaceCatalog, "apps/server"),
@@ -4285,22 +4340,13 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
 
   const stagePackageJsonString = yield* encodeJsonString(stagePackageJson);
   yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${stagePackageJsonString}\n`);
-  const stageWorkspaceConfig = createStageWorkspaceConfig({
+  yield* writeStageWorkspace({
+    repoRoot,
+    stageDir: stageAppDir,
     platform: options.platform,
     arch: options.arch,
-    allowBuilds: workspaceAllowBuilds,
-    patchedDependencies: workspacePatchedDependencies,
-    overrides: resolvedOverrides,
+    workspace: workspaceConfig,
   });
-  const stageWorkspaceConfigString = yield* encodeStageWorkspaceConfig(stageWorkspaceConfig);
-  yield* fs.writeFileString(
-    path.join(stageAppDir, "pnpm-workspace.yaml"),
-    stageWorkspaceConfigString,
-  );
-
-  if (Object.keys(workspacePatchedDependencies).length > 0) {
-    yield* fs.copy(path.join(repoRoot, "patches"), path.join(stageAppDir, "patches"));
-  }
 
   yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
   yield* installStagedDependencies({
@@ -4324,9 +4370,7 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
       appVersion,
       runtimeExternalDependencies: resolvedServerRuntimeExternalDependencies,
       fffNodeVersion: serverPackageJson.dependencies["@ff-labs/fff-node"],
-      allowBuilds: workspaceAllowBuilds,
-      patchedDependencies: workspacePatchedDependencies,
-      overrides: resolvedOverrides,
+      workspace: workspaceConfig,
       asarPath: windowsServerAsarPath,
       verbose: options.verbose,
     });
