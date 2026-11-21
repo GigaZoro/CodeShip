@@ -5861,6 +5861,7 @@ const catalog: MessageCatalog = {
   "Failed to rename folder": "Не вдалося перейменувати папку",
   "Failed to rename project": "Не вдалося перейменувати проєкт",
   "Failed to rename thread": "Не вдалося перейменувати чат",
+  "Failed to reopen archived thread": "Не вдалося відновити архівований чат",
   "Failed to reorder active threads": "Не вдалося змінити порядок активних чатів",
   "Failed to reorder pinned threads": "Не вдалося змінити порядок закріплених чатів",
   "Failed to request notification permissions.": "Не вдалося запросити дозволи на сповіщення.",
@@ -7853,6 +7854,7 @@ const catalog: MessageCatalog = {
     "Жоден застосунок на цьому пристрої не може показати цей формат. Збережіть його або поділіться, щоб відкрити деінде.",
   "No approval pending": "Немає схвалень в очікуванні",
   "No archived threads": "Немає архівних чатів",
+  "No archived threads to reopen": "Немає архівних чатів для відновлення",
   "No artifacts in this project.": "У цьому проєкті немає артефактів.",
   "No artifacts match “{query}”.": "Немає артефактів за запитом «{query}».",
   "No artifacts yet": "Артефактів ще немає",
@@ -8929,6 +8931,7 @@ const catalog: MessageCatalog = {
   PID: "PID",
   "PID {pid}": "PID {pid}",
   Pin: "Закріпити",
+  "Pin ({count})": "Закріпити ({count})",
   "Pin {name}": "Закріпити: {name}",
   "Pin project": "Закріпити проєкт",
   "Pin thread": "Закріпити чат",
@@ -9889,6 +9892,7 @@ const catalog: MessageCatalog = {
   Reopen: "Відкрити знову",
   "Reopen {term}": "Відкрити знову: {term}",
   "Reopen Closed Tab": "Відкрити закриту вкладку знову",
+  "Reopen last archived thread": "Відновити останній архівований чат",
   "Reopen the closed layers before merging this stack.":
     "Відкрийте закриті шари знову перед злиттям цього стека.",
   "Reopen this {term} before merging.": "Знову відкрийте цей {term} перед злиттям.",
@@ -13370,6 +13374,7 @@ const catalog: MessageCatalog = {
     "Час вказано за часовим поясом середовища, який може відрізнятися від поясу вашого телефона.",
   "Time, {time}": "Час, {time}",
   "Timed out": "Час очікування минув",
+  "Timed out loading archived threads.": "Час завантаження архівних чатів вичерпано.",
   "Timed out renewing the environment credential.":
     "Час очікування оновлення облікових даних середовища вичерпано.",
   "Timed out waiting for authenticated session after bootstrap.":
