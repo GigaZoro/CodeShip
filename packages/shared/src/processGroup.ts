@@ -36,8 +36,11 @@ export function signalProcessGroup(pid: number, signal: NodeJS.Signals | 0): voi
 // starts a job in a group of its own inside the child's session, outside the command's descendants,
 // then execs the command under that pid. Until the job reads `q` (or EOF on a pipe), signals miss it.
 
-/** Lines a holder reads: quit, spare the group at EOF, or end it at EOF. */
-export const HOLDER_LINES = { quit: "q\n", spare: "u\n", end: "r\n" } as const;
+/** Lines a holder reads: quit, spare the group at EOF, end it at EOF, or (a FIFO's) end it now. */
+export const HOLDER_LINES = { quit: "q\n", spare: "u\n", end: "r\n", stop: "k\n" } as const;
+
+/** How long a group that `stopFifoHolderGroup` sent SIGTERM has to end before SIGKILL. */
+const FIFO_HOLDER_STOP_SECONDS = 2;
 
 const SHELL = "/bin/sh";
 
@@ -353,7 +356,8 @@ export type HoldOptions = {
   | {
       /**
        * A FIFO the holder makes, unless it exists, and opens as `fd`, for a group that outlives
-       * this process: `isFifoHolderHeld` and `releaseFifoHolder` reach it from any later one.
+       * this process: `isFifoHolderHeld`, `releaseFifoHolder` and `stopFifoHolderGroup` reach it
+       * from any later one.
        * Where it cannot, the holder reads `fd` as given, and without one, the group runs unheld.
        */
       readonly fifo: string;
@@ -436,6 +440,12 @@ const restoredNames = (holder: string, env: NodeJS.ProcessEnv) => {
   return { assignments, unsetPwd: env.PWD === undefined };
 };
 
+/** Sends the holder's group SIGTERM, then SIGKILL `seconds` later, or SIGKILL at once for 0. */
+const endGroupAfter = (seconds: number) =>
+  seconds === 0
+    ? "kill -s KILL -- -$$"
+    : `kill -s TERM -- -$$ || exit; command -p sleep ${seconds}; kill -s KILL -- -$$`;
+
 const holderScript = (
   options: HoldOptions,
   restore: { readonly assignments: string; readonly unsetPwd: boolean },
@@ -451,16 +461,12 @@ const holderScript = (
     setup.push(
       `{ [ -p ${fifo} ] || command -p mkfifo -m 600 ${fifo} 2>/dev/null; } && exec ${fd}<>${fifo}`,
     );
-    job = `read -r -u ${fd} _`;
+    job = `while read -r -u ${fd} m; do case $m in q) exit;; k) ${endGroupAfter(FIFO_HOLDER_STOP_SECONDS)}; exit;; esac; done`;
   } else {
-    const end =
-      options.endGroupAfterSeconds === 0
-        ? "kill -s KILL -- -$$"
-        : `kill -s TERM -- -$$ || exit; command -p sleep ${options.endGroupAfterSeconds}; kill -s KILL -- -$$`;
     job =
       options.endGroupAfterSeconds === undefined
         ? `read -r -u ${fd} _`
-        : `r=1; while read -r -u ${fd} m; do case $m in q) exit;; u) r=;; r) r=1;; esac; done; [ -n "$r" ] || exit; ${end}`;
+        : `r=1; while read -r -u ${fd} m; do case $m in q) exit;; u) r=;; r) r=1;; esac; done; [ -n "$r" ] || exit; ${endGroupAfter(options.endGroupAfterSeconds)}`;
   }
   const otherFds = Array.from({ length: fd - 3 }, (_, index) => ` ${index + 3}<&-`).join("");
   // Only a bare `exec` redirects for good: bash keeps a copy of an fd it redirects for one
@@ -536,18 +542,33 @@ export function isFifoHolderHeld(fifo: string): boolean {
   return true;
 }
 
-/** The holder of a `fifo` hold quits, so the number stays its group's only while that has members. */
-export function releaseFifoHolder(fifo: string): void {
+/** Whether the holder of a `fifo` hold was there to read `line`. */
+const tellFifoHolder = (fifo: string, line: string) => {
   const fd = openHolderFifo(fifo);
-  if (fd === undefined) return;
+  if (fd === undefined) return false;
   try {
-    NodeFS.writeSync(fd, HOLDER_LINES.quit);
+    NodeFS.writeSync(fd, line);
+    return true;
   } catch (cause) {
     // It quit between the open and the write.
     if ((cause as NodeJS.ErrnoException).code !== "EPIPE") throw cause;
+    return false;
   } finally {
     NodeFS.closeSync(fd);
   }
+};
+
+/** The holder of a `fifo` hold quits, so the number stays its group's only while that has members. */
+export function releaseFifoHolder(fifo: string): void {
+  tellFifoHolder(fifo, HOLDER_LINES.quit);
+}
+
+/**
+ * The holder of a `fifo` hold, which keeps the number throughout, ends its group as
+ * `FIFO_HOLDER_STOP_SECONDS` says and quits. Returns whether a holder was there to do it.
+ */
+export function stopFifoHolderGroup(fifo: string): boolean {
+  return tellFifoHolder(fifo, HOLDER_LINES.stop);
 }
 
 export interface OwnedProcessGroup {
