@@ -30,7 +30,6 @@
 // Each pass records the tree it checked, and the pre-push hook refuses a push
 // to main without one.
 import * as NodeCrypto from "node:crypto";
-import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
@@ -154,43 +153,40 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
     yield* Deferred.succeed(waiting, undefined);
   });
 
-  // A landing run (the one holding main's landing turn, .github/scripts/landing-turn.cjs) holds a marker file's
-  // transaction while it waits for a slot; other runs leave free slots to it. The OS drops the marker with
-  // its process, so a crashed landing blocks nobody.
-  const markerPrefix = "landing-wait-";
+  // A landing run (the one holding main's landing turn, .github/scripts/landing-turn.cjs) holds the marker file's
+  // transaction while it waits for a slot; other runs leave free slots to it. The OS drops the lock with its
+  // process, so a crashed landing blocks nobody. Like the slots, the file stays: Windows cannot delete a file
+  // that another run has open to look at it.
+  const markerFile = NodePath.join(directory, "landing-wait.sqlite");
   let marker: NodeSqlite.DatabaseSync | undefined;
   const markLanding = () => {
     if (!landing || marker) return;
-    marker = new NodeSqlite.DatabaseSync(
-      NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`),
-    );
-    marker.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+    const db = new NodeSqlite.DatabaseSync(markerFile);
+    try {
+      db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+      marker = db;
+    } catch (cause) {
+      db.close();
+      // Another run is looking at the marker for a moment; the next poll marks it.
+      if (!isSqliteBusy(cause)) throw cause;
+    }
   };
   const unmarkLanding = () => {
     marker?.close();
     marker = undefined;
-    NodeFS.rmSync(NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`), {
-      force: true,
-    });
   };
-  const landingWaits = () =>
-    NodeFS.readdirSync(directory)
-      .filter((name) => name.startsWith(markerPrefix))
-      .some((name) => {
-        const file = NodePath.join(directory, name);
-        const db = new NodeSqlite.DatabaseSync(file);
-        try {
-          db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
-        } catch (cause) {
-          if (isSqliteBusy(cause)) return true;
-          throw cause;
-        } finally {
-          db.close();
-        }
-        // Nobody held it: a marker its landing left behind.
-        NodeFS.rmSync(file, { force: true });
-        return false;
-      });
+  const landingWaits = () => {
+    const db = new NodeSqlite.DatabaseSync(markerFile);
+    try {
+      db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+      return false;
+    } catch (cause) {
+      if (isSqliteBusy(cause)) return true;
+      throw cause;
+    } finally {
+      db.close();
+    }
+  };
 
   const lockFree = (max: number) =>
     Effect.try({

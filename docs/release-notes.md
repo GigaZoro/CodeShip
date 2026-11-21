@@ -1,3 +1,7 @@
+## 2026-11-24 — A landing's check no longer fails when another check looks at its place in line
+
+- Maintainers: on Windows, `vp run check:changed` in a landing on main could fail with EPERM as it took a free check slot, when another check:changed run was looking at the file that marks the landing's wait. That file now stays in place, like the slot files. No change to the app.
+
 ## 2026-11-24 — Require Git 2.47 on development machines
 
 - `machine-config.json` now requires Git 2.47.0 or later. `node ~/.agents/tools/machine-config.mjs check <checkout>` reports an older Git, which takes minutes on the UTF-16 rows of the Git driver tests. No change to the app.
