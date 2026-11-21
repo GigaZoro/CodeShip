@@ -255,11 +255,19 @@ On web and mobile, the Stop button sends `thread.stop` when the server advertise
 the `threadStop` capability. It cancels queued restart continuations, holds ordinary
 queued messages, ends pull request watches, and disposes pending delegated completions
 across the thread. After commit, a worker stops its delegated commands and child threads,
-including descendants. Older servers receive `run.interrupt` with `holdQueue`.
+including descendants. A delegated child that cannot be read does not keep Stop from
+committing. Older servers receive `run.interrupt` with `holdQueue`; the server treats
+that command as `thread.stop`, so a client without the capability stops the whole
+thread too.
 
 A per-run interrupt follows the selected run's restart chain. It interrupts provider
 turns and stops delegated work owned by that chain. Children and completions from
-independent runs keep working.
+independent runs keep working. An independent run that is active, or that starts after
+the interrupt, neither blocks it nor loses its own work: each provider interrupt names
+the chain's turns, and an adapter that restarts its runtime to end background commands
+ends only theirs. When a session lookup fails, the interrupt is still sent and the work
+stays for the worker to settle. A queued message that has not started is refused;
+`queued-run.cancel` ends it.
 
 ## Resumption
 

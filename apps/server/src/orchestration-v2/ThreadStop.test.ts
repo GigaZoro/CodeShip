@@ -512,32 +512,40 @@ it.effect.each([
     }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("Stop still stops the thread when a delegated child cannot be read", () =>
-  Effect.gen(function* () {
-    const orchestrator = yield* Orchestrator.OrchestratorV2;
-    const sql = yield* SqlClient.SqlClient;
-    const parentThreadId = ThreadId.make("thread:unreadable-child-parent");
-    yield* createWatchingThread(parentThreadId, 1);
-    yield* send(parentThreadId, "parent", "start_immediately");
-    const childThreadId = yield* delegate(parentThreadId, "unreadable child");
-    yield* sql`
-      UPDATE orchestration_v2_projection_runs
-      SET payload_json = '{"obsolete":true}'
-      WHERE thread_id = ${childThreadId}
-    `;
-    yield* orchestrator.dispatch({
-      type: "run.interrupt",
-      commandId: CommandId.make("stop:unreadable-child"),
-      threadId: parentThreadId,
-      runId: (yield* orchestrator.getThreadProjection(parentThreadId)).runs.at(-1)!.id,
-      holdQueue: true,
-    });
-    assert.deepEqual(yield* threadState(parentThreadId), { runs: ["interrupted"], watched: [] });
-  }).pipe(Effect.provide(layerTest)),
+it.effect.each(["thread.stop", "old client run.interrupt"] as const)(
+  "Stop still stops the thread when a delegated child cannot be read (%s)",
+  (type) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sql = yield* SqlClient.SqlClient;
+      const parentThreadId = ThreadId.make("thread:unreadable-child-parent");
+      yield* createWatchingThread(parentThreadId, 1);
+      yield* send(parentThreadId, "parent", "start_immediately");
+      const childThreadId = yield* delegate(parentThreadId, "unreadable child");
+      yield* sql`
+        UPDATE orchestration_v2_projection_runs
+        SET payload_json = '{"obsolete":true}'
+        WHERE thread_id = ${childThreadId}
+      `;
+      const commandId = CommandId.make("stop:unreadable-child");
+      yield* orchestrator.dispatch(
+        type === "thread.stop"
+          ? { type, commandId, threadId: parentThreadId }
+          : {
+              type: "run.interrupt",
+              commandId,
+              threadId: parentThreadId,
+              runId: (yield* orchestrator.getThreadProjection(parentThreadId)).runs.at(-1)!.id,
+              holdQueue: true,
+            },
+      );
+      assert.deepEqual(yield* threadState(parentThreadId), { runs: ["interrupted"], watched: [] });
+    }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect.each(["run.interrupt", "thread.stop"] as const)(
-  "%s holds the queue and ends watches; only thread Stop ends an independent child and its completions",
+  // An older client's Stop button sends run.interrupt with holdQueue for the run it shows.
+  "%s holds the queue, ends watches and stops every child and its completions",
   (type) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -583,25 +591,15 @@ it.effect.each(["run.interrupt", "thread.stop"] as const)(
         watched: [],
       });
       const parent = yield* orchestrator.getThreadProjection(parentThreadId);
-      const threadWide = type === "thread.stop";
-      assert.equal(
-        parent.subagents[0]?.completionDelivery?.state,
-        threadWide ? "disposed" : undefined,
-      );
+      assert.equal(parent.subagents[0]?.completionDelivery?.state, "disposed");
       yield* sql`DELETE FROM orchestration_v2_effect_outbox WHERE command_id != ${stopCommandId}`;
       const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
       yield* worker.drain();
-      const childRuns = threadWide ? ["interrupted", "queued:held"] : ["starting", "queued"];
+      const childRuns = ["interrupted", "queued:held"];
       assert.deepEqual((yield* threadState(childThreadId)).runs, childRuns);
-      assert.deepEqual((yield* threadState(grandchildThreadId)).runs, [
-        threadWide ? "interrupted" : "starting",
-      ]);
+      assert.deepEqual((yield* threadState(grandchildThreadId)).runs, ["interrupted"]);
 
-      yield* threads.stopDelegatedTasks({
-        threadId: parentThreadId,
-        commandId: stopCommandId,
-        parentRunId: threadWide ? undefined : secondRun.id,
-      });
+      yield* threads.stopDelegatedTasks({ threadId: parentThreadId, commandId: stopCommandId });
       assert.deepEqual((yield* threadState(childThreadId)).runs, childRuns);
       // The walk stops each level itself, so the child stops it sends queue no walk of their own.
       const walks = yield* sql<{ readonly command_id: string }>`
@@ -610,7 +608,7 @@ it.effect.each(["run.interrupt", "thread.stop"] as const)(
     `;
       assert.deepEqual(
         walks.map((row) => row.command_id),
-        threadWide ? [stopCommandId] : [],
+        [stopCommandId],
       );
     }).pipe(Effect.provide(layerTest)),
 );
@@ -1052,6 +1050,62 @@ it.effect.each([false, true])(
     }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("run.interrupt refuses an ordinary queued message, which queued-run.cancel ends", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:interrupt-queued-message");
+    yield* createWatchingThread(threadId, 4);
+    yield* send(threadId, "first", "start_immediately");
+    yield* send(threadId, "queued", "queue_after_active");
+    const now = yield* DateTime.now;
+    const [first, queued] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+    for (const run of [first!, queued!]) {
+      yield* projections.apply({
+        id: EventId.make(`event:interrupt-queued-message:${run.id}`),
+        type: "run.updated",
+        threadId,
+        runId: run.id,
+        occurredAt: now,
+        payload:
+          run.id === first!.id
+            ? { ...run, status: "completed", completedAt: now }
+            : { ...run, queueHeld: true },
+      });
+    }
+
+    const refused = yield* Effect.exit(
+      orchestrator.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make("interrupt-queued-message"),
+        threadId,
+        runId: queued!.id,
+      }),
+    );
+    assert.isTrue(Exit.isFailure(refused));
+    assert.include(String(Exit.isFailure(refused) ? refused.cause : ""), "queued-run.cancel");
+    const after = yield* orchestrator.getThreadProjection(threadId);
+    assert.equal(after.runs.find((run) => run.id === queued!.id)?.status, "queued");
+    assert.isFalse(
+      after.turnItems.some(
+        (item) => item.type === "run_interrupt_request" && item.runId === queued!.id,
+      ),
+    );
+
+    yield* orchestrator.dispatch({
+      type: "queued-run.cancel",
+      commandId: CommandId.make("cancel-queued-message"),
+      threadId,
+      runId: queued!.id,
+    });
+    assert.equal(
+      (yield* orchestrator.getThreadProjection(threadId)).runs.find((run) => run.id === queued!.id)
+        ?.status,
+      "cancelled",
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("a run Stop reached cannot delegate or start a watch, even after it ends", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -1378,7 +1432,9 @@ it.effect.each([
   "only if active",
   "MCP queued restart",
   "MCP delayed restart with live session",
-  "without queue hold",
+  "MCP queued restart beside an active run with live session",
+  "failed secondary session lookup",
+  "old client Stop",
 ] as const)(
   "per-run Stop reaches pending work on provider threads across a restart continuation (%s)",
   (scenario) =>
@@ -1491,7 +1547,9 @@ it.effect.each([
       });
       const otherThreadId = ProviderThreadId.make("provider-thread:background");
       const otherTurnId = ProviderTurnId.make("turn:background");
-      const threadWide = scenario.startsWith("thread Stop");
+      // An older client's Stop button sends run.interrupt with holdQueue; it stops the thread.
+      const oldClientStop = scenario === "old client Stop";
+      const threadWide = scenario.startsWith("thread Stop") || oldClientStop;
       const separateOwner = scenario.includes("unrelated");
       const backgroundOwner = separateOwner ? unrelated : source;
       const earlierAttemptId = RunAttemptId.make("attempt:background");
@@ -1511,11 +1569,15 @@ it.effect.each([
           completedAt: now,
         },
       });
+      const failedLookup = scenario === "failed secondary session lookup";
+      const otherSessionId = failedLookup
+        ? ProviderSessionId.make("session:unreadable")
+        : sessionId;
       yield* projections.apply({
         ...event,
         id: EventId.make("other-thread"),
         type: "provider-thread.updated",
-        payload: { ...owner, id: otherThreadId, providerSessionId: sessionId },
+        payload: { ...owner, id: otherThreadId, providerSessionId: otherSessionId },
       });
       yield* projections.apply({
         ...event,
@@ -1553,6 +1615,20 @@ it.effect.each([
         },
       });
       const interruptedTurns: ProviderTurnId[] = [];
+      const ownedTurnsByCall = new Map<ProviderTurnId, ReadonlyArray<ProviderTurnId> | undefined>();
+      if (failedLookup) {
+        const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const session = vi
+          .spyOn(sessions, "get")
+          .mockImplementation((providerSessionId) =>
+            providerSessionId === otherSessionId
+              ? Effect.fail(
+                  new ProviderSessionManager.ProviderSessionLookupError({ providerSessionId }),
+                )
+              : Effect.succeedNone,
+          );
+        yield* Effect.addFinalizer(() => Effect.sync(() => session.mockRestore()));
+      }
       if (live) {
         const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
         const unexpected = () => Effect.die("Only interruptTurn is expected during Stop");
@@ -1582,9 +1658,10 @@ it.effect.each([
             readThreadSnapshot: unexpected,
             rollbackThread: unexpected,
             forkThread: unexpected,
-            interruptTurn: ({ providerTurnId }) =>
+            interruptTurn: ({ providerTurnId, ownedProviderTurnIds }) =>
               Effect.sync(() => {
                 interruptedTurns.push(providerTurnId);
+                ownedTurnsByCall.set(providerTurnId, ownedProviderTurnIds);
               }),
           } satisfies ProviderAdapter.ProviderAdapterV2SessionRuntime),
         );
@@ -1599,8 +1676,36 @@ it.effect.each([
           runId: later.id,
         });
       }
+      const besideActiveRun = scenario.includes("beside an active run");
+      if (besideActiveRun) {
+        // A message sent after the restart was queued runs now, on the source's provider thread;
+        // the restart chain stays the target.
+        const unrelatedAttempt = before.attempts.find(
+          (candidate) => candidate.id === unrelated.activeAttemptId,
+        );
+        assert.isDefined(unrelatedAttempt);
+        yield* projections.apply({
+          ...event,
+          id: EventId.make("unrelated-running"),
+          type: "run.updated",
+          payload: { ...unrelated, status: "running", completedAt: null },
+        });
+        yield* projections.apply({
+          ...event,
+          id: EventId.make("unrelated-turn"),
+          type: "provider-turn.updated",
+          payload: {
+            ...turn,
+            id: ProviderTurnId.make("turn:unrelated"),
+            runAttemptId: unrelatedAttempt.id,
+            ordinal: 2,
+            status: "running",
+            completedAt: null,
+          },
+        });
+      }
       const commandId = CommandId.make("stop-queued-restart");
-      const holdQueue = !mcp && scenario !== "without queue hold";
+      const holdQueue = threadWide;
       const onlyIfActive = scenario === "only if active";
       const { storedEvents } = yield* mcp
         ? Effect.gen(function* () {
@@ -1617,20 +1722,41 @@ it.effect.each([
             return result.dispatch;
           })
         : orchestrator.dispatch(
-            threadWide
+            threadWide && !oldClientStop
               ? { type: "thread.stop", threadId, commandId }
               : {
                   type: "run.interrupt",
                   threadId,
                   commandId,
                   runId: source.id,
-                  holdQueue,
+                  ...(oldClientStop ? { holdQueue } : {}),
                   ...(onlyIfActive ? { onlyIfActive } : {}),
                 },
           );
       const interrupts = (yield* outbox.listByCommandId(commandId)).flatMap(({ request }) =>
         request.type === "provider-turn.interrupt" ? [request] : [],
       );
+      if (failedLookup) {
+        // The unreadable session may still run the command, so Stop leaves it to the worker.
+        assert.deepEqual(
+          interrupts.map(({ providerSessionId, providerThreadId, providerTurnId }) => ({
+            providerSessionId,
+            providerThreadId,
+            providerTurnId,
+          })),
+          [
+            {
+              providerSessionId: otherSessionId,
+              providerThreadId: otherThreadId,
+              providerTurnId: otherTurnId,
+            },
+          ],
+        );
+        const pending = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(pending.turnItems.find((item) => item.id === itemId)?.status, "running");
+        assert.equal(pending.runs.find((run) => run.id === queued.id)?.status, "cancelled");
+        return;
+      }
       assert.sameDeepMembers(
         interrupts.map(({ providerSessionId, providerThreadId, providerTurnId }) => ({
           providerSessionId,
@@ -1661,7 +1787,28 @@ it.effect.each([
         interruptedTurns,
         live ? [turn.id, ...(separateOwner && !threadWide ? [] : [otherTurnId])] : [],
       );
+      // The unrelated run can share the chain's provider threads; a run-scoped Stop must not reach its turns.
       const stopped = yield* orchestrator.getThreadProjection(threadId);
+      const unrelatedTurnIds = stopped.providerTurns
+        .filter((candidate) =>
+          stopped.attempts.some(
+            (attempt) => attempt.id === candidate.runAttemptId && attempt.runId === unrelated.id,
+          ),
+        )
+        .map((candidate) => candidate.id);
+      for (const [interrupted, owned] of ownedTurnsByCall) {
+        if (threadWide) {
+          assert.isUndefined(owned);
+          continue;
+        }
+        assert.isDefined(owned);
+        assert.include(owned, interrupted);
+        for (const unrelatedTurnId of unrelatedTurnIds) assert.notInclude(owned, unrelatedTurnId);
+      }
+      if (besideActiveRun) {
+        assert.include(unrelatedTurnIds, ProviderTurnId.make("turn:unrelated"));
+        assert.equal(stopped.runs.find((run) => run.id === unrelated.id)?.status, "running");
+      }
       assert.deepEqual(
         stopped.providerThreads.find((p) => p.id === owner.id)!.pendingBackgroundTasks,
         [],

@@ -46,7 +46,8 @@ const stopEarlierBackgroundWork = ({
   readonly wakeAfterStop?: boolean;
   readonly failedStart?: boolean;
   readonly backgroundWorkAfterStop?: "running" | "unknown";
-  readonly stopWithQueue?: "thread.stop" | "run.interrupt";
+  /** An older client's Stop sends run.interrupt with holdQueue; it stops the thread. */
+  readonly stopWithQueue?: "thread.stop" | "old client Stop" | "run.interrupt";
   readonly olderStart?: boolean;
   readonly workflowMember?: boolean;
   readonly stalledRun?: "missing-session-terminal" | "returned-interrupt" | "superseded-attempt";
@@ -939,7 +940,7 @@ const stopEarlierBackgroundWork = ({
         }
 
         yield* orchestrator.dispatch(
-          stopWithQueue !== "run.interrupt"
+          stopWithQueue === undefined || stopWithQueue === "thread.stop"
             ? {
                 type: "thread.stop",
                 commandId: CommandId.make("stop-background-work"),
@@ -954,7 +955,7 @@ const stopEarlierBackgroundWork = ({
                   : failedStart
                     ? failedRun.runId
                     : latestRun.runId,
-                ...(stopWithQueue === undefined ? {} : { holdQueue: true }),
+                ...(stopWithQueue === "old client Stop" ? { holdQueue: true } : {}),
               },
         );
         yield* worker.drain();
@@ -1055,12 +1056,12 @@ it.effect("Stop preserves the roster when the background work probe fails", () =
   stopEarlierBackgroundWork({ failedStart: true, backgroundWorkAfterStop: "unknown" }),
 );
 
-it.effect.each(["thread.stop", "run.interrupt"] as const)(
+it.effect.each(["thread.stop", "old client Stop", "run.interrupt"] as const)(
   "%s respects background work ownership when a later message is queued",
   (stopType) => stopEarlierBackgroundWork({ stopWithQueue: stopType }),
 );
 
-it.effect.each(["thread.stop", "run.interrupt"] as const)(
+it.effect.each(["thread.stop", "old client Stop", "run.interrupt"] as const)(
   "%s respects later background work ownership when an older run is starting",
   (stopType) => stopEarlierBackgroundWork({ stopWithQueue: stopType, olderStart: true }),
 );

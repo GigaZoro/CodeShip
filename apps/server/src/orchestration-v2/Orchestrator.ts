@@ -73,6 +73,7 @@ import {
   resolveProviderInstanceEnabled,
   resolveProjectProviderInstanceEnabled,
   type ProviderSessionId,
+  type ProviderTurnId,
   RunId,
   RuntimeMode,
   ThreadLinkedPullRequest,
@@ -801,6 +802,14 @@ function interruptWorkForRuns<
   };
 }
 
+/** The runs a Stop owns: every run for a thread Stop, the restart chain for a run Stop. */
+function stopOwnedRuns<R extends { readonly id: RunId }>(
+  runs: ReadonlyArray<R>,
+  runIds?: ReadonlyArray<RunId>,
+): ReadonlyArray<R> {
+  return runIds === undefined ? runs : runs.filter((run) => runIds.includes(run.id));
+}
+
 function delegatedTasksStopEffect(
   command: {
     readonly commandId: CommandId;
@@ -1338,6 +1347,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const providerAdapters = yield* ProviderAdapterRegistryV2;
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
   const providerSessions = yield* ProviderSessionManagerV2;
+  /**
+   * Stop's view of a session. A failed lookup cannot show the process is gone, so Stop still sends
+   * that thread's interrupt and leaves its work to the worker, which repeats the lookup.
+   */
+  const stopSessionLiveness = Effect.fn("Orchestrator.stopSessionLiveness")(function* (
+    providerSessionId: ProviderSessionId,
+  ) {
+    return yield* providerSessions.get(providerSessionId).pipe(
+      Effect.map((session) => (Option.isSome(session) ? "live" : "absent") as "live" | "absent"),
+      Effect.catch((cause) =>
+        Effect.logWarning("orchestration-v2.stop-session-lookup-failed", {
+          providerSessionId,
+          cause,
+        }).pipe(Effect.as("unknown" as const)),
+      ),
+    );
+  });
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const runtimePolicy = yield* RuntimePolicyV2;
@@ -11850,12 +11876,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const sessionId = input.projection.providerThreads.find(
         (candidate) => candidate.id === providerThreadId,
       )?.providerSessionId;
+      // An unknown session may still run the work; its own interrupt settles it.
       const live =
         sessionId !== null &&
         sessionId !== undefined &&
-        Option.isSome(
-          yield* providerSessions.get(sessionId).pipe(Effect.orElseSucceed(() => Option.none())),
-        );
+        (yield* stopSessionLiveness(sessionId)) !== "absent";
       liveness.set(providerThreadId, live);
       return live;
     });
@@ -11863,13 +11888,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       providerThread: OrchestrationV2ProviderThread,
     ) {
       if (providerThread.providerSessionId == null) return false;
-      const session = yield* providerSessions
-        .get(providerThread.providerSessionId)
-        .pipe(Effect.orElseSucceed(() => Option.none()));
-      if (Option.isNone(session) || session.value.hasPendingBackgroundWorkForThread === undefined) {
+      const session = yield* providerSessions.get(providerThread.providerSessionId).pipe(
+        Effect.map((found) => ({ found })),
+        // A failed lookup cannot confirm that the work ended.
+        Effect.catch((cause) =>
+          Effect.logWarning("orchestration-v2.stop-session-lookup-failed", {
+            providerSessionId: providerThread.providerSessionId,
+            cause,
+          }).pipe(Effect.as(undefined)),
+        ),
+      );
+      if (session === undefined) return true;
+      if (
+        Option.isNone(session.found) ||
+        session.found.value.hasPendingBackgroundWorkForThread === undefined
+      ) {
         return false;
       }
-      return yield* session.value
+      return yield* session.found.value
         .hasPendingBackgroundWorkForThread(providerThread)
         // A failed probe cannot confirm that the work ended.
         .pipe(Effect.catchCause(() => Effect.succeed(true)));
@@ -12590,9 +12626,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           now,
         });
       }
-      // A new turn may have started since Stop; its work is not this Stop's.
+      // A new turn may have started since Stop; its work is not this Stop's. A run Stop owns only
+      // its chain's work, so an independent run that starts later cannot hold it.
       if (
-        projection.runs.some(
+        stopOwnedRuns(projection.runs, command.stopRunIds).some(
           (run) =>
             run.id !== stoppedRun.id &&
             (run.status === "preparing" || run.status === "starting" || run.status === "running"),
@@ -12770,6 +12807,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Run ${command.runId} is not interruptible.`,
       });
     }
+    if (selectedRun.status === "queued" && selectedRun.restartContinuationOfRunId === undefined) {
+      // An interrupt cannot stop a run that has not started; one command ends a queued message.
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Run ${command.runId} is a queued message that has not started; cancel it with queued-run.cancel.`,
+      });
+    }
     let run =
       target === "thread" ? selectedRun : latestRestartContinuation(projection.runs, selectedRun);
     // Recovery can keep delegated work alive across several server restarts.
@@ -12824,6 +12869,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (command.onlyIfActive === true && !isActiveRun(run) && !pendingContinuation) return;
     const stopRunIds = target === "thread" ? undefined : [...chainRunIds];
     const work = interruptWorkForRuns(projection, stopRunIds);
+    // An independent run keeps its own work, so only the chain decides whether this Stop reaches any.
+    const ownedRuns = stopOwnedRuns(projection.runs, stopRunIds);
     const hasBackgroundWork =
       (target !== "thread" || run.id === lastExecuted?.id) &&
       derivePendingBackgroundWork({
@@ -12832,8 +12879,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         turnItems: work.turnItems,
         activeProviderThreadId:
           target === "thread" ? projection.thread.activeProviderThreadId : null,
-        runs: projection.runs,
+        runs: ownedRuns,
       }).length > 0;
+    const interruptRequest = (owner: {
+      readonly providerSessionId: ProviderSessionId;
+      readonly providerThreadId: OrchestrationV2ProviderThread["id"];
+      readonly providerTurnId: ProviderTurnId;
+    }) =>
+      ({
+        type: "provider-turn.interrupt",
+        ...(stopRunIds === undefined
+          ? {}
+          : {
+              stopRunIds,
+              // Another run can share this provider thread; the adapter stops only these turns.
+              ownedProviderTurnIds: work.providerTurns
+                .filter((turn) => turn.providerThreadId === owner.providerThreadId)
+                .map((turn) => turn.id),
+            }),
+        ...owner,
+      }) as const;
     if (pendingContinuation || hasBackgroundWork) {
       const backgroundTarget = run;
       // Before preparation, a failed restart has no provider of its own. Its source still owns the work.
@@ -12924,7 +12989,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       yield* stopRemainingWork();
       return outcome;
     }
-    if (projection.runs.some((candidate) => isActiveRun(candidate) && candidate.id !== run.id)) {
+    if (ownedRuns.some((candidate) => isActiveRun(candidate) && candidate.id !== run.id)) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
@@ -12986,21 +13051,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           (candidate) => candidate.id === turn.providerThreadId,
         );
         if (owner === undefined || owner.providerSessionId === null) continue;
-        const ownerSession = yield* providerSessions
-          .get(owner.providerSessionId)
-          .pipe(Effect.orElseSucceed(() => Option.none()));
-        if (Option.isNone(ownerSession)) continue;
+        if ((yield* stopSessionLiveness(owner.providerSessionId)) === "absent") continue;
         otherProviderInterrupts.push({
           id: `effect:${command.commandId}:provider-turn.interrupt:${turn.id}`,
           commandId: command.commandId,
           threadId: command.threadId,
-          request: {
-            type: "provider-turn.interrupt",
-            ...(stopRunIds === undefined ? {} : { stopRunIds }),
+          request: interruptRequest({
             providerSessionId: owner.providerSessionId,
             providerThreadId: owner.id,
             providerTurnId: turn.id,
-          },
+          }),
         });
       }
     }
@@ -13155,11 +13215,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         supersededTurn !== undefined &&
         supersededOwner !== undefined &&
         supersededOwner.providerSessionId !== null &&
-        Option.isSome(
-          yield* providerSessions
-            .get(supersededOwner.providerSessionId)
-            .pipe(Effect.orElseSucceed(() => Option.none())),
-        )
+        (yield* stopSessionLiveness(supersededOwner.providerSessionId)) !== "absent"
       ) {
         const id = `effect:${command.commandId}:provider-turn.interrupt:${supersededTurn.id}`;
         if (!otherProviderInterrupts.some((effect) => effect.id === id)) {
@@ -13167,13 +13223,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             id,
             commandId: command.commandId,
             threadId: command.threadId,
-            request: {
-              type: "provider-turn.interrupt",
-              ...(stopRunIds === undefined ? {} : { stopRunIds }),
+            request: interruptRequest({
               providerSessionId: supersededOwner.providerSessionId,
               providerThreadId: supersededOwner.id,
               providerTurnId: supersededTurn.id,
-            },
+            }),
           });
         }
       }
@@ -13265,13 +13319,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         id: `effect:${command.commandId}:provider-turn.interrupt:${providerTurn.id}`,
         commandId: command.commandId,
         threadId: command.threadId,
-        request: {
-          type: "provider-turn.interrupt",
-          ...(stopRunIds === undefined ? {} : { stopRunIds }),
+        request: interruptRequest({
           providerSessionId,
           providerThreadId: providerThread.id,
           providerTurnId: providerTurn.id,
-        },
+        }),
       } satisfies PendingOrchestrationEffectV2,
       ...otherProviderInterrupts,
     ]);
@@ -13414,6 +13466,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   );
 
   /** Puts a queued goal command first and, given a target, stops the run in its way. */
+  /** Stop must still commit when a child cannot be read, so a failed repair's partial events are dropped. */
+  const repairOrphansBestEffort = Effect.fn("Orchestrator.repairOrphansBestEffort")(function* <
+    E,
+    R,
+  >(
+    threadId: ThreadId,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    repair: (
+      repairEvents: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) => Effect.Effect<unknown, E, R>,
+  ) {
+    const repairEvents = yield* Ref.make(yield* Ref.get(events));
+    const repaired = yield* Effect.exit(repair(repairEvents));
+    if (Exit.isSuccess(repaired)) {
+      yield* Ref.set(events, yield* Ref.get(repairEvents));
+      return;
+    }
+    yield* Effect.logWarning("Stop could not cancel orphaned delegated follow-ups", {
+      threadId,
+      cause: repaired.cause,
+    });
+  });
+
   const stopRunForQueuedCommand = Effect.fn("Orchestrator.stopRunForQueuedCommand")(
     function* (input: {
       readonly command: Extract<
@@ -13543,7 +13618,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const enqueued = yield* Ref.get(interruptEffects);
         yield* Ref.update(events, (existing) => [...existing, ...written]);
         yield* Ref.update(effects, (existing) => [...existing, ...enqueued]);
-        yield* cancelIdleOrphans({ command, events, projection });
+        yield* repairOrphansBestEffort(command.threadId, events, (repairEvents) =>
+          cancelIdleOrphans({ command, events: repairEvents, projection }),
+        );
         yield* stopDelegatedTasks;
         return interrupted.value?.cancelUnsettledEffects;
       }
@@ -13571,7 +13648,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       includeOtherCohorts: true,
       now,
     });
-    yield* cancelIdleOrphans({ command, events, projection });
+    yield* repairOrphansBestEffort(command.threadId, events, (repairEvents) =>
+      cancelIdleOrphans({ command, events: repairEvents, projection }),
+    );
     yield* stopDelegatedTasks;
     return undefined;
   });
@@ -14932,14 +15011,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* dispatchSubagentStop(command, events, effects);
         break;
       case "run.interrupt": {
+        if (command.holdQueue === true) {
+          // An older client's Stop button: it names the run it shows, but stops the thread.
+          cancelUnsettledEffects = yield* dispatchThreadStop(
+            {
+              type: "thread.stop",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              ...(command.reason === undefined ? {} : { reason: command.reason }),
+            },
+            events,
+            effects,
+          );
+          break;
+        }
         const outcome = yield* dispatchRunInterrupt(command, events, effects);
         cancelUnsettledEffects = outcome?.cancelUnsettledEffects;
         const parentRunIds = outcome?.delegatedTaskRunIds;
         if (parentRunIds !== undefined && parentRunIds.size > 0) {
-          // Stop must still commit when a child can't be read, so a failed repair's
-          // partial events are dropped.
-          const repairEvents = yield* Ref.make(yield* Ref.get(events));
-          const repaired = yield* Effect.exit(
+          yield* repairOrphansBestEffort(command.threadId, events, (repairEvents) =>
             loadProjectionForCommand(command, ["subagents", "turnItems"], {
               turnItemTypes: ["subagent"],
               turnItemStatuses: ["pending", "running", "waiting"],
@@ -14958,12 +15048,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ),
             ),
           );
-          if (Exit.isSuccess(repaired)) yield* Ref.set(events, yield* Ref.get(repairEvents));
-          else
-            yield* Effect.logWarning("Stop could not cancel orphaned delegated follow-ups", {
-              threadId: command.threadId,
-              cause: repaired.cause,
-            });
           yield* Ref.update(effects, (existing) => [
             ...existing,
             ...Array.from(parentRunIds, (id) => delegatedTasksStopEffect(command, id)),
