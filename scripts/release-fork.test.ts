@@ -1,6 +1,10 @@
-// @effect-diagnostics nodeBuiltinImport:off - Reads the workflow files as plain text, like GitHub does.
+// @effect-diagnostics nodeBuiltinImport:off - Reads the workflow files as plain text, like GitHub does, and runs their shell steps.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import * as Schema from "effect/Schema";
 import type { AppUpdater } from "electron-updater";
@@ -13,6 +17,11 @@ import { carryMacosFeed, publicConfig } from "../.github/scripts/fork-release.cj
 const WorkflowJob = Schema.Struct({
   needs: Schema.optional(Schema.Union([Schema.String, Schema.Array(Schema.String)])),
   "runs-on": Schema.optional(Schema.String),
+  steps: Schema.optional(
+    Schema.Array(
+      Schema.Struct({ id: Schema.optional(Schema.String), run: Schema.optional(Schema.String) }),
+    ),
+  ),
   with: Schema.optional(
     Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Boolean, Schema.Number])),
   ),
@@ -31,11 +40,92 @@ const readWorkflow = (file: string) =>
 const readRepoFile = (path: string) =>
   NodeFS.readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
+const decodeYaml = Schema.decodeUnknownSync(fromYaml(Schema.Unknown));
+const asRecord = (value: unknown): Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+const asArray = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ? value : []);
+const isString = (value: unknown): value is string => typeof value === "string";
+
+/** Every string a YAML value holds, at any depth. */
+function stringsIn(value: unknown): ReadonlyArray<string> {
+  if (isString(value)) return [value];
+  if (Array.isArray(value)) return value.flatMap(stringsIn);
+  return typeof value === "object" && value !== null ? Object.values(value).flatMap(stringsIn) : [];
+}
+
 const ACTION_AT_COMMIT = /^[\w.-]+\/[\w.-]+(?:\/[\w./-]+)?@[0-9a-f]{40}$/;
+const USES_LINE = /^\s*(?:-\s+)?uses:\s*["']?([^\s"'#]+)["']?\s*(#.*)?$/;
+// GitHub hands workflow_run and pull_request_target runs the base repository's token and secrets.
+const PRIVILEGED_TRIGGERS = new Set(["pull_request_target", "workflow_run"]);
+const OTHER_SECRET = /\bsecrets\.(?!GITHUB_TOKEN\b)\w/;
+// The fork keeps upstream's jobs that only run in upstream's repository as they are.
+const UPSTREAM_ONLY =
+  /^\s*(?:\$\{\{\s*)?github\.repository\s*==\s*'pingdotgg\/t3code'\s*(?:&&|\}\}\s*$|$)/;
+// Workflows the fork turned off in its Actions settings
+// (`gh api repos/GigaZoro/CodeShip/actions/workflows` lists them as disabled_manually).
+const DISABLED_IN_FORK = [
+  "agent-context-budget.yml",
+  "ci.yml",
+  "deploy-relay.yml",
+  "desktop-macos-preview-publish.yml",
+  "desktop-macos-preview.yml",
+  "issue-labels.yml",
+  "mobile-android-apk.yml",
+  "mobile-eas-preview.yml",
+  "mobile-eas-production.yml",
+  "mobile-fingerprint-check.yml",
+  "pr-size.yml",
+  "pr-vouch.yml",
+  "relay-preview-cleanup.yml",
+  "relay-preview.yml",
+  "release.yml",
+  "stale-needs-more-info.yml",
+  "thread-transfer-report.yml",
+  "web-preview.yml",
+];
+
+/** The reusable workflows a workflow's jobs call and the actions its or a composite action's steps run. */
+function usesOf(document: unknown): ReadonlyArray<string> {
+  const root = asRecord(document);
+  const jobs = Object.values(asRecord(root.jobs)).map(asRecord);
+  const steps = [
+    ...jobs.flatMap((job) => asArray(job.steps)),
+    ...asArray(asRecord(root.runs).steps),
+  ];
+  return [...jobs.map((job) => job.uses), ...steps.map((step) => asRecord(step).uses)].filter(
+    isString,
+  );
+}
 
 /**
- * Every action the workflows run, following local actions and reusable workflows,
- * that is not pinned to a commit with its version in a comment.
+ * Whether a job that runs in the fork can write to it or reads a secret besides the run's own
+ * token: GitHub's default token for this repository is read-only, so only these grant more.
+ */
+function isPrivileged(document: unknown): boolean {
+  const root = asRecord(document);
+  const on = root.on;
+  const triggers = isString(on) ? [on] : Array.isArray(on) ? on : Object.keys(asRecord(on));
+  const grants = (permissions: unknown) =>
+    permissions === "write-all" || Object.values(asRecord(permissions)).includes("write");
+  const forkTrigger = triggers.some((trigger) => PRIVILEGED_TRIGGERS.has(String(trigger)));
+  return Object.values(asRecord(root.jobs))
+    .map(asRecord)
+    .filter((job) => !(isString(job.if) && UPSTREAM_ONLY.test(job.if)))
+    .some(
+      (job) =>
+        forkTrigger ||
+        grants(root.permissions) ||
+        grants(job.permissions) ||
+        job.secrets === "inherit" ||
+        [...stringsIn(root.env), ...stringsIn(job)].some((value) => OTHER_SECRET.test(value)),
+    );
+}
+
+/**
+ * Every action the workflows run, following local actions and reusable workflows, that is not
+ * pinned to a commit on its own `uses:` line with its version in a comment.
  */
 function unpinnedActions(roots: ReadonlyArray<string>, read: (path: string) => string) {
   const pending = [...roots];
@@ -45,20 +135,34 @@ function unpinnedActions(roots: ReadonlyArray<string>, read: (path: string) => s
     const path = pending.pop()!;
     if (seen.has(path)) continue;
     seen.add(path);
-    read(path)
-      .split("\n")
-      .forEach((line, index) => {
-        const match = /^\s*(?:-\s+)?uses:\s*["']?([^\s"']+)["']?(.*)$/.exec(line);
-        if (!match) return;
-        const [, ref = "", comment = ""] = match;
-        if (ref.startsWith("./.github/workflows/")) pending.push(ref.slice(2));
-        else if (ref.startsWith("./")) pending.push(`${ref.slice(2)}/action.yml`);
-        else if (!ACTION_AT_COMMIT.test(ref) || !/^\s+#\s*\S/.test(comment)) {
-          unpinned.push(`${path}:${index + 1} ${ref}`);
+    const text = read(path);
+    const lines = text.split("\n").map((line) => USES_LINE.exec(line));
+    for (const ref of new Set(usesOf(decodeYaml(text)))) {
+      if (ref.startsWith("./.github/workflows/")) pending.push(ref.slice(2));
+      else if (ref.startsWith("./")) pending.push(`${ref.slice(2).replace(/\/$/, "")}/action.yml`);
+      else {
+        const sites = lines.flatMap((match, index) =>
+          match?.[1] === ref ? [{ match, index }] : [],
+        );
+        if (sites.length === 0) unpinned.push(`${path} ${ref}`);
+        for (const { match, index } of sites) {
+          if (!ACTION_AT_COMMIT.test(ref) || !/^#\s*\S/.test(match[2] ?? "")) {
+            unpinned.push(`${path}:${index + 1} ${ref}`);
+          }
         }
-      });
+      }
+    }
   }
   return { seen: [...seen], unpinned };
+}
+
+/** The workflows GitHub runs in the fork with write access or secrets. */
+function privilegedWorkflows() {
+  return NodeFS.readdirSync(new URL("../.github/workflows/", import.meta.url))
+    .filter((file) => /\.ya?ml$/.test(file) && !DISABLED_IN_FORK.includes(file))
+    .filter((file) => isPrivileged(decodeYaml(readRepoFile(`.github/workflows/${file}`))))
+    .map((file) => `.github/workflows/${file}`)
+    .toSorted();
 }
 
 const runnersOf = (job: WorkflowJob) =>
@@ -192,32 +296,148 @@ describe("fork release", () => {
     }
   });
 
-  // These jobs publish the release and hold its signing secrets, and a tag or branch can be moved to other code.
-  it("pins every action the release runs to a commit", () => {
-    const release = unpinnedActions(
-      [".github/workflows/release-fork.yml", ".github/workflows/release-fork-macos.yml"],
-      readRepoFile,
+  // A job that can write to the fork or holds its secrets runs only action code someone read:
+  // a tag or branch can be moved to other code after the review.
+  it("pins every action a privileged workflow runs to a commit", () => {
+    const roots = privilegedWorkflows();
+    expect(roots).toEqual(
+      expect.arrayContaining([
+        ".github/workflows/mobile-eas-preview-fork.yml",
+        ".github/workflows/mobile-fingerprint-label.yml",
+        ".github/workflows/release-fork-macos.yml",
+        ".github/workflows/release-fork-retry.yml",
+        ".github/workflows/release-fork.yml",
+      ]),
     );
-    expect(release.seen).toEqual(
+    const pinned = unpinnedActions(roots, readRepoFile);
+    expect(pinned.seen).toEqual(
       expect.arrayContaining([
         ".github/workflows/release-desktop.yml",
         ".github/actions/setup-ci-deps/action.yml",
       ]),
     );
-    expect(release.unpinned).toEqual([]);
+    expect(pinned.unpinned).toEqual([]);
+    for (const file of DISABLED_IN_FORK) {
+      expect(
+        NodeFS.existsSync(new URL(`../.github/workflows/${file}`, import.meta.url)),
+        file,
+      ).toBe(true);
+    }
+  });
+
+  it("finds privilege and unpinned actions from the workflow's structure", () => {
+    const workflow = (on: string, job: string) => `on: ${on}\njobs:\n  a:\n${job}`;
+    const job = "    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n";
+    expect(isPrivileged(decodeYaml(workflow("push", job)))).toBe(false);
+    expect(isPrivileged(decodeYaml(workflow("[push, workflow_run]", job)))).toBe(true);
+    expect(isPrivileged(decodeYaml(`permissions: write-all\n${workflow("push", job)}`))).toBe(true);
+    expect(isPrivileged(decodeYaml(`permissions: read-all\n${workflow("push", job)}`))).toBe(false);
+    const writes = "    permissions:\n      id-token: write\n";
+    expect(isPrivileged(decodeYaml(workflow("push", `${writes}${job}`)))).toBe(true);
+    const token = "    env:\n      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n";
+    expect(isPrivileged(decodeYaml(workflow("push", `${token}${job}`)))).toBe(false);
+    const secret = "    env:\n      KEY: ${{ secrets.SIGNING_KEY }}\n";
+    expect(isPrivileged(decodeYaml(workflow("push", `${secret}${job}`)))).toBe(true);
+    const upstreamOnly = "    if: github.repository == 'pingdotgg/t3code'\n";
+    expect(isPrivileged(decodeYaml(workflow("push", `${upstreamOnly}${secret}${job}`)))).toBe(
+      false,
+    );
+    const orElsewhere = "    if: github.repository == 'pingdotgg/t3code' || inputs.force\n";
+    expect(isPrivileged(decodeYaml(workflow("push", `${orElsewhere}${secret}${job}`)))).toBe(true);
 
     const fixture = [
-      "steps:",
-      "  - uses: actions/checkout@v6",
-      "  - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3",
-      "  - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6",
-      "  # - uses: actions/checkout@main",
+      "jobs:",
+      "  call:",
+      "    uses: owner/repo/.github/workflows/w.yml@main",
+      "  build:",
+      "    steps:",
+      "      - uses: actions/checkout@v6",
+      "      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3",
+      "      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6",
+      "      - { uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 }",
+      "      # - uses: actions/checkout@main",
     ].join("\n");
     expect(unpinnedActions(["w.yml"], () => fixture).unpinned).toEqual([
-      "w.yml:2 actions/checkout@v6",
-      "w.yml:3 softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3",
+      "w.yml:3 owner/repo/.github/workflows/w.yml@main",
+      "w.yml:6 actions/checkout@v6",
+      "w.yml:7 softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3",
+      "w.yml actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
     ]);
   });
+
+  it("starts the macOS build at the release's tag", () => {
+    const dispatches = [
+      ".github/workflows/release-fork.yml",
+      ".github/workflows/release-fork-retry.yml",
+    ]
+      .flatMap((file) => stringsIn(decodeYaml(readRepoFile(file))))
+      .flatMap((script) => script.match(/gh workflow run release-fork-macos\.yml[^\n]*/g) ?? []);
+    expect(dispatches.length).toBe(2);
+    for (const dispatch of dispatches) expect(dispatch).toMatch(/--ref "(?:v\$VERSION|\$tag)"/);
+  });
+
+  // The step runs on ubuntu-24.04 runners; Windows has no bash to run it with.
+  it.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "builds the macOS app only at the commit its release, tag and bundle all name",
+    () => {
+      const script = readWorkflow("release-fork-macos.yml").jobs.preflight?.steps?.find(
+        (step) => step.id === "release",
+      )?.run;
+      if (script === undefined)
+        throw new Error("release-fork-macos.yml has no preflight step `release`.");
+      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-macos-release-"));
+      try {
+        // Answers the three lookups the step makes with the commits each case names.
+        NodeFS.writeFileSync(
+          NodePath.join(dir, "gh"),
+          [
+            "#!/usr/bin/env bash",
+            'case "$2" in',
+            '  */releases/tags/*) echo "$RELEASE_SHA" ;;',
+            '  */commits/*) echo "$TAG_SHA" ;;',
+            '  */actions/runs/*) echo "$BUNDLE_SHA" ;;',
+            "  *) exit 2 ;;",
+            "esac",
+          ].join("\n"),
+          { mode: 0o755 },
+        );
+        const sha = "a".repeat(40);
+        const runStep = (env: Record<string, string>) => {
+          const output = NodePath.join(dir, "output");
+          NodeFS.writeFileSync(output, "");
+          const result = NodeChildProcess.spawnSync("bash", ["-c", script], {
+            encoding: "utf8",
+            env: {
+              PATH: `${dir}${NodePath.delimiter}${process.env.PATH ?? ""}`,
+              GITHUB_REPOSITORY: "GigaZoro/CodeShip",
+              GITHUB_OUTPUT: output,
+              VERSION: "2026.1121.3",
+              BUNDLE_RUN: "42",
+              GITHUB_REF: "refs/tags/v2026.1121.3",
+              GITHUB_SHA: sha,
+              RELEASE_SHA: sha,
+              TAG_SHA: sha,
+              BUNDLE_SHA: sha,
+              ...env,
+            },
+          });
+          return { status: result.status, output: NodeFS.readFileSync(output, "utf8") };
+        };
+        expect(runStep({})).toEqual({ status: 0, output: `sha=${sha}\n` });
+        const other = "b".repeat(40);
+        for (const change of [
+          { GITHUB_REF: "refs/heads/main" },
+          { GITHUB_SHA: other },
+          { TAG_SHA: other },
+          { BUNDLE_SHA: other },
+        ]) {
+          expect(runStep(change), JSON.stringify(change)).toEqual({ status: 1, output: "" });
+        }
+      } finally {
+        NodeFS.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("reads only plain public T3 Connect values", () => {
     expect(publicConfig("T3CODE_RELAY_URL=wss://relay.example.com/ws\n")).toContain(

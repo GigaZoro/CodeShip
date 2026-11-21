@@ -5,7 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 
-import { begin, checkCommand, land, RUN_LIMIT_MS, status } from "./upstream-sync.ts";
+import { begin, checkCommand, land, lockfileCheck, RUN_LIMIT_MS, status } from "./upstream-sync.ts";
 
 const START = new Date("2026-11-16T07:00:00Z");
 const later = (minutes: number) => new Date(START.getTime() + minutes * 60_000);
@@ -214,5 +214,59 @@ describe("upstream sync", () => {
     begin(repo.sync, START);
     git(repo.sync, "update-index", "--assume-unchanged", "shared.txt");
     expect(() => land(repo.sync, later(60))).toThrow("Commit or resolve every change");
+  });
+});
+
+describe("upstream sync lockfile", () => {
+  const lock = (...ids: Array<string>) =>
+    `lockfileVersion: '9.0'\n\npackages:\n\n${ids
+      .map((id) => `  ${id}:\n    resolution: {integrity: sha512-${id}}\n`)
+      .join("\n")}\nsnapshots: {}\n`;
+
+  it("accounts for the merge in progress, then for the merge commit, against both parents", () => {
+    isolateGit();
+    const root = NodeFS.realpathSync(
+      NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-lock-")),
+    );
+    onTestFinished(() => NodeFS.rmSync(root, { recursive: true, force: true }));
+    git(root, "init", "-q", "-b", "main");
+    commitFiles(root, { "pnpm-lock.yaml": lock("a@1.0.0", "b@1.0.0") }, "M");
+    const mergeBase = git(root, "rev-parse", "HEAD");
+    git(root, "checkout", "-q", "-b", "upstream");
+    commitFiles(root, { "pnpm-lock.yaml": lock("a@1.0.0", "b@1.2.0") }, "theirs");
+    const theirs = git(root, "rev-parse", "HEAD");
+    git(root, "checkout", "-q", "main");
+    commitFiles(root, { "pnpm-lock.yaml": lock("a@1.0.0", "b@1.1.0") }, "ours");
+    const ours = git(root, "rev-parse", "HEAD");
+    const merged = NodeChildProcess.spawnSync("git", ["merge", "-q", "upstream"], { cwd: root });
+    expect(merged.status).not.toBe(0);
+    expect(() => lockfileCheck(root)).toThrow(/conflict markers/);
+
+    NodeFS.writeFileSync(NodePath.join(root, "pnpm-lock.yaml"), lock("a@1.0.0", "b@1.1.0"));
+    expect(lockfileCheck(root)).toEqual({
+      ours,
+      theirs,
+      mergeBase,
+      added: [],
+      reverted: [{ id: "b@1.2.0", side: "theirs", result: ["b@1.1.0"] }],
+      dropped: [],
+      mismatched: [],
+    });
+
+    NodeFS.writeFileSync(NodePath.join(root, "pnpm-lock.yaml"), lock("a@1.0.0", "b@1.2.0"));
+    git(root, "commit", "-q", "-a", "--no-edit");
+    expect(lockfileCheck(root)).toMatchObject({ ours, theirs, mergeBase, reverted: [] });
+    expect(lockfileCheck(root).dropped).toEqual([
+      { id: "b@1.1.0", side: "ours", result: ["b@1.2.0"] },
+    ]);
+
+    const merge = git(root, "rev-parse", "HEAD");
+    commitFiles(root, { "other.txt": "x\n" }, "after");
+    expect(() => lockfileCheck(root)).toThrow(
+      /while a merge is in progress or while HEAD is its merge commit/,
+    );
+    // A resumed branch names its upstream merge, with the run's own commits on top.
+    expect(lockfileCheck(root, merge)).toMatchObject({ ours, theirs, mergeBase, reverted: [] });
+    expect(() => lockfileCheck(root, ours)).toThrow(`${ours} is not a merge commit.`);
   });
 });

@@ -136,7 +136,6 @@ jobs:
       - name: Rerun or start the macOS build of the latest release
         env:
           GH_TOKEN: ${{ github.token }}
-          DEFAULT_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           release="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" \
@@ -167,7 +166,7 @@ jobs:
               exit 1
             fi
             echo "No macOS build for $tag; starting one from run $bundle_run."
-            gh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" \
+            gh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "$tag" \
               -f version="$version" -f bundle_run="$bundle_run"
             exit 0
           fi

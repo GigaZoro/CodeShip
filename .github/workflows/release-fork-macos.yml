@@ -6,7 +6,9 @@ run-name: Release (fork) macOS v${{ inputs.version }}
 # GitHub runs short of hosted macOS runners for hours, and Windows and Linux do
 # not need one. Until it attaches, the release carries the previous release's
 # macOS feed, so Macs stay on that build. release-fork.yml starts it, and
-# release-fork-retry.yml reruns it while its release is the latest. See
+# release-fork-retry.yml reruns it while its release is the latest. Both start
+# it at the release's tag, so it runs the workflows and actions of the commit
+# that release was built and reviewed from, never a later main. See
 # "Releasing from a fork" in docs/operations/release.md.
 
 on:
@@ -70,10 +72,15 @@ jobs:
             echo "::error::Pass a version such as 2026.1113.13 and the numeric id of its Release (fork) run."
             exit 1
           fi
+          if [[ "$GITHUB_REF" != "refs/tags/v$VERSION" ]]; then
+            echo "::error::Run this workflow at the release's tag (--ref v$VERSION), not $GITHUB_REF."
+            exit 1
+          fi
           sha="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION" --jq .target_commitish)"
+          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/v$VERSION" --jq .sha)"
           bundle_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUNDLE_RUN" --jq .head_sha)"
-          if [[ "$sha" != "$bundle_sha" ]]; then
-            echo "::error::v$VERSION was built from $sha, but run $BUNDLE_RUN built $bundle_sha."
+          if [[ "$sha" != "$bundle_sha" || "$tag_sha" != "$sha" || "$GITHUB_SHA" != "$sha" ]]; then
+            echo "::error::v$VERSION was built from $sha, but its tag is at $tag_sha, run $BUNDLE_RUN built $bundle_sha and this run is at $GITHUB_SHA."
             exit 1
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"

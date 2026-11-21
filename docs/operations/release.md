@@ -70,7 +70,10 @@ and `install.sh` for Linux servers. Its Linux installers are not published.
 
 The macOS arm64 app (DMG and the zip updates use) comes from `release-fork-macos.yml` (**Release
 (fork) macOS**), which the release starts once it is published, because GitHub can run short of
-hosted macOS runners for hours and Windows and Linux do not need one. Until it attaches the app and
+hosted macOS runners for hours and Windows and Linux do not need one. It runs at the release's tag
+and refuses any other ref, so the workflows and actions that hold the macOS signing secrets are the
+ones of the commit the release was built from; to start it by hand, pick the tag `v<version>` as
+its ref. Until it attaches the app and
 its `latest-mac.yml`, the release serves the previous release's `latest-mac.yml` with its file
 links pointing back at that release, so Macs stay on the build they have instead of failing their
 update check. Only one macOS build runs at a time; a newer release's waiting build replaces an

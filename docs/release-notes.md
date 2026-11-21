@@ -1,6 +1,7 @@
-## 2026-11-21 — Libraries are upgraded every week
+## 2026-11-21 — Weekly library upgrades are ready
 
-- A weekly task now moves every library, Node, pnpm, Electron, the Rust crates' dependencies and the GitHub Actions to their newest stable releases, the day after the sync from T3 Code. It takes only releases at least 3 days old, reads every changed install script before it runs, ports local patches, and lands only after the full checks and two reviewers pass. The mobile app's native packages keep following T3 Code. A version it cannot take yet is recorded as a hold and retried every week. No change to the app.
+- A weekly task is ready to move every library, Node, pnpm, Electron, the Rust crates' dependencies and the GitHub Actions to their newest stable releases, the day after the sync from T3 Code. It takes only releases at least 3 days old, reads every changed install script before it runs, ports local patches, and lands only after the full checks and two reviewers pass. The mobile app's native packages keep following T3 Code, and a version it cannot take yet is recorded as a hold and retried every week. It starts once release builds install exactly the lockfile it reviewed. No change to the app.
+- The macOS build now runs only at its release's tag and stops when the tag, the release and the Linux bundle name different commits, and every workflow that can publish or holds secrets runs only actions pinned to a reviewed commit.
 
 ## 2026-11-21 — Start a worktree from a branch that exists only on the remote
 

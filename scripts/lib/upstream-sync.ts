@@ -4,6 +4,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import { REAL_HISTORY_ENV, markedFiles } from "../../.github/scripts/git-history.cjs";
+import { accountLockfile } from "./lockfile-accounting.ts";
 
 // A busy main moves every few minutes while a sync's checks take an hour, so a sync that chased
 // it by re-merging never ended. These limits make a run land or hold within a working morning.
@@ -15,6 +16,7 @@ const CHECK_TIMEOUT_SECONDS = "3600";
 const LANDING_TURN = NodePath.join(import.meta.dirname, "../../.github/scripts/landing-turn.cjs");
 const STATE_FILE = "upstream-sync.json";
 const RELEASE_NOTES = "docs/release-notes.md";
+const LOCKFILE = "pnpm-lock.yaml";
 const UPSTREAM_URL = "https://github.com/pingdotgg/t3code.git";
 
 interface MergeAttempt {
@@ -162,6 +164,47 @@ export function checkCommand(worktree: string, env: NodeJS.ProcessEnv) {
   return {
     args: ["run", "check:changed", readState(worktree).base],
     env: { ...env, CHECK_CHANGED_TIMEOUT: env.CHECK_CHANGED_TIMEOUT ?? CHECK_TIMEOUT_SECONDS },
+  };
+}
+
+/** A commit's lockfile, or empty text when that commit has none. */
+function lockfileAt(worktree: string, commit: string): string {
+  if (!git(worktree, "cat-file", "-e", `${commit}:${LOCKFILE}`).ok) return "";
+  const shown = run(worktree, ["show", `${commit}:${LOCKFILE}`]);
+  if (!shown.ok) throw new Error(`git show ${commit}:${LOCKFILE} failed: ${shown.stderr}`);
+  return shown.stdout;
+}
+
+/**
+ * The working tree's lockfile against both parents of a merge: the one in progress, HEAD when HEAD
+ * is the merge, or `merge` (a resumed branch's upstream merge, with commits on top). Step 4 of the
+ * sync keeps git's merged lockfile and accounts for every entry.
+ */
+export function lockfileCheck(worktree: string, merge?: string) {
+  const merging =
+    merge === undefined ? git(worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD") : undefined;
+  const commit = merge ?? "HEAD";
+  if (!merging?.ok && !git(worktree, "rev-parse", "-q", "--verify", `${commit}^2`).ok) {
+    throw new Error(
+      merge === undefined
+        ? "Run lockfile while a merge is in progress or while HEAD is its merge commit."
+        : `${merge} is not a merge commit.`,
+    );
+  }
+  const ours = gitOrThrow(worktree, "rev-parse", merging?.ok ? "HEAD" : `${commit}^1`);
+  const theirs = merging?.ok ? merging.stdout : gitOrThrow(worktree, "rev-parse", `${commit}^2`);
+  const mergeBase = gitOrThrow(worktree, "merge-base", ours, theirs);
+  const result = NodeFS.readFileSync(NodePath.join(worktree, LOCKFILE), "utf8");
+  return {
+    ours,
+    theirs,
+    mergeBase,
+    ...accountLockfile({
+      mergeBase: lockfileAt(worktree, mergeBase),
+      ours: lockfileAt(worktree, ours),
+      theirs: lockfileAt(worktree, theirs),
+      result,
+    }),
   };
 }
 
