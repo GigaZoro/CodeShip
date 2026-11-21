@@ -691,12 +691,11 @@ export function useThreadListActions(): {
           ? "pinned"
           : "active";
     const preferences = appAtomRegistry.get(mobilePreferencesAtom);
-    if (
+    // A sorted Active list has no manual order: a drop there only unpins, unsettles or unsnoozes.
+    const activeSorted =
       section === "active" &&
       preferences._tag === "Success" &&
-      (preferences.value.threadListFilters?.sort ?? "default") !== "default"
-    )
-      return false;
+      (preferences.value.threadListFilters?.sort ?? "default") !== "default";
     if (section === "settled") {
       if (!environmentConfigLoaded(thread.environmentId)) return false;
       appAtomRegistry.set(threadDropBusyAtom, true);
@@ -730,6 +729,10 @@ export function useThreadListActions(): {
       shells.map((shell) => [scopedThreadKey(shell.environmentId, shell.id), shell]),
     );
     const movedKey = scopedThreadKey(thread.environmentId, thread.id);
+    const crossSection = !ordered.some(
+      (row) => row.id === thread.id && row.environmentId === thread.environmentId,
+    );
+    if (activeSorted && !crossSection) return false;
     // Filed chats list in their folders, so an unfiled chat steps over them in the Active list.
     const destination =
       section === "active" &&
@@ -743,19 +746,20 @@ export function useThreadListActions(): {
           )
         : direction;
     if (destination === null) return false;
-    const assignments = createThreadMovePlanner({
-      allThreads: shells,
-      ordered,
-      section,
-      reorderableEnvironmentIds: new Set(
-        [...configs.keys()].filter((environmentId) => connectedEnvironmentIds.has(environmentId)),
-      ),
-    })(movedKey, destination);
+    const assignments = activeSorted
+      ? []
+      : createThreadMovePlanner({
+          allThreads: shells,
+          ordered,
+          section,
+          reorderableEnvironmentIds: new Set(
+            [...configs.keys()].filter((environmentId) =>
+              connectedEnvironmentIds.has(environmentId),
+            ),
+          ),
+        })(movedKey, destination);
     if (assignments === null) return false;
     const lifecycle = threadDropLifecycle(thread, section, new Date().toISOString());
-    const crossSection = !ordered.some(
-      (row) => row.id === thread.id && row.environmentId === thread.environmentId,
-    );
     for (const assignment of assignments) {
       const target = shellByKey.get(assignment.id);
       if (target && !checkThreadOperationPermission(target, t("Could not move thread")))

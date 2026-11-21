@@ -430,6 +430,21 @@ describe("thread reorder connection availability", () => {
       ]);
     },
   );
+
+  it("unpins a thread dropped into a sorted Active list without writing order keys", async () => {
+    const moved = makeThread({ pinnedAt: "2026-09-02T00:00:00.000Z", pinOrderKey: "m" });
+    state.shells = [moved, makeThread({ id: ThreadId.make("neighbor"), activeOrderKey: "g" })];
+    state.sort = "name";
+
+    expect(
+      await useThreadListActions().moveThread(moved, {
+        targetId: null,
+        section: "active",
+        placement: "after",
+      }),
+    ).toBe(true);
+    expect(state.requests.map(({ action }) => action)).toEqual(["unpin"]);
+  });
 });
 
 describe("thread action undo", () => {

@@ -1123,7 +1123,8 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
         woke: hasUnseenServerWake(thread, preciseNow),
         locallyUnread: input.locallyUnreadKeys.has(threadShellKey(thread)),
       }));
-  // Ignores the project scope: a thread waiting on the user must not hide in a folder, shelf, or filter.
+  // Ignores the project scope, not the status and tag filters the user picked: a thread waiting
+  // on the user must not hide in a folder, shelf, or project filter.
   const needsYou = collectNeedsYouThreads(
     filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent).filter(matchesFilters),
     { now: preciseNow },
