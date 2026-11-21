@@ -176,7 +176,7 @@
 
 ## 2026-11-21 — Weekly library upgrades are ready
 
-- A weekly task is ready to move every library, Node, pnpm, Electron, the Rust crates' dependencies and the GitHub Actions to their newest stable releases, the day after the sync from T3 Code. It takes only releases at least 3 days old, reads every changed install script before it runs, ports local patches, and lands only after the full checks and two reviewers pass. The mobile app's native packages keep following T3 Code, and a version it cannot take yet is recorded as a hold and retried every week. No change to the app.
+- A weekly task is ready to move every library, Node, pnpm, Electron, the Rust crates' dependencies and the GitHub Actions to their newest stable releases, the day after the sync from T3 Code. It takes only releases at least 3 days old (a younger one only when it fixes a known vulnerability), reads every changed install script before it runs, ports local patches, and lands only after the full checks and two reviewers pass. The mobile app's native packages keep following T3 Code, and a version it cannot take yet is recorded as a hold and retried every week. No change to the app.
 
 ## 2026-11-21 — Monitoring stays visible while it updates
 
