@@ -13,6 +13,9 @@ const MACOS_WORKFLOW = "Release (fork) macOS";
 const DISPATCH_EVENT = "workflow_dispatch";
 const GH_TIMEOUT_MS = 2 * 60 * 1000;
 
+/** A run's address, from its repository and id alone: gh's own `url` field is never needed, so never trusted. */
+const runUrl = (repository, id) => `https://github.com/${repository}/actions/runs/${id}`;
+
 /** The text of each line of `gh run view --job <id> --log`, without its job, step and timestamp columns. */
 function logLines(log) {
   return log
@@ -41,10 +44,8 @@ function dispatchOutput(log, repository) {
     .flatMap((line) => /^ {2}VERSION: (\S+)$/.exec(line)?.slice(1) ?? []);
   if (versions.length !== 1)
     return { problem: `the dispatch step's log names ${versions.length} versions` };
-  const runUrl = new RegExp(
-    `^https://github\\.com/${repository.replace(/[.]/g, "\\.")}/actions/runs/(\\d+)$`,
-  );
-  const runs = step.slice(groupEnd + 1).flatMap((line) => runUrl.exec(line)?.slice(1) ?? []);
+  const printedRun = new RegExp(`^${runUrl(repository, "").replace(/[.]/g, "\\.")}(\\d+)$`);
+  const runs = step.slice(groupEnd + 1).flatMap((line) => printedRun.exec(line)?.slice(1) ?? []);
   if (runs.length !== 1) return { problem: `the dispatch step printed ${runs.length} run URLs` };
   return { version: versions[0], run: runs[0] };
 }
@@ -56,19 +57,19 @@ function dispatchOutput(log, repository) {
 function releaseMacosRun(repository, runId, gh) {
   const view = (...args) => gh(["run", "view", ...args, "-R", repository]);
   // Until gh has described the run its attempt is unknown, but its address is not.
-  let where = `https://github.com/${repository}/actions/runs/${runId} (attempt unknown)`;
+  const address = runUrl(repository, runId);
+  let where = `${address} (attempt unknown)`;
   try {
-    const release = JSON.parse(view(runId, "--json", "status,attempt,url,jobs"));
+    const release = JSON.parse(view(runId, "--json", "status,attempt,jobs"));
     const isRun =
       typeof release?.status === "string" &&
       Number.isInteger(release.attempt) &&
-      typeof release.url === "string" &&
       Array.isArray(release.jobs);
     if (!isRun)
       throw new Error(
         `gh's answer for run ${runId} is not a run: ${JSON.stringify(release).slice(0, 200)}`,
       );
-    where = `${release.url} (attempt ${release.attempt})`;
+    where = `${address} (attempt ${release.attempt})`;
     return { ...macosRun(release, repository, view), release: where };
   } catch (error) {
     return { outcome: "unverified", reason: error.message, release: where };
@@ -100,9 +101,7 @@ function macosRun(release, repository, view) {
   const output = dispatchOutput(view("--job", String(job.databaseId), "--log"), repository);
   const ended = step.conclusion === "success" ? "" : ` (the step ended ${step.conclusion})`;
   if (output.problem) return answer("unverified", `${output.problem}${ended}`);
-  const macos = JSON.parse(
-    view(output.run, "--json", "workflowName,event,displayTitle,createdAt,url"),
-  );
+  const macos = JSON.parse(view(output.run, "--json", "workflowName,event,displayTitle,createdAt"));
   const expected = {
     workflowName: MACOS_WORKFLOW,
     event: DISPATCH_EVENT,
@@ -123,7 +122,7 @@ function macosRun(release, repository, view) {
       `run ${output.run} was created at ${macos.createdAt}, outside the dispatch step (${step.startedAt} to ${step.completedAt})`,
     );
   }
-  return { outcome: "dispatched", run: Number(output.run), url: macos.url };
+  return { outcome: "dispatched", run: Number(output.run), url: runUrl(repository, output.run) };
 }
 
 function gh(args) {

@@ -38,6 +38,14 @@ function jobLog({
   return `${lines.map((line) => `Publish GitHub Release\tUNKNOWN STEP\t${line}`).join("\n")}\n`;
 }
 
+/** What gh says of the macOS run the dispatch step printed. */
+const MACOS_RUN = {
+  workflowName: "Release (fork) macOS",
+  event: "workflow_dispatch",
+  displayTitle: "Release (fork) macOS v2026.1121.10",
+  createdAt: "2026-11-21T15:32:35Z",
+};
+
 const dispatchStep = (overrides = {}) => ({
   name: "Build the macOS app for this release",
   status: "completed",
@@ -61,16 +69,7 @@ function fixture({
   runs = {},
 } = {}) {
   const calls = [];
-  const macos = {
-    44919730318: {
-      workflowName: "Release (fork) macOS",
-      event: "workflow_dispatch",
-      displayTitle: "Release (fork) macOS v2026.1121.10",
-      createdAt: "2026-11-21T15:32:35Z",
-      url: RUN_URL(44919730318),
-    },
-    ...runs,
-  };
+  const macos = { 44919730318: MACOS_RUN, ...runs };
   const publish = {
     name: "Publish GitHub Release",
     databaseId: 136892706420,
@@ -93,7 +92,6 @@ function fixture({
       return JSON.stringify({
         status,
         attempt: 2,
-        url: RUN_URL(44919164430),
         jobs: [{ name: "Preflight", conclusion: "success", steps: [] }, publish],
       });
     }
@@ -122,6 +120,25 @@ test("the macOS run is the one the dispatch step printed, checked against the re
     ],
   );
   assert.ok(calls[1].includes("136892706420"));
+  // Neither run's address is asked of gh: both come from the repository and the run's id.
+  assert.deepEqual(
+    calls.map((args) => (args.includes("--json") ? args[args.indexOf("--json") + 1] : null)),
+    ["status,attempt,jobs", null, "workflowName,event,displayTitle,createdAt"],
+  );
+});
+
+test("a url in gh's answer changes neither run's address", () => {
+  const gh = (answer) => () => JSON.stringify(answer);
+  assert.deepEqual(
+    releaseMacosRun(REPOSITORY, "42", gh({ status: "in_progress", attempt: 2, url: "", jobs: [] })),
+    {
+      outcome: "pending",
+      reason: "the release run is in_progress",
+      release: `${RUN_URL(42)} (attempt 2)`,
+    },
+  );
+  const { result } = fixture({ runs: { 44919730318: { ...MACOS_RUN, url: "" } } });
+  assert.equal(result().url, RUN_URL(44919730318));
 });
 
 test("a CRLF log reads the same, and a URL in the step's command is not what it printed", () => {
@@ -211,12 +228,7 @@ test("anything that leaves the run uncertain is unverified, never guessed", () =
     [
       {
         runs: {
-          44919730318: {
-            workflowName: "Windows check (fork)",
-            event: "workflow_dispatch",
-            displayTitle: "x",
-            createdAt: "2026-11-21T15:32:35Z",
-          },
+          44919730318: { ...MACOS_RUN, workflowName: "Windows check (fork)", displayTitle: "x" },
         },
       },
       'run 44919730318 has workflowName "Windows check (fork)", not "Release (fork) macOS"',
@@ -228,12 +240,7 @@ test("anything that leaves the run uncertain is unverified, never guessed", () =
     [
       {
         runs: {
-          44919730318: {
-            workflowName: "Release (fork) macOS",
-            event: "push",
-            displayTitle: "Release (fork) macOS v2026.1121.10",
-            createdAt: "2026-11-21T15:32:35Z",
-          },
+          44919730318: { ...MACOS_RUN, event: "push" },
         },
       },
       'run 44919730318 has event "push", not "workflow_dispatch"',
