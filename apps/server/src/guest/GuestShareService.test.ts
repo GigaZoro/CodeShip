@@ -71,7 +71,11 @@ const layerOrchestration = Layer.mergeAll(
   ProviderReplayHarness.layerWithRegistry(
     { name: "guest-share-service" },
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
-    { databaseLayer: layerDatabase, runEffectWorker: false },
+    {
+      databaseLayer: layerDatabase,
+      serverSettingsLayer: ServerSettings.layerTest({ guestSharingEnabled: true }),
+      runEffectWorker: false,
+    },
   ),
 );
 
@@ -137,7 +141,6 @@ const layerTest = GuestShareService.layer.pipe(
     ),
   ),
   Layer.provide(layerProviders),
-  Layer.provideMerge(ServerSettings.layerTest({ guestSharingEnabled: true })),
   Layer.provide(layerConnect),
   Layer.provideMerge(layerAnalytics),
   Layer.provide(ServerSecretStore.layer),
