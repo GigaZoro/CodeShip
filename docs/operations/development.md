@@ -326,8 +326,9 @@ The staged app, the Windows server sidecar and the CLI archive install exactly t
 root `pnpm-lock.yaml`, with the root workspace's patches, overrides and package extensions. A
 package, dependency or patch the root lockfile does not hold, or a dependency it lists that the
 stage would drop, fails the build instead of resolving from the registry, so run `vp i` and commit
-the lockfile after changing a dependency. Staged installs run without signing, notarization or
-registry credentials in their environment, so their install scripts never see them.
+the lockfile after changing a dependency. Staged installs get only the allowlisted variables in
+`scripts/lib/child-env.ts`, so their install scripts never see signing, notarization or registry
+credentials.
 
 Release jobs build in two steps so no install runs with signing credentials: `--phase stage
 --stage-dir <dir>` builds and installs everything that ships into an empty `<dir>`, and `--phase
@@ -337,7 +338,9 @@ version at the same commit. `scripts/build-cli-archive.ts` takes the same two fl
 Every desktop build stages Electron the same way: it downloads the zip for each target
 architecture into `<stage>/electron-dist` and checks it against the SHA-256 in the locked
 `electron` package's `checksums.json`, and electron-builder unpacks that zip instead of
-downloading its own. `ELECTRON_MIRROR` sets the download host.
+downloading its own. `ELECTRON_MIRROR` sets the download host. Mac App Store targets (`mas`,
+`mas-dev`) are rejected: they package Electron's separate Mac App Store build, which staging does
+not download.
 
 ### Prepared server bytecode
 

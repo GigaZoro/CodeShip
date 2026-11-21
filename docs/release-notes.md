@@ -4,7 +4,8 @@
 - Those installs now finish before any signing certificate or key reaches the build machine, and signing works only on what they staged.
 - The Electron each release ships is downloaded while staging and checked against the SHA-256 that the locked Electron version lists, so packaging never downloads it with signing credentials loaded. When Electron's own install download did not finish, its fallback download is checked the same way.
 - Code that runs while a release is signed gets only the environment it needs, and the relay tracing token reaches only the CLI executable build. A relay tracing token that ends in `=` keeps it.
-- Dependency installs during a release build run without signing, notarization or registry credentials, and each signing step deletes its certificates, keys and keychain when it ends, so the checks that run the app afterwards never find them.
+- Dependency installs during a release build get only an allowlisted environment, without signing, notarization or registry credentials, and each platform's build receives only its own signing secrets.
+- Each signing step deletes every certificate, key and keychain it or electron-builder made when it ends, even when one removal fails, and electron-builder starts from a fresh tool cache, so the checks that run the app afterwards never find them. Packaging still runs on the build machine that holds the signing material.
 
 ## 2026-11-21 — Start a worktree from a branch that exists only on the remote
 

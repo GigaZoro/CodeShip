@@ -63,19 +63,27 @@ the version.
 - Signing is optional and auto-detected per platform from secrets.
 - Each build job installs before it signs. It stages the CLI archive and the desktop app first,
   before any signing secret is in a step's environment or any certificate or key is on the runner,
-  and those installs take exactly the root `pnpm-lock.yaml` versions for that platform. Staged
-  installs also run without signing, notarization or registry credentials in their environment,
-  whichever step starts them. Staging downloads the Electron zip of each target architecture and
-  checks it against the SHA-256 the locked `electron` package lists. Only then do the package
-  steps import certificates and keys, and they sign and package the staged files, unpacking that
-  Electron zip, without installing anything. Each package step writes its certificates, keys and
-  keychain into a folder it deletes when it ends, so the launch check and smoke tests after it,
-  which run the app and the archive, find none. Code that runs during packaging, such as the
-  bytecode and bundle probes, gets an allowlisted environment without the signing variables. It
-  still runs on the runner that holds the signing material, so a process an install left running
-  could reach it; only a separate signing job closes that. The relay tracing config is downloaded
-  just before the CLI executable build, the one step that reads it, and deleted when that step
-  ends. `scripts/release-desktop-workflow.test.ts` keeps that order.
+  and those installs take exactly the root `pnpm-lock.yaml` versions for that platform. A staged
+  install gets only the allowlisted variables in `scripts/lib/child-env.ts`, so it never sees
+  signing, notarization or registry credentials, whichever step starts it. Staging downloads the
+  Electron zip of each target architecture and checks it against the SHA-256 the locked
+  `electron` package lists. Only then do the package steps import certificates and keys, and they
+  sign and package the staged files, unpacking that Electron zip, without installing anything.
+  Each signing secret reaches only the platform that signs with it: the Apple ones the macOS job,
+  the Azure ones the Windows job.
+- Each package step keeps its certificates, keys and keychain in one folder. The desktop step
+  also points `APP_BUILDER_TMP_DIR` and a fresh `ELECTRON_BUILDER_CACHE` there, so the keychain,
+  certificate and unpacked tools electron-builder makes land in it too, and no tool an earlier
+  step unpacked is trusted. When the step ends, it deletes every keychain in that folder and then
+  the folder. It runs every removal even when one fails, and then fails the step, so the launch
+  check and smoke tests after it, which run the app and the archive, find none.
+- Packaging still runs staged code on the runner that holds the signing material: electron-builder
+  and the bytecode and bundle probes. The probes get only allowlisted variables, but any of this
+  code, or a process an install left running, could reach the certificates and keys on disk. Only
+  a separate signing job that receives just the built output closes that.
+- The relay tracing config is downloaded just before the CLI executable build, the one step that
+  reads it, and deleted when that step ends. `scripts/release-desktop-workflow.test.ts` keeps this
+  order and the cleanup and secret scoping above.
 
 ## Releasing from a fork
 
