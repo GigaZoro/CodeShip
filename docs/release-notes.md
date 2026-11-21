@@ -1,3 +1,7 @@
+## 2026-11-21 — Mute, follow, and color-code threads
+
+- Open a thread’s menu to mute its notifications, follow it for completion and Needs you alerts, or give it a color marker. Both choices sync across devices.
+
 ## 2026-11-21 — Relay install tests run on Windows
 
 - The relay client install and version-selection tests build every path with the Path service and the host's PATH delimiter, so they run on Windows hosts instead of being skipped.

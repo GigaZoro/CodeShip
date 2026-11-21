@@ -293,10 +293,12 @@ export function applyOrchestrationV2ProjectionEvent(
     case "thread.provider-switched":
     case "thread.guest-share-updated":
       return { ...base, thread: event.payload };
-    // Visited tracking, tags, folders, and putting off are not activity: skip the updatedAt bump.
+    // These events preserve the thread’s activity timestamp.
     case "thread.visited":
     case "thread.later-set":
     case "thread.tags-updated":
+    case "thread.notification-level-updated":
+    case "thread.color-updated":
     case "thread.folder-updated":
     case "thread.artifacts-updated":
     case "thread.marked-unread":

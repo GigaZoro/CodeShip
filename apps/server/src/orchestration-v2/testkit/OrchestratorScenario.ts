@@ -149,6 +149,8 @@ function commandThreadIds(command: OrchestrationV2Command): ReadonlyArray<Thread
     case "thread.pin.reorder":
     case "thread.active.reorder":
     case "thread.tag.set":
+    case "thread.notification-level.set":
+    case "thread.color.set":
     case "thread.folder.set":
     case "thread.artifact.hide":
     case "thread.visit":

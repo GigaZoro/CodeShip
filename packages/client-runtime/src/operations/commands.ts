@@ -278,7 +278,7 @@ const allocateCommandId = Effect.fn("EnvironmentCommands.allocateCommandId")(fun
   return CommandId.make(yield* crypto.randomUUIDv4().pipe(Effect.orDie));
 });
 
-const dispatch = (command: OrchestrationV2Command) =>
+export const dispatch = (command: OrchestrationV2Command) =>
   request(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, command);
 
 const getProjection = (threadId: ThreadId) =>

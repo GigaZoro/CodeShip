@@ -45,6 +45,12 @@ it("refuses a t3_thread_update whose fields do not fit its action", () => {
   const decode = Schema.decodeUnknownExit(
     OrchestratorToolkit.tools.t3_thread_update.parametersSchema,
   );
+  expect(Exit.isSuccess(decode({ action: "set_color", color: null }))).toBe(true);
+  expect(Exit.isFailure(decode({ action: "set_color", color: "#fff" }))).toBe(true);
+  expect(
+    Exit.isSuccess(decode({ action: "set_notification_level", notificationLevel: "muted" })),
+  ).toBe(true);
+  expect(Exit.isFailure(decode({ action: "set_notification_level", color: "blue" }))).toBe(true);
   expect(Exit.isFailure(decode({ action: "rename" }))).toBe(true);
   expect(Exit.isFailure(decode({ action: "regenerate_title", title: "New" }))).toBe(true);
   expect(Exit.isSuccess(decode({ action: "rename", title: "New", environmentId: undefined }))).toBe(
