@@ -9,6 +9,10 @@ name: Release (fork) retry
 # and uses no build time. Other failures rerun twice right away, then from the
 # schedule, which GitHub delays by hours under load.
 #
+# Only runs on the default branch are main's release runs: a run on another
+# branch fails at preflight and can never publish, so it is left alone, and the
+# catch-up jobs look at runs on the default branch only.
+#
 # Release (fork) publishes main's head for Windows and Linux. A run whose commit
 # is no longer main is left alone: main's own run releases it, and publishing
 # the older build afterwards would mark it latest. Release (fork) macOS then
@@ -34,7 +38,8 @@ jobs:
     name: Retry failed release
     if: >-
       github.event_name == 'workflow_run' &&
-      github.event.workflow_run.conclusion == 'failure'
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -99,11 +104,18 @@ jobs:
             exit 0
           fi
           run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-fork.yml \
-            --commit "$head" --limit 1 --json databaseId,status,conclusion,attempt \
+            --branch "$DEFAULT_BRANCH" --commit "$head" --limit 1 --json databaseId,status,conclusion,attempt \
             --jq '.[] | "\(.databaseId) \(.status) \(.attempt) \(.conclusion)"')"
           if [[ -z "$run" ]]; then
-            committed="$(gh api "repos/$GITHUB_REPOSITORY/commits/$head" --jq .commit.committer.date)"
-            if (( $(date +%s) - $(date -d "$committed" +%s) < 600 )); then
+            # A fast-forward keeps its commits' old dates, so age the head by when main moved to it.
+            read -r moved_to moved_at < <(gh api "repos/$GITHUB_REPOSITORY/activity?ref=refs/heads/$DEFAULT_BRANCH&per_page=1" \
+              --jq '.[0] | "\(.after) \(.timestamp)"')
+            if [[ "$moved_to" == "$head" ]]; then
+              arrived="$moved_at"
+            else
+              arrived="$(gh api "repos/$GITHUB_REPOSITORY/commits/$head" --jq .commit.committer.date)"
+            fi
+            if (( $(date +%s) - $(date -d "$arrived" +%s) < 600 )); then
               echo "$head is new; its push run may not have been created yet."
               exit 0
             fi
@@ -161,7 +173,7 @@ jobs:
               exit 0
             fi
             bundle_run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-fork.yml \
-              --commit "$sha" --limit 1 --json databaseId --jq '.[].databaseId')"
+              --branch "$DEFAULT_BRANCH" --commit "$sha" --limit 1 --json databaseId --jq '.[].databaseId')"
             if [[ -z "$bundle_run" ]]; then
               echo "::error::No Release (fork) run built $sha, so $tag has no JS bundle for its macOS app."
               exit 1

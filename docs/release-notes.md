@@ -1,3 +1,7 @@
+## 2026-11-21 — Release retries ignore runs from other branches
+
+- A release started from another branch no longer replaces main's pending release or gets retried, and the catch-up checks look only at runs on main. A branch fast-forwarded onto main no longer gets a second release run.
+
 ## 2026-11-21 — Pin from more places, reopen archived threads, and see what needs you in the title
 
 - Pin or unpin the open thread from a button in the chat header, and pin from a sidebar row on hover or focus. Select several threads and choose **Pin (N)** to pin them in the order you selected them. On mobile, the thread screen's header has Pin and Unpin.

@@ -125,6 +125,25 @@ describe("fork release", () => {
     expect(macos.concurrency.group).not.toBe(release.concurrency.group);
   });
 
+  it("treats only a run on the default branch as main's release run", () => {
+    const release = readWorkflow("release-fork.yml");
+    expect(release.concurrency.group).toContain("github.ref");
+
+    const retry = NodeFS.readFileSync(
+      new URL("../.github/workflows/release-fork-retry.yml", import.meta.url),
+      "utf8",
+    );
+    expect(retry).toContain(
+      "github.event.workflow_run.head_branch == github.event.repository.default_branch",
+    );
+    const listings = retry.match(/gh run list[^\n]*\\\n[^\n]*/g) ?? [];
+    expect(listings).toHaveLength(3);
+    for (const listing of listings.filter((line) => line.includes("release-fork.yml"))) {
+      expect(listing).toContain('--branch "$DEFAULT_BRANCH"');
+    }
+    expect(retry).toContain("activity?ref=refs/heads/$DEFAULT_BRANCH");
+  });
+
   it("serves Macs the previous build until the macOS app is attached", async () => {
     const previous = {
       tag: "v2026.1113.14",
