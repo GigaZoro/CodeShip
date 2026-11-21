@@ -250,7 +250,10 @@ it.each([false, true])(
     const primary = { model: "claude-opus-5-5", options: [{ id: "effort", value: "xhigh" }] };
     const otherPrimary = {
       model: "gpt-review",
-      options: [{ id: "reasoningEffort", value: "ultra" }],
+      options: [
+        { id: "reasoningEffort", value: "ultra" },
+        { id: "serviceTier", value: "default" },
+      ],
     };
     const result = autoCoordinatorBriefInput({
       driver: ProviderDriverKind.make("claudeAgent"),
@@ -295,14 +298,37 @@ it.each([false, true])(
           },
         }),
         provider(first),
-        provider(second, { models: [model("gpt-6-astra"), model(otherPrimary.model)] }),
+        provider(second, {
+          models: [
+            model("gpt-6-astra"),
+            {
+              ...model(otherPrimary.model),
+              capabilities: {
+                optionDescriptors: [
+                  {
+                    id: "reasoningEffort",
+                    label: "Reasoning",
+                    type: "select" as const,
+                    options: [{ id: "ultra", label: "Ultra" }],
+                  },
+                ],
+              },
+            },
+          ],
+        }),
       ],
     });
     expect(result.primary).toEqual(primary);
     expect(result.model).toBe(primary.model);
     expect(result.models.map((model) => model.slug)).toEqual([primary.model]);
     expect(result.otherPrimary).toEqual(
-      reviewerLimited ? undefined : { ...otherPrimary, providerInstanceId: second },
+      reviewerLimited
+        ? undefined
+        : {
+            ...otherPrimary,
+            options: [{ id: "reasoningEffort", value: "ultra" }],
+            providerInstanceId: second,
+          },
     );
     expect(
       result.otherProviders?.map((provider) => [
