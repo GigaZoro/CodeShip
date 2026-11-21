@@ -276,6 +276,10 @@
 - Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
 - A landing that joins the queue comes after every landing it finds waiting there, even when that landing's machine clock runs ahead; landings that join at the same moment, before either can see the other, go in the order of their machines' clocks. A queue of any length keeps moving, and a waiter reads a bounded part of it per poll. Entries origin will not delete block no one and are reported once: a crashed lander's, or a waiter's own old names, which no longer keep it from a free lease, and the waiter keeps renewing its entry, so it keeps its place. A landing whose entry origin refused joins again behind the landings that came meanwhile. A lander whose take reached origin while its answer was lost keeps the turn instead of waiting behind itself, unless the lease expired before the take was confirmed, and its checks get the time that lease has left.
 
+## 2026-11-21 — The ACP terminal kill test expects SIGTERM on Windows too
+
+- Maintainers: Effect's kill now ends a Windows process through Node's own handle, which reports the signal, so a killed ACP terminal command reports `SIGTERM` on Windows as it does elsewhere. The terminal kill test still expected no signal there and failed on every Windows run; it now expects `SIGTERM` on every platform. No change to the app.
+
 ## 2026-11-21 — `check:changed` keeps its pace on a busy Windows machine
 
 - Maintainers: on Windows, `check:changed` no longer starts PowerShell after each git call to end what git started once git has exited. It still ends the process tree of every check step, and of a git call that is killed or that leaves a process holding its output. Each walk took about 1.7 s on a machine at full CPU load, and a run makes 18 git calls one after another, so each `check-changed.test.ts` launcher test took 48 to 58 s there, close to the 60 s test limit, which a landing could then fail on load alone. They now take 16 to 24 s.

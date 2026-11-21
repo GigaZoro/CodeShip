@@ -136,12 +136,8 @@ describe("AcpClientTerminals", () => {
           terminalId: created.terminalId,
         });
         expect(exit.exitCode === 0 ? null : exit.exitCode).not.toBe(0);
-        // Windows has no signals: a killed process only reports an exit code.
-        if (yield* HostProcess.isWindows) {
-          expect(exit.signal).toBeNull();
-        } else {
-          expect(exit.signal).toBe("SIGTERM");
-        }
+        // Windows too: Effect's patched kill goes through Node's own handle, which reports the signal.
+        expect(exit.signal).toBe("SIGTERM");
 
         yield* terminals.release({ sessionId: "session", terminalId: created.terminalId });
         const rejected = yield* Effect.flip(
