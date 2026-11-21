@@ -169,6 +169,16 @@ it.effect("resolves only the requested active project page in creation order", (
         new Set(yield* Ref.get(inspected)),
         new Set(["/work/page-0", "/work/page-2", "/work/page-sentinel"]),
       );
+      assert.deepEqual(
+        Option.map(
+          yield* service.getWithRepositoryIdentity(ProjectId.make("page:3")),
+          (project) => project.repositoryIdentity?.canonicalKey,
+        ),
+        Option.some("example.test/work/page-3"),
+      );
+      assert.isTrue(
+        Option.isNone(yield* service.getWithRepositoryIdentity(ProjectId.make("page:1"))),
+      );
       const second = yield* service.listPage({ cursor: first.nextCursor!, limit: 2 });
       assert.deepEqual(
         second.projects.map((project) => project.id),

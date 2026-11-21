@@ -1,3 +1,10 @@
+## 2026-11-21 — Worktree helpers in another repository on a linked machine start from its default branch
+
+- `delegate_task` with `isolation: "worktree"`, a linked environment, and `target.projectId` naming a project of another repository there now starts the helper in a new worktree of that project from its default branch. Before, it passed your thread's commit, which that repository cannot have, and the launch failed with only "git worktree add failed". A project of your thread's repository still branches from your pushed commit.
+- A new worktree from a commit that neither the checkout nor its remote has is now refused before the thread is created, naming the commit, instead of failing later while the worktree is prepared.
+- A worktree from a missing commit now reports it as a missing ref (`ref_not_found`).
+- A local Git failure CodeShip cannot classify now ends its message with Git's last error lines, with quoted values, URLs, and paths replaced, so the failure can be traced without exposing names.
+
 ## 2026-11-21 — Every checkout runs the tracked push gate again
 
 - The machine configuration listed its Git settings twice, so only the second list applied and the machine check stopped pointing `core.hooksPath` at the tracked hooks in `.vite-hooks`. One list now holds both settings, so the check sets the hooks path and the one-day prune window on every machine.
