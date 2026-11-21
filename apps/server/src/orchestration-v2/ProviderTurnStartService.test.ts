@@ -24,9 +24,11 @@ import {
   RunId,
   ThreadId,
   ProjectId,
+  type OrchestrationV2ProviderFailure,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
+import { AwakeSinceWake } from "@t3tools/shared/AwakeTime";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -1991,12 +1993,23 @@ effectIt.effect.each([
   {
     message: "DESCRIPTION is not valid ACP JSON",
     pause: undefined,
+    sinceWakeMs: undefined,
     class: "provider_error",
     code: null,
   },
   {
     message: "getaddrinfo ENOTFOUND api.anthropic.com",
     pause: undefined,
+    sinceWakeMs: undefined,
+    class: "transport_error",
+    code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+  },
+  // Under a wrapper whose own text does not name the lost connection.
+  {
+    message: "Provider session failed",
+    cause: "getaddrinfo ENOTFOUND api.anthropic.com",
+    pause: undefined,
+    sinceWakeMs: undefined,
     class: "transport_error",
     code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   },
@@ -2004,6 +2017,7 @@ effectIt.effect.each([
   {
     message: "MCP server initialization timed out",
     pause: "sleep",
+    sinceWakeMs: undefined,
     class: "transport_error",
     code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   },
@@ -2011,24 +2025,46 @@ effectIt.effect.each([
   {
     message: "MCP server initialization timed out",
     pause: "stall",
+    sinceWakeMs: undefined,
     class: "transport_error",
     code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
     shown:
       "MCP server initialization timed out. The server stalled while this turn started. Its stalls are logged to event-loop-stalls.ndjson in the server's logs folder, ~/.t3/userdata/logs by default.",
   },
+  // A start right after a wake, before the network and sign-ins are back.
+  {
+    message: "DESCRIPTION is not valid ACP JSON",
+    pause: undefined,
+    sinceWakeMs: 30_000,
+    class: "transport_error",
+    code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+  },
+  {
+    message: "DESCRIPTION is not valid ACP JSON",
+    pause: undefined,
+    sinceWakeMs: 10 * 60_000,
+    class: "provider_error",
+    code: null,
+  },
 ] as const)(
-  "terminalizes a starting run when its provider session cannot open: $message after $pause",
+  "terminalizes a starting run when its provider session cannot open: $message after $pause, $sinceWakeMs ms after a wake",
   (row) =>
     Effect.gen(function* () {
       const mac = yield* sleepingTestClock;
       const { pause } = row;
       const harness = makeLocalCommandHarness({
         text: "Continue",
-        openFailure: new Error(row.message),
+        openFailure: new Error(
+          row.message,
+          "cause" in row ? { cause: new Error(row.cause) } : undefined,
+        ),
         ...(pause === undefined ? {} : { beforeOpenFailure: () => mac[pause]("8 hours") }),
       });
 
-      yield* harness.start.pipe(mac.provide);
+      yield* harness.start.pipe(
+        Effect.provideService(AwakeSinceWake, Effect.succeed(row.sinceWakeMs)),
+        mac.provide,
+      );
 
       expect(harness.open).toHaveBeenCalledOnce();
       expect(harness.startRootRun).not.toHaveBeenCalled();
@@ -2196,30 +2232,150 @@ effectIt.effect.each([
   }),
 );
 
-effectIt.effect("fails the run without a retry when the provider needs sign-in", () =>
-  Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({
-      text: "Continue",
-      openFailure: new ProviderAdapter.ProviderAdapterOpenSessionError({
-        driver: ProviderDriverKind.make("antigravity"),
-        providerSessionId: ProviderSessionId.make("new-provider-session"),
-        requiresSignIn: true,
-      }),
-    });
+effectIt.effect(
+  "fails the run without a retry when the provider needs sign-in, even across a sleep and after a wake",
+  () =>
+    Effect.gen(function* () {
+      const mac = yield* sleepingTestClock;
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        openFailure: new ProviderAdapter.ProviderAdapterOpenSessionError({
+          driver: ProviderDriverKind.make("antigravity"),
+          providerSessionId: ProviderSessionId.make("new-provider-session"),
+          requiresSignIn: true,
+        }),
+        beforeOpenFailure: () => mac.sleep("8 hours"),
+      });
 
-    yield* harness.startWithRetry;
+      yield* harness.startWithRetry.pipe(
+        Effect.provideService(AwakeSinceWake, Effect.succeed(30_000)),
+        mac.provide,
+      );
 
-    expect(harness.open).toHaveBeenCalledOnce();
-    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
-    expect(harness.projection().turnItems).toMatchObject([
-      {
-        type: "error",
-        status: "failed",
-        failure: {
-          class: "provider_error",
-          message: "Failed to open antigravity provider session new-provider-session.",
+      expect(harness.open).toHaveBeenCalledOnce();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(harness.projection().turnItems).toMatchObject([
+        {
+          type: "error",
+          status: "failed",
+          failure: {
+            class: "provider_error",
+            message: "Failed to open antigravity provider session new-provider-session.",
+          },
         },
-      },
+      ]);
+    }),
+);
+
+const START_FAILURE_MESSAGE =
+  "The provider could not start this turn. Retry the turn; if it keeps failing, check the provider setup and server logs.";
+
+effectIt.effect.each([
+  {
+    case: "30 seconds after a wake",
+    cause: "Query closed before response received",
+    beforePrompt: true,
+    pause: undefined,
+    sinceWakeMs: 30_000,
+    class: "transport_error",
+    code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+  },
+  // The adapter cannot say the prompt never arrived, so resending it could run it twice.
+  {
+    case: "30 seconds after a wake, the prompt perhaps delivered",
+    cause: "Query closed before response received",
+    beforePrompt: undefined,
+    pause: undefined,
+    sinceWakeMs: 30_000,
+    class: "provider_error",
+    code: null,
+  },
+  {
+    case: "10 minutes after a wake",
+    cause: "Query closed before response received",
+    beforePrompt: true,
+    pause: undefined,
+    sinceWakeMs: 10 * 60_000,
+    class: "provider_error",
+    code: null,
+  },
+  {
+    case: "30 seconds after a wake, for a reason the provider named",
+    cause: "previous_turn_active",
+    beforePrompt: true,
+    pause: undefined,
+    sinceWakeMs: 30_000,
+    class: "provider_error",
+    code: null,
+  },
+  {
+    case: "across a sleep",
+    cause: "Query closed before response received",
+    beforePrompt: true,
+    pause: "sleep",
+    sinceWakeMs: undefined,
+    class: "transport_error",
+    code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+  },
+  {
+    case: "for a lost connection",
+    cause: "getaddrinfo ENOTFOUND api.anthropic.com",
+    beforePrompt: true,
+    pause: undefined,
+    sinceWakeMs: undefined,
+    class: "transport_error",
+    code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+  },
+] as const)("records the cause of a provider turn that failed to start $case", (row) =>
+  Effect.gen(function* () {
+    const mac = yield* sleepingTestClock;
+    const { pause } = row;
+    const harness = makeLocalCommandHarness({ text: "Continue", nativeTurn: true });
+    const failures: Array<OrchestrationV2ProviderFailure> = [];
+    const driver = ProviderDriverKind.make("claudeAgent");
+    const cause =
+      row.cause === "previous_turn_active"
+        ? new ProviderAdapter.ProviderAdapterProtocolError({
+            driver,
+            detail: "turn still active",
+            reason: row.cause,
+          })
+        : new Error(row.cause);
+    harness.startRootRun.mockImplementation((runInput) =>
+      Effect.gen(function* () {
+        if (pause !== undefined) mac[pause]("8 hours");
+        const error = new ProviderAdapter.ProviderAdapterTurnStartError({
+          driver,
+          threadId: runInput.run.threadId,
+          providerThreadId: ProviderThreadId.make("provider-thread:start-failure"),
+          runId: runInput.run.id,
+          ...(row.beforePrompt === undefined ? {} : { beforePrompt: row.beforePrompt }),
+          cause,
+        });
+        failures.push(yield* runInput.startFailure(error));
+      }),
+    );
+
+    yield* harness.start.pipe(
+      Effect.provideService(AwakeSinceWake, Effect.succeed(row.sinceWakeMs)),
+      mac.provide,
+    );
+
+    expect(failures).toEqual([
+      expect.objectContaining({
+        class: row.class,
+        code: row.code,
+        ...(row.cause === "previous_turn_active"
+          ? {
+              message:
+                "The provider could not start this turn: the previous turn is still running. Retry the turn; if it keeps failing, check the provider setup and server logs.",
+              detail: `ProviderAdapterTurnStartError > ProviderAdapterProtocolError: ${cause.message}`,
+            }
+          : {
+              message: START_FAILURE_MESSAGE,
+              detail: `ProviderAdapterTurnStartError > Error: ${cause.message}`,
+            }),
+      }),
     ]);
   }),
 );

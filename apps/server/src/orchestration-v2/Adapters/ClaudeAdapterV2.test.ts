@@ -6671,21 +6671,22 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             stalled: row.stalled,
           }),
         });
-        const failure = makeProviderFailure({
-          cause: yield* Effect.flip(
-            harness.runtime.startTurn(
-              makeClaudeTestTurnInput({
-                threadId: harness.threadId,
-                providerThread: harness.providerThread,
-                now: yield* DateTime.now,
-                attemptId: RunAttemptId.make("attempt-mcp-timeout"),
-                text: "Implement.",
-                attachments: [],
-              }),
-            ),
+        const error = yield* Effect.flip(
+          harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-mcp-timeout"),
+              text: "Implement.",
+              attachments: [],
+            }),
           ),
-        });
+        );
+        const failure = makeProviderFailure({ cause: error });
         assert.deepEqual([failure.class, failure.code], [row.class, row.code]);
+        // Registration precedes queuing the prompt, so a retry cannot send it twice.
+        assert.deepInclude(error, { _tag: "ProviderAdapterTurnStartError", beforePrompt: true });
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

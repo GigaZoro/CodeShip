@@ -11487,6 +11487,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     threadId: turnInput.threadId,
                     providerThreadId: turnInput.providerThread.id,
                     runId: turnInput.runId,
+                    // Queuing the prompt is a prompt turn's last step that can fail, and a closed
+                    // queue is settled by whoever closed the query, so every failure here is earlier.
+                    ...(isClaudeProviderContinuationTurn(turnInput)
+                      ? {}
+                      : { beforePrompt: true as const }),
                     cause,
                   }),
               ),

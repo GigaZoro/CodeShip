@@ -1675,6 +1675,8 @@ export const OrchestrationV2ProviderFailure = Schema.Struct({
   resetAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** The model family a usage limit covers, as the provider's window names it (`opus`); absent for the whole account. */
   modelScope: Schema.optional(TrimmedNonEmptyString),
+  /** The cause's error tags and redacted innermost message, for diagnosis, when `message` is generic. Not shown. */
+  detail: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(1_024))),
 });
 export type OrchestrationV2ProviderFailure = typeof OrchestrationV2ProviderFailure.Type;
 

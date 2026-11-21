@@ -4,13 +4,19 @@ import { autoCoordinatorBriefInput } from "./autoCoordinatorAccount.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
-import { type AwakeWait, timeoutAwakeOrElse, watchWait } from "@t3tools/shared/AwakeTime";
+import {
+  AwakeSinceWake,
+  type AwakeWait,
+  timeoutAwakeOrElse,
+  watchWait,
+} from "@t3tools/shared/AwakeTime";
 import {
   CommandId,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2ExecutionNode,
+  type OrchestrationV2ProviderFailure,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
@@ -70,6 +76,8 @@ import {
   makeProviderFailure,
   promptNotSentFailure,
   providerErrorClass,
+  providerFailureDetail,
+  providerFailureExplained,
 } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
@@ -171,6 +179,7 @@ const isProviderStartStepTimeoutError = Schema.is(ProviderStartStepTimeoutError)
 const isProviderAdapterOpenSessionError = Schema.is(
   ProviderAdapter.ProviderAdapterOpenSessionError,
 );
+const isProviderAdapterTurnStartError = Schema.is(ProviderAdapter.ProviderAdapterTurnStartError);
 
 /**
  * Claude refuses these before it reads the prompt: replacing a process running background work,
@@ -190,9 +199,64 @@ const PROMPT_REFUSAL_TAGS = [
   "ClaudeTermsReviewRequiredError",
 ] as const;
 
+function causedBy(error: unknown, matches: (cause: object) => boolean): boolean {
+  const seen = new Set<unknown>();
+  for (let cause = error; Predicate.isObject(cause) && !seen.has(cause); cause = cause.cause) {
+    seen.add(cause);
+    if (matches(cause)) return true;
+  }
+  return false;
+}
+
+/** The provider refused the start before the prompt reached it, by its own report. */
 const refusedBeforePrompt = (error: unknown): boolean =>
-  PROMPT_REFUSAL_TAGS.some((tag) => Predicate.isTagged(error, tag)) ||
-  (Predicate.hasProperty(error, "cause") && refusedBeforePrompt(error.cause));
+  causedBy(
+    error,
+    (cause) =>
+      PROMPT_REFUSAL_TAGS.some((tag) => Predicate.isTagged(cause, tag)) ||
+      (isProviderAdapterTurnStartError(cause) && cause.beforePrompt === true),
+  );
+
+/** The account has to sign in again, which no retry fixes. */
+const requiresSignIn = (error: unknown): boolean =>
+  causedBy(
+    error,
+    (cause) => isProviderAdapterOpenSessionError(cause) && cause.requiresSignIn === true,
+  );
+
+// Starts fail for a while after a wake, as the network, DNS and sign-ins come back.
+const AFTER_WAKE_START_MS = 2 * 60_000;
+
+interface StartWait extends AwakeWait {
+  /** The start began within AFTER_WAKE_START_MS of awake time after the machine woke. */
+  readonly afterWake: boolean;
+}
+
+/**
+ * The agent never got the message, so a sleep, stall, lost connection or timeout (provider
+ * deadlines expire meanwhile) retries it, and so does an unexplained failure right after a wake.
+ */
+function unstartedTurnFailure(
+  error: unknown,
+  wait: StartWait | undefined,
+  shown?: { readonly message: string; readonly explained: boolean },
+): OrchestrationV2ProviderFailure {
+  if (requiresSignIn(error)) {
+    return makeProviderFailure({ cause: error, message: shown?.message, class: "provider_error" });
+  }
+  const explained = shown?.explained === true || providerFailureExplained(error);
+  const waitingFixes =
+    wait?.slept === true ||
+    wait?.stalled === true ||
+    (wait?.afterWake === true && !explained) ||
+    isProviderStartStepTimeoutError(error) ||
+    [shown?.message, providerFailureDetail(error)].some(
+      (text) => providerErrorClass(text) === "transport_error",
+    );
+  return waitingFixes
+    ? promptNotSentFailure(shown?.message, error)
+    : makeProviderFailure({ cause: error, message: shown?.message, class: "provider_error" });
+}
 
 interface UnstartedRunContext {
   readonly projection: Effect.Success<
@@ -264,6 +328,7 @@ export const layer: Layer.Layer<
       ProviderAdapterRegistry.ProviderAdapterRegistryV2,
     );
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
+    const awakeSinceWake = yield* AwakeSinceWake;
 
     const settleUnstartedRun = Effect.fn("orchestrationV2.providerTurnStart.settleBeforeStart")(
       function* (
@@ -375,7 +440,7 @@ export const layer: Layer.Layer<
           readonly title: string;
           readonly error: Error;
           readonly message?: string;
-          readonly wait?: AwakeWait;
+          readonly wait?: StartWait;
         },
       ) {
         const nestedCause = "cause" in failed.error ? failed.error.cause : undefined;
@@ -392,28 +457,27 @@ export const layer: Layer.Layer<
           failed.wait?.stalled === true && !providerMessage.includes(STALL_LOG_NOTE)
             ? `${providerMessage}${/[.!?]$/.test(providerMessage) ? "" : "."} The server stalled while this turn started. ${STALL_LOG_NOTE}`
             : providerMessage;
-        // The agent never saw the message, so a start that a sleep, a lost connection or a
-        // timeout (a loaded host recovers) stopped can go again on the retry worker's backoff.
-        // Any failure across a sleep or a server stall counts: a provider's wall-clock deadlines
-        // expire meanwhile.
-        const waitingFixes =
-          failed.wait?.slept === true ||
-          failed.wait?.stalled === true ||
-          isProviderStartStepTimeoutError(failed.error) ||
-          providerErrorClass(providerMessage) === "transport_error";
+        const failure = unstartedTurnFailure(failed.error, failed.wait, {
+          message,
+          explained: failed.message !== undefined,
+        });
+        // A worded failure keeps its cause off the chat, so the server log is where it stays.
+        if (failure.detail === undefined) {
+          yield* Effect.logError("orchestration-v2.provider-turn-start.failed", {
+            runId: context.run.id,
+            providerInstanceId: context.run.providerInstanceId,
+            class: failure.class,
+            code: failure.code,
+            cause: providerFailureDetail(failed.error),
+          });
+        }
         yield* settleUnstartedRun(context, {
           signal: failed.signal,
           status: "failed",
           now: yield* DateTime.now,
           providerInstanceId: context.run.providerInstanceId,
           itemProviderThreadId: context.run.providerThreadId,
-          item: {
-            type: "error",
-            title: failed.title,
-            failure: waitingFixes
-              ? promptNotSentFailure(message, failed.error)
-              : makeProviderFailure({ cause: failed.error, message, class: "provider_error" }),
-          },
+          item: { type: "error", title: failed.title, failure },
         });
       },
     );
@@ -653,7 +717,7 @@ export const layer: Layer.Layer<
       readonly threadId: ThreadId;
       readonly runId: RunId;
       readonly willRetry?: boolean;
-      readonly waitDuringStart: Effect.Effect<AwakeWait>;
+      readonly waitDuringStart: Effect.Effect<StartWait>;
     }) {
       const { runId } = input;
       const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
@@ -1052,12 +1116,12 @@ export const layer: Layer.Layer<
       );
       if (sessionResult._tag === "Failure") {
         const failure = sessionResult.failure;
-        if (failure._tag !== "ProviderStartStepTimeoutError") {
-          const requiresSignIn =
-            "cause" in failure &&
-            isProviderAdapterOpenSessionError(failure.cause) &&
-            failure.cause.requiresSignIn === true;
-          if (input.willRetry === true && !requiresSignIn) return yield* failure;
+        if (
+          failure._tag !== "ProviderStartStepTimeoutError" &&
+          input.willRetry === true &&
+          !requiresSignIn(failure)
+        ) {
+          return yield* failure;
         }
         yield* settleStartFailure({
           signal: "provider-session-open-failure",
@@ -2065,6 +2129,11 @@ export const layer: Layer.Layer<
         },
         modelSelection: run.modelSelection,
         runtimePolicy: resolvedRuntimePolicy,
+        // Only a start the adapter knows stopped before the prompt can be resent without running it twice.
+        startFailure: (error) =>
+          refusedBeforePrompt(error)
+            ? Effect.map(input.waitDuringStart, (wait) => unstartedTurnFailure(error, wait))
+            : Effect.succeed(makeProviderFailure({ cause: error, class: "provider_error" })),
       });
     });
 
@@ -2075,15 +2144,22 @@ export const layer: Layer.Layer<
           // Storage cleanup removes worktrees under the same lease. Only startup
           // holds it; the provider turn runs after it is released.
           const { thread } = yield* projectionStore.getThreadRecords(input.threadId, []);
-          const providerTurn = yield* Effect.scoped(
+          // The watch runs until the provider took the turn or refused it.
+          yield* Effect.scoped(
             Effect.gen(function* () {
-              const starting = start({ ...input, waitDuringStart: yield* watchWait });
-              return yield* thread.worktreePath === null
+              const sinceWake = yield* awakeSinceWake;
+              const afterWake = sinceWake !== undefined && sinceWake < AFTER_WAKE_START_MS;
+              const waitDuringStart = Effect.map(yield* watchWait, (wait): StartWait => ({
+                ...wait,
+                afterWake,
+              }));
+              const starting = start({ ...input, waitDuringStart });
+              const providerTurn = yield* thread.worktreePath === null
                 ? starting
                 : withWorkspaceLease(path.resolve(thread.worktreePath), starting);
+              if (providerTurn !== undefined) yield* providerTurn;
             }),
           );
-          if (providerTurn !== undefined) yield* providerTurn;
         },
         (effect, input) =>
           effect.pipe(

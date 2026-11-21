@@ -54,6 +54,7 @@ export function modelHoldScope(model: string): string {
 
 export const MAX_PROVIDER_FAILURE_MESSAGE_LENGTH = 4_096;
 const MAX_PROVIDER_FAILURE_CODE_LENGTH = 128;
+const MAX_PROVIDER_FAILURE_DETAIL_LENGTH = 1_024;
 
 const isProviderFailure = Schema.is(ProviderFailureSchema);
 
@@ -94,6 +95,7 @@ function curatedCauseMessages(cause: unknown): {
   readonly failure?: OrchestrationV2ProviderFailure;
   readonly known: string | undefined;
   readonly category: string | undefined;
+  readonly reason?: string;
 } {
   const seen = new Set<unknown>();
   let category: (typeof PROVIDER_FAILURE_CATEGORIES)[string];
@@ -177,7 +179,7 @@ function curatedCauseMessages(cause: unknown): {
       break;
     }
   }
-  return { known: undefined, category: categoryMessage() };
+  return { known: undefined, category: categoryMessage(), ...(reason ? { reason } : {}) };
 }
 
 // Only the structured status; stderr and the spawner cause can carry provider output.
@@ -196,6 +198,50 @@ function processExitStatus(exited: object): string {
  */
 export function knownProviderFailureMessage(cause: unknown): string | undefined {
   return curatedCauseMessages(cause).known;
+}
+
+/** Whether a failure names its reason: a domain error, or a typed provider protocol reason. */
+export function providerFailureExplained(cause: unknown): boolean {
+  const curated = curatedCauseMessages(cause);
+  return curated.known !== undefined || curated.reason !== undefined;
+}
+
+/**
+ * The tags of a cause chain and its innermost message, redacted and bounded: why a failure whose
+ * message is generic happened.
+ */
+export function providerFailureDetail(cause: unknown): string | undefined {
+  const seen = new Set<unknown>();
+  const tags: Array<string> = [];
+  let message: string | undefined;
+  for (let depth = 0; depth < 16 && cause != null && !seen.has(cause); depth++) {
+    seen.add(cause);
+    try {
+      if (Cause.isCause(cause)) {
+        cause = Cause.squash(cause);
+        continue;
+      }
+      if (typeof cause === "string") {
+        message = cause.trim() || message;
+        break;
+      }
+      if (typeof cause !== "object") break;
+      const { _tag: tag, stderr } = cause as Record<string, unknown>;
+      if (typeof tag === "string") tags.push(tag);
+      else if (cause instanceof Error) tags.push(cause.name);
+      if (stderr !== undefined) {
+        // Its message repeats the process output, which can carry the prompt or credentials.
+        message = `process exited${processExitStatus(cause)}`;
+        break;
+      }
+      message = stringField(cause, "message")?.trim() || message;
+      cause = (cause as Record<string, unknown>).cause;
+    } catch {
+      break;
+    }
+  }
+  const detail = [tags.join(" > "), message].filter(Boolean).join(": ");
+  return boundedText(detail, MAX_PROVIDER_FAILURE_DETAIL_LENGTH).trim() || undefined;
 }
 
 function stringField(value: unknown, key: "message" | "code"): string | undefined {
@@ -289,12 +335,20 @@ export function makeProviderFailure(input: {
   readonly retryable?: boolean | null;
   readonly resetAt?: string | null;
   readonly modelScope?: string | undefined;
+  readonly detail?: string | undefined;
 }): OrchestrationV2ProviderFailure {
   const curated = curatedCauseMessages(input.cause);
   if (curated.failure !== undefined)
     return makeProviderFailure({ ...curated.failure, resetAt: curated.failure.resetAt ?? null });
   const rawMessage =
     input.message ?? curated.known ?? curated.category ?? DEFAULT_PROVIDER_FAILURE_MESSAGE;
+  // A caller that words the message keeps the cause out: it can carry another tool's private output.
+  const detail =
+    input.detail === undefined
+      ? input.message === undefined && curated.known === undefined
+        ? providerFailureDetail(input.cause)
+        : undefined
+      : boundedText(input.detail, MAX_PROVIDER_FAILURE_DETAIL_LENGTH).trim() || undefined;
   const message = boundedText(rawMessage, MAX_PROVIDER_FAILURE_MESSAGE_LENGTH);
   const rawCode = input.code ?? stringField(input.cause, "code") ?? null;
   const code =
@@ -306,6 +360,7 @@ export function makeProviderFailure(input: {
     code,
     retryable: input.retryable ?? null,
     ...(input.modelScope === undefined ? {} : { modelScope: input.modelScope }),
+    ...(detail === undefined ? {} : { detail }),
     ...(input.class === "usage_limit" &&
     input.resetAt != null &&
     Number.isFinite(Date.parse(input.resetAt))
@@ -316,7 +371,7 @@ export function makeProviderFailure(input: {
 
 /** The agent did not start before it received the message, for a reason that waiting fixes. */
 export function promptNotSentFailure(
-  message: string,
+  message: string | undefined,
   cause?: unknown,
 ): OrchestrationV2ProviderFailure {
   return makeProviderFailure({

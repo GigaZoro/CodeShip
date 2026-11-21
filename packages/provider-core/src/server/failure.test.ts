@@ -48,6 +48,11 @@ it("redacts credentials and URL secrets from provider failures", () => {
   assert.notInclude(failure.message, "4321");
   assert.notInclude(failure.message, "8765");
   assert.include(failure.message, "for [email]");
+  const detail = makeProviderFailure({
+    cause: new Error("request failed: Authorization: Bearer detail-secret"),
+  }).detail;
+  assert.include(detail, "[REDACTED]");
+  assert.notInclude(detail, "detail-secret");
 });
 
 it("redacts credentials whose key names end in a credential word", () => {
@@ -74,22 +79,45 @@ it("does not split a surrogate pair at the truncation boundary", () => {
   assert.notMatch(failure.message.slice(0, -1), /[\uD800-\uDBFF]$/u);
 });
 
-it("does not expose arbitrary cause messages and preserves explicit messages", () => {
+it("does not show arbitrary cause messages, keeps them as detail, and preserves explicit messages", () => {
   const cause = new Error("Adapter failed", {
     cause: new Error("Session expired. Sign in again."),
   });
-  for (const value of [
-    cause,
-    Cause.fail(cause),
-    "Session expired. Sign in again.",
-    { message: "Session expired. Sign in again." },
-  ]) {
-    assert.equal(makeProviderFailure({ cause: value }).message, "Provider turn failed.");
-    assert.equal(
-      makeProviderFailure({ cause: value, message: "Provider connection closed." }).message,
-      "Provider connection closed.",
-    );
+  for (const [value, detail] of [
+    [cause, "Error > Error: Session expired. Sign in again."],
+    [Cause.fail(cause), "Error > Error: Session expired. Sign in again."],
+    ["Session expired. Sign in again.", "Session expired. Sign in again."],
+    [{ message: "Session expired. Sign in again." }, "Session expired. Sign in again."],
+    [new Error(" \n "), "Error"],
+    [" ", undefined],
+  ] as const) {
+    const failure = makeProviderFailure({ cause: value });
+    assert.equal(failure.message, "Provider turn failed.");
+    assert.equal(failure.detail, detail);
+    const explicit = makeProviderFailure({ cause: value, message: "Provider connection closed." });
+    assert.equal(explicit.message, "Provider connection closed.");
+    assert.isUndefined(explicit.detail);
   }
+  const exited = makeProviderFailure({
+    cause: {
+      _tag: "ProviderAdapterTurnStartError",
+      cause: {
+        _tag: "CodexAppServerProcessExitedError",
+        code: 1,
+        stderr: "private prompt text",
+        message: "Codex App Server process exited with code 1: private prompt text",
+      },
+    },
+  });
+  assert.equal(
+    exited.detail,
+    "ProviderAdapterTurnStartError > CodexAppServerProcessExitedError: process exited with code 1",
+  );
+  assert.equal(
+    makeProviderFailure({ cause, detail: " \u001b[31mtoken=detail-secret " }).detail,
+    "token=[REDACTED]",
+  );
+  assert.isUndefined(makeProviderFailure({ cause, detail: " " }).detail);
 });
 
 it("preserves T3.CodeShip's own actionable errors wrapped by turn startup", () => {
