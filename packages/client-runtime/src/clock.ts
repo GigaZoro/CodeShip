@@ -158,34 +158,51 @@ export function deadlineStore(deadlineMs: number | null): DeadlineStore {
 /** Usage reads one wall clock, with an extra notification when an account resets mid-minute. */
 export function usageClock(resetTimes: readonly number[] = []): ClockStore<number> {
   const resets = [...new Set(resetTimes.filter(Number.isFinite))].sort((a, b) => a - b);
-  return {
-    getSnapshot: () => {
-      const minute = Date.parse(`${minuteTick.getSnapshot()}:00Z`);
-      const now = Date.now();
-      return resets.findLast((reset) => reset <= now && reset > minute) ?? minute;
-    },
-    subscribe: (listener) => {
-      const releaseMinute = minuteTick.subscribe(listener);
-      let releaseReset: (() => void) | undefined;
-      const subscribeToNextReset = () => {
-        const now = Date.now();
-        const next = resets.find((reset) => reset > now);
-        if (next === undefined) return;
-        const deadline = deadlineStore(next);
-        const advance = () => {
-          releaseReset?.();
-          subscribeToNextReset();
-        };
-        releaseReset = deadline.subscribe(() => {
-          advance();
-          listener();
-        });
-        if (deadline.getSnapshot()) advance();
-      };
+  const read = () => {
+    const minute = Date.parse(`${minuteTick.getSnapshot()}:00Z`);
+    const now = Date.now();
+    return resets.findLast((reset) => reset <= now && reset > minute) ?? minute;
+  };
+  let value = read();
+  const listeners = new Set<() => void>();
+  let releaseMinute: (() => void) | undefined;
+  let releaseReset: (() => void) | undefined;
+  const publish = () => {
+    const next = read();
+    if (next === value) return;
+    value = next;
+    for (const listener of listeners) listener();
+  };
+  const subscribeToNextReset = () => {
+    releaseReset?.();
+    releaseReset = undefined;
+    const now = Date.now();
+    const next = resets.find((reset) => reset > now);
+    if (next === undefined) return;
+    const deadline = deadlineStore(next);
+    releaseReset = deadline.subscribe(() => {
       subscribeToNextReset();
+      publish();
+    });
+    if (deadline.getSnapshot()) subscribeToNextReset();
+  };
+  return {
+    getSnapshot: () => (listeners.size === 0 ? read() : value),
+    subscribe: (listener) => {
+      if (listeners.size === 0) {
+        releaseMinute = minuteTick.subscribe(publish);
+        subscribeToNextReset();
+        value = read();
+      }
+      listeners.add(listener);
       return () => {
-        releaseMinute();
-        releaseReset?.();
+        listeners.delete(listener);
+        if (listeners.size === 0) {
+          releaseMinute?.();
+          releaseReset?.();
+          releaseMinute = undefined;
+          releaseReset = undefined;
+        }
       };
     },
   };

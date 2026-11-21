@@ -4,6 +4,8 @@ import {
   ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
+import { useUsageLimitNow } from "../../hooks/useUsageNow";
 import { CHATGPT_USAGE_URL } from "@t3tools/shared/usageLimits";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -84,7 +86,9 @@ describe("UsageLimitsPooled ChatGPT usage card", () => {
         },
       ],
     ]);
-    await using screen = await render(<UsageLimitsPooled presentations={presentations} />);
+    await using screen = await render(
+      <UsageLimitsPooled presentations={presentations} now={Date.parse(checkedAt)} />,
+    );
 
     await expect.element(screen.getByRole("heading", { name: "Codex" })).toBeVisible();
     await expect
@@ -128,7 +132,11 @@ it("updates the limit countdown at the minute and reset boundaries", async () =>
   using _timers = fakeTimers();
   vi.setSystemTime(new Date(checkedAt));
   const presentations = accountReadings(["Alpha", "2026-10-25T16:01:30.000Z"]);
-  await using screen = await render(<UsageLimitsPooled presentations={presentations} />);
+  const all = Atom.make(presentations);
+  function Limits() {
+    return <UsageLimitsPooled presentations={presentations} now={useUsageLimitNow(all)} />;
+  }
+  await using screen = await render(<Limits />);
   const segment = screen.getByRole("button", { name: /Alpha: 80% left/ });
   await expect.element(segment).toHaveAccessibleName(/1m/);
   await act(() => vi.advanceTimersByTimeAsync(60_000));
@@ -141,12 +149,45 @@ it("keeps pooled account columns stable when the reset order changes", async () 
   const early = "2026-10-25T17:00:00.000Z";
   const late = "2026-10-25T18:00:00.000Z";
   await using screen = await render(
-    <UsageLimitsPooled presentations={accountReadings(["Alpha", early], ["Beta", late])} />,
+    <UsageLimitsPooled
+      presentations={accountReadings(["Alpha", early], ["Beta", late])}
+      now={Date.parse(checkedAt)}
+    />,
   );
   const alpha = screen.getByRole("button", { name: /Alpha: 80% left/ });
   await expect.element(alpha).toHaveStyle("grid-column: 1");
   await screen.rerender(
-    <UsageLimitsPooled presentations={accountReadings(["Alpha", late], ["Beta", early])} />,
+    <UsageLimitsPooled
+      presentations={accountReadings(["Alpha", late], ["Beta", early])}
+      now={Date.parse(checkedAt)}
+    />,
   );
   await expect.element(alpha).toHaveStyle("grid-column: 1");
+});
+
+it("uses hidden accounts' deadlines for the filtered Limits countdown", async () => {
+  using _timers = fakeTimers();
+  vi.setSystemTime(new Date(checkedAt));
+  const beta = ["Beta", "2026-10-25T16:02:10.000Z"] as const;
+  const full = accountReadings(["Alpha", "2026-10-25T16:00:30.000Z"], beta);
+  const filtered = accountReadings(beta);
+  const all = Atom.make(full);
+
+  function Limits() {
+    const now = useUsageLimitNow(all);
+    return (
+      <>
+        <UsageLimitsPooled presentations={full} now={now} />
+        <UsageLimitsPooled presentations={filtered} now={now} />
+      </>
+    );
+  }
+
+  await using screen = await render(<Limits />);
+  const rows = screen.getByRole("button", { name: /Beta: 80% left/ });
+  await expect.element(rows.nth(0)).toHaveAccessibleName(/2m/);
+  await expect.element(rows.nth(1)).toHaveAccessibleName(/2m/);
+  await act(() => vi.advanceTimersByTimeAsync(40_000));
+  await expect.element(rows.nth(0)).toHaveAccessibleName(/1m/);
+  await expect.element(rows.nth(1)).toHaveAccessibleName(/1m/);
 });

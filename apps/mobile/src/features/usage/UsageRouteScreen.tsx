@@ -1,8 +1,10 @@
 import { Notice } from "../../components/ui/Notice";
-import { useUsageNow } from "../../lib/clock";
+import { useNowMinuteMs } from "../../lib/clock";
 import {
   mergeAnsweredUsage,
   retainedUsageLabel,
+  refreshingUsageProviders,
+  usageCoverageEnvironments,
   usageEnvironmentError,
   usageGaps,
 } from "@t3tools/client-runtime/state/usage-progress";
@@ -37,13 +39,20 @@ import {
   makeWindow,
   usageSourceMessages,
 } from "@t3tools/shared/usageFormat";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  use,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
 import { AccessibilityInfo, Platform, Pressable, RefreshControl, View } from "react-native";
 import Animated, { FadeIn, ReduceMotion } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
-import { useReduceMotionEnabled } from "../../lib/appState";
 import { AppText as Text } from "../../components/ui/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { cn } from "../../lib/cn";
@@ -122,7 +131,7 @@ function UsageScreen(props: {
   const wide = width >= WIDE_WIDTH;
   const [windowDays, selectWindow] = useState(30);
   const resolution = windowDays === 1 ? "hour" : "day";
-  const now = useUsageNow();
+  const now = useNowMinuteMs();
   const window = makeWindow(windowDays, new Date(now), resolution);
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
@@ -141,7 +150,10 @@ function UsageScreen(props: {
     void refresh();
     void limits.refreshAfterEnable();
   };
-  const coverage = usageGaps(shownEnvironments, merged.contractMismatches);
+  const coverage = usageGaps(
+    usageCoverageEnvironments(shownEnvironments, environments),
+    merged.contractMismatches,
+  );
   const sourceMessages = usageSourceMessages(
     shownEnvironments.flatMap((environment) => environment.summary?.sources ?? []),
   );
@@ -201,7 +213,8 @@ function UsageScreen(props: {
   };
   const providers = (
     <ProviderSection
-      merged={merged}
+      providers={shown?.providers ?? []}
+      refreshingProviders={showingKept ? new Set() : refreshingUsageProviders(selectedEnvironments)}
       metric={metric}
       cursorAccessEnvironments={cursorKeychainAccessEnvironments(shownEnvironments)}
       showCursorEnvironment={selectedEnvironments.length > 1}
@@ -401,15 +414,20 @@ function UsageScreen(props: {
                   >
                     {t("Scanning provider transcripts…")}
                   </Text>
-                ) : shownEnvironments.every(({ summary }) => summary === null) ? (
+                ) : !shown.hasAnswer ? (
                   <View className="gap-2 py-16">
                     {selectedEnvironments.map((environment) => {
-                      const error = usageEnvironmentError(environment);
-                      return error === null ? null : (
+                      const error =
+                        usageEnvironmentError(environment) ??
+                        coverage?.gaps.find(
+                          (gap) => gap.environment.environmentId === environment.environmentId,
+                        )?.message;
+                      return error == null ? null : (
                         <Notice
                           key={environment.environmentId}
                           message={
-                            selectedEnvironments.length > 1
+                            selectedEnvironments.length > 1 &&
+                            usageEnvironmentError(environment) !== null
                               ? t("{environment}: {error}", {
                                   environment: environment.label,
                                   error,
@@ -493,6 +511,13 @@ function UsageScreen(props: {
   );
 }
 
+const RetainedFigures = createContext(false);
+
+function UsageFigure({ className, ...props }: ComponentProps<typeof Text>) {
+  const retained = use(RetainedFigures);
+  return <Text {...props} className={cn(className, retained && "text-foreground-muted")} />;
+}
+
 function UsageUpdating({
   dimmed,
   announce,
@@ -504,20 +529,11 @@ function UsageUpdating({
   readonly label: string | null;
   readonly children: ReactNode;
 }) {
-  const reduceMotion = useReduceMotionEnabled();
-  // The delay keeps a quick refresh from flashing the content.
-  const dimStyle = {
-    opacity: dimmed ? 0.5 : 1,
-    transitionProperty: "opacity",
-    transitionDuration: reduceMotion ? 0 : 150,
-    transitionDelay: dimmed ? 150 : 0,
-  } as const;
-
   return (
     <View>
-      <Animated.View style={dimStyle} className="gap-6" accessibilityState={{ busy: dimmed }}>
-        {children}
-      </Animated.View>
+      <View className="gap-6" accessibilityState={{ busy: dimmed }}>
+        <RetainedFigures.Provider value={dimmed}>{children}</RetainedFigures.Provider>
+      </View>
       {label !== null ? (
         <Animated.View
           entering={FadeIn.delay(150).duration(150).reduceMotion(ReduceMotion.System)}
@@ -736,9 +752,9 @@ function UsageSummary(props: { readonly merged: MergedUsage; readonly metric: Us
       <Text className="text-sm text-foreground-muted">
         {metric === "cost" ? t("Raw token cost") : t("Processed tokens")}
       </Text>
-      <Text className="text-4xl font-t3-bold tabular-nums text-foreground">
+      <UsageFigure className="text-4xl font-t3-bold tabular-nums text-foreground">
         {metric === "cost" ? `${formatUsd(merged.costUsd)}*` : formatTokens(merged.totalTokens)}
-      </Text>
+      </UsageFigure>
       <Text className="text-sm text-foreground-muted">
         {metric === "cost"
           ? t("* if billed at full API rate")
@@ -749,7 +765,8 @@ function UsageSummary(props: { readonly merged: MergedUsage; readonly metric: Us
 }
 
 function ProviderSection(props: {
-  readonly merged: MergedUsage;
+  readonly providers: MergedUsage["providers"];
+  readonly refreshingProviders: ReadonlySet<UsageProviderKind>;
   readonly metric: UsageChartMetric;
   readonly cursorAccessEnvironments: readonly EnvironmentUsageStatus[];
   readonly showCursorEnvironment: boolean;
@@ -758,12 +775,12 @@ function ProviderSection(props: {
   /** Drops the share bar so the list fits beside the chart. */
   readonly compact: boolean;
 }) {
-  const { merged, metric } = props;
+  const { providers, metric } = props;
   const colors = useProviderColors();
-  if (merged.providers.length === 0 && props.cursorAccessEnvironments.length === 0) return null;
+  if (providers.length === 0 && props.cursorAccessEnvironments.length === 0) return null;
 
   // Hermes lacks toSorted.
-  const ordered = [...merged.providers].sort((a, b) =>
+  const ordered = [...providers].sort((a, b) =>
     metric === "cost" ? b.costUsd - a.costUsd : b.totalTokens - a.totalTokens,
   );
   const rows: Array<
@@ -823,8 +840,11 @@ function ProviderSection(props: {
                 >
                   {PROVIDER_LABEL[provider.provider]}
                 </Text>
+                {props.refreshingProviders.has(provider.provider) ? (
+                  <Text className="text-xs text-foreground-muted">{t("Updating…")}</Text>
+                ) : null}
               </View>
-              <Text
+              <UsageFigure
                 className={
                   props.compact
                     ? "text-base tabular-nums text-foreground"
@@ -834,7 +854,7 @@ function ProviderSection(props: {
                 {metric === "cost"
                   ? formatUsd(provider.costUsd)
                   : formatTokens(provider.totalTokens)}
-              </Text>
+              </UsageFigure>
             </View>
             {props.compact ? null : (
               <View className="h-1 flex-row overflow-hidden rounded-full bg-subtle">
@@ -1009,7 +1029,9 @@ function ShareBar(props: {
           <View key={segment.label} className="flex-row items-center gap-1.5">
             <View className="size-2 rounded-sm" style={{ backgroundColor: segment.color }} />
             <Text className="text-sm text-foreground-muted">{segment.label}</Text>
-            <Text className="text-sm tabular-nums text-foreground">{formatUsd(segment.value)}</Text>
+            <UsageFigure className="text-sm tabular-nums text-foreground">
+              {formatUsd(segment.value)}
+            </UsageFigure>
           </View>
         ))}
       </View>
@@ -1026,7 +1048,9 @@ function MetricCell(props: {
   return (
     <View className="gap-0.5 p-4" style={{ width: `${100 / props.columns}%` }}>
       <Text className="text-sm text-foreground-muted">{props.label}</Text>
-      <Text className="text-xl font-t3-medium tabular-nums text-foreground">{props.value}</Text>
+      <UsageFigure className="text-xl font-t3-medium tabular-nums text-foreground">
+        {props.value}
+      </UsageFigure>
       <Text className="text-xs text-foreground-tertiary">{props.detail}</Text>
     </View>
   );
@@ -1087,13 +1111,13 @@ function ModelsSection(props: {
                       })}
               </Text>
             </View>
-            <Text className="text-base tabular-nums text-foreground">
+            <UsageFigure className="text-base tabular-nums text-foreground">
               {metric === "tokens"
                 ? formatTokens(model.totalTokens)
                 : isModelCostUnknown(model)
                   ? t("Unpriced")
                   : formatUsd(model.costUsd)}
-            </Text>
+            </UsageFigure>
           </View>
         ))}
       </View>

@@ -1,4 +1,4 @@
-import { useUsageNow } from "../../hooks/useUsageNow";
+import { useUsageLimitNow } from "../../hooks/useUsageNow";
 import { useAtomValue } from "@effect/atom-react";
 import {
   collectLimitAccounts,
@@ -21,7 +21,7 @@ import { t, tn } from "~/i18n";
 export function useLimitPools() {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
   const accounts = collectLimitAccounts(presentations);
-  const now = useUsageNow(accounts);
+  const now = useUsageLimitNow();
   return { pools: collectLimitPools(accounts, now), now };
 }
 

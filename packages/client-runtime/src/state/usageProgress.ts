@@ -1,3 +1,6 @@
+import { Atom } from "effect/reactivity";
+import { limitResetTimes, type LimitPresentations } from "@t3tools/shared/usageLimits";
+import { usageClock } from "../clock.ts";
 import {
   USAGE_CONTRACT_VERSION,
   type EnvironmentId,
@@ -8,7 +11,12 @@ import {
   type UsageSummaryInput,
 } from "@t3tools/contracts";
 import { formatUsageContractMismatch, usageWindowLabel } from "@t3tools/shared/usageFormat";
-import { mergeUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
+import {
+  isCompatibleUsageContractVersion,
+  mergeUsage,
+  type MergedUsage,
+  type ProviderTotals,
+} from "@t3tools/shared/usageMerge";
 import { t } from "@t3tools/shared/i18n";
 
 interface UsageProgressEnvironment {
@@ -144,12 +152,38 @@ export function mergeAnsweredUsage(
   );
 }
 
+function hasCompatibleUsage({ summary }: EnvironmentUsageStatus): boolean {
+  return (
+    summary !== null &&
+    isCompatibleUsageContractVersion(summary.contractVersion, USAGE_CONTRACT_VERSION)
+  );
+}
+
+export function refreshingUsageProviders(
+  environments: readonly EnvironmentUsageStatus[],
+  hidden: ReadonlySet<UsageProviderKind> = new Set(),
+): ReadonlySet<UsageProviderKind> {
+  return new Set(
+    environments.flatMap((environment) =>
+      environment.isConnected && environment.isPending && hasCompatibleUsage(environment)
+        ? (environment.summary?.sources ?? []).flatMap(
+            ({ refreshing, fingerprint: { provider } }) =>
+              refreshing && !hidden.has(provider) ? [provider] : [],
+          )
+        : [],
+    ),
+  );
+}
+
 export interface UsageSnapshot {
   readonly key: string;
   readonly window: UsageSummaryInput;
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
   readonly environments: readonly EnvironmentUsageStatus[];
   readonly merged: ReturnType<typeof mergeAnsweredUsage>;
+  readonly hasAnswer: boolean;
+  readonly providers: readonly ProviderTotals[];
+  readonly reservedProviders: ReadonlySet<UsageProviderKind>;
 }
 
 export function settleUsageSnapshot(
@@ -161,11 +195,13 @@ export function settleUsageSnapshot(
 ): UsageSnapshot | null {
   if (selected.length === 0) return null;
   const key = usageSelectionKey(window, selected, hidden);
+  if (previous?.key === key && equalUsageStatuses(previous.environments, selected)) return previous;
+
   const kept =
-    previous?.environments.some(({ summary }) => summary !== null) &&
+    previous?.hasAnswer &&
     previous.environments.every(
       (environment) =>
-        environment.summary === null ||
+        !hasCompatibleUsage(environment) ||
         environments.some(
           (current) =>
             current.environmentId === environment.environmentId && current.canReadDiagnostics,
@@ -173,41 +209,85 @@ export function settleUsageSnapshot(
     )
       ? previous
       : null;
+  const keepDuringRefresh =
+    kept?.key === key && refreshingUsageProviders(kept.environments).size === 0;
   if (
     selected.some(
       ({ summary, isConnected, isPending, error }) =>
-        error === null && isConnected && isPending && (summary === null || kept?.key === key),
+        error === null && isConnected && isPending && (summary === null || keepDuringRefresh),
     )
   )
     return kept;
-  if (kept?.key === key && equalUsageStatuses(kept.environments, selected)) return kept;
+
   const hiddenProviders = new Set(hidden);
+  const merged = mergeAnsweredUsage(
+    hiddenProviders.size === 0
+      ? selected
+      : selected.map((environment) =>
+          environment.summary === null
+            ? environment
+            : {
+                ...environment,
+                summary: {
+                  ...environment.summary,
+                  buckets: environment.summary.buckets.filter(
+                    (bucket) => !hiddenProviders.has(bucket.provider),
+                  ),
+                  sources: environment.summary.sources.filter(
+                    (source) => !hiddenProviders.has(source.fingerprint.provider),
+                  ),
+                },
+              },
+        ),
+  );
+  const reservedProviders = new Set([
+    ...(kept?.key === key ? kept.reservedProviders : []),
+    ...refreshingUsageProviders(selected, hiddenProviders),
+  ]);
+  const active = merged.providers.filter(
+    ({ costUsd, totalTokens, sessions }) => costUsd > 0 || totalTokens > 0 || sessions > 0,
+  );
+  const represented = new Set(active.map(({ provider }) => provider));
+  const providers = [
+    ...active,
+    ...[...reservedProviders].flatMap((provider) =>
+      represented.has(provider)
+        ? []
+        : [
+            {
+              provider,
+              costUsd: 0,
+              totalTokens: 0,
+              records: 0,
+              sessions: 0,
+              costShare: 0,
+              tokenShare: 0,
+            },
+          ],
+    ),
+  ];
   return {
     key,
     window,
-    environments: selected,
     hiddenProviders,
-    merged: mergeAnsweredUsage(
-      hiddenProviders.size === 0
-        ? selected
-        : selected.map((environment) =>
-            environment.summary === null
-              ? environment
-              : {
-                  ...environment,
-                  summary: {
-                    ...environment.summary,
-                    buckets: environment.summary.buckets.filter(
-                      (bucket) => !hiddenProviders.has(bucket.provider),
-                    ),
-                    sources: environment.summary.sources.filter(
-                      (source) => !hiddenProviders.has(source.fingerprint.provider),
-                    ),
-                  },
-                },
-          ),
-    ),
+    environments: selected,
+    merged,
+    hasAnswer: selected.some(hasCompatibleUsage),
+    providers,
+    reservedProviders,
   };
+}
+
+export function usageCoverageEnvironments(
+  represented: readonly EnvironmentUsageStatus[],
+  live: readonly EnvironmentUsageStatus[],
+): readonly EnvironmentUsageStatus[] {
+  return represented.map((environment) => {
+    const current = live.find(({ environmentId }) => environmentId === environment.environmentId);
+    return current === undefined || current === environment
+      ? environment
+      : { ...current, summary: environment.summary };
+  });
 }
 
 export function isKeptUsage(
@@ -236,7 +316,7 @@ function usageSelectionKey(
 export function retainedUsageLabel(snapshot: UsageSnapshot, hour12?: boolean): string {
   return t("Showing previous usage for {environments} · {period}", {
     environments: snapshot.environments
-      .filter(({ summary }) => summary !== null)
+      .filter(hasCompatibleUsage)
       .map(({ label }) => label)
       .join(", "),
     period: usageWindowLabel(snapshot.window, hour12),
@@ -295,3 +375,12 @@ export function usageGaps(
         : t("Totals leave out {count} environments", { count: excluded.length });
   return { title, gaps };
 }
+
+export const usageLimitClockAtom = Atom.family((presentations: Atom.Atom<LimitPresentations>) =>
+  Atom.make((get) =>
+    JSON.stringify([...new Set(limitResetTimes(get(presentations)))].sort((a, b) => a - b)),
+  ).pipe(
+    Atom.map((resetTimes) => usageClock(JSON.parse(resetTimes) as number[])),
+    Atom.withLabel("usage-limit-clock"),
+  ),
+);

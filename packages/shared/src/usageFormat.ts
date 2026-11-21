@@ -174,7 +174,7 @@ export function enumerateHourStarts(sinceTime: string, untilTime: string): reado
   const end = Date.parse(untilTime);
   if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return starts;
 
-  for (let cursor = start; cursor < end; cursor += HOUR_MS) {
+  for (let cursor = Math.floor(start / HOUR_MS) * HOUR_MS; cursor < end; cursor += HOUR_MS) {
     starts.push(new Date(cursor).toISOString());
   }
   return starts;
@@ -270,13 +270,17 @@ export function formatRelativeHourShort(
 export function usageWindowLabel(window: UsageSummaryInput, hour12 = true): string {
   const { sinceTime, untilTime, timeZone } = window;
   if (window.resolution === "hour" && sinceTime !== undefined && untilTime !== undefined) {
+    const format = dateTimeFormatter(displayLocale(), {
+      timeZone,
+      month: "short",
+      day: "numeric",
+      hour: hour12 ? "numeric" : "2-digit",
+      minute: "2-digit",
+      ...(hour12 ? { hour12: true } : { hourCycle: "h23" }),
+    });
     return t("{from} to {to}", {
-      from: formatDateTimeShort(sinceTime, timeZone, hour12),
-      to: formatDateTimeShort(
-        new Date(Date.parse(untilTime) - HOUR_MS).toISOString(),
-        timeZone,
-        hour12,
-      ),
+      from: format.format(new Date(sinceTime)),
+      to: format.format(new Date(untilTime)),
     });
   }
   return t("{from} to {to}", {
@@ -310,13 +314,14 @@ export function makeWindow(
   }
   const untilDay = format.format(now);
   if (resolution === "hour") {
-    const untilTimeMs = (Math.floor(now.getTime() / HOUR_MS) + 1) * HOUR_MS;
+    const minuteMs = 60_000;
+    const untilTimeMs = Math.floor(now.getTime() / minuteMs) * minuteMs;
     const sinceTimeMs = untilTimeMs - days * 24 * HOUR_MS;
     const sinceTime = new Date(sinceTimeMs);
     const untilTime = new Date(untilTimeMs);
     return {
       sinceDay: UsageDay.make(format.format(sinceTime)),
-      untilDay: UsageDay.make(format.format(new Date(untilTimeMs - 1))),
+      untilDay: UsageDay.make(format.format(untilTime)),
       timeZone,
       resolution,
       sinceTime: sinceTime.toISOString(),

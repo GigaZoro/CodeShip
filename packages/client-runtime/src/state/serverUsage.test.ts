@@ -278,6 +278,29 @@ it.effect("restarts a pending usage read after a price change", () =>
   ),
 );
 
+it.effect("publishes the first usage answer while the slow follow-up is pending", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const finish = yield* Deferred.make<void>();
+      const harness = yield* makeRefreshingHarness(Deferred.await(finish));
+      const summary = harness.summary();
+      const unmount = harness.registry.mount(summary);
+      yield* Deferred.await(harness.followUpStarted);
+
+      const initial = harness.registry.get(summary);
+      expect(AsyncResult.isSuccess(initial) && initial.waiting).toBe(true);
+      if (!AsyncResult.isSuccess(initial)) throw new Error("Expected the first usage answer");
+      expect(initial.value.buckets[0]?.totals.uncachedInputTokens).toBe(1_000_000);
+      expect(initial.value.sources).toEqual([cursorSource(true)]);
+
+      yield* Deferred.succeed(finish, undefined);
+      const result = yield* settledUsage(harness.registry, summary);
+      expect(AsyncResult.isSuccess(result) && result.value.sources).toEqual([cursorSource(false)]);
+      unmount();
+    }),
+  ),
+);
+
 it.effect("keeps the cached usage summary when the awaited refresh fails", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -292,7 +315,7 @@ it.effect("keeps the cached usage summary when the awaited refresh fails", () =>
       const summary = harness.summary();
       const unmount = harness.registry.mount(summary);
       yield* Deferred.await(harness.followUpStarted);
-      expect(AsyncResult.isSuccess(harness.registry.get(summary))).toBe(false);
+      expect(AsyncResult.isSuccess(harness.registry.get(summary))).toBe(true);
       yield* Deferred.succeed(finish, undefined);
       const result = yield* settledUsage(harness.registry, summary);
       expect(result._tag).toBe("Success");

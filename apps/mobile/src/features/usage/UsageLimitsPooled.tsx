@@ -1,4 +1,4 @@
-import { useUsageNow } from "../../lib/clock";
+import { usageLimitClockAtom } from "@t3tools/client-runtime/state/usage-progress";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -27,7 +27,7 @@ import {
   type LimitPool,
   type LimitPoolWindow,
 } from "@t3tools/shared/usageLimits";
-import { Fragment, type ReactNode, useId, useState } from "react";
+import { Fragment, type ReactNode, useId, useState, useSyncExternalStore } from "react";
 import { Linking, Pressable, View } from "react-native";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { Defs, Path, Pattern, Rect, Svg } from "react-native-svg";
@@ -608,6 +608,13 @@ function PoolWindowCard({
   );
 }
 
+const limitClockAtom = usageLimitClockAtom(environmentPresentations.presentationsWithProvidersAtom);
+
+function useUsageLimitNow() {
+  const clock = useAtomValue(limitClockAtom);
+  return useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getSnapshot);
+}
+
 export function UsageLimitsSection({
   failedLabels,
   selectedEnvironmentIds,
@@ -625,7 +632,7 @@ export function UsageLimitsSection({
       ? presentations
       : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
   const accounts = collectLimitAccounts(selected);
-  const now = useUsageNow(accounts);
+  const now = useUsageLimitNow();
   const pools = collectLimitPools(accounts, now);
   const failover = collectAccountFailover(selected, now);
   const notices = collectLimitNotices(selected);
@@ -772,7 +779,7 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
       ? presentations
       : new Map([...presentations].filter(([id]) => selectedIds.has(id)));
   const accounts = collectLimitAccounts(selected);
-  const now = useUsageNow(accounts);
+  const now = useUsageLimitNow();
   const account = accounts.find((candidate) => candidate.key === accountKey);
   const pool = collectLimitPools(accounts, now)
     .find((candidate) => candidate.driver === account?.driver)

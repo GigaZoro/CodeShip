@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   USAGE_CONTRACT_VERSION,
+  USAGE_MERGE_COMPATIBLE_SINCE,
   UsageDay,
   type UsageProviderKind,
   type UsageSummary,
@@ -11,6 +12,7 @@ import {
   isKeptUsage,
   settleUsageSnapshot,
   usageEnvironmentProgress,
+  usageCoverageEnvironments,
   usageGaps,
   usageProgress,
   type EnvironmentUsageStatus,
@@ -117,6 +119,22 @@ describe("usageProgress", () => {
 });
 
 describe("settleUsageSnapshot", () => {
+  it.each([
+    ["all-failed", [status("Failed", { summary: null, error: "Scan failed." })]],
+    [
+      "all-offline",
+      [status("Offline", { summary: null, isConnected: false, canReadDiagnostics: false })],
+    ],
+    ["mixed", [status("Ready"), status("Failed", { summary: null, error: "Scan failed." })]],
+    ["answered", [status("Ready")]],
+  ] as const)("reuses the settled snapshot for %s selections", (_kind, selected) => {
+    const window = summary();
+    const first = settleUsageSnapshot(null, window, selected, selected);
+    expect(first).not.toBeNull();
+    const cloned = selected.map((entry) => ({ ...entry }));
+    expect(settleUsageSnapshot(first, window, cloned, cloned)).toBe(first);
+  });
+
   it("shows the newly selected period's cached answer while it refreshes", () => {
     const currentSummary = summary();
     const cachedSummary = { ...currentSummary, sinceDay: UsageDay.make("2026-08-07") };
@@ -240,4 +258,55 @@ it("keeps two consecutive background refetches quiet and announces a manual refr
   expect(usageProgress([refetching], { ...options, refreshing: true }).announcement).toBe(
     "Updating…",
   );
+});
+
+it("never retains an incompatible answer as figures for another selection", () => {
+  const window = summary();
+  const older = status("Old", {
+    summary: { ...window, contractVersion: USAGE_MERGE_COMPATIBLE_SINCE - 1 },
+  });
+  const pending = status("Waiting", { summary: null, isPending: true });
+  const prior = settleUsageSnapshot(null, window, [older, pending], [older]);
+
+  expect(prior?.merged.contractMismatches).toHaveLength(1);
+  expect(prior?.hasAnswer).toBe(false);
+  expect(settleUsageSnapshot(prior, window, [older, pending], [pending])).toBeNull();
+});
+
+it("shows the first answer and preserves the slow provider row when it settles empty", () => {
+  const first = summary(["cursor"]);
+  const provisional = status("Desk", { summary: first, isPending: true });
+  const fresh = status("Desk", { summary: summary() });
+  const oldWindow = { ...first, sinceDay: UsageDay.make("2026-08-07") };
+  const old = settleUsageSnapshot(null, oldWindow, [fresh], [fresh]);
+
+  for (const previous of [null, old]) {
+    const shown = settleUsageSnapshot(previous, first, [provisional], [provisional]);
+    expect(shown?.window.sinceDay).toBe(first.sinceDay);
+    expect(shown?.providers.map(({ provider }) => provider)).toEqual(["codex", "cursor"]);
+
+    const finished = settleUsageSnapshot(shown, first, [fresh], [fresh]);
+    expect(finished?.providers.map(({ provider }) => provider)).toEqual(["codex", "cursor"]);
+    expect(finished?.providers.find(({ provider }) => provider === "cursor")?.sessions).toBe(0);
+
+    expect(settleUsageSnapshot(finished, first, [provisional], [provisional])).toBe(finished);
+  }
+});
+
+it("reports a live partial failure while keeping same-window figures", () => {
+  const window = summary();
+  const a = status("Desk");
+  const b = status("Laptop");
+  const previous = settleUsageSnapshot(null, window, [a, b], [a, b]);
+  const live = [
+    { ...a, isPending: true },
+    { ...b, summary: null, error: "Read failed." },
+  ];
+  const shown = settleUsageSnapshot(previous, window, live, live);
+  expect(shown).toBe(previous);
+  const notices = usageGaps(usageCoverageEnvironments(shown!.environments, live), []);
+  expect(notices?.title).toBe("Some totals may be out of date");
+  expect(notices?.gaps.map(({ message }) => message)).toEqual([
+    "Laptop: Read failed. Showing its last values.",
+  ]);
 });

@@ -1765,12 +1765,15 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.serverGetUsageSummary,
       staleTimeMs: 60_000,
       refreshTrigger: ({ environmentId }) => usageScanSettingsAtom(environmentId),
-      execute: (input) =>
+      execute: (input, emit) =>
         request(WS_METHODS.serverGetUsageSummary, input).pipe(
           Effect.filterOrElse(
             (summary) => !summary.sources.some((source) => source.refreshing === true),
             (summary) =>
-              request(WS_METHODS.serverGetUsageSummary, { ...input, awaitRefresh: true }).pipe(
+              emit(summary).pipe(
+                Effect.andThen(
+                  request(WS_METHODS.serverGetUsageSummary, { ...input, awaitRefresh: true }),
+                ),
                 Effect.catch((error) =>
                   Effect.logWarning("Could not refresh slow usage sources.").pipe(
                     Effect.annotateLogs({ ...safeErrorLogAttributes(error) }),

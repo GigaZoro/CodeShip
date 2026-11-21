@@ -22,10 +22,14 @@ export function UsageShareBar({
   readonly segments: readonly ShareSegment[];
   readonly format: (value: number) => string;
   readonly aside?: ReactNode;
-  readonly recordedUsage?: Pick<MergedUsage, "sessions" | "totalTokens">;
+  readonly recordedUsage?: Pick<MergedUsage, "records" | "costQuality">;
 }) {
-  const hasRecordedActivity =
-    recordedUsage !== undefined && (recordedUsage.totalTokens > 0 || recordedUsage.sessions > 0);
+  const emptyMessage =
+    recordedUsage === undefined || recordedUsage.records === 0
+      ? t("No activity in this window.")
+      : recordedUsage.costQuality.unpricedShare === 1
+        ? t("No priced usage")
+        : t("Priced usage costs $0");
   const visible = segments.filter((segment) => segment.value > 0);
   const total = visible.reduce((sum, segment) => sum + segment.value, 0);
 
@@ -38,9 +42,7 @@ export function UsageShareBar({
       {total <= 0 ? (
         <>
           <div aria-hidden className="h-2 rounded-full bg-muted" />
-          <p className="text-xs text-muted-foreground">
-            {hasRecordedActivity ? t("No priced usage") : t("No activity in this window.")}
-          </p>
+          <p className="text-xs text-muted-foreground">{emptyMessage}</p>
         </>
       ) : (
         <>

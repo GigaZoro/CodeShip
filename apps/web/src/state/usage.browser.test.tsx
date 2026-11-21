@@ -5,7 +5,11 @@ import {
   type UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
-import { retainedUsageLabel } from "@t3tools/client-runtime/state/usage-progress";
+import {
+  mergeAnsweredUsage,
+  retainedUsageLabel,
+  usageEnvironmentError,
+} from "@t3tools/client-runtime/state/usage-progress";
 import { UsageShareBar } from "../components/usage/UsageShareBar";
 import { expect, it, vi } from "vite-plus/test";
 
@@ -97,7 +101,11 @@ function UsageProbe({
   readonly window: UsageSummaryInput;
   readonly selection?: ReadonlySet<EnvironmentId>;
 }) {
-  const usage = useUsage(window, selection);
+  return <UsageProbeResult usage={useUsage(window, selection)} />;
+}
+
+function UsageProbeResult({ usage }: { readonly usage: ReturnType<typeof useUsage> }) {
+  const error = usage.shown?.environments[0];
   return (
     <>
       <output>
@@ -106,7 +114,10 @@ function UsageProbe({
           : `${usage.shown.window.resolution ?? "day"} usage: ${usage.selectedEnvironments[0]?.error ?? "ready"}`}
       </output>
       <output>{usage.shown?.window.sinceDay ?? "No shown window"}</output>
-      {usage.shown === null ? null : <p>{usage.shown.merged.totalTokens} tokens</p>}
+      {error === undefined ? null : <p>{usageEnvironmentError(error)}</p>}
+      {usage.shown?.environments.some(({ summary }) => summary !== null) ? (
+        <p>{usage.shown.merged.totalTokens} tokens</p>
+      ) : null}
       {usage.showingKept && usage.shown !== null ? <p>{retainedUsageLabel(usage.shown)}</p> : null}
     </>
   );
@@ -175,16 +186,52 @@ it("labels whose figures are retained when switching environments and never keep
 });
 
 it("shows no priced usage when recorded tokens have zero cost", async () => {
-  setup();
+  const { answered } = setup();
   await using screen = await render(
     <UsageShareBar
       label="Cost by type"
       segments={[]}
       format={String}
-      recordedUsage={{ totalTokens: 100, sessions: 1 }}
+      recordedUsage={mergeAnsweredUsage([answered])}
     />,
   );
 
   await expect.element(screen.getByText("No priced usage")).toBeVisible();
   await expect.element(screen.getByText("No activity in this window.")).not.toBeInTheDocument();
+});
+
+it("renders web Usage with a single failed or offline environment", async () => {
+  const { window, answered } = setup();
+  state.environments = [{ ...answered, summary: null, error: "Usage scan failed." }];
+  await using failed = await render(<UsageProbe window={window} />);
+  await expect.element(failed.getByText("Usage scan failed.", { exact: true })).toBeVisible();
+  await expect.element(failed.getByText("0 tokens", { exact: true })).not.toBeInTheDocument();
+
+  state.environments = [
+    { ...answered, summary: null, isConnected: false, canReadDiagnostics: false },
+  ];
+  await using offline = await render(<UsageProbe window={window} />);
+  await expect.element(offline.getByText("This environment is not connected.")).toBeVisible();
+  await expect.element(offline.getByText("0 tokens", { exact: true })).not.toBeInTheDocument();
+});
+
+it("distinguishes priced zero-rate records from unpriced or absent usage", async () => {
+  const { answered, summary } = setup();
+  const priced = mergeAnsweredUsage([
+    {
+      ...answered,
+      summary: {
+        ...summary,
+        buckets: summary.buckets.map((bucket) => ({
+          ...bucket,
+          costSource: "modelPriced",
+          unpricedRecords: 0,
+        })),
+      },
+    },
+  ]);
+  await using screen = await render(
+    <UsageShareBar label="Cost by type" segments={[]} format={String} recordedUsage={priced} />,
+  );
+  await expect.element(screen.getByText("Priced usage costs $0")).toBeVisible();
 });

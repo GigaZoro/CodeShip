@@ -42,12 +42,14 @@ export function UsageModelDialog({
   chartWindow,
   onSetPrice,
   onClose,
+  readOnly = false,
 }: {
   readonly model: ModelTotals;
   readonly environments: readonly EnvironmentUsageStatus[];
   readonly metric: UsageChartMetric;
   readonly chartWindow: UsageChartWindow;
   readonly onSetPrice: () => void;
+  readonly readOnly?: boolean;
   readonly onClose: () => void;
 }) {
   const usage = mergeAnsweredUsage(
@@ -92,6 +94,7 @@ export function UsageModelDialog({
                 })}
           </DialogDescription>
         </DialogHeader>
+        {readOnly ? <p className="px-6 text-sm text-muted-foreground">{t("Updating…")}</p> : null}
         <DialogPanel>
           <div className="flex flex-col gap-8">
             <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
@@ -124,6 +127,7 @@ export function UsageModelDialog({
                   label={t("Cost by type")}
                   segments={costTypeSegments(usage.categoryCost)}
                   format={formatUsd}
+                  recordedUsage={usage}
                 />
               )}
               <UsageShareBar
@@ -149,7 +153,9 @@ export function UsageModelDialog({
                 tokens: formatTokens(model.unpricedTokens),
               })}
             </span>
-            <Button onClick={onSetPrice}>{t("Set price")}</Button>
+            <Button onClick={onSetPrice} disabled={readOnly}>
+              {t("Set price")}
+            </Button>
           </DialogFooter>
         ) : null}
       </DialogPopup>

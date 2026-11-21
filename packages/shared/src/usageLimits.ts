@@ -509,6 +509,7 @@ function accountKeyResolver(reports: Iterable<AccountReport>) {
 
 export interface LimitAccount {
   readonly key: string;
+  readonly identity?: string | undefined;
   readonly driver: ServerProvider["driver"];
   readonly displayName: string | null;
   readonly email: string | undefined;
@@ -605,8 +606,11 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
     const label = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
       if (!provider.usageLimits || limitsNotice(provider.usageLimits) !== null) continue;
-      merge(resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`, {
-        key: `${environmentId}:${provider.instanceId}`,
+      const identity = resolveKey(nativeReport(provider)) ?? undefined;
+      const key = identity ?? `${environmentId}:${provider.instanceId}`;
+      merge(key, {
+        key,
+        identity,
         driver: provider.driver,
         displayName: provider.displayName?.trim() || null,
         email: provider.auth.email,
@@ -629,9 +633,13 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         : source.label;
       for (const account of source.accounts) {
         if (limitsNotice(account.usageLimits) !== null) continue;
-        const key = `${source.id}:${account.id}${account.workspaceId ? `:${account.workspaceId}` : ""}`;
-        merge(resolveKey(account) ?? key, {
+        const identity = resolveKey(account) ?? undefined;
+        const key =
+          identity ??
+          `${source.id}:${account.id}${account.workspaceId ? `:${account.workspaceId}` : ""}`;
+        merge(key, {
           key,
+          identity,
           driver: account.driver,
           displayName: account.email ? null : account.id.replace(/\.json$/i, ""),
           email: account.email,
@@ -818,7 +826,12 @@ export function collectLimitPools(
 }
 
 function accountSortName(account: LimitAccount): string {
-  return (account.displayName ?? account.email ?? account.key).toLowerCase();
+  return (
+    account.identity?.slice(account.driver.length + 1) ??
+    account.displayName ??
+    account.email ??
+    account.key
+  ).toLowerCase();
 }
 
 // Codex ids name slots, so pool by kind; other drivers' ids identify distinct allowances.
@@ -939,13 +952,21 @@ export function remainingPercent(window: ServerProviderUsageWindow): number {
   return Math.round(100 - Math.max(0, Math.min(100, window.usedPercent)));
 }
 
-export function limitResetTimes(accounts: readonly LimitAccount[]): number[] {
-  return accounts.flatMap((account) =>
-    account.limits.windows.flatMap((window) => {
-      const reset = resetMillis(window);
-      return reset === null ? [] : [reset];
-    }),
-  );
+export function limitResetTimes(presentations: LimitPresentations): number[] {
+  const resets: number[] = [];
+  for (const { serverConfig } of presentations.values()) {
+    const reports = [
+      ...providersWithLimits(serverConfig?.providers ?? []),
+      ...(serverConfig?.usageLimitSources ?? []).flatMap(({ accounts }) => accounts),
+    ];
+    for (const report of reports) {
+      for (const window of report.usageLimits?.windows ?? []) {
+        const reset = resetMillis(window);
+        if (reset !== null) resets.push(reset);
+      }
+    }
+  }
+  return resets;
 }
 
 function resetMillis(window: ServerProviderUsageWindow): number | null {

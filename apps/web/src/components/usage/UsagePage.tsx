@@ -26,6 +26,8 @@ import {
   usageEnvironmentProgress,
   mergeAnsweredUsage,
   retainedUsageLabel,
+  refreshingUsageProviders,
+  usageCoverageEnvironments,
   usageEnvironmentError,
   usageProgress,
 } from "@t3tools/client-runtime/state/usage-progress";
@@ -224,22 +226,30 @@ export function UsagePage() {
     refreshing: refreshingUsage,
     providerLabel,
   });
-  const activeProviders = providersWithUsage(merged.providers);
+  const activeProviders = PROVIDER_ORDER.filter((provider) =>
+    shown?.providers.some((row) => row.provider === provider),
+  );
+  const footprint = providersWithUsage(merged.providers);
+  const settledAnswer =
+    shown?.hasAnswer === true &&
+    !showingKept &&
+    !selectedEnvironments.some(({ isConnected, isPending }) => isConnected && isPending);
+  const coverageEnvironments = usageCoverageEnvironments(shownEnvironments, environments);
   const shownHiddenProviders = shown?.hiddenProviders ?? hiddenProviders;
   const shownCursorAccess = shownHiddenProviders.has("cursor")
     ? []
     : cursorKeychainAccessEnvironments(shownEnvironments);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retain the provider footprint across Usage visits
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retain the last settled provider footprint across Usage visits
   useEffect(() => {
+    if (!settledAnswer) return;
     const previous = appAtomRegistry.get(skeletonProvidersAtom);
     if (
-      activeProviders.length > 0 &&
-      (previous.length !== activeProviders.length ||
-        previous.some((provider, index) => provider !== activeProviders[index]))
+      previous.length !== footprint.length ||
+      previous.some((provider, index) => provider !== footprint[index])
     ) {
-      appAtomRegistry.set(skeletonProvidersAtom, activeProviders);
+      appAtomRegistry.set(skeletonProvidersAtom, footprint);
     }
-  }, [activeProviders]);
+  }, [footprint, settledAnswer]);
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
   const presentationsWithProviders = useAtomValue(
     environmentPresentations.presentationsWithProvidersAtom,
@@ -654,20 +664,31 @@ export function UsagePage() {
               </>
             ) : shown === null ? (
               <UsageSkeleton hiddenProviders={hiddenProviders} />
-            ) : shownEnvironments.every(({ summary }) => summary === null) ? (
+            ) : !shown.hasAnswer ? (
               // Nothing to show at all: an empty overview would read as zero spend.
               <div
                 role="status"
                 className="space-y-2 py-12 text-center text-sm text-muted-foreground"
               >
-                {selectedEnvironments.map((environment) => (
-                  <p key={environment.environmentId}>
-                    {selectedEnvironments.length > 1
-                      ? t("{environment}: ", { environment: environment.label })
-                      : null}
-                    {usageEnvironmentError(environment)}
-                  </p>
-                ))}
+                {selectedEnvironments.map((environment) => {
+                  const mismatch = merged.contractMismatches.find(
+                    ({ environmentId }) => environmentId === environment.environmentId,
+                  );
+                  return (
+                    <p key={environment.environmentId}>
+                      {mismatch === undefined ? (
+                        <>
+                          {selectedEnvironments.length > 1
+                            ? t("{environment}: ", { environment: environment.label })
+                            : null}
+                          {usageEnvironmentError(environment)}
+                        </>
+                      ) : (
+                        formatUsageContractMismatch(environment.label, mismatch)
+                      )}
+                    </p>
+                  );
+                })}
                 {canReadDiagnostics ? (
                   <Button
                     size="sm"
@@ -687,7 +708,7 @@ export function UsagePage() {
                   </p>
                 ) : null}
                 <UsageGapsNotice
-                  environments={shownEnvironments}
+                  environments={coverageEnvironments}
                   contractMismatches={merged.contractMismatches}
                   retrying={refreshingUsage || showingKept}
                   onRetry={refreshWindow}
@@ -706,6 +727,10 @@ export function UsagePage() {
                   selectedEnvironments={shownEnvironments}
                   hiddenProviders={shownHiddenProviders}
                   activeProviders={activeProviders}
+                  refreshingProviders={refreshingUsageProviders(
+                    selectedEnvironments,
+                    shownHiddenProviders,
+                  )}
                   cursorAccessEnvironments={shownCursorAccess}
                   showChatGptSharing={showChatGptSharing}
                   onCursorEnabled={() => {
@@ -721,8 +746,9 @@ export function UsagePage() {
           </WorkspacePageContainer>
         </ScrollArea>
       </div>
-      {showingLimits || showingKept ? null : (
+      {showingLimits ? null : (
         <UsageModelDialogHost
+          readOnly={showingKept}
           models={merged.models}
           environments={shownEnvironments}
           metric={metric === "tokens" ? "tokens" : "cost"}
@@ -766,6 +792,7 @@ function UsageOverview({
   selectedEnvironments,
   hiddenProviders,
   activeProviders,
+  refreshingProviders,
   cursorAccessEnvironments,
   showChatGptSharing,
   onCursorEnabled,
@@ -786,6 +813,7 @@ function UsageOverview({
   readonly selectedEnvironments: readonly EnvironmentUsageStatus[];
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
   readonly activeProviders: readonly UsageProviderKind[];
+  readonly refreshingProviders: ReadonlySet<UsageProviderKind>;
   readonly cursorAccessEnvironments: readonly EnvironmentUsageStatus[];
   readonly showChatGptSharing: boolean;
   readonly onCursorEnabled: () => void;
@@ -795,7 +823,7 @@ function UsageOverview({
 }) {
   const shownHourly = shownWindow.resolution === "hour";
   const loadingPartial = showingKept;
-  const loadingProviders = new Set<UsageProviderKind>(showingKept ? activeProviders : []);
+  const loadingProviders = showingKept ? new Set(activeProviders) : refreshingProviders;
   const sourceMessages = usageSourceMessages(
     selectedEnvironments.flatMap(
       (environment) =>
@@ -925,7 +953,7 @@ function UsageOverview({
                           figureClass(providerLoading),
                         )}
                       >
-                        {sessionLabel}
+                        {!showingKept && providerLoading ? t("Updating…") : sessionLabel}
                       </span>
                     </span>
                   </span>
@@ -1400,7 +1428,7 @@ function ProviderMark({
 }
 
 function figureClass(loading: boolean) {
-  return cn("transition-opacity", loading && "opacity-40 delay-150");
+  return loading ? "text-usage-retained-foreground" : undefined;
 }
 
 function Metric({

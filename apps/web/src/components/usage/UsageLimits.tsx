@@ -1,3 +1,4 @@
+import { useUsageLimitNow } from "../../hooks/useUsageNow";
 import { connectionMayStillAnswer } from "@t3tools/client-runtime/connection";
 import {
   AuthProvidersManageScope,
@@ -411,6 +412,7 @@ export function UsageLimitsSection({
   readonly cursorPrompt?: ReactNode;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
+  const now = useUsageLimitNow();
   const hiddenDrivers = new Set<ServerProvider["driver"]>(
     [...hiddenProviders].map((provider) => PROVIDER_PRESENTATION[provider].driverKind),
   );
@@ -456,6 +458,7 @@ export function UsageLimitsSection({
   return (
     <UsageLimitsPooled
       presentations={selected}
+      now={now}
       getFailover={(now) => collectAccountFailover(selected, now)}
       cursorPrompt={cursorPrompt}
       {...(emptyMessage === undefined ? {} : { emptyMessage })}

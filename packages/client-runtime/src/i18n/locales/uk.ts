@@ -9100,6 +9100,7 @@ const catalog: MessageCatalog = {
   "Previous turn": "Попередній хід",
   "Previous worktree": "Попередній worktree",
   "Previous worktree ({branch})": "Попередній worktree ({branch})",
+  "Priced usage costs $0": "Використання з відомою вартістю коштує 0 доларів США",
   "Prices and mappings apply to all past and future usage on the environments you select.":
     "Ціни та зіставлення застосовуються до всього минулого й майбутнього використання у вибраних середовищах.",
   "Prices not loaded": "Ціни не завантажено",

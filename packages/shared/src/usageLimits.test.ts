@@ -504,7 +504,7 @@ describe("pools", () => {
     const accounts = collectLimitAccounts(input);
     expect(accounts).toHaveLength(1);
     expect(accounts[0]).toMatchObject({
-      key: "env-a:claude",
+      key: "claudeAgent:same@example.com",
       sourceLabel: null,
       redeem: { environmentId: "env-b", input: { instanceId: "claude" } },
       environments: [
@@ -865,6 +865,44 @@ describe("pools", () => {
     expect(account?.redeem?.environmentId).toBe("env-2");
   });
 
+  it("keeps a login's column and detail key when its first reporter fails", () => {
+    const login = (displayName: string, email: string) =>
+      provider({
+        displayName,
+        auth: { status: "authenticated", email, workspaceId: "work" },
+        usageLimits: { checkedAt, windows: [window] },
+      });
+    const alpha = login("Alpha", "a@example.com");
+    const input = (first: ServerProvider) =>
+      new Map([
+        [EnvironmentId.make("alpha"), { ...laptop, serverConfig: { providers: [first] } }],
+        [
+          EnvironmentId.make("zulu"),
+          { ...laptop, serverConfig: { providers: [login("Zulu", "a@example.com")] } },
+        ],
+        [
+          EnvironmentId.make("beta"),
+          { ...laptop, serverConfig: { providers: [login("Beta", "b@example.com")] } },
+        ],
+      ]);
+    const keys = (presentations: ReturnType<typeof input>) =>
+      collectLimitPools(
+        collectLimitAccounts(presentations),
+        Date.parse(checkedAt),
+      )[0]?.accounts.map(({ key }) => key);
+
+    const healthy = keys(input(alpha));
+    const failed = keys(
+      input({
+        ...alpha,
+        usageLimits: { checkedAt, windows: [], unavailable: { reason: "probeFailed" } },
+      }),
+    );
+
+    expect(healthy).toEqual(["codex:a@example.com:work", "codex:b@example.com:work"]);
+    expect(failed).toEqual(healthy);
+  });
+
   it("keeps one email in two workspaces apart while merging each workspace's duplicates", () => {
     const login = (instanceId: string, workspaceId: string, usedPercent: number) =>
       provider({
@@ -902,8 +940,8 @@ describe("pools", () => {
     ]);
     const accounts = collectLimitAccounts(input);
     expect(accounts.map((account) => account.key)).toEqual([
-      "env-a:business",
-      "env-a:personal",
+      "codex:same@example.com:ws-business",
+      "codex:same@example.com:ws-plus",
       "hub:x.json",
     ]);
     expect(accounts[0]?.limits.windows[0]?.usedPercent).toBe(8);
@@ -970,7 +1008,7 @@ describe("pools", () => {
       ]);
     const unrelated = provider({ instanceId: ProviderInstanceId.make("codex-2") });
     expect(collectLimitAccounts(withOther(unrelated)).map((account) => account.key)).toEqual([
-      "env-a:codex",
+      "claudeAgent:same@example.com:org-a",
     ]);
     const unreadable = provider({
       ...native,
@@ -979,7 +1017,7 @@ describe("pools", () => {
       usageLimits: { checkedAt, windows: [], unavailable: { reason: "probeFailed" } },
     });
     expect(collectLimitAccounts(withOther(unreadable)).map((account) => account.key)).toEqual([
-      "env-a:codex",
+      "claudeAgent:same@example.com:org-a",
       "hub:claude.json",
     ]);
   });
