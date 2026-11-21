@@ -598,16 +598,13 @@ const make = Effect.gen(function* () {
    */
   const rebootedSince = (row: CommandRunRow) =>
     isHeld(row).pipe(
-      Effect.flatMap((held) =>
-        held
-          ? Effect.succeed(false)
-          : DateTime.now.pipe(
-              Effect.map(
-                (now) =>
-                  DateTime.toEpochMillis(now) - NodeOS.uptime() * 1_000 >
-                  Date.parse(row.started_at),
-              ),
-            ),
+      Effect.flatMap((held) => (held ? Effect.succeed(false) : startedBeforeBoot(row))),
+    );
+  /** Whether the machine booted after the command started, as the wall clock estimates it. */
+  const startedBeforeBoot = (row: CommandRunRow) =>
+    DateTime.now.pipe(
+      Effect.map(
+        (now) => DateTime.toEpochMillis(now) - NodeOS.uptime() * 1_000 > Date.parse(row.started_at),
       ),
     );
 
@@ -620,10 +617,12 @@ const make = Effect.gen(function* () {
   ): Effect.fn.Return<Loss | "unconfirmed" | undefined> {
     const probe_error = row.probe_error;
     if (row.pid === null) return { lost_reason: row.lost_reason ?? "no-pid", probe_error };
-    if (yield* rebootedSince(row)) return { lost_reason: "rebooted", probe_error };
+    const held = yield* isHeld(row);
+    if (!held && (yield* startedBeforeBoot(row))) return { lost_reason: "rebooted", probe_error };
     const probe = probeProcess(row.pid);
     if (probe.state === "gone") return { lost_reason: "gone", probe_error: probe.code };
-    if (row.process_identity === null) return undefined;
+    // No process can take the pid while the holder keeps its group, whatever a start read says.
+    if (held || row.process_identity === null) return undefined;
     if (row.process_identity === ENDED_IDENTITY) return { lost_reason: "pid-reused", probe_error };
     const verdict = compareIdentity(
       row.process_identity,

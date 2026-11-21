@@ -521,6 +521,18 @@ const hideHolder = (directory: string) =>
     yield* Effect.addFinalizer(() => Effect.sync(() => NodeFS.renameSync(hidden, holder)));
   });
 
+/** A recorded start that differs from the real one, standing for a process that took the pid. */
+const recordOtherStart = (taskId: string) =>
+  SqlClient.SqlClient.pipe(
+    Effect.flatMap(
+      (sql) => sql`
+        UPDATE command_runs SET process_identity = CASE WHEN process_identity LIKE 'boot:%'
+          THEN 'boot:other:1' ELSE 'time:0' END
+        WHERE task_id = ${taskId}
+      `,
+    ),
+  );
+
 const taskOf = (threadId: ThreadId, taskId: string) =>
   Orchestrator.OrchestratorV2.pipe(
     Effect.flatMap((orchestrator) => orchestrator.getThreadProjection(threadId)),
@@ -1901,6 +1913,24 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
   });
 
   describe.skipIf(isWindowsHost)("POSIX shell and process groups", () => {
+    it.effect.skipIf(!holdsGroups)(
+      "keeps a held command running when a start read disagrees with its record",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-held-other-identity");
+          const ready = awaitFile(NodePath.join(chat.workspace, "ready"));
+          const started = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+          );
+          yield* ready;
+          yield* recordOtherStart(started.taskId);
+          // A run waits until the server has adopted what the earlier one left.
+          yield* withServer((runner) => runner.run(callerOf(chat.threadId), { command: "true" }));
+          assert.equal((yield* commandRow(started.taskId))?.status, "running");
+          assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+        }),
+    );
+
     it.effect(
       "reports a command lost when a later start read finds another process under its pid",
       () =>
@@ -1911,13 +1941,9 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
           );
           yield* ready;
-          const sql = yield* SqlClient.SqlClient;
-          // A start time that differs from the real one stands for a process that took the pid.
-          yield* sql`
-          UPDATE command_runs SET process_identity = CASE WHEN process_identity LIKE 'boot:%'
-            THEN 'boot:other:1' ELSE 'time:0' END
-          WHERE task_id = ${started.taskId}
-        `;
+          // Only once no holder keeps the number can another process have taken the pid.
+          yield* hideHolder(NodePath.dirname(started.logPath));
+          yield* recordOtherStart(started.taskId);
           let startReads = 0;
           const { pid } = (yield* commandRow(started.taskId))!;
           yield* withServer(() => nextWake(chat.threadId)).pipe(
