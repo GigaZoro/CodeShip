@@ -12926,7 +12926,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       yield* stopRemainingWork();
       return outcome;
     }
-    if (projection.runs.some((candidate) => isActiveRun(candidate) && candidate.id !== run.id)) {
+    // Cancelling a pending restart interrupts no turn, so another active run is not in its way.
+    if (
+      !(pendingContinuation && providerTurn === undefined) &&
+      projection.runs.some((candidate) => isActiveRun(candidate) && candidate.id !== run.id)
+    ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
@@ -13831,14 +13835,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       runs: ReadonlyArray<OrchestrationV2Run>,
       scope: "pending-restart" | "shutdown-candidate" = "shutdown-candidate",
     ) {
-      if (supersededRun(run, runs)) return false;
+      // A pending restart still runs if the later run is cancelled before it starts, so Stop
+      // must reach it.
+      const awaiting = yield* awaitsRestartContinuation(run);
+      if (!awaiting && supersededRun(run, runs)) return false;
       const records = yield* projectionStore.getThreadRecords(
         run.threadId,
         ["providerTurns", "turnItems"],
         { turnItemTypes: ["error", "run_interrupt_request"], turnItemRunIds: [run.id] },
       );
       if (runStopRequested(run.id, records.turnItems)) return false;
-      if (yield* awaitsRestartContinuation(run)) return true;
+      if (awaiting) return true;
       if (continuationStartRetryDelayMs(run, { ...records, runs }) !== undefined) return true;
       if (!isSettledRun(run)) return false;
       if (isRestartContinuationSource(run, records.providerTurns)) return true;
