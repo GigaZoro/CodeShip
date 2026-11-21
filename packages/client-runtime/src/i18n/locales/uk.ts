@@ -10607,6 +10607,7 @@ const catalog: MessageCatalog = {
   "Search pull requests, or label:bug": "Пошук пул-реквестів або label:bug",
   "Search refs...": "Пошук посилань...",
   "Search registry": "Пошук у реєстрі",
+  "Search release notes": "Пошук у нотатках до випуску",
   "Search result": "Результат пошуку",
   "Search reviewers": "Пошук рецензентів",
   "Search servers": "Пошук серверів",
@@ -12173,6 +12174,8 @@ const catalog: MessageCatalog = {
   "The draft changed while voice input was running. The transcript was not added.":
     "Чернетка змінилася під час голосового введення. Транскрипцію не додано.",
   "The draft has new content.": "У чернетці є новий вміст.",
+  "The draft rejected this attachment (duplicate or attachment limit reached).":
+    "Чернетка відхилила вкладення (дублікат або досягнуто ліміту вкладень).",
   "The editor did not open.": "Редактор не відкрився.",
   "the environment": "середовище",
   "The environment could not authorize the connection.":

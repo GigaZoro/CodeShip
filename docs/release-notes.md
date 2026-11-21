@@ -1,3 +1,9 @@
+## 2026-11-21 — Search the release history offline
+
+- On web and desktop, Release notes opens with the ten newest entries. Page through older changes or search the full history by date, title, or text, including offline.
+- Pasting a file to restore a draft attachment no longer shows an error after the file is restored. If the draft rejects a duplicate or reaches its attachment limit, the error follows your language setting.
+- The browser profile and device preview guides now point to **Settings → Browser & devices**.
+
 ## 2026-11-21 — Renew unattended provider credentials from 1Password
 
 - CodeShip rereads credentials from Linux 1Password service accounts and applies rotated tokens after the provider's live sessions close. If the vault read fails, the provider keeps its last working credential.

@@ -6,6 +6,9 @@ of the sidebar and **Settings → Machines & access** offer to update it. The de
 app checks for new releases on its own, so the update button appears only when
 there is something to update.
 
+Open **Release notes** beside **Details** to see what changed in your installed
+version. Search by date, title, or a word in a note to find older changes offline.
+
 ## Update everything at once
 
 The update button at the bottom of the sidebar updates every connected machine
