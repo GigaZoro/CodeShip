@@ -41,6 +41,7 @@ import {
   selectCliRuntimeExternalDependencies,
 } from "./lib/cli-external-packages.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
+import { packagedProbeEnv } from "./lib/packaged-probe-env.ts";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 import {
@@ -2562,13 +2563,14 @@ export const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBund
     yield* runCommand(
       ChildProcess.make(
         process.execPath,
-        // Clearing NODE_PATH leaves CommonJS global fallbacks; disable them so host packages cannot satisfy missing dependencies.
+        // The probe env has no NODE_PATH, but CommonJS still has global fallbacks; disable them so host packages cannot satisfy missing dependencies.
         ["--no-global-search-paths", entryPoint, "--version"],
         {
           cwd: probeApp,
           stdout: "pipe",
           stderr: "pipe",
-          env: { ...process.env, NODE_PATH: "" },
+          env: packagedProbeEnv(process.env),
+          extendEnv: false,
         },
       ),
       {
@@ -3552,10 +3554,6 @@ export const verifyWindowsPrimaryFffNativeLoad = Effect.fn(
     prefix: "t3code-windows-primary-native-probe-",
   });
   const fffEntryPath = path.join(input.asarPath, "node_modules/@ff-labs/fff-node/dist/index.js");
-  const probeEnv = { ...process.env };
-  delete probeEnv.ELECTRON_NO_ASAR;
-  delete probeEnv.NODE_OPTIONS;
-
   yield* runCommand(
     ChildProcess.make(
       executablePath,
@@ -3571,11 +3569,8 @@ export const verifyWindowsPrimaryFffNativeLoad = Effect.fn(
         cwd: input.packagedAppDir,
         stdout: "pipe",
         stderr: "pipe",
-        env: {
-          ...probeEnv,
-          ELECTRON_RUN_AS_NODE: "1",
-          NODE_PATH: "",
-        },
+        env: packagedProbeEnv(process.env, { ELECTRON_RUN_AS_NODE: "1" }),
+        extendEnv: false,
       },
     ),
     {

@@ -3,6 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { expect, it } from "vite-plus/test";
 import { cacheKey, seedPreparedCache } from "./server-compile-cache.ts";
 
@@ -23,6 +24,54 @@ it.each(["x64", "arm64"])("skips prepared bytecode generation on Linux %s", asyn
   );
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout).toContain("Skipping unsupported target linux");
+});
+
+// The fixture app executable is a symlink to node.
+it.skipIf(isWindowsHost)("prepares bytecode without the signing step's credentials", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const hook = NodeURL.fileURLToPath(
+    new URL("../prepare-server-compile-cache.cjs", import.meta.url),
+  );
+  const root = NodeFS.realpathSync(
+    NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cache-env-")),
+  );
+  try {
+    const contents = NodePath.join(root, "Fixture.app", "Contents");
+    const helper = NodePath.join(
+      contents,
+      "Resources",
+      "app.asar",
+      "apps/desktop/dist-electron/serverCompileCache.cjs",
+    );
+    NodeFS.mkdirSync(NodePath.dirname(helper), { recursive: true });
+    NodeFS.writeFileSync(
+      helper,
+      `exports.generatePreparedServerCache = async () => {
+          const visible = Object.keys(process.env).filter((name) => /password|token/i.test(name));
+          if (visible.length > 0) throw new Error("credentials visible: " + visible.join(","));
+          if (!process.env.T3CODE_HOME || process.env.ELECTRON_RUN_AS_NODE !== "1") throw new Error("runtime env missing");
+        };`,
+    );
+    NodeFS.mkdirSync(NodePath.join(contents, "MacOS"));
+    NodeFS.symlinkSync(process.execPath, NodePath.join(contents, "MacOS", "Fixture"));
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        `Object.defineProperty(process, "platform", { value: "darwin" });
+           Object.defineProperty(process, "arch", { value: "arm64" });
+           require(${JSON.stringify(hook)})({ appOutDir: ${JSON.stringify(root)}, electronPlatformName: "darwin", arch: 3, packager: { appInfo: { productFilename: "Fixture" } } }).catch(error => { console.error(error); process.exitCode = 1; });`,
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, CSC_KEY_PASSWORD: "fixture", Release_Signing_Token: "fixture" },
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("Prepared server bytecode");
+  } finally {
+    NodeFS.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 it("seeds relocated cache entries without allowing writes into shipped resources", () => {

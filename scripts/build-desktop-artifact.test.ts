@@ -4,7 +4,7 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createPackageWithOptions, extractFile } from "@electron/asar";
-import { assert, it } from "@effect/vitest";
+import { assert, it, vi } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -1715,6 +1715,28 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     Effect.scoped(
       Effect.gen(function* () {
         const fixture = yield* makeMacPayloadFixture({});
+        yield* validateMacPackagedPayload({ stageDistDir: fixture.stageDistDir });
+      }),
+    ),
+  );
+
+  it.effect("runs the packaged server without the signing step's credentials", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            vi.stubEnv("CSC_KEY_PASSWORD", "fixture-password");
+            vi.stubEnv("Release_Signing_Token", "fixture-token");
+          }),
+          () => Effect.sync(() => vi.unstubAllEnvs()),
+        );
+        const fixture = yield* makeMacPayloadFixture({
+          serverEntrySource: [
+            "const visible = Object.keys(process.env).filter((name) => /password|token/i.test(name));",
+            'if (visible.length > 0) { console.error(`credentials visible: ${visible.join(",")}`); process.exit(1); }',
+            "",
+          ].join("\n"),
+        });
         yield* validateMacPackagedPayload({ stageDistDir: fixture.stageDistDir });
       }),
     ),

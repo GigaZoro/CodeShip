@@ -3,18 +3,7 @@ const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
-
-const STRIPPED_ENV_PREFIXES = [
-  "NODE_",
-  "T3CODE_",
-  "CSC_",
-  "WIN_CSC_",
-  "APPLE_",
-  "AZURE_",
-  "MACOS_",
-  "GH_TOKEN",
-  "GITHUB_TOKEN",
-];
+const { packagedProbeEnv } = require("./lib/packaged-probe-env.ts");
 
 // afterPack runs before signing and installer creation, against the final ASAR layout.
 module.exports = async ({ appOutDir, electronPlatformName, arch, packager }) => {
@@ -47,13 +36,8 @@ module.exports = async ({ appOutDir, electronPlatformName, arch, packager }) => 
     "app.asar",
     "apps/desktop/dist-electron/serverCompileCache.cjs",
   );
-  // The packaged server runs inside the signing step, so it gets none of that step's credentials.
-  const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
-  for (const name of Object.keys(env)) {
-    if (STRIPPED_ENV_PREFIXES.some((prefix) => name.startsWith(prefix))) delete env[name];
-  }
   const state = fs.mkdtempSync(path.join(os.tmpdir(), "t3-release-cache-"));
-  env.T3CODE_HOME = state;
+  const env = packagedProbeEnv(process.env, { ELECTRON_RUN_AS_NODE: "1", T3CODE_HOME: state });
   let result;
   try {
     result = spawnSync(
