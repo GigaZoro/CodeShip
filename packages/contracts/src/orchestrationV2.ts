@@ -3515,6 +3515,7 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     runId: RunId,
     reason: Schema.optional(Schema.String),
+    /** The Stop button of clients without thread.stop: stops the whole thread as thread.stop does. */
     holdQueue: Schema.optional(Schema.Boolean),
     /** Interrupt active runs and pending restarts, including work owned by their restart chain. Other terminal runs are a no-op. */
     onlyIfActive: Schema.optional(Schema.Boolean),
