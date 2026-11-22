@@ -15,7 +15,7 @@ import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/prov
 import {
   collectAccountFailover,
   collectLimitAccounts,
-  hasLimitCountdown,
+  showsRelativeLimitTimes,
   formatDuration,
   formatResetsIn,
   type LimitPace,
@@ -455,7 +455,7 @@ export function UsageLimitsSection({
     }),
   );
   const accounts = collectLimitAccounts(selected, workspaces);
-  const now = useUsageLimitNow(undefined, (at) => hasLimitCountdown(accounts, at));
+  const now = useUsageLimitNow(undefined, (at) => showsRelativeLimitTimes(accounts, at));
   // Limits arrive with the server config, so a machine still connecting has none to show yet.
   const connecting = [...selected.values()].filter(
     (presentation) =>

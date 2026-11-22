@@ -876,10 +876,9 @@ export function collectLimitPools(
   });
 }
 
-export function hasLimitCountdown(accounts: readonly LimitAccount[], now: number): boolean {
-  return collectLimitPools(accounts, now).some((pool) =>
-    displayLimitWindows(pool).some((window) => window.resets.some((reset) => reset.at > now)),
-  );
+/** Every pool shows a relative "checked … ago" label besides any countdown, so either needs the minute clock. */
+export function showsRelativeLimitTimes(accounts: readonly LimitAccount[], now: number): boolean {
+  return collectLimitPools(accounts, now).length > 0;
 }
 
 export function findLimitAccountWindow(

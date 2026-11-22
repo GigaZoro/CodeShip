@@ -13,7 +13,7 @@ import {
   CHATGPT_USAGE_URL,
   collectAccountFailover,
   collectLimitAccounts,
-  hasLimitCountdown,
+  showsRelativeLimitTimes,
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
@@ -666,7 +666,7 @@ export function UsageLimitsSection({
       : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
   const workspaces = useAtomValue(accountWorkspacesAtom);
   const accounts = collectLimitAccounts(selected, workspaces);
-  const now = useUsageLimitNow((at) => hasLimitCountdown(accounts, at));
+  const now = useUsageLimitNow((at) => showsRelativeLimitTimes(accounts, at));
   const pools = collectLimitPools(accounts, now);
   const failover = collectAccountFailover(selected, now);
   const notices = collectLimitNotices(selected);

@@ -29,6 +29,7 @@ import {
   tightestLimitWindow,
   usesChatGptSharing,
   resolveNewThreadModelSelection,
+  showsRelativeLimitTimes,
 } from "./usageLimits.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
@@ -573,6 +574,29 @@ describe("pools", () => {
         { label: "Desktop · hub", checkedAt: "2026-09-03T05:00:00.000Z" },
       ],
     });
+  });
+
+  it("keeps relative times ticking for a pool that has no countdown", () => {
+    const untimed = provider({
+      auth: { status: "authenticated", email: "untimed@example.com" },
+      usageLimits: {
+        checkedAt: "2026-09-03T11:00:00.000Z",
+        windows: [{ ...window, resetsAt: undefined }],
+      },
+    });
+    const accounts = collectLimitAccounts(
+      new Map([
+        [
+          EnvironmentId.make("env-a"),
+          { ...laptop, connection: { phase: "connected" }, serverConfig: { providers: [untimed] } },
+        ],
+      ]),
+    );
+    const [pool] = collectLimitPools(accounts, now);
+    expect(pool?.windows.flatMap(({ resets }) => resets).some(({ at }) => at > now)).toBe(false);
+    expect(limitsFreshness(pool!.accounts).checkedAt).toBe("2026-09-03T11:00:00.000Z");
+    expect(showsRelativeLimitTimes(accounts, now)).toBe(true);
+    expect(showsRelativeLimitTimes([], now)).toBe(false);
   });
 
   it("uses the freshest reported plan even when the newest quota has no plan", () => {
