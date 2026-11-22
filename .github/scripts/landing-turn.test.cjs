@@ -18,6 +18,7 @@ const {
   tryAcquire,
   verifyPush,
 } = require("./landing-turn.cjs");
+const { createQueueWaiter } = require("./lease-queue.cjs");
 
 const QUEUE_PREFIX = "refs/heads/landing-lease/queue/";
 const QUEUE_REFRESH_MS = 60_000;
@@ -116,12 +117,13 @@ function setup() {
   return { root, origin, git, clone, commit, entryCommit, seedEntries, dropEntries, ticketsOn };
 }
 
-// A lander in its own process. It reports each pause it begins on fd 3, and with GO, its first pause lasts until that
-// file exists.
+// A lander in its own process. It reports each pause it begins on fd 3, as "released" once the RELEASED file exists.
+// With GO, its first pause lasts until that file exists.
 const LANDER_SCRIPT = `
 const fs = require("node:fs");
 const { acquire } = require(process.env.LANDING_TURN);
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const released = () => process.env.RELEASED && fs.existsSync(process.env.RELEASED);
 process.stdout.write(
   acquire({
     cwd: process.env.LANDER,
@@ -129,7 +131,7 @@ process.stdout.write(
     pollMs: 50,
     maxWaitMs: 60000,
     sleep: (ms) => {
-      fs.writeSync(3, "pause\\n");
+      fs.writeSync(3, released() ? "released\\n" : "pause\\n");
       while (process.env.GO && !fs.existsSync(process.env.GO)) pause(50);
       pause(ms);
     },
@@ -137,7 +139,7 @@ process.stdout.write(
 );
 `;
 
-function startLander({ name, cwd, origin, go = "" }) {
+function startLander({ name, cwd, origin, go = "", released = "" }) {
   const child = spawn(process.execPath, ["-e", LANDER_SCRIPT], {
     env: {
       ...process.env,
@@ -145,6 +147,7 @@ function startLander({ name, cwd, origin, go = "" }) {
       LANDER: cwd,
       ORIGIN: origin,
       GO: go,
+      RELEASED: released,
     },
     stdio: ["ignore", "pipe", "pipe", "pipe"],
   });
@@ -152,25 +155,30 @@ function startLander({ name, cwd, origin, go = "" }) {
   let stderr = "";
   child.stdout.on("data", (chunk) => (stdout += chunk));
   child.stderr.on("data", (chunk) => (stderr += chunk));
-  let pauses = 0;
+  const begun = { pause: 0, released: 0 };
+  let partial = "";
   const waiters = new Set();
   child.stdio[3].on("data", (chunk) => {
-    pauses += String(chunk).split("\n").length - 1;
+    const lines = (partial + chunk).split("\n");
+    partial = lines.pop();
+    for (const line of lines) begun[line] += 1;
     for (const waiter of waiters) {
-      if (pauses < waiter.count) continue;
+      if (waiter.count(begun) < waiter.target) continue;
       waiters.delete(waiter);
       waiter.resolve();
     }
   });
+  const until = (count, target) =>
+    count(begun) >= target
+      ? Promise.resolve()
+      : new Promise((resolve) => waiters.add({ count, target, resolve }));
   const lander = {
     name,
     result: null,
-    pauses: () => pauses,
     /** Settles once the lander has begun `count` pauses. */
-    paused: (count) =>
-      pauses >= count
-        ? Promise.resolve()
-        : new Promise((resolve) => waiters.add({ count, resolve })),
+    paused: (count) => until(({ pause, released }) => pause + released, count),
+    /** Settles once `count` pauses began after RELEASED existed; from the second, a whole poll began after it. */
+    pausedSinceRelease: (count) => until(({ released }) => released, count),
     closed: new Promise((resolve) =>
       child.on("close", (code) => resolve((lander.result = { code, stdout, stderr }))),
     ),
@@ -410,14 +418,15 @@ test("waiting landers take the turn in arrival order while both stay in the queu
     const first = startLander({ name: "first", cwd: clone("first"), origin, go });
     landers.push(first);
     await reach(first.paused(1), "the first lander never waited", landers);
-    const later = startLander({ name: "later", cwd: clone("later"), origin });
+    const released = path.join(root, "released");
+    const later = startLander({ name: "later", cwd: clone("later"), origin, released });
     landers.push(later);
     // Each lander joins the queue in the poll before its first pause.
     await reach(later.paused(1), "the later lander never waited", landers);
     assert.equal(entries().length, 2, "the later lander joined the queue");
     release({ cwd: holder, remote: origin }, held);
-    // Two more pauses: the poll that began after the release has ended.
-    await reach(later.paused(later.pauses() + 2), "the later lander stopped polling", landers);
+    fs.writeFileSync(released, "");
+    await reach(later.pausedSinceRelease(2), "the later lander stopped polling", landers);
     assert.equal(git(origin, "for-each-ref", LEASE_REF), "", "the later lander took the turn");
 
     fs.writeFileSync(go, "");
@@ -660,6 +669,54 @@ test("a stale entry origin will not delete blocks no one, and the waiter says so
   }
 });
 
+test("pruning moves past stale entries origin will not delete, with one warning however the batches differ", () => {
+  const { root, origin, git, clone, seedEntries } = setup();
+  try {
+    const holder = clone("holder");
+    const waiter = clone("waiter");
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    const epoch = Date.parse("2026-01-01T00:00:00Z");
+    // Eleven entries origin will not delete, more than one batch, and one it will.
+    const locked = Array.from(
+      { length: 11 },
+      (_, index) => `crashed-${String(index).padStart(2, "0")}`,
+    );
+    seedEntries([...locked, "crashed-11"].map((runId, index) => [runId, epoch - 100 + index]));
+    for (const runId of locked)
+      fs.writeFileSync(path.join(origin, `${QUEUE_PREFIX}${runId}.1.lock`), "");
+
+    let time = 0;
+    let polls = 0;
+    const { result: turn, written } = stderrOf(() =>
+      acquire({
+        cwd: waiter,
+        remote: origin,
+        clock: () => time,
+        now: () => epoch,
+        sleep: () => {
+          polls += 1;
+          if (polls === 5) release({ cwd: holder, remote: origin }, held);
+          assert.ok(polls <= 5, "kept waiting after the lease was free");
+          time = QUEUE_STALE_MS + polls;
+        },
+      }),
+    );
+
+    assert.equal(git(origin, "rev-parse", LEASE_REF), turn);
+    assert.deepEqual(
+      git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX).split("\n"),
+      locked.map((runId) => `${QUEUE_PREFIX}${runId}.1`),
+    );
+    assert.equal(
+      written.filter((line) => line.includes("could not remove stale queue entries")).length,
+      1,
+      written.join(""),
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a crashed lander blocks the next waiter until its entry is observed unchanged for the stale window", () => {
   const { root, origin, git, clone, entryCommit } = setup();
   try {
@@ -694,11 +751,12 @@ test("a crashed lander blocks the next waiter until its entry is observed unchan
   }
 });
 
-test("a heartbeat renames the entry with its commit, and names origin will not delete neither pile up nor hold the waiter back", () => {
-  const { root, origin, git, clone } = setup();
+test("a heartbeat renames the entry with its commit, and while origin keeps the old names it renews the newest in place", () => {
+  const { root, origin, git, clone, ticketsOn } = setup();
   try {
     const holder = clone("holder");
     const waiter = clone("waiter");
+    const later = clone("later");
     const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
     const names = () =>
       git(origin, "for-each-ref", "--format=%(refname) %(objectname)", QUEUE_PREFIX)
@@ -708,7 +766,19 @@ test("a heartbeat renames the entry with its commit, and names origin will not d
     const hooks = path.join(origin, "hooks");
     git(origin, "config", "core.hooksPath", hooks);
     let time = 0;
+    // A lander that came later polls the queue on the same clock.
+    const behind = createQueueWaiter({
+      remote: origin,
+      runId: "later",
+      arrivedAt: Date.parse("2026-01-01T00:00:00Z"),
+      clock: () => time,
+      remoteGit: (args) => git(later, ...args),
+      readMessage: (sha) => git(later, "show", "-s", "--format=%B", sha),
+      makeCommit: () => assert.fail("the later lander joined"),
+      warn: () => {},
+    });
     let commit;
+    let ticket;
     const counts = [];
     const { result: turn, written } = stderrOf(() =>
       acquire({
@@ -716,14 +786,22 @@ test("a heartbeat renames the entry with its commit, and names origin will not d
         remote: origin,
         clock: () => time,
         sleep: () => {
-          const listed = names();
-          commit ??= listed[0]?.[1];
-          assert.ok(commit, "published an entry");
+          const tickets = ticketsOn(() => true);
+          ticket ??= tickets[0];
+          commit ??= names()[0]?.[1];
+          assert.ok(ticket, "published an entry");
           assert.ok(
-            listed.every(([, sha]) => sha === commit),
-            "a heartbeat changed the commit",
+            tickets.every((since) => since === ticket),
+            "a heartbeat changed the ticket",
           );
-          counts.push(listed.length);
+          counts.push(tickets.length);
+          if (counts.length <= 3) {
+            assert.ok(
+              names().every(([, sha]) => sha === commit),
+              "a renaming heartbeat changed the commit",
+            );
+          }
+          assert.equal(behind.poll(), false, "the later lander went ahead of a live waiter");
           // From its first heartbeat on, origin refuses to delete any queue entry.
           if (counts.length === 1) {
             fs.writeFileSync(
@@ -732,21 +810,86 @@ test("a heartbeat renames the entry with its commit, and names origin will not d
               { mode: 0o755 },
             );
           }
-          if (counts.length === 5) release({ cwd: holder, remote: origin }, held);
-          assert.ok(counts.length <= 5, "kept waiting after the lease was free");
+          if (counts.length === 9) release({ cwd: holder, remote: origin }, held);
+          assert.ok(counts.length <= 9, "kept waiting after the lease was free");
           time += QUEUE_REFRESH_MS;
         },
       }),
     );
 
-    // One more name per heartbeat while origin keeps the old ones, until it stops renewing at three.
-    assert.deepEqual(counts, [1, 2, 3, 3, 3]);
+    // One more name per heartbeat while origin keeps the old ones, until three; then the newest moves on.
+    assert.deepEqual(counts, [1, 2, 3, 3, 3, 3, 3, 3, 3]);
     assert.equal(git(origin, "rev-parse", LEASE_REF), turn);
+    const [newest] = names()
+      .map(([ref]) => ref)
+      .sort((a, b) => Number(b.split(".").pop()) - Number(a.split(".").pop()));
+    // Six renewals in place, each a fast-forward from the commit before.
+    assert.equal(git(origin, "rev-list", "--count", newest), "7");
     assert.equal(
-      written.filter((line) => line.includes("stops renewing")).length,
+      written.filter((line) => line.includes("renews the newest in place")).length,
       1,
       written.join(""),
     );
+    assert.equal(
+      written.filter((line) => line.includes("could not remove old names")).length,
+      1,
+      written.join(""),
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a waiter whose first entry origin refused joins again after the entries that came meanwhile", () => {
+  const { root, origin, git, clone, entryCommit, dropEntries, ticketsOn } = setup();
+  try {
+    const holder = clone("holder");
+    const waiter = clone("waiter");
+    const other = clone("other");
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    const hooks = path.join(origin, "hooks");
+    git(origin, "config", "core.hooksPath", hooks);
+    fs.writeFileSync(
+      path.join(hooks, "update"),
+      `#!/bin/sh\ncase "$1" in ${QUEUE_PREFIX}*) [ -e refuse-entry ] && rm refuse-entry && exit 1;; esac\nexit 0\n`,
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(path.join(origin, "refuse-entry"), "");
+    const epoch = Date.parse("2026-01-01T00:00:00Z");
+    const ownTickets = () => ticketsOn((name) => !name.startsWith("other."));
+    let time = 0;
+    const pauses = [
+      () => {
+        assert.deepEqual(ownTickets(), [], "origin took the first entry");
+        // Another lander joins, seeing no entry of the waiter's.
+        const sha = entryCommit(other, "other", epoch + 60_000);
+        git(other, "push", "-q", "origin", `${sha}:${QUEUE_PREFIX}other.1`);
+        time = 1;
+      },
+      () => {
+        const [own] = ownTickets();
+        assert.ok(own > epoch + 60_000, `joined ahead of an entry it had read: ${own}`);
+        dropEntries(["other"]);
+        release({ cwd: holder, remote: origin }, held);
+        time = 2;
+      },
+    ];
+    const { result: turn } = stderrOf(() =>
+      acquire({
+        cwd: waiter,
+        remote: origin,
+        clock: () => time,
+        now: () => epoch + time,
+        sleep: () => {
+          const pause = pauses.shift();
+          assert.ok(pause, "waited after the lease was free");
+          pause();
+        },
+      }),
+    );
+
+    assert.equal(pauses.length, 0);
+    assert.equal(git(origin, "rev-parse", LEASE_REF), turn);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1011,6 +1154,62 @@ test("a take whose answer was lost goes back through the queue when its lease ex
     assert.equal(git(origin, "rev-parse", LEASE_REF), turn);
     const holder = JSON.parse(git(origin, "show", "-s", "--format=%B", turn).split("\n")[0]);
     assert.equal(Date.parse(holder.expires_at), wall + LEASE_TTL_MS);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a take whose lost answer is confirmed only after its lease expired goes back through the queue", () => {
+  const { root, origin, git, clone, entryCommit } = setup();
+  try {
+    const lander = clone("lander");
+    const other = clone("other");
+    // Origin commits the take, then its receive-pack dies before it acknowledges the push; the read after it works.
+    const hooks = path.join(origin, "hooks");
+    git(origin, "config", "core.hooksPath", hooks);
+    fs.writeFileSync(
+      path.join(hooks, "reference-transaction"),
+      '#!/bin/sh\n[ "$1" = committed ] && [ -e drop-ack ] && rm drop-ack && kill -9 "$PPID"\nexit 0\n',
+      { mode: 0o755 },
+    );
+    const dropAck = path.join(origin, "drop-ack");
+    fs.writeFileSync(dropAck, "");
+    const epoch = Date.parse("2026-01-01T00:00:00Z");
+    const expired = epoch + LEASE_TTL_MS + 1000;
+    let time = 0;
+    let lost;
+    const pauses = [
+      () => {
+        lost = git(origin, "rev-parse", LEASE_REF);
+        // An older entry joins while the lease that take left is expired.
+        const sha = entryCommit(other, "other", epoch - 1000);
+        git(other, "push", "-q", "origin", `${sha}:${QUEUE_PREFIX}other.1`);
+        time = 1;
+      },
+      () => {
+        assert.equal(git(origin, "rev-parse", LEASE_REF), lost, "went ahead of the older entry");
+        // The older entry stops renewing.
+        time = 1 + QUEUE_STALE_MS;
+      },
+    ];
+    const turn = acquire({
+      cwd: lander,
+      remote: origin,
+      clock: () => time,
+      // The lease runs out between the take and the read that confirms it.
+      now: () => (fs.existsSync(dropAck) ? epoch : expired),
+      sleep: () => {
+        const pause = pauses.shift();
+        assert.ok(pause, "waited after the older entry went stale");
+        pause();
+      },
+    });
+
+    assert.equal(pauses.length, 0, "kept the lease that had expired");
+    assert.notEqual(turn, lost);
+    assert.equal(git(origin, "rev-parse", LEASE_REF), turn);
+    const holder = JSON.parse(git(origin, "show", "-s", "--format=%B", turn).split("\n")[0]);
+    assert.equal(Date.parse(holder.expires_at), expired + LEASE_TTL_MS);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

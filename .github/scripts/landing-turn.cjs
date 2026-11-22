@@ -120,17 +120,23 @@ function tryAcquire({ runId, now = Date.now, canTake = () => true, ...lease }) {
   if (liveRunId !== null) return liveRunId === runId ? held : null;
   if (!canTake() || (held && !moveLease(lease, held, null))) return null;
   const acquiredAt = now();
+  const expiresAt = acquiredAt + LEASE_TTL_MS;
   const sha = landingCommit(lease.cwd, {
     run_id: runId,
     acquired_at: new Date(acquiredAt).toISOString(),
-    expires_at: new Date(acquiredAt + LEASE_TTL_MS).toISOString(),
+    expires_at: new Date(expiresAt).toISOString(),
   });
   // A push that creates the ref is atomic: when two landers race, the remote takes one and refuses the other.
-  return moveLease(lease, null, sha) ? sha : null;
+  if (!moveLease(lease, null, sha)) return null;
+  // A take confirmed only after its lease ran out holds no turn; the next take goes through the queue again.
+  return expiresAt > now() ? sha : null;
 }
 
-function landingCommit(cwd, data) {
-  return git(cwd, ["commit-tree", EMPTY_TREE, "-m", `${JSON.stringify(data)}\n[skip ci]`], {
+/** A commit of `data` on the empty tree, a child of `parent` when one is given. */
+function landingCommit(cwd, data, parent) {
+  const parents = parent ? ["-p", parent] : [];
+  const message = `${JSON.stringify(data)}\n[skip ci]`;
+  return git(cwd, ["commit-tree", EMPTY_TREE, ...parents, "-m", message], {
     env: {
       GIT_AUTHOR_NAME: "landing-turn",
       GIT_AUTHOR_EMAIL: "landing-turn@localhost",
@@ -178,7 +184,7 @@ function acquire({
     clock,
     remoteGit: (args) => remoteGit(cwd, args, callMs).stdout,
     readMessage: (sha) => git(cwd, ["show", "-s", "--format=%B", sha]).stdout,
-    makeCommit: (data) => landingCommit(cwd, data),
+    makeCommit: (data, parent) => landingCommit(cwd, data, parent),
     warn: (message) => process.stderr.write(`landing turn: ${message}\n`),
   });
   let waiting = false;

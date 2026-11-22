@@ -9,7 +9,8 @@ const QUEUE_PRUNE_MAX = 10;
 const QUEUE_PRUNE_MAX_OVER = 50;
 // Entry commits fetched per poll. Until every fresh entry is read, an unread one may be the first.
 const QUEUE_FETCH_MAX = 100;
-// Names of its own entry a waiter leaves on origin when origin will not delete the old ones; then it stops renewing.
+// Names of its own entry a waiter leaves on origin when origin will not delete the old ones; then it renews the newest
+// in place.
 const OWN_NAMES_MAX = 3;
 
 function waitingSince(message) {
@@ -33,10 +34,10 @@ function waitingSince(message) {
   return Number.isFinite(time) ? time : null;
 }
 
-// Each heartbeat publishes the same commit at a new name before deleting the previous name. Readers use
-// their own monotonic clocks to age unchanged names. A waiter's ticket comes after every entry it read before
-// joining, so clock skew only affects ordering between arrivals that did not see each other. The queue orders
-// attempts, while the lease's compare-and-swap still grants ownership.
+// Each heartbeat moves the entry's commit to a new name, or renews the newest in place while origin keeps old names.
+// Readers age a name on their own monotonic clocks while its commit stays. A ticket comes after every entry its waiter
+// read, so clock skew only orders arrivals that did not see each other. The queue orders attempts; the lease's
+// compare-and-swap still grants ownership.
 function createQueueWaiter({
   remote,
   runId,
@@ -60,14 +61,17 @@ function createQueueWaiter({
   let budget = 0;
   // The commits of the entries listed when the waiter first tried to join; it joins once it has read them all.
   let admission = null;
+  // Its entry's data and the commit that now carries it.
+  let ownEntry = null;
   let commit;
   let sequence = 0;
   let refreshedAt = null;
   let pruneFrom = 0;
 
-  function warnOnce(message) {
-    if (warned.has(message)) return;
-    warned.add(message);
+  // The first diagnostic stands for the rest: git's text differs with each batch of names.
+  function warnOnce(key, message = key) {
+    if (warned.has(key)) return;
+    warned.add(key);
     warn(message);
   }
 
@@ -97,7 +101,7 @@ function createQueueWaiter({
       remove(entries);
       return true;
     } catch (error) {
-      warnOnce(`could not remove ${what}: ${error.message}`);
+      warnOnce(what, `could not remove ${what}: ${error.message}`);
       return false;
     }
   }
@@ -178,18 +182,26 @@ function createQueueWaiter({
     return Math.max(arrivedAt, latest + 1);
   }
 
-  /** Joins the queue from the latest listing, then gives its entry a new name every QUEUE_REFRESH_MS. */
+  /** Joins the queue from the latest listing, then renews its entry every QUEUE_REFRESH_MS. */
   function refresh() {
     if (refreshedAt !== null && clock() - refreshedAt < QUEUE_REFRESH_MS) return;
+    // No name of it on origin, as after a first push origin refused, so its entry is out of the queue: it joins again,
+    // after the entries it read meanwhile.
+    if (commit && ownListed.length === 0) {
+      times.delete(commit);
+      commit = undefined;
+      ownEntry = null;
+    }
     if (!commit) {
       const since = ticket();
       if (since === null) return;
-      commit = makeCommit({
+      ownEntry = {
         kind: "land",
         host: hostname(),
         run_id: runId,
         waiting_since: new Date(since).toISOString(),
-      });
+      };
+      commit = makeCommit(ownEntry);
       times.set(commit, since);
     }
     // A push can apply although its answer was lost, so the names come from origin. The old ones go first, and the
@@ -199,11 +211,21 @@ function createQueueWaiter({
       older.length === 0 || removeOrWarn(older, "old names of its queue entry")
         ? ownListed.length - older.length
         : list(`${ownRef}*`).filter(({ ref }) => isOwn(ref)).length;
-    if (kept >= OWN_NAMES_MAX) {
+    if (kept >= OWN_NAMES_MAX && newest) {
+      // A child commit is a fast-forward, which needs no right to delete or force. Readers see the commit change.
+      const parent = times.has(newest.sha) ? newest.sha : commit;
+      const renewed = makeCommit(ownEntry, parent);
+      remoteGit([
+        "push",
+        "--quiet",
+        `--force-with-lease=${newest.ref}:${newest.sha}`,
+        remote,
+        `${renewed}:${newest.ref}`,
+      ]);
+      times.set(renewed, times.get(commit));
+      commit = renewed;
       refreshedAt = clock();
-      warnOnce(
-        "origin keeps the old names of its queue entry, so it stops renewing it and other landers may go first.",
-      );
+      warnOnce("origin keeps the old names of its queue entry, so it renews the newest in place.");
       return;
     }
     remoteGit(["push", "--quiet", remote, `${commit}:${ownRef}${++sequence}`]);
