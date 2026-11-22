@@ -1,7 +1,7 @@
 // The macOS build a Release (fork) run started, from the URL its dispatch step printed: a manual rebuild or the
 // catch-up of the same version shares its title. `node .github/scripts/release-macos-run.cjs <owner/repo> <run id>`
-// prints one JSON outcome over every attempt: dispatched (with the run), not-started (the step was skipped), pending
-// (an attempt is running) or unverified (anything else, a gh failure included: reported, never guessed).
+// prints one JSON outcome over every attempt: dispatched (with the run), not-started (every attempt skipped the step),
+// pending (an attempt is running) or unverified (anything else, a gh failure included: reported, never guessed).
 const { spawnSync } = require("node:child_process");
 
 const PUBLISH_JOB = "Publish GitHub Release";
@@ -16,13 +16,9 @@ const GH_TIMEOUT_MS = 2 * 60 * 1000;
 /** A run's address, from its repository and id alone: gh's own `url` field is never needed, so never trusted. */
 const runUrl = (repository, id) => `https://github.com/${repository}/actions/runs/${id}`;
 
-/** The text of each line of `gh run view --job <id> --log`, without its job, step and timestamp columns. */
+/** The text of each line of a job's own log (`actions/jobs/<id>/logs`), without its timestamp. */
 function logLines(log) {
-  return log
-    .split(/\r?\n/)
-    .map((line) =>
-      line.replace(/^[^\t]*\t[^\t]*\t/, "").replace(/^\uFEFF?\d{4}-\d{2}-\d{2}T[\d:.]+Z ?/, ""),
-    );
+  return log.split(/\r?\n/).map((line) => line.replace(/^\uFEFF?\d{4}-\d{2}-\d{2}T[\d:.]+Z ?/, ""));
 }
 
 /**
@@ -69,11 +65,16 @@ function readAttempt(view, runId, attempt) {
 
 /**
  * The macOS build the release run `runId` started, as one of the outcomes above, with the release run and the attempt
- * it comes from: the last attempt that dispatched, otherwise the latest. With more than one attempt, `attempts` gives
- * each one's outcome. `gh` runs gh and returns stdout; a failure of it, or an answer this cannot read, is unverified.
+ * it comes from: the newest attempt that is not a confirmed not-started, so an unread attempt is never passed over;
+ * not-started only when every attempt is. With more than one attempt, `attempts` gives each one's outcome. `gh` runs
+ * gh and returns stdout; a failure of it, or an answer this cannot read, is unverified.
  */
 function releaseMacosRun(repository, runId, gh) {
   const view = (...args) => gh(["run", "view", ...args, "-R", repository]);
+  // `gh run view --job --log` matches the run's latest log archive by job name, so an earlier attempt could get its
+  // retry's log; the job's own log is that attempt's. GitHub's logs carry colour codes, which gh prints only on request.
+  const jobLog = (job) =>
+    gh(["api", "--allow-escape-sequences", `repos/${repository}/actions/jobs/${job}/logs`]);
   // Until gh has described the run its attempt is unknown, but its address is not.
   const where = (attempt = "unknown") => `${runUrl(repository, runId)} (attempt ${attempt})`;
   const unverified = (error) => ({ outcome: "unverified", reason: error.message });
@@ -93,19 +94,19 @@ function releaseMacosRun(repository, runId, gh) {
     const attempt = index + 1;
     try {
       const release = attempt === latest.attempt ? latest : readAttempt(view, runId, attempt);
-      return { attempt, ...macosRun(release, repository, view) };
+      return { attempt, ...macosRun(release, repository, view, jobLog) };
     } catch (error) {
       return { attempt, ...unverified(error) };
     }
   });
   const { attempt, ...chosen } =
-    attempts.findLast((each) => each.outcome === "dispatched") ?? attempts.at(-1);
+    attempts.findLast((each) => each.outcome !== "not-started") ?? attempts.at(-1);
   const result = { ...chosen, release: where(attempt) };
   return attempts.length > 1 ? { ...result, attempts } : result;
 }
 
-/** The outcome for an attempt gh described, reading the job log and the macOS run through `view`. */
-function macosRun(release, repository, view) {
+/** The outcome for an attempt gh described, reading its job's log through `jobLog` and the macOS run through `view`. */
+function macosRun(release, repository, view, jobLog) {
   const answer = (outcome, reason) => ({ outcome, reason });
   if (release.status !== "completed")
     return answer(
@@ -129,7 +130,7 @@ function macosRun(release, repository, view) {
     return answer("not-started", `its "${DISPATCH_STEP}" step was skipped`);
   if (step.status !== "completed")
     return answer("unverified", `its "${DISPATCH_STEP}" step is ${step.status}`);
-  const output = dispatchOutput(view("--job", String(job.databaseId), "--log"), repository);
+  const output = dispatchOutput(jobLog(job.databaseId), repository);
   const ended = step.conclusion === "success" ? "" : ` (the step ended ${step.conclusion})`;
   if (output.problem) return answer("unverified", `${output.problem}${ended}`);
   const macos = JSON.parse(view(output.run, "--json", "workflowName,event,displayTitle,createdAt"));
