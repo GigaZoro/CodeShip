@@ -514,22 +514,34 @@ const liveChat = (name: string) =>
     const parent = yield* seedLiveParent({ name, driver, modelSelection, worktreePath: workspace });
     const sql = yield* SqlClient.SqlClient;
     yield* Effect.addFinalizer(() =>
-      sql<{ readonly pid: number | null; readonly directory: string }>`
-        SELECT pid, directory FROM command_runs WHERE thread_id = ${parent.threadId}
+      sql<{
+        readonly pid: number | null;
+        readonly directory: string;
+        readonly started_at: string;
+        readonly ended_at: string | null;
+      }>`
+        SELECT pid, directory, started_at, ended_at FROM command_runs
+        WHERE thread_id = ${parent.threadId}
       `.pipe(
         Effect.flatMap((rows) =>
           Effect.forEach(rows, (row) =>
-            Effect.try(() =>
-              signalProcessGroup(
-                // A failed test can leave a row without its pid; the wrapper's pid file still names it.
+            Effect.try(() => {
+              // A failed test can leave a row without its pid; the wrapper's pid file still names it.
+              const pid =
                 row.pid ??
-                  Number.parseInt(
-                    NodeFS.readFileSync(NodePath.join(row.directory, "pid"), "utf8"),
-                    10,
-                  ),
-                "SIGKILL",
-              ),
-            ).pipe(Effect.ignore),
+                Number.parseInt(
+                  NodeFS.readFileSync(NodePath.join(row.directory, "pid"), "utf8"),
+                  10,
+                );
+              // Windows has no process groups, so what descends from a wrapper still running stops.
+              if (!isWindowsHost) signalProcessGroup(pid, "SIGKILL");
+              else if (row.ended_at === null)
+                NodeChildProcess.execFileSync(
+                  "powershell.exe",
+                  windowsStopTreeArgs({ pid, since: Date.parse(row.started_at) }),
+                  { timeout: 30_000, stdio: "ignore" },
+                );
+            }).pipe(Effect.ignore),
           ),
         ),
         Effect.ignore,
@@ -916,6 +928,12 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         const runPath = /-File "(.+run\.ps1)"/.exec(launcherScript)?.[1] ?? "";
         // The wrapper reads no variable, so no setting can move the cmd or PowerShell it starts.
         assert.notMatch(NodeFS.readFileSync(runPath, "utf8"), /\$env:/i);
+        // It works in its own folder and gives the command its cwd ("a Windows command's folder").
+        assert.include(launcherScript, `CurrentDirectory = '${NodePath.dirname(runPath)}'`);
+        assert.include(
+          NodeFS.readFileSync(runPath, "utf8"),
+          `$start.WorkingDirectory = '${chat.workspace}'`,
+        );
         const scriptPath = NodePath.join(NodePath.dirname(runPath), "command.ps1");
         for (const file of [runPath, scriptPath]) {
           assert.notInclude(NodeFS.readFileSync(file, "utf8"), "from settings");
@@ -2275,6 +2293,24 @@ describe.runIf(isWindowsHost)("Windows only", () => {
             assert.equal(row?.exit_code, -1073741510);
           }),
         );
+      }),
+    );
+  });
+
+  it.layer(layerTest, { excludeTestServices: true })("a Windows command's folder", (it) => {
+    // An agent may remove a worktree as soon as its command ends, and Windows refuses to remove a
+    // folder some process works in, as the wrapper did while it outlived the command.
+    it.effect("can be removed as soon as the command's end is delivered", () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-win-folder-freed");
+        const folder = NodePath.join(chat.workspace, "sub");
+        NodeFS.mkdirSync(folder);
+        yield* withServer((runner) =>
+          runner
+            .run(callerOf(chat.threadId), { command: "exit 0", cwd: "sub" })
+            .pipe(Effect.tap(() => nextWake(chat.threadId))),
+        );
+        NodeFS.rmSync(folder, { recursive: true });
       }),
     );
   });

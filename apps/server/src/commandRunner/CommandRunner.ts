@@ -118,36 +118,39 @@ const CREATE_UNICODE_ENVIRONMENT = 0x400;
 // no window. Windows PowerShell started with no console at all (Detached_Process) exits at once.
 const SW_HIDE = 0;
 
-// Runs command.ps1 in a new console with no window, which the command and what it starts share, so
-// no console event they get (Ctrl+C, Ctrl+Break, that console closing) reaches the wrapper, which
-// outlives them to write the exit status; each rename makes its file appear whole.
-const WINDOWS_WRAPPER = [
-  "$ErrorActionPreference = 'Stop'",
-  "$code = 1",
-  "function Write-T3File($name, $value) {",
-  "  $file = Join-Path $PSScriptRoot $name",
-  `  Set-Content -LiteralPath "$file.tmp" -Value $value`,
-  `  Move-Item -Force -LiteralPath "$file.tmp" -Destination $file`,
-  "}",
-  "try {",
-  `  Write-T3File '${PID_FILE}' $PID`,
-  "  $system = [Environment]::SystemDirectory",
-  "  $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $system 'cmd.exe'))",
-  // cmd only appends the output of PowerShell and everything it starts to the log. Input is NUL,
-  // as /dev/null elsewhere: a command that reads it ends instead of waiting on the hidden console.
-  `  $start.Arguments = '/d /s /c ""' + (Join-Path $system 'WindowsPowerShell\\v1.0\\powershell.exe') + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $PSScriptRoot 'command.ps1') + '" < NUL >> "' + (Join-Path $PSScriptRoot '${LOG_FILE}') + '" 2>&1"'`,
-  "  $start.UseShellExecute = $false",
-  "  $start.CreateNoWindow = $true",
-  "  $command = [Diagnostics.Process]::Start($start)",
-  "  $command.WaitForExit()",
-  "  $code = $command.ExitCode",
-  "} catch {",
-  `  Add-Content -LiteralPath (Join-Path $PSScriptRoot '${LOG_FILE}') -Value "CodeShip could not run the command: $_"`,
-  "} finally {",
-  `  Write-T3File '${STATUS_FILE}' $code`,
-  "}",
-  "",
-].join("\r\n");
+// Runs command.ps1 in a new console with no window, shared by the command and what it starts, so no
+// console event they get (Ctrl+C, Ctrl+Break, its closing) reaches the wrapper, which outlives them to
+// write the exit status; each rename makes its file appear whole. The wrapper works in its own folder,
+// since Windows will not remove a folder a process works in: the command's is free once it ends.
+const windowsWrapper = (cwd: string) =>
+  [
+    "$ErrorActionPreference = 'Stop'",
+    "$code = 1",
+    "function Write-T3File($name, $value) {",
+    "  $file = Join-Path $PSScriptRoot $name",
+    `  Set-Content -LiteralPath "$file.tmp" -Value $value`,
+    `  Move-Item -Force -LiteralPath "$file.tmp" -Destination $file`,
+    "}",
+    "try {",
+    `  Write-T3File '${PID_FILE}' $PID`,
+    "  $system = [Environment]::SystemDirectory",
+    "  $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $system 'cmd.exe'))",
+    // cmd only appends the output of PowerShell and everything it starts to the log. Input is NUL,
+    // as /dev/null elsewhere: a command that reads it ends instead of waiting on the hidden console.
+    `  $start.Arguments = '/d /s /c ""' + (Join-Path $system 'WindowsPowerShell\\v1.0\\powershell.exe') + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $PSScriptRoot 'command.ps1') + '" < NUL >> "' + (Join-Path $PSScriptRoot '${LOG_FILE}') + '" 2>&1"'`,
+    `  $start.WorkingDirectory = ${escapePowerShellStringLiteral(cwd)}`,
+    "  $start.UseShellExecute = $false",
+    "  $start.CreateNoWindow = $true",
+    "  $command = [Diagnostics.Process]::Start($start)",
+    "  $command.WaitForExit()",
+    "  $code = $command.ExitCode",
+    "} catch {",
+    `  Add-Content -LiteralPath (Join-Path $PSScriptRoot '${LOG_FILE}') -Value "CodeShip could not run the command: $_"`,
+    "} finally {",
+    `  Write-T3File '${STATUS_FILE}' $code`,
+    "}",
+    "",
+  ].join("\r\n");
 
 /** PowerShell that prints when the process with id `pid` was made, or `ended` when none has it. */
 export const windowsStartOrEnded = (pid: string) =>
@@ -1257,7 +1260,7 @@ const make = Effect.gen(function* () {
         "",
       ].join("\r\n"),
     );
-    yield* fs.writeFileString(wrapperPath, WINDOWS_WRAPPER);
+    yield* fs.writeFileString(wrapperPath, windowsWrapper(cwd));
     yield* fs.writeFileString(logPath, "");
     const created = yield* processRunner
       .run({
@@ -1269,7 +1272,7 @@ const make = Effect.gen(function* () {
           // Windows folds names by a case table only it has, so the launcher keeps the last of the
           // spellings Windows reads as one name. It keeps them in a list: a dictionary key named
           // like a member (Values) hides that member in PowerShell.
-          `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT}; ShowWindow = [uint16]${SW_HIDE} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"' + $powershell + ${escapePowerShellStringLiteral(`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wrapperPath}"`)}; CurrentDirectory = ${escapePowerShellStringLiteral(cwd)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $r.ProcessId; ${windowsStartOrEnded("$r.ProcessId")}`,
+          `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT}; ShowWindow = [uint16]${SW_HIDE} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"' + $powershell + ${escapePowerShellStringLiteral(`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wrapperPath}"`)}; CurrentDirectory = ${escapePowerShellStringLiteral(directory)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $r.ProcessId; ${windowsStartOrEnded("$r.ProcessId")}`,
         ],
         // Base64, since PowerShell decodes stdin with the console code page.
         stdin: Buffer.from(
