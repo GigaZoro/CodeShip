@@ -72,13 +72,15 @@ const publishJob = ({ job = {}, step = {}, steps } = {}, databaseId) => ({
 /**
  * A fake gh: the release run's latest attempt (`earlier` describes the attempts before it, each as `job`, `step`,
  * `steps`, `log` and `status`), each publish job's log (an Error fails that call) and the runs a log may print,
- * recording every call.
+ * recording every call. A `retry` attempt starts right after the first read of the run's latest attempt, so gh's
+ * second request of that read, for its jobs, already gets the retry's.
  */
 function fixture({
   status = "completed",
   log = jobLog(),
   runs = {},
   earlier = [],
+  retry,
   ...latest
 } = {}) {
   const calls = [];
@@ -91,7 +93,12 @@ function fixture({
   const describe = (attempt) => {
     const { status, publish } = attempts[attempt - 1];
     const jobs = [{ name: "Preflight", conclusion: "success", steps: [] }, publish];
-    return JSON.stringify({ status, attempt, jobs });
+    return { status, attempt, jobs };
+  };
+  let pendingRetry = retry && {
+    status: "in_progress",
+    log: jobLog(),
+    publish: publishJob(retry, 136892706420 + 1),
   };
   const gh = (args) => {
     calls.push(args);
@@ -108,10 +115,14 @@ function fixture({
     assert.deepEqual(args.slice(args.indexOf("-R"), args.indexOf("-R") + 2), ["-R", REPOSITORY]);
     const id = args[2];
     if (id === "44919164430") {
-      const attempt = args.includes("--attempt")
-        ? Number(args[args.indexOf("--attempt") + 1])
-        : attempts.length;
-      return describe(attempt);
+      const fields = args[args.indexOf("--json") + 1].split(",");
+      if (args.includes("--attempt"))
+        return JSON.stringify(describe(Number(args[args.indexOf("--attempt") + 1])));
+      const { status, attempt } = describe(attempts.length);
+      if (pendingRetry) attempts.push(pendingRetry);
+      pendingRetry = undefined;
+      const jobs = fields.includes("jobs") ? { jobs: describe(attempts.length).jobs } : {};
+      return JSON.stringify({ status, attempt, ...jobs });
     }
     if (!macos[id]) throw new Error(`gh run view ${id} failed: HTTP 404`);
     return JSON.stringify(macos[id]);
@@ -133,14 +144,16 @@ test("the macOS run is the one the dispatch step printed, checked against the re
     calls.map((args) => args.slice(0, 3)),
     [
       ["run", "view", "44919164430"],
+      ["run", "view", "44919164430"],
       ["api", "--allow-escape-sequences", `repos/${REPOSITORY}/actions/jobs/136892706420/logs`],
       ["run", "view", "44919730318"],
     ],
   );
+  assert.ok(calls[1].join(" ").includes("--attempt 1 --json"));
   // Neither run's address is asked of gh: both come from the repository and the run's id.
   assert.deepEqual(
     calls.map((args) => (args.includes("--json") ? args[args.indexOf("--json") + 1] : null)),
-    ["status,attempt,jobs", null, "workflowName,event,displayTitle,createdAt"],
+    ["status,attempt", "status,attempt,jobs", null, "workflowName,event,displayTitle,createdAt"],
   );
 });
 
@@ -336,6 +349,13 @@ test("a retry's build is the newest attempt not known to have skipped it, with e
       { attempt: 1, outcome: "not-started", reason: "its Publish GitHub Release job was skipped" },
       { attempt: 2, outcome: "not-started", reason: "its Publish GitHub Release job was skipped" },
     ],
+  });
+  // A retry that starts while the run is read lends none of its jobs to the attempt before it.
+  assert.deepEqual(fixture({ retry: skipped }).result(), {
+    outcome: "dispatched",
+    run: 44919730318,
+    url: RUN_URL(44919730318),
+    release,
   });
   // A retry that is still running is pending, before any attempt is read.
   const running = fixture({ earlier: [{}], status: "in_progress" });
