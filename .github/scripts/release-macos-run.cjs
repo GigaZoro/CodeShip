@@ -46,16 +46,21 @@ function dispatchOutput(log, repository) {
   return { version: versions[0], run: runs[0] };
 }
 
-/** One attempt of the release run (`attempt` undefined: its latest), as gh describes it, or a thrown problem. */
+/**
+ * The release run as gh describes it, or a thrown problem: with `attempt`, that attempt and its jobs; without, only its
+ * latest attempt's number and status, because gh reads jobs in a second request that follows whichever is latest then.
+ */
 function readAttempt(view, runId, attempt) {
-  const which = attempt === undefined ? [] : ["--attempt", String(attempt)];
-  const release = JSON.parse(view(runId, ...which, "--json", "status,attempt,jobs"));
+  const fields =
+    attempt === undefined
+      ? ["--json", "status,attempt"]
+      : ["--attempt", String(attempt), "--json", "status,attempt,jobs"];
+  const release = JSON.parse(view(runId, ...fields));
   const isRun =
     typeof release?.status === "string" &&
     Number.isInteger(release.attempt) &&
     release.attempt >= 1 &&
-    (attempt === undefined || release.attempt === attempt) &&
-    Array.isArray(release.jobs);
+    (attempt === undefined || (release.attempt === attempt && Array.isArray(release.jobs)));
   if (!isRun)
     throw new Error(
       `gh's answer for run ${runId} is not a run: ${JSON.stringify(release).slice(0, 200)}`,
@@ -93,8 +98,7 @@ function releaseMacosRun(repository, runId, gh) {
   const attempts = Array.from({ length: latest.attempt }, (_, index) => {
     const attempt = index + 1;
     try {
-      const release = attempt === latest.attempt ? latest : readAttempt(view, runId, attempt);
-      return { attempt, ...macosRun(release, repository, view, jobLog) };
+      return { attempt, ...macosRun(readAttempt(view, runId, attempt), repository, view, jobLog) };
     } catch (error) {
       return { attempt, ...unverified(error) };
     }
