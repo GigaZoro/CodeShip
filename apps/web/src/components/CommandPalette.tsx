@@ -157,6 +157,7 @@ import {
   usePrimaryEnvironmentId,
 } from "../state/environments";
 import {
+  readThreadShell,
   useAnyEnvironmentHiding,
   useHiddenThreadKeys,
   useEnvironmentThreadRefs,
@@ -1015,11 +1016,7 @@ function OpenCommandPaletteDialog(props: {
     threadMessageItems,
     now: searchNow,
     isSearchPending: isThreadSearchPending,
-  } = useCommandPaletteThreadItems({
-    activeThread: activeThread ?? null,
-    ...(panelThreadRef === null ? {} : { panelThreadRef }),
-    threadSearchQuery,
-  });
+  } = useCommandPaletteThreadItems({ activeThread: activeThread ?? null, threadSearchQuery });
   // Recent means used recently: written in or opened, whichever is later. The
   // open thread would always lead that list, so it is left out.
   const activeThreadValue = activeThread
@@ -2891,13 +2888,22 @@ function OpenCommandPaletteDialog(props: {
     displayedGroups,
     highlightedItemValue ?? (autoHighlightsFirstRow ? (resultRows.itemValues[0] ?? null) : null),
   );
-  const openSelectedThreadInSidePanel =
-    selectedItem?.kind === "action" ? selectedItem.openInSidePanel : undefined;
+  const selectedThreadRef =
+    selectedItem?.kind === "action" ? selectedItem.targetThreadRef : undefined;
+  const canOpenSelectedThreadInSidePanel =
+    panelThreadRef !== null &&
+    selectedThreadRef !== undefined &&
+    scopedThreadKey(panelThreadRef) !== scopedThreadKey(selectedThreadRef);
 
   function openPaletteThreadInSidePanel() {
-    if (!openSelectedThreadInSidePanel) return;
-    setOpen(false);
-    openSelectedThreadInSidePanel();
+    if (panelThreadRef === null || selectedThreadRef === undefined) return;
+    if (
+      useRightPanelStore
+        .getState()
+        .openThread(panelThreadRef, selectedThreadRef, readThreadShell(selectedThreadRef)?.lineage)
+    ) {
+      setOpen(false);
+    }
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
@@ -2919,7 +2925,7 @@ function OpenCommandPaletteDialog(props: {
       !event.metaKey &&
       !event.shiftKey &&
       panelThreadRef !== null &&
-      selectedItem?.threadSearch
+      selectedThreadRef !== undefined
     ) {
       (event as typeof event & { preventBaseUIHandler?: () => void }).preventBaseUIHandler?.();
       event.preventDefault();
@@ -3304,7 +3310,7 @@ function OpenCommandPaletteDialog(props: {
     >
       {t("Open in {fileManager}", { fileManager: fileManagerName })}
     </CommandFooterAction>
-  ) : openSelectedThreadInSidePanel ? (
+  ) : canOpenSelectedThreadInSidePanel ? (
     <CommandFooterAction onClick={openPaletteThreadInSidePanel}>
       {t("Open in side panel")} <Kbd>{"Alt+Enter"}</Kbd>
     </CommandFooterAction>

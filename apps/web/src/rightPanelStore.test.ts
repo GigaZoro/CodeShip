@@ -113,17 +113,27 @@ describe("rightPanelStore", () => {
     useRightPanelStore.getState().openThread(refA, remoteRef);
     await reloadRightPanelStore();
     const { storage, name, version } = useRightPanelStore.persist.getOptions();
-    const saved = await storage!.getItem(name!);
-    const owner = saved!.state.byThreadKey["env-1:thread-A"]!;
-    owner.surfaces = [
-      ...owner.surfaces,
-      null,
-      { id: "unknown", kind: "unknown" },
-      { ...remoteSurface, id: "thread:env-1:thread-B" },
-      { ...remoteSurface, threadRef: { environmentId: "", threadId: refB.threadId } },
-      { id: "thread:env-1:thread-A", kind: "thread", threadRef: refA },
-    ] as typeof owner.surfaces;
-    await storage!.setItem(name!, { ...saved!, version: version!, state: saved!.state });
+    const owner = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(owner.activeSurfaceId).toBe(remoteSurface.id);
+    expect(owner.surfaces).toEqual([remoteSurface]);
+    await storage!.setItem(name!, {
+      version: version!,
+      state: {
+        byThreadKey: {
+          "env-1:thread-A": {
+            ...owner,
+            surfaces: [
+              ...owner.surfaces,
+              null,
+              { id: "unknown", kind: "unknown" },
+              { ...remoteSurface, id: "thread:env-1:thread-B" },
+              { ...remoteSurface, threadRef: { environmentId: "", threadId: refB.threadId } },
+              { id: "thread:env-1:thread-A", kind: "thread", threadRef: refA },
+            ],
+          },
+        },
+      },
+    });
     await useRightPanelStore.persist.rehydrate();
     expect(
       selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA),

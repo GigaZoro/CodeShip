@@ -13,13 +13,12 @@ import {
   pickedQuery,
   rankMessageMatches,
 } from "@t3tools/shared/paletteSearch";
-import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { MessageSquareIcon } from "lucide-react";
 import { useState } from "react";
 
 import { useProviderEntryByEnvironmentAndInstanceId } from "../hooks/useEnvironmentProviderEntries";
-import { useRightPanelStore } from "../rightPanelStore";
 import { useVisibleThreadShells } from "../state/entities";
 import { useEnvironments } from "../state/environments";
 import { useThreadSearch } from "../state/queries";
@@ -65,10 +64,9 @@ function useConnectedThreadSearch(query: string) {
  */
 export function useCommandPaletteThreadItems(input: {
   readonly activeThread: { readonly environmentId: EnvironmentId; readonly id: ThreadId } | null;
-  readonly panelThreadRef?: ScopedThreadRef;
   readonly threadSearchQuery: string;
 }) {
-  const { activeThread, panelThreadRef, threadSearchQuery } = input;
+  const { activeThread, threadSearchQuery } = input;
   const navigate = useNavigate();
   const threads = useVisibleThreadShells();
   const { projectEnvironmentLocationById } = useEnvironmentLookups();
@@ -129,17 +127,6 @@ export function useCommandPaletteThreadItems(input: {
         />
       );
     },
-    ...(panelThreadRef && {
-      openThreadInSidePanel: (thread: (typeof threads)[number]) => {
-        useRightPanelStore
-          .getState()
-          .openThread(
-            panelThreadRef,
-            scopeThreadRef(thread.environmentId, thread.id),
-            thread.lineage,
-          );
-      },
-    }),
     runThread: async (thread) => {
       // A pick sends its open with the query, always, so the server records
       // it; the thread view then skips its own open. The open thread is no pick.
