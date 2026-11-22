@@ -1,7 +1,7 @@
 // The macOS build a Release (fork) run started, from the URL its dispatch step printed: a manual rebuild or the
 // catch-up of the same version shares its title. `node .github/scripts/release-macos-run.cjs <owner/repo> <run id>`
-// prints one JSON outcome for the run's latest attempt: dispatched (with the run), not-started (the step was skipped),
-// pending (an attempt is running) or unverified (anything else, a gh failure included: reported, never guessed).
+// prints one JSON outcome over every attempt: dispatched (with the run), not-started (the step was skipped), pending
+// (an attempt is running) or unverified (anything else, a gh failure included: reported, never guessed).
 const { spawnSync } = require("node:child_process");
 
 const PUBLISH_JOB = "Publish GitHub Release";
@@ -50,37 +50,68 @@ function dispatchOutput(log, repository) {
   return { version: versions[0], run: runs[0] };
 }
 
+/** One attempt of the release run (`attempt` undefined: its latest), as gh describes it, or a thrown problem. */
+function readAttempt(view, runId, attempt) {
+  const which = attempt === undefined ? [] : ["--attempt", String(attempt)];
+  const release = JSON.parse(view(runId, ...which, "--json", "status,attempt,jobs"));
+  const isRun =
+    typeof release?.status === "string" &&
+    Number.isInteger(release.attempt) &&
+    release.attempt >= 1 &&
+    (attempt === undefined || release.attempt === attempt) &&
+    Array.isArray(release.jobs);
+  if (!isRun)
+    throw new Error(
+      `gh's answer for run ${runId} is not a run: ${JSON.stringify(release).slice(0, 200)}`,
+    );
+  return release;
+}
+
 /**
- * The macOS build the release run `runId` started, as one of the outcomes above, with the release run and its attempt.
- * `gh` runs gh and returns stdout; a failure of it, or an answer this cannot read, is reported as unverified.
+ * The macOS build the release run `runId` started, as one of the outcomes above, with the release run and the attempt
+ * it comes from: the last attempt that dispatched, otherwise the latest. With more than one attempt, `attempts` gives
+ * each one's outcome. `gh` runs gh and returns stdout; a failure of it, or an answer this cannot read, is unverified.
  */
 function releaseMacosRun(repository, runId, gh) {
   const view = (...args) => gh(["run", "view", ...args, "-R", repository]);
   // Until gh has described the run its attempt is unknown, but its address is not.
-  const address = runUrl(repository, runId);
-  let where = `${address} (attempt unknown)`;
+  const where = (attempt = "unknown") => `${runUrl(repository, runId)} (attempt ${attempt})`;
+  const unverified = (error) => ({ outcome: "unverified", reason: error.message });
+  let latest;
   try {
-    const release = JSON.parse(view(runId, "--json", "status,attempt,jobs"));
-    const isRun =
-      typeof release?.status === "string" &&
-      Number.isInteger(release.attempt) &&
-      Array.isArray(release.jobs);
-    if (!isRun)
-      throw new Error(
-        `gh's answer for run ${runId} is not a run: ${JSON.stringify(release).slice(0, 200)}`,
-      );
-    where = `${address} (attempt ${release.attempt})`;
-    return { ...macosRun(release, repository, view), release: where };
+    latest = readAttempt(view, runId);
   } catch (error) {
-    return { outcome: "unverified", reason: error.message, release: where };
+    return { ...unverified(error), release: where() };
   }
+  if (latest.status !== "completed")
+    return {
+      outcome: "pending",
+      reason: `the release run is ${latest.status}`,
+      release: where(latest.attempt),
+    };
+  const attempts = Array.from({ length: latest.attempt }, (_, index) => {
+    const attempt = index + 1;
+    try {
+      const release = attempt === latest.attempt ? latest : readAttempt(view, runId, attempt);
+      return { attempt, ...macosRun(release, repository, view) };
+    } catch (error) {
+      return { attempt, ...unverified(error) };
+    }
+  });
+  const { attempt, ...chosen } =
+    attempts.findLast((each) => each.outcome === "dispatched") ?? attempts.at(-1);
+  const result = { ...chosen, release: where(attempt) };
+  return attempts.length > 1 ? { ...result, attempts } : result;
 }
 
-/** The outcome for a release run gh described, reading the job log and the macOS run through `view`. */
+/** The outcome for an attempt gh described, reading the job log and the macOS run through `view`. */
 function macosRun(release, repository, view) {
   const answer = (outcome, reason) => ({ outcome, reason });
   if (release.status !== "completed")
-    return answer("pending", `the release run is ${release.status}`);
+    return answer(
+      "unverified",
+      `the release run's attempt ${release.attempt} is ${release.status}`,
+    );
   const jobs = release.jobs.filter((job) => job.name === PUBLISH_JOB);
   if (jobs.length !== 1)
     return answer("unverified", `the release run has ${jobs.length} ${PUBLISH_JOB} jobs`);

@@ -180,14 +180,12 @@ function resolveReleaseNotes(worktree: string): boolean {
   return true;
 }
 
-/** True when the fetched main already holds HEAD, the commit this run would push. */
-function holdsCandidate(worktree: string): boolean {
-  return git(worktree, "merge-base", "--is-ancestor", "HEAD", "origin/main").ok;
+/** True when the fetched main already holds `candidate`, the commit this run pushes. */
+function holdsCandidate(worktree: string, candidate: string): boolean {
+  return git(worktree, "merge-base", "--is-ancestor", candidate, "origin/main").ok;
 }
 
-function landed(worktree: string): SyncResult {
-  return { status: "landed", commit: gitOrThrow(worktree, "rev-parse", "HEAD") };
-}
+const landed = (candidate: string): SyncResult => ({ status: "landed", commit: candidate });
 
 /**
  * Pushes the branch to main when that is a fast-forward of the commit it was verified against.
@@ -202,8 +200,10 @@ export function land(worktree: string, now: Date): SyncResult {
     conflicts: allConflicts(from),
   });
   gitOrThrow(worktree, "fetch", "-q", "origin");
+  // Read once: the push waits for the landing turn, and the worktree may move meanwhile.
+  const candidate = gitOrThrow(worktree, "rev-parse", "HEAD");
   // A push whose reply was lost, or one cut by the time limit, may have landed.
-  if (holdsCandidate(worktree)) return landed(worktree);
+  if (holdsCandidate(worktree, candidate)) return landed(candidate);
   if (now.getTime() >= Date.parse(state.startedAt) + RUN_LIMIT_MS) return hold("time-limit");
   if (
     gitOrThrow(worktree, "status", "--porcelain", "--untracked-files=no") !== "" ||
@@ -214,16 +214,15 @@ export function land(worktree: string, now: Date): SyncResult {
   let main = gitOrThrow(worktree, "rev-parse", "origin/main");
   if (main === state.base) {
     // Main refuses a push from anyone who does not hold its landing turn (.github/scripts/landing-turn.cjs).
-    const candidate = gitOrThrow(worktree, "rev-parse", "HEAD");
     const pushRun = NodeChildProcess.spawnSync(
       process.execPath,
       [LANDING_TURN, "push", candidate],
       { cwd: worktree, encoding: "utf8" },
     );
     const pushed = { ok: pushRun.status === 0, stderr: pushRun.stderr.trim() };
-    if (pushed.ok) return landed(worktree);
+    if (pushed.ok) return landed(candidate);
     gitOrThrow(worktree, "fetch", "-q", "origin");
-    if (holdsCandidate(worktree)) return landed(worktree);
+    if (holdsCandidate(worktree, candidate)) return landed(candidate);
     main = gitOrThrow(worktree, "rev-parse", "origin/main");
     if (main === state.base) return { status: "push-failed", detail: pushed.stderr };
   }

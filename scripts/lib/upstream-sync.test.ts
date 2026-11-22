@@ -5,6 +5,8 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+
 import { begin, checkCommand, land, RUN_LIMIT_MS, status } from "./upstream-sync.ts";
 
 const START = new Date("2026-11-16T07:00:00Z");
@@ -208,6 +210,28 @@ describe("upstream sync", () => {
       commit: repo.head(),
     });
   });
+
+  it.skipIf(isWindowsHost)(
+    "reports the commit it pushed, not one its worktree made while the push waited",
+    () => {
+      const repo = fixture();
+      begin(repo.sync, START);
+      const checked = repo.head();
+      // The pre-push hook runs after the landing turn resolved the commit, while the push is in flight.
+      const hooks = NodePath.join(repo.sync, "..", "hooks");
+      NodeFS.mkdirSync(hooks);
+      NodeFS.writeFileSync(
+        NodePath.join(hooks, "pre-push"),
+        `#!/bin/sh\ngit -C '${repo.sync}' commit -q --allow-empty -m later\n`,
+        { mode: 0o755 },
+      );
+      git(repo.sync, "config", "core.hooksPath", hooks);
+
+      expect(land(repo.sync, later(60))).toEqual({ status: "landed", commit: checked });
+      expect(repo.originMain()).toBe(checked);
+      expect(repo.head()).not.toBe(checked);
+    },
+  );
 
   it("refuses a worktree with files marked assume-unchanged", () => {
     const repo = fixture();
