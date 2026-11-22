@@ -223,7 +223,7 @@ export function settleUsageReadings(
 ): UsageReadings {
   const readings = new Map<EnvironmentId, EnvironmentReading>();
   for (const env of environments) {
-    if (!env.canReadDiagnostics || !env.isConnected) continue;
+    if (!env.canReadDiagnostics) continue;
     const saved = previous?.get(env.environmentId);
     if (!hasCompatibleUsage(env)) {
       if (saved) readings.set(env.environmentId, saved);
@@ -518,7 +518,7 @@ export function retainUsageSnapshot(
   if (!snapshot.hasAnswer) return null;
   const readable = new Set(
     environments
-      .filter(({ canReadDiagnostics, isConnected }) => canReadDiagnostics && isConnected)
+      .filter(({ canReadDiagnostics }) => canReadDiagnostics)
       .map(({ environmentId }) => environmentId),
   );
   const retained = snapshot.environments.filter(({ environmentId }) => readable.has(environmentId));

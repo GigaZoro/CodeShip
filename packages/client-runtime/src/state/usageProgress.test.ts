@@ -11,6 +11,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   isKeptUsage,
+  retainUsageSnapshot,
   settleUsageScanFailures,
   settleUsageSnapshot,
   usageEnvironmentProgress,
@@ -202,6 +203,22 @@ function status(
     ...overrides,
   };
 }
+
+it("keeps Desk's figures as its last values while it reconnects", () => {
+  const window = summary();
+  const desk = status("Desk");
+  const settled = settleUsageSnapshot(null, window, [desk], [desk]);
+  // The session grant and the usage answer both keep their last values while the socket reconnects.
+  const reconnecting = status("Desk", { isConnected: false, isPending: true });
+
+  const shown = settleUsageSnapshot(settled, window, [reconnecting], [reconnecting]);
+
+  expect(shown?.hasAnswer).toBe(true);
+  expect(retainUsageSnapshot(settled!, [reconnecting])).toBe(settled);
+  expect(
+    usageGaps([reconnecting], [], shown?.environments)?.gaps.map(({ message }) => message),
+  ).toEqual(["Desk: This environment is not connected. Showing its last values."]);
+});
 
 it("settles connected usage when another selected environment is still connecting", () => {
   const ready = status("Ready");
