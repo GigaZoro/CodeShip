@@ -5,11 +5,8 @@ import {
   UsageDay,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
-import {
-  usageEnvironmentError,
-  usageNotices,
-  type EnvironmentUsageStatus,
-} from "@t3tools/client-runtime/state/usage-progress";
+import type { EnvironmentUsageStatus } from "@t3tools/client-runtime/state/usage-progress";
+import { usageEnvironmentError, usageNotices } from "@t3tools/client-runtime/state/usage-view";
 import { usageRefreshingEnvironmentIdsAtom } from "@t3tools/client-runtime/state/usage";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -86,8 +83,7 @@ const window: UsageSummaryInput = {
 };
 
 function UsageProbe() {
-  const { shown } = useUsage(window);
-  const environment = shown?.environments[0];
+  const environment = useUsage(window).selectedEnvironments[0];
   return <output>{environment ? usageEnvironmentError(environment) : "Loading usage"}</output>;
 }
 
@@ -150,11 +146,11 @@ it("keeps two slow mobile scan errors and Retry visible across later ticks", asy
       "hour",
     );
     const usage = useUsage(request);
-    const coverage = usageNotices(
+    const { coverage } = usageNotices(
+      usage.usage,
       usage.selectedEnvironments,
-      usage.shown?.environments ?? [],
-      usage.failures,
-    ).coverage;
+      usage.requestedWindow,
+    );
     return (
       <>
         {coverage?.gaps.map(({ message, environment }) => (
@@ -238,14 +234,12 @@ function statusWithTokens(label: string, tokens: number): EnvironmentUsageStatus
 
 function ScopedUsage({ period }: { readonly period: UsageSummaryInput }) {
   const usage = useUsage(period);
-  const { coverage } = usageNotices(
-    usage.selectedEnvironments,
-    usage.shown?.environments ?? [],
-    usage.failures,
-  );
+  const { coverage } = usageNotices(usage.usage, usage.selectedEnvironments, usage.requestedWindow);
   return (
     <>
-      {usage.shown?.hasAnswer ? <output>{usage.shown.merged.totalTokens} tokens</output> : null}
+      {usage.usage.view.kind === "figures" ? (
+        <output>{usage.usage.view.merged.totalTokens} tokens</output>
+      ) : null}
       {coverage?.gaps.map(({ environment, message }) => (
         <p key={environment.environmentId}>{message}</p>
       ))}
@@ -256,19 +250,50 @@ function ScopedUsage({ period }: { readonly period: UsageSummaryInput }) {
   );
 }
 
-it("keeps Laptop's figures on mobile after Desk loses access", async () => {
+it("shows Laptop's 200 on mobile until it answers after Desk loses access during a rolling refresh", async () => {
   await using screen = mountUsageProbe();
+  const tick = makeWindow(1, new Date("2026-10-23T12:00:00Z"), "hour");
+  const next = makeWindow(1, new Date("2026-10-23T12:01:00Z"), "hour");
   const desk = statusWithTokens("Desk", 100);
   const laptop = statusWithTokens("Laptop", 200);
+  const tokens = () => screen.container.querySelector("output")?.textContent;
   state.environments = [desk, laptop];
-  await act(() => screen.root.render(<ScopedUsage period={window} />));
-  expect(screen.container.querySelector("output")?.textContent).toBe("300 tokens");
+  await act(() => screen.root.render(<ScopedUsage period={tick} />));
+  expect(tokens()).toBe("300 tokens");
+
   state.environments = [
-    { ...desk, canReadDiagnostics: false, summary: null, error: "Access revoked" },
+    { ...desk, summary: null, isPending: true },
     { ...laptop, summary: null, isPending: true },
   ];
-  await act(() => screen.root.render(<ScopedUsage period={window} />));
-  expect(screen.container.querySelector("output")?.textContent).toBe("200 tokens");
+  await act(() => screen.root.render(<ScopedUsage period={next} />));
+  expect(tokens()).toBe("300 tokens");
+  const revoked = { ...desk, canReadDiagnostics: false, summary: null, error: "Access revoked" };
+  state.environments = [revoked, { ...laptop, summary: null, isPending: true }];
+  await act(() => screen.root.render(<ScopedUsage period={next} />));
+  expect(tokens()).toBe("200 tokens");
+
+  state.environments = [revoked, statusWithTokens("Laptop", 250)];
+  await act(() => screen.root.render(<ScopedUsage period={next} />));
+  expect(tokens()).toBe("250 tokens");
+});
+
+it("returns the same mobile usage state when rerendered with unchanged statuses", async () => {
+  await using screen = mountUsageProbe();
+  const seen: ReturnType<typeof useUsage>["usage"][] = [];
+  function Capture() {
+    const usage = useUsage(window);
+    seen.push(usage.usage);
+    return <output>{usage.usage.view.kind}</output>;
+  }
+  state.environments = [statusWithTokens("Desk", 100)];
+  await act(() => screen.root.render(<Capture />));
+  expect(screen.container.textContent).toBe("figures");
+  state.environments = [{ ...state.environments[0]! }];
+  await act(() => screen.root.render(<Capture />));
+  await act(() => screen.root.render(<Capture />));
+  expect(seen.length).toBeLessThan(10);
+  expect(seen.at(-1)).toBe(seen.at(-2));
+  expect(seen.at(-1)).toBe(seen.at(-3));
 });
 
 it("reports only the new period's failures on mobile while retaining the previous figures", async () => {

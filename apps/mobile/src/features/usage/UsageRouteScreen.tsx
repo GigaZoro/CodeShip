@@ -3,14 +3,16 @@ import { useUsageNow } from "../../lib/clock";
 import { useAppForeground } from "../../lib/appState";
 import {
   mergeAnsweredUsage,
-  retainedUsageLabel,
   refreshingUsageProviders,
-  usageNotices,
-  formatUsageSourceNotices,
-  waitingForFirstUsage,
   usageWindowKey,
-  type UsageProviderRow,
 } from "@t3tools/client-runtime/state/usage-progress";
+import {
+  formatUsageSourceNotices,
+  retainedUsageLabel,
+  usageNotices,
+  type UsageProviderRow,
+  type UsageViewEnvironment,
+} from "@t3tools/client-runtime/state/usage-view";
 import { Button } from "../../components/ui/Button";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { ChatGptUsageSummary } from "./ChatGptUsageSummary";
@@ -144,16 +146,17 @@ function UsageScreen(props: {
   const {
     requestedWindow,
     refreshingEnvironmentIds,
-    failures,
-    shown,
-    showingKept,
+    usage,
     environments,
     selectedEnvironments,
     refresh,
   } = useUsage(window, selectedEnvironmentIds, { advanceWindow, enabled: !showingLimits });
+  const shown = usage.view.kind === "figures" ? usage.view : null;
+  const showingKept = shown?.kept === true;
   const merged = shown?.merged ?? EMPTY_USAGE;
   const shownWindow = shown?.window ?? window;
-  const shownEnvironments = shown?.environments ?? selectedEnvironments;
+  const shownEnvironments: readonly Pick<UsageViewEnvironment, "environmentId">[] =
+    shown?.environments ?? selectedEnvironments;
   const isPast24Hours = shownWindow.resolution === "hour";
   const limits = useRefreshLimits(selectedEnvironmentIds, isFocused && showingLimits);
   const cursorAccessEnvironments = cursorKeychainAccessEnvironments(
@@ -164,11 +167,7 @@ function UsageScreen(props: {
     void refresh();
     void limits.refreshAfterEnable();
   };
-  const { coverage, sourceMessages } = usageNotices(
-    selectedEnvironments,
-    shownEnvironments,
-    failures,
-  );
+  const { coverage, sourceMessages } = usageNotices(usage, selectedEnvironments, requestedWindow);
   const canReadDiagnostics = selectedEnvironments.some(
     (environment) => environment.canReadDiagnostics,
   );
@@ -182,7 +181,7 @@ function UsageScreen(props: {
 
   const [refreshingUsage, setRefreshingUsage] = useState(false);
   const refreshingRef = useRef(false);
-  const initialLoading = shown === null && waitingForFirstUsage(selectedEnvironments, failures);
+  const initialLoading = usage.view.kind === "loading";
   const loading = isFocused && !showingLimits && initialLoading && selectedEnvironments.length > 0;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Android uses a live region, while VoiceOver needs an explicit initial announcement
   useEffect(() => {
@@ -454,7 +453,7 @@ function UsageScreen(props: {
                   >
                     {t("Scanning provider transcripts…")}
                   </Text>
-                ) : !shown?.hasAnswer ? null : (
+                ) : shown === null ? null : (
                   <>
                     {showingKept ? (
                       <Text className="text-sm text-foreground-muted">

@@ -11,16 +11,18 @@ import {
   type UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
-import type {
-  EnvironmentUsageStatus,
-  UsageSnapshot,
-  UsageScanFailures,
-} from "@t3tools/client-runtime/state/usage-progress";
+import type { EnvironmentUsageStatus } from "@t3tools/client-runtime/state/usage-progress";
+import {
+  initialUsageViewState,
+  type UsageViewState,
+} from "@t3tools/client-runtime/state/usage-view";
+import { makeWindow, usageWindowLabel } from "@t3tools/shared/usageFormat";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, fakeTimers, render } from "../../../test/render";
 import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
+import { resolveHour12 } from "../../timestampFormat";
 import "../../index.css";
 import { UsagePage } from "./UsagePage";
 import { UsageProviderChart } from "./UsageProviderChart";
@@ -59,8 +61,8 @@ const state = vi.hoisted(() => ({
   costUsd: 0,
   totalTokens: 100,
   costSource: "unpriced" as "unpriced" | "modelPriced" | "providerReported",
-  previous: null as UsageSnapshot | null,
-  failures: null as UsageScanFailures | null,
+  view: null as UsageViewState | null,
+  summaries: new Map<string, UsageSummary>(),
   revision: 0,
   manualRefresh: null as Promise<void> | null,
   refreshingEnvironmentIds: new Set<EnvironmentId>(),
@@ -202,13 +204,9 @@ vi.mock("../../state/usage", async (importOriginal) => {
     };
   };
   const revision = () => state.revision;
-  const {
-    isKeptUsage,
-    mergeAnsweredUsage,
-    settleUsageScanFailures,
-    settleUsageSnapshot,
-    usageWindowKey,
-  } = await import("@t3tools/client-runtime/state/usage-progress");
+  const { mergeAnsweredUsage, usageWindowKey } =
+    await import("@t3tools/client-runtime/state/usage-progress");
+  const { settleUsageView } = await import("@t3tools/client-runtime/state/usage-view");
   return {
     mergeAnsweredUsage,
     useUsage: (
@@ -227,16 +225,18 @@ vi.mock("../../state/usage", async (importOriginal) => {
         selectedIds === null
           ? environments
           : environments.filter(({ environmentId }) => selectedIds.has(environmentId));
-      const shown = settleUsageSnapshot(state.previous, window, environments, selected);
-      state.previous = shown;
-      state.failures = settleUsageScanFailures(state.failures, window, selected);
+      state.view = settleUsageView(state.view ?? initialUsageViewState, {
+        window,
+        environments,
+        selectedIds,
+        hidden: hidden ?? [],
+        enabled: options?.enabled ?? true,
+      });
       return {
         requestedWindow: window,
-        failures: state.failures,
         environments,
         selectedEnvironments: selected,
-        shown,
-        showingKept: isKeptUsage(shown, window, selected),
+        usage: state.view,
         refreshingEnvironmentIds: state.refreshingEnvironmentIds,
         refresh: async () => {
           if (state.manualRefresh === null) return;
@@ -249,6 +249,16 @@ vi.mock("../../state/usage", async (importOriginal) => {
     },
   };
 });
+
+// The query atom keeps one result object per answer, so a regrant can surface the same object again.
+function stable(summary: UsageSummary | null): UsageSummary | null {
+  if (summary === null) return null;
+  const key = JSON.stringify(summary);
+  const known = state.summaries.get(key);
+  if (known !== undefined) return known;
+  state.summaries.set(key, summary);
+  return summary;
+}
 
 function reading(window: UsageSummaryInput, response = state.response): EnvironmentUsageStatus {
   const summary: UsageSummary | null =
@@ -333,7 +343,7 @@ function reading(window: UsageSummaryInput, response = state.response): Environm
           ? "Read failed"
           : null,
     isPending: response === "waiting" || response === "provisional" || response === "cursorPending",
-    summary: cursor,
+    summary: stable(cursor),
   };
 }
 
@@ -358,22 +368,28 @@ function otherReading(
     summary:
       response === "scanFailure"
         ? null
-        : {
+        : stable({
             ...summary,
             contractVersion: response === "incompatible" ? 0 : summary.contractVersion,
             buckets: summary.buckets.map((bucket) => ({ ...bucket, model: "laptop-model" })),
-            sources: summary.sources.map((source) => ({
-              ...source,
-              fingerprint: {
-                ...source.fingerprint,
-                hostId: "laptop",
-                provider: response === "sourceFailure" ? "cursor" : source.fingerprint.provider,
-              },
-              ...(response === "sourceFailure"
-                ? { status: "partial" as const, message: "Cursor fetch failed" }
-                : {}),
-            })),
-          },
+            sources: summary.sources.flatMap((source) => {
+              const laptop = {
+                ...source,
+                fingerprint: { ...source.fingerprint, hostId: "laptop" },
+              };
+              return response === "sourceFailure"
+                ? [
+                    laptop,
+                    {
+                      ...laptop,
+                      fingerprint: { ...laptop.fingerprint, provider: "cursor" as const },
+                      status: "partial" as const,
+                      message: "Cursor fetch failed",
+                    },
+                  ]
+                : [laptop];
+            }),
+          }),
   };
 }
 
@@ -392,8 +408,8 @@ function setup(windowDays: 1 | 7 = 1) {
   state.costUsd = 0;
   state.totalTokens = 100;
   state.costSource = "unpriced";
-  state.previous = null;
-  state.failures = null;
+  state.view = null;
+  state.summaries.clear();
   state.manualRefresh = null;
   state.refreshingEnvironmentIds.clear();
 }
@@ -580,7 +596,7 @@ it("clears provider placeholders after a compatible empty window settles", async
   await using screen = await render(<Screen />);
   await expect.element(screen.getByRole("button", { name: "usage-test-model" })).toBeVisible();
 
-  state.previous = null;
+  state.view = null;
   state.response = "waiting";
   await update();
   await expect.element(screen.getByText("Loading usage…")).toBeInTheDocument();
@@ -590,7 +606,7 @@ it("clears provider placeholders after a compatible empty window settles", async
   await update();
   await expect.element(screen.getByText("No activity in this window.").first()).toBeVisible();
 
-  state.previous = null;
+  state.view = null;
   state.response = "waiting";
   await update();
   await expect.element(screen.getByText("Loading usage…")).toBeInTheDocument();
@@ -656,19 +672,18 @@ it("keeps retained figures readable and disables price edits when the period cha
   }
 });
 
-it("keeps the model dialog on its authorized reading when the new period is empty and Laptop was already denied", async () => {
+it("closes the model dialog and focuses the page when the new period settles without the model", async () => {
   setup();
   state.secondEnvironment = "revoked";
   await using screen = await render(<Screen />);
   await screen.getByRole("button", { name: "usage-test-model" }).click();
   const dialog = page.getByRole("dialog");
-  const close = dialog.getByRole("button", { name: "Close" });
-  (close.element() as HTMLElement).focus();
+  (dialog.getByRole("button", { name: "Close" }).element() as HTMLElement).focus();
   state.response = "empty";
   await selectWeekFromShortcut();
-  await expect.element(dialog.getByRole("heading", { name: "usage-test-model" })).toBeVisible();
-  await expect.element(close).toHaveFocus();
-  await expect.element(dialog.getByText(/Showing previous usage for Desk/)).toBeVisible();
+  await expect.element(dialog).not.toBeInTheDocument();
+  await expect.element(screen.getByRole("main")).toHaveFocus();
+  await expect.element(screen.getByText(/Showing previous usage/)).not.toBeInTheDocument();
 });
 
 it("keeps the web failure layout while the next clock tick retries a cold scan", async () => {
@@ -738,6 +753,55 @@ it("reports live compatibility and source failures beside the saved total", asyn
   await update();
   await expect.element(screen.getByText("Laptop · Cursor: Cursor fetch failed")).toBeVisible();
   await expect.element(figures).toBeVisible();
+});
+
+it("never brings back Laptop's figures in the web model dialog after a revoke, regrant and revoke", async () => {
+  setup();
+  state.secondEnvironment = "ready";
+  await using screen = await render(<Screen />);
+  await expect.element(screen.getByText("200", { exact: true }).first()).toBeVisible();
+  await screen.getByRole("button", { name: "usage-test-model" }).click();
+  const dialog = page.getByRole("dialog");
+  for (const second of ["revoked", "ready", "revoked"] as const) {
+    state.secondEnvironment = second;
+    await update();
+    await expect.element(dialog.getByRole("heading", { name: "usage-test-model" })).toBeVisible();
+    expect(screen.container.textContent).not.toContain("laptop-model");
+    expect(screen.getByText("200", { exact: true }).query()).toBeNull();
+    if (second === "ready") {
+      await expect.element(screen.getByText(/Its access changed/)).toBeVisible();
+    }
+  }
+
+  state.response = "waiting";
+  state.secondEnvironment = "waiting";
+  await selectWeekFromShortcut();
+  const status = dialog.getByText(/Showing previous usage for/);
+  await expect.element(status).toBeVisible();
+  expect(status.element().textContent).toContain("Showing previous usage for Desk ·");
+  expect(status.element().textContent).not.toContain("Laptop");
+});
+
+it("labels kept web figures with their exact window at compact width after the next scan fails", async () => {
+  setup();
+  const viewport = { width: globalThis.window.innerWidth, height: globalThis.window.innerHeight };
+  await page.viewport(640, 900);
+  await using _viewport = {
+    [Symbol.asyncDispose]: () => page.viewport(viewport.width, viewport.height),
+  };
+  const shown = makeWindow(1, new Date(state.now), "hour");
+  await using screen = await render(<Screen />);
+  await expect.element(screen.getByRole("button", { name: "usage-test-model" })).toBeVisible();
+  const label = `Showing previous usage for Desk · ${usageWindowLabel(shown, resolveHour12("locale"))}`;
+
+  state.now += 60_000;
+  state.response = "waiting";
+  await update();
+  expect(screen.getByText(label).query()).toBeNull();
+  state.response = "failed";
+  await update();
+  await expect.element(screen.getByText(label)).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Retry" })).toBeVisible();
 });
 
 it("closes the open model and removes its figures when diagnostics access is revoked", async () => {

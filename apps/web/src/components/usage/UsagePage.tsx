@@ -25,17 +25,19 @@ import {
   updatingProvidersLabel,
   usageEnvironmentProgress,
   mergeAnsweredUsage,
-  retainedUsageLabel,
   refreshingUsageProviders,
-  retainUsageSnapshot,
   usageWindowKey,
   usageSelectionKey,
-  usageNotices,
-  formatUsageSourceNotices,
-  waitingForFirstUsage,
   usageProgress,
-  type UsageSnapshot,
 } from "@t3tools/client-runtime/state/usage-progress";
+import {
+  formatUsageSourceNotices,
+  retainedUsageLabel,
+  usageNotices,
+  type UsageFigures,
+  type UsageProviderRow,
+  type UsageViewEnvironment,
+} from "@t3tools/client-runtime/state/usage-view";
 
 import {
   isCompatibleUsageContractVersion,
@@ -158,72 +160,43 @@ function selectUsageModel(key: string | null): void {
 }
 
 function UsageModelDialogHost({
-  snapshot,
-  liveEnvironments,
+  view,
   pageRef,
   onSetPrice,
   ...dialogProps
-}: Omit<Parameters<typeof UsageModelDialog>[0], "model" | "onSetPrice" | "onClose"> & {
+}: Pick<Parameters<typeof UsageModelDialog>[0], "metric" | "chartWindow"> & {
   readonly pageRef: React.RefObject<HTMLElement | null>;
-  readonly snapshot: UsageSnapshot | null;
-  readonly liveEnvironments: readonly EnvironmentUsageStatus[];
+  readonly view: UsageFigures | null;
   readonly onSetPrice: (model: string) => void;
 }) {
   const selectedKey = useAtomValue(selectedUsageModelKeyAtom);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clears the shared selected-model atom on unmount
   useEffect(() => () => selectUsageModel(null), []);
-  const findModel = (reading: UsageSnapshot | null) =>
-    reading?.merged.models.find(
-      (candidate) => `${candidate.provider}:${candidate.model}` === selectedKey,
-    );
-  const currentModel = findModel(snapshot);
-  const [last, setLast] = useState<{
-    readonly key: string;
-    readonly snapshot: UsageSnapshot;
-    readonly chartWindow: typeof dialogProps.chartWindow;
-  } | null>(null);
-  const saved = last?.key === selectedKey && currentModel === undefined ? last : null;
-  const retained = saved === null ? null : retainUsageSnapshot(saved.snapshot, liveEnvironments);
-  const retainedModel = findModel(retained);
-  const closeRevoked = saved !== null && retainedModel === undefined;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes the shared model selection when the open reading loses diagnostic access
+  const model =
+    selectedKey === null
+      ? undefined
+      : view?.merged.models.find(
+          (candidate) => `${candidate.provider}:${candidate.model}` === selectedKey,
+        );
+  const lost = selectedKey !== null && model === undefined;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes the shared model selection when the shown figures no longer hold the model
   useEffect(() => {
-    if (!closeRevoked) return;
+    if (!lost) return;
     selectUsageModel(null);
     if (document.activeElement === document.body) {
       const page = pageRef.current;
       const nextModel = page?.querySelector<HTMLButtonElement>("[data-usage-model]:enabled");
       (nextModel ?? page)?.focus();
     }
-  }, [closeRevoked, pageRef]);
-  if (
-    selectedKey !== null &&
-    currentModel !== undefined &&
-    snapshot !== null &&
-    (last?.key !== selectedKey || last.snapshot !== snapshot)
-  ) {
-    setLast({
-      key: selectedKey,
-      snapshot,
-      chartWindow: dialogProps.chartWindow,
-    });
-  } else if (selectedKey === null && last !== null) {
-    setLast(null);
-  }
-  const model = currentModel ?? retainedModel;
-  if (model === undefined) return null;
+  }, [lost, pageRef]);
+  if (model === undefined || view === null) return null;
   return (
     <UsageModelDialog
       {...dialogProps}
       model={model}
-      environments={retained?.environments ?? dialogProps.environments}
-      chartWindow={saved?.chartWindow ?? dialogProps.chartWindow}
-      readOnly={dialogProps.readOnly || (retained !== null && retained.key !== snapshot?.key)}
-      status={
-        retained === null || saved === null
-          ? undefined
-          : retainedUsageLabel(retained, saved.chartWindow.hour12)
-      }
+      environments={view.environments}
+      readOnly={view.kept}
+      status={view.kept ? retainedUsageLabel(view, dialogProps.chartWindow.hour12) : undefined}
       onSetPrice={() => {
         selectUsageModel(null);
         onSetPrice(model.model);
@@ -269,18 +242,19 @@ export function UsagePage() {
   const {
     requestedWindow,
     refreshingEnvironmentIds,
-    failures,
     environments,
     selectedEnvironments,
-    shown,
-    showingKept,
+    usage,
     refresh,
   } = useUsage(window, selectedEnvironmentIds, preferences.hiddenProviders, {
     advanceWindow,
     enabled: !showingLimits,
   });
+  const shown = usage.view.kind === "figures" ? usage.view : null;
+  const showingKept = shown?.kept === true;
   const merged = shown?.merged ?? EMPTY_USAGE;
-  const shownEnvironments = shown?.environments ?? selectedEnvironments;
+  const shownEnvironments: readonly Pick<UsageViewEnvironment, "environmentId" | "label">[] =
+    shown?.environments ?? selectedEnvironments;
   const shownWindow = shown?.window ?? window;
   const shownHourly = shownWindow.resolution === "hour";
   const refreshingUsage = isRefreshing && !showingLimits;
@@ -297,15 +271,13 @@ export function UsagePage() {
   );
   const footprint = providersWithUsage(merged.providers);
   const settledAnswer =
-    shown?.hasAnswer === true &&
+    shown !== null &&
     !showingKept &&
     !selectedEnvironments.some(({ isConnected, isPending }) => isConnected && isPending);
-  const { coverage, sourceMessages } = usageNotices(
-    selectedEnvironments,
-    shownEnvironments,
-    failures,
-    hiddenProviders,
-  );
+  const { coverage, sourceMessages } = usageNotices(usage, selectedEnvironments, requestedWindow, {
+    hidden: hiddenProviders,
+    hour12,
+  });
   const shownHiddenProviders = shown?.hiddenProviders ?? hiddenProviders;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retain the last settled provider footprint across Usage visits
   useEffect(() => {
@@ -728,13 +700,11 @@ export function UsagePage() {
                   }
                 />
               </>
-            ) : shown === null ? (
-              waitingForFirstUsage(selectedEnvironments, failures) ? (
-                <UsageSkeleton hiddenProviders={hiddenProviders} />
-              ) : null
-            ) : !shown.hasAnswer ? null : (
+            ) : usage.view.kind === "loading" ? (
+              <UsageSkeleton hiddenProviders={hiddenProviders} />
+            ) : shown === null ? null : (
               <>
-                {showingKept && shown !== null ? (
+                {showingKept ? (
                   <p className="text-xs text-muted-foreground">
                     {retainedUsageLabel(shown, hour12)}
                   </p>
@@ -791,10 +761,7 @@ export function UsagePage() {
       {showingLimits ? null : (
         <UsageModelDialogHost
           pageRef={pageRef}
-          readOnly={showingKept}
-          snapshot={shown}
-          liveEnvironments={environments}
-          environments={shownEnvironments}
+          view={shown}
           metric={metric === "tokens" ? "tokens" : "cost"}
           chartWindow={{
             chartType,
@@ -855,10 +822,10 @@ function UsageOverview({
   readonly showingKept: boolean;
   readonly progressLabel: string | null;
   readonly metric: "tokens" | "cost";
-  readonly selectedEnvironments: readonly EnvironmentUsageStatus[];
+  readonly selectedEnvironments: readonly Pick<UsageViewEnvironment, "environmentId" | "label">[];
   readonly sourceMessages: ReturnType<typeof formatUsageSourceNotices>;
   readonly activeProviders: readonly UsageProviderKind[];
-  readonly providerRows: UsageSnapshot["providers"];
+  readonly providerRows: readonly UsageProviderRow[];
   readonly refreshingProviders: ReadonlySet<UsageProviderKind>;
   readonly cursorAccessEnvironments: readonly EnvironmentUsageStatus[];
   readonly showChatGptSharing: boolean;

@@ -12,14 +12,13 @@ import {
   USAGE_CONTRACT_VERSION,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
+import type { EnvironmentUsageStatus } from "@t3tools/client-runtime/state/usage-progress";
 import {
-  settleUsageSnapshot,
-  settleUsageScanFailures,
-  type EnvironmentUsageStatus,
-  type UsageSnapshot,
-  type UsageScanFailures,
-} from "@t3tools/client-runtime/state/usage-progress";
-import { makeWindow } from "@t3tools/shared/usageFormat";
+  initialUsageViewState,
+  settleUsageView,
+  type UsageViewState,
+} from "@t3tools/client-runtime/state/usage-view";
+import { makeWindow, usageWindowLabel } from "@t3tools/shared/usageFormat";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
@@ -35,10 +34,8 @@ const { Contents, state } = vi.hoisted(() => ({
     usageCalls: new Set<EnvironmentId>(),
     tab: "usage" as string | undefined,
     live: [] as readonly EnvironmentUsageStatus[],
-    shown: null as UsageSnapshot | null,
+    view: null as UsageViewState | null,
     grantProbe: null as ReturnType<typeof mobileGrantProbe> | null,
-    scanFailures: null as UsageScanFailures | null,
-    simulateRequests: false,
     requestedWindow: null as UsageSummaryInput | null,
     readsEnabled: [] as (boolean | undefined)[],
     failedLimits: new Set<EnvironmentId>(),
@@ -177,24 +174,16 @@ vi.mock("../../state/usage", async (importOriginal) => {
           ? state.live
           : state.live.filter(({ environmentId }) => selected.has(environmentId));
       const requestedWindow = state.requestedWindow ?? window;
-      if (state.simulateRequests) {
-        state.shown = settleUsageSnapshot(
-          state.shown,
-          requestedWindow,
-          state.live,
-          selectedEnvironments,
-        );
-        state.scanFailures = settleUsageScanFailures(
-          state.scanFailures,
-          requestedWindow,
-          selectedEnvironments,
-        );
-      }
+      state.view = settleUsageView(state.view ?? initialUsageViewState, {
+        window: requestedWindow,
+        environments: state.live,
+        selectedIds: selected,
+        hidden: [],
+        enabled: options?.enabled ?? true,
+      });
       return {
         requestedWindow,
-        failures: state.scanFailures,
-        shown: state.shown,
-        showingKept: false,
+        usage: state.view,
         environments: state.live,
         selectedEnvironments,
         refreshingEnvironmentIds: state.usageRefreshingEnvironmentIds,
@@ -336,10 +325,8 @@ function setup(tab: string | undefined = "usage") {
   state.cursorSetup = null;
   state.usageCalls.clear();
   state.live = [];
-  state.shown = null;
-  state.scanFailures = null;
+  state.view = null;
   state.grantProbe = null;
-  state.simulateRequests = false;
   state.requestedWindow = null;
   state.readsEnabled.length = 0;
   state.failedLimits.clear();
@@ -407,7 +394,13 @@ it("keeps the mobile compatibility explanation in coverage and the short status 
     "Update required.",
   );
 
-  state.shown = settleUsageSnapshot(null, window, [desk, laptop], [desk, laptop]);
+  state.view = settleUsageView(initialUsageViewState, {
+    window,
+    environments: [desk, laptop],
+    selectedIds: null,
+    hidden: [],
+    enabled: true,
+  });
   await screen.render();
   const message = "Laptop runs an older server version. Showing its last compatible values.";
   expect(screen.container.querySelector('[role="status"]')?.textContent).toContain(message);
@@ -473,7 +466,6 @@ it("keeps an unselected environment's own scan error in the mobile menu", async 
 
 it("keeps the mobile failure layout while the next clock tick retries a cold scan", async () => {
   await using screen = setup();
-  state.simulateRequests = true;
   state.requestedWindow = makeWindow(1, new Date("2026-11-21T18:56:00Z"), "hour");
   const desk = liveEnvironment("desk", "Desk");
   state.live = [{ ...desk, error: "Read failed" }];
@@ -485,6 +477,26 @@ it("keeps the mobile failure layout while the next clock tick retries a cold sca
   await screen.render();
   expect(screen.container.textContent).toContain("Read failed");
   expect(screen.container.textContent).not.toContain("Scanning provider transcripts…");
+});
+
+it("labels kept mobile figures with their exact window after the next scan fails", async () => {
+  await using screen = setup();
+  const tick = makeWindow(1, new Date("2026-11-21T18:56:00Z"), "hour");
+  const next = makeWindow(1, new Date("2026-11-21T18:57:00Z"), "hour");
+  const desk = { ...liveEnvironment("desk", "Desk"), summary: { ...observedSummary(), ...tick } };
+  state.requestedWindow = tick;
+  state.live = [desk];
+  await screen.render();
+  const label = `Showing previous usage for Desk · ${usageWindowLabel(tick)}`;
+  expect(screen.container.textContent).not.toContain(label);
+
+  state.requestedWindow = next;
+  state.live = [{ ...desk, summary: null, isPending: true }];
+  await screen.render();
+  state.live = [{ ...desk, summary: null, error: "Read failed" }];
+  await screen.render();
+  expect(screen.container.textContent).toContain(label);
+  expect(screen.container.textContent).toContain("Read failed");
 });
 
 function observedSummary(contractVersion: number = USAGE_CONTRACT_VERSION) {
@@ -675,7 +687,6 @@ it("shows Update required for an unselected incompatible environment on mobile",
 
 it("announces a first pending read alongside a different environment's failure on mobile", async () => {
   await using screen = setup();
-  state.simulateRequests = true;
   state.live = [
     { ...liveEnvironment("desk", "Desk"), error: "Desk failed" },
     { ...liveEnvironment("laptop", "Laptop"), isPending: true },
@@ -693,7 +704,6 @@ it("announces a first pending read alongside a different environment's failure o
 
 it("removes Laptop's reserved row from mobile Providers when its grant is revoked again", async () => {
   await using screen = setup();
-  state.simulateRequests = true;
   const desk = { ...liveEnvironment("desk", "Desk"), summary: observedSummary() };
   const laptop = { ...liveEnvironment("laptop", "Laptop"), summary: observedSummary() };
   const denied = { ...laptop, canReadDiagnostics: false, summary: null, error: "Access revoked" };

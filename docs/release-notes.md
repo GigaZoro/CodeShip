@@ -2,6 +2,7 @@
 
 - Usage keeps the last complete totals while a new period or filter loads. Background refreshes leave current figures at full opacity.
 - Usage periods advance automatically. Limit countdowns and pace marks update on the Usage screen and sidebar, and account bars keep their order across resets.
+- When an environment's scan fails, Usage keeps the figures every selected environment last shared and names their exact time range, on web and mobile. An environment that loses access never brings its old figures back, and a failed scan's notice names the period it was for.
 
 ## 2026-11-21 — Start a worktree from a branch that exists only on the remote
 

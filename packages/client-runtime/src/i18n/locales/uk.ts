@@ -1251,6 +1251,7 @@ const catalog: MessageCatalog = {
   "{enabled} of {total} on": "увімкнено {enabled} із {total}",
   "{environment} · {provider}": "{environment} · {provider}",
   "{environment} · {provider}: {message}": "{environment} · {provider}: {message}",
+  "{environment} ({window})": "{environment} ({window})",
   "{environment} (Local)": "{environment} (локальне)",
   "{environment} {preference}": "{environment} {preference}",
   "{environment} can now be reached over SSH {alias}.":
@@ -6809,6 +6810,8 @@ const catalog: MessageCatalog = {
   "It’s now active.": "Тепер вона активна.",
   "It’s now your dark theme.": "Тепер це ваша темна тема.",
   "It’s now your light theme.": "Тепер це ваша світла тема.",
+  "Its access changed. Refresh to read its usage again.":
+    "Його доступ змінився. Оновіть, щоб знову зчитати дані про використання.",
   "Its chats move out of the folder. Scheduled tasks in this group lose their group.":
     "Її чати вийдуть із папки. Заплановані завдання цієї групи втратять групу.",
   "Its cookies and logins are deleted. Desktop tabs already open in this profile stay open until you close them; server browser tabs close now.":
@@ -6818,6 +6821,7 @@ const catalog: MessageCatalog = {
   "Its dark palette was added.": "Додано її темну палітру.",
   "its database has changes {version} does not support yet; stay on {from} until {channel} has them":
     "його база даних має зміни, які {version} ще не підтримує; залишайтеся на {from}, доки вони не з’являться в {channel}",
+  "Its latest figures are for {window}.": "Його останні дані охоплюють період {window}.",
   "Its light palette was added.": "Додано її світлу палітру.",
   "Its live-run limit was reached: earlier runs were still working.":
     "Досягнуто ліміту активних запусків: попередні запуски ще працювали.",

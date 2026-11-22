@@ -6,12 +6,12 @@ import {
   type UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
+import { mergeAnsweredUsage } from "@t3tools/client-runtime/state/usage-progress";
 import {
-  mergeAnsweredUsage,
   retainedUsageLabel,
   usageEnvironmentError,
   usageNotices,
-} from "@t3tools/client-runtime/state/usage-progress";
+} from "@t3tools/client-runtime/state/usage-view";
 import { usageRefreshingEnvironmentIdsAtom } from "@t3tools/client-runtime/state/usage";
 import { UsageShareBar } from "../components/usage/UsageShareBar";
 import { UsageGapsNotice } from "../components/usage/UsageGapsNotice";
@@ -207,20 +207,19 @@ function UsageProbe({
 }
 
 function UsageProbeResult({ usage }: { readonly usage: ReturnType<typeof useUsage> }) {
-  const error = usage.shown?.environments[0];
+  const shown = usage.usage.view.kind === "figures" ? usage.usage.view : null;
+  const environment = usage.selectedEnvironments[0];
   return (
     <>
       <output>
-        {usage.shown === null
+        {shown === null
           ? "Loading usage"
-          : `${usage.shown.window.resolution ?? "day"} usage: ${usage.selectedEnvironments[0]?.error ?? "ready"}`}
+          : `${shown.window.resolution ?? "day"} usage: ${environment?.error ?? "ready"}`}
       </output>
-      <output>{usage.shown?.window.sinceDay ?? "No shown window"}</output>
-      {error === undefined ? null : <p>{usageEnvironmentError(error)}</p>}
-      {usage.shown?.environments.some(({ summary }) => summary !== null) ? (
-        <p>{usage.shown.merged.totalTokens} tokens</p>
-      ) : null}
-      {usage.showingKept && usage.shown !== null ? <p>{retainedUsageLabel(usage.shown)}</p> : null}
+      <output>{shown?.window.sinceDay ?? "No shown window"}</output>
+      {environment === undefined ? null : <p>{usageEnvironmentError(environment)}</p>}
+      {shown === null ? null : <p>{shown.merged.totalTokens} tokens</p>}
+      {shown?.kept ? <p>{retainedUsageLabel(shown)}</p> : null}
     </>
   );
 }
@@ -238,9 +237,9 @@ it("keeps two slow hourly scan failures visible until a later response", async (
   function Scan({ seconds }: { readonly seconds: number }) {
     const usage = useUsage(time(seconds));
     const { coverage } = usageNotices(
+      usage.usage,
       usage.selectedEnvironments,
-      usage.shown?.environments ?? [],
-      usage.failures,
+      usage.requestedWindow,
     );
     return (
       <UsageGapsNotice notice={coverage} retrying={false} onRetry={() => void usage.refresh()} />
@@ -274,22 +273,19 @@ function ScopedUsage({
   readonly selection?: ReadonlySet<EnvironmentId>;
 }) {
   const usage = useUsage(window, selection);
-  const { coverage } = usageNotices(
-    usage.selectedEnvironments,
-    usage.shown?.environments ?? [],
-    usage.failures,
-  );
+  const { coverage } = usageNotices(usage.usage, usage.selectedEnvironments, usage.requestedWindow);
   return (
     <>
-      {usage.shown?.hasAnswer ? <p>{usage.shown.merged.totalTokens} tokens</p> : null}
+      {usage.usage.view.kind === "figures" ? (
+        <p>{usage.usage.view.merged.totalTokens} tokens</p>
+      ) : null}
       <UsageGapsNotice notice={coverage} retrying={false} onRetry={() => void usage.refresh()} />
     </>
   );
 }
 
-it("keeps Laptop's figures on web after Desk loses access", async () => {
-  const { window, answered, summary } = setup();
-  const laptop = {
+function laptopAnswer(answered: EnvironmentUsageStatus, summary: UsageSummary, tokens: number) {
+  return {
     ...answered,
     environmentId: EnvironmentId.make("laptop"),
     label: "Laptop",
@@ -301,20 +297,56 @@ it("keeps Laptop's figures on web after Desk loses access", async () => {
       })),
       buckets: summary.buckets.map((bucket) => ({
         ...bucket,
-        totals: { ...bucket.totals, uncachedInputTokens: 200 },
+        totals: { ...bucket.totals, uncachedInputTokens: tokens },
       })),
     },
   };
+}
+
+it("shows Laptop's 200 on web until it answers after Desk loses access during a rolling refresh", async () => {
+  const { answered, summary } = setup();
+  const tick = makeWindow(1, new Date("2026-11-21T18:56:00Z"), "hour");
+  const next = makeWindow(1, new Date("2026-11-21T18:57:00Z"), "hour");
+  const laptop = laptopAnswer(answered, summary, 200);
   state.environments = [answered, laptop];
-  await using screen = await render(<ScopedUsage window={window} />);
+  await using screen = await render(<ScopedUsage window={tick} />);
+  await expect.element(screen.getByText("300 tokens")).toBeVisible();
+
+  state.environments = [
+    { ...answered, summary: null, isPending: true },
+    { ...laptop, summary: null, isPending: true },
+  ];
+  await screen.rerender(<ScopedUsage window={next} />);
   await expect.element(screen.getByText("300 tokens")).toBeVisible();
   state.environments = [
     { ...answered, canReadDiagnostics: false, summary: null, error: "Access revoked" },
     { ...laptop, summary: null, isPending: true },
   ];
-  await screen.rerender(<ScopedUsage window={window} />);
+  await screen.rerender(<ScopedUsage window={next} />);
   await expect.element(screen.getByText("200 tokens")).toBeVisible();
   await expect.element(screen.getByText("300 tokens")).not.toBeInTheDocument();
+
+  state.environments = [state.environments[0]!, laptopAnswer(answered, summary, 250)];
+  await screen.rerender(<ScopedUsage window={next} />);
+  await expect.element(screen.getByText("250 tokens")).toBeVisible();
+});
+
+it("returns the same web usage state when rerendered with unchanged statuses", async () => {
+  const { window, answered } = setup();
+  const seen: ReturnType<typeof useUsage>["usage"][] = [];
+  function Capture() {
+    const usage = useUsage(window);
+    seen.push(usage.usage);
+    return <UsageProbeResult usage={usage} />;
+  }
+  await using screen = await render(<Capture />);
+  await expect.element(screen.getByText("100 tokens")).toBeVisible();
+  state.environments = [{ ...answered }];
+  await screen.rerender(<Capture />);
+  await screen.rerender(<Capture />);
+  expect(seen.length).toBeLessThan(10);
+  expect(seen.at(-1)).toBe(seen.at(-2));
+  expect(seen.at(-1)).toBe(seen.at(-3));
 });
 
 it("reports only the new period's failures on web while retaining the previous figures", async () => {

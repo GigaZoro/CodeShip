@@ -26,18 +26,11 @@ import { environmentSession, readEnvironmentScope } from "./session";
 
 import {
   equalUsageStatuses,
-  isKeptUsage,
   nextUsageRequest,
-  settleUsageScanFailures,
-  retainUsageSnapshot,
-  settleUsageSnapshot,
-  settleUsageReadings,
-  type UsageReadings,
   usageWindowKey,
   type EnvironmentUsageStatus,
-  type UsageScanFailures,
-  type UsageSnapshot,
 } from "@t3tools/client-runtime/state/usage-progress";
+import { initialUsageViewState, settleUsageView } from "@t3tools/client-runtime/state/usage-view";
 
 export type { EnvironmentUsageStatus } from "@t3tools/client-runtime/state/usage-progress";
 export { mergeAnsweredUsage } from "@t3tools/client-runtime/state/usage-progress";
@@ -138,32 +131,15 @@ export function useUsage(
     selectedEnvironmentIds === null
       ? environments
       : environments.filter(({ environmentId }) => selectedEnvironmentIds.has(environmentId));
-  const [savedFailures, setSavedFailures] = useState<UsageScanFailures | null>(null);
-  const failures = enabled
-    ? settleUsageScanFailures(savedFailures, requestedWindow, environments, hiddenProviders)
-    : null;
-  if (failures !== savedFailures) setSavedFailures(failures);
-  const [savedReadings, setSavedReadings] = useState<UsageReadings>();
-  const readings = settleUsageReadings(
-    savedReadings,
-    requestedWindow,
+  const [saved, setSaved] = useState(initialUsageViewState);
+  const usage = settleUsageView(saved, {
+    window: requestedWindow,
     environments,
-    hiddenProviders,
-  );
-  if (readings !== savedReadings) setSavedReadings(readings);
-  const [previous, setPrevious] = useState<UsageSnapshot | null>(null);
-  const shown = enabled
-    ? settleUsageSnapshot(
-        previous,
-        requestedWindow,
-        environments,
-        selectedEnvironments,
-        hiddenProviders,
-        readings,
-      )
-    : null;
-  const retained = enabled || !previous ? shown : retainUsageSnapshot(previous, environments);
-  if (retained !== previous) setPrevious(retained);
+    selectedIds: selectedEnvironmentIds,
+    hidden: hiddenProviders,
+    enabled,
+  });
+  if (usage !== saved) setSaved(usage);
   const next = nextUsageRequest(request, input, selectedEnvironments, advanceWindow, enabled);
   if (next !== request) setRequest(next);
 
@@ -187,11 +163,9 @@ export function useUsage(
   return {
     requestedWindow,
     refreshingEnvironmentIds,
-    failures,
     environments,
     selectedEnvironments,
-    shown,
-    showingKept: isKeptUsage(shown, input, selectedEnvironments, hiddenProviders),
+    usage,
     refresh,
   };
 }

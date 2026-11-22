@@ -1,4 +1,4 @@
-import type { usageNotices } from "@t3tools/client-runtime/state/usage-progress";
+import type { usageNotices } from "@t3tools/client-runtime/state/usage-view";
 import { CircleAlertIcon } from "lucide-react";
 
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";

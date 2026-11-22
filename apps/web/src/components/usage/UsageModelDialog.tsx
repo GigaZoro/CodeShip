@@ -1,7 +1,9 @@
 import { formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import { isModelCostUnknown, type ModelTotals } from "@t3tools/shared/usageMerge";
 
-import { mergeAnsweredUsage, type EnvironmentUsageStatus } from "../../state/usage";
+import type { UsageViewEnvironment } from "@t3tools/client-runtime/state/usage-view";
+
+import { mergeAnsweredUsage } from "../../state/usage";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { Button } from "../ui/button";
 import {
@@ -46,7 +48,7 @@ export function UsageModelDialog({
   status,
 }: {
   readonly model: ModelTotals;
-  readonly environments: readonly EnvironmentUsageStatus[];
+  readonly environments: readonly UsageViewEnvironment[];
   readonly metric: UsageChartMetric;
   readonly chartWindow: UsageChartWindow;
   readonly onSetPrice: () => void;
