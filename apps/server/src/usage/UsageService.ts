@@ -788,20 +788,28 @@ export const make = Effect.gen(function* () {
   });
 
   const persistLock = yield* Semaphore.make(1);
+  const scanCacheLoadDue = Effect.gen(function* () {
+    if (savedUsageGaps.size > 0) return (yield* monotonicMillis) >= retryCacheAt;
+    return !cacheLoaded;
+  });
+  // Only a first load or a due retry takes the permit. A persist holds it while it waits up to
+  // CACHE_LOCK_WAIT_MS for another process's lock, and a scan must not wait behind that.
   const ensureScanCacheLoaded = Effect.gen(function* () {
-    if (savedUsageGaps.size > 0 && (yield* monotonicMillis) < retryCacheAt) return;
-    if (cacheLoaded && savedUsageGaps.size === 0) return;
-    yield* withCacheLock(loadScanCache()).pipe(
-      Effect.mapError(
-        (cause) =>
-          new UsageReadError({
-            reason: "scanFailed",
-            detail: "Saved transcript usage could not be loaded.",
-            cause,
-          }),
-      ),
-    );
-  }).pipe(persistLock.withPermit);
+    if (!(yield* scanCacheLoadDue)) return;
+    yield* Effect.gen(function* () {
+      if (!(yield* scanCacheLoadDue)) return;
+      yield* withCacheLock(loadScanCache()).pipe(
+        Effect.mapError(
+          (cause) =>
+            new UsageReadError({
+              reason: "scanFailed",
+              detail: "Saved transcript usage could not be loaded.",
+              cause,
+            }),
+        ),
+      );
+    }).pipe(persistLock.withPermit);
+  });
   yield* listLegacyCaches.pipe(
     Effect.result,
     Effect.flatMap((listed) =>

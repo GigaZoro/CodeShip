@@ -3147,6 +3147,47 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
+  it.live("answers a scan while a persist waits for the cache lock", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      yield* Effect.gen(function* () {
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
+        const { acquireFileLock } = yield* Effect.promise(() =>
+          vi.importActual<typeof FileLock>("../provider/FileLock.ts"),
+        );
+        const persistWaiting = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined));
+        let acquisitions = 0;
+        using _acquire = vi
+          .spyOn(FileLock, "acquireFileLock")
+          .mockImplementation((target, options) =>
+            Effect.gen(function* () {
+              if (target === current && acquisitions++ === 1) {
+                yield* Deferred.succeed(persistWaiting, undefined);
+                yield* Deferred.await(release);
+              }
+              return yield* acquireFileLock(target, options);
+            }),
+          );
+        const service = yield* UsageService.make;
+        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
+        yield* Deferred.await(persistWaiting);
+        yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 12)));
+        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 12);
+        yield* Deferred.succeed(release, undefined);
+        yield* service.awaitPersisted;
+        const restarted = yield* UsageService.make;
+        assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 12);
+      }).pipe(
+        Effect.provide(layerService({ prefix: "usage-cache-scan-during-persist", home, settings })),
+      );
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.live("serializes concurrent startup around legacy claims and preserves deleted history", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
