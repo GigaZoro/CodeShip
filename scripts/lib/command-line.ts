@@ -14,9 +14,10 @@ export function parseCommandLine<
   return parsed;
 }
 
+// Number() also reads "0x10", "1e3" and " 5", so only plain decimal digits count.
 export function positiveInteger(value: string, flag: string): number {
   const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 1)
+  if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(number))
     throw new Error(flag + " must be a positive safe integer.");
   return number;
 }

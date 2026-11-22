@@ -71,11 +71,14 @@ describe("renderComparison", () => {
 });
 
 describe("render metrics arguments", () => {
-  it.each(["oops", "0", "-1", "1.5", "9007199254740992"])("refuses --runs=%s", (runs) => {
-    expect(() =>
-      parseRenderMetricsArguments(["run", "--runs=" + runs, "--out=report.json"]),
-    ).toThrow("--runs must be a positive safe integer.");
-  });
+  it.each(["oops", "", "0", "-1", "1.5", "2.0", "0x10", "1e3", " 5", "05", "9007199254740992"])(
+    "refuses --runs=%s",
+    (runs) => {
+      expect(() =>
+        parseRenderMetricsArguments(["run", "--runs=" + runs, "--out=report.json"]),
+      ).toThrow("--runs must be a positive safe integer.");
+    },
+  );
 
   it("accepts a positive run count and rejects a duplicate singleton", () => {
     expect(parseRenderMetricsArguments(["run", "--runs=2", "--out=report.json"])).toEqual({
