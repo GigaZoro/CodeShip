@@ -1086,8 +1086,10 @@ function paceOfShares(usedPercent: number, elapsed: number): LimitPace {
   return "on";
 }
 
+/** A time left under a minute reads "<1m", so every countdown and expiry keeps its own sentence. */
 export function formatDuration(ms: number): string {
   const remaining = Math.max(0, ms);
+  if (remaining < MINUTE) return t("<1m");
   const days = Math.floor(remaining / DAY);
   const hours = Math.floor((remaining % DAY) / HOUR);
   const minutes = Math.floor((remaining % HOUR) / MINUTE);
@@ -1112,7 +1114,6 @@ export function formatResetsIn(
   if (resetsAt <= now) {
     return form === "after" ? t("now") : form === "sentence" ? t("Resets now") : t("resets now");
   }
-  if (resetsAt - now < MINUTE) return t("Resets momentarily");
   const duration = formatDuration(resetsAt - now);
   switch (form) {
     case "duration":

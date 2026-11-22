@@ -123,11 +123,10 @@ export function UsageScheduledTaskGroups({
           },
         ],
   );
+  // Only the results are busy: a status message inside a busy region can go unannounced.
+  const updatingResults = loadingStats || pendingGrants.size > 0 || checkingSupport.length > 0;
   return (
-    <section
-      className="flex flex-col gap-3"
-      aria-busy={loadingStats || pendingGrants.size > 0 || checkingSupport.length > 0}
-    >
+    <section className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
         <h2 tabIndex={-1} className="text-sm font-medium text-foreground">
           {t("Scheduled task groups")}
@@ -220,12 +219,12 @@ export function UsageScheduledTaskGroups({
         </p>
       ) : displayedRows.length === 0 ? (
         readings.length > 0 ? (
-          <p className="py-2 text-sm text-muted-foreground">
+          <p className="py-2 text-sm text-muted-foreground" aria-busy={updatingResults}>
             {t("No scheduled task runs in this period.")}
           </p>
         ) : null
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto" aria-busy={updatingResults}>
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border text-right text-xs text-muted-foreground">

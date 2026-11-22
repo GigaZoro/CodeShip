@@ -1245,11 +1245,14 @@ function TaskForm({
     }
   };
 
+  // Null until the target's config arrives: a missing config says nothing about its version.
   const targetSupportsRunConditions =
-    config?.environment.capabilities.scheduledTaskRunConditions === true;
-  const offersRunCondition = targetSupportsRunConditions && draft.schedule.mode !== "webhook";
+    config === null ? null : config.environment.capabilities.scheduledTaskRunConditions === true;
+  const offersRunCondition =
+    targetSupportsRunConditions === true && draft.schedule.mode !== "webhook";
   const runConditionLost = runConditionLostOnTarget({ targetSupportsRunConditions, draft });
-  const supportsPromptFiles = config?.environment.capabilities.scheduledTaskPromptFiles === true;
+  const supportsPromptFiles =
+    config === null ? null : config.environment.capabilities.scheduledTaskPromptFiles === true;
   const supportsDescriptions = config?.environment.capabilities.scheduledTaskDescriptions === true;
   const savedDescription = draft.task?.description ?? "";
   const descriptionField = scheduledTaskDescriptionField({
@@ -1287,7 +1290,9 @@ function TaskForm({
       saving ||
       dictationPending ||
       taskMissing ||
-      environmentUnavailable
+      environmentUnavailable ||
+      // An upsert is shaped by what the target stores, so it waits for the target's config.
+      supportsPromptFiles === null
     )
       return;
     // Preserve signatures edited on other clients by sending the task's current value.

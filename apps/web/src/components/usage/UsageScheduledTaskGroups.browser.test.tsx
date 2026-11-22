@@ -222,3 +222,34 @@ it("checks scheduled task support while the connected server config is missing",
   await screen.rerender(groups(0));
   await expect.element(screen.getByRole("row", { name: /Nightly/ })).toBeVisible();
 });
+
+it("keeps each environment's status outside the busy results", async () => {
+  readyStats();
+  data.configPending = true;
+  await using screen = await render(groups(0, false, true));
+  const statuses = () => [...screen.container.querySelectorAll('[role="status"]')];
+  expect(statuses().map((status) => status.textContent)).toEqual([
+    "Checking scheduled task support on Desk…",
+    "Checking scheduled task support on Laptop…",
+  ]);
+  for (const status of statuses()) expect(status.closest('[aria-busy="true"]')).toBeNull();
+
+  data.configPending = false;
+  data.errors.set("laptop", "Stats read failed.");
+  await screen.rerender(groups(0, false, true));
+  await expect.element(screen.getByRole("row", { name: /Nightly/ })).toBeVisible();
+  expect(statuses().map((status) => status.textContent)).toEqual([
+    "Could not load scheduled task runs: Laptop: Stats read failed.Retry",
+  ]);
+  for (const status of statuses()) expect(status.closest('[aria-busy="true"]')).toBeNull();
+
+  data.stats.delete("laptop");
+  data.errors.clear();
+  await screen.rerender(groups(0, false, true));
+  expect(
+    screen
+      .getByRole("row", { name: /Nightly/ })
+      .element()
+      .closest('[aria-busy="true"]'),
+  ).not.toBeNull();
+});

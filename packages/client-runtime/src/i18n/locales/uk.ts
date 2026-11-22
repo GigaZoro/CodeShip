@@ -10013,7 +10013,6 @@ const catalog: MessageCatalog = {
   "resets in {duration}": "скидання через {duration}",
   "Resets in {duration}": "Скидається через {duration}",
   "Resets in {duration} · {time}": "Оновиться за {duration} · {time}",
-  "Resets momentarily": "Скидається за мить",
   "resets now": "скидається зараз",
   "Resets now": "Скидається зараз",
   "Resident memory": "Резидентна пам’ять",

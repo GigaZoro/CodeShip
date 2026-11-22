@@ -26,6 +26,8 @@ import {
   paceOf,
   paceRemainingPercent,
   poolResetSummary,
+  formatDuration,
+  formatResetsIn,
   tightestLimitWindow,
   usesChatGptSharing,
   resolveNewThreadModelSelection,
@@ -1409,9 +1411,26 @@ describe("pooled account columns", () => {
       { ...window, usedPercent: 20, resetsAt: "2026-09-03T12:02:00Z" },
     ]);
     const pool = collectLimitPools([before, after], now)[0]!.windows[0]!;
-    expect(poolResetSummary(pool, now)?.text).toContain("+50%");
+    expect(poolResetSummary(pool, now)?.text).toBe("+50% back in <1m");
     expect(poolResetSummary(pool, now + 60_000)?.text).toBe("+10% back in 1m");
     expect(poolResetSummary(pool, now + 120_000)).toBeNull();
+  });
+
+  it("words a reset under a minute away to fit each form", () => {
+    const soon = { ...window, resetsAt: "2026-09-03T12:00:30.000Z" };
+    expect(
+      (["full", "sentence", "after", "arrow", "duration"] as const).map((form) =>
+        formatResetsIn(soon, now, form),
+      ),
+    ).toEqual(["resets in <1m", "Resets in <1m", "in <1m", "↻ <1m", "<1m"]);
+  });
+
+  it("formats a time left under a minute as <1m, not 0m", () => {
+    expect([formatDuration(30_000), formatDuration(59_999), formatDuration(60_000)]).toEqual([
+      "<1m",
+      "<1m",
+      "1m",
+    ]);
   });
 
   // regression: #20349 sessions stay visible while the weekly quota is exhausted

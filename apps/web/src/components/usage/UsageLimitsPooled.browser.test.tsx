@@ -142,7 +142,7 @@ it("updates the limit countdown at the minute and reset boundaries", async () =>
   const segment = screen.getByRole("button", { name: /Alpha: 80% left/ });
   await expect.element(segment).toHaveAccessibleName(/1m/);
   await act(() => vi.advanceTimersByTimeAsync(60_000));
-  await expect.element(segment).toHaveAccessibleName(/Resets momentarily/);
+  await expect.element(segment).toHaveAccessibleName(/↻ <1m/);
   await act(() => vi.advanceTimersByTimeAsync(30_000));
   await expect.element(segment).toHaveAccessibleName(/resets now/);
 });
