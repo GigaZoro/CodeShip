@@ -65,7 +65,7 @@ import {
   recordPass,
   workingTree,
 } from "../.github/scripts/check-changed-receipt.cjs";
-import { REAL_HISTORY_ENV } from "../.github/scripts/git-history.cjs";
+import { GIT_CALL_TIMEOUT_MS, REAL_HISTORY_ENV } from "../.github/scripts/git-history.cjs";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { checkNodeRuntime } from "../.github/scripts/check-node-runtime.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
@@ -365,9 +365,8 @@ const decodeRootPackageJson = Schema.decodeEffect(
 const collectBytes = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) =>
   Stream.runCollect(stream).pipe(Effect.map((chunks) => Buffer.concat(chunks)));
 
-// A git call that runs away fails the run and is killed, instead of holding a core until someone
-// notices. Each call here takes seconds even on a large worktree.
-export const GIT_TIMEOUT = "5 minutes";
+// The landing's limit for one git call (git-history.cjs): past it the call fails the run.
+export const GIT_TIMEOUT = `${GIT_CALL_TIMEOUT_MS / 60_000} minutes` as const;
 
 // Reports git's exit code; a call past GIT_TIMEOUT fails. Without forceKillAfter the spawner sends
 // only SIGTERM and then waits for the exit, so a git that ignores it would hold the run forever.
@@ -632,8 +631,21 @@ export const ignoredInputs = Effect.fn("checkChanged.ignoredInputs")(function* (
         }
       } else if (matches(file)) files.add(file);
     };
+    // Git for Windows lists what is in the folder a junction leads to, where Git elsewhere lists the
+    // link alone, which the walk never enters; so a path under a link is no input either.
+    const underLink = async (file: string) => {
+      const parts = file.split("/");
+      for (let end = 1; end < parts.length; end++) {
+        const info = await unlessAbsentAsync(
+          NodeFSP.lstat(NodePath.join(root, ...parts.slice(0, end))),
+        );
+        if (info?.isSymbolicLink()) return true;
+      }
+      return false;
+    };
     for (const entry of output.toString().split("\0").filter(Boolean)) {
-      await walk(entry.replace(/\/$/, ""));
+      const file = entry.replace(/\/$/, "");
+      if (!(await underLink(file))) await walk(file);
     }
     return [...files].sort();
   });

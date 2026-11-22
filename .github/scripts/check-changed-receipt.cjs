@@ -5,7 +5,12 @@ const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { GIT_OUTPUT_MAX_BYTES, REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
+const {
+  GIT_CALL_LIMITS,
+  GIT_OUTPUT_MAX_BYTES,
+  REAL_HISTORY_ENV,
+  markedFiles,
+} = require("./git-history.cjs");
 
 const RECEIPT_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -18,6 +23,7 @@ const git = (cwd, args, env = process.env) =>
     encoding: "utf8",
     maxBuffer: GIT_OUTPUT_MAX_BYTES,
     stdio: ["ignore", "pipe", "pipe"],
+    ...GIT_CALL_LIMITS,
   }).trim();
 
 // Every worktree of a repository shares its git directory, so a pass in one worktree covers a push from another.

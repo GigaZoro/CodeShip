@@ -261,3 +261,30 @@ test("a push that moves only the landing lease or a topic passes the hook from a
     git("push", "origin", ":refs/heads/landing-lease/main");
     assert.equal(git("ls-remote", "origin", "refs/heads/landing-lease/main"), "");
   }));
+
+// A runaway git would hold the push the pre-push hook checks until someone noticed, so each git call the receipt
+// makes, and the marked-file listing's, is killed past the landing's limit.
+test("every git call the receipt makes is killed past the landing's limit", (t) =>
+  withRoot((root) => {
+    const { work, objects } = fixture(root);
+    const childProcess = require("node:child_process");
+    const limits = [];
+    for (const name of ["execFileSync", "spawnSync"]) {
+      const real = childProcess[name];
+      t.mock.method(childProcess, name, (file, args, options) => {
+        if (file === "git")
+          limits.push({ timeout: options.timeout, killSignal: options.killSignal });
+        return real(file, args, options);
+      });
+    }
+    // Loaded again, so they take the recording calls in place of the ones they took at first.
+    for (const module of ["./check-changed-receipt.cjs", "./git-history.cjs"]) {
+      delete require.cache[require.resolve(module)];
+    }
+    const { GIT_CALL_TIMEOUT_MS } = require("./git-history.cjs");
+    require("./check-changed-receipt.cjs").workingTree(work, objects);
+    assert.ok(limits.length > 1);
+    for (const limit of limits) {
+      assert.deepEqual(limit, { timeout: GIT_CALL_TIMEOUT_MS, killSignal: "SIGKILL" });
+    }
+  }));

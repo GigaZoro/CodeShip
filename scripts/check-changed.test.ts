@@ -1337,11 +1337,11 @@ const env: Record<string, string> = {
   ),
 };
 
-// Code for node -e that runs `code` until the file `hold` is gone, then exits whatever `code` still
-// waits for. A test ends such a process by removing its folder, never by signalling an id that the
-// system may have given to an unrelated process once this one ended.
+// Code for node -e that runs `code` until the file `hold` is gone, or this test process is (a run cut
+// short never removes it), then exits whatever `code` still waits for. A test ends it by removing
+// its folder, never by signalling an id the system may have given an unrelated process since.
 const whileHeld = (hold: string, code: string) =>
-  `setInterval(() => { if (!require("node:fs").existsSync(${JSON.stringify(hold)})) process.exit(); }, 50).unref(); ${code}`;
+  `{ const tester = ${process.pid}; const testing = () => { try { process.kill(tester, 0); return true; } catch (error) { return error.code === "EPERM"; } }; setInterval(() => { if (!require("node:fs").existsSync(${JSON.stringify(hold)}) || !testing()) process.exit(); }, 50).unref(); } ${code}`;
 
 // The stdio pipes that keep this process's event loop running. A stdin pipe, which Node destroys
 // once its process exits, counts until it has closed on a later turn of the loop, so a test that
@@ -1563,6 +1563,22 @@ it("reads each ignored folder once when Git lists it beside folders inside it", 
       NodePath.relative(project.root, String(folder)).replaceAll("\\", "/"),
     ),
     ["outer", "outer/inner", "outer/inner/deeper"],
+  );
+});
+
+// Git for Windows lists the folders inside one a junction leads to, as `linked/dist/`; Git elsewhere
+// lists the link itself. Either way the link's target is no input of this checkout.
+it("leaves out what Git lists under a link", async () => {
+  using project = fixture({});
+  writeUnder(project.root, "target/dist/x.d.ts");
+  NodeFS.symlinkSync(
+    NodePath.join(project.root, "target"),
+    NodePath.join(project.root, "linked"),
+    "junction",
+  );
+  assert.deepStrictEqual(
+    await ignoredInputsListed(project.root, ["linked/", "linked/dist/", "linked/dist/x.d.ts"]),
+    [],
   );
 });
 
