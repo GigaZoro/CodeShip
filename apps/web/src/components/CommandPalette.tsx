@@ -195,7 +195,7 @@ import {
   isWindowsPlatform,
   newProjectId,
 } from "../lib/utils";
-import { buildThreadRouteParams } from "../threadRoutes";
+import { buildThreadRouteParams, resolveActiveThreadRouteRef } from "../threadRoutes";
 import { useAvailableSettingsSearchItems } from "./settings/useAvailableSettingsSearchItems";
 import {
   applyWslEnvironmentConfiguration,
@@ -279,6 +279,7 @@ import { settingsForThisPlatform, SETTINGS_SECTION_LABELS } from "./settings/set
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { resolveShortcutCommand, threadJumpIndexFromCommand } from "../keybindings";
 import { CommandDialog, CommandDialogPopup, CommandFooterAction } from "./ui/command";
+import { Kbd } from "./ui/kbd";
 import { Button } from "./ui/button";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { suggestAppAccessForRemote } from "./sourceControlAppAccessToast";
@@ -1008,12 +1009,17 @@ function OpenCommandPaletteDialog(props: {
     };
   })();
 
+  const panelThreadRef = resolveActiveThreadRouteRef(paletteRouteTarget, activeDraftThread ?? null);
   const {
     threadItems: allThreadItems,
     threadMessageItems,
     now: searchNow,
     isSearchPending: isThreadSearchPending,
-  } = useCommandPaletteThreadItems({ activeThread: activeThread ?? null, threadSearchQuery });
+  } = useCommandPaletteThreadItems({
+    activeThread: activeThread ?? null,
+    ...(panelThreadRef === null ? {} : { panelThreadRef }),
+    threadSearchQuery,
+  });
   // Recent means used recently: written in or opened, whichever is later. The
   // open thread would always lead that list, so it is left out.
   const activeThreadValue = activeThread
@@ -2881,6 +2887,19 @@ function OpenCommandPaletteDialog(props: {
     return useMetaForMod ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
   }
 
+  const selectedItem = findHighlightedCommandPaletteItem(
+    displayedGroups,
+    highlightedItemValue ?? (autoHighlightsFirstRow ? (resultRows.itemValues[0] ?? null) : null),
+  );
+  const openSelectedThreadInSidePanel =
+    selectedItem?.kind === "action" ? selectedItem.openInSidePanel : undefined;
+
+  function openPaletteThreadInSidePanel() {
+    if (!openSelectedThreadInSidePanel) return;
+    setOpen(false);
+    openSelectedThreadInSidePanel();
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
     if (event.key === "Enter" && (event.nativeEvent.isComposing || event.keyCode === 229)) {
       // Confirming an IME candidate must not submit a path or select a row.
@@ -2892,6 +2911,22 @@ function OpenCommandPaletteDialog(props: {
       platform: navigator.platform,
       context: { modelPickerOpen: false, editableFocus: true },
     });
+    if (
+      command === null &&
+      event.key === "Enter" &&
+      event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      panelThreadRef !== null &&
+      selectedItem?.threadSearch
+    ) {
+      (event as typeof event & { preventBaseUIHandler?: () => void }).preventBaseUIHandler?.();
+      event.preventDefault();
+      event.stopPropagation();
+      openPaletteThreadInSidePanel();
+      return;
+    }
     if (
       command === "thread.snooze" &&
       !event.nativeEvent.isComposing &&
@@ -3268,6 +3303,10 @@ function OpenCommandPaletteDialog(props: {
       }}
     >
       {t("Open in {fileManager}", { fileManager: fileManagerName })}
+    </CommandFooterAction>
+  ) : openSelectedThreadInSidePanel ? (
+    <CommandFooterAction onClick={openPaletteThreadInSidePanel}>
+      {t("Open in side panel")} <Kbd>{"Alt+Enter"}</Kbd>
     </CommandFooterAction>
   ) : isThreadSearchPending && !isLinkedThreadSearch && !isBrowsing ? (
     // In the footer, so the list keeps its height while message results may

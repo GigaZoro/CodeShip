@@ -216,6 +216,7 @@ export interface CommandPaletteActionItem extends CommandPaletteItem {
   readonly run: () => Promise<void>;
   /** A pin toggle on the row, also reached with the pin shortcut while the row is highlighted. */
   readonly pin?: CommandPaletteItemPin;
+  readonly openInSidePanel?: () => void;
 }
 
 export interface CommandPaletteItemPin {
@@ -433,6 +434,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
   renderTrailingContent?: (thread: TThread) => ReactNode;
   renderDescription?: (thread: TThread, meta: { projectTitle: string | undefined }) => ReactNode;
   runThread: (thread: TThread) => Promise<void>;
+  openThreadInSidePanel?: (thread: TThread) => void;
   /** Makes the environment searchable; pass it only with two or more environments. */
   environmentLabelOf?: (thread: TThread) => string | null;
 }): CommandPaletteActionItem[] {
@@ -499,6 +501,9 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
         run: async () => {
           await input.runThread(thread);
         },
+        ...(!isCurrent && input.openThreadInSidePanel
+          ? { openInSidePanel: () => input.openThreadInSidePanel?.(thread) }
+          : {}),
       },
     );
   });

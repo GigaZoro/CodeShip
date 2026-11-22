@@ -12,6 +12,7 @@ import type {
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { lazy, Suspense } from "react";
 import SideChatPane from "./SideChatPane";
+import ThreadPanelPane from "./ThreadPanelPane";
 import type { ComposerImageAttachment, DraftId } from "../../composerDraftStore";
 import type { ShortcutMatchContext } from "../../keybindings";
 import type { SideChatParentPanel } from "../../lib/sideChatPane";
@@ -183,6 +184,15 @@ export function RightPanelSurfaceContent(props: {
           <ThreadPullRequestsPanel threadRef={threadRef} />
         </Suspense>
       );
+    case "thread":
+      return (
+        <ThreadPanelPane
+          key={surface.id}
+          hostRef={threadRef}
+          threadRef={surface.threadRef}
+          onClose={() => onCloseSurface(surface)}
+        />
+      );
     case "side-chat":
       // Not lazy: revealing a suspended tiptap editor tears down its view and crashes the composer.
       return (
@@ -214,14 +224,18 @@ export function RightPanelSurfaceContent(props: {
     case "file": {
       const files = props.files;
       const attachment = surface.kind === "file" ? surface.attachment : undefined;
+      const environmentId =
+        surface.kind === "file" && attachment
+          ? (surface.attachmentEnvironmentId ?? props.environmentId)
+          : props.environmentId;
       if (!attachment && (files.projectName === null || !files.workspaceRoot)) return null;
       return (
         <Suspense fallback={null}>
           <FilePreviewPanel
-            key={`${props.environmentId}:${
+            key={`${environmentId}:${
               attachment ? `attachment:${attachment.id}` : files.workspaceRoot
             }`}
-            environmentId={props.environmentId}
+            environmentId={environmentId}
             cwd={files.workspaceRoot ?? ""}
             projectName={files.projectName ?? ""}
             threadRef={threadRef}

@@ -124,7 +124,8 @@ export async function reopenClosedView(
       panels.openBrowser(ref, null);
       break;
     case "file":
-      if (surface.attachment) panels.openAttachment(ref, surface.attachment);
+      if (surface.attachment)
+        panels.openAttachment(ref, surface.attachment, surface.attachmentEnvironmentId);
       else panels.openFile(ref, surface.relativePath, surface.revealLine ?? undefined);
       break;
     case "device":

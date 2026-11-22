@@ -584,6 +584,8 @@ function surfaceTitle(
       return surface.title ?? surface.target?.name ?? t("Device");
     case "side-chat":
       return t("Side chat");
+    case "thread":
+      return t("Thread");
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return t("Browser");
@@ -672,6 +674,8 @@ function SurfaceIcon({
       );
     case "pull-requests":
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
+    case "thread":
+      return <MessagesSquare className="size-3 shrink-0" />;
     case "side-chat":
       return <SideChatTabIcon environmentId={environmentId} threadId={surface.threadId} />;
     case "device":
@@ -890,13 +894,15 @@ function RightPanelTab(
     id: surface.id,
     disabled: props.dragDisabled,
   });
-  const sideChatShell = useQuietThreadShell(
-    surface.kind === "side-chat" && props.environmentId !== null
-      ? scopeThreadRef(props.environmentId, surface.threadId)
-      : null,
+  const threadShell = useQuietThreadShell(
+    surface.kind === "thread"
+      ? surface.threadRef
+      : surface.kind === "side-chat" && props.environmentId !== null
+        ? scopeThreadRef(props.environmentId, surface.threadId)
+        : null,
   );
-  const title = sideChatShell?.title ?? props.title;
-  const sideChatState = sideChatTabState(sideChatShell);
+  const title = threadShell?.title ?? props.title;
+  const sideChatState = surface.kind === "side-chat" ? sideChatTabState(threadShell) : null;
   const content = (
     <>
       <PanelTabCloseButton label={t("Close {title}", { title })} onClick={() => onClose(surface)}>

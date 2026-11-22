@@ -982,21 +982,35 @@ describe("rightPanelStore", () => {
     ]);
   });
 
-  it("keeps attachment and workspace file ids disjoint", () => {
-    useRightPanelStore.getState().openFile(refA, "attachment:shared-id");
-    useRightPanelStore.getState().openAttachment(refA, {
-      type: "file",
+  it("keeps workspace files and attachments from different environments disjoint", () => {
+    const store = useRightPanelStore.getState();
+    const attachment = {
+      type: "file" as const,
       id: "shared-id",
       name: "report.pdf",
       mimeType: "application/pdf",
       sizeBytes: 42,
-    });
+    };
+    store.openFile(refA, "attachment:shared-id");
+    store.openAttachment(refA, attachment);
+    const unhost = hostRightPanel(remoteRef, refA);
+    store.openAttachment(remoteRef, attachment);
+    unhost();
 
     expect(
-      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces.map(
-        (surface) => surface.id,
-      ),
-    ).toEqual(["file:attachment:shared-id", "attachment:shared-id"]);
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA),
+    ).toMatchObject({
+      activeSurfaceId: "attachment:env-2:shared-id",
+      surfaces: [
+        { id: "file:attachment:shared-id" },
+        { id: "attachment:shared-id", attachment },
+        {
+          id: "attachment:env-2:shared-id",
+          attachment,
+          attachmentEnvironmentId: remoteRef.environmentId,
+        },
+      ],
+    });
   });
 
   it("updates line reveal requests when reopening a file surface", () => {

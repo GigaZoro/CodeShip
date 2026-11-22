@@ -214,6 +214,7 @@ import {
   resolveThreadRouteTarget,
 } from "../threadRoutes";
 import type { SidebarThreadSummary } from "../types";
+import { useRightPanelStore } from "../rightPanelStore";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { cn } from "~/lib/utils";
 import { ProjectEnvironmentBadge } from "./ProjectEnvironmentBadge";
@@ -1518,13 +1519,17 @@ const SIDEBAR_DRAG_LABEL_HEIGHT = 24;
 const threadSearchResultId = (index: number) => `sidebar-thread-search-result-${index}`;
 
 // Continuations that outlive a render read the open thread from the router.
-function readRouteThreadKey(router: AnyRouter): string | null {
+function readRouteThreadRef(router: AnyRouter): ScopedThreadRef | null {
   const target = resolveThreadRouteTarget(router.state.matches.at(-1)?.params ?? {});
   const draft =
     target?.kind === "draft"
       ? useComposerDraftStore.getState().getDraftSession(target.draftId)
       : null;
-  const ref = resolveActiveThreadRouteRef(target, draft);
+  return resolveActiveThreadRouteRef(target, draft);
+}
+
+function readRouteThreadKey(router: AnyRouter): string | null {
+  const ref = readRouteThreadRef(router);
   return ref === null ? null : scopedThreadKey(ref);
 }
 
@@ -2648,6 +2653,14 @@ export default function Sidebar({
     })();
   };
 
+  const openThreadInSidePanel = (threadRef: ScopedThreadRef) => {
+    const hostRef = readRouteThreadRef(router);
+    if (hostRef === null) return;
+    useRightPanelStore
+      .getState()
+      .openThread(hostRef, threadRef, readThreadShell(threadRef)?.lineage);
+  };
+
   const handleThreadClick = (event: ReactMouseEvent, threadRef: ScopedThreadRef) => {
     if (isSidebarNestedLinkClick(event.target)) return;
     const isMac = isMacPlatform(navigator.platform);
@@ -2664,6 +2677,11 @@ export default function Sidebar({
       return;
     }
     if (isTrailingDoubleClick(event.detail)) {
+      return;
+    }
+    if (event.altKey && routeThreadRef !== null) {
+      event.preventDefault();
+      openThreadInSidePanel(threadRef);
       return;
     }
     navigateToThread(threadRef);
@@ -3857,6 +3875,7 @@ export default function Sidebar({
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems({
+              canOpenInSidePanel: routeThreadKey !== null && routeThreadKey !== threadKey,
               canOperate: readEnvironmentScope(
                 threadRef.environmentId,
                 AuthOrchestrationOperateScope,
@@ -3925,6 +3944,9 @@ export default function Sidebar({
           return;
         }
         switch (clicked.value) {
+          case "open-in-side-panel":
+            openThreadInSidePanel(threadRef);
+            return;
           case "filter-by-project":
             if (threadProjectGroup) {
               setProjectScopeKeys(

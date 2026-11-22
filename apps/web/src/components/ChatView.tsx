@@ -3397,6 +3397,9 @@ export default function ChatView(props: ChatViewProps) {
     runShellCommand: runSideChatShellCommandStable,
   };
 
+  const timelineRunShellCommand = embedded ? parentPanel.runShellCommand : runShellCommandStable;
+  const timelineOpenToolDiff = embedded ? parentPanel.openToolDiff : onOpenToolDiffStable;
+
   if (!activeThread) {
     return embedded ? null : <NoActiveThreadState />;
   }
@@ -3618,8 +3621,8 @@ export default function ChatView(props: ChatViewProps) {
                 citationRequest={citationRequest}
                 citationHistory={citationHistory}
                 onCiteAssistantText={citeAssistantTextStable}
-                {...(activeProject
-                  ? { onRunShellCommand: parentPanel?.runShellCommand ?? runShellCommandStable }
+                {...(activeProject && timelineRunShellCommand
+                  ? { onRunShellCommand: timelineRunShellCommand }
                   : {})}
                 {...(canOperateThread ? { onAddToComposer: addToComposerStable } : {})}
                 isWorking={isWorking}
@@ -3664,7 +3667,7 @@ export default function ChatView(props: ChatViewProps) {
                 routeThreadKey={displayedTimelineKey}
                 displayThreadKey={displayedTimelineKey}
                 announceTurnStatus={!isProviderSubagent}
-                onOpenToolDiff={parentPanel?.openToolDiff ?? onOpenToolDiffStable}
+                {...(timelineOpenToolDiff ? { onOpenToolDiff: timelineOpenToolDiff } : {})}
                 // Side chat runs keep no checkpoints to diff, and a fork would promote the side chat.
                 {...(embedded
                   ? {}

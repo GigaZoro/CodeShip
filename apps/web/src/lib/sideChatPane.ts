@@ -3,7 +3,7 @@ import type { OrchestrationV2ThreadShell, ScopedThreadRef } from "@t3tools/contr
 import type { ToolCallDiffTarget } from "../diffPanelStore";
 import { useRightPanelStore } from "../rightPanelStore";
 
-/** Whether an event started in the side chat pane (`data-side-chat-pane`), which the main chat ignores. */
+/** Whether an event started in an embedded chat pane (`data-side-chat-pane`), which the main chat ignores. */
 export function isInSideChatPane(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest("[data-side-chat-pane]") !== null;
 }
@@ -14,8 +14,8 @@ export function isInSideChatPane(target: EventTarget | null): boolean {
  * the parent through `hostRightPanel`; diff selection and the drawer are not panel state.
  */
 export interface SideChatParentPanel {
-  readonly openToolDiff: (target: ToolCallDiffTarget) => void;
-  readonly runShellCommand: (command: string) => void;
+  readonly openToolDiff?: (target: ToolCallDiffTarget) => void;
+  readonly runShellCommand?: (command: string) => void;
 }
 
 /** Opens `thread` in its tab when it is a side chat of `parentRef`; false for any other thread. */

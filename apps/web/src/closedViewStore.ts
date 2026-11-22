@@ -1,6 +1,7 @@
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   ChatFileAttachment,
+  EnvironmentId,
   INCOGNITO_BROWSER_PROFILE_ID,
   PreviewSessionSnapshot,
   ScopedThreadRef,
@@ -52,6 +53,7 @@ const isPersistentView = (entry: ClosedViewEntry) =>
 const isThreadRef = Schema.is(ScopedThreadRef);
 const isSnapshot = Schema.is(PreviewSessionSnapshot);
 const isAttachment = Schema.is(ChatFileAttachment);
+const isEnvironmentId = Schema.is(EnvironmentId);
 
 const isClosedViewEntry = (entry: unknown): entry is ClosedViewEntry => {
   const view = entry as ClosedViewEntry | null;
@@ -72,7 +74,9 @@ const isClosedViewEntry = (entry: unknown): entry is ClosedViewEntry => {
         typeof surface.relativePath === "string" &&
         (surface.revealLine === null || Number.isSafeInteger(surface.revealLine)) &&
         Number.isSafeInteger(surface.revealRequestId) &&
-        (surface.attachment === undefined || isAttachment(surface.attachment))
+        (surface.attachment === undefined || isAttachment(surface.attachment)) &&
+        (surface.attachmentEnvironmentId === undefined ||
+          (surface.attachment !== undefined && isEnvironmentId(surface.attachmentEnvironmentId)))
       );
     case "device":
       return (

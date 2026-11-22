@@ -72,6 +72,7 @@ export type RightPanelSurface =
       revealLine: number | null;
       revealRequestId: number;
       attachment?: ChatFileAttachment;
+      attachmentEnvironmentId?: EnvironmentId;
       /** Deepest workspace path retained for navigating back down after moving up. */
       folderTrail?: string;
     }
@@ -156,7 +157,11 @@ interface RightPanelStoreState {
     folderTrail: string,
     keepSource?: boolean,
   ) => void;
-  openAttachment: (ref: ScopedThreadRef, attachment: ChatFileAttachment) => void;
+  openAttachment: (
+    ref: ScopedThreadRef,
+    attachment: ChatFileAttachment,
+    sourceEnvironmentId?: EnvironmentId,
+  ) => void;
   openPullRequest: (
     ref: ScopedThreadRef,
     target: {
@@ -260,13 +265,20 @@ const fileSurface = (
   revealRequestId,
 });
 
-const attachmentSurface = (attachment: ChatFileAttachment): RightPanelSurface => ({
-  id: `attachment:${attachment.id}`,
+const attachmentSurface = (
+  attachment: ChatFileAttachment,
+  attachmentEnvironmentId: EnvironmentId | undefined,
+): RightPanelSurface => ({
+  id:
+    attachmentEnvironmentId === undefined
+      ? `attachment:${attachment.id}`
+      : `attachment:${attachmentEnvironmentId}:${attachment.id}`,
   kind: "file",
   relativePath: attachment.name,
   revealLine: null,
   revealRequestId: 0,
   attachment,
+  ...(attachmentEnvironmentId === undefined ? {} : { attachmentEnvironmentId }),
 });
 
 const terminalSurface = (terminalId: string): RightPanelSurface => ({
@@ -408,7 +420,7 @@ const automaticUpdate = (
   ...updateThread(state, threadKey, updater),
 });
 
-// A side chat pane has no panel of its own, so its panel actions open in its parent's panel.
+// Embedded chats use the containing panel for their panel actions.
 const panelHosts = new Map<string, ScopedThreadRef>();
 
 /** Routes `guest`'s panel actions to `host`'s panel until the returned cleanup runs. */
@@ -902,7 +914,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             return { ...current, isOpen: true, activeSurfaceId: target.id, surfaces };
           }),
         ),
-      openAttachment: (ref, attachment) =>
+      openAttachment: (ref, attachment, sourceEnvironmentId = ref.environmentId) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) => {
             const withoutStandaloneExplorer = current.surfaces.filter(
@@ -910,7 +922,12 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             );
             return upsertSurface(
               { ...current, surfaces: withoutStandaloneExplorer },
-              attachmentSurface(attachment),
+              attachmentSurface(
+                attachment,
+                sourceEnvironmentId === rightPanelHostRef(ref).environmentId
+                  ? undefined
+                  : sourceEnvironmentId,
+              ),
             );
           }),
         ),

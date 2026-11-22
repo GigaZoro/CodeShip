@@ -8497,8 +8497,10 @@ const catalog: MessageCatalog = {
   "Open in editor": "Відкрити в редакторі",
   "Open in file viewer": "Відкрити в засобі перегляду файлів",
   "Open in integrated browser": "Відкрити у вбудованому браузері",
+  "Open in main view": "Відкрити в основній області",
   "Open in right panel": "Відкрити в правій панелі",
   "Open in Safari": "Відкрити в Safari",
+  "Open in side panel": "Відкрити в бічній панелі",
   "Open in system browser": "Відкрити в системному браузері",
   "Open in the browser panel. {key} for your browser.":
     "Відкрити на панелі браузера. {key} – у вашому браузері.",
