@@ -1,7 +1,7 @@
 import { defineRule } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, isIdentifier, unwrapExpression } from "../utils.ts";
+import { getPropertyName, isIdentifier, resolvePropertyName, unwrapExpression } from "../utils.ts";
 
 const MCP_SERVER_MODULE = "effect/ai/McpServer";
 const AI_MODULES = new Set(["effect/ai", "effect/ai/index"]);
@@ -55,6 +55,7 @@ export default defineRule({
     },
   },
   create(context) {
+    const { sourceCode } = context;
     const isTest = TEST_FILE_PATTERN.test(context.filename);
     return {
       ImportDeclaration(node) {
@@ -97,7 +98,7 @@ export default defineRule({
         }
       },
       MemberExpression(node) {
-        const name = getPropertyName(node.property);
+        const name = resolvePropertyName(sourceCode, node.property);
         if (Option.isNone(name)) return;
         if (SERVICE_REGISTRATIONS.has(name.value)) {
           context.report({ node, message: registrationMessage(`.${name.value}`) });
@@ -114,7 +115,7 @@ export default defineRule({
           isIdentifier(unwrapExpression(node.parent.init), "McpServer");
         for (const property of node.properties) {
           if (property.type !== "Property") continue;
-          const name = getPropertyName(property.key);
+          const name = resolvePropertyName(sourceCode, property.key);
           if (Option.isNone(name)) continue;
           if (SERVICE_REGISTRATIONS.has(name.value)) {
             context.report({ node: property, message: registrationMessage(`.${name.value}`) });

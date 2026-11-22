@@ -1,7 +1,7 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, unwrapExpression } from "../utils.ts";
+import { resolvePropertyName, unwrapExpression } from "../utils.ts";
 
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
 const SUITES = new Set(["describe", "suite"]);
@@ -10,10 +10,10 @@ const FUNCTIONS = new Set(["ArrowFunctionExpression", "FunctionExpression"]);
 
 // A merge that keeps both sides of a test file leaves two tests that Vitest reports under one name.
 // oxlint's vitest/no-identical-title skips it.effect and it.live, which most of our tests use.
-const callKind = (callee: unknown): "suite" | "test" | undefined => {
+const callKind = (sourceCode: SourceCode, callee: unknown): "suite" | "test" | undefined => {
   let current = unwrapExpression(callee);
   while (Option.isSome(current) && current.value.type === "MemberExpression") {
-    if (Option.isNone(getPropertyName(current.value.property))) return undefined;
+    if (Option.isNone(resolvePropertyName(sourceCode, current.value.property))) return undefined;
     current = unwrapExpression(current.value.object);
   }
   if (Option.isNone(current) || current.value.type !== "Identifier") return undefined;
@@ -30,13 +30,13 @@ const staticTitle = (node: ESTree.CallExpression): string | undefined => {
   return undefined;
 };
 
-const enclosingSuite = (node: ESTree.Node): ESTree.Node | undefined => {
+const enclosingSuite = (sourceCode: SourceCode, node: ESTree.Node): ESTree.Node | undefined => {
   let current = node.parent;
   while (current) {
     if (
       FUNCTIONS.has(current.type) &&
       current.parent?.type === "CallExpression" &&
-      callKind(current.parent.callee) === "suite"
+      callKind(sourceCode, current.parent.callee) === "suite"
     ) {
       return current;
     }
@@ -53,18 +53,19 @@ export default defineRule({
     },
   },
   create(context) {
+    const { sourceCode } = context;
     if (!TEST_FILE_PATTERN.test(context.filename)) return {};
 
     const seen = new Map<ESTree.Node | undefined, Set<string>>();
 
     return {
       CallExpression(node) {
-        const kind = callKind(node.callee);
+        const kind = callKind(sourceCode, node.callee);
         if (kind !== "test") return;
         const title = staticTitle(node);
         if (title === undefined) return;
 
-        const scope = enclosingSuite(node);
+        const scope = enclosingSuite(sourceCode, node);
         const titles = seen.get(scope) ?? new Set<string>();
         seen.set(scope, titles);
         if (titles.has(title)) {

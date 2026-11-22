@@ -1,6 +1,7 @@
 import { defineRule, type ESTree } from "@oxlint/plugins";
+import * as Option from "effect/Option";
 
-import { findVariable } from "../utils.ts";
+import { findVariable, resolvePropertyName } from "../utils.ts";
 
 const MESSAGE = "Catch known tags with `Effect.catchTags({ Tag: handler })`, even for one tag.";
 
@@ -37,10 +38,8 @@ export default defineRule({
       },
       MemberExpression(node) {
         if (
-          !node.computed &&
           node.object.type === "Identifier" &&
-          node.property.type === "Identifier" &&
-          node.property.name === "catchTag" &&
+          Option.contains(resolvePropertyName(context.sourceCode, node.property), "catchTag") &&
           isEffectNamespace(node.object)
         ) {
           context.report({ node, message: MESSAGE });

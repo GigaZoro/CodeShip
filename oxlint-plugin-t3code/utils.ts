@@ -210,6 +210,18 @@ const statementList = (node: AstNode): ReadonlyArray<AstNode> | undefined => {
   }
 };
 
+const statementIndexes = new WeakMap<ReadonlyArray<AstNode>, Map<AstNode, number>>();
+
+/** Where `statement` stands in `statements`, or -1; the positions of a list are found once, as a file may hold thousands of changes. */
+const indexInList = (statements: ReadonlyArray<AstNode>, statement: AstNode): number => {
+  let indexes = statementIndexes.get(statements);
+  if (indexes === undefined) {
+    indexes = new Map(statements.map((each, index) => [each, index]));
+    statementIndexes.set(statements, indexes);
+  }
+  return indexes.get(statement) ?? -1;
+};
+
 const isFunction = (node: AstNode) =>
   node.type === "ArrowFunctionExpression" ||
   node.type === "FunctionExpression" ||
@@ -266,8 +278,8 @@ const writeOrder = (
   }
   const usePath = enclosing(use, (node) => node === list);
   const useStatement = usePath.at(-1);
-  const writeIndex = statements.indexOf(writeStatement);
-  const useIndex = useStatement === undefined ? -1 : statements.indexOf(useStatement);
+  const writeIndex = indexInList(statements, writeStatement);
+  const useIndex = useStatement === undefined ? -1 : indexInList(statements, useStatement);
   if (writeIndex < 0 || useIndex < 0) return anytime;
   if (writeIndex < useIndex) {
     if (writePath.some(isDeferred) || usePath.some((node) => node.type === "FunctionDeclaration")) {
@@ -358,6 +370,8 @@ const readingWrites = new Set<Variable>();
  */
 const MAX_WRITE_READS = 64;
 let writeReads = 0;
+/** How many times a read was refused for a limit or a cycle: a result computed across none of them holds in any context. */
+let refusedReads = 0;
 /** How many evaluations are under way, one inside another: the outermost one starts the count of reads afresh. */
 let evaluating = 0;
 
@@ -387,6 +401,7 @@ function writesThrough(
 ): ReadonlyArray<Write> {
   writeReads++;
   if (depth >= MAX_ALIAS_DEPTH || readingWrites.has(variable) || writeReads > MAX_WRITE_READS) {
+    refusedReads++;
     return [UNREADABLE_WRITE];
   }
   readingWrites.add(variable);
@@ -399,6 +414,32 @@ function writesThrough(
   } finally {
     readingWrites.delete(variable);
   }
+}
+
+const writesOfVariable = new WeakMap<
+  Variable,
+  { readonly writes: ReadonlyArray<Write>; readonly reads: number }
+>();
+
+/**
+ * `writesThrough` for a variable, remembered when it was read outside any other read and met no limit or cycle, so
+ * the same changes are not walked again for each use of the name. A remembered result still counts its reads against
+ * the budget, and is used only where the whole walk would fit in it, so the outcome is the one a fresh walk gives.
+ */
+function cachedWritesThrough(sourceCode: SourceCode, variable: Variable): ReadonlyArray<Write> {
+  const outermost = readingWrites.size === 0;
+  const known = outermost ? writesOfVariable.get(variable) : undefined;
+  if (known !== undefined && writeReads + known.reads <= MAX_WRITE_READS) {
+    writeReads += known.reads;
+    return known.writes;
+  }
+  const readsBefore = writeReads;
+  const refusedBefore = refusedReads;
+  const writes = writesThrough(sourceCode, variable);
+  if (outermost && refusedReads === refusedBefore) {
+    writesOfVariable.set(variable, { writes, reads: writeReads - readsBefore });
+  }
+  return writes;
 }
 
 /**
@@ -436,7 +477,7 @@ export function resolveConstValue(
     const object = holder;
     // An alias's changes are read where it is declared, among the object's own: sorted, the changes made in source
     // order are in the order they run in.
-    const writes = writesThrough(sourceCode, object)
+    const writes = cachedWritesThrough(sourceCode, object)
       .flatMap(({ change, node: write }) => {
         const order = Option.match(write, {
           onNone: () => ({ made: "anytime", within: [] }) as const,
@@ -470,6 +511,12 @@ export const overwrittenKinds = (operator: LogicalOperator): number =>
 /** How far conditions and logical expressions inside one another are followed; values deeper may be of any kind. */
 const MAX_KIND_DEPTH = 4;
 
+/** Which ways a branch goes on some run, from the kinds its test or left side may have: where `over` leads, and where the rest do. */
+const waysTaken = (kinds: number, over: number) => ({
+  over: (kinds & over) !== 0,
+  other: (kinds & ~over) !== 0,
+});
+
 /**
  * The operands whose value a condition or logical expression takes on some run: both, unless the kinds the source
  * shows its test or left side may have pick one on every run.
@@ -481,15 +528,14 @@ export function operandsTaken(
 ): ReadonlyArray<ESTree.Expression> {
   if (expression.type === "ConditionalExpression") {
     const { test, consequent, alternate } = expression;
-    const kinds = valueKinds(sourceCode, test, depth + 1);
-    if (kinds === TRUTHY) return [consequent];
-    return (kinds & TRUTHY) === 0 ? [alternate] : [consequent, alternate];
+    const ways = waysTaken(valueKinds(sourceCode, test, depth + 1), TRUTHY);
+    if (!ways.other) return [consequent];
+    return ways.over ? [consequent, alternate] : [alternate];
   }
   const { left, operator, right } = expression;
-  const kinds = valueKinds(sourceCode, left, depth + 1);
-  const over = overwrittenKinds(operator);
-  if ((kinds & ~over) === 0) return [right];
-  return (kinds & over) === 0 ? [left] : [left, right];
+  const ways = waysTaken(valueKinds(sourceCode, left, depth + 1), overwrittenKinds(operator));
+  if (!ways.other) return [right];
+  return ways.over ? [left, right] : [left];
 }
 
 /**
@@ -563,11 +609,12 @@ const groupedWithin = (writes: ReadonlyArray<ConstWrite>, depth: number) =>
 
 /**
  * What `writes` leave of `initial`, `change` giving what one leaves of a state and `either` what holds of one of two:
- * those in source order in turn, then each `anytime` one after them all, made or not, as it may be the last. An `if`
- * or `a ? b : c` runs its test, then one arm, whose changes hold together, and a logical expression its left side, then
- * perhaps its right; a change in any other statement may be skipped or repeated, so it is either made or not.
+ * those in source order in turn, then each `anytime` one after them all, as it may be the last. An `if` or `a ? b : c`
+ * runs its test, then an arm the test's kinds may lead to, whose changes hold together, and a logical expression its
+ * left side, then its right where the left's kinds may; a change in any other statement may be skipped or repeated.
  */
 export function applyWrites<State>(
+  sourceCode: SourceCode,
   writes: ReadonlyArray<ConstWrite>,
   initial: State,
   change: (state: State, write: ConstWrite) => State,
@@ -589,11 +636,16 @@ export function applyWrites<State>(
       case "IfStatement":
       case "ConditionalExpression": {
         const tested = made(node.test, state);
+        const ways = waysTaken(valueKinds(sourceCode, node.test), TRUTHY);
+        if (!ways.other) return made(node.consequent, tested);
+        if (!ways.over) return made(node.alternate, tested);
         return either(made(node.consequent, tested), made(node.alternate, tested));
       }
       case "LogicalExpression": {
         const left = made(node.left, state);
-        return either(left, made(node.right, left));
+        const ways = waysTaken(valueKinds(sourceCode, node.left), overwrittenKinds(node.operator));
+        if (!ways.other) return made(node.right, left);
+        return ways.over ? either(left, made(node.right, left)) : left;
       }
       default:
         return runsEveryPart(node)

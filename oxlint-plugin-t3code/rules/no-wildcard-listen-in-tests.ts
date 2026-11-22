@@ -239,6 +239,7 @@ const isPortWithoutHost = (
     if (expression.type !== "ObjectExpression") return false;
     return Option.exists(literalKeys(sourceCode, expression), (own) => {
       const runs = applyWrites<Reachable>(
+        sourceCode,
         writes,
         reachable([giveKeys(sourceCode, NO_KEYS, own)]),
         (current, write) =>

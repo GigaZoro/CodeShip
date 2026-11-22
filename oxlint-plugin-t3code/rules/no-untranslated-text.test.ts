@@ -7,6 +7,25 @@ const rule = createOxlintRuleHarness("t3code/no-untranslated-text", {
 });
 
 describe("t3code/no-untranslated-text", () => {
+  rule.invalid(
+    "reports copy passed to a text call a bracketed string or a const key names",
+    `
+      Alert["alert"]("Could not save");
+      const method = "confirm";
+      window[method]("Discard changes?");
+    `,
+    (output) => assert.equal(output.match(/no-untranslated-text/g)?.length, 2),
+  );
+
+  rule.invalid(
+    "reports copy under a text key a bracketed string or a const key names",
+    `
+      const key = "detail";
+      const copy = [{ ["detail"]: "Could not save" }, { [key]: "Try again later" }];
+    `,
+    (output) => assert.equal(output.match(/no-untranslated-text/g)?.length, 2),
+  );
+
   rule.valid(
     "allows translated text, glyphs, and literal opt-outs",
     `const el = (

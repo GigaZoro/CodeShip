@@ -1,21 +1,23 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, unwrapExpression } from "../utils.ts";
+import { resolvePropertyName, unwrapExpression } from "../utils.ts";
 
 const EFFECT_HOOKS = new Set(["useEffect", "useLayoutEffect", "useInsertionEffect"]);
 const EFFECT_HOOK_TEXT = /use(?:Layout|Insertion)?Effect/;
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$|[\\/](?:tests?|__tests__)[\\/]/;
 
-const isEffectHookCall = (node: ESTree.CallExpression): boolean => {
+const isEffectHookCall = (sourceCode: SourceCode, node: ESTree.CallExpression): boolean => {
   const callee = unwrapExpression(node.callee);
   if (Option.isNone(callee)) return false;
   const expression = callee.value;
   if (expression.type === "Identifier") return EFFECT_HOOKS.has(expression.name);
-  if (expression.type === "MemberExpression" && !expression.computed) {
-    return Option.exists(getPropertyName(expression.property), (name) => EFFECT_HOOKS.has(name));
-  }
-  return false;
+  return (
+    expression.type === "MemberExpression" &&
+    Option.exists(resolvePropertyName(sourceCode, expression.property), (name) =>
+      EFFECT_HOOKS.has(name),
+    )
+  );
 };
 
 // Agents read this message and act on it, so it walks the alternatives before it shows the way out.
@@ -51,7 +53,7 @@ export default defineRule({
     }
     return {
       CallExpression(node) {
-        if (!isEffectHookCall(node)) return;
+        if (!isEffectHookCall(context.sourceCode, node)) return;
         context.report({
           node,
           message: MESSAGE,

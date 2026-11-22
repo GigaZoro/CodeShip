@@ -8,6 +8,15 @@ const rule = createOxlintRuleHarness("t3code/no-hookless-use-function", {
 
 describe("t3code/no-hookless-use-function", () => {
   rule.valid(
+    "allows a function that calls a hook a bracketed string or a const key names",
+    `
+      function useCounter() { return React["useState"](0); }
+      const hook = "useMemo";
+      function useTotal(items) { return React[hook](() => items.length, [items]); }
+    `,
+  );
+
+  rule.valid(
     "allows a hook that calls useState",
     `function useCount() { const [count] = useState(0); return count; }`,
   );

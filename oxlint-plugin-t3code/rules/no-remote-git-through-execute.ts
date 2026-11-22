@@ -1,7 +1,7 @@
-import { defineRule } from "@oxlint/plugins";
+import { defineRule, type SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, unwrapExpression } from "../utils.ts";
+import { resolvePropertyName, unwrapExpression } from "../utils.ts";
 
 const REMOTE_SUBCOMMANDS = new Set(["fetch", "ls-remote", "pull", "push", "clone"]);
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
@@ -20,12 +20,12 @@ const literalString = (node: unknown): Option.Option<string> =>
     return Option.none();
   });
 
-const firstArgsElement = (input: unknown): Option.Option<string> =>
+const firstArgsElement = (sourceCode: SourceCode, input: unknown): Option.Option<string> =>
   Option.flatMap(unwrapExpression(input), (object) => {
     if (object.type !== "ObjectExpression") return Option.none();
     for (const property of object.properties) {
       if (property.type !== "Property") continue;
-      const name = getPropertyName(property.key);
+      const name = resolvePropertyName(sourceCode, property.key);
       if (Option.isNone(name) || name.value !== "args") continue;
       const value = unwrapExpression(property.value);
       if (Option.isNone(value) || value.value.type !== "ArrayExpression") return Option.none();
@@ -44,14 +44,15 @@ export default defineRule({
     },
   },
   create(context) {
+    const { sourceCode } = context;
     if (TEST_FILE_PATTERN.test(context.filename)) return {};
     return {
       CallExpression(node) {
         const callee = unwrapExpression(node.callee);
         if (Option.isNone(callee) || callee.value.type !== "MemberExpression") return;
-        const method = getPropertyName(callee.value.property);
+        const method = resolvePropertyName(sourceCode, callee.value.property);
         if (Option.isNone(method) || method.value !== "execute") return;
-        const subcommand = firstArgsElement(node.arguments[0]);
+        const subcommand = firstArgsElement(sourceCode, node.arguments[0]);
         if (Option.isNone(subcommand) || !REMOTE_SUBCOMMANDS.has(subcommand.value)) return;
         // Reported on the property so a disable comment sits right above `.execute(` in a chain.
         context.report({ node: callee.value.property, message: MESSAGE });

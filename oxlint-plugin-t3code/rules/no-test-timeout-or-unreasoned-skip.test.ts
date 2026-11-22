@@ -475,6 +475,66 @@ describe(RULE, () => {
     `,
   );
 
+  rule.valid(
+    "ignores a change in a branch its test never takes, and in the other arm of one it always takes",
+    `
+      import { it } from "vitest";
+      const slow = false;
+      const never = { concurrent: true };
+      if (slow) never.timeout = 90_000;
+      const unlikely = { concurrent: true };
+      slow ? (unlikely.timeout = 90_000) : undefined;
+      const fast = true;
+      const reset = { concurrent: true };
+      if (fast) {
+        delete reset.timeout;
+      } else {
+        reset.timeout = 90_000;
+      }
+      it("never", never, () => {});
+      it("unlikely", unlikely, () => {});
+      it("reset", reset, () => {});
+    `,
+  );
+
+  rule.valid(
+    "reads one options object across thousands of changes and hundreds of tests",
+    [
+      'import { it } from "vitest";',
+      "const options = { concurrent: true };",
+      ...Array.from({ length: 2_000 }, () => "options.concurrent = true;"),
+      ...Array.from({ length: 200 }, (_, index) => `it("case ${index}", options, () => {});`),
+    ].join("\n"),
+  );
+
+  rule.invalid(
+    "reports a change in a branch its test always takes",
+    `
+      import { it } from "vitest";
+      const slow = true;
+      const options = { concurrent: true };
+      if (slow) options.timeout = 90_000;
+      it("slow", options, () => {});
+    `,
+    assertTimeoutMessage,
+  );
+
+  rule.invalid(
+    "reports a timeout an always-taken branch sets over one the other arm deleted",
+    `
+      import { it } from "vitest";
+      const slow = true;
+      const options = { concurrent: true };
+      if (slow) {
+        options.timeout = 90_000;
+      } else {
+        delete options.timeout;
+      }
+      it("slow", options, () => {});
+    `,
+    assertTimeoutMessage,
+  );
+
   rule.invalid(
     "reads the const Object.assign returns as its target, changed through either name after the call",
     `

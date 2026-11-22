@@ -11,6 +11,18 @@ const component = lint("apps/web/src/Panel.tsx");
 
 describe("t3code/no-unreasoned-state-sync", () => {
   component.invalid(
+    "reports an effect hook a bracketed string or a const key names",
+    `const hook = "useEffect";
+export function Panel() {
+  React[hook](() => {});
+  React["useLayoutEffect"](() => {});
+  return null;
+}
+`,
+    (output) => assert.strictEqual(reports(output), 2),
+  );
+
+  component.invalid(
     "reports every effect hook, including member calls",
     `import React, { useEffect } from "react";
 export function Panel() {

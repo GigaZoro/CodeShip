@@ -106,6 +106,27 @@ describe("t3code/no-wildcard-listen-in-tests", () => {
     `,
   );
 
+  rule.valid(
+    "ignores a host deleted in a branch its test never takes",
+    `
+      const never = false;
+      const loopback = { port: 0, host: "127.0.0.1" };
+      if (never) delete loopback.host;
+      server.listen(loopback);
+    `,
+  );
+
+  rule.invalid(
+    "reports a host deleted in a branch its test always takes",
+    `
+      const always = true;
+      const loopback = { port: 0, host: "127.0.0.1" };
+      if (always) delete loopback.host;
+      server.listen(loopback);
+    `,
+    (output) => assert.match(output, /listens on all interfaces/),
+  );
+
   rule.invalid(
     "reports port options whose name changes leave them without a host",
     `

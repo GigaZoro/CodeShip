@@ -1,7 +1,7 @@
 import { defineRule, type Variable } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { findVariable, getPropertyName, unwrapExpression } from "../utils.ts";
+import { findVariable, getPropertyName, resolvePropertyName, unwrapExpression } from "../utils.ts";
 
 const APPEARANCE_VARIANT_PATTERN = /\b(?:dark|light):(?=\S)/u;
 const APPEARANCE_VARIANT_MESSAGE =
@@ -52,6 +52,7 @@ export default defineRule({
     defaultOptions: [{ allowUniwindTheme: false }],
   },
   create(context) {
+    const { sourceCode } = context;
     const allowUniwindTheme = readAllowUniwindTheme(context.options);
     const uniwindNamespaces = new Set<Variable>();
 
@@ -127,7 +128,7 @@ export default defineRule({
         const object = unwrapExpression(node.object);
         if (Option.isNone(object) || object.value.type !== "Identifier") return;
 
-        const property = getPropertyName(node.property);
+        const property = resolvePropertyName(sourceCode, node.property);
         if (Option.isNone(property)) return;
 
         const namespace = resolveVariable(object.value);
@@ -181,7 +182,7 @@ export default defineRule({
           }
 
           if (propertyNode.type !== "Property") continue;
-          const property = getPropertyName(propertyNode.key);
+          const property = resolvePropertyName(sourceCode, propertyNode.key);
           if (Option.isNone(property)) continue;
 
           if (property.value === "useCSSVariable") {

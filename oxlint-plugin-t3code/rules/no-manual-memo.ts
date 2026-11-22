@@ -1,4 +1,7 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
+import * as Option from "effect/Option";
+
+import { resolvePropertyName } from "../utils.ts";
 
 const MANUAL_MEMO_HOOKS = new Set(["useCallback", "useMemo"]);
 // "use no memo" and "use no forget" skip a component the compiler would bail on,
@@ -15,21 +18,19 @@ const readAllowMemoHooks = (options: ReadonlyArray<unknown>): boolean => {
   );
 };
 
-function manualMemoHookName(callee: ESTree.Node): string | null {
+function manualMemoHookName(sourceCode: SourceCode, callee: ESTree.Node): string | null {
   if (callee.type === "Identifier") {
     return MANUAL_MEMO_HOOKS.has(callee.name) ? callee.name : null;
   }
   if (
-    callee.type === "MemberExpression" &&
-    !callee.computed &&
-    callee.object.type === "Identifier" &&
-    callee.object.name === "React" &&
-    callee.property.type === "Identifier" &&
-    MANUAL_MEMO_HOOKS.has(callee.property.name)
+    callee.type !== "MemberExpression" ||
+    callee.object.type !== "Identifier" ||
+    callee.object.name !== "React"
   ) {
-    return callee.property.name;
+    return null;
   }
-  return null;
+  const name = Option.getOrNull(resolvePropertyName(sourceCode, callee.property));
+  return name !== null && MANUAL_MEMO_HOOKS.has(name) ? name : null;
 }
 
 export default defineRule({
@@ -71,7 +72,7 @@ export default defineRule({
       },
       CallExpression(node) {
         if (allowMemoHooks) return;
-        const name = manualMemoHookName(node.callee);
+        const name = manualMemoHookName(context.sourceCode, node.callee);
         if (name === null) return;
         context.report({
           node: node.callee,

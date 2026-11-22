@@ -343,7 +343,7 @@ export default defineRule({
       };
       // A change made through the const's name, as in `options.skip = false`, replaces what the options held, in the
       // order the changes run, on the runs that make it before the test registers.
-      return applyWrites(writes, state, change, either);
+      return applyWrites(context.sourceCode, writes, state, change, either);
     };
 
     /**

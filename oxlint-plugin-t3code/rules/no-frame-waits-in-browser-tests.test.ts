@@ -76,6 +76,20 @@ describe("t3code/no-frame-waits-in-browser-tests", () => {
     'panel.addEventListener("transitionend", () => resolve(), { once: true });',
   );
   browserTest.invalid(
+    "rejects a transitionend listener whose method name a const holds",
+    `
+      const addEventListener = "addEventListener";
+      panel[addEventListener]("transitionend", () => resolve());
+    `,
+  );
+  browserTest.valid(
+    "allows a bracketed variable that holds no listener method",
+    `
+      const addEventListener = "removeEventListener";
+      panel[addEventListener]("transitionend", () => resolve());
+    `,
+  );
+  browserTest.invalid(
     "rejects animationend listeners",
     'panel.addEventListener("animationend", () => resolve());',
   );

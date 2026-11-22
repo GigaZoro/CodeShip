@@ -1,7 +1,7 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, isIdentifier, unwrapExpression } from "../utils.ts";
+import { getPropertyName, isIdentifier, resolvePropertyName, unwrapExpression } from "../utils.ts";
 
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
 const TEST_CLOCK_DRIVERS = new Set(["adjust", "setTime"]);
@@ -28,7 +28,7 @@ interface CalleeChain {
 
 // Flattens `it.live.skipIf(cond)` or `it.layer(L, opts)` into the root name, the member
 // names, and the curried calls whose arguments carry options like `excludeTestServices`.
-const calleeChain = (callee: unknown): Option.Option<CalleeChain> => {
+const calleeChain = (sourceCode: SourceCode, callee: unknown): Option.Option<CalleeChain> => {
   const members: Array<string> = [];
   const calls: Array<ESTree.CallExpression> = [];
   let current = unwrapExpression(callee);
@@ -43,7 +43,7 @@ const calleeChain = (callee: unknown): Option.Option<CalleeChain> => {
       continue;
     }
     if (node.type === "MemberExpression") {
-      const name = getPropertyName(node.property);
+      const name = resolvePropertyName(sourceCode, node.property);
       if (Option.isNone(name)) return Option.none();
       members.push(name.value);
       current = unwrapExpression(node.object);
@@ -68,14 +68,14 @@ const testerKind = (chain: CalleeChain): Option.Option<Tester> => {
   return Option.some("plain");
 };
 
-const excludesTestServices = (chain: CalleeChain) =>
+const excludesTestServices = (sourceCode: SourceCode, chain: CalleeChain) =>
   chain.calls.some((call) =>
     call.arguments.some((argument) => {
       const expression = unwrapExpression(argument);
       if (Option.isNone(expression) || expression.value.type !== "ObjectExpression") return false;
       return expression.value.properties.some((property) => {
         if (property.type !== "Property") return false;
-        const key = getPropertyName(property.key);
+        const key = resolvePropertyName(sourceCode, property.key);
         const value = unwrapExpression(property.value);
         return (
           Option.isSome(key) &&
@@ -90,7 +90,7 @@ const excludesTestServices = (chain: CalleeChain) =>
 
 // The clock a call runs on: the nearest enclosing test call decides, and an enclosing
 // `it.layer(_, { excludeTestServices: true })` block strips the TestClock from `it.effect`.
-const enclosingTester = (node: ESTree.Node): Option.Option<Tester> => {
+const enclosingTester = (sourceCode: SourceCode, node: ESTree.Node): Option.Option<Tester> => {
   let child: ESTree.Node = node;
   let current = node.parent;
   let tester: Option.Option<Tester> = Option.none();
@@ -99,12 +99,12 @@ const enclosingTester = (node: ESTree.Node): Option.Option<Tester> => {
       current.type === "CallExpression" &&
       current.arguments.some((argument) => argument === child)
     ) {
-      const chain = calleeChain(current.callee);
+      const chain = calleeChain(sourceCode, current.callee);
       if (Option.isSome(chain)) {
         if (Option.isNone(tester)) {
           tester = testerKind(chain.value);
           if (Option.isSome(tester) && tester.value !== "effect") return tester;
-        } else if (isLayerBlock(chain.value) && excludesTestServices(chain.value)) {
+        } else if (isLayerBlock(chain.value) && excludesTestServices(sourceCode, chain.value)) {
           return Option.some("live");
         }
       }
@@ -115,13 +115,16 @@ const enclosingTester = (node: ESTree.Node): Option.Option<Tester> => {
   return tester;
 };
 
-const memberCallName = (callee: unknown): Option.Option<readonly [string, string]> => {
+const memberCallName = (
+  sourceCode: SourceCode,
+  callee: unknown,
+): Option.Option<readonly [string, string]> => {
   const expression = unwrapExpression(callee);
   if (Option.isNone(expression) || expression.value.type !== "MemberExpression") {
     return Option.none();
   }
   const object = unwrapExpression(expression.value.object);
-  const property = getPropertyName(expression.value.property);
+  const property = resolvePropertyName(sourceCode, expression.value.property);
   if (Option.isNone(property) || Option.isNone(object) || object.value.type !== "Identifier") {
     return Option.none();
   }
@@ -177,6 +180,7 @@ export default defineRule({
     },
   },
   create(context) {
+    const { sourceCode } = context;
     if (!TEST_FILE_PATTERN.test(context.filename)) return {};
     let drivesTestClock = false;
     // Whether the file drives the TestClock is only known after the whole file is walked.
@@ -190,7 +194,7 @@ export default defineRule({
       if (expression.value.type === "Identifier") {
         return timerPromiseLocals.has(expression.value.name);
       }
-      return Option.match(memberCallName(callee), {
+      return Option.match(memberCallName(sourceCode, callee), {
         onNone: () => false,
         onSome: ([object, property]) =>
           timerPromiseNamespaces.has(object) && TIMER_FUNCTIONS.has(property),
@@ -228,7 +232,7 @@ export default defineRule({
           isTimerPromiseCall(node.callee) ||
           (isCallbackTimer(node.callee) && isInsidePromiseExecutor(node))
         ) {
-          const tester = enclosingTester(node);
+          const tester = enclosingTester(sourceCode, node);
           reportFor(
             Option.isSome(tester) && tester.value === "effect"
               ? `${REAL_CLOCK_MESSAGE} ${MIXED_CLOCK_MESSAGE}`
@@ -237,7 +241,7 @@ export default defineRule({
           return;
         }
 
-        const name = memberCallName(node.callee);
+        const name = memberCallName(sourceCode, node.callee);
         if (Option.isNone(name)) return;
         const [object, property] = name.value;
         if (object === "TestClock" && TEST_CLOCK_DRIVERS.has(property)) {
@@ -251,7 +255,7 @@ export default defineRule({
           (object === "Schedule" && SCHEDULE_WAITS.has(property));
         if (!isWait) return;
 
-        const tester = enclosingTester(node);
+        const tester = enclosingTester(sourceCode, node);
         if (Option.isNone(tester)) {
           // A shared helper can serve TestClock tests, so only report it when nothing in
           // the file drives the TestClock or it polls in a loop, which only a real clock ends.

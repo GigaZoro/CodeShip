@@ -7,6 +7,17 @@ const rule = createOxlintRuleHarness("t3code/no-checkout-temp-dir-in-tests", {
 });
 
 describe("t3code/no-checkout-temp-dir-in-tests", () => {
+  rule.invalid(
+    "reports a temp folder whose call, path or option a bracketed string or a const key names",
+    `
+      NodeFS["mkdtempSync"](".t3-agent-scope-");
+      const cwd = "cwd";
+      NodeFS.mkdtempSync(NodePath["join"](process[cwd](), "t3-"));
+      fs.makeTempDirectory({ ["directory"]: "." });
+    `,
+    (output) => assert.equal(output.match(/no-checkout-temp-dir-in-tests/g)?.length, 3),
+  );
+
   rule.valid(
     "allows temp folders under the system temp folder and paths it cannot place",
     `
