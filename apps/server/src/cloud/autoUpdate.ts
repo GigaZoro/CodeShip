@@ -635,12 +635,7 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
 export const start = Effect.fn("cloud.auto_update.start")(function* () {
   const serverConfig = yield* ServerConfig.ServerConfig;
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
-  if (
-    serverConfig.mode === "desktop"
-      ? !ServerConfig.supportsDesktopAppUpdate(serverConfig)
-      : !launcher.managed
-  )
-    return;
+  if (!ServerConfig.runsAutomaticUpdates(serverConfig, launcher.managed)) return;
   const { check, waitForNextCheck } = yield* make();
   yield* ServerActivation.forkParked(
     check().pipe(

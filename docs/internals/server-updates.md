@@ -110,7 +110,9 @@ commands for its own request ID. Commands for other requests retain their order.
 ## Automatic installs
 
 The same [automatic update service](../../apps/server/src/cloud/autoUpdate.ts) runs in the
-launcher-managed server and the desktop app's bundled server. It checks at activation, at the daily install time and when a retry is due,
+launcher-managed server and the desktop app's bundled server, when the app can apply an update.
+Whoever starts any other server updates it. `server-runtime.json` records which kind of server is
+running (`automaticUpdates`), so a diagnosis can tell them apart. The service checks at activation, at the daily install time and when a retry is due,
 with at most 30 minutes between checks while `installUpdatesAutomatically` is on. An update becomes due when a release
 newer than the running version was published by the most recent daily `automaticUpdateTime`
 (default `03:00`, in the server's local time). The GitHub release index supplies the publication

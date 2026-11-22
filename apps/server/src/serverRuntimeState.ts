@@ -35,6 +35,9 @@ export const PersistedServerRuntimeState = Schema.Struct({
       }),
     ),
   ),
+  // Whether this server checks for and installs its own updates (runsAutomaticUpdates); absent from
+  // older servers.
+  automaticUpdates: Schema.optional(Schema.Boolean),
 });
 export type PersistedServerRuntimeState = typeof PersistedServerRuntimeState.Type;
 
@@ -72,6 +75,7 @@ export const makePersistedServerRuntimeState = (input: {
   readonly port: number;
   readonly serviceManaged?: boolean;
   readonly managedPolicy?: PersistedServerRuntimeState["managedPolicy"];
+  readonly automaticUpdates?: boolean;
 }): Effect.Effect<PersistedServerRuntimeState> =>
   Effect.map(DateTime.now, (now) => ({
     version: 1,
@@ -85,6 +89,7 @@ export const makePersistedServerRuntimeState = (input: {
     ...(input.serviceManaged ? { serviceManaged: true } : {}),
     serverVersion: packageJson.version,
     ...(input.managedPolicy === undefined ? {} : { managedPolicy: input.managedPolicy }),
+    ...(input.automaticUpdates === undefined ? {} : { automaticUpdates: input.automaticUpdates }),
   }));
 
 export const persistServerRuntimeState = (input: {

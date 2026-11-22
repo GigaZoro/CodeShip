@@ -1046,10 +1046,12 @@ const layerMakeServer = Layer.unwrap(
         }
 
         const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
+        const serverConfig = yield* ServerConfig.ServerConfig;
         const state = yield* makePersistedServerRuntimeState({
-          config: yield* ServerConfig.ServerConfig,
+          config: serverConfig,
           port: address.port,
           serviceManaged: launcher.managed,
+          automaticUpdates: ServerConfig.runsAutomaticUpdates(serverConfig, launcher.managed),
           managedPolicy: yield* ManagedPolicy.loadedPolicy(yield* ManagedPolicy.ManagedPolicy),
         });
         yield* ownership
