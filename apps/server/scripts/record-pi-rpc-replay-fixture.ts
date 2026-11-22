@@ -21,6 +21,7 @@ import {
 import * as PiAdapterV2Testkit from "../src/orchestration-v2/Adapters/PiAdapterV2.testkit.ts";
 import { PI_PROVIDER } from "@t3tools/provider-pi/server";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { escapeRegExp } from "@t3tools/shared/String";
 import { provideDeterministicTestRuntime } from "../src/orchestration-v2/testkit/DeterministicRuntime.ts";
 import { ORCHESTRATOR_REPLAY_FIXTURES } from "../src/orchestration-v2/testkit/fixtures/index.ts";
@@ -189,6 +190,13 @@ const readPiVersion = Effect.gen(function* () {
 });
 
 const record = Effect.gen(function* () {
+  // The fixtures replay Pi's POSIX shutdown (PiOrchestratorReplayHarness.hostPlatform). On Windows
+  // Pi's process tree is stopped through PowerShell, which a recording would capture and no replay starts.
+  if (yield* HostProcess.isWindows) {
+    return yield* Effect.die(
+      new Error("Record Pi fixtures on macOS or Linux: they replay Pi's POSIX shutdown."),
+    );
+  }
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const piVersion = yield* readPiVersion;

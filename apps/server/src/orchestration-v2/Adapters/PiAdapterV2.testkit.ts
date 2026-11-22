@@ -399,6 +399,9 @@ export const PiOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarness<
   PiOrchestratorReplayHarnessError
 > = {
   driver: PI_PROVIDER,
+  // The transcripts replay Pi's POSIX teardown. Its Windows tree stop walks real processes and
+  // waits for an exit report that a replayed Pi never sends.
+  hostPlatform: "linux",
   decodeTranscript: (transcript: ProviderReplayTranscript) =>
     decodePiRpcReplayTranscript(transcript).pipe(
       Effect.mapError(

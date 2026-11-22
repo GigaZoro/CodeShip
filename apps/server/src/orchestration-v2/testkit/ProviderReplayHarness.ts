@@ -1,4 +1,5 @@
 import * as ProviderSkillsTestkit from "../../provider/ProviderSkills.testkit.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -178,6 +179,8 @@ export interface OrchestratorV2ProviderReplayHarness<
   Error = never,
 > {
   readonly driver: ProviderDriverKind;
+  /** The host the transcripts were recorded on, for an adapter whose shutdown depends on it. */
+  readonly hostPlatform?: NodeJS.Platform;
   readonly decodeTranscript: (
     transcript: ProviderReplayTranscript,
   ) => Effect.Effect<Transcript, Error>;
@@ -230,11 +233,14 @@ export function runOrchestratorV2ProviderReplayScenario<
     replayGate,
   });
 
-  return Effect.gen(function* () {
+  const run = Effect.gen(function* () {
     const result = yield* runOrchestratorV2Scenario(scenario, { replayGate });
     const recorder = yield* CommandOutputRecorder.CommandOutputRecorder;
     return { ...result, commandOutput: yield* recorder.snapshot };
   }).pipe(Effect.provide(layer));
+  return harness.hostPlatform === undefined
+    ? run
+    : run.pipe(Effect.provideService(HostProcess.Platform, harness.hostPlatform));
 }
 
 export function layerProviderReplay<Transcript extends ProviderReplayTranscript, Error>(
