@@ -778,15 +778,10 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
             case "connecting":
             case "backoff":
               // A retry can take minutes. A query with an answer keeps showing it while it
-              // waits; one with nothing to show reports the failure the retry is recovering
-              // from, so its reader stops loading, and re-runs when the connection settles.
-              return connectionState.lastFailure !== null &&
-                Option.isNone(
-                  Option.flatMap(
-                    get.self<AsyncResult.AsyncResult<A, unknown>>(),
-                    AsyncResult.value,
-                  ),
-                )
+              // waits; one with nothing to show (an answer discarded by a signal change counts as
+              // nothing) reports the failure the retry is recovering from, so its reader stops
+              // loading, and re-runs when the connection settles.
+              return connectionState.lastFailure !== null && previous === undefined
                 ? Effect.fail(connectionState.lastFailure)
                 : Effect.never;
             case "available":

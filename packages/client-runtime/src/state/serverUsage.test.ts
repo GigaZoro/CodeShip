@@ -27,6 +27,7 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
 import {
   AVAILABLE_CONNECTION_STATE,
+  ConnectionTransientError,
   PrimaryConnectionTarget,
   type PreparedConnection,
   type SupervisorConnectionState,
@@ -145,12 +146,13 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
     inboundFrames: Effect.succeed(0),
     closed: Effect.never,
   };
+  const connection = yield* SubscriptionRef.make<SupervisorConnectionState>({
+    ...AVAILABLE_CONNECTION_STATE,
+    phase: "connected",
+  });
   const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
     target: TARGET,
-    state: yield* SubscriptionRef.make<SupervisorConnectionState>({
-      ...AVAILABLE_CONNECTION_STATE,
-      phase: "connected",
-    }),
+    state: connection,
     session: yield* SubscriptionRef.make(Option.some(session)),
     prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
     connect: Effect.void,
@@ -212,6 +214,8 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
     requests: () => requests,
     inputs: () => inputs,
     updateSettings,
+    setConnection: (next: SupervisorConnectionState) =>
+      SubscriptionRef.set(connection, next).pipe(Effect.andThen(Effect.yieldNow)),
     summary: (input = INPUT) => atoms.usageSummary({ environmentId: TARGET.environmentId, input }),
   };
 });
@@ -459,6 +463,45 @@ it.effect.each(["top-level reason", "refreshing source"] as const)(
         unmount();
       }),
     ),
+);
+
+it.effect("reports the reconnect failure once a settings change discards the figures", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(
+        () => Effect.void,
+        () => [],
+        () => ({ output: 5 }),
+      );
+      const summary = harness.summary();
+      const unmount = harness.registry.mount(summary);
+      expect((yield* settledSummary(harness.registry, summary)).buckets[0]?.costUsd).toBe(0);
+      const lastFailure = new ConnectionTransientError({ reason: "transport", detail: "Down." });
+      yield* harness.setConnection({
+        ...AVAILABLE_CONNECTION_STATE,
+        desired: true,
+        phase: "backoff",
+        attempt: 1,
+        lastFailure,
+        retryAt: 1,
+      });
+      yield* harness.updateSettings({
+        ...DEFAULT_SERVER_SETTINGS,
+        usagePriceOverrides: {
+          "custom-model": { inputCostPerMillionTokens: 5, outputCostPerMillionTokens: 10 },
+        },
+      });
+      const settled = yield* AtomRegistry.toStream(harness.registry, summary).pipe(
+        Stream.filter((result) => !result.waiting),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      expect(AsyncResult.isFailure(settled)).toBe(true);
+      expect(Option.isNone(AsyncResult.value(settled))).toBe(true);
+      expect(harness.requests()).toBe(1);
+      unmount();
+    }),
+  ),
 );
 
 it.effect("never settles a pending scan with partial figures from the previous price", () =>
