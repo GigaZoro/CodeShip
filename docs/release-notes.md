@@ -292,6 +292,11 @@
 
 - New owner requests and accepted guest messages receive a demand ID. Steering, failover, and final review retain the original demand. Delegated questions and completions use their recorded sources. On-return compaction shares the demand ID of the following message.
 
+## 2026-11-22 — Stopped usage scans end cleanly and slow compressed transcripts finish
+
+- Stopping a Usage scan while it checks where a transcript left off no longer crashes the server, and a stopped scan does no more reading.
+- A compressed (`.jsonl.zst`) transcript that produces no output for a while as it decompresses no longer makes the Usage scan give up as stalled and start again.
+
 ## 2026-11-22 — Saved usage works with several T3 processes at once
 
 - Saved transcript usage is now kept as separate snapshot files. Several T3.CodeShip processes on one machine can add to it at the same time without taking a lock, so a Usage scan never waits for another process to finish saving.

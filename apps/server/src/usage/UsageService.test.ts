@@ -4,6 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
+import * as NodeStream from "node:stream";
 import * as NodeZlib from "node:zlib";
 
 import { assert, describe, it } from "@effect/vitest";
@@ -4770,6 +4771,86 @@ describe("UsageService", () => {
           assert.strictEqual(initial._tag === "Failure" && initial.failure.reason, "scanPending");
         }).pipe(
           Effect.provide(layerService({ prefix: "usage-file-operation-progress", home, settings })),
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live(
+    "keeps a compressed transcript read under the stall watchdog while it decodes nothing",
+    () =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        const compressed = `${transcript}.zst`;
+        // A skippable Zstandard frame decodes to no output, so only its raw read shows progress.
+        const skippable = Buffer.from([0x50, 0x2a, 0x4d, 0x18, 4, 0, 0, 0, 0, 0, 0, 0]);
+        const frames = [
+          ...Array.from({ length: 10 }, () => skippable),
+          NodeZlib.zstdCompressSync(claudeLine(1, 5)),
+        ];
+        yield* Effect.promise(() => NodeFSP.writeFile(compressed, Buffer.concat(frames)));
+        const actual = yield* Effect.promise(() =>
+          vi.importActual<typeof NodeFSP>("node:fs/promises"),
+        );
+        const gates = frames.map(() => ({
+          requested: Promise.withResolvers<void>(),
+          release: Promise.withResolvers<void>(),
+        }));
+        let opens = 0;
+        using _open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+          const handle = await actual.open(...args);
+          if (args[0] !== compressed) return handle;
+          opens++;
+          let next = 0;
+          Object.defineProperty(handle, "createReadStream", {
+            value: () =>
+              new NodeStream.Readable({
+                highWaterMark: 0,
+                read() {
+                  const index = next++;
+                  const gate = gates[index];
+                  if (gate === undefined) {
+                    this.push(null);
+                    return;
+                  }
+                  gate.requested.resolve();
+                  void gate.release.promise.then(() => this.push(frames[index]));
+                },
+              }),
+          });
+          return handle;
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            for (const gate of gates) gate.release.resolve();
+          }),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* UsageService.make;
+          const caller = yield* service.readSummary(WINDOW).pipe(Effect.result, Effect.forkChild);
+          // Ten frames two minutes apart span four stall intervals.
+          for (const gate of gates.slice(0, -1)) {
+            yield* Effect.promise(() => gate.requested.promise);
+            yield* TestClock.adjust("2 minutes");
+            gate.release.resolve();
+          }
+          const initial = yield* Fiber.join(caller);
+          assert.strictEqual(initial._tag === "Failure" && initial.failure.reason, "scanPending");
+          const last = gates.at(-1)!;
+          yield* Effect.promise(() => last.requested.promise);
+          const followUp = yield* service
+            .readSummary({ ...WINDOW, awaitRefresh: true })
+            .pipe(Effect.forkChild);
+          last.release.resolve();
+          const settled = yield* Fiber.join(followUp);
+          assert.deepStrictEqual(
+            { tokens: totalOutputTokens(settled), partialReason: settled.partialReason, opens },
+            { tokens: 5, partialReason: undefined, opens: 1 },
+          );
+        }).pipe(
+          Effect.provide(
+            layerService({ prefix: "usage-compressed-read-progress", home, settings }),
+          ),
         );
       }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );

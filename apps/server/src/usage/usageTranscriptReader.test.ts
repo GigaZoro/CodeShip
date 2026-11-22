@@ -9,6 +9,7 @@ import * as NodeZlib from "node:zlib";
 import { afterEach, assert, beforeEach, describe, it } from "@effect/vitest";
 import type { TranscriptUsageFormat } from "@t3tools/provider-core/server/usage";
 import * as Schema from "effect/Schema";
+import { vi } from "vite-plus/test";
 
 import { TEST_FORMATS } from "./usageTestFormats.ts";
 import {
@@ -16,6 +17,8 @@ import {
   readTranscriptRecords,
   transcriptLineGate,
 } from "./usageTranscriptReader.ts";
+
+vi.mock("node:fs/promises", { spy: true });
 
 let dir: string;
 
@@ -394,6 +397,56 @@ describe("readTranscriptRecords resume", () => {
     assert.deepStrictEqual(
       second.records.map((record) => record.totals.outputTokens),
       [13, 17],
+    );
+  });
+
+  it("ends a read aborted during its resume guard with the abort reason, before any stream", async () => {
+    const path = NodePath.join(dir, "claude.jsonl");
+    await NodeFSP.writeFile(path, claudeLine(1, 5));
+    const first = await readTranscriptRecords(path, TEST_FORMATS.claude);
+    assert.isNotNull(first);
+    await NodeFSP.appendFile(path, claudeLine(2, 7));
+    const actual = await vi.importActual<typeof NodeFSP>("node:fs/promises");
+    const guardRead = Promise.withResolvers<void>();
+    const releaseGuard = Promise.withResolvers<void>();
+    let streams = 0;
+    using _open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+      const handle = await actual.open(...args);
+      const read = handle.read.bind(handle);
+      Object.defineProperty(handle, "read", {
+        value: async (...readArgs: Parameters<typeof read>) => {
+          guardRead.resolve();
+          await releaseGuard.promise;
+          return read(...readArgs);
+        },
+      });
+      const createStream = handle.createReadStream.bind(handle);
+      handle.createReadStream = (options) => {
+        streams += 1;
+        return createStream(options);
+      };
+      return handle;
+    });
+    const controller = new AbortController();
+    const reason = new Error("The usage scan was interrupted.");
+    let progressAfterAbort = 0;
+    const reading = readTranscriptRecords(path, TEST_FORMATS.claude, first.position, {
+      signal: controller.signal,
+      onProgress: () => {
+        if (controller.signal.aborted) progressAfterAbort += 1;
+      },
+    });
+    await guardRead.promise;
+    controller.abort(reason);
+    releaseGuard.resolve();
+
+    const outcome = await reading.then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error }),
+    );
+    assert.deepStrictEqual(
+      { outcome, streams, progressAfterAbort },
+      { outcome: { error: reason }, streams: 0, progressAfterAbort: 0 },
     );
   });
 

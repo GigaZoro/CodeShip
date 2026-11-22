@@ -3,6 +3,7 @@
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import * as NodeStreamPromises from "node:stream/promises";
 import * as NodeStringDecoder from "node:string_decoder";
 import * as NodeZlib from "node:zlib";
 
@@ -53,6 +54,23 @@ interface TranscriptIoOptions {
 
 const activeReads = new Map<string, Set<() => void>>();
 
+/** A cancelled scan must not look alive to its stall watchdog. */
+const progressUntilAborted = (options: TranscriptIoOptions | undefined) => () => {
+  if (options?.signal?.aborted !== true) options?.onProgress?.();
+};
+
+/** Settles a step, then rethrows the abort reason if the read was cancelled while it waited. */
+type AbortAware = <A>(step: Promise<A>) => Promise<A>;
+const abortAware =
+  (signal: AbortSignal | undefined): AbortAware =>
+  async (step) => {
+    try {
+      return await step;
+    } finally {
+      signal?.throwIfAborted();
+    }
+  };
+
 function selectUsageFields(fields: SelectedFields) {
   return (path: ReadonlyArray<string | number | null>): boolean => {
     let selected: true | SelectedFields = fields;
@@ -81,6 +99,7 @@ export async function listTranscriptFiles(
   options?: TranscriptIoOptions & { readonly fileName?: string | undefined },
 ): Promise<{ readonly files: readonly TranscriptFile[]; readonly failedPaths: number }> {
   const fileName = options?.fileName;
+  const progress = progressUntilAborted(options);
   const candidates: string[] = [];
   let failedPaths = 0;
   const walk = async (dir: string): Promise<void> => {
@@ -92,7 +111,7 @@ export async function listTranscriptFiles(
       failedPaths += 1;
       return;
     } finally {
-      options?.onProgress?.();
+      progress();
     }
     for (const entry of entries) {
       const child = NodePath.join(dir, entry.name);
@@ -118,6 +137,7 @@ export async function statTranscriptFiles(
 ) {
   const found: Array<TranscriptFile | undefined> = Array.from({ length: candidates.length });
   const queue = candidates.entries();
+  const progress = progressUntilAborted(options);
   let failedPaths = 0;
   const statQueued = async (): Promise<void> => {
     for (const [index, path] of queue) {
@@ -132,7 +152,7 @@ export async function statTranscriptFiles(
           failedPaths += 1;
         }
       } finally {
-        options?.onProgress?.();
+        progress();
       }
     }
   };
@@ -154,22 +174,20 @@ export async function readDirectoryVolumeId(path: string): Promise<string> {
 async function guardMatches(
   handle: NodeFSP.FileHandle,
   position: TranscriptParsePosition,
-  onProgress: (() => void) | undefined,
+  settle: AbortAware,
+  progress: () => void,
 ): Promise<boolean> {
   if (position.guardLength <= 0 || position.guardLength > GUARD_LENGTH) return false;
-  try {
-    const window = Buffer.alloc(position.guardLength);
-    const { bytesRead } = await handle.read(
-      window,
-      0,
-      position.guardLength,
-      position.resumeOffset - position.guardLength,
-    );
-    onProgress?.();
-    return bytesRead === position.guardLength && fnv1a(window) === position.guardHash;
-  } catch {
-    return false;
-  }
+  const window = Buffer.alloc(position.guardLength);
+  // A failed guard read only means the file cannot resume; a cancelled one ends the read.
+  const bytesRead = await settle(
+    handle.read(window, 0, position.guardLength, position.resumeOffset - position.guardLength).then(
+      (read) => read.bytesRead,
+      () => -1,
+    ),
+  );
+  progress();
+  return bytesRead === position.guardLength && fnv1a(window) === position.guardHash;
 }
 
 // Match markers in one latin1 alternation; one character per byte preserves exact ASCII offsets.
@@ -184,7 +202,10 @@ export function transcriptLineGate(markers: readonly [string, ...string[]]) {
   return (line: Buffer) => pattern.test(line.toString("latin1"));
 }
 
-/** Returns null on read failure; caching it as empty would hide usage until size/mtime changes. */
+/**
+ * Returns null on read failure; caching it as empty would hide usage until size/mtime changes.
+ * Rejects with the signal's reason once aborted, and does no further work or progress after it.
+ */
 export async function readTranscriptRecords<State>(
   filePath: string,
   format: TranscriptUsageFormat<State>,
@@ -194,21 +215,24 @@ export async function readTranscriptRecords<State>(
   },
 ): Promise<TranscriptParseResult | null> {
   const signal = options?.signal;
-  const onProgress = options?.onProgress;
+  const progress = progressUntilAborted(options);
+  const settle = abortAware(signal);
   for (let read = activeReads.get(filePath); read !== undefined; read = activeReads.get(filePath)) {
-    if (signal?.aborted) return null;
+    signal?.throwIfAborted();
     const outstanding = read;
-    await new Promise<void>((resolve) => {
-      const resume = () => {
-        outstanding.delete(resume);
-        signal?.removeEventListener("abort", resume);
-        resolve();
-      };
-      outstanding.add(resume);
-      signal?.addEventListener("abort", resume, { once: true });
-    });
+    await settle(
+      new Promise<void>((resolve) => {
+        const resume = () => {
+          outstanding.delete(resume);
+          signal?.removeEventListener("abort", resume);
+          resolve();
+        };
+        outstanding.add(resume);
+        signal?.addEventListener("abort", resume, { once: true });
+      }),
+    );
   }
-  if (signal?.aborted) return null;
+  signal?.throwIfAborted();
 
   // An interrupted stat or open can still hold the descriptor until its native call returns.
   const waiters = new Set<() => void>();
@@ -217,12 +241,15 @@ export async function readTranscriptRecords<State>(
   const compressed = filePath.endsWith(".jsonl.zst");
   let handle: NodeFSP.FileHandle | undefined;
   try {
-    handle = await NodeFSP.open(filePath, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NONBLOCK);
-    signal?.throwIfAborted();
-    onProgress?.();
-    const stat = await handle.stat();
-    signal?.throwIfAborted();
-    onProgress?.();
+    // Assigned before the abort check, so the finally block closes a descriptor that opens late.
+    const opened = await settle(
+      NodeFSP.open(filePath, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NONBLOCK).then(
+        (file) => (handle = file),
+      ),
+    );
+    progress();
+    const stat = await settle(opened.stat());
+    progress();
     if (!stat.isFile()) return null;
     const codec = format.state;
     const decodeState = codec === undefined ? undefined : Schema.decodeUnknownOption(codec.schema);
@@ -239,7 +266,7 @@ export async function readTranscriptRecords<State>(
       resumeFrom !== undefined &&
       resumeFrom.resumeOffset > 0 &&
       (codec === undefined || Option.isSome(savedState)) &&
-      (await guardMatches(handle, resumeFrom, onProgress))
+      (await guardMatches(opened, resumeFrom, settle, progress))
     ) {
       if (Option.isSome(savedState)) state = savedState.value;
       start = resumeFrom.resumeOffset;
@@ -302,17 +329,7 @@ export async function readTranscriptRecords<State>(
       streaming = undefined;
       decoder = undefined;
     };
-    const input = handle.createReadStream({
-      ...(options?.signal === undefined ? {} : { signal: options.signal }),
-      start,
-      autoClose: compressed,
-      highWaterMark: 256 * 1024,
-    });
-    // Compressed snapshots cache a full parse; decoded byte offsets cannot
-    // resume the compressed input.
-    const stream = compressed ? input.compose(NodeZlib.createZstdDecompress()) : input;
-    for await (const chunk of stream) {
-      onProgress?.();
+    const parseChunk = (chunk: Buffer) => {
       let lineStart = 0;
       while (lineStart < chunk.length) {
         const newlineIndex = chunk.indexOf(NEWLINE, lineStart);
@@ -330,7 +347,36 @@ export async function readTranscriptRecords<State>(
         resumeOffset = scanOffset + lineStart;
       }
       scanOffset += chunk.length;
-    }
+    };
+    const parseChunks = async (chunks: AsyncIterable<Buffer>) => {
+      for await (const chunk of chunks) parseChunk(chunk);
+    };
+    // Raw reads are the progress: compressed input can decode to nothing for a long stretch.
+    const countReads = async function* (chunks: AsyncIterable<Buffer>) {
+      for await (const chunk of chunks) {
+        progress();
+        yield chunk;
+      }
+    };
+    const input = opened.createReadStream({
+      start,
+      autoClose: compressed,
+      highWaterMark: 256 * 1024,
+    });
+    const pipelineOptions = signal === undefined ? {} : { signal };
+    // Compressed snapshots cache a full parse; decoded byte offsets cannot
+    // resume the compressed input.
+    await settle(
+      compressed
+        ? NodeStreamPromises.pipeline(
+            input,
+            countReads,
+            NodeZlib.createZstdDecompress(),
+            parseChunks,
+            pipelineOptions,
+          )
+        : NodeStreamPromises.pipeline(input, countReads, parseChunks, pipelineOptions),
+    );
 
     // Parse unfinished tails against copied state so the next scan can replay from resumeOffset.
     const encodedState = encodeState === undefined ? null : encodeState(state);
@@ -343,8 +389,8 @@ export async function readTranscriptRecords<State>(
     let guardHash = 0;
     if (guardLength > 0) {
       const window = Buffer.alloc(guardLength);
-      await handle.read(window, 0, guardLength, resumeOffset - guardLength);
-      onProgress?.();
+      await settle(opened.read(window, 0, guardLength, resumeOffset - guardLength));
+      progress();
       guardHash = fnv1a(window);
     }
 
@@ -361,6 +407,7 @@ export async function readTranscriptRecords<State>(
       resumed,
     };
   } catch {
+    signal?.throwIfAborted();
     return null;
   } finally {
     await handle?.close().catch(() => undefined);
