@@ -9,8 +9,8 @@ const { dispatchOutput, releaseMacosRun } = require("./release-macos-run.cjs");
 const REPOSITORY = "GigaZoro/CodeShip";
 const RUN_URL = (id) => `https://github.com/${REPOSITORY}/actions/runs/${id}`;
 
-// The end of a real `gh run view --job <id> --log` of the Publish GitHub Release job (run 44919164430): gh labels
-// every step UNKNOWN STEP, and the first line carries a byte order mark before its timestamp.
+// The end of the real log of run 44919164430's Publish GitHub Release job (`actions/jobs/136892706420/logs`): the
+// first line carries a byte order mark before its timestamp, and a line of git's output holds a tab.
 function jobLog({
   printed = [RUN_URL(44919730318)],
   version = "2026.1121.10",
@@ -19,6 +19,7 @@ function jobLog({
 } = {}) {
   const lines = [
     "﻿2026-11-21T15:31:50.1Z Current runner version: '2.330.0'",
+    "2026-11-21T15:31:53.9Z hint: \tgit branch -m <name>",
     "2026-11-21T15:32:34.5Z 🎉 Release ready at https://github.com/GigaZoro/CodeShip/releases/tag/v2026.1121.10",
     '2026-11-21T15:32:34.6Z ##[group]Run gh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" \\',
     '2026-11-21T15:32:34.6Z ^[[36;1mgh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" \\^[[0m',
@@ -35,7 +36,7 @@ function jobLog({
     ...after.map((line) => `2026-11-21T15:32:36.0Z ${line}`),
     "2026-11-21T15:32:36.0Z Cleaning up orphan processes",
   ];
-  return `${lines.map((line) => `Publish GitHub Release\tUNKNOWN STEP\t${line}`).join("\n")}\n`;
+  return `${lines.join("\n")}\n`;
 }
 
 /** What gh says of the macOS run the dispatch step printed. */
@@ -94,13 +95,17 @@ function fixture({
   };
   const gh = (args) => {
     calls.push(args);
-    assert.deepEqual(args.slice(args.indexOf("-R"), args.indexOf("-R") + 2), ["-R", REPOSITORY]);
-    if (args.includes("--log")) {
-      const id = Number(args[args.indexOf("--job") + 1]);
+    if (args[0] === "api") {
+      const [, escapes, endpoint] = args;
+      assert.equal(escapes, "--allow-escape-sequences");
+      const id = Number(
+        /^repos\/GigaZoro\/CodeShip\/actions\/jobs\/(\d+)\/logs$/.exec(endpoint)[1],
+      );
       const { log } = attempts.find((each) => each.publish.databaseId === id);
       if (log instanceof Error) throw log;
       return log;
     }
+    assert.deepEqual(args.slice(args.indexOf("-R"), args.indexOf("-R") + 2), ["-R", REPOSITORY]);
     const id = args[2];
     if (id === "44919164430") {
       const attempt = args.includes("--attempt")
@@ -128,11 +133,10 @@ test("the macOS run is the one the dispatch step printed, checked against the re
     calls.map((args) => args.slice(0, 3)),
     [
       ["run", "view", "44919164430"],
-      ["run", "view", "--job"],
+      ["api", "--allow-escape-sequences", `repos/${REPOSITORY}/actions/jobs/136892706420/logs`],
       ["run", "view", "44919730318"],
     ],
   );
-  assert.ok(calls[1].includes("136892706420"));
   // Neither run's address is asked of gh: both come from the repository and the run's id.
   assert.deepEqual(
     calls.map((args) => (args.includes("--json") ? args[args.indexOf("--json") + 1] : null)),
@@ -271,7 +275,7 @@ test("anything that leaves the run uncertain is unverified, never guessed", () =
     assert.deepEqual(fixture(options).result(), { outcome: "unverified", reason, release }, reason);
 });
 
-test("a retry's build is the last attempt that dispatched, with every attempt's outcome", () => {
+test("a retry's build is the newest attempt not known to have skipped it, with every attempt's outcome", () => {
   const skipped = { job: { conclusion: "skipped" } };
   // The first attempt dispatched and the retry reran another job alone, so its publish job did not run again.
   const first = fixture({ earlier: [{}], ...skipped });
@@ -290,17 +294,46 @@ test("a retry's build is the last attempt that dispatched, with every attempt's 
   const retried = fixture({ earlier: [skipped] }).result();
   assert.equal(retried.outcome, "dispatched");
   assert.equal(retried.release, `${RUN_URL(44919164430)} (attempt 2)`);
-  // No attempt dispatched: the latest one's outcome, with a failed read of an earlier one among them.
-  const none = fixture({
-    earlier: [{ log: new Error("gh run view --job failed: HTTP 502") }],
-    ...skipped,
+  // Both attempts dispatched, each its own build: each attempt reads its own job's log.
+  const again = RUN_URL(44919800000);
+  const twice = fixture({
+    earlier: [{}],
+    log: jobLog({ printed: [again] }),
+    step: { startedAt: "2026-11-21T16:10:00Z", completedAt: "2026-11-21T16:10:02Z" },
+    runs: { 44919800000: { ...MACOS_RUN, createdAt: "2026-11-21T16:10:01Z" } },
   });
-  assert.deepEqual(none.result(), {
+  assert.deepEqual(twice.result(), {
+    outcome: "dispatched",
+    run: 44919800000,
+    url: again,
+    release: `${RUN_URL(44919164430)} (attempt 2)`,
+    attempts: [
+      { attempt: 1, outcome: "dispatched", run: 44919730318, url: RUN_URL(44919730318) },
+      { attempt: 2, outcome: "dispatched", run: 44919800000, url: again },
+    ],
+  });
+  // An attempt whose log could not be read may have dispatched, so a later skip does not make it not started.
+  const unread = { log: new Error("gh api failed: HTTP 502") };
+  assert.deepEqual(fixture({ earlier: [unread], ...skipped }).result(), {
+    outcome: "unverified",
+    reason: "gh api failed: HTTP 502",
+    release: `${RUN_URL(44919164430)} (attempt 1)`,
+    attempts: [
+      { attempt: 1, outcome: "unverified", reason: "gh api failed: HTTP 502" },
+      { attempt: 2, outcome: "not-started", reason: "its Publish GitHub Release job was skipped" },
+    ],
+  });
+  // Nor does an earlier dispatch name the build when a later attempt may have dispatched another.
+  const later = fixture({ earlier: [{}], ...unread }).result();
+  assert.equal(later.outcome, "unverified");
+  assert.equal(later.release, `${RUN_URL(44919164430)} (attempt 2)`);
+  // Not started only when every attempt skipped it.
+  assert.deepEqual(fixture({ earlier: [skipped], ...skipped }).result(), {
     outcome: "not-started",
     reason: "its Publish GitHub Release job was skipped",
     release: `${RUN_URL(44919164430)} (attempt 2)`,
     attempts: [
-      { attempt: 1, outcome: "unverified", reason: "gh run view --job failed: HTTP 502" },
+      { attempt: 1, outcome: "not-started", reason: "its Publish GitHub Release job was skipped" },
       { attempt: 2, outcome: "not-started", reason: "its Publish GitHub Release job was skipped" },
     ],
   });
@@ -324,9 +357,9 @@ test("a gh failure is unverified, with the release run and its attempt wherever 
       release,
     }),
   );
-  assert.deepEqual(fixture({ log: new Error("gh run view --job failed: HTTP 502") }).result(), {
+  assert.deepEqual(fixture({ log: new Error("gh api failed: HTTP 502") }).result(), {
     outcome: "unverified",
-    reason: "gh run view --job failed: HTTP 502",
+    reason: "gh api failed: HTTP 502",
     release,
   });
   // When the lookup itself fails, the run's URL from the repository and its id, the attempt unknown.
