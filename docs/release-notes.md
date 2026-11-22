@@ -1,3 +1,9 @@
+## 2026-11-22 — Delegated tasks on an Auto model keep the options they are given
+
+- A delegated task, or a thread an agent launches, on its parent's Auto model or on a role or reviewer model set to Auto ran the effort and other options saved for Auto instead of the ones the agent gave. A target that gives options now runs on that model with them, keeping the parent's other options when it is on the parent's account and model, named by slug or alias (on a linked machine by its slug, since an alias there can name another model); one without options still runs as Auto. Options a role or reviewer model rejects now fail the call instead of quietly running the task on the parent's model, and a task on a linked machine that gives one option twice fails instead of keeping one of them.
+- A role's model that its account no longer offers now falls back to the parent's model, as a removed account does, instead of starting the task on a model that cannot run, also when the account is rechecked first.
+- `create_threads` now reports the account and model its prompt's run starts on, when routing moves it off an account at its usage limit, and a retry of the call reports that run even after the thread has started others.
+
 ## 2026-11-22 — Landings take turns in arrival order
 
 - Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.

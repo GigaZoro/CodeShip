@@ -149,7 +149,11 @@ import {
 } from "./McpInvocationContext.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import {
+  advertisedSlug,
+  findAdvertisedModel,
   interactionModeRank,
+  invalidOptionSelections,
+  overrideOptions,
   resolveInteractionMode,
   resolveRuntimeMode,
   runtimeModeRank,
@@ -533,14 +537,6 @@ function capabilityModelOption(descriptor: ProviderOptionDescriptor): Orchestrat
   };
 }
 
-/** Yields the model a slug or alias names; a provider that lists no models accepts any slug. */
-const findAdvertisedModel = (provider: ServerProvider, model: string) =>
-  provider.models.find(
-    (candidate) =>
-      candidate.slug === model ||
-      candidate.aliases?.some((alias) => alias.toLowerCase() === model.toLowerCase()),
-  );
-
 export const requireAdvertisedModel = (provider: ServerProvider, model: string) => {
   const advertised = findAdvertisedModel(provider, model);
   return provider.models.length > 0 && advertised === undefined
@@ -640,41 +636,6 @@ function knownOptions(
 ): ReadonlyArray<ProviderOptionSelection> | undefined {
   if (options === undefined || descriptors === undefined) return options;
   return options.filter((option) => descriptors.some((descriptor) => descriptor.id === option.id));
-}
-
-/** Skip checks without descriptors; reject duplicate IDs because consumers disagree on precedence. */
-function invalidOptionSelections(
-  selections: ReadonlyArray<ProviderOptionSelection>,
-  descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
-): ReadonlyArray<string> {
-  const problems: Array<string> = [];
-  const seen = new Set<string>();
-  for (const selection of selections) {
-    if (seen.has(selection.id)) {
-      problems.push(`Option ${selection.id} was specified more than once.`);
-      continue;
-    }
-    seen.add(selection.id);
-    if (descriptors === undefined) continue;
-    const descriptor = descriptors.find((candidate) => candidate.id === selection.id);
-    if (descriptor === undefined) {
-      const known = descriptors.map((candidate) => candidate.id).join(", ");
-      problems.push(`Unknown option ${selection.id}; supported options: ${known || "none"}.`);
-      continue;
-    }
-    if (descriptor.type === "boolean" && typeof selection.value !== "boolean") {
-      problems.push(`Option ${selection.id} expects a boolean value.`);
-      continue;
-    }
-    if (
-      descriptor.type === "select" &&
-      !descriptor.options.some((choice) => choice.id === selection.value)
-    ) {
-      const choices = descriptor.options.map((choice) => choice.id).join(", ");
-      problems.push(`Option ${selection.id} must be one of: ${choices}.`);
-    }
-  }
-  return problems;
 }
 
 const requireModelSelection = Effect.fn("OrchestratorMcpService.requireModelSelection")(function* (
@@ -1859,9 +1820,10 @@ const make = Effect.gen(function* () {
       );
     }
     const slug =
-      requestedModel === undefined
-        ? model
-        : ((yield* requireAdvertisedModel(provider, requestedModel))?.slug ?? model);
+      (requestedModel === undefined
+        ? findAdvertisedModel(provider, model)
+        : yield* requireAdvertisedModel(provider, requestedModel)
+      )?.slug ?? model;
 
     const descriptors = provider.models.find((candidate) => candidate.slug === slug)?.capabilities
       ?.optionDescriptors;
@@ -1879,27 +1841,19 @@ const make = Effect.gen(function* () {
       }
     }
 
+    // Either side may name the model by an alias, so both are compared as the account's slug.
     const inheritsOptions =
       instanceId === inheritedSelection.instanceId &&
-      (model === inheritedSelection.model || slug === inheritedSelection.model);
-    let options = inheritsOptions
-      ? knownOptions(
-          withLegacyUltracodeEffort(descriptors ?? [], inheritedSelection.options) ?? undefined,
-          descriptors,
-        )
-      : undefined;
-    if (requestedOptions !== undefined) {
-      const selections = new Map(
-        (requestedOptions.length === 0 ? [] : (options ?? [])).map((selection) => [
-          selection.id,
-          selection,
-        ]),
-      );
-      for (const selection of requestedOptions) {
-        selections.set(selection.id, selection);
-      }
-      options = [...selections.values()];
-    }
+      slug === advertisedSlug(provider, inheritedSelection.model);
+    const options = overrideOptions(
+      inheritsOptions
+        ? knownOptions(
+            withLegacyUltracodeEffort(descriptors ?? [], inheritedSelection.options) ?? undefined,
+            descriptors,
+          )
+        : undefined,
+      requestedOptions,
+    );
     return {
       modelSelection: {
         instanceId,
@@ -1907,8 +1861,10 @@ const make = Effect.gen(function* () {
         ...(options === undefined ? {} : { options }),
         // A child on its parent's Auto model is Auto too; a model the agent names instead is
         // not. A model the user set to Auto, as a reviewer or a role's model, keeps that choice.
-        ...((inheritsOptions && inheritedSelection.autoAccount === true) ||
-        (yield* isConfiguredAutoAccount(instanceId, slug))
+        // Auto runs the options saved for Auto, so a target that gives options runs as named.
+        ...(requestedOptions === undefined &&
+        ((inheritsOptions && inheritedSelection.autoAccount === true) ||
+          (yield* isConfiguredAutoAccount(instanceId, slug)))
           ? { autoAccount: true }
           : {}),
       },
@@ -3447,12 +3403,31 @@ const make = Effect.gen(function* () {
             : yield* resolveDelegateTarget({
                 thread: { ...parent.thread, modelSelection: roleSelection },
               }).pipe(
-                Effect.catch((cause) =>
-                  Effect.logWarning("orchestrator-mcp.delegated-task-role-model-unavailable", {
-                    role: input.role ?? "general",
-                    instanceId: roleSelection.instanceId,
-                    cause,
-                  }).pipe(Effect.andThen(resolveDelegateTarget(parent))),
+                // The role's model stands in for an inherited one, which resolution does not
+                // check against the account's models, so one the account no longer offers is
+                // caught here, in the snapshot after any recheck of the account.
+                Effect.tap(() =>
+                  loadProviders.pipe(
+                    Effect.flatMap((current) => {
+                      const roleProvider = current.find(
+                        (provider) => provider.instanceId === roleSelection.instanceId,
+                      );
+                      return roleProvider === undefined
+                        ? Effect.void
+                        : requireAdvertisedModel(roleProvider, roleSelection.model);
+                    }),
+                  ),
+                ),
+                // Only a role model that is gone falls back; options it rejects fail as named.
+                Effect.catchIf(
+                  (cause) =>
+                    cause.code === "provider_unavailable" || cause.code === "model_unavailable",
+                  (cause) =>
+                    Effect.logWarning("orchestrator-mcp.delegated-task-role-model-unavailable", {
+                      role: input.role ?? "general",
+                      instanceId: roleSelection.instanceId,
+                      cause,
+                    }).pipe(Effect.andThen(resolveDelegateTarget(parent))),
                 ),
               );
       const projectId = foreignProjectId ?? parent.thread.projectId;
@@ -4017,6 +3992,7 @@ const make = Effect.gen(function* () {
               const resolvedModelSelection = (yield* threadManagement
                 .getThreadRecords(threadId, [])
                 .pipe(Effect.mapError(threadManagementFailure))).thread.modelSelection;
+              const messageId = stableMessageId({ scope, requestKey: key, index });
               if (request.prompt !== undefined) {
                 yield* threadManagement
                   .dispatch({
@@ -4031,11 +4007,7 @@ const make = Effect.gen(function* () {
                     }),
                     threadId,
                     senderThreadId: scope.thread.threadId,
-                    messageId: stableMessageId({
-                      scope,
-                      requestKey: key,
-                      index,
-                    }),
+                    messageId,
                     text: request.prompt,
                     attachments: [],
                     modelSelection: resolvedModelSelection,
@@ -4066,7 +4038,12 @@ const make = Effect.gen(function* () {
                   );
               }
               const projection = yield* loadProjection(threadId);
-              const run = projection.runs.at(-1);
+              // A replay reports the run this prompt started, not a later one on the thread.
+              const run = projection.runs.find(
+                (candidate) => candidate.userMessageId === messageId,
+              );
+              // Routing may move a fresh run to another account, so a started thread reports its run's.
+              const runsOn = run?.modelSelection ?? projection.thread.modelSelection;
               yield* threadManagement
                 .dispatch({
                   type: "thread.created.record",
@@ -4098,8 +4075,8 @@ const make = Effect.gen(function* () {
                 title: projection.thread.title,
                 createdBy: projection.thread.createdBy,
                 creationSource: projection.thread.creationSource,
-                providerInstanceId: resolvedModelSelection.instanceId,
-                model: resolvedModelSelection.model,
+                providerInstanceId: runsOn.instanceId,
+                model: runsOn.model,
               } satisfies OrchestratorMcpCreatedThread;
             }),
           { concurrency: 1 },

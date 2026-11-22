@@ -236,6 +236,7 @@ type DelegateTaskInput = {
     providerInstanceId?: string;
     driverKind?: string;
     model?: string;
+    options?: Array<{ id: string; value: string | boolean }> | Record<string, string | boolean>;
   };
   title?: string;
   role?: "implementation" | "research" | "review" | "design" | "test" | "general";
@@ -253,6 +254,17 @@ when it can run child tasks, and otherwise selects an available instance of
 that driver; an explicit `providerInstanceId` is honored exactly and fails
 when unavailable. Selecting a different provider without a model uses that
 provider's first advertised model.
+
+A child on its parent's provider instance and model, named by slug or alias,
+inherits the parent's options, and given `options` override them one by one
+(`[]` or `{}` clears them; an option given twice fails the call). An alias can
+name another model in a linked environment, so a child there inherits them only
+on the parent's model named by its slug in this environment, and an omitted
+model is sent as that slug. A child on an Auto model would run the options
+saved for Auto instead, so a target that gives options runs on that model as
+named, not as Auto; without options it stays Auto. A role's model whose account
+is gone, or no longer offers it, falls back to the parent's; one that rejects
+the given options fails the call.
 
 A provider runs a runtime mode it does not offer as `approval-required`, so a
 child would ask for approval on every command. `orchestrator_capabilities`

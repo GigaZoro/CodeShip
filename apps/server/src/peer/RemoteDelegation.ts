@@ -34,11 +34,15 @@ import type * as Tool from "effect/ai/Tool";
 import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import {
+  advertisedSlug,
+  invalidOptionSelections,
+  overrideOptions,
   resolveInteractionMode,
   resolveRuntimeMode,
   taskPrompt,
 } from "../mcp/delegatedTaskModes.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -133,6 +137,7 @@ const make = Effect.gen(function* () {
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const git = yield* GitVcsDriver.GitVcsDriver;
+  const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const crypto = yield* Crypto.Crypto;
   const hereId = yield* ServerEnvironment.ServerEnvironment.pipe(
     Effect.flatMap((environment) => environment.getEnvironmentId),
@@ -313,19 +318,35 @@ const make = Effect.gen(function* () {
         (target.driverKind === undefined
           ? inherited.instanceId
           : yield* resolveRemoteInstance(scope, target.environmentId, target.driverKind));
-      const model =
-        target.model ?? (instanceId === inherited.instanceId ? inherited.model : undefined);
+      // An alias can name another model on the other machine, so the parent's model goes there
+      // by its slug here, and only that name carries the parent's options.
+      const parentModel = advertisedSlug(
+        (yield* providerRegistry.getProviders).find(
+          (provider) => provider.instanceId === inherited.instanceId,
+        ),
+        inherited.model,
+      );
+      const model = target.model ?? (instanceId === inherited.instanceId ? parentModel : undefined);
       if (model === undefined) {
         return yield* new OrchestratorMcpFailure({
           code: "target_required",
           message: `Pass target.model from orchestrator_capabilities with this environmentId (instance ${instanceId} there).`,
         });
       }
-      const options =
-        target.options ??
-        (instanceId === inherited.instanceId && model === inherited.model
+      // The merge would keep one of two values given for an option; the call names it instead.
+      const repeated = invalidOptionSelections(target.options ?? [], undefined);
+      if (repeated.length > 0) {
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: `Model ${model} on provider ${instanceId} rejected options: ${repeated.join(" ")}`,
+        });
+      }
+      const options = overrideOptions(
+        instanceId === inherited.instanceId && model === parentModel
           ? inherited.options
-          : undefined);
+          : undefined,
+        target.options,
+      );
       // Modes asked for are checked against this thread. Omitted ones are left
       // to the other side, which inherits this thread's modes capped by the
       // link's access, so a narrower link still takes the task.

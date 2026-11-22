@@ -6,6 +6,7 @@ import {
   CommandId,
   EventId,
   MessageId,
+  type ModelSelection,
   NodeId,
   type OrchestrationV2Run,
   type OrchestratorMcpThreadReadInput,
@@ -263,6 +264,17 @@ const boxProviders = [
     ...readyProvider,
     instanceId: ProviderInstanceId.make("claudeAgent_box"),
     driver: ProviderDriverKind.make("claudeAgent"),
+  },
+] as unknown as ReadonlyArray<ServerProvider>;
+/** The laptop's own account, which also names its model by an alias. */
+const laptopProviders = [
+  {
+    ...readyProvider,
+    instanceId,
+    driver,
+    models: [
+      { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: null, aliases: ["gpt"] },
+    ],
   },
 ] as unknown as ReadonlyArray<ServerProvider>;
 
@@ -746,7 +758,11 @@ const makeLaptop = (
       ),
       Layer.provide(NodeCrypto.layer),
       Layer.provideMerge(layerThreads),
-      Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
+      Layer.provide(
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed(laptopProviders),
+        }),
+      ),
       Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
       Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
       Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
@@ -805,6 +821,7 @@ const parentScope: McpInvocationContext.McpInvocationScope = {
 const seedParent = (
   laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
   projectId = ProjectId.make("project:laptop"),
+  parentSelection: ModelSelection = modelSelection,
 ) =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;
@@ -817,7 +834,7 @@ const seedParent = (
       threadId: parentThreadId,
       projectId,
       title: "Laptop parent",
-      modelSelection,
+      modelSelection: parentSelection,
       runtimeMode: "full-access",
       interactionMode: "default",
       branch: null,
@@ -1216,19 +1233,61 @@ it.effect("a task named only by environment inherits the parent's model, within 
       const a = yield* makeLaptop(database, offers);
       // The parent runs with full access; the link allows less.
       yield* linkTo(a.links, b, "auto-accept-edits");
-      yield* seedParent(a);
+      const effort = { id: "reasoningEffort", value: "high" };
+      const tier = { id: "serviceTier", value: "priority" };
+      // The parent names its model by the laptop's alias, which the box may map elsewhere.
+      yield* seedParent(a, undefined, { ...modelSelection, model: "gpt", options: [effort, tier] });
 
       const result = yield* a.call("delegate_task", {
         task: "Run the suite on the box.",
-        target: { environmentId: box.environmentId },
+        target: { environmentId: box.environmentId, options: { reasoningEffort: "max" } },
       });
       expect(result.isError, JSON.stringify(result.content)).toBe(false);
-      // The parent's model, and the link's modes rather than the parent's.
+      // The parent's model by its slug, the given option over its own, and the link's modes.
       expect(yield* Ref.get(thread.launchedWith)).toEqual({
-        modelSelection,
+        modelSelection: { ...modelSelection, options: [{ ...effort, value: "max" }, tier] },
         runtimeMode: "auto-accept-edits",
         interactionMode: "default",
       });
+
+      // An alias is the box's to resolve, so it takes only the given options.
+      for (const [name, inheritedOptions] of [
+        ["gpt", []],
+        ["gpt-5.4", [tier]],
+      ] as const) {
+        const named = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          target: {
+            environmentId: box.environmentId,
+            model: name,
+            options: { reasoningEffort: "max" },
+          },
+          clientRequestId: `named:${name}`,
+        });
+        expect(named.isError, JSON.stringify(named.content)).toBe(false);
+        expect((yield* Ref.get(thread.launchedWith))?.modelSelection).toEqual({
+          ...modelSelection,
+          model: name,
+          options: [{ ...effort, value: "max" }, ...inheritedOptions],
+        });
+      }
+
+      // An option given twice is refused, not settled by the merge.
+      const repeated = yield* a.call("delegate_task", {
+        task: "Run the suite on the box.",
+        target: {
+          environmentId: box.environmentId,
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "reasoningEffort", value: "max" },
+          ],
+        },
+        clientRequestId: "repeated",
+      });
+      expect(repeated.isError).toBe(true);
+      expect(JSON.stringify(repeated.content)).toContain(
+        "Option reasoningEffort was specified more than once.",
+      );
 
       // Asking for more than the link allows is still refused there.
       const broader = yield* a.call("delegate_task", {

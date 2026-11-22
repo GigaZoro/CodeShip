@@ -5,7 +5,10 @@ import {
   type OrchestratorMcpInteractionMode,
   type OrchestratorMcpRuntimeMode,
   type ProviderInteractionMode,
+  type ProviderOptionDescriptor,
+  type ProviderOptionSelection,
   type RuntimeMode,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
@@ -85,6 +88,65 @@ export function resolveInteractionMode(
         }),
       )
     : Effect.succeed(resolved);
+}
+
+/** Yields the model a slug or alias names; a provider that lists no models accepts any slug. */
+export const findAdvertisedModel = (provider: ServerProvider, model: string) =>
+  provider.models.find(
+    (candidate) =>
+      candidate.slug === model ||
+      candidate.aliases?.some((alias) => alias.toLowerCase() === model.toLowerCase()),
+  );
+
+/** The slug a provider lists for a model named by slug or alias, or the name as given. */
+export const advertisedSlug = (provider: ServerProvider | undefined, model: string) =>
+  (provider === undefined ? undefined : findAdvertisedModel(provider, model))?.slug ?? model;
+
+/** Skip checks without descriptors; reject duplicate IDs because consumers disagree on precedence. */
+export function invalidOptionSelections(
+  selections: ReadonlyArray<ProviderOptionSelection>,
+  descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
+): ReadonlyArray<string> {
+  const problems: Array<string> = [];
+  const seen = new Set<string>();
+  for (const selection of selections) {
+    if (seen.has(selection.id)) {
+      problems.push(`Option ${selection.id} was specified more than once.`);
+      continue;
+    }
+    seen.add(selection.id);
+    if (descriptors === undefined) continue;
+    const descriptor = descriptors.find((candidate) => candidate.id === selection.id);
+    if (descriptor === undefined) {
+      const known = descriptors.map((candidate) => candidate.id).join(", ");
+      problems.push(`Unknown option ${selection.id}; supported options: ${known || "none"}.`);
+      continue;
+    }
+    if (descriptor.type === "boolean" && typeof selection.value !== "boolean") {
+      problems.push(`Option ${selection.id} expects a boolean value.`);
+      continue;
+    }
+    if (
+      descriptor.type === "select" &&
+      !descriptor.options.some((choice) => choice.id === selection.value)
+    ) {
+      const choices = descriptor.options.map((choice) => choice.id).join(", ");
+      problems.push(`Option ${selection.id} must be one of: ${choices}.`);
+    }
+  }
+  return problems;
+}
+
+/** A child's options: each given one replaces the inherited one with its id, and [] clears them. */
+export function overrideOptions(
+  inherited: ReadonlyArray<ProviderOptionSelection> | undefined,
+  given: ReadonlyArray<ProviderOptionSelection> | undefined,
+): ReadonlyArray<ProviderOptionSelection> | undefined {
+  if (given === undefined) return inherited;
+  if (given.length === 0) return [];
+  const selections = new Map((inherited ?? []).map((selection) => [selection.id, selection]));
+  for (const selection of given) selections.set(selection.id, selection);
+  return [...selections.values()];
 }
 
 /** The task as its child receives it, with the role the caller asked for. */
