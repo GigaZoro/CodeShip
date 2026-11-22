@@ -288,76 +288,23 @@ test("anything that leaves the run uncertain is unverified, never guessed", () =
     assert.deepEqual(fixture(options).result(), { outcome: "unverified", reason, release }, reason);
 });
 
-test("a retry's build is the newest attempt not known to have skipped it, with every attempt's outcome", () => {
-  const skipped = { job: { conclusion: "skipped" } };
-  // The first attempt dispatched and the retry reran another job alone, so its publish job did not run again.
-  const first = fixture({ earlier: [{}], ...skipped });
-  assert.deepEqual(first.result(), {
-    outcome: "dispatched",
-    run: 44919730318,
-    url: RUN_URL(44919730318),
-    release: `${RUN_URL(44919164430)} (attempt 1)`,
-    attempts: [
-      { attempt: 1, outcome: "dispatched", run: 44919730318, url: RUN_URL(44919730318) },
-      { attempt: 2, outcome: "not-started", reason: "its Publish GitHub Release job was skipped" },
-    ],
-  });
-  assert.ok(first.calls.some((args) => args.join(" ").includes("--attempt 1 --json")));
-  // The first attempt failed before its dispatch, and the retry dispatched.
-  const retried = fixture({ earlier: [skipped] }).result();
-  assert.equal(retried.outcome, "dispatched");
-  assert.equal(retried.release, `${RUN_URL(44919164430)} (attempt 2)`);
-  // Both attempts dispatched, each its own build: each attempt reads its own job's log.
-  const again = RUN_URL(44919800000);
-  const twice = fixture({
-    earlier: [{}],
-    log: jobLog({ printed: [again] }),
-    step: { startedAt: "2026-11-21T16:10:00Z", completedAt: "2026-11-21T16:10:02Z" },
-    runs: { 44919800000: { ...MACOS_RUN, createdAt: "2026-11-21T16:10:01Z" } },
-  });
-  assert.deepEqual(twice.result(), {
-    outcome: "dispatched",
-    run: 44919800000,
-    url: again,
-    release: `${RUN_URL(44919164430)} (attempt 2)`,
-    attempts: [
-      { attempt: 1, outcome: "dispatched", run: 44919730318, url: RUN_URL(44919730318) },
-      { attempt: 2, outcome: "dispatched", run: 44919800000, url: again },
-    ],
-  });
-  // An attempt whose log could not be read may have dispatched, so a later skip does not make it not started.
-  const unread = { log: new Error("gh api failed: HTTP 502") };
-  assert.deepEqual(fixture({ earlier: [unread], ...skipped }).result(), {
+test("a retried run is unverified, and a retry that starts while the run is read changes nothing read", () => {
+  // A rerun copies a publish job that succeeded into the new attempt, log and times included.
+  const retried = fixture({ earlier: [{}] });
+  assert.deepEqual(retried.result(), {
     outcome: "unverified",
-    reason: "gh api failed: HTTP 502",
-    release: `${RUN_URL(44919164430)} (attempt 1)`,
-    attempts: [
-      { attempt: 1, outcome: "unverified", reason: "gh api failed: HTTP 502" },
-      { attempt: 2, outcome: "not-started", reason: "its Publish GitHub Release job was skipped" },
-    ],
-  });
-  // Nor does an earlier dispatch name the build when a later attempt may have dispatched another.
-  const later = fixture({ earlier: [{}], ...unread }).result();
-  assert.equal(later.outcome, "unverified");
-  assert.equal(later.release, `${RUN_URL(44919164430)} (attempt 2)`);
-  // Not started only when every attempt skipped it.
-  assert.deepEqual(fixture({ earlier: [skipped], ...skipped }).result(), {
-    outcome: "not-started",
-    reason: "its Publish GitHub Release job was skipped",
+    reason: "the release run was retried (attempt 2), and only a first attempt's dispatch is read",
     release: `${RUN_URL(44919164430)} (attempt 2)`,
-    attempts: [
-      { attempt: 1, outcome: "not-started", reason: "its Publish GitHub Release job was skipped" },
-      { attempt: 2, outcome: "not-started", reason: "its Publish GitHub Release job was skipped" },
-    ],
   });
-  // A retry that starts while the run is read lends none of its jobs to the attempt before it.
+  assert.equal(retried.calls.length, 1);
+  // The first read names the attempt and every later one is pinned to it, so a retry's jobs are never attempt 1's.
+  const skipped = { job: { conclusion: "skipped" } };
   assert.deepEqual(fixture({ retry: skipped }).result(), {
     outcome: "dispatched",
     run: 44919730318,
     url: RUN_URL(44919730318),
     release,
   });
-  // A retry that is still running is pending, before any attempt is read.
   const running = fixture({ earlier: [{}], status: "in_progress" });
   assert.deepEqual(running.result(), {
     outcome: "pending",

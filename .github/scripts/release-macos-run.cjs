@@ -1,7 +1,7 @@
 // The macOS build a Release (fork) run started, from the URL its dispatch step printed: a manual rebuild or the
 // catch-up of the same version shares its title. `node .github/scripts/release-macos-run.cjs <owner/repo> <run id>`
-// prints one JSON outcome over every attempt: dispatched (with the run), not-started (every attempt skipped the step),
-// pending (an attempt is running) or unverified (anything else, a gh failure included: reported, never guessed).
+// prints one JSON outcome: dispatched (with the run), not-started (the step was skipped), pending (the run is running)
+// or unverified (a retried run, or anything else, a gh failure included: reported, never guessed).
 const { spawnSync } = require("node:child_process");
 
 const PUBLISH_JOB = "Publish GitHub Release";
@@ -69,44 +69,41 @@ function readAttempt(view, runId, attempt) {
 }
 
 /**
- * The macOS build the release run `runId` started, as one of the outcomes above, with the release run and the attempt
- * it comes from: the newest attempt that is not a confirmed not-started, so an unread attempt is never passed over;
- * not-started only when every attempt is. With more than one attempt, `attempts` gives each one's outcome. `gh` runs
- * gh and returns stdout; a failure of it, or an answer this cannot read, is unverified.
+ * The macOS build the release run `runId` started, as one of the outcomes above, with the release run and its attempt.
+ * Only a first attempt is read: a rerun copies a job that succeeded into the new attempt, log and times included, so
+ * which attempt dispatched cannot be told yet. `gh` runs gh and returns stdout; a failure of it is unverified.
  */
 function releaseMacosRun(repository, runId, gh) {
   const view = (...args) => gh(["run", "view", ...args, "-R", repository]);
-  // `gh run view --job --log` matches the run's latest log archive by job name, so an earlier attempt could get its
-  // retry's log; the job's own log is that attempt's. GitHub's logs carry colour codes, which gh prints only on request.
+  // `gh run view --job --log` matches the run's latest log archive by job name; the job's own log is its attempt's.
+  // GitHub's logs carry colour codes, which gh prints only on request.
   const jobLog = (job) =>
     gh(["api", "--allow-escape-sequences", `repos/${repository}/actions/jobs/${job}/logs`]);
   // Until gh has described the run its attempt is unknown, but its address is not.
   const where = (attempt = "unknown") => `${runUrl(repository, runId)} (attempt ${attempt})`;
-  const unverified = (error) => ({ outcome: "unverified", reason: error.message });
+  const answer = (outcome, reason, attempt) => ({ outcome, reason, release: where(attempt) });
   let latest;
   try {
     latest = readAttempt(view, runId);
   } catch (error) {
-    return { ...unverified(error), release: where() };
+    return answer("unverified", error.message);
   }
   if (latest.status !== "completed")
+    return answer("pending", `the release run is ${latest.status}`, latest.attempt);
+  if (latest.attempt !== 1)
+    return answer(
+      "unverified",
+      `the release run was retried (attempt ${latest.attempt}), and only a first attempt's dispatch is read`,
+      latest.attempt,
+    );
+  try {
     return {
-      outcome: "pending",
-      reason: `the release run is ${latest.status}`,
-      release: where(latest.attempt),
+      ...macosRun(readAttempt(view, runId, 1), repository, view, jobLog),
+      release: where(1),
     };
-  const attempts = Array.from({ length: latest.attempt }, (_, index) => {
-    const attempt = index + 1;
-    try {
-      return { attempt, ...macosRun(readAttempt(view, runId, attempt), repository, view, jobLog) };
-    } catch (error) {
-      return { attempt, ...unverified(error) };
-    }
-  });
-  const { attempt, ...chosen } =
-    attempts.findLast((each) => each.outcome !== "not-started") ?? attempts.at(-1);
-  const result = { ...chosen, release: where(attempt) };
-  return attempts.length > 1 ? { ...result, attempts } : result;
+  } catch (error) {
+    return answer("unverified", error.message, 1);
+  }
 }
 
 /** The outcome for an attempt gh described, reading its job's log through `jobLog` and the macOS run through `view`. */
