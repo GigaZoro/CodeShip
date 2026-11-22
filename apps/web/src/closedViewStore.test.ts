@@ -60,6 +60,28 @@ describe("closedViewStore", () => {
       threadRef: refA,
       surface: { kind: "side-chat", id: "side-chat:x" },
     },
+    {
+      id: "bad",
+      kind: "panel-tab",
+      threadRef: refA,
+      surface: { kind: "thread", id: "thread:env-1:thread-A", threadRef: refA },
+    },
+    {
+      id: "bad",
+      kind: "panel-tab",
+      threadRef: refA,
+      surface: { kind: "thread", id: "thread:env-1:thread-A", threadRef: refB },
+    },
+    {
+      id: "bad",
+      kind: "panel-tab",
+      threadRef: refA,
+      surface: {
+        kind: "thread",
+        id: "thread:env-2:thread-A",
+        threadRef: { threadId: refB.threadId },
+      },
+    },
   ])("discards incomplete saved views %j while retaining valid history", async (entry) => {
     const id = useClosedViewStore.getState().remember(diff(refA));
     const { storage, name } = useClosedViewStore.persist.getOptions();
@@ -96,6 +118,11 @@ describe("closedViewStore", () => {
       threadRef: refA,
       surface: { id: "side-chat:side", kind: "side-chat", threadId: ThreadId.make("side") },
     });
+    const threadTabId = store.remember({
+      kind: "panel-tab",
+      threadRef: refA,
+      surface: { kind: "thread", id: "thread:env-2:thread-A", threadRef: refB },
+    });
     const publicId = store.remember(diff(refA));
     const browserId = store.remember({
       kind: "browser",
@@ -126,6 +153,7 @@ describe("closedViewStore", () => {
     expect(useClosedViewStore.getState().entries.map((entry) => entry.id)).toEqual([
       browserId,
       publicId,
+      threadTabId,
       sideChatId,
     ]);
     const saved = JSON.stringify(await storage!.getItem(name!));

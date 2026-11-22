@@ -3,13 +3,24 @@ import {
   scopedThreadKey,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, RunId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  RunId,
+  ThreadId,
+  type OrchestrationV2ThreadShell,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 import { useClosedViewStore } from "./closedViewStore";
 import { resolveStorage } from "./lib/storage";
 import type { ThreadPanelPresentation } from "./rightPanelLayout";
+import {
+  isThreadPanelSurface,
+  threadPanelSurface,
+  type ThreadPanelSurface,
+} from "./rightPanelThreadSurface";
 import type { ChatFileAttachment } from "./types";
 
 const RIGHT_PANEL_KINDS = [
@@ -22,6 +33,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-request",
   "pull-requests",
   "side-chat",
+  "thread",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -76,7 +88,8 @@ export type RightPanelSurface =
       detailTab?: PullRequestDetailTab;
     }
   | { id: "pull-requests"; kind: "pull-requests" }
-  | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId };
+  | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId }
+  | ThreadPanelSurface;
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 const RIGHT_PANEL_STORAGE_VERSION = 14;
@@ -123,8 +136,13 @@ interface RightPanelStoreState {
   ) => boolean;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat" | "thread">,
   ) => void;
+  openThread: (
+    host: ScopedThreadRef,
+    target: ScopedThreadRef,
+    lineage?: Pick<OrchestrationV2ThreadShell["lineage"], "sideChat" | "parentThreadId">,
+  ) => boolean;
   openSideChat: (ref: ScopedThreadRef, threadId: ThreadId) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
@@ -185,7 +203,7 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat" | "thread">,
   ) => void;
   setThreadPanelOpen: (
     ref: ScopedThreadRef,
@@ -208,7 +226,10 @@ const DEFAULT_THREAD_PANEL_VISIBILITY: ThreadPanelVisibility = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request" | "side-chat">,
+  kind: Exclude<
+    RightPanelKind,
+    "file" | "preview" | "terminal" | "pull-request" | "side-chat" | "thread"
+  >,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -488,8 +509,19 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                 threadState && typeof threadState === "object" ? threadState : null;
               const surfaces = Array.isArray(validThreadState?.surfaces)
                 ? validThreadState.surfaces.flatMap<RightPanelSurface>((surface) => {
-                    const kind = (surface as { kind?: string }).kind;
-                    if (kind === "plan" || kind === "agents") return [];
+                    if (
+                      !surface ||
+                      typeof surface.id !== "string" ||
+                      !RIGHT_PANEL_KINDS.includes(surface.kind)
+                    ) {
+                      return [];
+                    }
+                    if (surface.kind === "thread") {
+                      return isThreadPanelSurface(surface) &&
+                        scopedThreadKey(surface.threadRef) !== threadKey
+                        ? [surface]
+                        : [];
+                    }
                     if (
                       (surface.kind === "file" || surface.kind === "files") &&
                       "folderTrail" in surface &&
@@ -726,6 +758,27 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             );
           }),
         ),
+      openThread: (host, target, lineage) => {
+        const hostKey = scopedThreadKey(host);
+        if (hostKey === scopedThreadKey(target)) return false;
+        if (
+          target.environmentId === host.environmentId &&
+          lineage?.sideChat === true &&
+          lineage.parentThreadId === host.threadId
+        ) {
+          get().openSideChat(host, target.threadId);
+        } else {
+          set((state) =>
+            userActionOnThread(
+              state,
+              hostKey,
+              (current) => upsertSurface(current, threadPanelSurface(target)),
+              false,
+            ),
+          );
+        }
+        return true;
+      },
       openSideChat: (ref, threadId) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) =>
@@ -1183,6 +1236,10 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         ),
       }),
       migrate: migratePersistedRightPanelState,
+      merge: (persisted, current) => ({
+        ...current,
+        ...migratePersistedRightPanelState(persisted),
+      }),
     },
   ),
 );

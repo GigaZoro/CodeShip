@@ -1,5 +1,6 @@
 import {
   DEFAULT_CLIENT_SETTINGS,
+  EnvironmentId,
   type PreviewSessionSnapshot,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -61,6 +62,26 @@ describe("reopenClosedView", () => {
     expect(state.isOpen).toBe(true);
     expect(state.surfaces).toMatchObject([{ id: "file:src/app.ts", revealLine: 18 }]);
     expect(openPreview).not.toHaveBeenCalled();
+  });
+
+  it("reopens a closed cross-environment thread tab in its original panel", async () => {
+    const targetRef = { ...threadRef, environmentId: EnvironmentId.make("remote") };
+    const store = useRightPanelStore.getState();
+    store.openThread(threadRef, targetRef);
+    store.closeSurface(threadRef, "thread:remote:thread-1");
+
+    const [entry] = useClosedViewStore.getState().entries;
+    expect(entry).toMatchObject({ kind: "panel-tab", threadRef });
+    expect(
+      await reopenClosedView(entry!, { openPreview: vi.fn(), workspaceAvailable: false }),
+    ).toBe(true);
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, threadRef),
+    ).toMatchObject({
+      isOpen: true,
+      activeSurfaceId: "thread:remote:thread-1",
+      surfaces: [{ kind: "thread", id: "thread:remote:thread-1", threadRef: targetRef }],
+    });
   });
 
   it("does not reopen workspace tabs without an available project", async () => {

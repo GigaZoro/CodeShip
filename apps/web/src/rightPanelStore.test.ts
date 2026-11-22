@@ -18,6 +18,8 @@ import {
 
 const refA = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-A"));
 const refB = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-B"));
+const remoteRef = scopeThreadRef("env-2" as EnvironmentId, refB.threadId);
+const remoteSurface = { id: "thread:env-2:thread-B", kind: "thread", threadRef: remoteRef };
 
 beforeEach(() => {
   useClosedViewStore.setState({ entries: [] });
@@ -55,6 +57,80 @@ describe("rightPanelStore", () => {
     expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refB)?.id).toBe(
       "file:src/app.ts",
     );
+  });
+
+  it("does not open the current thread or change its panel selection", () => {
+    const store = useRightPanelStore.getState();
+    store.open(refA, "diff");
+    const previous = useRightPanelStore.getState();
+    expect(store.openThread(refA, { ...refA })).toBe(false);
+    expect(useRightPanelStore.getState()).toBe(previous);
+  });
+
+  it("uses the existing side-chat tab only for a child in the host environment", () => {
+    const store = useRightPanelStore.getState();
+    const lineage = { sideChat: true, parentThreadId: refA.threadId };
+    store.openSideChat(refA, refB.threadId);
+    store.open(refA, "diff");
+    store.openThread(refA, refB, lineage);
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA),
+    ).toMatchObject({
+      activeSurfaceId: "side-chat:thread-B",
+      surfaces: [
+        { id: "side-chat:thread-B", kind: "side-chat", threadId: refB.threadId },
+        { id: "diff", kind: "diff" },
+      ],
+    });
+
+    store.openThread(refA, remoteRef, lineage);
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual(
+      remoteSurface,
+    );
+  });
+
+  it("reopens the panel and focuses an existing thread tab without reordering or duplicating it", () => {
+    const store = useRightPanelStore.getState();
+    store.openThread(refA, refB);
+    store.openThread(refA, remoteRef);
+    store.open(refA, "diff");
+    store.close(refA);
+    store.openThread(refA, remoteRef);
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA),
+    ).toMatchObject({
+      isOpen: true,
+      activeSurfaceId: remoteSurface.id,
+      surfaces: [
+        { id: "thread:env-1:thread-B", kind: "thread", threadRef: refB },
+        remoteSurface,
+        { id: "diff", kind: "diff" },
+      ],
+    });
+  });
+
+  it("round-trips a thread tab and drops malformed, unknown, and self-referencing tabs", async () => {
+    useRightPanelStore.getState().openThread(refA, remoteRef);
+    await reloadRightPanelStore();
+    const { storage, name, version } = useRightPanelStore.persist.getOptions();
+    const saved = await storage!.getItem(name!);
+    const owner = saved!.state.byThreadKey["env-1:thread-A"]!;
+    owner.surfaces = [
+      ...owner.surfaces,
+      null,
+      { id: "unknown", kind: "unknown" },
+      { ...remoteSurface, id: "thread:env-1:thread-B" },
+      { ...remoteSurface, threadRef: { environmentId: "", threadId: refB.threadId } },
+      { id: "thread:env-1:thread-A", kind: "thread", threadRef: refA },
+    ] as typeof owner.surfaces;
+    await storage!.setItem(name!, { ...saved!, version: version!, state: saved!.state });
+    await useRightPanelStore.persist.rehydrate();
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA),
+    ).toMatchObject({
+      activeSurfaceId: remoteSurface.id,
+      surfaces: [remoteSurface],
+    });
   });
 
   it("records single and bulk tab closes, newest first", () => {
