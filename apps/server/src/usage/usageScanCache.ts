@@ -13,12 +13,13 @@ export const USAGE_SCAN_CACHE_VERSION = 11 as const;
 const SPEED_COMPATIBLE_SINCE_VERSION = 4;
 
 /**
- * An older server sharing that directory cannot read a newer cache and would
- * replace it, dropping saved usage for deleted transcripts. Separate files keep
- * both.
+ * Saved usage is a directory of snapshots that are written once and never changed, so processes
+ * sharing a state directory need no lock: each reads every name once and merges rows. A future
+ * format uses a new directory and claims this one's snapshots as legacy inputs.
  */
-export const SCAN_CACHE_FILE_NAME = `usage-scan-cache-v${USAGE_SCAN_CACHE_VERSION}.json`;
-export const LEGACY_SCAN_CACHE_FILE_NAMES = [
+export const SCAN_CACHE_DIRECTORY_NAME = `usage-scan-cache-v${USAGE_SCAN_CACHE_VERSION}`;
+/** Single-file caches of older builds, which a sync moves into the store as legacy inputs. */
+const LEGACY_SCAN_CACHE_FILE_NAMES = [
   "usage-scan-cache-v10.json",
   "usage-scan-cache-v9.json",
   "usage-scan-cache-v8.json",
@@ -28,12 +29,32 @@ export const LEGACY_SCAN_CACHE_FILE_NAMES = [
   "usage-scan-cache.json",
 ] as const;
 
+const UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const SNAPSHOT_NAME = new RegExp(`^${UUID_PATTERN}-\\d+\\.json$`);
+const CLAIMED_LEGACY_NAME = new RegExp(`^legacy-${UUID_PATTERN}-(.+)$`);
+
+export const isLegacyScanCacheFileName = (name: string): boolean =>
+  (LEGACY_SCAN_CACHE_FILE_NAMES as readonly string[]).includes(name);
+export const scanCacheSnapshotName = (writerId: string, seq: number) => `${writerId}-${seq}.json`;
+export const claimedLegacyScanCacheName = (claimId: string, legacyName: string) =>
+  `legacy-${claimId}-${legacyName}`;
+/** Temporary files of an atomic write never match, so a sync cannot read a half-written file. */
+export function isScanCacheInput(name: string): boolean {
+  if (SNAPSHOT_NAME.test(name)) return true;
+  const legacyName = CLAIMED_LEGACY_NAME.exec(name)?.[1];
+  return legacyName !== undefined && isLegacyScanCacheFileName(legacyName);
+}
+
 const SPEEDS: readonly UsageSpeed[] = ["standard", "fast", "ultrafast"];
 
 export interface CachedFile {
   readonly size: number;
   readonly needsReparse?: true;
+  /** Decoded from an older format: it loses to a current row observed at the same time. */
+  readonly legacy?: true;
   readonly mtimeMs: number;
+  /** Wall-clock time a scan stored this row, compared across processes when rows meet. */
+  readonly observedAtMs: number;
   readonly provider: UsageProviderKind;
   readonly records: readonly UsageRecord[];
   /** Unterminated tail records stay separate because incremental parsing rereads them. */
@@ -44,6 +65,36 @@ export interface CachedFile {
 }
 
 export type ScanCache = Map<string, CachedFile>;
+
+export interface CachedSource {
+  readonly dir: string;
+  readonly volumeId: string;
+  /** Wall-clock time a scan recorded this directory or its volume. */
+  readonly seenAtMs?: number;
+}
+
+const isCurrentRow = (entry: CachedFile) => entry.legacy === undefined && !entry.needsReparse;
+
+/**
+ * Every place rows for one transcript meet uses this order, so any merge order of the same
+ * snapshots gives the same rows: the later observation, then a current-format row, then the
+ * larger file, then the row already held.
+ */
+export function mergeScanEntry(held: CachedFile, incoming: CachedFile): CachedFile {
+  if (incoming.observedAtMs !== held.observedAtMs) {
+    return incoming.observedAtMs > held.observedAtMs ? incoming : held;
+  }
+  const heldCurrent = isCurrentRow(held);
+  if (heldCurrent !== isCurrentRow(incoming)) return heldCurrent ? held : incoming;
+  return incoming.size > held.size ? incoming : held;
+}
+
+export function mergeCachedSource(held: CachedSource, incoming: CachedSource): CachedSource {
+  const incomingWins = (incoming.seenAtMs ?? -Infinity) > (held.seenAtMs ?? -Infinity);
+  const [winner, other] = incomingWins ? [incoming, held] : [held, incoming];
+  if (winner.volumeId !== "" || other.volumeId === "" || other.dir !== winner.dir) return winner;
+  return { ...winner, volumeId: other.volumeId };
+}
 
 type SerializedRecord = readonly [
   timestampMs: number,
@@ -64,7 +115,9 @@ type SerializedRecord = readonly [
 interface SerializedFile {
   readonly s: number;
   readonly nr?: true;
+  readonly lg?: true;
   readonly m: number;
+  readonly oa?: number;
   readonly p: UsageProviderKind;
   readonly r: readonly SerializedRecord[];
   readonly t: readonly SerializedRecord[];
@@ -125,7 +178,9 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
   return {
     s: entry.size,
     ...(entry.needsReparse ? { nr: true } : {}),
+    ...(entry.legacy ? { lg: true } : {}),
     m: entry.mtimeMs,
+    oa: entry.observedAtMs,
     p: entry.provider,
     r: entry.records.map(serializeRecord),
     t: entry.tailRecords.map(serializeRecord),
@@ -311,11 +366,16 @@ export function decodeScanCache(
     const records = decodeRecords(entry.r, provider);
     const tailRecords = decodeRecords(entry.t, provider);
     if (records === null || tailRecords === null) continue;
+    // Rows written before observations were recorded count as observed at their mtime.
+    const observedAtMs =
+      typeof entry.oa === "number" && Number.isFinite(entry.oa) ? entry.oa : entry.m;
 
     cache.set(path, {
       size: entry.s,
       ...(needsReparse ? { needsReparse: true } : {}),
+      ...(version < USAGE_SCAN_CACHE_VERSION || entry.lg === true ? { legacy: true } : {}),
       mtimeMs: entry.m,
+      observedAtMs,
       provider,
       records,
       tailRecords,

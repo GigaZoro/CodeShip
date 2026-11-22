@@ -292,6 +292,12 @@
 
 - New owner requests and accepted guest messages receive a demand ID. Steering, failover, and final review retain the original demand. Delegated questions and completions use their recorded sources. On-return compaction shares the demand ID of the following message.
 
+## 2026-11-22 — Saved usage works with several T3 processes at once
+
+- Saved transcript usage is now kept as separate snapshot files. Several T3.CodeShip processes on one machine can add to it at the same time without taking a lock, so a Usage scan never waits for another process to finish saving.
+- If saved usage is damaged, can't be read, or comes from a newer version, the file is kept and the Usage page marks the figures as partial. They count in full again once the file can be read. The cache from an older version is moved in and merged once, even when several processes start together.
+- If saving fails at shutdown, the error log says how many transcript files were left unsaved. Saved rows older than 92 days are removed before every save.
+
 ## 2026-11-22 — A Windows command's folder is free as soon as it ends
 
 - On Windows, the hidden wrapper that runs a `t3_command_run` command now works in its own run folder and starts the command in its `cwd`. Before, the wrapper worked in the command's folder and outlived the command for a moment to record how it ended, so an agent that removed that folder, such as a worktree, as soon as the command's end reached it could be refused with "being used by another process".

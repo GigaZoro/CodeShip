@@ -13,7 +13,7 @@ import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { SCAN_CACHE_FILE_NAME } from "./usage/usageScanCache.ts";
+import { SCAN_CACHE_DIRECTORY_NAME } from "./usage/usageScanCache.ts";
 import { TestClock } from "effect/testing";
 import * as SqlClient from "effect/sql/SqlClient";
 import {
@@ -3327,8 +3327,9 @@ it.live("keeps saved usage data when removing a settled checkout", () =>
       fixture.setThreads([
         shell({ branch: "feature", worktreePath: fixture.worktree, settledAt: at(0) }),
       ]);
-      yield* fixture.fs.makeDirectory(fixture.config.stateDir, { recursive: true });
-      const cachePath = `${fixture.config.stateDir}/${SCAN_CACHE_FILE_NAME}`;
+      const storeDir = `${fixture.config.stateDir}/${SCAN_CACHE_DIRECTORY_NAME}`;
+      yield* fixture.fs.makeDirectory(storeDir, { recursive: true });
+      const cachePath = `${storeDir}/00000000-0000-4000-8000-000000000000-1.json`;
       const savedUsage = JSON.stringify({ tokens: 12345, cost: 1.25 });
       yield* fixture.fs.writeFileString(cachePath, savedUsage);
       expect((yield* fixture.service.runNow).counts.removed).toBe(1);

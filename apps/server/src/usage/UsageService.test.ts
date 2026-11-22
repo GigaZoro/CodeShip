@@ -23,7 +23,6 @@ import {
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Clock from "effect/Clock";
-import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -41,7 +40,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import * as ServerConfig from "../config.ts";
-import * as FileLock from "../provider/FileLock.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as CodexUsageHistory from "./CodexUsageHistory.ts";
@@ -57,13 +55,14 @@ import * as UsageService from "./UsageService.ts";
 import * as MuseSdk from "../../../../packages/provider-muse/src/server/sdk.ts";
 import { MuseUsageHome } from "@t3tools/provider-muse/server";
 import {
+  isLegacyScanCacheFileName,
+  isScanCacheInput,
   makeScanCacheWriter,
-  SCAN_CACHE_FILE_NAME,
+  SCAN_CACHE_DIRECTORY_NAME,
   USAGE_SCAN_CACHE_VERSION,
 } from "./usageScanCache.ts";
 
 vi.mock("node:fs/promises", { spy: true });
-vi.mock("../provider/FileLock.ts", { spy: true });
 vi.mock("../../../../packages/provider-muse/src/server/sdk.ts", async (importOriginal) => ({
   ...(await importOriginal<typeof MuseSdk>()),
   createMuseSdkHostEffect: vi.fn(() =>
@@ -279,6 +278,98 @@ const writeCursorLogin = (home: string) =>
 function cursorSource(summary: { readonly sources: readonly UsageSource[] }) {
   return summary.sources.find((source) => source.fingerprint.provider === "cursor");
 }
+
+function claudeSource(summary: { readonly sources: readonly UsageSource[] }) {
+  return summary.sources.find((source) => source.fingerprint.provider === "claude");
+}
+
+const storeDirOf = (stateDir: string) => NodePath.join(stateDir, SCAN_CACHE_DIRECTORY_NAME);
+
+/** The rename that publishes a finished snapshot; a legacy claim renames from the state directory. */
+const isSnapshotPublish = (stateDir: string, from: string, to: string) =>
+  NodePath.dirname(to) === storeDirOf(stateDir) && NodePath.dirname(from) !== stateDir;
+
+interface StoredRow {
+  s: number;
+  m: number;
+  oa?: number;
+  nr?: true;
+  mr: number;
+  r: unknown[][];
+  cs: Record<string, unknown>;
+}
+
+interface StoredDocument {
+  version: number;
+  files: Record<string, StoredRow>;
+  sources: Record<string, unknown>;
+}
+
+/** The saved snapshots, by name; a test that ran one service has one. */
+const readStore = (stateDir: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const dir = storeDirOf(stateDir);
+    const names = yield* fs.readDirectory(dir).pipe(
+      Effect.catchIf(
+        (error) => error.reason._tag === "NotFound",
+        () => Effect.succeed<readonly string[]>([]),
+      ),
+    );
+    return yield* Effect.forEach(names.filter(isScanCacheInput).sort(), (name) =>
+      fs
+        .readFileString(NodePath.join(dir, name))
+        .pipe(Effect.map((raw) => ({ name, path: NodePath.join(dir, name), raw }))),
+    );
+  });
+
+const onlySnapshot = (stateDir: string) =>
+  Effect.gen(function* () {
+    const stored = yield* readStore(stateDir);
+    assert.lengthOf(stored, 1);
+    const { path, raw } = stored[0]!;
+    return { path, raw, document: decodeUnknownJsonString(raw) as StoredDocument };
+  });
+
+const storedFileKeys = (stateDir: string) =>
+  Effect.map(readStore(stateDir), (stored) => [
+    ...new Set(
+      stored.flatMap(({ raw }) =>
+        Object.keys((decodeUnknownJsonString(raw) as StoredDocument).files),
+      ),
+    ),
+  ]);
+
+let seededSnapshots = 0;
+/** Writes a snapshot as another process would, under a writer id no service uses. */
+const seedSnapshot = (stateDir: string, contents: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const dir = storeDirOf(stateDir);
+    yield* fs.makeDirectory(dir, { recursive: true });
+    seededSnapshots += 1;
+    const file = NodePath.join(dir, `00000000-0000-4000-8000-000000000000-${seededSnapshots}.json`);
+    yield* fs.writeFileString(file, contents);
+    return file;
+  });
+
+/** Collects log lines; `of` returns the fields logged with one message at one level. */
+const captureLogs = () => {
+  const lines: { readonly level: string; readonly message: unknown }[] = [];
+  const logger = Logger.make(({ message, logLevel }) => {
+    lines.push({ level: logLevel, message });
+  });
+  return {
+    layer: Logger.layer([logger], { mergeWithExisting: false }),
+    of: (level: "Error" | "Warn" | "Info", text: string) =>
+      lines.flatMap(({ level: logged, message }) =>
+        logged === level && Array.isArray(message) && message[0] === text ? [message[1]] : [],
+      ),
+  };
+};
+
+const PERMISSION_DENIED = (method: string) =>
+  PlatformError.systemError({ _tag: "PermissionDenied", module: "FileSystem", method });
 
 const seedCodexHistory = (input: {
   id: string;
@@ -1648,7 +1739,7 @@ describe("UsageService", () => {
           Effect.provideService(FileSystem.FileSystem, {
             ...fs,
             readFileString: (file, encoding) =>
-              file === NodePath.join(stateDir, SCAN_CACHE_FILE_NAME)
+              NodePath.dirname(file) === storeDirOf(stateDir)
                 ? Deferred.succeed(cacheStarted, undefined).pipe(
                     Effect.andThen(Deferred.await(releaseCache)),
                     Effect.andThen(fs.readFileString(file, encoding)),
@@ -2838,7 +2929,6 @@ describe("UsageService", () => {
 
         yield* Effect.gen(function* () {
           const { stateDir } = yield* ServerConfig.ServerConfig;
-          const cachePath = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
           const legacyPath = NodePath.join(
             stateDir,
             version === 4 ? "usage-scan-cache.json" : `usage-scan-cache-v${version}.json`,
@@ -2846,12 +2936,10 @@ describe("UsageService", () => {
           const first = yield* UsageService.make;
           yield* first.readSummary(WINDOW);
           yield* first.awaitPersisted;
+          const { path: cachePath, document } = yield* onlySnapshot(stateDir);
 
           yield* Effect.promise(async () => {
             const livePath = await NodeFSP.realpath(live);
-            const document = decodeUnknownJsonString(await NodeFSP.readFile(cachePath, "utf8")) as {
-              files: Record<string, { r: unknown[][]; mr: number; cs: Record<string, unknown> }>;
-            };
             for (const [path, file] of Object.entries(document.files)) {
               file.r = file.r.map((row) => [
                 ...row.slice(0, 6),
@@ -2874,7 +2962,7 @@ describe("UsageService", () => {
             if (version === 9) {
               const current = decodeUnknownJsonString(
                 await NodeFSP.readFile(cachePath, "utf8"),
-              ) as typeof document;
+              ) as StoredDocument;
               delete current.files[await NodeFSP.realpath(deleted)];
               await NodeFSP.writeFile(cachePath, encodeUnknownJsonString(current));
             } else {
@@ -2903,7 +2991,6 @@ describe("UsageService", () => {
             60 + 20 * (version === 4 ? 1 : 2),
           );
           yield* upgraded.awaitPersisted;
-          assert.strictEqual(SCAN_CACHE_FILE_NAME, "usage-scan-cache-v11.json");
           const fs = yield* FileSystem.FileSystem;
           assert.isFalse(yield* fs.exists(legacyPath));
           const restarted = yield* UsageService.make;
@@ -2930,38 +3017,28 @@ describe("UsageService", () => {
       }).pipe(Effect.scoped),
   );
 
-  it.live.each(["read error", "invalid current JSON"] as const)(
-    "handles a current cache %s without destroying its bytes",
+  it.live.each(["read error", "invalid JSON"] as const)(
+    "keeps a saved snapshot with a %s and reports it",
     (failure) =>
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
         yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
         yield* Effect.gen(function* () {
-          const { stateDir } = yield* ServerConfig.ServerConfig;
-          const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
-          const legacy = NodePath.join(stateDir, "usage-scan-cache-v9.json");
-          const original = yield* UsageService.make;
-          yield* original.readSummary(WINDOW);
-          yield* original.awaitPersisted;
-          const saved = yield* Effect.promise(() => NodeFSP.readFile(current, "utf8"));
-          const archive = encodeUnknownJsonString({
-            version: 9,
-            models: [],
-            sessions: [],
-            files: {},
-          });
-          const unreadable = failure === "invalid current JSON" ? "{" : saved;
-          yield* Effect.promise(async () => {
-            await NodeFSP.rm(transcript);
-            await NodeFSP.writeFile(legacy, archive);
-            await NodeFSP.writeFile(current, unreadable);
-          });
           const fs = yield* FileSystem.FileSystem;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const seed = yield* UsageService.make;
+          yield* seed.readSummary(WINDOW);
+          yield* seed.awaitPersisted;
+          const { path: saved, raw } = yield* onlySnapshot(stateDir);
+          const unreadable = failure === "invalid JSON" ? "{" : raw;
+          yield* fs.writeFileString(saved, unreadable);
+          yield* fs.remove(transcript);
+
           const service = yield* UsageService.make.pipe(
             Effect.provideService(FileSystem.FileSystem, {
               ...fs,
               readFileString: (file, encoding) =>
-                file === current && failure === "read error"
+                failure === "read error" && file === saved
                   ? Effect.fail(
                       new PlatformError.PlatformError(
                         new PlatformError.BadArgument({
@@ -2975,37 +3052,29 @@ describe("UsageService", () => {
           );
           const summary = yield* service.readSummary(WINDOW);
           assert.strictEqual(totalOutputTokens(summary), 0);
-          const source = summary.sources.find((item) => item.fingerprint.provider === "claude");
-          assert.strictEqual(source?.status, "partial");
-          assert.include(source?.message ?? "", "Some saved usage could not be read.");
+          assert.strictEqual(claudeSource(summary)?.status, "partial");
+          assert.include(
+            claudeSource(summary)?.message ?? "",
+            failure === "read error"
+              ? "Some saved usage could not be read."
+              : "Some saved usage is damaged or from a newer version and is only partly counted.",
+          );
           yield* service.awaitPersisted;
-          if (failure === "read error") {
-            assert.strictEqual(yield* fs.readFileString(current), unreadable);
-            assert.strictEqual(yield* fs.readFileString(legacy), archive);
-          } else {
-            const names = yield* fs.readDirectory(stateDir);
-            const backup = names.find((name) => name.startsWith(".usage-cache-unreadable-"));
-            assert.isDefined(backup);
-            assert.strictEqual(
-              yield* fs.readFileString(NodePath.join(stateDir, backup)),
-              unreadable,
-            );
-            assert.isFalse(yield* fs.exists(legacy));
-            assert.isNotEmpty(yield* fs.readFileString(current));
-          }
-          yield* fs.writeFileString(current, saved);
+          assert.strictEqual(yield* fs.readFileString(saved), unreadable);
+
+          yield* fs.writeFileString(saved, raw);
           const restarted = yield* UsageService.make;
           assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 5);
         }).pipe(
           Effect.provide(
-            layerService({ prefix: "usage-cache-current-unreadable", home, settings }),
+            layerService({ prefix: "usage-cache-unreadable-snapshot", home, settings }),
           ),
         );
       }).pipe(Effect.scoped),
   );
 
-  it.live.each(["v9 source", "v10 source", "v10 file"] as const)(
-    "salvages deleted Usage beside a malformed %s entry",
+  it.live.each(["v9 source", "current source", "current file"] as const)(
+    "counts deleted usage beside a malformed %s entry and keeps the damaged file",
     (damage) =>
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
@@ -3019,190 +3088,267 @@ describe("UsageService", () => {
         yield* Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const { stateDir } = yield* ServerConfig.ServerConfig;
-          const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
+          const legacy = NodePath.join(stateDir, "usage-scan-cache-v9.json");
           const original = yield* UsageService.make;
           assert.strictEqual(totalOutputTokens(yield* original.readSummary(WINDOW)), 5);
           yield* original.awaitPersisted;
-          const cache = decodeUnknownJsonString(yield* fs.readFileString(current)) as {
-            version: number;
-            files: Record<string, unknown>;
-            sources: Record<string, unknown>;
-          };
-          if (damage === "v10 file") cache.files["broken.jsonl"] = { unexpected: true };
-          else cache.sources["bad-root"] = { dir: false };
-          let corrupted = current;
+          const { path: snapshot, document: cache } = yield* onlySnapshot(stateDir);
+          if (damage === "current file") {
+            (cache.files as Record<string, unknown>)["broken.jsonl"] = { unexpected: true };
+          } else cache.sources["bad-root"] = { dir: false };
+          let damaged = snapshot;
           if (damage === "v9 source") {
             cache.version = 9;
-            corrupted = NodePath.join(stateDir, "usage-scan-cache-v9.json");
-            yield* fs.remove(current);
+            damaged = legacy;
+            yield* fs.remove(snapshot);
           }
           const bytes = encodeUnknownJsonString(cache);
-          yield* fs.writeFileString(corrupted, bytes);
+          yield* fs.writeFileString(damaged, bytes);
           yield* fs.remove(projects);
           yield* fs.remove(actual, { recursive: true });
 
-          const repaired = yield* UsageService.make;
-          assert.strictEqual(totalOutputTokens(yield* repaired.readSummary(WINDOW)), 5);
-          yield* repaired.awaitPersisted;
-          const names = yield* fs.readDirectory(stateDir);
-          const backups = names.filter((name) => name.startsWith(".usage-cache-unreadable-"));
-          assert.lengthOf(backups, 1);
-          assert.strictEqual(yield* fs.readFileString(NodePath.join(stateDir, backups[0]!)), bytes);
-          const persisted = decodeUnknownJsonString(
-            yield* fs.readFileString(current),
-          ) as typeof cache;
+          const answersPartially = Effect.gen(function* () {
+            const service = yield* UsageService.make;
+            const summary = yield* service.readSummary(WINDOW);
+            assert.strictEqual(totalOutputTokens(summary), 5);
+            assert.strictEqual(claudeSource(summary)?.status, "partial");
+            assert.include(claudeSource(summary)?.message ?? "", "only partly counted");
+            yield* service.awaitPersisted;
+          });
+          yield* answersPartially;
+          assert.isFalse(yield* fs.exists(legacy));
+          const stored = yield* readStore(stateDir);
+          const kept = stored.filter(({ raw }) => raw === bytes);
+          assert.lengthOf(kept, 1);
+          if (damage === "v9 source") {
+            assert.match(kept[0]!.name, /^legacy-.+-usage-scan-cache-v9\.json$/);
+          } else assert.strictEqual(kept[0]!.path, snapshot);
+          const written = stored.filter(({ raw }) => raw !== bytes);
+          assert.lengthOf(written, 1);
+          const persisted = decodeUnknownJsonString(written[0]!.raw) as StoredDocument;
           assert.strictEqual(persisted.version, USAGE_SCAN_CACHE_VERSION);
           assert.isUndefined(persisted.sources["bad-root"]);
           assert.isUndefined(persisted.files["broken.jsonl"]);
-          const restarted = yield* UsageService.make;
-          assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 5);
+          yield* answersPartially;
         }).pipe(Effect.provide(layerService({ prefix: "usage-cache-salvage", home, settings })));
       }).pipe(Effect.scoped),
   );
 
-  it.live("retries a failed initial cache load on the same service", () =>
+  it.live.each([
+    { change: "append", sibling: false, expected: 9 },
+    { change: "append", sibling: true, expected: 16 },
+    { change: "smaller rewrite", sibling: false, expected: 5 },
+  ] as const)(
+    "keeps a peer's later $change over a paused writer (sibling: $sibling)",
+    ({ change, sibling, expected }) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        const writeTranscript = (contents: string) =>
+          Effect.promise(async () => {
+            await NodeFSP.writeFile(transcript, contents);
+            await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+          });
+        yield* writeTranscript(claudeLine(1, change === "append" ? 5 : 12));
+        yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const only = NodePath.join(NodePath.dirname(transcript), "writer-only.jsonl");
+          const peer = yield* UsageService.make;
+          yield* peer.readSummary(WINDOW);
+          yield* peer.awaitPersisted;
+          if (sibling) yield* fs.writeFileString(only, claudeLine(3, 7));
+
+          const publishing = yield* Deferred.make<void>();
+          const resume = yield* Deferred.make<void>();
+          yield* Effect.addFinalizer(() => Deferred.succeed(resume, undefined));
+          let published = 0;
+          const writer = yield* UsageService.make.pipe(
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              rename: (from, to) =>
+                Effect.suspend(() =>
+                  isSnapshotPublish(stateDir, from, to) && published++ === 0
+                    ? Deferred.succeed(publishing, undefined).pipe(
+                        Effect.andThen(Deferred.await(resume)),
+                        Effect.andThen(fs.rename(from, to)),
+                      )
+                    : fs.rename(from, to),
+                ),
+            }),
+          );
+          yield* writer.readSummary(WINDOW);
+          yield* Deferred.await(publishing);
+
+          if (sibling) yield* fs.remove(only);
+          yield* writeTranscript(
+            change === "append" ? claudeLine(1, 5) + claudeLine(2, 4) : claudeLine(1, 5),
+          );
+          yield* TestClock.adjust("5 seconds");
+          assert.strictEqual(
+            totalOutputTokens(yield* peer.readSummary(WINDOW)),
+            change === "append" ? 9 : 5,
+          );
+          yield* peer.awaitPersisted;
+          const { path: correction } = yield* onlySnapshot(stateDir);
+
+          yield* Deferred.succeed(resume, undefined);
+          yield* writer.awaitPersisted;
+          assert.isTrue(yield* fs.exists(correction));
+          yield* fs.remove(transcript);
+          const restarted = yield* UsageService.make;
+          assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), expected);
+        }).pipe(
+          Effect.provide(layerService({ prefix: "usage-cache-paused-writer", home, settings })),
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live.each(["saves", "cannot save"] as const)(
+    "after a transient read failure, a shutdown that %s its dirty rows",
+    (outcome) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+        const logs = captureLogs();
+        yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const storeDir = storeDirOf(stateDir);
+          const peer = yield* UsageService.make;
+          yield* peer.readSummary(WINDOW);
+          yield* peer.awaitPersisted;
+
+          let deny = true;
+          let published = 0;
+          const blocked = yield* Deferred.make<void>();
+          yield* Effect.gen(function* () {
+            const service = yield* UsageService.make.pipe(
+              Effect.provideService(FileSystem.FileSystem, {
+                ...fs,
+                readFileString: (file, encoding) =>
+                  deny && NodePath.dirname(file) === storeDir
+                    ? Effect.fail(PERMISSION_DENIED("readFileString"))
+                    : fs.readFileString(file, encoding),
+                rename: (from, to) =>
+                  Effect.suspend(() => {
+                    if (!isSnapshotPublish(stateDir, from, to)) return fs.rename(from, to);
+                    published += 1;
+                    if (published === 2) {
+                      return Deferred.succeed(blocked, undefined).pipe(
+                        Effect.andThen(Effect.never),
+                      );
+                    }
+                    return published === 3 && outcome === "cannot save"
+                      ? Effect.fail(PERMISSION_DENIED("rename"))
+                      : fs.rename(from, to);
+                  }),
+              }),
+            );
+            const first = yield* service.readSummary(WINDOW);
+            assert.strictEqual(claudeSource(first)?.status, "partial");
+            yield* service.awaitPersisted;
+            assert.strictEqual(published, 1);
+
+            deny = false;
+            yield* fs.writeFileString(transcript, claudeLine(1, 5) + claudeLine(2, 7));
+            yield* TestClock.adjust("5 seconds");
+            assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 12);
+            yield* Deferred.await(blocked);
+          }).pipe(Effect.scoped);
+
+          assert.strictEqual(published, 3);
+          assert.deepStrictEqual(
+            logs.of("Error", "Could not finish saving transcript usage at shutdown"),
+            outcome === "saves" ? [] : [{ path: storeDir, unsavedRows: 1 }],
+          );
+          yield* fs.remove(transcript);
+          const restarted = yield* UsageService.make;
+          assert.strictEqual(
+            totalOutputTokens(yield* restarted.readSummary(WINDOW)),
+            outcome === "saves" ? 12 : 5,
+          );
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              layerService({ prefix: "usage-cache-shutdown-save", home, settings }),
+              logs.layer,
+            ),
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live("keeps a damaged older cache as a reported gap until it is removed", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
       yield* TestClock.setTime(CURSOR_NOW);
       yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      const logs = captureLogs();
+      const damagedText = "Saved transcript usage is damaged or from a newer version";
       yield* Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const { stateDir } = yield* ServerConfig.ServerConfig;
-        const seed = yield* UsageService.make;
-        yield* seed.readSummary(WINDOW);
-        yield* seed.awaitPersisted;
-        yield* fs.remove(transcript);
-
-        let attempts = 0;
-        const service = yield* UsageService.make.pipe(
-          Effect.provideService(FileSystem.FileSystem, {
-            ...fs,
-            makeDirectory: (directory, options) =>
-              directory === stateDir && ++attempts === 1
-                ? Effect.fail(
-                    PlatformError.systemError({
-                      _tag: "Unknown",
-                      module: "FileSystem",
-                      method: "makeDirectory",
-                    }),
-                  )
-                : fs.makeDirectory(directory, options),
-          }),
-        );
-        const failed = yield* Effect.flip(service.readSummary(WINDOW));
-        assert.strictEqual(failed.detail, "Saved transcript usage could not be loaded.");
-        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
-        assert.strictEqual(attempts, 2);
-      }).pipe(Effect.provide(layerService({ prefix: "usage-cache-load-retry", home, settings })));
-    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
-  );
-
-  it.live("waits past the stale lock period during both loading and persistence", () =>
-    Effect.gen(function* () {
-      const { transcript, settings, home } = yield* setup;
-      yield* TestClock.setTime(CURSOR_NOW);
-      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
-      yield* Effect.gen(function* () {
-        const { stateDir } = yield* ServerConfig.ServerConfig;
-        const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
-        const { acquireFileLock } = yield* Effect.promise(() =>
-          vi.importActual<typeof FileLock>("../provider/FileLock.ts"),
-        );
-        const waits = [yield* Deferred.make<void>(), yield* Deferred.make<void>()];
-        let beganAt: number | undefined;
-        let acquisitions = 0;
-        using _acquire = vi
-          .spyOn(FileLock, "acquireFileLock")
-          .mockImplementation((target, options) =>
-            Effect.gen(function* () {
-              if (target !== current || acquisitions >= waits.length) {
-                return yield* acquireFileLock(target, options);
-              }
-              const now = yield* Clock.currentTimeMillis;
-              beganAt ??= now;
-              yield* Deferred.succeed(waits[acquisitions]!, undefined);
-              if (now - beganAt < (options.stale ?? 0) + (options.update ?? 0)) {
-                return yield* new Cause.UnknownError({ code: "ELOCKED" });
-              }
-              yield* acquireFileLock(target, options);
-              acquisitions++;
-              beganAt = undefined;
-            }),
-          );
+        const archive = NodePath.join(stateDir, "usage-scan-cache-v10.json");
+        yield* fs.makeDirectory(stateDir, { recursive: true });
+        yield* fs.writeFileString(archive, "{");
         const service = yield* UsageService.make;
-        const initial = yield* service.readSummary(WINDOW).pipe(Effect.result, Effect.forkChild);
-        yield* Deferred.await(waits[0]!);
-        yield* TestClock.adjust("130 seconds");
-        const timeout = yield* Fiber.join(initial);
-        assert.strictEqual(timeout._tag === "Failure" && timeout.failure.reason, "scanPending");
-        yield* Deferred.await(waits[1]!);
-        yield* TestClock.adjust("130 seconds");
-        yield* service.awaitPersisted;
-        assert.strictEqual(acquisitions, 2);
-        assert.strictEqual(
-          totalOutputTokens(yield* service.readSummary({ ...WINDOW, awaitRefresh: true })),
-          5,
+        for (const _ of [1, 2]) {
+          const summary = yield* service.readSummary(WINDOW);
+          assert.strictEqual(totalOutputTokens(summary), 5);
+          assert.strictEqual(claudeSource(summary)?.status, "partial");
+          yield* service.awaitPersisted;
+          yield* TestClock.adjust("1 minute");
+        }
+        assert.isFalse(yield* fs.exists(archive));
+        const claimed = (yield* readStore(stateDir)).filter(({ name }) =>
+          name.startsWith("legacy-"),
         );
-      }).pipe(Effect.provide(layerService({ prefix: "usage-cache-stale-wait", home, settings })));
-    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
-  );
+        assert.lengthOf(claimed, 1);
+        assert.match(claimed[0]!.name, /-usage-scan-cache-v10\.json$/);
+        assert.strictEqual(claimed[0]!.raw, "{");
+        assert.lengthOf(logs.of("Error", damagedText), 1);
 
-  it.live("answers a scan while a persist waits for the cache lock", () =>
-    Effect.gen(function* () {
-      const { transcript, settings, home } = yield* setup;
-      yield* TestClock.setTime(CURSOR_NOW);
-      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
-      yield* Effect.gen(function* () {
-        const { stateDir } = yield* ServerConfig.ServerConfig;
-        const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
-        const { acquireFileLock } = yield* Effect.promise(() =>
-          vi.importActual<typeof FileLock>("../provider/FileLock.ts"),
-        );
-        const persistWaiting = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined));
-        let acquisitions = 0;
-        using _acquire = vi
-          .spyOn(FileLock, "acquireFileLock")
-          .mockImplementation((target, options) =>
-            Effect.gen(function* () {
-              if (target === current && acquisitions++ === 1) {
-                yield* Deferred.succeed(persistWaiting, undefined);
-                yield* Deferred.await(release);
-              }
-              return yield* acquireFileLock(target, options);
-            }),
-          );
-        const service = yield* UsageService.make;
-        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
-        yield* Deferred.await(persistWaiting);
-        yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 12)));
-        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 12);
-        yield* Deferred.succeed(release, undefined);
+        yield* fs.remove(claimed[0]!.path);
+        yield* service.readSummary(WINDOW);
         yield* service.awaitPersisted;
-        const restarted = yield* UsageService.make;
-        assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 12);
+        assert.deepStrictEqual(
+          logs.of(
+            "Warn",
+            "Damaged saved transcript usage was removed; the part that could not be read is not counted",
+          ),
+          [{ path: claimed[0]!.path }],
+        );
+        const cleared = yield* service.readSummary(WINDOW);
+        assert.strictEqual(totalOutputTokens(cleared), 5);
+        assert.strictEqual(claudeSource(cleared)?.status, "ok");
+        assert.deepStrictEqual(logs.of("Info", "Recovered saved transcript usage"), []);
       }).pipe(
-        Effect.provide(layerService({ prefix: "usage-cache-scan-during-persist", home, settings })),
+        Effect.provide(
+          Layer.mergeAll(
+            layerService({ prefix: "usage-cache-damaged-archive", home, settings }),
+            logs.layer,
+          ),
+        ),
       );
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
-  it.live("serializes concurrent startup around legacy claims and preserves deleted history", () =>
+  it.live("claims a legacy cache once across concurrent startups and keeps its rows", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
       yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
       yield* Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const { stateDir } = yield* ServerConfig.ServerConfig;
-        const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
         const archive = NodePath.join(stateDir, "usage-scan-cache-v9.json");
         const seed = yield* UsageService.make;
         yield* seed.readSummary(WINDOW);
         yield* seed.awaitPersisted;
-        const saved = decodeUnknownJsonString(yield* fs.readFileString(current)) as object;
-        yield* fs.writeFileString(archive, encodeUnknownJsonString({ ...saved, version: 9 }));
-        yield* fs.remove(current);
+        const { path: snapshot, document } = yield* onlySnapshot(stateDir);
+        yield* fs.writeFileString(archive, encodeUnknownJsonString({ ...document, version: 9 }));
+        yield* fs.remove(snapshot);
         yield* fs.remove(transcript);
 
         const claiming = yield* Deferred.make<void>();
@@ -3221,15 +3367,13 @@ describe("UsageService", () => {
           }),
         );
         yield* Deferred.await(claiming);
-        assert.isTrue(yield* fs.exists(current + ".lock"));
         const firstRead = yield* first.readSummary(WINDOW).pipe(Effect.forkChild);
         const second = yield* UsageService.make;
-        const secondRead = yield* second.readSummary(WINDOW).pipe(Effect.forkChild);
+        assert.strictEqual(totalOutputTokens(yield* second.readSummary(WINDOW)), 5);
+        yield* second.awaitPersisted;
         yield* Deferred.succeed(release, undefined);
         assert.strictEqual(totalOutputTokens(yield* Fiber.join(firstRead)), 5);
-        assert.strictEqual(totalOutputTokens(yield* Fiber.join(secondRead)), 5);
         yield* first.awaitPersisted;
-        yield* second.awaitPersisted;
         assert.isFalse(yield* fs.exists(archive));
         const restarted = yield* UsageService.make;
         assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 5);
@@ -3239,24 +3383,23 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("keeps the larger Claude archive at equal modification time", () =>
+  it.live("keeps the larger legacy row when two older caches observed it at once", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
       yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
       yield* Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const { stateDir } = yield* ServerConfig.ServerConfig;
-        const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
         const archive = NodePath.join(stateDir, "usage-scan-cache-v9.json");
-        const newerArchive = NodePath.join(stateDir, "usage-scan-cache-v10.json");
         const seed = yield* UsageService.make;
         yield* seed.readSummary(WINDOW);
         yield* seed.awaitPersisted;
-        const saved = decodeUnknownJsonString(yield* fs.readFileString(current)) as {
-          files: Record<string, { s: number; r: unknown[][] }>;
-        };
-        yield* fs.remove(current);
-        yield* fs.writeFileString(newerArchive, encodeUnknownJsonString({ ...saved, version: 10 }));
+        const { path: snapshot, document: saved } = yield* onlySnapshot(stateDir);
+        yield* fs.remove(snapshot);
+        yield* fs.writeFileString(
+          NodePath.join(stateDir, "usage-scan-cache-v10.json"),
+          encodeUnknownJsonString({ ...saved, version: 10 }),
+        );
         const copied = saved.files[transcript]!;
         copied.s *= 2;
         copied.r[0]![6] = 12;
@@ -3270,72 +3413,91 @@ describe("UsageService", () => {
         const restarted = yield* UsageService.make;
         assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 12);
       }).pipe(
-        Effect.provide(layerService({ prefix: "usage-cache-larger-claude", home, settings })),
+        Effect.provide(layerService({ prefix: "usage-cache-larger-legacy", home, settings })),
       );
     }).pipe(Effect.scoped),
   );
 
   it.live.each(["listing", "claim"] as const)(
-    "reports a saved Usage gap after a denied archive %s",
+    "reports a denied %s once per input and retries it later",
     (operation) =>
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
         yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
-        const errors: unknown[] = [];
-        const logger = Logger.make(({ message, logLevel }) => {
-          if (logLevel === "Error") errors.push(message);
-        });
+        const logs = captureLogs();
         yield* Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const { stateDir } = yield* ServerConfig.ServerConfig;
-          const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
-          const archive = NodePath.join(stateDir, "usage-scan-cache-v9.json");
+          const storeDir = storeDirOf(stateDir);
+          const archives = ["usage-scan-cache-v9.json", "usage-scan-cache-v10.json"].map((name) =>
+            NodePath.join(stateDir, name),
+          );
           const seed = yield* UsageService.make;
           yield* seed.readSummary(WINDOW);
           yield* seed.awaitPersisted;
-          const saved = decodeUnknownJsonString(yield* fs.readFileString(current)) as object;
-          yield* fs.writeFileString(archive, encodeUnknownJsonString({ ...saved, version: 9 }));
-          yield* fs.remove(current);
+          const { path: snapshot, document } = yield* onlySnapshot(stateDir);
+          yield* fs.writeFileString(
+            archives[0]!,
+            encodeUnknownJsonString({ ...document, version: 9 }),
+          );
+          yield* fs.writeFileString(
+            archives[1]!,
+            encodeUnknownJsonString({ ...document, version: 10, files: {} }),
+          );
+          yield* fs.remove(snapshot);
           yield* fs.remove(transcript);
-          const denied = PlatformError.systemError({
-            _tag: "PermissionDenied",
-            module: "FileSystem",
-            method: operation,
-          });
+
           let deny = true;
           let attempts = 0;
+          const refuse = (method: string) =>
+            Effect.sync(() => attempts++).pipe(
+              Effect.andThen(Effect.fail(PERMISSION_DENIED(method))),
+            );
           const service = yield* UsageService.make.pipe(
             Effect.provideService(FileSystem.FileSystem, {
               ...fs,
               readDirectory: (directory, options) =>
-                deny && operation === "listing" && directory === stateDir
-                  ? Effect.sync(() => attempts++).pipe(Effect.andThen(Effect.fail(denied)))
+                deny &&
+                operation === "listing" &&
+                (directory === stateDir || directory === storeDir)
+                  ? refuse("readDirectory")
                   : fs.readDirectory(directory, options),
               rename: (from, to) =>
-                deny && operation === "claim" && from === archive
-                  ? Effect.sync(() => attempts++).pipe(Effect.andThen(Effect.fail(denied)))
+                deny && operation === "claim" && archives.includes(from)
+                  ? refuse("rename")
                   : fs.rename(from, to),
             }),
           );
           const summary = yield* service.readSummary(WINDOW);
-          const source = summary.sources.find((item) => item.fingerprint.provider === "claude");
           assert.strictEqual(totalOutputTokens(summary), 0);
-          assert.strictEqual(source?.status, "partial");
-          assert.include(source?.message ?? "", "Some saved usage could not be read.");
-          assert.deepInclude(errors, [
-            "Could not read some saved transcript usage",
-            {
-              path: operation === "listing" ? stateDir : archive,
-              cause: denied,
-            },
-          ]);
+          assert.strictEqual(claudeSource(summary)?.status, "partial");
+          assert.include(
+            claudeSource(summary)?.message ?? "",
+            operation === "listing"
+              ? "Saved usage could not be listed."
+              : "Older saved usage could not be moved into the current cache.",
+          );
+          const failures = () =>
+            logs
+              .of(
+                "Error",
+                operation === "listing"
+                  ? "Could not list saved transcript usage"
+                  : "Could not move older saved transcript usage into the current cache",
+              )
+              .map((fields) => (fields as { path: string }).path);
+          assert.sameMembers(failures(), operation === "listing" ? [stateDir, storeDir] : archives);
           yield* service.awaitPersisted;
-          assert.isTrue(yield* fs.exists(archive));
+          for (const archive of archives) assert.isTrue(yield* fs.exists(archive));
           const initialAttempts = attempts;
-          const initialErrors = errors.length;
-          for (let request = 0; request < 5; request++) yield* service.readSummary(WINDOW);
+          for (let request = 0; request < 5; request++) {
+            yield* service.readSummary(WINDOW);
+            yield* service.awaitPersisted;
+          }
           assert.strictEqual(attempts, initialAttempts);
-          assert.strictEqual(errors.length, initialErrors);
+          assert.lengthOf(failures(), 2);
+
           const restarted = yield* UsageService.make;
           assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 5);
           yield* restarted.awaitPersisted;
@@ -3347,16 +3509,19 @@ describe("UsageService", () => {
           yield* TestClock.adjust("1 minute");
           const recovered = yield* service.readSummary(WINDOW);
           assert.strictEqual(totalOutputTokens(recovered), 12);
-          assert.strictEqual(
-            recovered.sources.find((item) => item.fingerprint.provider === "claude")?.status,
-            "ok",
-          );
+          assert.strictEqual(claudeSource(recovered)?.status, "ok");
+          if (operation === "listing") {
+            assert.sameDeepMembers(logs.of("Info", "Recovered saved transcript usage"), [
+              { path: stateDir },
+              { path: storeDir },
+            ]);
+          }
           yield* service.awaitPersisted;
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
-              layerService({ prefix: "usage-cache-denied-archive", home, settings }),
-              Logger.layer([logger], { mergeWithExisting: false }),
+              layerService({ prefix: "usage-cache-denied-input", home, settings }),
+              logs.layer,
             ),
           ),
         );
@@ -3395,7 +3560,7 @@ describe("UsageService", () => {
   );
 
   it.live.each(["deleted usage", "live reparse"] as const)(
-    "isolates the new cache from an overlapping v10 writer with %s",
+    "claims a v10 cache an older build writes after the upgrade, with %s",
     (scenario) =>
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
@@ -3407,17 +3572,14 @@ describe("UsageService", () => {
         yield* Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const { stateDir } = yield* ServerConfig.ServerConfig;
-          const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
           const previous = NodePath.join(stateDir, "usage-scan-cache-v10.json");
           const archive = NodePath.join(stateDir, "usage-scan-cache-v9.json");
           const seed = yield* UsageService.make;
           yield* seed.readSummary(WINDOW);
           yield* seed.awaitPersisted;
-          const saved = decodeUnknownJsonString(yield* fs.readFileString(current)) as {
-            files: Record<string, { r: unknown[][]; nr?: true }>;
-          };
+          const { path: snapshot, document: saved } = yield* onlySnapshot(stateDir);
           const entry = saved.files[transcript]!;
-          yield* fs.remove(current);
+          yield* fs.remove(snapshot);
           yield* fs.writeFileString(
             previous,
             encodeUnknownJsonString({ ...saved, version: 10, files: {} }),
@@ -3437,6 +3599,7 @@ describe("UsageService", () => {
           if (scenario === "deleted usage") assert.strictEqual(totalOutputTokens(loaded), 5);
           yield* updated.awaitPersisted;
           assert.isFalse(yield* fs.exists(archive));
+          assert.isFalse(yield* fs.exists(previous));
           const sibling = NodePath.join(NodePath.dirname(transcript), "old-build.jsonl");
           const { nr: _reparse, ...legacyEntry } = entry;
           const records = entry.r.map((record) => [...record]);
@@ -3491,51 +3654,6 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
-  it.live("saves dirty usage at shutdown after a lock wait failed", () =>
-    Effect.gen(function* () {
-      const { transcript, settings, home } = yield* setup;
-      yield* TestClock.setTime(CURSOR_NOW);
-      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
-      yield* Effect.gen(function* () {
-        const { stateDir } = yield* ServerConfig.ServerConfig;
-        const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
-        const { acquireFileLock: original } = yield* Effect.promise(() =>
-          vi.importActual<typeof FileLock>("../provider/FileLock.ts"),
-        );
-        const attempted = yield* Deferred.make<void>();
-        let busy = false;
-        using _acquire = vi
-          .spyOn(FileLock, "acquireFileLock")
-          .mockImplementation((target, options) =>
-            target === current && busy
-              ? Deferred.succeed(attempted, undefined).pipe(
-                  Effect.andThen(Effect.fail(new Cause.UnknownError({ code: "ELOCKED" }))),
-                )
-              : original(target, options),
-          );
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const service = yield* UsageService.make;
-            assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
-            yield* service.awaitPersisted;
-            busy = true;
-            yield* Effect.promise(() => NodeFSP.appendFile(transcript, claudeLine(2, 7)));
-            assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 12);
-            yield* Deferred.await(attempted);
-            yield* TestClock.adjust("130 seconds");
-            yield* service.awaitPersisted;
-            busy = false;
-            yield* Effect.promise(() => NodeFSP.rm(transcript));
-          }),
-        );
-        const restarted = yield* UsageService.make;
-        assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 12);
-      }).pipe(
-        Effect.provide(layerService({ prefix: "usage-cache-shutdown-retry", home, settings })),
-      );
-    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
-  );
-
   it.live.each(["peer", "migration", "late archive", "unrelated peer write"] as const)(
     "keeps a verified correction ahead of a stale %s",
     (scenario) =>
@@ -3549,16 +3667,15 @@ describe("UsageService", () => {
         yield* Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const { stateDir } = yield* ServerConfig.ServerConfig;
-          const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
           const archive = NodePath.join(stateDir, "usage-scan-cache-v10.json");
           const seed = yield* UsageService.make;
           assert.strictEqual(totalOutputTokens(yield* seed.readSummary(WINDOW)), 12);
           yield* seed.awaitPersisted;
-          const original = decodeUnknownJsonString(yield* fs.readFileString(current)) as object;
+          const { path: snapshot, document: original } = yield* onlySnapshot(stateDir);
           const stale = encodeUnknownJsonString({ ...original, version: 10 });
           if (scenario === "migration") {
             yield* fs.writeFileString(archive, stale);
-            yield* fs.remove(current);
+            yield* fs.remove(snapshot);
           }
           const writer = yield* UsageService.make;
           assert.strictEqual(totalOutputTokens(yield* writer.readSummary(WINDOW)), 12);
@@ -3600,7 +3717,7 @@ describe("UsageService", () => {
       }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
-  it.live("prunes a late archive before writing the cache at startup", () =>
+  it.live("prunes expired rows before every write, the shutdown write included", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
       yield* TestClock.setTime(CURSOR_NOW);
@@ -3611,132 +3728,109 @@ describe("UsageService", () => {
       yield* Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const { stateDir } = yield* ServerConfig.ServerConfig;
-        const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
         const archive = NodePath.join(stateDir, "usage-scan-cache-v10.json");
         const seed = yield* UsageService.make;
         yield* seed.readSummary(WINDOW);
         yield* seed.awaitPersisted;
-        const original = decodeUnknownJsonString(yield* fs.readFileString(current)) as object;
+        const { document: original } = yield* onlySnapshot(stateDir);
         yield* fs.remove(transcript);
         yield* TestClock.adjust("93 days");
         yield* seed.readSummary(WINDOW);
         yield* seed.awaitPersisted;
+        assert.isEmpty(yield* storedFileKeys(stateDir));
         yield* fs.writeFileString(archive, encodeUnknownJsonString({ ...original, version: 10 }));
-        const migrated = yield* Deferred.make<void>();
-        yield* UsageService.make.pipe(
-          Effect.provideService(FileSystem.FileSystem, {
-            ...fs,
-            remove: (file, options) =>
-              fs
-                .remove(file, options)
-                .pipe(
-                  Effect.tap(() =>
-                    file.endsWith("usage-scan-cache-v10.json")
-                      ? Deferred.succeed(migrated, undefined)
-                      : Effect.void,
-                  ),
-                ),
-          }),
+
+        yield* Effect.scoped(
+          Effect.flatMap(UsageService.make, (service) => service.awaitPersisted),
         );
-        yield* Deferred.await(migrated);
-        const written = decodeUnknownJsonString(yield* fs.readFileString(current)) as {
-          files: Record<string, unknown>;
-        };
-        assert.isEmpty(Object.keys(written.files));
-      }).pipe(
-        Effect.provide(layerService({ prefix: "usage-cache-expired-import", home, settings })),
-      );
+        assert.isFalse(yield* fs.exists(archive));
+        assert.isEmpty(yield* storedFileKeys(stateDir));
+        assert.isFalse((yield* readStore(stateDir)).some(({ name }) => name.startsWith("legacy-")));
+      }).pipe(Effect.provide(layerService({ prefix: "usage-cache-retention", home, settings })));
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
-  it.live.each(["current decode", "legacy decode", "persist read"] as const)(
-    "reports and retries a saved Usage gap from %s",
-    (scenario) =>
-      Effect.gen(function* () {
-        const { transcript, settings, home } = yield* setup;
-        yield* TestClock.setTime(CURSOR_NOW);
-        yield* Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const { stateDir } = yield* ServerConfig.ServerConfig;
-          const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
-          const archive = NodePath.join(stateDir, "usage-scan-cache-v10.json");
-          yield* fs.writeFileString(transcript, claudeLine(1, 5));
-          const seed = yield* UsageService.make;
-          yield* seed.readSummary(WINDOW);
-          yield* seed.awaitPersisted;
-          const saved = yield* fs.readFileString(current);
-          yield* fs.remove(transcript);
-          if (scenario === "legacy decode") {
-            yield* fs.remove(current);
-            yield* fs.writeFileString(archive, "{");
-          } else if (scenario === "current decode") {
-            yield* fs.writeFileString(current, "{");
-          } else {
-            yield* fs.remove(current);
-          }
-
-          const denied = PlatformError.systemError({
-            _tag: "PermissionDenied",
-            module: "FileSystem",
-            method: "readFileString",
-          });
-          let deny = false;
-          const service = yield* UsageService.make.pipe(
-            Effect.provideService(FileSystem.FileSystem, {
-              ...fs,
-              readFileString: (file, encoding) =>
-                deny && file === current ? Effect.fail(denied) : fs.readFileString(file, encoding),
-            }),
-          );
-          if (scenario === "persist read") {
-            yield* service.readSummary(WINDOW);
-            yield* service.awaitPersisted;
-            yield* fs.writeFileString(current + ".peer", saved);
-            yield* fs.rename(current + ".peer", current);
-            deny = true;
-            yield* fs.writeFileString(
-              NodePath.join(NodePath.dirname(transcript), "local.jsonl"),
-              claudeLine(2, 7),
-            );
-            yield* TestClock.adjust("5 seconds");
-            yield* service.readSummary(WINDOW);
-            yield* service.awaitPersisted;
-          }
-          const partial = yield* service.readSummary(WINDOW);
-          const claude = partial.sources.find((source) => source.fingerprint.provider === "claude");
-          assert.strictEqual(claude?.status, "partial");
-          assert.include(claude?.message ?? "", "Some saved usage could not be read.");
-          if (scenario !== "persist read") {
-            yield* service.awaitPersisted;
-            yield* fs.writeFileString(current + ".peer", saved);
-            yield* fs.rename(current + ".peer", current);
-          }
-          deny = false;
-          yield* TestClock.adjust("1 minute");
-          const recovered = yield* service.readSummary(WINDOW);
-          assert.strictEqual(totalOutputTokens(recovered), scenario === "persist read" ? 12 : 5);
-          assert.strictEqual(
-            recovered.sources.find((source) => source.fingerprint.provider === "claude")?.status,
-            "ok",
-          );
-        }).pipe(Effect.provide(layerService({ prefix: "usage-cache-read-gap", home, settings })));
-      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  it.live("answers a warm scan while a sync is blocked on disk", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const publishing = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined));
+        let published = 0;
+        const service = yield* UsageService.make.pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            rename: (from, to) =>
+              Effect.suspend(() =>
+                isSnapshotPublish(stateDir, from, to) && published++ === 0
+                  ? Deferred.succeed(publishing, undefined).pipe(
+                      Effect.andThen(Deferred.await(release)),
+                      Effect.andThen(fs.rename(from, to)),
+                    )
+                  : fs.rename(from, to),
+              ),
+          }),
+        );
+        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
+        yield* Deferred.await(publishing);
+        yield* fs.writeFileString(transcript, claudeLine(1, 12));
+        yield* TestClock.adjust("5 seconds");
+        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 12);
+        yield* Deferred.succeed(release, undefined);
+        yield* service.awaitPersisted;
+        yield* fs.remove(transcript);
+        const restarted = yield* UsageService.make;
+        assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 12);
+      }).pipe(Effect.provide(layerService({ prefix: "usage-cache-warm-scan", home, settings })));
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
-  it.live("reuses the current cache for unchanged persists and reads a peer replacement", () =>
+  it.live("keeps a re-parsed row ahead of a peer's older one after the clock steps back", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const peer = yield* UsageService.make;
+        assert.strictEqual(totalOutputTokens(yield* peer.readSummary(WINDOW)), 5);
+        yield* peer.awaitPersisted;
+
+        yield* TestClock.setTime(CURSOR_NOW - HOUR_MS);
+        yield* fs.writeFileString(transcript, claudeLine(1, 5) + claudeLine(2, 7));
+        const stepped = yield* UsageService.make;
+        assert.strictEqual(totalOutputTokens(yield* stepped.readSummary(WINDOW)), 12);
+        yield* stepped.awaitPersisted;
+
+        yield* fs.remove(transcript);
+        yield* peer.readSummary(WINDOW);
+        yield* peer.awaitPersisted;
+        const restarted = yield* UsageService.make;
+        assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 12);
+      }).pipe(Effect.provide(layerService({ prefix: "usage-cache-clock-step", home, settings })));
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live("reads each saved snapshot name at most once", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
       yield* TestClock.setTime(CURSOR_NOW);
       yield* Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const { stateDir } = yield* ServerConfig.ServerConfig;
-        const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
-        let decoded = 0;
+        const reads = new Map<string, number>();
         const service = yield* UsageService.make.pipe(
           Effect.provideService(FileSystem.FileSystem, {
             ...fs,
             readFileString: (file, encoding) => {
-              if (file === current) decoded++;
+              if (NodePath.dirname(file) === storeDirOf(stateDir)) {
+                reads.set(file, (reads.get(file) ?? 0) + 1);
+              }
               return fs.readFileString(file, encoding);
             },
           }),
@@ -3747,51 +3841,195 @@ describe("UsageService", () => {
         yield* fs.writeFileString(transcript, claudeLine(1, 12));
         yield* service.readSummary(WINDOW);
         yield* service.awaitPersisted;
-        assert.strictEqual(decoded, 0);
+        assert.strictEqual(reads.size, 0);
 
         const peer = yield* UsageService.make;
-        yield* fs.writeFileString(
-          NodePath.join(NodePath.dirname(transcript), "peer.jsonl"),
-          claudeLine(2, 7),
-        );
+        const peerTranscript = NodePath.join(NodePath.dirname(transcript), "peer.jsonl");
+        yield* fs.writeFileString(peerTranscript, claudeLine(2, 7));
         yield* peer.readSummary(WINDOW);
         yield* peer.awaitPersisted;
-        yield* fs.remove(NodePath.join(NodePath.dirname(transcript), "peer.jsonl"));
+        const { path: peerSnapshot } = yield* onlySnapshot(stateDir);
+        yield* fs.remove(peerTranscript);
         yield* fs.writeFileString(transcript, claudeLine(1, 30));
-        yield* service.readSummary(WINDOW);
-        yield* service.awaitPersisted;
-        assert.strictEqual(decoded, 1);
+        for (const _ of [1, 2, 3]) {
+          yield* service.readSummary(WINDOW);
+          yield* service.awaitPersisted;
+        }
+        assert.deepStrictEqual([...reads], [[peerSnapshot, 1]]);
         assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 37);
-      }).pipe(Effect.provide(layerService({ prefix: "usage-cache-peer-stat", home, settings })));
+      }).pipe(Effect.provide(layerService({ prefix: "usage-cache-read-once", home, settings })));
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
-  it.live("leaves a newer current cache untouched after scanning", () =>
+  it.live("keeps a snapshot from a newer version and reports it", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
       yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
       yield* Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const { stateDir } = yield* ServerConfig.ServerConfig;
-        const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
         const bytes = encodeUnknownJsonString({
           version: USAGE_SCAN_CACHE_VERSION + 1,
           future: true,
         });
-        yield* fs.writeFileString(current, bytes);
+        const future = yield* seedSnapshot(stateDir, bytes);
         const service = yield* UsageService.make;
-        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
+        const summary = yield* service.readSummary(WINDOW);
+        assert.strictEqual(totalOutputTokens(summary), 5);
+        assert.strictEqual(claudeSource(summary)?.status, "partial");
+        assert.include(claudeSource(summary)?.message ?? "", "from a newer version");
         yield* service.awaitPersisted;
-        assert.strictEqual(yield* fs.readFileString(current), bytes);
-        assert.isFalse(
-          (yield* fs.readDirectory(stateDir)).some((name) =>
-            name.startsWith(".usage-cache-unreadable-"),
-          ),
-        );
+        assert.strictEqual(yield* fs.readFileString(future), bytes);
       }).pipe(
         Effect.provide(layerService({ prefix: "usage-cache-future-version", home, settings })),
       );
     }).pipe(Effect.scoped),
+  );
+
+  it.live.each(["first load", "persist"] as const)(
+    "retries a saved snapshot the %s could not read",
+    (stage) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+        const logs = captureLogs();
+        yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const storeDir = storeDirOf(stateDir);
+          let deny = false;
+          const unread: string[] = [];
+          if (stage === "first load") {
+            const seed = yield* UsageService.make;
+            yield* seed.readSummary(WINDOW);
+            yield* seed.awaitPersisted;
+            unread.push((yield* onlySnapshot(stateDir)).path);
+            yield* fs.remove(transcript);
+            deny = true;
+          }
+          const service = yield* UsageService.make.pipe(
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              readFileString: (file, encoding) =>
+                deny && NodePath.dirname(file) === storeDir
+                  ? Effect.fail(PERMISSION_DENIED("readFileString"))
+                  : fs.readFileString(file, encoding),
+            }),
+          );
+          yield* service.readSummary(WINDOW);
+          yield* service.awaitPersisted;
+          if (stage === "persist") {
+            const { document } = yield* onlySnapshot(stateDir);
+            const row = document.files[transcript]!;
+            for (const [name, tokens] of [
+              ["gone-a.jsonl", 7],
+              ["gone-b.jsonl", 4],
+            ] as const) {
+              const records = row.r.map((record) => [...record]);
+              records[0]![6] = tokens;
+              records[0]![8] = `event-${name}`;
+              unread.push(
+                yield* seedSnapshot(
+                  stateDir,
+                  encodeUnknownJsonString({
+                    ...document,
+                    files: {
+                      [NodePath.join(NodePath.dirname(transcript), name)]: { ...row, r: records },
+                    },
+                  }),
+                ),
+              );
+            }
+            deny = true;
+            yield* TestClock.adjust("5 seconds");
+            yield* service.readSummary(WINDOW);
+            yield* service.awaitPersisted;
+          }
+          const partial = yield* service.readSummary(WINDOW);
+          assert.strictEqual(claudeSource(partial)?.status, "partial");
+          assert.include(
+            claudeSource(partial)?.message ?? "",
+            "Some saved usage could not be read.",
+          );
+          assert.sameMembers(
+            logs
+              .of("Error", "Could not read some saved transcript usage")
+              .map((fields) => (fields as { path: string }).path),
+            unread,
+          );
+
+          deny = false;
+          yield* TestClock.adjust("1 minute");
+          const recovered = yield* service.readSummary(WINDOW);
+          assert.strictEqual(totalOutputTokens(recovered), stage === "persist" ? 16 : 5);
+          assert.strictEqual(claudeSource(recovered)?.status, "ok");
+          assert.sameDeepMembers(
+            logs.of("Info", "Recovered saved transcript usage"),
+            unread.map((path) => ({ path })),
+          );
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              layerService({ prefix: "usage-cache-read-gap", home, settings }),
+              logs.layer,
+            ),
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live.each([
+    { misses: 1, status: "ok" },
+    { misses: Infinity, status: "partial" },
+  ] as const)(
+    "relists the store when a listed snapshot disappears ($misses misses)",
+    ({ misses, status }) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+        yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const seed = yield* UsageService.make;
+          yield* seed.readSummary(WINDOW);
+          yield* seed.awaitPersisted;
+          const { path: snapshot } = yield* onlySnapshot(stateDir);
+          yield* fs.remove(transcript);
+          let missed = 0;
+          const service = yield* UsageService.make.pipe(
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              readFileString: (file, encoding) =>
+                Effect.suspend(() =>
+                  file === snapshot && missed < misses
+                    ? Effect.sync(() => missed++).pipe(
+                        Effect.andThen(
+                          Effect.fail(
+                            PlatformError.systemError({
+                              _tag: "NotFound",
+                              module: "FileSystem",
+                              method: "readFileString",
+                            }),
+                          ),
+                        ),
+                      )
+                    : fs.readFileString(file, encoding),
+                ),
+            }),
+          );
+          const summary = yield* service.readSummary(WINDOW);
+          assert.strictEqual(claudeSource(summary)?.status, status);
+          if (status === "ok") assert.strictEqual(totalOutputTokens(summary), 5);
+          else
+            assert.include(
+              claudeSource(summary)?.message ?? "",
+              "Saved usage could not be listed.",
+            );
+          yield* service.awaitPersisted;
+          assert.strictEqual(missed, status === "ok" ? 1 : 4);
+        }).pipe(Effect.provide(layerService({ prefix: "usage-cache-relist", home, settings })));
+      }).pipe(Effect.scoped),
   );
 
   it.live.each([
@@ -3800,81 +4038,72 @@ describe("UsageService", () => {
     { offset: 0, size: 2000, expected: 5 },
     { offset: 0, size: 0, expected: 5 },
     { offset: 0, size: -1, expected: 5 },
-  ])("retires older caches using whole file state ($offset, $size)", ({ offset, size, expected }) =>
-    Effect.gen(function* () {
-      const { settings, home } = yield* setup;
-      const sessions = NodePath.join(home, "codex", "sessions");
-      const transcript = NodePath.join(sessions, "run.jsonl");
-      yield* Effect.promise(async () => {
-        await NodeFSP.mkdir(sessions, { recursive: true });
-        const lines = [
-          { type: "session_meta", payload: { id: "cache-session", model_provider: "openai" } },
-          { type: "turn_context", payload: { model: "gpt-6-astra" } },
-          {
-            type: "event_msg",
-            timestamp: "2026-08-01T10:00:00Z",
-            payload: {
-              type: "token_count",
-              info: { last_token_usage: { input_tokens: 0, output_tokens: 5 } },
+  ])(
+    "ranks a v9 row against the current one by when it was observed ($offset, $size)",
+    ({ offset, size, expected }) =>
+      Effect.gen(function* () {
+        const { settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        const sessions = NodePath.join(home, "codex", "sessions");
+        const transcript = NodePath.join(sessions, "run.jsonl");
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(sessions, { recursive: true });
+          const lines = [
+            { type: "session_meta", payload: { id: "cache-session", model_provider: "openai" } },
+            { type: "turn_context", payload: { model: "gpt-6-astra" } },
+            {
+              type: "event_msg",
+              timestamp: "2026-08-01T10:00:00Z",
+              payload: {
+                type: "token_count",
+                info: { last_token_usage: { input_tokens: 0, output_tokens: 5 } },
+              },
             },
-          },
-        ];
-        await NodeFSP.writeFile(
-          transcript,
-          lines.map((line) => encodeUnknownJsonString(line)).join("\n") + "\n",
+          ];
+          await NodeFSP.writeFile(
+            transcript,
+            lines.map((line) => encodeUnknownJsonString(line)).join("\n") + "\n",
+          );
+          await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+        });
+        yield* Effect.gen(function* () {
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const fs = yield* FileSystem.FileSystem;
+          const original = yield* UsageService.make;
+          yield* original.readSummary(WINDOW);
+          yield* original.awaitPersisted;
+          const { document: saved } = yield* onlySnapshot(stateDir);
+          const entry = saved.files[transcript]!;
+          delete entry.oa;
+          entry.m += offset;
+          if (size < 0) entry.s = size;
+          else entry.s += size;
+          entry.r[0]![6] = 12;
+          yield* fs.writeFileString(
+            NodePath.join(stateDir, "usage-scan-cache-v9.json"),
+            encodeUnknownJsonString({ ...saved, version: 9 }),
+          );
+          yield* fs.writeFileString(NodePath.join(stateDir, "usage-scan-cache-v8.json"), "{");
+          yield* fs.remove(transcript);
+
+          const service = yield* UsageService.make;
+          const summary = yield* service.readSummary(WINDOW);
+          assert.strictEqual(totalOutputTokens(summary), expected);
+          assert.strictEqual(claudeSource(summary)?.status, "partial");
+          yield* service.awaitPersisted;
+          assert.isFalse((yield* fs.readDirectory(stateDir)).some(isLegacyScanCacheFileName));
+          const damaged = (yield* readStore(stateDir)).filter(({ name }) =>
+            name.startsWith("legacy-"),
+          );
+          assert.lengthOf(damaged, 1);
+          assert.match(damaged[0]!.name, /-usage-scan-cache-v8\.json$/);
+          assert.strictEqual(damaged[0]!.raw, "{");
+          const restarted = yield* UsageService.make;
+          assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), expected);
+        }).pipe(
+          Effect.provide(layerService({ prefix: "usage-cache-file-precedence", home, settings })),
         );
-      });
-      yield* Effect.gen(function* () {
-        const { stateDir } = yield* ServerConfig.ServerConfig;
-        const current = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
-        const malformed = NodePath.join(stateDir, "usage-scan-cache-v8.json");
-        const fs = yield* FileSystem.FileSystem;
-        const original = yield* UsageService.make;
-        yield* original.readSummary(WINDOW);
-        yield* original.awaitPersisted;
-        const saved = decodeUnknownJsonString(yield* fs.readFileString(current)) as {
-          files: Record<string, { m: number; s: number; r: unknown[][] }>;
-        };
-        const entry = saved.files[transcript]!;
-        entry.m += offset;
-        if (size < 0) entry.s = size;
-        else entry.s += size;
-        entry.r[0]![6] = 12;
-        yield* fs.writeFileString(
-          NodePath.join(stateDir, "usage-scan-cache-v9.json"),
-          encodeUnknownJsonString({ ...saved, version: 9 }),
-        );
-        yield* fs.writeFileString(malformed, "{");
-        yield* fs.remove(transcript);
-        const opened: string[] = [];
-        const service = yield* UsageService.make.pipe(
-          Effect.provideService(FileSystem.FileSystem, {
-            ...fs,
-            open: (file, options) => {
-              if (file === current) opened.push(options?.flag ?? "r");
-              return fs.open(file, options);
-            },
-          }),
-        );
-        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), expected);
-        yield* service.awaitPersisted;
-        assert.deepStrictEqual(opened, ["r+"]);
-        const names = yield* fs.readDirectory(stateDir);
-        assert.isFalse(
-          names.some(
-            (name) =>
-              name.startsWith(".usage-cache-retiring-") || name === "usage-scan-cache-v9.json",
-          ),
-        );
-        const invalid = names.filter((name) => name.startsWith(".usage-cache-unreadable-"));
-        assert.lengthOf(invalid, 1);
-        assert.strictEqual(yield* fs.readFileString(NodePath.join(stateDir, invalid[0]!)), "{");
-        const restarted = yield* UsageService.make;
-        assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), expected);
-      }).pipe(
-        Effect.provide(layerService({ prefix: "usage-cache-file-precedence", home, settings })),
-      );
-    }).pipe(Effect.scoped),
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
   it.live("preserves saved tokens, costs and sessions after transcript cleanup and restart", () =>
@@ -4041,12 +4270,7 @@ describe("UsageService", () => {
             release.resolve();
             yield* original.awaitPersisted;
             const { stateDir } = yield* ServerConfig.ServerConfig;
-            const persisted = decodeUnknownJsonString(
-              yield* Effect.promise(() =>
-                NodeFSP.readFile(NodePath.join(stateDir, SCAN_CACHE_FILE_NAME), "utf8"),
-              ),
-            ) as { files: Record<string, unknown> };
-            assert.deepStrictEqual(Object.keys(persisted.files), [second]);
+            assert.deepStrictEqual(yield* storedFileKeys(stateDir), [second]);
           }
 
           const service = yield* UsageService.make;
@@ -4160,7 +4384,6 @@ describe("UsageService", () => {
       yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()));
       yield* Effect.gen(function* () {
         const { stateDir } = yield* ServerConfig.ServerConfig;
-        const fs = yield* FileSystem.FileSystem;
         const service = yield* UsageService.make;
         const base = yield* Effect.tracer;
         const cutOff = Effect.gen(function* () {
@@ -4193,12 +4416,7 @@ describe("UsageService", () => {
           assert.strictEqual((yield* Fiber.join(caller))._tag, "Failure");
           release.resolve();
           yield* service.awaitPersisted;
-          const saved = decodeUnknownJsonString(
-            yield* fs.readFileString(NodePath.join(stateDir, SCAN_CACHE_FILE_NAME)),
-          ) as {
-            files: Record<string, unknown>;
-          };
-          return Object.keys(saved.files);
+          return yield* storedFileKeys(stateDir);
         });
         const first = yield* cutOff;
         assert.isAbove(first.length, 0);
@@ -4212,10 +4430,7 @@ describe("UsageService", () => {
         blocked.clear();
         assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), paths.length);
         yield* service.awaitPersisted;
-        const saved = decodeUnknownJsonString(
-          yield* fs.readFileString(NodePath.join(stateDir, SCAN_CACHE_FILE_NAME)),
-        ) as { files: Record<string, unknown> };
-        assert.sameMembers(Object.keys(saved.files), listed);
+        assert.sameMembers(yield* storedFileKeys(stateDir), listed);
         for (const path of first)
           assert.lengthOf(
             open.mock.calls.filter(([file]) => file === path),
@@ -4779,6 +4994,7 @@ describe("UsageService", () => {
               {
                 size: 0,
                 mtimeMs,
+                observedAtMs: mtimeMs,
                 provider: "claude" as const,
                 records: [],
                 tailRecords: [],
@@ -4789,10 +5005,7 @@ describe("UsageService", () => {
           ]),
           {},
         );
-        yield* Effect.promise(async () => {
-          await NodeFSP.mkdir(stateDir, { recursive: true });
-          await NodeFSP.writeFile(NodePath.join(stateDir, SCAN_CACHE_FILE_NAME), cache);
-        });
+        yield* seedSnapshot(stateDir, cache);
         const summary = yield* (yield* UsageService.make).readSummary(WINDOW);
         const source = summary.sources.find((source) => source.fingerprint.provider === "claude");
         assert.strictEqual(source?.status, "missing");

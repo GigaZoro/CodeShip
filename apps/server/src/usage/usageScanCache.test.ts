@@ -3,7 +3,10 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   decodeScanCache,
   makeScanCacheWriter,
+  mergeCachedSource,
+  mergeScanEntry,
   type CachedFile,
+  type CachedSource,
   type ScanCache,
 } from "./usageScanCache.ts";
 import type { UsageRecord } from "@t3tools/provider-core/server/usage";
@@ -47,6 +50,7 @@ function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][])
     cache.set(path, {
       size: records.length * 10,
       mtimeMs,
+      observedAtMs: mtimeMs,
       provider: "claude",
       records,
       tailRecords: [],
@@ -87,6 +91,7 @@ describe("scan cache round trip", () => {
       size: 40,
       malformedRecords: 2,
       mtimeMs: 300,
+      observedAtMs: 350,
       provider: "grok",
       records: [
         record({ provider: "grok", model: "grok-4.5-build", dedupeKey: "s:p:grok-4.5-build" }),
@@ -123,6 +128,7 @@ describe("scan cache round trip", () => {
       size: 80,
       malformedRecords: 3,
       mtimeMs: 400,
+      observedAtMs: 450,
       provider: "codex",
       records: [
         record({
@@ -221,28 +227,32 @@ describe("scan cache round trip", () => {
       expect(restored.get("/gone.jsonl")).toEqual({
         ...original.get("/gone.jsonl"),
         needsReparse: true,
+        legacy: true,
         position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
       });
       expect(restored.get("/gone-codex.jsonl")).toEqual({
         ...original.get("/gone-codex.jsonl"),
         needsReparse: true,
+        legacy: true,
         position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
       });
       expect(restored.get("/clean-codex.jsonl")).toEqual(
         version >= 8
-          ? cleanCodex
+          ? { ...cleanCodex, legacy: true }
           : {
               ...cleanCodex,
               needsReparse: true,
+              legacy: true,
               position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
             },
       );
       expect(restored.get("/gone-pi.jsonl")).toEqual(
         version >= 6
-          ? original.get("/gone-pi.jsonl")
+          ? { ...original.get("/gone-pi.jsonl"), legacy: true }
           : {
               ...original.get("/gone-pi.jsonl"),
               needsReparse: true,
+              legacy: true,
               position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
             },
       );
@@ -257,6 +267,7 @@ describe("scan cache round trip", () => {
     expect(restored.get("/claude.jsonl")).toEqual({
       ...original.get("/claude.jsonl"),
       needsReparse: true,
+      legacy: true,
       position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
     });
     expect(
@@ -326,5 +337,61 @@ describe("scan cache round trip", () => {
 
     const restored = decodeScanCache(JSON.parse(JSON.stringify(poisoned)), TEST_FORMAT_MAP);
     expect(restored.has("/a.jsonl")).toBe(false);
+  });
+});
+
+describe("scan cache merge", () => {
+  const row = (overrides: Partial<CachedFile> = {}): CachedFile => ({
+    size: 100,
+    mtimeMs: 1_000,
+    observedAtMs: 2_000,
+    provider: "claude",
+    records: [record()],
+    tailRecords: [],
+    malformedRecords: 0,
+    position: position(),
+    ...overrides,
+  });
+
+  it.each([
+    ["the later observation over a larger file", row({ observedAtMs: 2_001 }), row({ size: 900 })],
+    [
+      "a current row over a legacy row seen at the same time",
+      row(),
+      row({ legacy: true, size: 900 }),
+    ],
+    [
+      "a current row over a row that needs a re-parse",
+      row(),
+      row({ needsReparse: true, size: 900 }),
+    ],
+    [
+      "the larger of two legacy rows",
+      row({ legacy: true, size: 200 }),
+      row({ needsReparse: true }),
+    ],
+    ["the larger of two current rows", row({ size: 200 }), row()],
+  ])("keeps %s in either order", (_name, winner, loser) => {
+    expect(mergeScanEntry(winner, loser)).toBe(winner);
+    expect(mergeScanEntry(loser, winner)).toBe(winner);
+    expect(mergeScanEntry(winner, winner)).toBe(winner);
+  });
+
+  it("keeps the held row when nothing tells two rows apart", () => {
+    const held = row();
+    expect(mergeScanEntry(held, row())).toBe(held);
+  });
+
+  it("keeps the later source and fills its volume from the same directory", () => {
+    const later: CachedSource = { dir: "/projects", volumeId: "", seenAtMs: 2 };
+    const earlier: CachedSource = { dir: "/projects", volumeId: "1:2", seenAtMs: 1 };
+    const moved: CachedSource = { dir: "/elsewhere", volumeId: "3:4", seenAtMs: 1 };
+    const filled = { ...later, volumeId: "1:2" };
+
+    expect(mergeCachedSource(later, earlier)).toEqual(filled);
+    expect(mergeCachedSource(earlier, later)).toEqual(filled);
+    expect(mergeCachedSource(filled, earlier)).toBe(filled);
+    expect(mergeCachedSource(later, moved)).toBe(later);
+    expect(mergeCachedSource({ dir: "/projects", volumeId: "1:2" }, later)).toEqual(filled);
   });
 });

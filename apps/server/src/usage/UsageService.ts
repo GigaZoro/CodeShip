@@ -19,14 +19,12 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import { HttpClient, HttpClientResponse } from "effect/http";
@@ -35,7 +33,6 @@ import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { formatMalformedUsageWarning } from "@t3tools/shared/usageFormat";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { acquireFileLock } from "../provider/FileLock.ts";
 import { BUILT_IN_USAGE_DRIVERS, type BuiltInUsageReadersEnv } from "../provider/builtInDrivers.ts";
 import type { ProviderDriver } from "@t3tools/provider-core/server/driver";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
@@ -58,14 +55,20 @@ import {
   statTranscriptFiles,
 } from "./usageTranscriptReader.ts";
 import {
+  claimedLegacyScanCacheName,
   decodeScanCache,
   dedupeWithinFile,
-  LEGACY_SCAN_CACHE_FILE_NAMES,
+  isLegacyScanCacheFileName,
+  isScanCacheInput,
   makeScanCacheWriter,
+  mergeCachedSource,
+  mergeScanEntry,
   pruneScanCache,
-  SCAN_CACHE_FILE_NAME,
+  SCAN_CACHE_DIRECTORY_NAME,
+  scanCacheSnapshotName,
   USAGE_SCAN_CACHE_VERSION,
   type CachedFile,
+  type CachedSource,
   type ScanCache,
 } from "./usageScanCache.ts";
 
@@ -82,13 +85,9 @@ const RATES_REFRESH_FLOOR_MS = 60 * 1000;
 const MTIME_SLACK_MS = 36 * 60 * 60 * 1000;
 const MAX_HOURLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-const CACHE_RETENTION_DAYS = 92;
-const CACHE_LOCK_STALE_MS = 120_000;
-const CACHE_LOCK_UPDATE_MS = 10_000;
-const CACHE_LOCK_RETRY_MS = 500;
-const CACHE_LOCK_WAIT_MS = CACHE_LOCK_STALE_MS + CACHE_LOCK_UPDATE_MS;
-const CACHE_SHUTDOWN_LOCK_WAIT_MS = 10_000;
+const CACHE_RETENTION_MS = 92 * 24 * 60 * 60 * 1000;
 const CACHE_GAP_RETRY_MS = 60_000;
+const MAX_STORE_RELISTS = 3;
 
 const TRANSCRIPT_READ_CONCURRENCY = 4;
 const LISTING_TTL_MS = 5_000;
@@ -129,8 +128,13 @@ const encodeRatesCache = Schema.encodeEffect(Schema.fromJsonString(RatesCacheFil
 const ScanCacheJson = Schema.fromJsonString(Schema.Unknown);
 const decodeScanCacheFile = Schema.decodeUnknownEffect(ScanCacheJson);
 const encodeUsageRecordKey = Schema.encodeSync(ScanCacheJson);
-const CachedSource = Schema.Struct({ dir: Schema.String, volumeId: Schema.String });
-const decodeCachedSource = Schema.decodeUnknownOption(CachedSource);
+const decodeCachedSource = Schema.decodeUnknownOption(
+  Schema.Struct({
+    dir: Schema.String,
+    volumeId: Schema.String,
+    seenAtMs: Schema.optionalKey(Schema.Number),
+  }),
+);
 const decodeCacheVersion = Schema.decodeUnknownOption(Schema.Struct({ version: Schema.Number }));
 const decodeSourceRows = Schema.decodeUnknownOption(
   Schema.Struct({ sources: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)) }),
@@ -145,7 +149,6 @@ const decodeCacheShape = Schema.decodeUnknownOption(
     sessions: Schema.Array(Schema.String),
   }),
 );
-const LEGACY_CLAIM_PREFIX = ".usage-cache-retiring-";
 
 const sharedSessionProviders: ReadonlySet<UsageProviderKind> = new Set(
   transcriptReaders.flatMap(({ reader }) =>
@@ -198,32 +201,21 @@ export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
 
   const fileCache: ScanCache = new Map();
-  type CacheView = {
-    readonly entries: ScanCache;
-    readonly sources: Map<string, typeof CachedSource.Type>;
-  };
-  const emptyCacheView = (): CacheView => ({ entries: new Map(), sources: new Map() });
-  let diskBase = emptyCacheView();
-  let diskIdentity: string | null | undefined;
   const resolvedRecords = new WeakMap<UsageRecord, UsageRecord>();
   const correctedRecord = (record: UsageRecord) => resolvedRecords.get(record) ?? record;
   const correctedBatch = (records: readonly UsageRecord[]) =>
     records.some((record) => resolvedRecords.has(record)) ? records.map(correctedRecord) : records;
-  const sourceCache = new Map<string, typeof CachedSource.Type>();
-  let cacheDirty = false;
-  let cacheWritable = true;
-  let cacheLoaded = false;
-  let retryCacheAt = 0;
-  const savedUsageGaps = new Set<"current" | "legacy">();
-  const updatedFiles = new Set<string>();
-  const updatedSources = new Set<string>();
+  const sourceCache = new Map<string, CachedSource>();
+  /** Counts changes to fileCache and sourceCache; a sync writes while it is ahead of the saved one. */
+  let generation = 0;
+  const observedAt = (filePath: string, nowMs: number) =>
+    Math.max(nowMs, (fileCache.get(filePath)?.observedAtMs ?? -Infinity) + 1);
   const isWithinDirectory = (filePath: string, dir: string) => {
     const relative = path.relative(dir, filePath);
     return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
   };
 
   const ratesCachePath = path.join(config.stateDir, "usage-model-rates.json");
-  const scanCachePath = path.join(config.stateDir, SCAN_CACHE_FILE_NAME);
   const writeCacheFile = (filePath: string, contents: string) =>
     writeFileStringAtomically({ filePath, contents }).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -414,9 +406,8 @@ export const make = Effect.gen(function* () {
             ? previous.volumeId || currentVolumeId
             : currentVolumeId;
         if (previous?.dir !== dir || previous.volumeId !== volumeId) {
-          sourceCache.set(sourceKey, { dir, volumeId });
-          updatedSources.add(sourceKey);
-          cacheDirty = true;
+          sourceCache.set(sourceKey, { dir, volumeId, seenAtMs: yield* Clock.currentTimeMillis });
+          generation += 1;
         }
         const key = `${provider}\0${dir}`;
         if (seen.has(key)) continue;
@@ -434,82 +425,85 @@ export const make = Effect.gen(function* () {
   });
 
   const writeScanCache = makeScanCacheWriter();
-  const listLegacyCaches = Effect.suspend(() => fileSystem.readDirectory(config.stateDir)).pipe(
-    Effect.map((names) =>
-      names.filter((name) =>
-        LEGACY_SCAN_CACHE_FILE_NAMES.some(
-          (legacy) =>
-            name === legacy || (name.startsWith(LEGACY_CLAIM_PREFIX) && name.endsWith(legacy)),
-        ),
-      ),
-    ),
-    Effect.catchIf(
-      (error) => error.reason._tag === "NotFound",
-      () => Effect.succeed([]),
-    ),
-  );
-  const reportSavedUsageGap = Effect.fn("UsageService.reportSavedUsageGap")(function* (
-    input: "current" | "legacy",
+  const storeDir = path.join(config.stateDir, SCAN_CACHE_DIRECTORY_NAME);
+  const writerId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+  let snapshotSeq = 0;
+  /** Every name this process wrote or tried to write; a durable write deletes all but itself. */
+  const ownSnapshots = new Set<string>();
+  /** A name fixes its content, so each one is merged at most once. */
+  const mergedInputs = new Map<string, "complete" | "incomplete">();
+  const unreadInputs = new Set<string>();
+  const claimedFrom = new Map<string, string>();
+  /** Merged complete and not yet deleted: only a later durable snapshot of ours may retire them. */
+  const retirable = new Set<string>();
+  const failedDeletes = new Set<string>();
+  let savedGeneration = 0;
+  let savedFiles: ReadonlyMap<string, CachedFile> = new Map();
+  let cacheLoaded = false;
+  let retryCacheAt = 0;
+
+  type SavedUsageGapKind = "list" | "claim" | "read" | "incomplete";
+  const SAVED_USAGE_GAPS: Record<
+    SavedUsageGapKind,
+    { readonly log: string; readonly message: string }
+  > = {
+    list: {
+      log: "Could not list saved transcript usage",
+      message: "Saved usage could not be listed.",
+    },
+    claim: {
+      log: "Could not move older saved transcript usage into the current cache",
+      message: "Older saved usage could not be moved into the current cache.",
+    },
+    read: {
+      log: "Could not read some saved transcript usage",
+      message: "Some saved usage could not be read.",
+    },
+    incomplete: {
+      log: "Saved transcript usage is damaged or from a newer version",
+      message: "Some saved usage is damaged or from a newer version and is only partly counted.",
+    },
+  };
+  const savedUsageGaps = new Map<
+    string,
+    { readonly kind: SavedUsageGapKind; readonly path: string }
+  >();
+  const gapKey = (kind: SavedUsageGapKind, file: string) => `${kind}\0${file}`;
+  const reportGap = Effect.fn("UsageService.reportSavedUsageGap")(function* (
+    kind: SavedUsageGapKind,
     file: string,
     cause: unknown,
   ) {
-    const first = savedUsageGaps.size === 0;
-    savedUsageGaps.add(input);
-    retryCacheAt = (yield* monotonicMillis) + CACHE_GAP_RETRY_MS;
-    if (first)
-      yield* Effect.logError("Could not read some saved transcript usage", { path: file, cause });
+    const key = gapKey(kind, file);
+    if (savedUsageGaps.has(key)) return;
+    savedUsageGaps.set(key, { kind, path: file });
+    yield* Effect.logError(SAVED_USAGE_GAPS[kind].log, { path: file, cause });
   });
-  const lockFailure = (cause: unknown) =>
-    new UsageReadError({
-      reason: "scanFailed",
-      detail: "Saved transcript usage could not be locked.",
-      cause,
-    });
-  const withCacheLock = <A, E, R>(task: Effect.Effect<A, E, R>, waitMs = CACHE_LOCK_WAIT_MS) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        yield* fileSystem
-          .makeDirectory(config.stateDir, { recursive: true })
-          .pipe(Effect.mapError(lockFailure));
-        const compromised = yield* Deferred.make<never, UsageReadError>();
-        yield* acquireFileLock(scanCachePath, {
-          realpath: false,
-          stale: CACHE_LOCK_STALE_MS,
-          update: CACHE_LOCK_UPDATE_MS,
-          retries: 0,
-          onCompromised: (cause) => Deferred.fail(compromised, lockFailure(cause)),
-        }).pipe(
-          Effect.retry({
-            times: Math.ceil(waitMs / CACHE_LOCK_RETRY_MS),
-            schedule: Schedule.spaced(CACHE_LOCK_RETRY_MS),
-            while: ({ cause }) =>
-              typeof cause === "object" &&
-              cause !== null &&
-              "code" in cause &&
-              cause.code === "ELOCKED",
-          }),
-          Effect.mapError(lockFailure),
-        );
-        return yield* Effect.raceFirst(task, Deferred.await(compromised));
-      }),
-    );
+  const recoverGap = (kind: SavedUsageGapKind, file: string) =>
+    savedUsageGaps.delete(gapKey(kind, file))
+      ? Effect.logInfo("Recovered saved transcript usage", { path: file })
+      : Effect.void;
+  const clearGap = (kind: SavedUsageGapKind, file: string) => {
+    savedUsageGaps.delete(gapKey(kind, file));
+  };
+  const savedUsageGapMessage = () => {
+    const kinds = new Set([...savedUsageGaps.values()].map(({ kind }) => kind));
+    const messages = (Object.keys(SAVED_USAGE_GAPS) as SavedUsageGapKind[])
+      .filter((kind) => kinds.has(kind))
+      .map((kind) => SAVED_USAGE_GAPS[kind].message);
+    return messages.length === 0 ? undefined : messages.join(" ");
+  };
+  // A damaged file cannot change under its name, so only the other gaps are worth a retry.
+  const hasRetryableGap = () =>
+    [...savedUsageGaps.values()].some(({ kind }) => kind !== "incomplete");
 
-  const readDocument = (filePath: string) =>
-    fileSystem
-      .stat(filePath)
-      .pipe(
-        Effect.flatMap((info) =>
-          info.type === "File" ? fileSystem.readFileString(filePath) : Effect.succeed(null),
-        ),
-      );
-  const decodeDocument = Effect.fn("UsageService.decodeScanCache")(function* (raw: string | null) {
-    const document =
-      raw === null ? null : yield* decodeScanCacheFile(raw).pipe(Effect.orElseSucceed(() => null));
+  const decodeDocument = Effect.fn("UsageService.decodeScanCache")(function* (raw: string) {
+    const document = yield* decodeScanCacheFile(raw).pipe(Effect.orElseSucceed(() => null));
     const version = Option.getOrUndefined(decodeCacheVersion(document))?.version;
     const shape = decodeCacheShape(document);
     const entries = decodeScanCache(document, transcriptFormats);
     const rows = decodeSourceRows(document);
-    const sources = new Map<string, typeof CachedSource.Type>();
+    const sources = new Map<string, CachedSource>();
     const sourceRows = Option.getOrUndefined(rows)?.sources ?? {};
     for (const [key, row] of Object.entries(sourceRows)) {
       const parsed = decodeCachedSource(row);
@@ -525,344 +519,302 @@ export const make = Effect.gen(function* () {
     const complete = Option.isSome(shape) && entriesDropped === 0 && sourcesDropped === 0;
     return { version, entries, sources, complete, entriesDropped, sourcesDropped };
   });
-  const unreadableName = Effect.fn("UsageService.unreadableCachePath")(function* (file: string) {
-    const id = yield* crypto.randomUUIDv4();
-    return path.join(config.stateDir, `.usage-cache-unreadable-${id}-${path.basename(file)}`);
+
+  // Merging only adds or supersedes rows, so a row a scan just stored cannot be lost to disk.
+  const mergeIntoMemory = (entries: ScanCache, sources: ReadonlyMap<string, CachedSource>) => {
+    let changed = false;
+    for (const [file, incoming] of entries) {
+      const held = fileCache.get(file);
+      const merged = held === undefined ? incoming : mergeScanEntry(held, incoming);
+      if (merged === held) continue;
+      fileCache.set(file, merged);
+      changed = true;
+    }
+    for (const [key, incoming] of sources) {
+      const held = sourceCache.get(key);
+      const merged = held === undefined ? incoming : mergeCachedSource(held, incoming);
+      if (merged === held) continue;
+      sourceCache.set(key, merged);
+      changed = true;
+    }
+    if (changed) generation += 1;
+  };
+
+  const mergeSavedUsage = Effect.fn("UsageService.mergeSavedUsage")(function* (name: string) {
+    const file = path.join(storeDir, name);
+    const claimedPath = claimedFrom.get(name);
+    claimedFrom.delete(name);
+    const raw = yield* fileSystem.readFileString(file).pipe(Effect.result);
+    if (raw._tag === "Failure") {
+      if (claimedPath !== undefined) clearGap("claim", claimedPath);
+      if (raw.failure.reason._tag === "NotFound") {
+        // Retired after a durable snapshot covered it: a relist finds that snapshot.
+        unreadInputs.delete(name);
+        clearGap("read", file);
+        return "missing" as const;
+      }
+      unreadInputs.add(name);
+      yield* reportGap("read", file, raw.failure);
+      return "unread" as const;
+    }
+    unreadInputs.delete(name);
+    const decoded = yield* decodeDocument(raw.success);
+    mergeIntoMemory(decoded.entries, decoded.sources);
+    if (decoded.complete) {
+      mergedInputs.set(name, "complete");
+      retirable.add(name);
+      yield* recoverGap("read", file);
+      if (claimedPath !== undefined) yield* recoverGap("claim", claimedPath);
+      return "complete" as const;
+    }
+    // Kept and counted as far as it decodes: deleting it would lose what a newer build or a
+    // repair could still read.
+    mergedInputs.set(name, "incomplete");
+    clearGap("read", file);
+    if (claimedPath !== undefined) clearGap("claim", claimedPath);
+    yield* reportGap("incomplete", file, {
+      version: decoded.version ?? null,
+      entriesDropped: decoded.entriesDropped,
+      sourcesDropped: decoded.sourcesDropped,
+    });
+    return "incomplete" as const;
   });
-  const syncCacheFile = (file: string) =>
+
+  const syncFile = (file: string) =>
     Effect.scoped(Effect.flatMap(fileSystem.open(file, { flag: "r+" }), (handle) => handle.sync));
-  const syncCacheDirectory =
+  const syncStoreDirectory =
     HostProcess.Platform.defaultValue() === "win32"
       ? Effect.void
-      : Effect.scoped(Effect.flatMap(fileSystem.open(config.stateDir), (handle) => handle.sync));
-  const statCurrent = Effect.suspend(() => fileSystem.stat(scanCachePath)).pipe(
-    Effect.asSome,
-    Effect.catchIf(
-      (error) => error.reason._tag === "NotFound",
-      () => Effect.succeedNone,
-    ),
-  );
-  const cacheIdentity = (stat: Option.Option<FileSystem.File.Info>) => {
-    if (Option.isNone(stat)) return null;
-    const { dev, ino, size, mtime } = stat.value;
-    if (Option.isNone(ino) || Option.isNone(mtime)) return undefined;
-    return `${dev}:${ino.value}:${size}:${mtime.value.getTime()}`;
-  };
+      : Effect.scoped(Effect.flatMap(fileSystem.open(storeDir), (handle) => handle.sync));
 
-  const readCurrent = Effect.fn("UsageService.readCurrentScanCache")(function* () {
-    const stat = yield* statCurrent;
-    const identity = cacheIdentity(stat);
-    if (identity !== undefined && identity === diskIdentity) return { identity, view: diskBase };
-    if (Option.isNone(stat)) return { identity, view: emptyCacheView() };
-    const raw = stat.value.type === "File" ? yield* fileSystem.readFileString(scanCachePath) : null;
-    const decoded = yield* decodeDocument(raw);
-    if (decoded.complete) return { identity, view: decoded };
-    return {
-      identity: undefined,
-      view: decoded,
-      problem: {
-        version: decoded.version ?? null,
-        entriesDropped: decoded.entriesDropped,
-        sourcesDropped: decoded.sourcesDropped,
-      },
-      canSalvage: raw !== null && (decoded.version ?? 0) <= USAGE_SCAN_CACHE_VERSION,
-    };
+  const deleteSavedUsage = Effect.fn("UsageService.deleteSavedUsage")(function* (name: string) {
+    const file = path.join(storeDir, name);
+    const removed = yield* fileSystem.remove(file).pipe(
+      Effect.catchIf(
+        (error) => error.reason._tag === "NotFound",
+        () => Effect.void,
+      ),
+      Effect.result,
+    );
+    if (removed._tag === "Success") {
+      failedDeletes.delete(name);
+      return true;
+    }
+    if (!failedDeletes.has(name)) {
+      failedDeletes.add(name);
+      yield* Effect.logError("Could not delete saved transcript usage", {
+        path: file,
+        cause: removed.failure,
+      });
+    }
+    return false;
   });
 
-  const mergeFileViews = (
-    local: ScanCache,
-    disk: ScanCache,
-    base: ScanCache | "legacy-only" | "current-over-legacy",
-  ): ScanCache => {
-    const merged = new Map(disk);
-    for (const [file, entry] of local) {
-      const persisted = disk.get(file);
-      if (base instanceof Map) {
-        const original = base.get(file);
-        if (Equal.equals(entry, original)) continue;
-        if (Equal.equals(persisted, original)) {
-          merged.set(file, entry);
-          continue;
+  const writeSnapshot = Effect.fn("UsageService.writeScanCacheSnapshot")(function* () {
+    const cutoff = (yield* Clock.currentTimeMillis) - CACHE_RETENTION_MS;
+    if (pruneScanCache(fileCache, cutoff) > 0) generation += 1;
+    const capturedGeneration = generation;
+    const covered = [...retirable];
+    const files = new Map(fileCache);
+    const contents = writeScanCache(files, { sources: Object.fromEntries(sourceCache) });
+    snapshotSeq += 1;
+    const name = scanCacheSnapshotName(writerId, snapshotSeq);
+    const file = path.join(storeDir, name);
+    ownSnapshots.add(name);
+    const written = yield* writeCacheFile(file, contents).pipe(
+      Effect.andThen(syncFile(file)),
+      Effect.andThen(syncStoreDirectory),
+      Effect.result,
+    );
+    if (written._tag === "Failure") {
+      yield* Effect.logError("Could not save transcript usage", {
+        path: file,
+        cause: written.failure,
+      });
+      return false;
+    }
+    savedGeneration = capturedGeneration;
+    savedFiles = files;
+    // Only now is everything these names held durable in a snapshot of ours.
+    for (const own of ownSnapshots) {
+      if (own !== name && (yield* deleteSavedUsage(own))) ownSnapshots.delete(own);
+    }
+    for (const input of covered) {
+      if (yield* deleteSavedUsage(input)) retirable.delete(input);
+    }
+    return true;
+  });
+
+  /**
+   * Lists the store, claims older single-file caches into it and merges every name not merged
+   * before. With `write`, it then saves a snapshot when memory holds rows no durable snapshot of
+   * ours has. Returns false when that write failed.
+   */
+  const syncScanCache = Effect.fn("UsageService.syncScanCache")(function* (write: boolean) {
+    const retryDue = (yield* monotonicMillis) >= retryCacheAt;
+    const recoveredLists: string[] = [];
+    const present = new Set<string>();
+    let storeListed = false;
+    let mergedAllComplete = true;
+
+    const list = Effect.fnUntraced(function* (dir: string) {
+      if (!retryDue && savedUsageGaps.has(gapKey("list", dir))) return undefined;
+      const listed = yield* fileSystem.readDirectory(dir).pipe(
+        Effect.catchIf(
+          (error) => error.reason._tag === "NotFound",
+          () => Effect.succeed<readonly string[]>([]),
+        ),
+        Effect.result,
+      );
+      if (listed._tag === "Failure") {
+        yield* reportGap("list", dir, listed.failure);
+        return undefined;
+      }
+      if (savedUsageGaps.delete(gapKey("list", dir))) recoveredLists.push(dir);
+      return listed.success;
+    });
+    const listStore = Effect.gen(function* () {
+      const names = yield* list(storeDir);
+      if (names !== undefined) storeListed = true;
+      const inputs = (names ?? []).filter(isScanCacheInput);
+      for (const name of inputs) present.add(name);
+      return inputs;
+    });
+
+    let pending = yield* listStore;
+    let missing = false;
+    const stateNames = yield* list(config.stateDir);
+    if (stateNames !== undefined) {
+      for (const gap of savedUsageGaps.values()) {
+        if (gap.kind === "claim" && !stateNames.includes(path.basename(gap.path))) {
+          clearGap("claim", gap.path);
         }
       }
-      // A current-format correction outranks an archive at the same mtime.
-      // Size breaks ties between peer changes or between archives.
-      if (
-        persisted === undefined ||
-        entry.mtimeMs > persisted.mtimeMs ||
-        (base !== "current-over-legacy" &&
-          entry.mtimeMs === persisted.mtimeMs &&
-          (entry.size > persisted.size ||
-            (entry.size === persisted.size && persisted.needsReparse && !entry.needsReparse)))
-      ) {
-        merged.set(file, entry);
+      for (const legacyName of stateNames.filter(isLegacyScanCacheFileName)) {
+        const legacyPath = path.join(config.stateDir, legacyName);
+        if (!retryDue && savedUsageGaps.has(gapKey("claim", legacyPath))) continue;
+        const claimId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+        const claimedName = claimedLegacyScanCacheName(claimId, legacyName);
+        const claimed = yield* fileSystem
+          .makeDirectory(storeDir, { recursive: true })
+          .pipe(
+            Effect.andThen(fileSystem.rename(legacyPath, path.join(storeDir, claimedName))),
+            Effect.result,
+          );
+        if (claimed._tag === "Success") {
+          claimedFrom.set(claimedName, legacyPath);
+          present.add(claimedName);
+          pending.push(claimedName);
+        } else if (claimed.failure.reason._tag === "NotFound") {
+          // A peer claimed it first; its claim, or the snapshot that covers it, is in the store.
+          clearGap("claim", legacyPath);
+          missing = true;
+        } else {
+          yield* reportGap("claim", legacyPath, claimed.failure);
+        }
       }
     }
-    return merged;
-  };
 
-  const mergeWithLiveCache = ({ entries, sources }: CacheView): CacheView => {
-    const mergedSources = new Map(sources);
-    for (const [key, source] of sourceCache) {
-      if (!mergedSources.has(key) || updatedSources.has(key)) mergedSources.set(key, source);
+    for (let relists = 0; ; relists += 1) {
+      for (const name of pending) {
+        if (ownSnapshots.has(name) || mergedInputs.has(name)) continue;
+        if (unreadInputs.has(name) && !retryDue) continue;
+        const outcome = yield* mergeSavedUsage(name);
+        if (outcome === "missing") missing = true;
+        else if (outcome !== "complete") mergedAllComplete = false;
+      }
+      if (!missing) break;
+      if (relists === MAX_STORE_RELISTS) {
+        yield* reportGap("list", storeDir, "Saved usage kept changing while it was read.");
+        mergedAllComplete = false;
+        break;
+      }
+      missing = false;
+      pending = yield* listStore;
     }
-    return {
-      entries:
-        entries === diskBase.entries
-          ? new Map(fileCache)
-          : mergeFileViews(fileCache, entries, diskBase.entries),
-      sources: mergedSources,
-    };
-  };
-  const applyCacheView = ({ entries, sources }: CacheView) => {
-    for (const key of fileCache.keys()) {
-      if (!entries.has(key)) fileCache.delete(key);
-    }
-    for (const [key, file] of entries) fileCache.set(key, file);
-    for (const [key, source] of sources) sourceCache.set(key, source);
-  };
 
-  const writeCurrent = Effect.fn("UsageService.writeScanCache")(function* (view: CacheView) {
-    const cutoff = (yield* Clock.currentTimeMillis) - CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-    pruneScanCache(view.entries, cutoff);
-    const contents = writeScanCache(view.entries, { sources: Object.fromEntries(view.sources) });
-    const beforeFiles = new Map(fileCache);
-    const beforeSources = new Map(sourceCache);
-    const writtenFiles = new Set(updatedFiles);
-    const writtenSources = new Set(updatedSources);
-    updatedFiles.clear();
-    updatedSources.clear();
-    cacheDirty = false;
-    yield* writeCacheFile(scanCachePath, contents).pipe(
-      Effect.onError(() =>
+    if (storeListed) {
+      for (const gap of savedUsageGaps.values()) {
+        if (path.dirname(gap.path) !== storeDir || present.has(path.basename(gap.path))) continue;
+        if (gap.kind === "incomplete") {
+          clearGap("incomplete", gap.path);
+          yield* Effect.logWarning(
+            "Damaged saved transcript usage was removed; the part that could not be read is not counted",
+            { path: gap.path },
+          );
+        } else if (gap.kind === "read") {
+          clearGap("read", gap.path);
+          unreadInputs.delete(path.basename(gap.path));
+        }
+      }
+    }
+
+    const needsWrite =
+      write &&
+      (generation !== savedGeneration || [...retirable].some((name) => !failedDeletes.has(name)));
+    const saved = needsWrite ? yield* writeSnapshot() : true;
+
+    for (const dir of recoveredLists) {
+      if (mergedAllComplete && !savedUsageGaps.has(gapKey("list", dir))) {
+        yield* Effect.logInfo("Recovered saved transcript usage", { path: dir });
+      }
+    }
+    cacheLoaded = true;
+    if (retryDue && hasRetryableGap()) {
+      retryCacheAt = (yield* monotonicMillis) + CACHE_GAP_RETRY_MS;
+    }
+    return saved;
+  });
+
+  const syncLock = yield* Semaphore.make(1);
+  /** Every sync runs on a fiber held here, so shutdown can stop them all and take the permit at once. */
+  const syncFibers = new Set<Fiber.Fiber<boolean>>();
+  const forkSync = (sync: Effect.Effect<boolean>) =>
+    Effect.forkDetach(syncLock.withPermit(sync)).pipe(
+      Effect.tap((fiber) =>
         Effect.sync(() => {
-          for (const file of writtenFiles) updatedFiles.add(file);
-          for (const key of writtenSources) updatedSources.add(key);
-          cacheDirty = true;
+          syncFibers.add(fiber);
+          fiber.addObserver(() => syncFibers.delete(fiber));
         }),
       ),
     );
-    diskBase = view;
-    diskIdentity = undefined;
-    for (const [key, original] of beforeFiles) {
-      if (!view.entries.has(key) && fileCache.get(key) === original) fileCache.delete(key);
-    }
-    for (const [key, entry] of view.entries) {
-      if (fileCache.get(key) === beforeFiles.get(key)) fileCache.set(key, entry);
-    }
-    for (const [key, source] of view.sources) {
-      if (sourceCache.get(key) === beforeSources.get(key)) sourceCache.set(key, source);
-    }
-    const stat = yield* statCurrent.pipe(
-      Effect.tapError((cause) => reportSavedUsageGap("current", scanCachePath, cause)),
-    );
-    diskIdentity = cacheIdentity(stat);
-  }, Effect.uninterruptible);
-
-  const readLegacyCaches = Effect.fn("UsageService.readLegacyScanCaches")(function* (
-    oldNames: readonly string[],
-  ) {
-    const claims: { readonly path: string; readonly unreadablePath?: string }[] = [];
-    let legacy = emptyCacheView();
-    let complete = true;
-    for (const fileName of LEGACY_SCAN_CACHE_FILE_NAMES) {
-      for (const name of oldNames.filter((name) => name.endsWith(fileName))) {
-        const original = path.join(config.stateDir, name);
-        const claim =
-          name === fileName
-            ? path.join(
-                config.stateDir,
-                `${LEGACY_CLAIM_PREFIX}${yield* crypto.randomUUIDv4()}-${name}`,
-              )
-            : original;
-        if (claim !== original) {
-          const claimed = yield* fileSystem.rename(original, claim).pipe(Effect.result);
-          if (claimed._tag === "Failure") {
-            complete = false;
-            yield* reportSavedUsageGap("legacy", original, claimed.failure);
-            continue;
-          }
-        }
-        const raw = yield* readDocument(claim).pipe(Effect.result);
-        if (raw._tag === "Failure") {
-          complete = false;
-          yield* reportSavedUsageGap("legacy", claim, raw.failure);
-          continue;
-        }
-        const decoded = yield* decodeDocument(raw.success);
-        legacy = {
-          entries: mergeFileViews(decoded.entries, legacy.entries, "legacy-only"),
-          sources: new Map([...decoded.sources, ...legacy.sources]),
-        };
-        if (decoded.complete) {
-          claims.push({ path: claim });
-        } else {
-          complete = false;
-          yield* reportSavedUsageGap("legacy", claim, {
-            version: decoded.version ?? null,
-            entriesDropped: decoded.entriesDropped,
-            sourcesDropped: decoded.sourcesDropped,
-          });
-          claims.push({ path: claim, unreadablePath: yield* unreadableName(claim) });
-        }
-      }
-    }
-    return { legacy, claims, complete };
-  });
-
-  const loadScanCache = Effect.fn("UsageService.loadScanCache")(function* () {
-    const hadGap = savedUsageGaps.size > 0;
-    const current = yield* readCurrent().pipe(
-      Effect.tapError((cause) => reportSavedUsageGap("current", scanCachePath, cause)),
-      Effect.result,
-    );
-    cacheWritable = false;
-    if (current._tag === "Failure") return;
-
-    const { identity, view, problem, canSalvage } = current.success;
-    // A newer format is opaque to this server. Preserve it and any remaining archives.
-    if (problem !== undefined) yield* reportSavedUsageGap("current", scanCachePath, problem);
-    if (problem !== undefined && !canSalvage) return;
-    const live = mergeWithLiveCache(view);
-    applyCacheView(live);
-    diskBase = view;
-    diskIdentity = identity;
-
-    if (problem !== undefined) {
-      const backup = yield* unreadableName(scanCachePath);
-      const copied = yield* fileSystem.copyFile(scanCachePath, backup).pipe(
-        Effect.andThen(syncCacheFile(backup)),
-        Effect.andThen(syncCacheDirectory),
-        Effect.tapError((cause) => reportSavedUsageGap("current", backup, cause)),
-        Effect.isSuccess,
-      );
-      if (!copied) return;
-      cacheDirty = true;
-    } else {
-      savedUsageGaps.delete("current");
-    }
-    cacheWritable = true;
-
-    const listed =
-      !cacheLoaded || savedUsageGaps.has("legacy")
-        ? yield* listLegacyCaches.pipe(
-            Effect.tapError((cause) => reportSavedUsageGap("legacy", config.stateDir, cause)),
-            Effect.result,
-          )
-        : { _tag: "Success" as const, success: [] };
-    const { legacy, claims, complete } =
-      listed._tag === "Success"
-        ? yield* readLegacyCaches(listed.success)
-        : { legacy: emptyCacheView(), claims: [], complete: false };
-
-    if (claims.length > 0 || problem !== undefined) {
-      const merged = {
-        entries: mergeFileViews(legacy.entries, live.entries, "current-over-legacy"),
-        sources: new Map([...legacy.sources, ...live.sources]),
-      };
-      const committed = yield* writeCurrent(merged).pipe(
-        Effect.andThen(syncCacheFile(scanCachePath)),
-        Effect.andThen(syncCacheDirectory),
-        Effect.tapError((cause) =>
-          reportSavedUsageGap(claims.length > 0 ? "legacy" : "current", scanCachePath, cause),
-        ),
-        Effect.isSuccess,
-      );
-      if (!committed) return;
-      for (const claim of claims) {
-        const retired = yield* (
-          claim.unreadablePath === undefined
-            ? fileSystem.remove(claim.path, { force: true })
-            : fileSystem.rename(claim.path, claim.unreadablePath)
-        ).pipe(
-          Effect.tapError((cause) => reportSavedUsageGap("legacy", claim.path, cause)),
-          Effect.isSuccess,
-        );
-        if (!retired) return;
-      }
-    }
-    if (complete) savedUsageGaps.delete("legacy");
-    cacheLoaded = true;
-    if (hadGap && savedUsageGaps.size === 0)
-      yield* Effect.logInfo("Recovered saved transcript usage", { path: scanCachePath });
-  });
-
-  const persistLock = yield* Semaphore.make(1);
   const scanCacheLoadDue = Effect.gen(function* () {
-    if (savedUsageGaps.size > 0) return (yield* monotonicMillis) >= retryCacheAt;
-    return !cacheLoaded;
+    if (!cacheLoaded) return true;
+    return hasRetryableGap() && (yield* monotonicMillis) >= retryCacheAt;
   });
-  // Only a first load or a due retry takes the permit. A persist holds it while it waits up to
-  // CACHE_LOCK_WAIT_MS for another process's lock, and a scan must not wait behind that.
+  const loadScanCache = Effect.gen(function* () {
+    return (yield* scanCacheLoadDue) ? yield* syncScanCache(false) : true;
+  });
+  // Only a first load or a due retry makes a scan wait, and never for a write: the scan's own
+  // persist saves what the load merged.
   const ensureScanCacheLoaded = Effect.gen(function* () {
-    if (!(yield* scanCacheLoadDue)) return;
-    yield* Effect.gen(function* () {
-      if (!(yield* scanCacheLoadDue)) return;
-      yield* withCacheLock(loadScanCache()).pipe(
-        Effect.mapError(
-          (cause) =>
-            new UsageReadError({
-              reason: "scanFailed",
-              detail: "Saved transcript usage could not be loaded.",
-              cause,
-            }),
-        ),
-      );
-    }).pipe(persistLock.withPermit);
+    if (yield* scanCacheLoadDue) yield* Fiber.join(yield* forkSync(loadScanCache));
   });
-  yield* listLegacyCaches.pipe(
-    Effect.result,
-    Effect.flatMap((listed) =>
-      listed._tag === "Failure" || listed.success.length > 0 ? ensureScanCacheLoaded : Effect.void,
-    ),
-    Effect.forkIn(scope),
-  );
-
-  const persistCaches = Effect.fn("UsageService.persistCaches")(function* (waitMs: number) {
-    if (!cacheWritable || !cacheDirty) return;
-    yield* withCacheLock(
-      Effect.gen(function* () {
-        const current = yield* readCurrent().pipe(Effect.result);
-        if (current._tag === "Failure" || current.success.problem !== undefined) {
-          cacheWritable = false;
-          yield* reportSavedUsageGap(
-            "current",
-            scanCachePath,
-            current._tag === "Failure" ? current.failure : current.success.problem,
-          );
-          return;
-        }
-        yield* writeCurrent(mergeWithLiveCache(current.success.view));
-      }),
-      waitMs,
-    ).pipe(
-      Effect.catch((cause) =>
-        Effect.logError("Could not save transcript usage", { path: scanCachePath, cause }),
-      ),
-    );
-  }, persistLock.withPermit);
-
-  const pendingPersists = new Set<Fiber.Fiber<void>>();
-  const schedulePersist = Effect.forkDetach(persistCaches(CACHE_LOCK_WAIT_MS)).pipe(
-    Effect.map((fiber) => {
-      pendingPersists.add(fiber);
-      fiber.addObserver(() => pendingPersists.delete(fiber));
-    }),
-  );
-  const awaitPersisted = Effect.suspend(() => Fiber.awaitAll([...pendingPersists])).pipe(
-    Effect.asVoid,
-  );
+  const schedulePersist = forkSync(syncScanCache(true)).pipe(Effect.asVoid);
+  const awaitPersisted = Effect.suspend(() => Fiber.awaitAll([...syncFibers])).pipe(Effect.asVoid);
+  // An interrupted sync loses nothing: the final sync writes whatever it left unsaved.
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
-      yield* Fiber.interruptAll([...pendingPersists]);
-      yield* persistCaches(CACHE_SHUTDOWN_LOCK_WAIT_MS);
-      if (cacheDirty) {
-        yield* Effect.logError("Could not finish saving transcript usage at shutdown", {
-          path: scanCachePath,
-          unsavedFiles: updatedFiles.size,
-        });
-      }
+      yield* Fiber.interruptAll([...syncFibers]);
+      if (yield* syncLock.withPermit(syncScanCache(true))) return;
+      yield* Effect.logError("Could not finish saving transcript usage at shutdown", {
+        path: storeDir,
+        unsavedRows: [...fileCache].filter(([file, entry]) => savedFiles.get(file) !== entry)
+          .length,
+      });
     }),
+  );
+  // Claim older caches promptly, before an older build sharing this directory rewrites them.
+  // Forked after the finalizer so a shutdown stops this fiber before the final sync.
+  yield* Effect.suspend(() => fileSystem.readDirectory(config.stateDir)).pipe(
+    Effect.map((names) => names.some(isLegacyScanCacheFileName)),
+    Effect.catchIf(
+      (error) => error.reason._tag === "NotFound",
+      () => Effect.succeed(false),
+    ),
+    Effect.orElseSucceed(() => true),
+    Effect.flatMap((due) => (due ? forkSync(loadScanCache) : Effect.void)),
+    Effect.forkIn(scope),
   );
 
   /** The earliest first record wins duplicate credit, with byte-ordered paths breaking ties. */
@@ -877,7 +829,7 @@ export const make = Effect.gen(function* () {
     readonly records: readonly UsageRecord[];
     readonly malformedRecords: number;
     readonly failed?: true;
-    readonly update?: CachedFile;
+    readonly update?: Omit<CachedFile, "observedAtMs">;
   }> {
     const cached = fileCache.get(filePath);
     // Provider is part of the identity: if both providers were ever pointed
@@ -1047,19 +999,21 @@ export const make = Effect.gen(function* () {
       candidates,
       (file) =>
         readFileRecords(file.path, file.size, file.mtimeMs, provider, format, onProgress).pipe(
-          Effect.map(({ records, malformedRecords, failed, update }) => {
-            onProgress();
-            if (update !== undefined) {
-              updatedFiles.add(file.path);
-              fileCache.set(file.path, {
-                ...update,
-                records: correctedBatch(update.records),
-                tailRecords: correctedBatch(update.tailRecords),
-              });
-              cacheDirty = true;
-            }
-            return { path: file.path, records, malformedRecords, failed };
-          }),
+          Effect.flatMap(({ records, malformedRecords, failed, update }) =>
+            Effect.gen(function* () {
+              onProgress();
+              if (update !== undefined) {
+                fileCache.set(file.path, {
+                  ...update,
+                  observedAtMs: observedAt(file.path, yield* Clock.currentTimeMillis),
+                  records: correctedBatch(update.records),
+                  tailRecords: correctedBatch(update.tailRecords),
+                });
+                generation += 1;
+              }
+              return { path: file.path, records, malformedRecords, failed };
+            }),
+          ),
         ),
       { concurrency: TRANSCRIPT_READ_CONCURRENCY },
     );
@@ -1186,7 +1140,7 @@ export const make = Effect.gen(function* () {
     const windowStartMs =
       (hourlyWindow?.sinceTimeMs ?? DateTime.toEpochMillis(windowStart.value)) - MTIME_SLACK_MS;
 
-    const retentionCutoffMs = startedAtMs - CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    const retentionCutoffMs = startedAtMs - CACHE_RETENTION_MS;
 
     const completedProviders = new Map<UsageProviderKind, readonly ScannedDir[]>();
     const rateLoad = yield* ensureRates(false).pipe(Effect.forkChild);
@@ -1385,6 +1339,7 @@ export const make = Effect.gen(function* () {
       }
 
       const sources: UsageSource[] = [];
+      const savedUsageMessage = savedUsageGapMessage();
       for (const [
         index,
         {
@@ -1400,9 +1355,9 @@ export const make = Effect.gen(function* () {
         },
       ] of scannedDirs.entries()) {
         const { scannedFiles, skippedFiles, malformedRecords, sessionIds } = counts[index]!;
-        const savedUsageGap = savedUsageGaps.size > 0 && transcriptFormats.has(provider);
+        const savedUsageGap = savedUsageMessage !== undefined && transcriptFormats.has(provider);
         const sourceMessage = savedUsageGap
-          ? [message, "Some saved usage could not be read."].filter(Boolean).join(" ")
+          ? [message, savedUsageMessage].filter(Boolean).join(" ")
           : (message ?? (files === null ? "No transcript directory on this environment." : null));
         sources.push({
           fingerprint: {
@@ -1491,17 +1446,17 @@ export const make = Effect.gen(function* () {
       }
     }
     if (resolvedAny) {
+      const nowMs = yield* Clock.currentTimeMillis;
       for (const [filePath, entry] of fileCache) {
         const records = correctedBatch(entry.records);
         const tailRecords = correctedBatch(entry.tailRecords);
         if (records === entry.records && tailRecords === entry.tailRecords) continue;
-        updatedFiles.add(filePath);
-        fileCache.set(filePath, { ...entry, records, tailRecords });
-        cacheDirty = true;
+        const observedAtMs = observedAt(filePath, nowMs);
+        fileCache.set(filePath, { ...entry, observedAtMs, records, tailRecords });
+        generation += 1;
       }
     }
-    const pruned = pruneScanCache(fileCache, retentionCutoffMs);
-    if (pruned > 0) cacheDirty = true;
+    if (pruneScanCache(fileCache, retentionCutoffMs) > 0) generation += 1;
 
     return yield* finish();
   });
