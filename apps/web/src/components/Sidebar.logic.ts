@@ -57,6 +57,7 @@ import type { SidebarThreadSummary, Thread } from "../types";
 import { normalizeSearchText } from "../lib/utils";
 import { isLatestRunSettled } from "../session-logic";
 import { observeIntersection } from "../lib/observeIntersection";
+import { useNowMinute } from "../hooks/useNowMinute";
 import { deadlineAfter, deadlineStore } from "@t3tools/client-runtime/clock";
 import { matchesAnyThreadTag } from "@t3tools/client-runtime/state/thread-tag-filter";
 import {
@@ -204,6 +205,30 @@ export function useRetainedValue<T>(key: string | null, value: T | null): T | nu
   }
   if (value !== null) return value;
   return key !== null && retained?.key === key ? retained.value : null;
+}
+
+/**
+ * One timestamp per clock trigger (minute tick, snooze wake, inbox return expiry), so the route
+ * reveal and the partition classify snoozes against the same instant even when a wake timer
+ * fires late.
+ */
+export function useSidebarClock(
+  threads: ReadonlyArray<{ readonly snoozedUntil?: string | null | undefined }>,
+  inboxReturns: {
+    readonly subscribe: (listener: () => void) => () => void;
+    readonly getSnapshot: () => unknown;
+  },
+): number {
+  const wakeClock = useSnoozeWakeClock(threads);
+  const nowMinute = useNowMinute();
+  const inboxVersion = React.useSyncExternalStore(inboxReturns.subscribe, inboxReturns.getSnapshot);
+  const key = `${nowMinute}:${wakeClock}:${String(inboxVersion)}`;
+  const [clock, setClock] = React.useState(() => ({ key, nowMs: Date.now() }));
+  if (clock.key === key) return clock.nowMs;
+  // oxlint-disable-next-line react/purity -- captures the instant once per clock trigger, not per render
+  const next = { key, nowMs: Date.now() };
+  setClock(next);
+  return next.nowMs;
 }
 
 // Sortable owns drag transforms; replaying committed order would animate drops twice.

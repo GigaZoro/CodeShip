@@ -107,7 +107,6 @@ import {
   useReducer,
   useRef,
   useState,
-  useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
@@ -172,7 +171,6 @@ import { canMoveProjectGroup, useMoveProjectGroup } from "../hooks/useProjectOrd
 import { updateClientSettings, useClientSettings, useSidebarGrouping } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
-import { useNowMinute } from "../hooks/useNowMinute";
 import {
   useEnvironmentIdentities,
   useConnectedEnvironmentIds,
@@ -288,7 +286,7 @@ import {
   sortPinnedThreadsForSidebar,
   sortThreadsForSidebar,
   sortWorkingThreadsBySend,
-  useSnoozeWakeClock,
+  useSidebarClock,
   resolveNextThreadAfterPark,
   useThreadJumpHintsVisible,
   type SidebarListItem,
@@ -468,10 +466,9 @@ interface SidebarThreadPartitionInput {
   readonly sortActiveBySend: boolean;
   /** Environments not answering; their threads' cached run states are stale. */
   readonly disconnectedEnvironmentIds: ReadonlySet<EnvironmentId>;
-  // Snooze wakes, the queued-turn grace and the Working shelf's exit grace depend
-  // on the clock, so the minute tick, the precise snooze-wake tick and the inbox
-  // tracker's expiry version are inputs: a new key repartitions.
-  readonly clockKey: string;
+  // Snooze wakes, the queued-turn grace and the Working shelf's exit grace depend on this
+  // instant, which the sidebar re-reads only when one of its clocks ticks.
+  readonly nowMs: number;
 }
 
 function scrollSidebarToTop(content: HTMLElement | null) {
@@ -609,7 +606,7 @@ export function useSidebarThreads(input: {
   readonly hiddenTaskThreadKeys: ReadonlySet<string>;
   readonly routeRowThreadKey: string | null;
   readonly grouping: SidebarThreadGrouping;
-  readonly snoozeWakeClock: number;
+  readonly nowMs: number;
 }) {
   const {
     projectScopeKey,
@@ -622,7 +619,6 @@ export function useSidebarThreads(input: {
     hiddenTaskThreadKeys,
     routeRowThreadKey,
     grouping,
-    snoozeWakeClock,
   } = input;
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
   const environmentConnections = useEnvironmentConnectionSummaries();
@@ -637,11 +633,6 @@ export function useSidebarThreads(input: {
       )
       .map((environment) => environment.environmentId),
   );
-  const inboxReturnsVersion = useSyncExternalStore(
-    inboxReturns.subscribe,
-    inboxReturns.getSnapshot,
-  );
-  const nowMinute = useNowMinute();
   const [settledShelfExpanded, setSettledShelfExpanded] = useLocalStorage(
     SETTLED_SHELF_EXPANDED_KEY,
     false,
@@ -707,7 +698,7 @@ export function useSidebarThreads(input: {
     workingShelfEnabled,
     sortActiveBySend: grouping.projects !== null || grouping.machines !== null,
     disconnectedEnvironmentIds,
-    clockKey: `${nowMinute}:${snoozeWakeClock}:${inboxReturnsVersion}`,
+    nowMs: input.nowMs,
   });
 
   const {
@@ -1215,7 +1206,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     sortActiveBySend,
     disconnectedEnvironmentIds,
   } = input;
-  const preciseNow = new Date().toISOString();
+  const preciseNow = new Date(input.nowMs).toISOString();
   const matchesFilters = (thread: EnvironmentThreadShell) =>
     matchesSidebarThreadFilters(thread, {
       statusFilter: input.statusFilter,
@@ -1795,8 +1786,7 @@ export default function Sidebar({
   const threads = useQuietThreadShells();
   const lastActivityOrder = useAtomValue(environmentThreadShells.lastActivityOrderAtom(threadSort));
   const locallyUnreadKeys = useLocallyUnreadThreadKeys(threads);
-  // Minute-quantized clocks would delay second-precise snooze wakes by up to a minute.
-  const snoozeWakeClock = useSnoozeWakeClock(threads);
+  const nowMs = useSidebarClock(threads, inboxReturns);
   const availableTags = useAtomValue(
     environmentThreadShells.threadFilterTagsAtom(
       hiddenScheduledTaskThreadKeysAtom(taskEnvironmentIdsKey),
@@ -1835,7 +1825,7 @@ export default function Sidebar({
         tagFilter,
         locallyUnreadKeys,
         hiddenTaskThreadKeys,
-        nowMs: snoozeWakeClock,
+        nowMs,
       }),
   });
   const projectScopeKeys = revealWidensScope ? [] : chosenProjectScopeKeys;
@@ -2069,7 +2059,7 @@ export default function Sidebar({
     delegatedUnderParent,
     hiddenTaskThreadKeys,
     routeRowThreadKey,
-    snoozeWakeClock,
+    nowMs,
     grouping: {
       projects: groupBy.project
         ? {

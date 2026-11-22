@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { act, fakeTimers, render } from "../../test/render";
-import { useSnoozeWakeClock, useThreadJumpHintsVisible } from "./Sidebar.logic";
+import { useSidebarClock, useSnoozeWakeClock, useThreadJumpHintsVisible } from "./Sidebar.logic";
 
 const MOUNTED_AT_MS = Date.parse("2026-10-24T08:00:00.000Z");
 
@@ -55,5 +55,34 @@ describe("useThreadJumpHintsVisible", () => {
     await expect.element(screen.getByRole("status")).toHaveTextContent("hidden");
     await act(() => vi.advanceTimersByTime(1_000));
     await expect.element(screen.getByRole("status")).toHaveTextContent("shown");
+  });
+});
+
+const NO_INBOX_RETURNS = { subscribe: () => () => {}, getSnapshot: () => 0 };
+
+function SidebarClock(props: {
+  readonly threads: ReadonlyArray<{ readonly snoozedUntil: string }>;
+}) {
+  return <output>{useSidebarClock(props.threads, NO_INBOX_RETURNS)}</output>;
+}
+
+describe("useSidebarClock", () => {
+  it("holds one instant until a clock ticks, so the reveal and the partition agree", async () => {
+    const wakeAtMs = 60_000 + 30_000;
+    using _timers = fakeTimers({ now: 60_000 });
+    const threads = [{ snoozedUntil: new Date(wakeAtMs).toISOString() }];
+    await using screen = await render(<SidebarClock threads={threads} />, {
+      // A bare hook host; nothing here links or navigates.
+      router: false,
+    });
+    await expect.element(screen.getByRole("status")).toHaveTextContent("60000");
+
+    // The wake deadline passes, but its timer has not run: no classification may see wall time.
+    vi.setSystemTime(wakeAtMs + 1);
+    await screen.rerender(<SidebarClock threads={[...threads]} />);
+    await expect.element(screen.getByRole("status")).toHaveTextContent("60000");
+
+    await act(() => vi.advanceTimersByTime(30_000));
+    await expect.element(screen.getByRole("status")).not.toHaveTextContent("60000");
   });
 });

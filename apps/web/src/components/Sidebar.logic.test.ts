@@ -1503,7 +1503,7 @@ describe("resolveSidebarRouteReveal", () => {
     expect(resolve(hiddenKey, another).widensScope).toBe(true);
   });
 
-  it("completes without widening when no scope lists the thread's row", () => {
+  it("never widens, but keeps the scroll pending, when no scope lists the thread's row", () => {
     const reveal = { observedKey: "environment-test:other", pendingKey: null, widenedKey: null };
     const resolve = (chosen: ReadonlySet<string>) =>
       resolveSidebarRouteReveal({
@@ -1515,9 +1515,9 @@ describe("resolveSidebarRouteReveal", () => {
         findThread,
         listsThread: () => false,
       });
-    expect(resolve(scopedProjectKeys)).toEqual({ pendingKey: null, widensScope: false });
+    expect(resolve(scopedProjectKeys)).toEqual({ pendingKey: hiddenKey, widensScope: false });
     expect(resolve(new Set(["environment-test:project-another"]))).toEqual({
-      pendingKey: null,
+      pendingKey: hiddenKey,
       widensScope: false,
     });
   });

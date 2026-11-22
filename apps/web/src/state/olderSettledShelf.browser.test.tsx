@@ -110,7 +110,7 @@ describe("useOlderSettledShelf", () => {
         hiddenTaskThreadKeys: new Set(),
         routeRowThreadKey: null,
         grouping: { projects: null, machines: null },
-        snoozeWakeClock: 0,
+        nowMs: Date.parse("2026-11-22T00:00:00.000Z"),
       });
       const folder = list.userFolders[0]!;
       return (

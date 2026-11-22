@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
 import { render } from "../../../test/render";
-import { type SidebarRouteReveal, useActiveRowReveal } from "./routeReveal";
+import {
+  resolveSidebarRouteReveal,
+  type SidebarRouteReveal,
+  useActiveRowReveal,
+} from "./routeReveal";
 
 const ROW_HEIGHT_PX = 24;
 
@@ -26,6 +30,28 @@ function RevealList(props: {
       ))}
     </ul>
   );
+}
+
+// The sidebar resolves the reveal in the same render that mounts the row.
+function ResolvingRevealList(props: {
+  readonly reveal: SidebarRouteReveal;
+  readonly rowKeys: ReadonlyArray<string>;
+  readonly activeKey: string;
+  readonly listed: boolean;
+  readonly onResolved: (widensScope: boolean) => void;
+}) {
+  const hidden = { projectId: "other" };
+  const { widensScope } = resolveSidebarRouteReveal({
+    reveal: props.reveal,
+    routeKey: props.activeKey,
+    isSearching: false,
+    scopedProjectKeys: new Set(["project"]),
+    delegatedUnderParent: new Set(),
+    findThread: () => hidden as never,
+    listsThread: () => props.listed,
+  });
+  props.onResolved(widensScope);
+  return <RevealList reveal={props.reveal} rowKeys={props.rowKeys} activeKey={props.activeKey} />;
 }
 
 const rowKeys = (count: number) => Array.from({ length: count }, (_, index) => `thread-${index}`);
@@ -144,5 +170,42 @@ describe("useActiveRowReveal", () => {
       { router: false },
     );
     await expect.element(screen.getByText("thread-40", { exact: true })).toBeInViewport();
+  });
+
+  it("scrolls a row that mounts after an approval resolves elsewhere", async () => {
+    const reveal = newReveal();
+    const keys = rowKeys(50);
+    const widened: boolean[] = [];
+    const rows = keys.slice(0, 5);
+    await using screen = await render(
+      <RevealList reveal={reveal} rowKeys={keys} activeKey="thread-0" />,
+      // No router: the route arrives as the activeKey prop.
+      { router: false },
+    );
+    // The thread waits in the Needs you box, so no section row lists it yet.
+    await screen.rerender(
+      <ResolvingRevealList
+        reveal={reveal}
+        rowKeys={rows}
+        activeKey="thread-40"
+        listed={false}
+        onResolved={(widensScope) => widened.push(widensScope)}
+      />,
+    );
+    expect(reveal.pendingKey).toBe("thread-40");
+
+    // Another client approves it, and its row mounts in a scope that still hides it.
+    await screen.rerender(
+      <ResolvingRevealList
+        reveal={reveal}
+        rowKeys={keys}
+        activeKey="thread-40"
+        listed
+        onResolved={(widensScope) => widened.push(widensScope)}
+      />,
+    );
+
+    await expect.element(screen.getByText("thread-40", { exact: true })).toBeInViewport();
+    expect(widened.every((widensScope) => !widensScope)).toBe(true);
   });
 });

@@ -79,9 +79,10 @@ export function resolveSidebarRouteReveal<T extends RevealableThread>(input: {
   // Search results replace the thread list; the reveal waits for it to return.
   const thread = pendingKey === null || isSearching ? undefined : findThread(pendingKey);
   if (thread !== undefined && !listsThread(thread)) {
-    // No scope lists its row (filters, Needs you box, scheduled task), so widening could never show it.
-    completeSidebarRouteReveal(reveal);
-    return { pendingKey: null, widensScope: false };
+    // Widening could never show the row now, and a scope picked later stands; the row still
+    // scrolls if it mounts later, e.g. once an approval resolves elsewhere.
+    markSidebarRouteRevealWidened(reveal);
+    return { pendingKey, widensScope: false };
   }
   const widensScope =
     thread !== undefined &&
