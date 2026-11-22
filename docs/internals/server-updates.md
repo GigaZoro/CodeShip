@@ -174,6 +174,13 @@ older version is ignored, and an unreadable one is replaced. A release the launc
 or a desktop update that did not apply, is skipped until a newer release is due. Manual updates
 can be started at any time.
 
+Every check that found a due release ends its "Automatic update" log lines with "Automatic update
+handed to its installer.", "Automatic update check ended without an install." (with the target
+and whether the settings changed), or "Automatic update check failed." when the check itself
+fails. A check can stop with no other line, when the
+schedule changes or the release is no longer due, so without that line its log would read as an
+install still under way.
+
 ## Recovering interrupted threads
 
 Restart continuation is an environment-owned preference, on by default. A

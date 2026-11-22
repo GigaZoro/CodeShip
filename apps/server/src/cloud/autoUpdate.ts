@@ -410,7 +410,8 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
       const idle = yield* idleBefore(patienceEnds);
       if (idle === false) return;
       if (idle === "busy") break;
-      if ((yield* handOff(schedule, false)) !== "chats") return;
+      const outcome = yield* handOff(schedule, false);
+      if (outcome !== "chats") return outcome;
     }
     yield* Effect.logInfo("Automatic update drains: new scheduled starts wait for it.", {
       targetVersion: installerVersion(target),
@@ -432,7 +433,8 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
       const drained = yield* idleBefore(drainEnds);
       if (drained === false) return;
       if (drained === "busy") break;
-      if ((yield* handOff(schedule, false)) !== "chats") return;
+      const outcome = yield* handOff(schedule, false);
+      if (outcome !== "chats") return outcome;
     }
     const hold = yield* machineHold.restartHold;
     yield* Effect.logWarning("Automatic update stops waiting for chats to be idle.", {
@@ -453,7 +455,10 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     return yield* handOff(schedule, true);
   });
 
-  /** `"chats"` when a chat that started while the release was prepared put the handoff off. */
+  /**
+   * `"handed-off"` once the installer has the release, and `"chats"` when a chat that started
+   * while the release was prepared put the handoff off.
+   */
   const handOff = Effect.fn("cloud.auto_update.hand_off")(function* (
     schedule: UpdateSchedule,
     afterPatience: boolean,
@@ -514,6 +519,7 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
                   ),
                 ),
             ),
+            Effect.as("handed-off" as const),
           ),
         ),
         Effect.catch((error) =>
@@ -538,9 +544,11 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
         ),
       );
     // Held while the release is prepared, so no scheduled start begins under the handoff.
-    yield* Effect.raceFirst(machineHold.whileDraining(prepare), cancelPreparation).pipe(
-      Effect.catch((error) => recordFailure(version, error.message)),
-    );
+    const outcome = yield* Effect.raceFirst(
+      machineHold.whileDraining(prepare),
+      cancelPreparation,
+    ).pipe(Effect.catch((error) => recordFailure(version, error.message)));
+    if (outcome === "handed-off") return outcome;
     return (yield* Ref.get(heldOff))?.chats === true ? ("chats" as const) : undefined;
   });
 
@@ -609,7 +617,14 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
       changed: Deferred.await(changed),
     };
     const target = yield* findTarget(schedule);
-    if (target !== undefined) yield* install(target, schedule);
+    if (target === undefined) return;
+    if ((yield* install(target, schedule)) === "handed-off") return;
+    // A check can end with no line of its own (a schedule change, a release no longer due), and
+    // without this one its log would read as an install still under way.
+    yield* Effect.logInfo("Automatic update check ended without an install.", {
+      targetVersion: installerVersion(target),
+      settingsChanged: yield* Deferred.isDone(changed),
+    });
   }, Effect.scoped);
 
   const waitForNextCheck = Effect.gen(function* () {

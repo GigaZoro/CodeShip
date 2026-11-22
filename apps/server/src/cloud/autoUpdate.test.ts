@@ -194,6 +194,23 @@ describe("automatic update target", () => {
 
 const answering = [{ threadId: ThreadId.make("thread-2"), threadTitle: "Answering" }];
 
+/** Runs `effect` and gives each "Automatic update" line it logged, as `[message, fields]`. */
+const updateLines = <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+  const lines: Array<ReadonlyArray<unknown>> = [];
+  return effect.pipe(
+    Effect.provide(
+      Logger.layer([
+        Logger.make(({ message }) => {
+          if (Array.isArray(message) && String(message[0]).startsWith("Automatic update")) {
+            lines.push(message);
+          }
+        }),
+      ]),
+    ),
+    Effect.as(lines),
+  );
+};
+
 const work = (id: string): OrchestrationV2RestartHold["work"][number] => ({
   threadId: ThreadId.make("thread-1"),
   threadTitle: "Coordinator",
@@ -698,16 +715,22 @@ it.layer(NodeServices.layer)("automatic server update", (it) => {
         harness.updateSettings((current) => ({ ...current, automaticUpdateTime: "05:00" })),
       );
       // Background work holds the update, so only the change can end this check.
-      yield* harness.auto.check();
+      const lines = yield* updateLines(harness.auto.check());
       expect(harness.events).toEqual([]);
+      // Its log would otherwise end on the wait, as if the install were still under way.
+      expect(lines.at(-1)).toEqual([
+        "Automatic update check ended without an install.",
+        { targetVersion: NEWER, settingsChanged: true },
+      ]);
     }),
   );
 
   it.effect("keeps scheduled starts held after the handoff until the installer stops it", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
-      yield* harness.auto.check();
+      const lines = yield* updateLines(harness.auto.check());
       expect(harness.events).toEqual([`update ${NEWER}`, `handoff ${NEWER}`]);
+      expect(lines.at(-1)?.[0]).toBe("Automatic update handed to its installer.");
       expect(yield* harness.draining).toBe(true);
 
       yield* TestClock.adjust(
