@@ -170,10 +170,15 @@ export function makeSubagentConversationArtifacts(input: {
   return { message, turnItem };
 }
 
-/** The turn item types `subagentResultForRun` reads; load at least these for a run's result. */
-export const SUBAGENT_RESULT_TURN_ITEM_TYPES = [
+/** The turn item types a run replies with; its latest non-blank one is its result. */
+export const SUBAGENT_REPLY_TURN_ITEM_TYPES = [
   "assistant_message",
   "proposed_plan",
+] as const satisfies ReadonlyArray<OrchestrationV2TurnItem["type"]>;
+
+/** The turn item types `subagentResultForRun` reads; load at least these for a run's result. */
+export const SUBAGENT_RESULT_TURN_ITEM_TYPES = [
+  ...SUBAGENT_REPLY_TURN_ITEM_TYPES,
   "error",
 ] as const satisfies ReadonlyArray<OrchestrationV2TurnItem["type"]>;
 

@@ -10,6 +10,7 @@ import {
   NodeId,
   type OrchestrationV2Run,
   type OrchestratorMcpThreadReadInput,
+  PlanId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -101,7 +102,7 @@ interface TimelineEntry {
   readonly id: TurnItemId;
   readonly runId: RunId;
   readonly text: string;
-  readonly type: "assistant_message" | "error";
+  readonly type: "assistant_message" | "proposed_plan" | "error";
 }
 
 interface BoxThread {
@@ -528,9 +529,7 @@ const boxToolkitLayer = (
         ).map((entry, position) => ({ ...entry, position }));
         const visible =
           options.itemId === undefined
-            ? replies.filter(
-                (entry) => options.view === "activity" || entry.type === "assistant_message",
-              )
+            ? replies.filter((entry) => options.view === "activity" || entry.type !== "error")
             : replies.filter((entry) => entry.id === options.itemId);
         const matching = visible
           .filter((entry) => entry.position > (options.afterPosition ?? -1))
@@ -558,12 +557,14 @@ const boxToolkitLayer = (
               updatedAt: DateTime.makeUnsafe(0),
               ...(type === "error"
                 ? { type, failure: { message: text } }
-                : {
-                    type: "assistant_message" as const,
-                    messageId: MessageId.make(`message:${id}`),
-                    text,
-                    streaming: false,
-                  }),
+                : type === "proposed_plan"
+                  ? { type, planId: PlanId.make(`plan:${id}`), markdown: text, streaming: false }
+                  : {
+                      type: "assistant_message" as const,
+                      messageId: MessageId.make(`message:${id}`),
+                      text,
+                      streaming: false,
+                    }),
             } as never,
           })),
           totalItems: replies.length,
@@ -2681,6 +2682,7 @@ it.effect.each([
   "no-run",
   "cancelled",
   "interrupted",
+  "plan",
 ] as const)("reads a successful task with an aligned tail probe (%s)", (scenario) =>
   Effect.gen(function* () {
     const reads: Array<OrchestratorMcpThreadReadInput> = [];
@@ -2731,7 +2733,7 @@ it.effect.each([
             id: TurnItemId.make("selected"),
             runId: scenario === "no-run" ? boxLaterRunId : boxRunId,
             text: result,
-            type: "assistant_message",
+            type: scenario === "plan" ? "proposed_plan" : "assistant_message",
           },
           ...(middle ? history(200, boxLaterRunId, "later") : []),
         ];

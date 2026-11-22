@@ -20,6 +20,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { derive } from "@t3tools/provider-core/server/IdAllocator";
+import { SUBAGENT_REPLY_TURN_ITEM_TYPES } from "@t3tools/provider-core/server/subagentProjection";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -57,6 +58,8 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 
+/** The reply types `subagentResultForRun` takes a run's result from, read here off the thread there. */
+const replyTypes: ReadonlyArray<string> = SUBAGENT_REPLY_TURN_ITEM_TYPES;
 /** How long one follow of a remote task waits on its thread there before checking again. */
 const FOLLOW_WAIT_MS = 10 * 60 * 1_000;
 /** A linked environment that stops answering is retried, backing off to this. */
@@ -644,9 +647,9 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * The last reply `runId` gave on the task's thread there, which is its
-   * result, read whole however long it is. A failed run prefers its error
-   * from the activity view over an earlier reply, without taking another run's.
+   * The last reply `runId` gave on the task's thread there (a message or a proposed
+   * plan), which is its result, read whole however long it is. A failed run prefers
+   * its error from the activity view over an earlier reply, without taking another run's.
    */
   const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
     scope: ThreadScope,
@@ -660,6 +663,8 @@ const make = Effect.gen(function* () {
     let afterPosition: number | undefined;
     let remainingItems = 0;
     let tailProbed = false;
+    const isReply = (item: OrchestratorMcpThreadTimelineItem) =>
+      replyTypes.includes(item.type) && (runId === null || item.runId === runId);
     while (true) {
       const read = yield* forwarding.readThread(scope, remote.environmentId, {
         threadId: remote.threadId,
@@ -670,10 +675,7 @@ const make = Effect.gen(function* () {
         ...(failed && remainingItems > 100 ? { maxCharsPerItem: 1 } : {}),
         ...(afterPosition === undefined ? {} : { afterPosition }),
       });
-      reply =
-        read.items.findLast(
-          (item) => item.type === "assistant_message" && (runId === null || item.runId === runId),
-        ) ?? reply;
+      reply = read.items.findLast(isReply) ?? reply;
       if (failed) {
         error =
           read.items.findLast(
@@ -691,9 +693,7 @@ const make = Effect.gen(function* () {
             limit: 100,
             afterPosition: tailPosition,
           });
-          const tailReply = tail.items.findLast(
-            (item) => item.type === "assistant_message" && (runId === null || item.runId === runId),
-          );
+          const tailReply = tail.items.findLast(isReply);
           if (!tail.hasMore && tailReply !== undefined) {
             reply = tailReply;
             break;

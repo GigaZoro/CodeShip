@@ -201,7 +201,7 @@
 
 ## 2026-11-22 — A delegated task in plan mode returns its plan
 
-- A delegated task that ran in plan mode and ended with a proposed plan reported "Child task completed without an assistant result" to the chat that started it. Its result is now the proposed plan.
+- A delegated task that ran in plan mode and ended with a proposed plan reported "Child task completed without an assistant result" to the chat that started it. Its result is now the proposed plan, also when the task runs on a linked machine.
 
 ## 2026-11-22 — Relay client installs keep each other's locks
 

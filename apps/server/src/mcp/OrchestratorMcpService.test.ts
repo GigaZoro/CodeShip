@@ -16,6 +16,7 @@ import {
   OrchestratorMcpProviderCapability,
   OrchestratorMcpModelOption,
   OrchestratorMcpTarget,
+  PlanId,
   type OrchestrationV2ThreadShell,
   type ScheduledTask,
   ScheduledTaskId,
@@ -28,6 +29,7 @@ import {
   ProviderTurnId,
   RunId,
   ThreadId,
+  TurnItemId,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
@@ -1219,6 +1221,65 @@ describe("OrchestratorMcpService", () => {
       });
     }),
   );
+});
+
+describe("OrchestratorMcpService.pageIncludesTerminalTaskResult", () => {
+  const parentThreadId = ThreadId.make("thread:ack-parent");
+  const childThreadId = ThreadId.make("thread:ack-child");
+  const runId = RunId.make("run:ack-child");
+  const delivered = {
+    id: TurnItemId.make("turn-item:ack-delivered"),
+    runId,
+    ordinal: 0,
+    type: "assistant_message" as const,
+    messageId: MessageId.make("message:ack-delivered"),
+    text: "The answer the parent received.",
+  };
+  const laterPlan = {
+    id: TurnItemId.make("turn-item:ack-later-plan"),
+    runId,
+    ordinal: 1,
+    type: "proposed_plan" as const,
+    planId: PlanId.make("plan:ack-later"),
+    markdown: "1. A plan the result would pick now.",
+  };
+
+  it.each([
+    ["the item the transfer delivered", delivered, true],
+    ["a later item the run's result would pick now", laterPlan, false],
+  ] as const)("acknowledges a page that holds %s", (_, item, acknowledged) => {
+    assert.equal(
+      OrchestratorMcpService.pageIncludesTerminalTaskResult({
+        parent: {
+          thread: { id: parentThreadId },
+          contextTransfers: [
+            {
+              type: "subagent_result",
+              sourceThreadId: childThreadId,
+              targetThreadId: parentThreadId,
+              sourcePoint: { threadId: childThreadId, runId, turnItemId: delivered.id },
+            },
+          ],
+        } as never,
+        page: [{ sourceThreadId: childThreadId, sourceItemId: item.id, item } as never],
+        task: {
+          id: NodeId.make("node:ack-task"),
+          threadId: parentThreadId,
+          childThreadId,
+          origin: "app_owned",
+        } as never,
+        target: {
+          thread: { id: childThreadId },
+          runs: [{ id: runId, ordinal: 1, status: "completed" }],
+          contextTransfers: [],
+          messages: [],
+          turnItems: [delivered, laterPlan],
+        } as never,
+        maxChars: 20_000,
+      }),
+      acknowledged,
+    );
+  });
 });
 
 describe("OrchestratorMcpService provider resolution", () => {

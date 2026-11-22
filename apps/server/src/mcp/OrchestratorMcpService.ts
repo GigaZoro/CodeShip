@@ -892,7 +892,7 @@ function taskResultTransfer(
   );
 }
 
-function pageIncludesTerminalTaskResult(input: {
+export function pageIncludesTerminalTaskResult(input: {
   readonly parent: Pick<OrchestrationV2ThreadProjection, "thread" | "contextTransfers">;
   readonly page: ReadonlyArray<OrchestrationV2ThreadProjection["visibleTurnItems"][number]>;
   readonly task: OrchestrationV2Subagent;
@@ -910,7 +910,12 @@ function pageIncludesTerminalTaskResult(input: {
       : input.target.runs.find((run) => run.id === transfer.sourcePoint.runId);
   if (run === undefined || !isTerminalTaskStatus(taskStatusForRun(run))) return false;
 
-  const result = subagentResultForRun(input.target, run);
+  // The transfer names the item it delivered; a result worked out again now can name another.
+  const delivered = transfer.sourcePoint.turnItemId;
+  const result =
+    delivered === undefined
+      ? subagentResultForRun(input.target, run)
+      : { turnItemId: delivered, messageId: null };
   if (result.messageId === null && result.turnItemId === null) return false;
 
   return input.page.some((row) => {
