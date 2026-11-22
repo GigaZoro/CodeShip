@@ -56,44 +56,57 @@ const dispatchStep = (overrides = {}) => ({
   ...overrides,
 });
 
+/** The release run's Publish GitHub Release job in one attempt (`databaseId` names its log). */
+const publishJob = ({ job = {}, step = {}, steps } = {}, databaseId) => ({
+  name: "Publish GitHub Release",
+  databaseId,
+  conclusion: "success",
+  steps: steps ?? [
+    { name: "Publish release", status: "completed", conclusion: "success" },
+    dispatchStep(step),
+  ],
+  ...job,
+});
+
 /**
- * A fake gh: the release run's jobs, the publish job's log (an Error fails that call) and the runs it may print,
+ * A fake gh: the release run's latest attempt (`earlier` describes the attempts before it, each as `job`, `step`,
+ * `steps`, `log` and `status`), each publish job's log (an Error fails that call) and the runs a log may print,
  * recording every call.
  */
 function fixture({
   status = "completed",
-  job = {},
-  step = {},
-  steps,
   log = jobLog(),
   runs = {},
+  earlier = [],
+  ...latest
 } = {}) {
   const calls = [];
   const macos = { 44919730318: MACOS_RUN, ...runs };
-  const publish = {
-    name: "Publish GitHub Release",
-    databaseId: 136892706420,
-    conclusion: "success",
-    steps: steps ?? [
-      { name: "Publish release", status: "completed", conclusion: "success" },
-      dispatchStep(step),
-    ],
-    ...job,
+  const attempts = [...earlier, { ...latest, status, log }].map((each, index) => ({
+    status: each.status ?? "completed",
+    log: each.log ?? jobLog(),
+    publish: publishJob(each, 136892706420 - earlier.length + index),
+  }));
+  const describe = (attempt) => {
+    const { status, publish } = attempts[attempt - 1];
+    const jobs = [{ name: "Preflight", conclusion: "success", steps: [] }, publish];
+    return JSON.stringify({ status, attempt, jobs });
   };
   const gh = (args) => {
     calls.push(args);
     assert.deepEqual(args.slice(args.indexOf("-R"), args.indexOf("-R") + 2), ["-R", REPOSITORY]);
     if (args.includes("--log")) {
+      const id = Number(args[args.indexOf("--job") + 1]);
+      const { log } = attempts.find((each) => each.publish.databaseId === id);
       if (log instanceof Error) throw log;
       return log;
     }
     const id = args[2];
     if (id === "44919164430") {
-      return JSON.stringify({
-        status,
-        attempt: 2,
-        jobs: [{ name: "Preflight", conclusion: "success", steps: [] }, publish],
-      });
+      const attempt = args.includes("--attempt")
+        ? Number(args[args.indexOf("--attempt") + 1])
+        : attempts.length;
+      return describe(attempt);
     }
     if (!macos[id]) throw new Error(`gh run view ${id} failed: HTTP 404`);
     return JSON.stringify(macos[id]);
@@ -101,7 +114,7 @@ function fixture({
   return { calls, result: () => releaseMacosRun(REPOSITORY, "44919164430", gh) };
 }
 
-const release = `${RUN_URL(44919164430)} (attempt 2)`;
+const release = `${RUN_URL(44919164430)} (attempt 1)`;
 
 test("the macOS run is the one the dispatch step printed, checked against the release's version and the step's time", () => {
   const { calls, result } = fixture();
@@ -256,6 +269,49 @@ test("anything that leaves the run uncertain is unverified, never guessed", () =
   ];
   for (const [options, reason] of cases)
     assert.deepEqual(fixture(options).result(), { outcome: "unverified", reason, release }, reason);
+});
+
+test("a retry's build is the last attempt that dispatched, with every attempt's outcome", () => {
+  const skipped = { job: { conclusion: "skipped" } };
+  // The first attempt dispatched and the retry reran another job alone, so its publish job did not run again.
+  const first = fixture({ earlier: [{}], ...skipped });
+  assert.deepEqual(first.result(), {
+    outcome: "dispatched",
+    run: 44919730318,
+    url: RUN_URL(44919730318),
+    release: `${RUN_URL(44919164430)} (attempt 1)`,
+    attempts: [
+      { attempt: 1, outcome: "dispatched", run: 44919730318, url: RUN_URL(44919730318) },
+      { attempt: 2, outcome: "not-started", reason: "its Publish GitHub Release job was skipped" },
+    ],
+  });
+  assert.ok(first.calls.some((args) => args.join(" ").includes("--attempt 1 --json")));
+  // The first attempt failed before its dispatch, and the retry dispatched.
+  const retried = fixture({ earlier: [skipped] }).result();
+  assert.equal(retried.outcome, "dispatched");
+  assert.equal(retried.release, `${RUN_URL(44919164430)} (attempt 2)`);
+  // No attempt dispatched: the latest one's outcome, with a failed read of an earlier one among them.
+  const none = fixture({
+    earlier: [{ log: new Error("gh run view --job failed: HTTP 502") }],
+    ...skipped,
+  });
+  assert.deepEqual(none.result(), {
+    outcome: "not-started",
+    reason: "its Publish GitHub Release job was skipped",
+    release: `${RUN_URL(44919164430)} (attempt 2)`,
+    attempts: [
+      { attempt: 1, outcome: "unverified", reason: "gh run view --job failed: HTTP 502" },
+      { attempt: 2, outcome: "not-started", reason: "its Publish GitHub Release job was skipped" },
+    ],
+  });
+  // A retry that is still running is pending, before any attempt is read.
+  const running = fixture({ earlier: [{}], status: "in_progress" });
+  assert.deepEqual(running.result(), {
+    outcome: "pending",
+    reason: "the release run is in_progress",
+    release: `${RUN_URL(44919164430)} (attempt 2)`,
+  });
+  assert.equal(running.calls.length, 1);
 });
 
 test("a gh failure is unverified, with the release run and its attempt wherever gh failed", () => {
