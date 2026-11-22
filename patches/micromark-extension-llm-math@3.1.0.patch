@@ -1,4 +1,5 @@
 diff --git a/dev/lib/math-flow.js b/dev/lib/math-flow.js
+index d795fabe8289d93633848c784ed150a3dba22bbc..490a4eb5af19506d046fe29f18d7ff01ef77b38d 100644
 --- a/dev/lib/math-flow.js
 +++ b/dev/lib/math-flow.js
 @@ -4,7 +4,7 @@
@@ -10,7 +11,17 @@ diff --git a/dev/lib/math-flow.js b/dev/lib/math-flow.js
  import {codes, constants, types} from 'micromark-util-symbol'
  
  /** @type {Construct} */
-@@ -32,6 +32,9 @@
+@@ -20,6 +20,9 @@ const nonLazyContinuation = {
+   partial: true
+ }
+ 
++/** @type {Construct} */
++const blankLine = {tokenize: tokenizeBlankLine, partial: true}
++
+ /**
+  * @this {TokenizeContext}
+  * @type {Tokenizer}
+@@ -32,6 +35,9 @@ function tokenizeMathFenced(effects, ok, nok) {
        ? tail[2].sliceSerialize(tail[1], true).length
        : 0
    let sizeOpen = 0
@@ -20,7 +31,7 @@ diff --git a/dev/lib/math-flow.js b/dev/lib/math-flow.js
  
    return start
  
-@@ -79,7 +82,32 @@
+@@ -79,7 +85,32 @@ function tokenizeMathFenced(effects, ok, nok) {
      }
  
      effects.exit('mathFlowFenceSequence')
@@ -54,7 +65,22 @@ diff --git a/dev/lib/math-flow.js b/dev/lib/math-flow.js
    }
  
    /**
-@@ -230,6 +258,14 @@
+@@ -193,6 +224,14 @@ function tokenizeMathFenced(effects, ok, nok) {
+    * @type {State}
+    */
+   function contentStart(code) {
++    // Display math cannot contain a blank line, as in TeX. Failing here bounds an
++    // unclosed opener: this construct is concrete, so while it is open the document
++    // tokenizer starts no lists or quotes on the lines it spans.
++    return effects.check(blankLine, nok, contentLineStart)(code)
++  }
++
++  /** @type {State} */
++  function contentLineStart(code) {
+     return (
+       initialSize
+         ? factorySpace(
+@@ -230,6 +269,14 @@ function tokenizeMathFenced(effects, ok, nok) {
        )(code)
      }
  
@@ -69,7 +95,7 @@ diff --git a/dev/lib/math-flow.js b/dev/lib/math-flow.js
      effects.enter('mathFlowValue')
      return contentChunk(code)
    }
-@@ -247,13 +283,74 @@
+@@ -247,15 +294,76 @@ function tokenizeMathFenced(effects, ok, nok) {
     * @type {State}
     */
    function contentChunk(code) {
@@ -91,8 +117,8 @@ diff --git a/dev/lib/math-flow.js b/dev/lib/math-flow.js
 +
      effects.consume(code)
      return contentChunk
-+  }
-+
+   }
+ 
 +  /**
 +   * Resume content after a failed inline closing fence attempt.
 +   *
@@ -141,10 +167,12 @@ diff --git a/dev/lib/math-flow.js b/dev/lib/math-flow.js
 +      trailingAfterClose = true
 +      return nok(code)
 +    }
-   }
- 
++  }
++
    /**
-@@ -269,6 +366,7 @@
+    * After math (ha!).
+    *
+@@ -269,6 +377,7 @@ function tokenizeMathFenced(effects, ok, nok) {
     * @type {State}
     */
    function after(code) {
@@ -152,7 +180,7 @@ diff --git a/dev/lib/math-flow.js b/dev/lib/math-flow.js
      effects.exit('mathFlow')
      return ok(code)
    }
-@@ -357,6 +455,7 @@
+@@ -357,6 +466,7 @@ function tokenizeMathFenced(effects, ok, nok) {
      function afterSequenceClose(code) {
        if (code === codes.eof || markdownLineEnding(code)) {
          effects.exit('mathFlowFence')
@@ -160,10 +188,36 @@ diff --git a/dev/lib/math-flow.js b/dev/lib/math-flow.js
          return ok(code)
        }
  
+@@ -392,3 +502,15 @@ function tokenizeNonLazyContinuation(effects, ok, nok) {
+     return self.parser.lazy[self.now().line] ? nok(code) : ok(code)
+   }
+ }
++
++/**
++ * @type {Tokenizer}
++ */
++function tokenizeBlankLine(effects, ok, nok) {
++  return factorySpace(effects, after, types.linePrefix)
++
++  /** @type {State} */
++  function after(code) {
++    return code === codes.eof || markdownLineEnding(code) ? ok(code) : nok(code)
++  }
++}
 diff --git a/dev/lib/math-tex-flow.js b/dev/lib/math-tex-flow.js
+index 622b88147b42687db3f353304d140dbb840fb3bc..50f104ea5ba8e27a684932ee94291afa5caab12d 100644
 --- a/dev/lib/math-tex-flow.js
 +++ b/dev/lib/math-tex-flow.js
-@@ -26,6 +26,7 @@
+@@ -20,12 +20,16 @@ const nonLazyContinuation = {
+   partial: true
+ }
+ 
++/** @type {Construct} */
++const blankLine = {tokenize: tokenizeBlankLine, partial: true}
++
+ /**
+  * @this {TokenizeContext}
+  * @type {Tokenizer}
   */
  function tokenizeMathFenced(effects, ok, nok) {
    const self = this
@@ -171,7 +225,7 @@ diff --git a/dev/lib/math-tex-flow.js b/dev/lib/math-tex-flow.js
    const tail = self.events[self.events.length - 1]
    const initialSize =
      tail && tail[1].type === types.linePrefix
-@@ -90,6 +91,7 @@
+@@ -90,6 +94,7 @@ function tokenizeMathFenced(effects, ok, nok) {
     * @type {State}
     */
    function metaAfter(code) {
@@ -179,7 +233,22 @@ diff --git a/dev/lib/math-tex-flow.js b/dev/lib/math-tex-flow.js
      effects.exit('mathFlowFence')
  
      if (self.interrupt) {
-@@ -245,6 +247,7 @@
+@@ -141,6 +146,14 @@ function tokenizeMathFenced(effects, ok, nok) {
+    * @type {State}
+    */
+   function contentStart(code) {
++    // Display math cannot contain a blank line, as in TeX. Failing here bounds an
++    // unclosed opener: this construct is concrete, so while it is open the document
++    // tokenizer starts no lists or quotes on the lines it spans.
++    return effects.check(blankLine, nok, contentLineStart)(code)
++  }
++
++  /** @type {State} */
++  function contentLineStart(code) {
+     return (
+       initialSize
+         ? factorySpace(
+@@ -245,6 +258,7 @@ function tokenizeMathFenced(effects, ok, nok) {
     * @type {State}
     */
    function after(code) {
@@ -187,7 +256,17 @@ diff --git a/dev/lib/math-tex-flow.js b/dev/lib/math-tex-flow.js
      effects.exit('mathFlow')
      return ok(code)
    }
-@@ -327,6 +330,7 @@
+@@ -284,6 +298,9 @@ function tokenizeMathFenced(effects, ok, nok) {
+      * @type {State}
+      */
+     function beforeSequenceClose(code) {
++      // Consuming anything else, such as the line ending of a blank line, reads into
++      // the next line, whose containers are decided while this concrete construct is open.
++      if (code !== codes.backslash) return nok(code)
+       effects.enter('mathFlowFence')
+       effects.enter('mathFlowFenceSequence')
+       effects.consume(code)
+@@ -327,6 +344,7 @@ function tokenizeMathFenced(effects, ok, nok) {
      function afterSequenceClose(code) {
        if (code === codes.eof || markdownLineEnding(code)) {
          effects.exit('mathFlowFence')
@@ -195,10 +274,27 @@ diff --git a/dev/lib/math-tex-flow.js b/dev/lib/math-tex-flow.js
          return ok(code)
        }
  
+@@ -386,3 +404,15 @@ function tokenizeNonClosingContinuation(effects, ok, nok) {
+     return code === codes.rightSquareBracket ? nok(code) : ok(code)
+   }
+ }
++
++/**
++ * @type {Tokenizer}
++ */
++function tokenizeBlankLine(effects, ok, nok) {
++  return factorySpace(effects, after, types.linePrefix)
++
++  /** @type {State} */
++  function after(code) {
++    return code === codes.eof || markdownLineEnding(code) ? ok(code) : nok(code)
++  }
++}
 diff --git a/dev/lib/math-tex-text.js b/dev/lib/math-tex-text.js
+index eae0b642aaf57afede360237130d908fa32abccc..7ccc295ec22b9226621b2e6458a3ff297479d0ee 100644
 --- a/dev/lib/math-tex-text.js
 +++ b/dev/lib/math-tex-text.js
-@@ -25,6 +25,7 @@
+@@ -25,6 +25,7 @@ function tokenizeMathText(effects, ok, nok) {
    let token
    /** @type {number} */
    let openSequenceCode
@@ -206,7 +302,7 @@ diff --git a/dev/lib/math-tex-text.js b/dev/lib/math-tex-text.js
  
    return start
  
-@@ -83,7 +84,7 @@
+@@ -83,7 +84,7 @@ function tokenizeMathText(effects, ok, nok) {
     * @type {State}
     */
    function between(code) {
@@ -215,7 +311,7 @@ diff --git a/dev/lib/math-tex-text.js b/dev/lib/math-tex-text.js
        return nok(code)
      }
  
-@@ -124,6 +125,8 @@
+@@ -124,6 +125,8 @@ function tokenizeMathText(effects, ok, nok) {
     * @type {State}
     */
    function data(code) {
@@ -224,7 +320,7 @@ diff --git a/dev/lib/math-tex-text.js b/dev/lib/math-tex-text.js
      if (
        code === codes.eof ||
        code === codes.space ||
-@@ -155,6 +158,7 @@
+@@ -155,6 +158,7 @@ function tokenizeMathText(effects, ok, nok) {
          ? codes.rightParenthesis
          : codes.rightSquareBracket
      if (code === closeSequenceCode) {
@@ -232,7 +328,7 @@ diff --git a/dev/lib/math-tex-text.js b/dev/lib/math-tex-text.js
        effects.consume(code)
        effects.exit('mathTextSequence')
        effects.exit('mathText')
-@@ -180,5 +184,8 @@
+@@ -180,5 +184,8 @@ function tokenizeMathText(effects, ok, nok) {
   */
  function previous(code) {
    // If there is a previous code, there will always be a tail.
@@ -243,12 +339,19 @@ diff --git a/dev/lib/math-tex-text.js b/dev/lib/math-tex-text.js
 +  )
  }
 diff --git a/dev/lib/math-text.js b/dev/lib/math-text.js
+index 79bbaed1497449505a0de6df3945869ce21113df..55e214ceceff2b764f9ffa2cf9cc3046ae1a7092 100644
 --- a/dev/lib/math-text.js
 +++ b/dev/lib/math-text.js
-@@ -10 +10 @@
+@@ -7,7 +7,7 @@
+ // This has to be coordinated together with `mdast-util-math`.
+ 
+ import {ok as assert} from 'devlop'
 -import {markdownLineEnding} from 'micromark-util-character'
 +import {markdownLineEnding, markdownLineEndingOrSpace} from 'micromark-util-character'
-@@ -42,6 +42,13 @@
+ import {codes, types} from 'micromark-util-symbol'
+ 
+ /**
+@@ -42,6 +42,13 @@ export function mathText(options) {
      let size
      /** @type {Token} */
      let token
@@ -262,7 +365,7 @@ diff --git a/dev/lib/math-text.js b/dev/lib/math-text.js
  
      return start
  
-@@ -89,6 +96,16 @@
+@@ -89,6 +96,16 @@ export function mathText(options) {
        }
  
        effects.exit('mathTextSequence')
@@ -279,7 +382,7 @@ diff --git a/dev/lib/math-text.js b/dev/lib/math-text.js
        return between(code)
      }
  
-@@ -103,13 +120,14 @@
+@@ -103,13 +120,14 @@ export function mathText(options) {
       * @type {State}
       */
      function between(code) {
@@ -295,7 +398,7 @@ diff --git a/dev/lib/math-text.js b/dev/lib/math-text.js
          return sequenceClose(code)
        }
  
-@@ -144,6 +162,16 @@
+@@ -144,6 +162,16 @@ export function mathText(options) {
       * @type {State}
       */
      function data(code) {
@@ -312,7 +415,7 @@ diff --git a/dev/lib/math-text.js b/dev/lib/math-text.js
        if (
          code === codes.eof ||
          code === codes.space ||
-@@ -179,9 +207,29 @@
+@@ -179,9 +207,29 @@ export function mathText(options) {
  
        // Done!
        if (size === sizeOpen) {
@@ -346,6 +449,7 @@ diff --git a/dev/lib/math-text.js b/dev/lib/math-text.js
  
        // More or less accents: mark as data.
 diff --git a/package.json b/package.json
+index 014e045dbdcc205b4846626a331c136c0f671d41..179f7b6166b1beca8c34330e2570dade7da05201 100644
 --- a/package.json
 +++ b/package.json
 @@ -27,7 +27,7 @@

@@ -1,3 +1,7 @@
+## 2026-11-22 — Unclosed display math no longer flattens the lists after it
+
+- A `$$` or `\[` that never closed turned every later list and quote in the message into plain paragraphs, even after a blank line. Display math now ends at a blank line, as in TeX, so an unclosed opener stays text and the rest of the message keeps its structure. Display math that contains a blank line now shows as text.
+
 ## 2026-11-22 — Commands wait for memory before they start
 
 - `t3_command_run` now waits until the machine has memory for a command before it starts it, as scheduled runs, delegated tasks, emulators and chats that resume by themselves already do. Before, every command started at once, so when many resumed chats started commands together after a restart, their shell wrappers alone could use up the free memory. A waiting command is never refused: commands start in the order they were asked for, `task_status` reports them as queued with the reason, each time limit counts from when the command starts, and a waiting command keeps its place through a restart. A waiting command whose task is cancelled or whose chat is archived never starts, and its task says why. The **Wait for memory before automated starts** setting in **Settings → Maintenance & about → Background activity** covers them too.
