@@ -51,7 +51,6 @@ import { usePrimarySettings } from "../../hooks/useSettings";
 import { resolveHour12 } from "../../timestampFormat";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { environmentPresentations } from "../../state/presentation";
-import { supportsScheduledTaskGroups } from "../../state/scheduledTaskStats";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "../../state/server";
 import { isCommandPaletteOpen } from "../../commandPaletteBus";
 import { isModelPickerOpen } from "../../modelPickerVisibility";
@@ -103,7 +102,9 @@ import { UsageProviderChart } from "./UsageProviderChart";
 import {
   refreshScheduledTaskGroupUsage,
   UsageScheduledTaskGroups,
+  useScheduledTaskStatsAccess,
 } from "./UsageScheduledTaskGroups";
+import { UsageRetryButton } from "./UsageRetryButton";
 import { SpeedPremium, UsageModelDialog } from "./UsageModelDialog";
 import { UsageShareBar } from "./UsageShareBar";
 import {
@@ -331,6 +332,9 @@ export function UsagePage() {
   const canReadDiagnostics = selectedEnvironments.some(
     (environment) => environment.canReadDiagnostics,
   );
+  const statsAccess = useScheduledTaskStatsAccess(selectedEnvironments);
+  // Each request keeps its own permission check, so Refresh only needs one of them to be readable.
+  const canRefreshUsage = canReadDiagnostics || statsAccess.readableIds.length > 0;
 
   const updatePreferences = (patch: Partial<UsagePagePreferences>) => {
     const nextPreferences = { ...preferences, ...patch };
@@ -450,13 +454,7 @@ export function UsagePage() {
       });
       return;
     }
-    const statsEnvironmentIds = selectedEnvironments
-      .filter(
-        (environment) =>
-          environment.isConnected &&
-          supportsScheduledTaskGroups(presentations.get(environment.environmentId)),
-      )
-      .map((environment) => environment.environmentId);
+    const statsEnvironmentIds = statsAccess.supportedIds;
     refreshingRef.current = true;
     setIsRefreshing(true);
     void refresh(requestedWindow).finally(() => {
@@ -575,7 +573,7 @@ export function UsagePage() {
           onClick={refreshWindow}
           aria-label={showingLimits ? t("Refresh limits") : t("Refresh usage")}
           aria-busy={isRefreshing}
-          disabled={isRefreshing || (!showingLimits && !canReadDiagnostics)}
+          disabled={isRefreshing || (!showingLimits && !canRefreshUsage)}
           size="icon-sm"
           variant="ghost"
         >
@@ -636,7 +634,7 @@ export function UsagePage() {
           onClick={refreshWindow}
           aria-label={showingLimits ? t("Refresh limits") : t("Refresh usage")}
           aria-busy={isRefreshing}
-          disabled={isRefreshing || (!showingLimits && !canReadDiagnostics)}
+          disabled={isRefreshing || (!showingLimits && !canRefreshUsage)}
           size="icon-sm"
           variant="ghost"
         >
@@ -710,14 +708,7 @@ export function UsagePage() {
                       )}
                     </AlertDescription>
                     <AlertAction>
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        disabled={isRefreshing}
-                        onClick={refreshWindow}
-                      >
-                        {t("Retry")}
-                      </Button>
+                      <UsageRetryButton pending={isRefreshing} onRetry={refreshWindow} />
                     </AlertAction>
                   </Alert>
                 ) : null}

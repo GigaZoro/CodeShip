@@ -26,14 +26,34 @@ import {
   sessionHasScope,
 } from "../../state/session";
 import type { EnvironmentUsageStatus } from "../../state/usage";
-import { Button } from "../ui/button";
+import { UsageRetryButton } from "./UsageRetryButton";
 
 const warningTone = (count: number) => (count > 0 ? "text-warning-foreground" : undefined);
 
-function restoreSectionFocus(button: HTMLButtonElement | null) {
-  if (!button) return;
-  return () => {
-    if (document.activeElement === button) button.closest("section")?.querySelector("h2")?.focus();
+/** Which selected environments' scheduled task runs this session can read, and why the rest cannot. */
+export function useScheduledTaskStatsAccess(environments: readonly EnvironmentUsageStatus[]) {
+  const presentations = useEnvironments().environments;
+  const connected = environments.filter((environment) => environment.isConnected);
+  const support = connected.map((environment) => ({
+    ...environment,
+    supported: supportsScheduledTaskGroups(
+      presentations.find((entry) => entry.environmentId === environment.environmentId),
+    ),
+  }));
+  const supportedIds = support
+    .filter((env) => env.supported === true)
+    .map((env) => env.environmentId);
+  const grants = useAtomValue(environmentSessionStatesAtom(environmentIdsKey(supportedIds)));
+  return {
+    connected,
+    supportedIds,
+    unsupported: support.filter((env) => env.supported === false),
+    checkingSupport: support.filter((env) => env.supported === null),
+    grants,
+    readableIds: supportedIds.filter((_, index) =>
+      sessionHasScope(grants[index]!, AuthOrchestrationReadScope),
+    ),
+    pendingGrants: new Set(supportedIds.filter((_, index) => grants[index]!._tag === "Initial")),
   };
 }
 
@@ -63,26 +83,15 @@ export function UsageScheduledTaskGroups({
   readonly environments: readonly EnvironmentUsageStatus[];
 }) {
   const registry = useContext(RegistryContext);
-  const presentations = useEnvironments().environments;
-  const connected = environments.filter((environment) => environment.isConnected);
-  const support = connected.map((environment) => ({
-    ...environment,
-    supported: supportsScheduledTaskGroups(
-      presentations.find((entry) => entry.environmentId === environment.environmentId),
-    ),
-  }));
-  const supportedIds = support
-    .filter((env) => env.supported === true)
-    .map((env) => env.environmentId);
-  const unsupported = support.filter((env) => env.supported === false);
-  const checkingSupport = support.filter((env) => env.supported === null);
-  const grants = useAtomValue(environmentSessionStatesAtom(environmentIdsKey(supportedIds)));
-  const readableIds = supportedIds.filter((_, index) =>
-    sessionHasScope(grants[index]!, AuthOrchestrationReadScope),
-  );
-  const pendingGrants = new Set(
-    supportedIds.filter((_, index) => grants[index]!._tag === "Initial"),
-  );
+  const {
+    connected,
+    supportedIds,
+    unsupported,
+    checkingSupport,
+    grants,
+    readableIds,
+    pendingGrants,
+  } = useScheduledTaskStatsAccess(environments);
   const range = scheduledTaskStatsRange(period);
   const input = range ?? { since: period.sinceDay };
   const results = useScheduledTaskStats(range === null ? [] : readableIds, input);
@@ -167,18 +176,12 @@ export function UsageScheduledTaskGroups({
                 className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground"
               >
                 <p className="min-w-0 break-words">{message}</p>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  ref={restoreSectionFocus}
-                  aria-disabled={grant.waiting}
-                  onClick={() =>
-                    !grant.waiting &&
+                <UsageRetryButton
+                  pending={grant.waiting}
+                  onRetry={() =>
                     registry.refresh(environmentSession.sessionStateAtom(environmentId))
                   }
-                >
-                  {t("Retry")}
-                </Button>
+                />
               </div>
             );
           }
@@ -201,15 +204,12 @@ export function UsageScheduledTaskGroups({
               error: failure.error,
             })}
           </p>
-          <Button
-            size="xs"
-            variant="outline"
-            onClick={() =>
+          <UsageRetryButton
+            pending={false}
+            onRetry={() =>
               refreshScheduledTaskGroupUsage(registry, [failure.environmentId], period)
             }
-          >
-            {t("Retry")}
-          </Button>
+          />
         </div>
       ))}
 

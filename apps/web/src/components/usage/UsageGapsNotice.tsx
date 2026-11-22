@@ -2,8 +2,7 @@ import type { usageNotices } from "@t3tools/client-runtime/state/usage-progress"
 import { CircleAlertIcon } from "lucide-react";
 
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
-import { Button } from "../ui/button";
-import { t } from "~/i18n";
+import { UsageRetryButton } from "./UsageRetryButton";
 
 export function UsageGapsNotice({
   notice,
@@ -31,9 +30,7 @@ export function UsageGapsNotice({
       </AlertDescription>
       {gaps.some((gap) => gap.retryable) ? (
         <AlertAction>
-          <Button size="xs" variant="outline" disabled={retrying} onClick={onRetry}>
-            {t("Retry")}
-          </Button>
+          <UsageRetryButton pending={retrying} onRetry={onRetry} />
         </AlertAction>
       ) : null}
     </Alert>

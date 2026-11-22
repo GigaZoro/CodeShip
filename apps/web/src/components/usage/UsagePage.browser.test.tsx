@@ -33,7 +33,8 @@ const state = vi.hoisted(() => ({
   },
   usageCalls: new Set<string>(),
   startOnLimits: false,
-  scheduledGrantProbe: false,
+  scheduledGrant: null as null | "failed" | "granted",
+  statsRequests: [] as string[],
   now: 0,
   windowDays: 1 as 1 | 7,
   realClock: false,
@@ -105,7 +106,7 @@ vi.mock("../../state/environments", async (original) => {
     ...actual,
     useEnvironments: () => {
       const result = actual.useEnvironments();
-      return state.scheduledGrantProbe
+      return state.scheduledGrant !== null
         ? {
             ...result,
             environments: ["desk", "laptop"].map((environmentId) => ({
@@ -120,31 +121,42 @@ vi.mock("../../state/environments", async (original) => {
 vi.mock("../../state/session", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../state/session")>();
   const { AsyncResult, Atom } = await import("effect/reactivity");
+  const { AuthOrchestrationReadScope } = await import("@t3tools/contracts");
+  const scheduledGrant = AsyncResult.success({
+    authenticated: true,
+    scopes: [AuthOrchestrationReadScope],
+  });
   return {
     ...actual,
     environmentSessionStatesAtom: (ids: string) =>
-      state.scheduledGrantProbe
-        ? Atom.make(
+      state.scheduledGrant === null
+        ? actual.environmentSessionStatesAtom(ids)
+        : Atom.make(
             ids
               .split("\n")
               .filter(Boolean)
-              .map(() => AsyncResult.fail(new Error("Grant lookup failed"))),
-          )
-        : actual.environmentSessionStatesAtom(ids),
+              .map(() =>
+                state.scheduledGrant === "granted"
+                  ? scheduledGrant
+                  : AsyncResult.fail(new Error("Grant lookup failed")),
+              ),
+          ),
     environmentSession: {
       ...actual.environmentSession,
       sessionStateAtom: (id: EnvironmentId) =>
-        state.cursorSetup === null
-          ? actual.environmentSession.sessionStateAtom(id)
-          : Atom.make(
-              AsyncResult.success({
-                authenticated: true,
-                scopes: [
-                  AuthDiagnosticsReadScope,
-                  ...(state.cursorSetup.canEnable ? [AuthSettingsWriteScope] : []),
-                ],
-              }),
-            ),
+        state.scheduledGrant === "granted"
+          ? Atom.make(scheduledGrant)
+          : state.cursorSetup === null
+            ? actual.environmentSession.sessionStateAtom(id)
+            : Atom.make(
+                AsyncResult.success({
+                  authenticated: true,
+                  scopes: [
+                    AuthDiagnosticsReadScope,
+                    ...(state.cursorSetup.canEnable ? [AuthSettingsWriteScope] : []),
+                  ],
+                }),
+              ),
     },
   };
 });
@@ -157,6 +169,10 @@ vi.mock("../../state/server", async (importOriginal) => {
     serverEnvironment: {
       ...actual.serverEnvironment,
       cursorUsageAccessAtom: (id: EnvironmentId) => Atom.make(cursorUsageAccess(cursorConfig(id))),
+      scheduledTaskStats: (request: { environmentId: EnvironmentId }) => {
+        state.statsRequests.push(request.environmentId);
+        return Atom.make(AsyncResult.initial());
+      },
       usageSummary: (request: { environmentId: EnvironmentId; input: UsageSummaryInput }) => {
         state.usageCalls.add(request.environmentId);
         return Atom.make(
@@ -171,6 +187,11 @@ vi.mock("../../state/server", async (importOriginal) => {
     },
   };
 });
+vi.mock("../../state/scheduledTaskStats", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../state/scheduledTaskStats")>()),
+  useScheduledTaskStats: (ids: readonly EnvironmentId[]) =>
+    ids.map((environmentId) => ({ environmentId, stats: [], error: null })),
+}));
 vi.mock("../../state/usage", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../state/usage")>();
   const { useSyncExternalStore } = await import("react");
@@ -360,7 +381,8 @@ function setup(windowDays: 1 | 7 = 1) {
   state.cursorSetup = null;
   state.usageCalls.clear();
   state.startOnLimits = false;
-  state.scheduledGrantProbe = false;
+  state.scheduledGrant = null;
+  state.statsRequests = [];
   state.now = new Date(2026, 10, 21, 23, windowDays === 1 ? 56 : 59).getTime();
   state.windowDays = windowDays;
   state.realClock = false;
@@ -929,9 +951,24 @@ it("removes Laptop's reserved row from the web overview when its grant is revoke
   expect(cursor.query()).toBeNull();
 });
 
+it("refreshes scheduled task runs when the selection can read only those", async () => {
+  setup();
+  state.scheduledGrant = "granted";
+  state.response = "revoked";
+  await using screen = await render(<Screen />);
+  const refresh = screen.getByRole("button", { name: "Refresh usage" }).first();
+  await expect.element(refresh).toBeEnabled();
+  await refresh.click();
+  await vi.waitFor(() => expect(state.statsRequests).toEqual(["desk"]));
+
+  state.scheduledGrant = "failed";
+  await update();
+  await expect.element(refresh).toBeDisabled();
+});
+
 it("shows the live selected scheduled grant even without usage figures", async () => {
   setup();
-  state.scheduledGrantProbe = true;
+  state.scheduledGrant = "failed";
   state.response = "failed";
   await using screen = await render(<Screen />);
   expect(screen.container.textContent).toContain(

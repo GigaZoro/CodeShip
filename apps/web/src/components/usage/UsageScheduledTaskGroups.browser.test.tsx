@@ -211,6 +211,30 @@ it("restores scheduled rows and focus by retrying the observed session grant", a
   );
 });
 
+it("moves focus to the heading when a stats retry clears its error", async () => {
+  readyStats();
+  data.recovering = Atom.make(
+    AsyncResult.success({ authenticated: true, scopes: [AuthOrchestrationReadScope] }),
+  );
+  data.errors.set("desk", "Stats read failed.");
+  const registry = AtomRegistry.make();
+  using _registry = { [Symbol.dispose]: () => registry.dispose() };
+  const refresh = vi.spyOn(registry, "refresh").mockImplementation(() => {});
+  const view = () => <RegistryContext value={registry}>{groups(0)}</RegistryContext>;
+  await using screen = await render(view());
+  const retry = screen.getByRole("button", { name: "Retry" });
+  (retry.element() as HTMLButtonElement).focus();
+  await retry.click();
+  expect(refresh).toHaveBeenCalledTimes(1);
+
+  data.errors.clear();
+  await screen.rerender(view());
+  await expect.element(screen.getByRole("row", { name: /Nightly/ })).toBeVisible();
+  expect(document.activeElement).toBe(
+    screen.getByRole("heading", { name: "Scheduled task groups" }).element(),
+  );
+});
+
 it("checks scheduled task support while the connected server config is missing", async () => {
   readyStats();
   data.configPending = true;
