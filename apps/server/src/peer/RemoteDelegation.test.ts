@@ -41,10 +41,13 @@ import * as Tracer from "effect/Tracer";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
-import { McpSchema, McpServer } from "effect/ai";
+import * as Schema from "effect/Schema";
+import { McpSchema, McpServer, Toolkit } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
+import * as ProjectHandlers from "../mcp/toolkits/project/handlers.ts";
+import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -72,7 +75,6 @@ import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts
 import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
-import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
@@ -248,14 +250,33 @@ const boxProviders = [
     driver: ProviderDriverKind.make("claudeAgent"),
   },
 ] as unknown as ReadonlyArray<ServerProvider>;
-/** The laptop's own account, which also names its model by an alias. */
+/** The laptop's own account, which names its model by an alias and has Ultracode as an option. */
 const laptopProviders = [
   {
     ...readyProvider,
     instanceId,
     driver,
     models: [
-      { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: null, aliases: ["gpt"] },
+      {
+        slug: "gpt-5.4",
+        name: "GPT-5.4",
+        isCustom: false,
+        aliases: ["gpt"],
+        capabilities: {
+          optionDescriptors: [
+            {
+              id: "effort",
+              label: "Effort",
+              type: "select",
+              options: [
+                { id: "high", label: "High" },
+                { id: "xhigh", label: "Extra high" },
+              ],
+            },
+            { id: "ultracode", label: "Ultracode", type: "boolean" },
+          ],
+        },
+      },
     ],
   },
 ] as unknown as ReadonlyArray<ServerProvider>;
@@ -267,12 +288,42 @@ interface BoxLaunch {
   laterRunId: RunId;
 }
 
-const serveBox = (thread: BoxThread, projects = boxProjects) => {
+const serveBox = (
+  thread: BoxThread,
+  projects = boxProjects,
+  providers?: ReadonlyArray<ServerProvider>,
+  projectRegistration?: typeof McpHttpServer.layerProjectRegistration,
+) => {
   const launches = new Map<ThreadId, BoxLaunch>();
-  return servePeer(box, boxToolkitLayer(thread, projects, launches)).pipe(
-    Effect.map((peer) => ({ ...peer, launches })),
-  );
+  return servePeer(
+    box,
+    boxToolkitLayer(thread, projects, launches, providers, projectRegistration),
+  ).pipe(Effect.map((peer) => ({ ...peer, launches })));
 };
+
+/** The model a delegated task was launched with on the box. */
+const launchedSelection = (
+  b: { readonly launches: Map<ThreadId, BoxLaunch> },
+  result: { readonly structuredContent?: unknown },
+) => {
+  const { remoteChild } = result.structuredContent as { remoteChild: { threadId: ThreadId } };
+  return b.launches.get(remoteChild.threadId)?.input.modelSelection;
+};
+
+/** A box from before `inheritedOptionIds`: its launch takes no such argument. */
+const { inheritedOptionIds: _inheritedOptionIds, ...olderLaunchFields } =
+  ProjectToolkit.tools.t3_thread_launch.parametersSchema.fields;
+const layerOlderProjectRegistration = McpHttpServer.toolkitRegistration(
+  Toolkit.make(
+    ...Object.values({
+      ...ProjectToolkit.tools,
+      t3_thread_launch: ProjectToolkit.tools.t3_thread_launch.setParameters(
+        Schema.Struct(olderLaunchFields),
+      ),
+    }),
+  ) as unknown as typeof ProjectToolkit,
+  ProjectHandlers.layer,
+);
 
 const boxRunId = RunId.make("run:box");
 const boxLaterRunId = RunId.make("run:box-later");
@@ -281,6 +332,8 @@ const boxToolkitLayer = (
   thread: BoxThread,
   projects: ReadonlyArray<Project>,
   launches: Map<ThreadId, BoxLaunch>,
+  providers: ReadonlyArray<ServerProvider> = boxProviders,
+  projectRegistration: typeof McpHttpServer.layerProjectRegistration = McpHttpServer.layerProjectRegistration,
 ) => {
   const interrupts = new Set<string>();
   const shellOf = (threadId: ThreadId) => {
@@ -591,7 +644,7 @@ const boxToolkitLayer = (
   });
   return Layer.mergeAll(
     McpHttpServer.layerOrchestratorToolkit,
-    McpHttpServer.layerProjectRegistration,
+    projectRegistration,
     McpHttpServer.layerThreadToolkit,
   ).pipe(
     Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
@@ -628,11 +681,11 @@ const boxToolkitLayer = (
       ),
     ),
     Layer.provide(
-      Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed(boxProviders) }),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed(providers) }),
     ),
     Layer.provide(
       Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
-        list: () => Effect.succeed(boxProviders.map((provider) => provider.instanceId)),
+        list: () => Effect.succeed(providers.map((provider) => provider.instanceId)),
       }),
     ),
     Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
@@ -1304,8 +1357,7 @@ it.effect("a task named only by environment inherits the parent's model, within 
           clientRequestId: `named:${name}`,
         });
         expect(named.isError, JSON.stringify(named.content)).toBe(false);
-        const { remoteChild } = named.structuredContent as { remoteChild: { threadId: ThreadId } };
-        expect(b.launches.get(remoteChild.threadId)?.input.modelSelection).toEqual({
+        expect(launchedSelection(b, named)).toEqual({
           ...modelSelection,
           model: name,
           options: [{ ...effort, value: "max" }, ...inheritedOptions],
@@ -1339,6 +1391,160 @@ it.effect("a task named only by environment inherits the parent's model, within 
       expect(broader.isError).toBe(true);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "a task there is refused an option the box's model lacks, and drops an inherited one",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        // The box's account offers reasoning effort for the parent's model but no service tier.
+        const b = yield* serveBox(thread, boxProjects, [
+          {
+            ...readyProvider,
+            instanceId,
+            driver,
+            models: [
+              {
+                slug: "gpt-5.4",
+                name: "gpt-5.4",
+                isCustom: false,
+                capabilities: {
+                  optionDescriptors: [
+                    {
+                      id: "reasoningEffort",
+                      label: "Reasoning",
+                      type: "select",
+                      options: [
+                        { id: "low", label: "Low" },
+                        { id: "high", label: "High", isDefault: true },
+                      ],
+                    },
+                    {
+                      id: "effort",
+                      label: "Effort",
+                      type: "select",
+                      options: [
+                        { id: "high", label: "High" },
+                        { id: "xhigh", label: "Extra high" },
+                      ],
+                    },
+                    { id: "ultracode", label: "Ultracode", type: "boolean" },
+                  ],
+                },
+              },
+            ],
+          } as unknown as ServerProvider,
+        ]);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a, ProjectId.make("project:laptop"), {
+          ...modelSelection,
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+            // A legacy effort: xhigh with Ultracode on.
+            { id: "effort", value: "ultracode" },
+          ],
+        });
+
+        // Given options are the box's to refuse, also when they replace every inherited one.
+        for (const [key, options] of [
+          ["given", [{ id: "serviceTier", value: "fast" }]],
+          [
+            "given-all",
+            [
+              { id: "reasoningEffort", value: "low" },
+              { id: "serviceTier", value: "fast" },
+              { id: "effort", value: "high" },
+              { id: "ultracode", value: false },
+            ],
+          ],
+        ] as const) {
+          const given = yield* a.call("delegate_task", {
+            task: "Run the suite on the box.",
+            target: { environmentId: box.environmentId, options },
+            clientRequestId: key,
+          });
+          expect(given.isError, key).toBe(true);
+          expect(JSON.stringify(given.content)).toContain(
+            "rejected options: Unknown option serviceTier; supported options: reasoningEffort, effort, ultracode.",
+          );
+        }
+        expect(yield* Ref.get(thread.launched)).toBeNull();
+
+        const inherited = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          target: { environmentId: box.environmentId },
+          clientRequestId: "inherited",
+        });
+        expect(inherited.isError, JSON.stringify(inherited.content)).toBe(false);
+        expect(launchedSelection(b, inherited)).toEqual({
+          ...modelSelection,
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "effort", value: "xhigh" },
+            { id: "ultracode", value: true },
+          ],
+        });
+
+        // A given effort replaces the legacy one's level and keeps its Ultracode, as here.
+        const effort = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          target: { environmentId: box.environmentId, options: [{ id: "effort", value: "high" }] },
+          clientRequestId: "effort",
+        });
+        expect(effort.isError, JSON.stringify(effort.content)).toBe(false);
+        expect(launchedSelection(b, effort)).toEqual({
+          ...modelSelection,
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "effort", value: "high" },
+            { id: "ultracode", value: true },
+          ],
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "a box from before inherited options are marked still takes the task, with them all",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread, boxProjects, boxProviders, layerOlderProjectRegistration);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        const parentModel = { ...modelSelection, options: [{ id: "serviceTier", value: "fast" }] };
+        yield* seedParent(a, ProjectId.make("project:laptop"), parentModel);
+
+        const result = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          target: {
+            environmentId: box.environmentId,
+            options: [{ id: "reasoningEffort", value: "high" }],
+          },
+        });
+        expect(result.isError, JSON.stringify(result.content)).toBe(false);
+        expect(launchedSelection(b, result)).toEqual({
+          ...modelSelection,
+          options: [
+            { id: "serviceTier", value: "fast" },
+            { id: "reasoningEffort", value: "high" },
+          ],
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("a task from a No-project chat runs in the box's No project", () =>

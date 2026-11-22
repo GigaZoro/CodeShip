@@ -27,6 +27,7 @@ import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 import { HttpBody, HttpClient, HttpClientRequest, HttpRouter } from "effect/http";
 
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as McpOAuth from "../auth/McpOAuth.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -260,6 +261,7 @@ const layerRecordingTools = (calls: Array<unknown>) => {
         McpToolAccessTestkit.liveThreadsLayer,
         Layer.mock(OrchestratorMcpService.OrchestratorMcpService)({}),
         Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
         NodeServices.layer,
       ),
     ),

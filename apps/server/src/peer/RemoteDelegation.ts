@@ -33,12 +33,13 @@ import * as Stream from "effect/Stream";
 import * as Hex from "effect/encoding/Hex";
 import type * as Tool from "effect/ai/Tool";
 
+import { withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import {
   advertisedSlug,
-  invalidOptionSelections,
   overrideOptions,
+  requireOfferedOptions,
   resolveInteractionMode,
   resolveRuntimeMode,
   taskPrompt,
@@ -317,12 +318,10 @@ const make = Effect.gen(function* () {
           : yield* resolveRemoteInstance(scope, target.environmentId, target.driverKind));
       // An alias can name another model on the other machine, so the parent's model goes there
       // by its slug here, and only that name carries the parent's options.
-      const parentModel = advertisedSlug(
-        (yield* providerRegistry.getProviders).find(
-          (provider) => provider.instanceId === inherited.instanceId,
-        ),
-        inherited.model,
+      const parentProvider = (yield* providerRegistry.getProviders).find(
+        (provider) => provider.instanceId === inherited.instanceId,
       );
+      const parentModel = advertisedSlug(parentProvider, inherited.model);
       const model = target.model ?? (instanceId === inherited.instanceId ? parentModel : undefined);
       if (model === undefined) {
         return yield* new OrchestratorMcpFailure({
@@ -331,19 +330,26 @@ const make = Effect.gen(function* () {
         });
       }
       // The merge would keep one of two values given for an option; the call names it instead.
-      const repeated = invalidOptionSelections(target.options ?? [], undefined);
-      if (repeated.length > 0) {
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: `Model ${model} on provider ${instanceId} rejected options: ${repeated.join(" ")}`,
-        });
-      }
+      yield* requireOfferedOptions({ instanceId, model, options: target.options }, undefined);
+      const inherits = instanceId === inherited.instanceId && model === parentModel;
+      // Both sides are read as the parent's model runs them before the merge, as for a task here,
+      // so a given effort keeps the Ultracode that an inherited legacy effort carries.
+      const descriptors = inherits
+        ? (parentProvider?.models.find((candidate) => candidate.slug === parentModel)?.capabilities
+            ?.optionDescriptors ?? [])
+        : [];
+      const given = withLegacyUltracodeEffort(descriptors, target.options) ?? undefined;
       const options = overrideOptions(
-        instanceId === inherited.instanceId && model === parentModel
-          ? inherited.options
+        inherits
+          ? (withLegacyUltracodeEffort(descriptors, inherited.options) ?? undefined)
           : undefined,
-        target.options,
+        given,
       );
+      // The other side checks the options against its own catalog: those the agent named must be
+      // offered there, and inherited ones it does not offer are dropped, as for a task here.
+      const inheritedOptionIds = (options ?? [])
+        .map((option) => option.id)
+        .filter((id) => given?.some((option) => option.id === id) !== true);
       // Modes asked for are checked against this thread. Omitted ones are left
       // to the other side, which inherits this thread's modes capped by the
       // link's access, so a narrower link still takes the task.
@@ -437,23 +443,31 @@ const make = Effect.gen(function* () {
               });
             }
             const launched = yield* forwarding
-              .call(scope, ProjectToolkit.tools.t3_thread_launch, remoteChild.environmentId, {
-                ...where,
-                title: input.title ?? parent.thread.title,
-                modelSelection,
-                ...(runtimeMode === undefined ? {} : { runtimeMode }),
-                ...(interactionMode === undefined ? {} : { interactionMode }),
-                ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
-                message: task,
-                clientRequestId: yield* composedKey("delegate", scope.thread.threadId, key),
-                launchId: remoteThreadId,
-                // The thread there shows it is this thread's subagent, with a way back.
-                delegatedFrom: {
-                  environmentId: hereId,
-                  threadId: parent.thread.id,
-                  title: parent.thread.title,
+              .call(
+                scope,
+                ProjectToolkit.tools.t3_thread_launch,
+                remoteChild.environmentId,
+                {
+                  ...where,
+                  title: input.title ?? parent.thread.title,
+                  modelSelection,
+                  inheritedOptionIds,
+                  ...(runtimeMode === undefined ? {} : { runtimeMode }),
+                  ...(interactionMode === undefined ? {} : { interactionMode }),
+                  ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+                  message: task,
+                  clientRequestId: yield* composedKey("delegate", scope.thread.threadId, key),
+                  launchId: remoteThreadId,
+                  // The thread there shows it is this thread's subagent, with a way back.
+                  delegatedFrom: {
+                    environmentId: hereId,
+                    threadId: parent.thread.id,
+                    title: parent.thread.title,
+                  },
                 },
-              })
+                // A peer that predates it checks no option, so it runs them all as before.
+                ["inheritedOptionIds"],
+              )
               .pipe(
                 Effect.filterOrElse(
                   (result) => result.threadId === remoteThreadId,

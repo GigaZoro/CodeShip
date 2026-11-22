@@ -10,6 +10,7 @@ import {
   type RuntimeMode,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 
 /** How much a runtime mode allows, narrowest first. */
@@ -103,7 +104,7 @@ export const advertisedSlug = (provider: ServerProvider | undefined, model: stri
   (provider === undefined ? undefined : findAdvertisedModel(provider, model))?.slug ?? model;
 
 /** Skip checks without descriptors; reject duplicate IDs because consumers disagree on precedence. */
-export function invalidOptionSelections(
+function invalidOptionSelections(
   selections: ReadonlyArray<ProviderOptionSelection>,
   descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
 ): ReadonlyArray<string> {
@@ -135,6 +136,55 @@ export function invalidOptionSelections(
     }
   }
   return problems;
+}
+
+/**
+ * The options without each inherited one the model cannot run: one it does not offer, or a repeat
+ * of an id already kept. `inheritedIds` names the inherited ids; without it, every option is.
+ */
+export function withoutUnrunnableInherited(
+  options: ReadonlyArray<ProviderOptionSelection>,
+  descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
+  inheritedIds?: ReadonlySet<string>,
+): ReadonlyArray<ProviderOptionSelection> {
+  const kept = new Set<string>();
+  return options.filter((option) => {
+    if (inheritedIds !== undefined && !inheritedIds.has(option.id)) return true;
+    if (kept.has(option.id) || invalidOptionSelections([option], descriptors).length > 0)
+      return false;
+    kept.add(option.id);
+    return true;
+  });
+}
+
+/**
+ * The options as the model runs them. Each must be one the model offers, except those with an id
+ * in `inheritedIds`, which came from a parent rather than the caller: withoutUnrunnableInherited
+ * drops those the model cannot run.
+ */
+export function requireOfferedOptions(
+  selection: {
+    readonly instanceId: string;
+    readonly model: string;
+    readonly options?: ReadonlyArray<ProviderOptionSelection> | undefined;
+  },
+  descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
+  inheritedIds?: ReadonlySet<string>,
+): Effect.Effect<ReadonlyArray<ProviderOptionSelection> | undefined, OrchestratorMcpFailure> {
+  const named = withLegacyUltracodeEffort(descriptors ?? [], selection.options) ?? undefined;
+  const options =
+    inheritedIds === undefined || named === undefined
+      ? named
+      : withoutUnrunnableInherited(named, descriptors, inheritedIds);
+  const invalid = invalidOptionSelections(options ?? [], descriptors);
+  return invalid.length === 0
+    ? Effect.succeed(options)
+    : Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: `Model ${selection.model} on provider ${selection.instanceId} rejected options: ${invalid.join(" ")}`,
+        }),
+      );
 }
 
 /** A child's options: each given one replaces the inherited one with its id, and [] clears them. */

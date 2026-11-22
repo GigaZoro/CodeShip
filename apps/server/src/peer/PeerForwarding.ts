@@ -53,12 +53,14 @@ export class PeerForwarding extends Context.Service<
     /**
      * Runs `tool` in the linked environment `environmentId` with `params`. A
      * `t3_thread_wait` goes in pieces short enough to survive any route.
+     * `ignorableArguments` are as for `PeerMcpClient.call`.
      */
     readonly call: <T extends Tool.Any>(
       scope: Scope,
       tool: T,
       environmentId: EnvironmentId,
       params: Tool.Parameters<T>,
+      ignorableArguments?: ReadonlyArray<string>,
     ) => Effect.Effect<Tool.Success<T>, OrchestratorMcpFailure>;
     /** `orchestrator_capabilities` there. */
     readonly readCapabilities: (
@@ -146,6 +148,7 @@ const make = Effect.gen(function* () {
     success: Schema.Top,
     environmentId: EnvironmentId,
     params: unknown,
+    ignorableArguments?: ReadonlyArray<string>,
   ) {
     const limits = yield* callerLimits(scope);
     const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
@@ -168,6 +171,7 @@ const make = Effect.gen(function* () {
       arguments: args,
       limits,
       success: success as Schema.Decoder<A>,
+      ...(ignorableArguments === undefined ? {} : { ignorableArguments }),
     });
   });
 
@@ -249,7 +253,13 @@ const make = Effect.gen(function* () {
     Effect.flatMap((enabled) => (enabled ? Effect.void : Effect.fail(linkedEnvironmentsOff))),
   );
 
-  const call: PeerForwarding["Service"]["call"] = (scope, tool, environmentId, params) => {
+  const call: PeerForwarding["Service"]["call"] = (
+    scope,
+    tool,
+    environmentId,
+    params,
+    ignorableArguments,
+  ) => {
     const forwarded: Effect.Effect<
       Tool.Success<typeof tool>,
       OrchestratorMcpFailure
@@ -259,7 +269,15 @@ const make = Effect.gen(function* () {
           environmentId,
           params as OrchestratorMcpThreadWaitInput,
         ) as Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure>)
-      : forward(scope, tool.name, tool.parametersSchema, tool.successSchema, environmentId, params);
+      : forward(
+          scope,
+          tool.name,
+          tool.parametersSchema,
+          tool.successSchema,
+          environmentId,
+          params,
+          ignorableArguments,
+        );
     return Effect.andThen(requireEnabled, forwarded);
   };
 

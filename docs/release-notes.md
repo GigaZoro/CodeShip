@@ -1,3 +1,10 @@
+## 2026-11-24 — Agent launches and model changes refuse options the model does not offer
+
+- `t3_thread_launch` now checks the options of a given model as `delegate_task` and `create_threads` do, and refuses one the model or account does not offer, naming it, instead of starting a thread that silently runs without it (such as `serviceTier` on a managed Codex account).
+- A task delegated to a linked machine is refused an option named for it that the model there does not offer. Options it inherits from your chat that the model there does not offer, or that your chat repeats, are dropped, as for a task on this machine. A linked machine on an older version still takes the task with every option, as before, and a task from an older machine has the options its model does not offer dropped rather than refused.
+- A retried launch keeps the model and options it was accepted with.
+- `t3_thread_configure`, a project's default model set with `t3_project_create` or `t3_project_update`, and a scheduled task's fallback models refuse a model or option the provider does not offer, naming it, instead of saving a selection a later turn cannot run. A fallback on an account this machine does not have, or has not installed, is left for the machine that has it.
+
 ## 2026-11-24 — See what needs you from a new thread, and submenus that stay on screen
 
 - On web and desktop, a new thread's empty composer lists the threads that need you, as the sidebar's Needs you does, before your recent threads. Recent threads list running threads first, latest started first, then the threads you last sent to, and follow the sidebar's project and machine scope and its scheduled-task placement.

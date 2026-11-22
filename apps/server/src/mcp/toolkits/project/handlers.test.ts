@@ -85,6 +85,8 @@ const clientLaunchHarness = (input: {
     shell: OrchestrationV2ThreadShell,
     read: "lookup" | "result",
   ) => OrchestrationV2ThreadShell;
+  /** Each default model a project was made or changed with. */
+  readonly savedDefaults?: Array<ModelSelection | null | undefined>;
   readonly workspaceRoot?: string;
   readonly checkWorktreeBase?: ThreadLaunch.ThreadLaunchService["Service"]["checkWorktreeBase"];
   readonly webOrigin?: string;
@@ -238,6 +240,14 @@ const clientLaunchHarness = (input: {
               } as unknown as ProjectRecord)
             : Option.none(),
         ),
+      create: (create) => {
+        input.savedDefaults?.push(create.defaultModelSelection);
+        return Effect.fail(new Project.ProjectNotFoundError({ projectId: create.projectId }));
+      },
+      update: (update) => {
+        input.savedDefaults?.push(update.defaultModelSelection);
+        return Effect.fail(new Project.ProjectNotFoundError({ projectId: update.projectId }));
+      },
     }),
     Layer.mock(ProviderMcp.ProviderMcp)({}),
     Layer.mock(ProviderRegistry.ProviderRegistry)({
@@ -376,25 +386,73 @@ it.effect(
     }),
 );
 
-it.effect("a launch with a model its provider does not advertise creates no thread", () =>
+/** A managed Codex account: its model has a reasoning effort and no serviceTier. */
+const codexWithEffort: ServerProvider = {
+  ...advertisedProvider("codex", []),
+  models: [
+    {
+      slug: "gpt-settings",
+      name: "gpt-settings",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "reasoningEffort",
+            label: "Reasoning",
+            type: "select",
+            options: [
+              { id: "medium", label: "Medium", isDefault: true },
+              { id: "high", label: "High" },
+            ],
+          },
+        ],
+      },
+    },
+  ],
+};
+const laptopParent = {
+  environmentId: EnvironmentId.make("environment-laptop"),
+  threadId: ThreadId.make("thread:laptop-parent"),
+  title: "Parent",
+};
+
+it.effect("a launch with a model or option its provider does not advertise creates no thread", () =>
   Effect.gen(function* () {
     const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const savedDefaults: Array<ModelSelection | null | undefined> = [];
     const { projectId, dependencies } = clientLaunchHarness({
-      runtimeModeCeiling: "auto",
+      runtimeModeCeiling: "full-access",
       launched,
+      savedDefaults,
+      providers: [
+        advertisedProvider("claudeAgent", ["claude-opus", "claude-sonnet"], {
+          "claude-opus": ["opus"],
+        }),
+        codexWithEffort,
+      ],
     });
     const toolkit = yield* ProjectToolkit.pipe(
       Effect.provide(
         McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
       ),
     );
-    const launchWith = (instanceId: string, model: string) =>
+    const launchWith = (
+      instanceId: string,
+      model: string,
+      options?: ModelSelection["options"],
+      claimed?: { readonly inheritedOptionIds: ReadonlyArray<string> },
+    ) =>
       toolkit
         .handle("t3_thread_launch", {
           title: "Fix",
           projectId,
           message: "Fix the bug",
-          modelSelection: { instanceId: ProviderInstanceId.make(instanceId), model },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make(instanceId),
+            model,
+            ...(options === undefined ? {} : { options }),
+          },
+          ...(claimed === undefined ? {} : { ...claimed, delegatedFrom: laptopParent }),
         })
         .pipe(
           Stream.unwrap,
@@ -425,7 +483,176 @@ it.effect("a launch with a model its provider does not advertise creates no thre
       modelSelection: { instanceId: "claudeAgent", model: "Opus" },
     });
     expect(launched).toHaveLength(2);
+
+    // As delegate_task checks its target.
+    for (const [option, problem] of [
+      [
+        { id: "serviceTier", value: "fast" },
+        "Unknown option serviceTier; supported options: reasoningEffort.",
+      ],
+      [
+        { id: "reasoningEffort", value: "ultra" },
+        "Option reasoningEffort must be one of: medium, high.",
+      ],
+    ] as const) {
+      expect(yield* launchWith("codex", "gpt-settings", [option])).toMatchObject({
+        code: "invalid_request",
+        message: `Model gpt-settings on provider codex rejected options: ${problem}`,
+      });
+    }
+    expect(launched).toHaveLength(2);
+    expect(
+      yield* launchWith("codex", "gpt-settings", [{ id: "reasoningEffort", value: "high" }]),
+    ).toMatchObject({
+      modelSelection: {
+        model: "gpt-settings",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      },
+    });
+    // Only a link's own session may mark options as inherited, so this caller named them all.
+    expect(
+      yield* launchWith("codex", "gpt-settings", [{ id: "serviceTier", value: "fast" }], {
+        inheritedOptionIds: ["serviceTier"],
+      }),
+    ).toMatchObject({
+      code: "invalid_request",
+      message:
+        "Model gpt-settings on provider codex rejected options: Unknown option serviceTier; supported options: reasoningEffort.",
+    });
+    expect(launched).toHaveLength(3);
+
+    // A project's default model is checked the same way before it is saved.
+    const defaultModel = (options: ModelSelection["options"]) => ({
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-settings",
+      options,
+    });
+    const saveDefaults = [
+      (options: ModelSelection["options"]) =>
+        toolkit
+          .handle("t3_project_create", {
+            title: "New",
+            workspaceRoot: "/projects/new",
+            defaultModelSelection: defaultModel(options),
+          })
+          .pipe(
+            Stream.unwrap,
+            Stream.runCollect,
+            Effect.map((result) => result.at(-1)?.result),
+            Effect.provide(dependencies),
+          ),
+      (options: ModelSelection["options"]) =>
+        toolkit
+          .handle("t3_project_update", { projectId, defaultModelSelection: defaultModel(options) })
+          .pipe(
+            Stream.unwrap,
+            Stream.runCollect,
+            Effect.map((result) => result.at(-1)?.result),
+            Effect.provide(dependencies),
+          ),
+    ];
+    for (const saveDefault of saveDefaults) {
+      expect(yield* saveDefault([{ id: "serviceTier", value: "fast" }])).toMatchObject({
+        code: "invalid_request",
+        message:
+          "Model gpt-settings on provider codex rejected options: Unknown option serviceTier; supported options: reasoningEffort.",
+      });
+      yield* saveDefault([{ id: "reasoningEffort", value: "high" }]);
+    }
+    expect(savedDefaults).toEqual(
+      saveDefaults.map(() => defaultModel([{ id: "reasoningEffort", value: "high" }])),
+    );
   }),
+);
+
+it.effect(
+  "a linked environment's delegated task drops inherited options the model does not offer, also on a retry",
+  () =>
+    Effect.gen(function* () {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "full-access",
+        client: { linked: true },
+        launched,
+        providers: [codexWithEffort],
+      });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const options = [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ];
+      const launchWith = (
+        clientRequestId: string,
+        inheritedOptionIds?: ReadonlyArray<string>,
+        selectionOptions = options,
+      ) =>
+        toolkit
+          .handle("t3_thread_launch", {
+            title: "Fix",
+            projectId,
+            message: "Fix the bug",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-settings",
+              options: selectionOptions,
+            },
+            ...(inheritedOptionIds === undefined ? {} : { inheritedOptionIds }),
+            delegatedFrom: laptopParent,
+            clientRequestId,
+          })
+          .pipe(
+            Stream.unwrap,
+            Stream.runCollect,
+            Effect.map((result) => result.at(-1)?.result),
+            Effect.provide(dependencies),
+          );
+
+      // The agent there named serviceTier itself.
+      expect(yield* launchWith("delegate:named", ["reasoningEffort"])).toMatchObject({
+        code: "invalid_request",
+        message:
+          "Model gpt-settings on provider codex rejected options: Unknown option serviceTier; supported options: reasoningEffort.",
+      });
+      expect(launched).toHaveLength(0);
+
+      // Its parent's selection held it, as a task here drops a parent's option its model lacks.
+      expect(
+        yield* launchWith("delegate:inherited", ["reasoningEffort", "serviceTier"]),
+      ).toMatchObject({
+        modelSelection: { options: [{ id: "reasoningEffort", value: "high" }] },
+      });
+      // The retry replays the launch as it was accepted, not as it was asked for.
+      yield* launchWith("delegate:inherited", ["reasoningEffort", "serviceTier"]);
+      expect(launched).toHaveLength(2);
+      expect(launched[1]?.modelSelection).toEqual(launched[0]?.modelSelection);
+
+      // A link from before options were marked names none, so each counts as inherited.
+      expect(yield* launchWith("delegate:older")).toMatchObject({
+        modelSelection: { options: [{ id: "reasoningEffort", value: "high" }] },
+      });
+      expect(launched).toHaveLength(3);
+
+      // A parent's selection can repeat an id, which runs here as on the laptop: its first entry.
+      const repeated = [
+        { id: "reasoningEffort", value: "high" },
+        { id: "reasoningEffort", value: "medium" },
+      ];
+      expect(yield* launchWith("delegate:repeated", ["reasoningEffort"], repeated)).toMatchObject({
+        modelSelection: { options: [{ id: "reasoningEffort", value: "high" }] },
+      });
+      expect(yield* launchWith("delegate:repeated-named", [], repeated)).toMatchObject({
+        code: "invalid_request",
+        message:
+          "Model gpt-settings on provider codex rejected options: Option reasoningEffort was specified more than once.",
+      });
+      expect(launched).toHaveLength(4);
+    }),
 );
 
 it.effect(

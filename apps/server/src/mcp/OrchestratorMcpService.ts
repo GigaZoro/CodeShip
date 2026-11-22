@@ -152,12 +152,13 @@ import {
   advertisedSlug,
   findAdvertisedModel,
   interactionModeRank,
-  invalidOptionSelections,
   overrideOptions,
+  requireOfferedOptions,
   resolveInteractionMode,
   resolveRuntimeMode,
   runtimeModeRank,
   taskPrompt,
+  withoutUnrunnableInherited,
 } from "./delegatedTaskModes.ts";
 import { isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
 import { providerUsageFields, publishesUsage, usageReadingStale } from "./orchestratorUsage.ts";
@@ -537,7 +538,7 @@ function capabilityModelOption(descriptor: ProviderOptionDescriptor): Orchestrat
   };
 }
 
-export const requireAdvertisedModel = (provider: ServerProvider, model: string) => {
+const requireAdvertisedModel = (provider: ServerProvider, model: string) => {
   const advertised = findAdvertisedModel(provider, model);
   return provider.models.length > 0 && advertised === undefined
     ? Effect.fail(
@@ -629,29 +630,52 @@ export const requireMemoryForDelegation = Effect.fn(
   );
 });
 
-/** t3_thread_launch keeps a selection as given, so it can hold options its model does not have. */
+/**
+ * Inherited options as the model runs them, keeping the first of each id it offers by id and value:
+ * a parent's selection, here or on a linked machine, can hold options this model or account lacks.
+ */
 function knownOptions(
   options: ReadonlyArray<ProviderOptionSelection> | undefined,
   descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
 ): ReadonlyArray<ProviderOptionSelection> | undefined {
-  if (options === undefined || descriptors === undefined) return options;
-  return options.filter((option) => descriptors.some((descriptor) => descriptor.id === option.id));
+  if (options === undefined) return undefined;
+  return withoutUnrunnableInherited(
+    withLegacyUltracodeEffort(descriptors ?? [], options) ?? options,
+    descriptors,
+  );
 }
 
+/** The selection as its model runs it, with its options checked as requireOfferedOptions does. */
 const requireModelSelection = Effect.fn("OrchestratorMcpService.requireModelSelection")(function* (
   provider: ServerProvider,
   selection: ModelSelection,
+  inheritedIds?: ReadonlySet<string>,
 ) {
   const model = yield* requireAdvertisedModel(provider, selection.model);
-  const invalid = invalidOptionSelections(
-    selection.options ?? [],
+  const options = yield* requireOfferedOptions(
+    selection,
     model?.capabilities?.optionDescriptors,
+    inheritedIds,
   );
-  if (invalid.length > 0)
-    return yield* failure(
-      "invalid_request",
-      `Model ${selection.model} on provider ${provider.instanceId} rejected options: ${invalid.join(" ")}`,
-    );
+  const { options: _named, ...rest } = selection;
+  return options === undefined ? rest : { ...rest, options };
+});
+
+/**
+ * requireModelSelection where the selection's provider is registered here. One this environment
+ * does not have, such as a fallback for another machine, is that machine's to check.
+ */
+export const requireRegisteredModelSelection = Effect.fn(
+  "OrchestratorMcpService.requireRegisteredModelSelection",
+)(function* (
+  providers: ReadonlyArray<ServerProvider>,
+  selection: ModelSelection,
+  inheritedIds?: ReadonlySet<string>,
+) {
+  const provider = providers.find((candidate) => candidate.instanceId === selection.instanceId);
+  return provider === undefined
+    ? selection
+    : yield* requireModelSelection(provider, selection, inheritedIds);
 });
 
 const requireVerifiedModelSelection = Effect.fn(
@@ -1830,28 +1854,17 @@ const make = Effect.gen(function* () {
     const requestedOptions =
       input.target?.options === undefined
         ? undefined
-        : (withLegacyUltracodeEffort(descriptors ?? [], input.target.options) ?? []);
-    if (requestedOptions !== undefined) {
-      const invalid = invalidOptionSelections(requestedOptions, descriptors);
-      if (invalid.length > 0) {
-        return yield* failure(
-          "invalid_request",
-          `Model ${model} on provider ${instanceId} rejected options: ${invalid.join(" ")}`,
-        );
-      }
-    }
+        : ((yield* requireOfferedOptions(
+            { instanceId, model, options: input.target.options },
+            descriptors,
+          )) ?? []);
 
     // Either side may name the model by an alias, so both are compared as the account's slug.
     const inheritsOptions =
       instanceId === inheritedSelection.instanceId &&
       slug === advertisedSlug(provider, inheritedSelection.model);
     const options = overrideOptions(
-      inheritsOptions
-        ? knownOptions(
-            withLegacyUltracodeEffort(descriptors ?? [], inheritedSelection.options) ?? undefined,
-            descriptors,
-          )
-        : undefined,
+      inheritsOptions ? knownOptions(inheritedSelection.options, descriptors) : undefined,
       requestedOptions,
     );
     return {
@@ -2374,6 +2387,18 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const requireScheduledTaskFallbacks = Effect.fn(
+    "OrchestratorMcpService.requireScheduledTaskFallbacks",
+  )(function* (selections: ReadonlyArray<ModelSelection> | undefined) {
+    if (selections === undefined) return undefined;
+    // A fallback can name an account of another machine, and a provider not installed here lists
+    // only its built-in models, so only an installed one is checked here.
+    const installed = (yield* loadProviders).filter((provider) => provider.installed);
+    return yield* Effect.forEach(selections, (selection) =>
+      requireRegisteredModelSelection(installed, selection),
+    );
+  });
+
   const scheduledTaskRunModes = Effect.fn("OrchestratorMcpService.scheduledTaskRunModes")(
     function* (task: ScheduledTask) {
       const modes: Array<{
@@ -2706,6 +2731,9 @@ const make = Effect.gen(function* () {
       }
       if (input.modelSelection !== undefined)
         yield* requireScheduledTaskModel(input.modelSelection, bindToCurrentThread);
+      const fallbackModelSelections = yield* requireScheduledTaskFallbacks(
+        input.fallbackModelSelections,
+      );
       const modelSelection =
         input.modelSelection ??
         parent?.thread.modelSelection ??
@@ -2759,9 +2787,7 @@ const make = Effect.gen(function* () {
         threadId: bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
         workspaceStrategy: yield* scheduledTaskWorkspaceStrategy(bindToCurrentThread, projectId),
         modelSelection,
-        ...(input.fallbackModelSelections === undefined
-          ? {}
-          : { fallbackModelSelections: input.fallbackModelSelections }),
+        ...(fallbackModelSelections === undefined ? {} : { fallbackModelSelections }),
         followsDefaultModel: input.followsDefaultModel ?? input.modelSelection === undefined,
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
@@ -2978,6 +3004,9 @@ const make = Effect.gen(function* () {
               : null;
         if (input.modelSelection !== undefined)
           yield* requireScheduledTaskModel(input.modelSelection, threadId !== null);
+        const fallbackModelSelections = yield* requireScheduledTaskFallbacks(
+          input.fallbackModelSelections,
+        );
         // Update workspace strategy on rebinding so unbound root tasks cannot run in the shared checkout.
         const workspaceStrategy =
           input.bindToCurrentThread === undefined
@@ -2995,9 +3024,7 @@ const make = Effect.gen(function* () {
           threadId,
           workspaceStrategy,
           modelSelection: input.modelSelection ?? existing.modelSelection,
-          ...(input.fallbackModelSelections === undefined
-            ? {}
-            : { fallbackModelSelections: input.fallbackModelSelections }),
+          ...(fallbackModelSelections === undefined ? {} : { fallbackModelSelections }),
           followsDefaultModel:
             input.followsDefaultModel ??
             (input.modelSelection === undefined ? (existing.followsDefaultModel ?? false) : false),
@@ -3250,6 +3277,9 @@ const make = Effect.gen(function* () {
           ? yield* usageResetRedeemer.value.lastRedemptions
           : new Map<string, OrchestratorMcpLastRedemption>();
       const inherited = parent?.thread.modelSelection;
+      const inheritedProvider = providers.find(
+        (provider) => provider.instanceId === inherited?.instanceId,
+      );
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
       return {
         parentThreadId: parent?.thread.id ?? null,
@@ -3258,10 +3288,10 @@ const make = Effect.gen(function* () {
         inheritedOptions:
           knownOptions(
             inherited?.options,
-            providers
-              .find((provider) => provider.instanceId === inherited?.instanceId)
-              ?.models.find((model) => model.slug === inherited?.model)?.capabilities
-              ?.optionDescriptors,
+            inherited === undefined || inheritedProvider === undefined
+              ? undefined
+              : findAdvertisedModel(inheritedProvider, inherited.model)?.capabilities
+                  ?.optionDescriptors,
           ) ?? [],
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,

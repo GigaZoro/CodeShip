@@ -22,6 +22,7 @@ import {
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ThreadShell,
   type ChatAttachment,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as Deferred from "effect/Deferred";
@@ -29,9 +30,10 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { McpAttachmentInput } from "./attachment/input.ts";
-import { McpSchema, McpServer } from "effect/ai";
+import { McpSchema, McpServer, Tool } from "effect/ai";
 import { FetchHttpClient } from "effect/http";
 
 import {
@@ -57,6 +59,7 @@ import * as RemoteDelegation from "../../peer/RemoteDelegation.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as MemoryAdmission from "../../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import { advertisedJsonSchema } from "../advertisedJsonSchema.ts";
 import * as McpHttpServer from "../McpHttpServer.ts";
 import * as McpInvocationContext from "../McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "../McpToolAccess.testkit.ts";
@@ -69,6 +72,7 @@ import * as PeerLinkBack from "../../peer/PeerLinkBack.ts";
 import * as PeerLinkRequests from "../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import * as SharedSettings from "../../sharedSettings/SharedSettings.ts";
+import { MCP_TOOLKITS } from "../toolkits.testkit.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
@@ -119,8 +123,46 @@ import { htmlRenderFromToolItem } from "@t3tools/shared/toolOutput";
 const decodeMcpAttachmentInput = Schema.decodeUnknownEffect(McpAttachmentInput);
 const decodeThreadReadResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadReadResult);
 
+const codexWithEffort: ServerProvider = {
+  instanceId: ProviderInstanceId.make("codex"),
+  driver: ProviderDriverKind.make("codex"),
+  enabled: true,
+  installed: true,
+  version: "test",
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: "2026-10-28T00:00:00.000Z",
+  models: [
+    {
+      slug: "gpt-5",
+      name: "gpt-5",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "reasoningEffort",
+            label: "Reasoning",
+            type: "select",
+            options: [
+              { id: "medium", label: "Medium", isDefault: true },
+              { id: "high", label: "High" },
+            ],
+          },
+        ],
+      },
+    },
+  ],
+  slashCommands: [],
+  skills: [],
+};
+
 const layerThreadToolkit = McpHttpServer.layerThreadToolkit.pipe(
   Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
+  Layer.provide(
+    Layer.mock(ProviderRegistry.ProviderRegistry)({
+      getProviders: Effect.succeed([codexWithEffort]),
+    }),
+  ),
   Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
   Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
   Layer.provide(
@@ -901,6 +943,107 @@ it.effect("a read-only client reads threads and is refused every write before it
 );
 const dispatched: Array<string> = [];
 
+// Each checks the options of a model selection it is given, before using or saving it, as
+// requireModelSelection does, and has a test that it refuses one the model lacks. A tool that
+// starts taking a model selection checks it too, and is then added here.
+const TOOLS_CHECKING_MODEL_OPTIONS = [
+  "schedule_task",
+  "t3_environment_preferences_update",
+  "t3_project_create",
+  "t3_project_update",
+  "t3_thread_configure",
+  "t3_thread_launch",
+];
+
+it("every tool that takes a model selection is one that checks its options", () => {
+  const takesModelSelection = (node: unknown): boolean =>
+    Predicate.isObject(node) &&
+    ((Predicate.isObject(node.properties) &&
+      "model" in node.properties &&
+      "autoAccount" in node.properties) ||
+      Object.values(node).some((child) =>
+        Array.isArray(child) ? child.some(takesModelSelection) : takesModelSelection(child),
+      ));
+  const tools = MCP_TOOLKITS.flatMap((toolkit): ReadonlyArray<Tool.Any> =>
+    Object.values(toolkit.tools),
+  ).filter((tool) => takesModelSelection(advertisedJsonSchema(tool)));
+  expect(tools.map((tool) => tool.name).toSorted()).toEqual(TOOLS_CHECKING_MODEL_OPTIONS);
+});
+
+it.effect(
+  "t3_thread_configure refuses an option the model does not offer and sends nothing",
+  () => {
+    const commands: Array<unknown> = [];
+    return Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const configure = (options: ReadonlyArray<{ id: string; value: string }>) =>
+        server
+          .callTool({
+            name: "t3_thread_configure",
+            arguments: {
+              threadId: "other-project-thread",
+              modelSelection: { instanceId: "codex", model: "gpt-5", options },
+            },
+          })
+          .pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, clientScope("auto")),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+
+      const refused = yield* configure([{ id: "serviceTier", value: "fast" }]);
+      expect(declaredFailure(refused)).toMatchObject({
+        code: "invalid_request",
+        message:
+          "Model gpt-5 on provider codex rejected options: Unknown option serviceTier; supported options: reasoningEffort.",
+      });
+      expect(commands).toEqual([]);
+
+      const accepted = yield* configure([{ id: "reasoningEffort", value: "high" }]);
+      expect(accepted.isError).toBe(false);
+      expect(commands).toMatchObject([
+        {
+          type: "thread.model-selection.set",
+          modelSelection: {
+            instanceId: "codex",
+            model: "gpt-5",
+            options: [{ id: "reasoningEffort", value: "high" }],
+          },
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        layerThreadToolkit.pipe(
+          Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provide(NodeCrypto.layer),
+          Layer.provide(
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: (id) =>
+                Effect.succeed(McpToolAccessTestkit.liveThreadShell(id, { runtimeMode: "auto" })),
+              getProjectThreadRecords: () =>
+                Effect.succeed({
+                  thread: {
+                    id: ThreadId.make("other-project-thread"),
+                    projectId: "other-project",
+                    providerInstanceId: "codex",
+                    modelSelection: { instanceId: "codex", model: "gpt-5" },
+                    runtimeMode: "auto",
+                    interactionMode: "default",
+                    deletedAt: null,
+                  },
+                } as never),
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  commands.push(command);
+                  return { sequence: 7, storedEvents: [] };
+                }),
+            }),
+          ),
+        ),
+      ),
+    );
+  },
+);
+
 it.effect("refuses act-as-caller tools to a client caller", () =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
@@ -1014,6 +1157,7 @@ it.effect.each([
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
         Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
+        Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
         Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
         Layer.provide(
           Layer.mergeAll(

@@ -3907,10 +3907,17 @@ describe("OrchestratorMcpService provider resolution", () => {
           ],
           code: "invalid_request",
         },
-      ].flatMap((row) => ["create", "update"].map((operation) => ({ ...row, operation }))),
+      ].flatMap((row) =>
+        ["create", "update"].flatMap((operation) =>
+          ["model", "fallback"].flatMap((field) =>
+            // A fallback on an account this machine lacks is the machine's that has it to check.
+            field === "fallback" && row.catalog !== undefined ? [] : [{ ...row, operation, field }],
+          ),
+        ),
+      ),
     )(
-      "refuses $operation of an unverifiable scheduled model: $catalog $model $options",
-      ({ model, options, code, catalog, operation }) =>
+      "refuses $operation of an unverifiable scheduled $field: $catalog $model $options",
+      ({ model, options, code, catalog, operation, field }) =>
         Effect.gen(function* () {
           const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
           const provider: ServerProvider = {
@@ -3962,14 +3969,18 @@ describe("OrchestratorMcpService provider resolution", () => {
             options,
             autoAccount: true,
           };
+          const selection =
+            field === "fallback"
+              ? { fallbackModelSelections: [modelSelection] }
+              : { modelSelection };
           const result =
             operation === "update"
-              ? mcp.updateScheduledTask(client, { scheduledTaskId: existing.id, modelSelection })
+              ? mcp.updateScheduledTask(client, { scheduledTaskId: existing.id, ...selection })
               : mcp.scheduleTask(client, {
                   projectId,
                   prompt: "Run checks",
                   schedule,
-                  modelSelection,
+                  ...selection,
                 });
           assert.equal((yield* result.pipe(Effect.flip)).code, code);
           assert.deepEqual(
@@ -3977,6 +3988,85 @@ describe("OrchestratorMcpService provider resolution", () => {
             existing.modelSelection,
           );
           assert.deepEqual(yield* Ref.get(saved), []);
+        }),
+    );
+
+    it.effect.each(
+      ["create", "update"].flatMap((operation) =>
+        ["missing", "not installed"].map((account) => ({ operation, account })),
+      ),
+    )(
+      "saves on $operation a scheduled fallback for an account $account here",
+      ({ operation, account }) =>
+        Effect.gen(function* () {
+          // Another machine's account, with a custom model and an option this one does not list.
+          const fallback = {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-custom",
+            options: [{ id: "serviceTier", value: "fast" }],
+            autoAccount: true,
+          };
+          const savedFallbacks: Array<ReadonlyArray<ModelSelection> | undefined> = [];
+          const withoutCli: ServerProvider = {
+            instanceId: fallback.instanceId,
+            driver: ProviderDriverKind.make("claudeAgent"),
+            enabled: true,
+            installed: false,
+            version: null,
+            status: "error",
+            auth: { status: "unknown" },
+            checkedAt: "2026-11-08T00:00:00.000Z",
+            models: [
+              {
+                slug: "claude-opus",
+                name: "Claude Opus",
+                isCustom: false,
+                capabilities: {
+                  optionDescriptors: [
+                    {
+                      id: "effort",
+                      label: "Effort",
+                      type: "select",
+                      options: [{ id: "high", label: "High" }],
+                    },
+                  ],
+                },
+              },
+            ],
+            slashCommands: [],
+            skills: [],
+          };
+          const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+            Effect.provide(
+              service(
+                masterRepository,
+                yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]),
+                [existing],
+                {},
+                {
+                  upsert: (input) =>
+                    Effect.sync(() => {
+                      savedFallbacks.push(input.fallbackModelSelections);
+                      return { task: existing };
+                    }),
+                },
+                account === "missing" ? [] : [withoutCli],
+              ),
+            ),
+          );
+          const fallbackModelSelections = [fallback];
+          yield* operation === "update"
+            ? mcp.updateScheduledTask(client, {
+                scheduledTaskId: existing.id,
+                fallbackModelSelections,
+              })
+            : mcp.scheduleTask(client, {
+                projectId,
+                prompt: "Run checks",
+                schedule,
+                fallbackModelSelections,
+              });
+          assert.deepEqual(savedFallbacks, [fallbackModelSelections]);
         }),
     );
 
@@ -5419,7 +5509,38 @@ describe("OrchestratorMcpService provider resolution", () => {
               model: "ultracode-model",
               options: [{ id: "effort", value: "ultracode" }],
             },
+            // Listed as the model runs the old level, which it no longer offers by that name.
+            inheritedOptions: [
+              { id: "effort", value: "xhigh" },
+              { id: "ultracode", value: true },
+            ],
             target: { options: { effort: "high" } },
+            expected: {
+              instanceId: codexInstanceId,
+              model: "ultracode-model",
+              options: [
+                { id: "effort", value: "high" },
+                { id: "ultracode", value: true },
+              ],
+            },
+          },
+          {
+            name: "a parent's level the model no longer offers, and one saved twice",
+            parent: {
+              instanceId: codexInstanceId,
+              model: "ultracode-model",
+              options: [
+                { id: "effort", value: "max" },
+                { id: "effort", value: "high" },
+                { id: "effort", value: "xhigh" },
+                { id: "ultracode", value: true },
+              ],
+            },
+            inheritedOptions: [
+              { id: "effort", value: "high" },
+              { id: "ultracode", value: true },
+            ],
+            target: { model: "ultracode-model" },
             expected: {
               instanceId: codexInstanceId,
               model: "ultracode-model",
@@ -5511,7 +5632,10 @@ describe("OrchestratorMcpService provider resolution", () => {
           yield* Effect.gen(function* () {
             const service = yield* OrchestratorMcpService.OrchestratorMcpService;
             const capabilities = yield* service.capabilities(scope);
-            assert.deepEqual(capabilities.inheritedOptions, parent.options);
+            assert.deepEqual(
+              capabilities.inheritedOptions,
+              "inheritedOptions" in testCase ? testCase.inheritedOptions : parent.options,
+            );
             yield* service.delegateTask(scope, {
               task: "Review the change.",
               target: yield* decodeTarget(testCase.target),
@@ -5583,94 +5707,97 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
-  it.effect("accepts the inherited options it reports back as a delegate target", () =>
-    Effect.gen(function* () {
-      // t3_thread_launch keeps a model selection as given, so a thread can hold an option its model lacks.
-      const inherited = {
-        instanceId: codexInstanceId,
-        model: "gpt-5.4",
-        options: [
-          { id: "reasoningEffort", value: "low" },
-          { id: "fastMode", value: false },
-        ],
-      } as const;
-      const commands: Array<{ readonly modelSelection?: unknown }> = [];
-      const task = {
-        id: taskId,
-        threadId: parentThreadId,
-        origin: "app_owned",
-        childThreadId,
-        providerInstanceId: codexInstanceId,
-        model: inherited.model,
-        status: "running",
-        result: null,
-      };
-      const dependencies = Layer.mergeAll(
-        NodeServices.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
-          assertProviderInstanceEnabled: () => Effect.void,
-          getThreadRecords: (threadId) =>
-            Effect.succeed(
-              threadId === parentThreadId
-                ? parentProjection(commands.length > 0 ? [task] : [], inherited)
-                : childProjection,
-            ),
-          dispatch: (command) =>
-            Effect.sync(() => {
-              commands.push(command as { readonly modelSelection?: unknown });
-              return {
-                sequence: 1,
-                storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
-              } as never;
-            }),
-        }),
-        ServerSettings.layerTest(),
-        providerRegistryLayer([
-          {
-            ...providerSnapshot({
-              instanceId: codexInstanceId,
-              driver: ProviderDriverKind.make("codex"),
-            }),
-            models: [
-              {
-                slug: inherited.model,
-                name: inherited.model,
-                isCustom: false,
-                capabilities: {
-                  optionDescriptors: [
-                    {
-                      id: "reasoningEffort",
-                      label: "Reasoning",
-                      type: "select",
-                      options: [{ id: "low", label: "Low" }],
-                    },
-                  ],
+  it.effect.each(["gpt-5.4", "gpt"])(
+    "accepts the inherited options it reports back as a delegate target, from a parent on %s",
+    (parentModel) =>
+      Effect.gen(function* () {
+        // A thread made before launches checked options can hold one its model lacks.
+        const inherited = {
+          instanceId: codexInstanceId,
+          model: parentModel,
+          options: [
+            { id: "reasoningEffort", value: "low" },
+            { id: "fastMode", value: false },
+          ],
+        } as const;
+        const commands: Array<{ readonly modelSelection?: unknown }> = [];
+        const task = {
+          id: taskId,
+          threadId: parentThreadId,
+          origin: "app_owned",
+          childThreadId,
+          providerInstanceId: codexInstanceId,
+          model: inherited.model,
+          status: "running",
+          result: null,
+        };
+        const dependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            assertProviderInstanceEnabled: () => Effect.void,
+            getThreadRecords: (threadId) =>
+              Effect.succeed(
+                threadId === parentThreadId
+                  ? parentProjection(commands.length > 0 ? [task] : [], inherited)
+                  : childProjection,
+              ),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                commands.push(command as { readonly modelSelection?: unknown });
+                return {
+                  sequence: 1,
+                  storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
+                } as never;
+              }),
+          }),
+          ServerSettings.layerTest(),
+          providerRegistryLayer([
+            {
+              ...providerSnapshot({
+                instanceId: codexInstanceId,
+                driver: ProviderDriverKind.make("codex"),
+              }),
+              models: [
+                {
+                  slug: "gpt-5.4",
+                  name: "gpt-5.4",
+                  aliases: ["gpt"],
+                  isCustom: false,
+                  capabilities: {
+                    optionDescriptors: [
+                      {
+                        id: "reasoningEffort",
+                        label: "Reasoning",
+                        type: "select",
+                        options: [{ id: "low", label: "Low" }],
+                      },
+                    ],
+                  },
                 },
-              },
-            ],
-          },
-        ]),
-        adapterRegistryLayer([codexInstanceId]),
-        Layer.mock(ProjectService.ProjectService)({}),
-        Layer.mock(SecretRequests.SecretRequests)({}),
-        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-      );
-      yield* Effect.gen(function* () {
-        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        const { inheritedOptions } = yield* service.capabilities(scope);
-        yield* service.delegateTask(scope, {
-          task: "Review the change.",
-          target: yield* decodeTarget({ options: inheritedOptions }),
-          mode: "async",
-        });
-        assert.deepEqual(commands[0]?.modelSelection, {
-          ...inherited,
-          options: [inherited.options[0]],
-        });
-      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
-    }),
+              ],
+            },
+          ]),
+          adapterRegistryLayer([codexInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const { inheritedOptions } = yield* service.capabilities(scope);
+          yield* service.delegateTask(scope, {
+            task: "Review the change.",
+            target: yield* decodeTarget({ options: inheritedOptions }),
+            mode: "async",
+          });
+          assert.deepEqual(commands[0]?.modelSelection, {
+            ...inherited,
+            options: [inherited.options[0]],
+          });
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+      }),
   );
 
   it.effect("starts a task on its role's model, keeping the Auto settings chose", () =>

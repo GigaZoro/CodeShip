@@ -85,7 +85,11 @@ const ProjectCreateTool = Tool.make("t3_project_create", {
     workspaceRoot: Schema.optional(ProjectCreatePayload.fields.workspaceRoot),
   }),
   success: Schema.Struct({ ...Project.fields, commitError: Schema.optional(Schema.String) }),
-  dependencies: [...shared.dependencies, ManagedProjectFolders.ManagedProjectFolders],
+  dependencies: [
+    ...shared.dependencies,
+    ManagedProjectFolders.ManagedProjectFolders,
+    ProviderRegistry.ProviderRegistry,
+  ],
 }).annotate(Tool.Destructive, true);
 const ProjectUpdateTool = Tool.make("t3_project_update", {
   ...shared,
@@ -96,6 +100,7 @@ const ProjectUpdateTool = Tool.make("t3_project_update", {
     // Order keys only make sense next to their neighbors' keys, which agents never see.
     ...ProjectUpdatePayload.mapFields(Struct.omit(["orderKey"])).fields,
   }),
+  dependencies: [...shared.dependencies, ProviderRegistry.ProviderRegistry],
 }).annotate(Tool.Destructive, true);
 const ProjectDeleteTool = Tool.make("t3_project_delete", {
   ...shared,
@@ -180,6 +185,8 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
     /** Set by a linked environment that recorded its delegated task before launching it here; ignored otherwise. */
     launchId: Schema.optional(Schema.String.check(Schema.isPattern(REMOTE_DELEGATE_THREAD_ID))),
+    /** Set by a linked environment for the `modelSelection` options its delegated task inherited rather than named; ignored otherwise. */
+    inheritedOptionIds: Schema.optional(Schema.Array(Schema.String)),
   }),
   success: Schema.Struct({
     threadId: ThreadId,

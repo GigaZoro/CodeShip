@@ -12,6 +12,8 @@ import { modelSelectionCommandType } from "@t3tools/shared/model";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import {
   dispatchFailure,
   newCommandId,
@@ -213,7 +215,10 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     ),
     writesThread((input) =>
       Effect.gen(function* () {
-        const modelSelection = yield* required(input.modelSelection, "modelSelection");
+        const modelSelection = yield* OrchestrationMcp.requireRegisteredModelSelection(
+          yield* (yield* ProviderRegistry.ProviderRegistry).getProviders,
+          yield* required(input.modelSelection, "modelSelection"),
+        );
         const {
           threads,
           projection: { thread },
