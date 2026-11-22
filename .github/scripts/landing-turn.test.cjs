@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { execFileSync, spawnSync } = require("node:child_process");
+const { execFileSync, spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -22,6 +22,8 @@ const {
 const QUEUE_PREFIX = "refs/heads/landing-lease/queue/";
 const QUEUE_REFRESH_MS = 60_000;
 const QUEUE_STALE_MS = 3 * 60_000;
+const QUEUE_FETCH_MAX = 100;
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 // `land` runs git itself, so its rebase needs an identity on a runner without one. A hook exports GIT_DIR
 // and GIT_INDEX_FILE. Git for Windows opens /dev/null, not os.devNull (\\.\nul).
@@ -57,7 +59,45 @@ function setup() {
     git(dir, "add", ".");
     git(dir, "commit", "-qm", file);
   };
-  return { root, origin, git, clone, commit };
+  // A queue entry's commit as another lander writes it.
+  const entryCommit = (dir, runId, waitingSince) =>
+    git(
+      dir,
+      "commit-tree",
+      EMPTY_TREE,
+      "-m",
+      JSON.stringify({
+        kind: "land",
+        host: "fixture",
+        run_id: runId,
+        waiting_since: new Date(waitingSince).toISOString(),
+      }),
+    );
+  return { root, origin, git, clone, commit, entryCommit };
+}
+
+function pauseFor(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Waits for `done`, failing after about 30 seconds of 50 ms pauses. */
+function waitUntil(done, message) {
+  for (let pauses = 0; !done(); pauses += 1) {
+    if (pauses >= 600) assert.fail(message);
+    pauseFor(50);
+  }
+}
+
+/** Collects what the lander writes to stderr while `run` runs. */
+function stderrOf(run) {
+  const written = [];
+  const write = process.stderr.write;
+  process.stderr.write = (chunk) => written.push(String(chunk)) > 0;
+  try {
+    return { result: run(), written };
+  } finally {
+    process.stderr.write = write;
+  }
 }
 
 test("a second lander cannot push to main while the first holds the turn, and the first lands after one check", () => {
@@ -243,68 +283,185 @@ test("a waiting lander takes the turn over from a holder whose lease expired, an
   }
 });
 
-test("the first lander in the queue takes the released turn even when a later lander polls first", () => {
+test("waiting landers take the turn in arrival order while both stay in the queue", async () => {
   const { root, origin, git, clone } = setup();
   try {
     const holder = clone("holder");
     const first = clone("first");
     const later = clone("later");
     const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
-    const epoch = Date.parse("2026-01-01T00:00:00Z");
-    let time = 0;
-    const clock = () => time;
-    const now = () => epoch + time;
+    const entries = () =>
+      git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX).split("\n").filter(Boolean);
+    let laterLander;
     const turn = acquire({
       cwd: first,
       remote: origin,
-      clock,
-      now,
       sleep: () => {
-        time += 1;
-        // Let the later lander poll after release while the first lander is still paused.
-        assert.throws(
-          () =>
-            acquire({
-              cwd: later,
-              remote: origin,
-              clock,
-              now,
-              maxWaitMs: 1,
-              sleep: () => {
-                time += 1;
-                release({ cwd: holder, remote: origin }, held);
-              },
-            }),
-          /timed out waiting for main's landing queue/,
+        assert.equal(laterLander, undefined, "the first lander waited a second time");
+        // The later lander waits in its own process and polls far more often than the first.
+        const child = spawn(
+          process.execPath,
+          [
+            "-e",
+            "const { acquire } = require(process.env.LANDING_TURN);" +
+              "process.stdout.write(acquire({ cwd: process.env.LANDER, remote: process.env.ORIGIN, pollMs: 50, maxWaitMs: 60000 }));",
+          ],
+          {
+            env: {
+              ...process.env,
+              LANDING_TURN: require.resolve("./landing-turn.cjs"),
+              LANDER: later,
+              ORIGIN: origin,
+            },
+          },
         );
+        laterLander = new Promise((resolve) => {
+          let stdout = "";
+          let stderr = "";
+          child.stdout.on("data", (chunk) => (stdout += chunk));
+          child.stderr.on("data", (chunk) => (stderr += chunk));
+          child.on("close", (code) => resolve({ code, stdout, stderr }));
+        });
+        waitUntil(() => entries().length === 2, "the later lander never joined the queue");
+        release({ cwd: holder, remote: origin }, held);
+        // The later lander polls the free lease many times while the first is paused.
+        pauseFor(1000);
+        assert.equal(git(origin, "for-each-ref", LEASE_REF), "", "the later lander took the turn");
       },
     });
 
     assert.equal(git(origin, "rev-parse", LEASE_REF), turn);
+    assert.equal(entries().length, 1, "the later lander left the queue");
+    release({ cwd: first, remote: origin }, turn);
+    const { code, stdout, stderr } = await laterLander;
+    assert.equal(code, 0, stderr);
+    assert.equal(git(origin, "rev-parse", LEASE_REF), stdout);
+    assert.deepEqual(entries(), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a waiter that joins after another comes after it, however far ahead the other's clock runs", () => {
+  const { root, origin, git, clone, entryCommit } = setup();
+  try {
+    const ahead = clone("ahead");
+    const waiter = clone("waiter");
+    const epoch = Date.parse("2026-01-01T00:00:00Z");
+    const ref = `${QUEUE_PREFIX}ahead.1`;
+    git(
+      ahead,
+      "push",
+      "-q",
+      "origin",
+      `${entryCommit(ahead, "ahead", epoch + 60 * 60_000)}:${ref}`,
+    );
+
+    let time = 0;
+    assert.throws(
+      () =>
+        acquire({
+          cwd: waiter,
+          remote: origin,
+          clock: () => time,
+          now: () => epoch,
+          maxWaitMs: 1,
+          sleep: () => (time += 1),
+        }),
+      /timed out waiting for main's landing queue/,
+    );
+    assert.equal(git(origin, "for-each-ref", LEASE_REF), "");
+    assert.equal(git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX), ref);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a queue longer than one poll reads still gives the turn to its first waiter", () => {
+  const { root, origin, git, clone, entryCommit } = setup();
+  try {
+    const holder = clone("holder");
+    const others = clone("others");
+    const waiter = clone("waiter");
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    const epoch = Date.parse("2026-01-01T00:00:00Z");
+    // More waiters join after it than the queue prunes in bulk for, each with its own entry commit.
+    const laterCount = 210;
+    let time = 0;
+    let pauses = 0;
+    const turn = acquire({
+      cwd: waiter,
+      remote: origin,
+      clock: () => time,
+      now: () => epoch,
+      sleep: () => {
+        time += 1;
+        pauses += 1;
+        assert.ok(pauses <= 10, "never took the turn");
+        if (pauses > 1) return;
+        const later = Array.from({ length: laterCount }, (_, index) => [
+          entryCommit(others, `later-${index}`, epoch + 1000 + index),
+          `${QUEUE_PREFIX}later-${index}.1`,
+        ]);
+        git(others, "push", "-q", "origin", ...later.map(([sha, ref]) => `${sha}:${ref}`));
+        release({ cwd: holder, remote: origin }, held);
+      },
+    });
+
+    assert.equal(git(origin, "rev-parse", LEASE_REF), turn);
+    // One pause behind the holder, then one per bounded batch it reads; the poll reading the last batch takes the turn.
+    assert.equal(pauses, Math.ceil(laterCount / QUEUE_FETCH_MAX));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a stale entry origin will not delete blocks no one, and the waiter says so once", () => {
+  const { root, origin, git, clone, entryCommit } = setup();
+  try {
+    const crashed = clone("crashed");
+    const waiter = clone("waiter");
+    const epoch = Date.parse("2026-01-01T00:00:00Z");
+    const ref = `${QUEUE_PREFIX}crashed.1`;
+    git(crashed, "push", "-q", "origin", `${entryCommit(crashed, "crashed", epoch - 1)}:${ref}`);
+    fs.writeFileSync(path.join(origin, `${ref}.lock`), "");
+
+    let time = 0;
+    const pauses = [QUEUE_STALE_MS - 1, QUEUE_STALE_MS];
+    const { result: turn, written } = stderrOf(() =>
+      acquire({
+        cwd: waiter,
+        remote: origin,
+        clock: () => time,
+        now: () => epoch,
+        sleep: () => {
+          time = pauses.shift();
+          assert.notEqual(time, undefined, "waited after the entry went stale");
+        },
+      }),
+    );
+
+    assert.equal(time, QUEUE_STALE_MS);
+    assert.equal(git(origin, "rev-parse", LEASE_REF), turn);
+    assert.equal(git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX), ref);
+    assert.equal(
+      written.filter((line) => line.includes("could not remove stale queue entries")).length,
+      1,
+      written.join(""),
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
 test("a crashed lander blocks the next waiter until its entry is observed unchanged for the stale window", () => {
-  const { root, origin, git, clone } = setup();
+  const { root, origin, git, clone, entryCommit } = setup();
   try {
     const crashed = clone("crashed");
     const waiter = clone("waiter");
     const epoch = Date.parse("2026-01-01T00:00:00Z");
     const ref = `${QUEUE_PREFIX}crashed.1`;
-    const sha = git(
-      crashed,
-      "commit-tree",
-      "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
-      "-m",
-      JSON.stringify({
-        kind: "land",
-        host: "fixture",
-        run_id: "crashed",
-        waiting_since: new Date(epoch - 1).toISOString(),
-      }),
-    );
+    const sha = entryCommit(crashed, "crashed", epoch - 1);
     git(crashed, "push", "-q", "origin", `${sha}:${ref}`);
 
     let time = 0;
@@ -550,6 +707,55 @@ test("a take whose push fails or times out is the lander's when origin took it, 
     assert.throws(
       () => acquire({ cwd: lander, remote: "origin", maxWaitMs: 0 }),
       /git push failed/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a take that reached origin but lost its answer is the lander's although another entry is now first", () => {
+  const { root, origin, git, clone, entryCommit } = setup();
+  try {
+    const lander = clone("lander");
+    const other = clone("other");
+    // Origin commits the take, then goes away and its receive-pack dies before it acknowledges the push, so the
+    // read that would confirm the take fails too.
+    const hooks = path.join(origin, "hooks");
+    git(origin, "config", "core.hooksPath", hooks);
+    fs.writeFileSync(
+      path.join(hooks, "reference-transaction"),
+      '#!/bin/sh\n[ "$1" = committed ] && [ -e drop-ack ] && rm drop-ack && mv "$PWD" "$PWD-away" && kill -9 "$PPID"\nexit 0\n',
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(path.join(origin, "drop-ack"), "");
+    const epoch = Date.parse("2026-01-01T00:00:00Z");
+    const pauses = [
+      () => {
+        fs.renameSync(`${origin}-away`, origin);
+        // An entry older than the lander's own joins while the lander cannot tell whether its take applied.
+        const sha = entryCommit(other, "other", epoch - 1000);
+        git(other, "push", "-q", "origin", `${sha}:${QUEUE_PREFIX}other.1`);
+      },
+    ];
+    let time = 0;
+    const turn = acquire({
+      cwd: lander,
+      remote: origin,
+      clock: () => time,
+      now: () => epoch,
+      maxWaitMs: 2,
+      sleep: () => {
+        time += 1;
+        const pause = pauses.shift();
+        assert.ok(pause, "waited behind its own lease");
+        pause();
+      },
+    });
+
+    assert.equal(git(origin, "rev-parse", LEASE_REF), turn);
+    assert.equal(
+      git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX),
+      `${QUEUE_PREFIX}other.1`,
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

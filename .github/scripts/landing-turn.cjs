@@ -174,19 +174,29 @@ function acquire({
     remoteGit: (args) => remoteGit(cwd, args, callMs).stdout,
     readMessage: (sha) => git(cwd, ["show", "-s", "--format=%B", sha]).stdout,
     makeCommit: (data) => landingCommit(cwd, data),
+    warn: (message) => process.stderr.write(`landing turn: ${message}\n`),
   });
   let waiting = false;
   let failingSince = null;
+  // A take that failed partway may have reached origin, and the queue can put another entry first meanwhile.
+  let tookMaybe = false;
   try {
     for (;;) {
       let failure = null;
       let firstInQueue = false;
       const canTake = () => (firstInQueue = queue.canTake());
       try {
+        if (tookMaybe) {
+          const held = remoteLease(options);
+          if (held && readHolder(options, held)?.run_id === runId) return held;
+          tookMaybe = false;
+        }
         if (waiting) queue.refresh();
         if (canTake()) {
           // Only the head polls the lease. It checks its place again before swapping a free or expired lease.
+          tookMaybe = true;
           const sha = tryAcquire({ ...options, runId, now, canTake });
+          tookMaybe = false;
           if (sha) return sha;
         }
       } catch (error) {

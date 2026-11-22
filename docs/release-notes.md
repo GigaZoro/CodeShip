@@ -1,6 +1,7 @@
 ## 2026-11-22 — Landings take turns in arrival order
 
 - Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
+- A landing that joins the queue comes after every landing already waiting there, even when its machine's clock runs ahead. A queue of any length keeps moving, a crashed lander's entry that origin will not delete blocks no one (the waiter says so once), and a lander whose take reached origin while its answer was lost keeps the turn instead of waiting behind itself.
 
 ## 2026-11-21 — Claude's held resets say what they clear, or why they cannot
 
