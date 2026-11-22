@@ -1,6 +1,3 @@
-import { RegistryContext, useAtomValue } from "@effect/atom-react";
-import { scheduledTaskAccessNotice } from "@t3tools/client-runtime/scheduled-task-groups";
-import { environmentSession } from "../../state/session";
 import { Notice } from "../../components/ui/Notice";
 import { useUsageNow } from "../../lib/clock";
 import { useAppForeground } from "../../lib/appState";
@@ -427,14 +424,6 @@ function UsageScreen(props: {
                     )}
                   </Text>
                 ) : null}
-                {selectedEnvironments
-                  .filter((environment) => environment.isConnected)
-                  .map((environment) => (
-                    <ScheduledGrantNotice
-                      key={environment.environmentId}
-                      environment={environment}
-                    />
-                  ))}
                 {coverage === null ? null : (
                   <View className="gap-2">
                     <Notice
@@ -1160,26 +1149,6 @@ function ModelsSection(props: {
         ))}
       </View>
     </SettingsSection>
-  );
-}
-
-function ScheduledGrantNotice({ environment }: { readonly environment: EnvironmentUsageStatus }) {
-  const registry = use(RegistryContext);
-  const atom = environmentSession.sessionStateAtom(environment.environmentId);
-  const grant = useAtomValue(atom);
-  const message = scheduledTaskAccessNotice(grant, environment.label);
-  if (message === null) return null;
-  return (
-    <View className="gap-2">
-      <Notice message={message} />
-      {grant._tag === "Failure" ? (
-        <Button
-          label={t("Retry")}
-          disabled={grant.waiting}
-          onPress={() => registry.refresh(atom)}
-        />
-      ) : null}
-    </View>
   );
 }
 

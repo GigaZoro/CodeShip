@@ -353,7 +353,6 @@ function setup(tab: string | undefined = "usage") {
   const registry = AtomRegistry.make();
   return {
     container,
-    registry,
     render: (child: ReactNode = <UsageRouteScreen />) =>
       act(() => {
         state.revision += 1;
@@ -752,32 +751,17 @@ function mobileGrantProbe() {
   });
 }
 
-it("checks each mobile scheduled grant and retries the failed environment's session", async () => {
+// Mobile Usage has no scheduled-task section, so grant states for scheduled task runs are not its to report.
+it("shows no scheduled-task access notices on mobile Usage", async () => {
   await using screen = setup();
   state.grantProbe = mobileGrantProbe();
-  const laptop = EnvironmentId.make("laptop");
   state.live = [
     liveEnvironment("desk", "Desk"),
-    liveEnvironment(laptop, "Laptop"),
+    liveEnvironment("laptop", "Laptop"),
     liveEnvironment("other", "Other"),
   ];
-  const refresh = vi.spyOn(screen.registry, "refresh");
   await screen.render();
-  expect(screen.container.textContent).toContain("Checking access to scheduled task runs on Desk…");
-  expect(screen.container.textContent).toContain(
-    "Could not check access to scheduled task runs on Laptop.",
-  );
-  expect(screen.container.textContent).toContain(
-    "This connection lacks permission to read scheduled task runs on Other.",
-  );
-  const retry = [...screen.container.querySelectorAll("button")].find(
-    (button) => button.textContent === "Retry",
-  )!;
-  await act(() => retry.click());
-  expect(refresh).toHaveBeenCalledWith(state.grantProbe(laptop));
-  expect(screen.container.textContent).not.toContain(
-    "Could not check access to scheduled task runs on Laptop.",
-  );
+  expect(screen.container.textContent).not.toContain("scheduled task runs");
 });
 
 it.each(["legacy", "reading"] as const)(
