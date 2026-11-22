@@ -133,20 +133,18 @@ const PEER_LINK_ONLY_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 // The tool list depends on the host, so each platform's is measured wherever the test runs.
-const mcpToolListJsonBytes = (platform: NodeJS.Platform) =>
+const mcpToolListJson = (platform: NodeJS.Platform) =>
   McpServer.McpServer.pipe(
     // The model sees these fields. outputSchema and annotations are protocol metadata.
     Effect.map((mcp) =>
-      utf8Bytes(
-        JSON.stringify(
-          mcp.tools
-            .filter(({ tool }) => !PEER_LINK_ONLY_TOOLS.has(tool.name))
-            .map(({ tool }) => ({
-              name: tool.name,
-              description: tool.description,
-              inputSchema: tool.inputSchema,
-            })),
-        ),
+      JSON.stringify(
+        mcp.tools
+          .filter(({ tool }) => !PEER_LINK_ONLY_TOOLS.has(tool.name))
+          .map(({ tool }) => ({
+            name: tool.name,
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+          })),
       ),
     ),
     Effect.provide(
@@ -160,16 +158,16 @@ const mcpToolListJsonBytes = (platform: NodeJS.Platform) =>
 
 it.effect("agent context on every platform matches the committed budget", () =>
   Effect.gen(function* () {
-    const linux = yield* mcpToolListJsonBytes("linux");
+    const linux = yield* mcpToolListJson("linux");
     expect(
-      yield* mcpToolListJsonBytes("darwin"),
+      yield* mcpToolListJson("darwin"),
       "macOS registers Linux's tools; give it its own budget value if that changes.",
     ).toBe(linux);
     const measured = {
       claudeSystemAppendBytes: utf8Bytes(claudeSystemAppend()),
       codexAdditionalContextBytes: utf8Bytes(codexAdditionalContext()),
-      mcpToolListJsonBytes: linux,
-      windowsMcpToolListJsonBytes: yield* mcpToolListJsonBytes("win32"),
+      mcpToolListJsonBytes: utf8Bytes(linux),
+      windowsMcpToolListJsonBytes: utf8Bytes(yield* mcpToolListJson("win32")),
     };
 
     expect(

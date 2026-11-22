@@ -135,9 +135,12 @@ describe("AcpClientTerminals", () => {
           sessionId: "session",
           terminalId: created.terminalId,
         });
-        expect(exit.exitCode === 0 ? null : exit.exitCode).not.toBe(0);
-        // Windows too: Effect's patched kill goes through Node's own handle, which reports the signal.
-        expect(exit.signal).toBe("SIGTERM");
+        // Windows too: Effect's patched kill goes through Node's own handle, which reports the signal
+        // in place of an exit code.
+        expect({ exitCode: exit.exitCode, signal: exit.signal }).toEqual({
+          exitCode: null,
+          signal: "SIGTERM",
+        });
 
         yield* terminals.release({ sessionId: "session", terminalId: created.terminalId });
         const rejected = yield* Effect.flip(
