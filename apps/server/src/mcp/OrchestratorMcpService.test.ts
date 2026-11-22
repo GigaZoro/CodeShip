@@ -2228,6 +2228,135 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
   );
 
+  it.effect(
+    "a role's provider and the parent's, both still being checked, hold a delegation for one wait",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-11-13T00:01:00.000Z"));
+        const roleInstanceId = ProviderInstanceId.make("codex-alt");
+        const installed = new Set<ProviderInstanceId>();
+        const snapshot = (instanceId: ProviderInstanceId): ServerProvider => ({
+          ...providerSnapshot({
+            instanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
+          ...(installed.has(instanceId) ? {} : { installed: false, status: "error" as const }),
+          checkedAt: installed.has(instanceId)
+            ? "2026-11-13T00:02:20.000Z"
+            : "2026-11-13T00:00:00.000Z",
+        });
+        const snapshots = () => [snapshot(codexInstanceId), snapshot(roleInstanceId)];
+        const layerDependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            getThreadRecords: () => Effect.succeed(parentProjection([])),
+          }),
+          ServerSettings.layerTest({
+            delegatedTaskModelSelections: {
+              general: { instanceId: roleInstanceId, model: "gpt-5.4" },
+            },
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.sync(snapshots),
+            // Each provider's probe outlasts one wait piece.
+            refreshInstance: (instanceId) =>
+              Effect.sleep("80 seconds").pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    installed.add(instanceId);
+                    return snapshots();
+                  }),
+                ),
+              ),
+          }),
+          adapterRegistryLayer([codexInstanceId, roleInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          // The role's provider is checked first, then the parent's as its fallback.
+          const delegating = yield* service
+            .delegateTask(scope, {
+              task: "Summarize the diff.",
+              mode: "async",
+              clientRequestId: "delegate-role-while-checking",
+            })
+            .pipe(Effect.flip, Effect.forkChild);
+          yield* TestClock.adjust("50 seconds");
+          const refused = yield* TestClock.withLive(
+            Fiber.join(delegating).pipe(Effect.timeout("10 seconds")),
+          );
+          assert.equal(refused.code, "provider_unavailable");
+          assert.isTrue(refused.message.endsWith("ask again for its result."), refused.message);
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+      }),
+  );
+
+  it.effect(
+    "requests that come while a provider's check runs wait for it, not for checks of their own",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-11-13T00:01:00.000Z"));
+        let refreshes = 0;
+        // A check can end without a new reading, as for an instance the registry no longer knows.
+        const snapshot = (): ServerProvider => ({
+          ...providerSnapshot({
+            instanceId: codexInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
+          installed: false,
+          status: "error" as const,
+          checkedAt: "2026-11-13T00:00:00.000Z",
+        });
+        const layerDependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: () => Effect.succeed(parentProjection([])),
+          }),
+          ServerSettings.layerTest(),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.sync(() => [snapshot()]),
+            refreshInstance: () =>
+              Effect.sync(() => {
+                refreshes += 1;
+              }).pipe(Effect.andThen(Effect.sleep("80 seconds")), Effect.as([snapshot()])),
+          }),
+          adapterRegistryLayer([codexInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const readings = yield* Effect.forEach([1, 2, 3], () =>
+            service.capabilities(scope).pipe(Effect.forkChild),
+          );
+          yield* TestClock.adjust("50 seconds");
+          for (const reading of readings) {
+            const read = yield* TestClock.withLive(
+              Fiber.join(reading).pipe(Effect.timeout("10 seconds")),
+            );
+            assert.include(
+              read.providers[0]!.constraints,
+              "A new check of this provider is still running; ask again for its result.",
+            );
+          }
+          // Long after that check ended, none of the requests has started another.
+          yield* TestClock.adjust("200 seconds");
+          assert.equal(refreshes, 1);
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+      }),
+  );
+
   it.effect("rejects delegation to a provider without a registered adapter", () =>
     Effect.gen(function* () {
       const forkOnlyInstanceId = ProviderInstanceId.make("forkOnly");

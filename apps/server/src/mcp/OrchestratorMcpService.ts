@@ -107,15 +107,14 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
@@ -1616,51 +1615,89 @@ const make = Effect.gen(function* () {
       })
       .pipe(Effect.mapError(threadManagementFailure));
 
-  const recheckLocks = new Map<ProviderInstanceId, Semaphore.Semaphore>();
+  // The check running for each instance, which every request arriving meanwhile awaits.
+  const checksInFlight = new Map<ProviderInstanceId, Deferred.Deferred<void>>();
   const checkedAtOf = (providers: ReadonlyArray<ServerProvider>, instanceId: ProviderInstanceId) =>
     providers.find((provider) => provider.instanceId === instanceId)?.checkedAt;
 
+  /** When a request's provider re-checks stop holding it: one wait for all of them. */
+  const recheckDeadline = Clock.currentTimeMillis.pipe(
+    Effect.map((nowMs) => nowMs + Duration.toMillis(PROVIDER_RECHECK_WAIT)),
+  );
+
   /**
-   * Concurrent callers share one check: an instance checked since `seen` was read is not checked
-   * again. A check runs detached, so one that outlasts `PROVIDER_RECHECK_WAIT` still updates the
-   * registry; `checking` names those instances.
+   * The instance's running check, else a new one unless the registry checked it since `seen` was
+   * read. It runs detached, so one that outlasts every caller's wait still updates the registry.
+   * Claim and fork are one step, or an interrupted caller would leave a claim nothing completes.
+   */
+  const sharedCheck = (instanceId: ProviderInstanceId, seen: ReadonlyArray<ServerProvider>) =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.suspend(() => {
+        const running = checksInFlight.get(instanceId);
+        if (running !== undefined) return Effect.succeed(running);
+        const done = Deferred.makeUnsafe<void>();
+        checksInFlight.set(instanceId, done);
+        const check = loadProviders.pipe(
+          Effect.flatMap((current) =>
+            checkedAtOf(current, instanceId) === checkedAtOf(seen, instanceId)
+              ? providerRegistry.refreshInstance(instanceId)
+              : Effect.void,
+          ),
+          Effect.asVoid,
+        );
+        return restore(check).pipe(
+          Effect.onExit((exit) =>
+            Effect.sync(() => checksInFlight.delete(instanceId)).pipe(
+              Effect.andThen(Deferred.done(done, exit)),
+            ),
+          ),
+          Effect.forkDetach,
+          Effect.as(done),
+        );
+      }),
+    );
+
+  /** Whether `check` ended by `deadline`. */
+  const endedBy = (check: Deferred.Deferred<void>, deadline: number) =>
+    Clock.currentTimeMillis.pipe(
+      Effect.flatMap((nowMs) =>
+        nowMs >= deadline
+          ? Deferred.isDone(check)
+          : Deferred.await(check).pipe(
+              Effect.timeoutOption(Duration.millis(deadline - nowMs)),
+              Effect.map(Option.isSome),
+            ),
+      ),
+    );
+
+  /**
+   * Re-checks `instanceIds` until `deadline` at most; `checking` names those whose check still
+   * runs then, which finishes on its own.
    */
   const recheckInstances = Effect.fn("OrchestratorMcpService.recheckInstances")(function* (
     instanceIds: ReadonlyArray<ProviderInstanceId>,
     seen: ReadonlyArray<ServerProvider>,
+    deadline: number,
   ) {
     if (instanceIds.length === 0) {
       return { providers: seen, checking: new Set<ProviderInstanceId>() };
     }
     const outlasted = yield* Effect.forEach(
       instanceIds,
-      (instanceId) => {
-        const lock = recheckLocks.get(instanceId) ?? Semaphore.makeUnsafe(1);
-        recheckLocks.set(instanceId, lock);
-        return lock
-          .withPermits(1)(
-            loadProviders.pipe(
-              Effect.flatMap((current) =>
-                checkedAtOf(current, instanceId) === checkedAtOf(seen, instanceId)
-                  ? providerRegistry.refreshInstance(instanceId)
-                  : Effect.void,
-              ),
-            ),
-          )
-          .pipe(
-            Effect.forkDetach,
-            Effect.flatMap((check) =>
-              Fiber.join(check).pipe(Effect.timeoutOption(PROVIDER_RECHECK_WAIT)),
-            ),
-            Effect.map((checked) => (Option.isNone(checked) ? [instanceId] : [])),
-          );
-      },
+      (instanceId) =>
+        sharedCheck(instanceId, seen).pipe(
+          Effect.flatMap((check) => endedBy(check, deadline)),
+          Effect.map((ended) => (ended ? [] : [instanceId])),
+        ),
       { concurrency: "unbounded" },
     );
     return { providers: yield* loadProviders, checking: new Set(outlasted.flat()) };
   });
 
-  const resolveTargetRechecking = (input: Parameters<typeof resolveTarget>[0]) => {
+  const resolveTargetRechecking = (
+    input: Parameters<typeof resolveTarget>[0],
+    recheckBy: number,
+  ) => {
     const requestedDriver =
       input.target?.providerInstanceId === undefined ? input.target?.driverKind : undefined;
     const instanceIds =
@@ -1673,7 +1710,7 @@ const make = Effect.gen(function* () {
       Effect.catchIf(
         (error) => error.code === "provider_unavailable" && instanceIds.length > 0,
         () =>
-          recheckInstances(instanceIds, input.providers).pipe(
+          recheckInstances(instanceIds, input.providers, recheckBy).pipe(
             Effect.flatMap(({ providers, checking }) =>
               resolveTarget({ ...input, providers }).pipe(
                 Effect.mapError((error) =>
@@ -1697,6 +1734,7 @@ const make = Effect.gen(function* () {
     function* (usage: boolean) {
       const providers = yield* loadProviders;
       const nowMs = yield* Clock.currentTimeMillis;
+      const recheckBy = yield* recheckDeadline;
       return yield* recheckInstances(
         providers
           .filter(
@@ -1707,6 +1745,7 @@ const make = Effect.gen(function* () {
           )
           .map((provider) => provider.instanceId),
         providers,
+        recheckBy,
       );
     },
   );
@@ -3516,14 +3555,19 @@ const make = Effect.gen(function* () {
         : null;
       // The child runs in its own project, so that project's accounts and Auto settings apply.
       const projectId = foreignProjectId ?? parent.thread.projectId;
+      // The role's provider and the parent's, its fallback, share the request's one wait.
+      const recheckBy = yield* recheckDeadline;
       // Auto's pick, or the role's model, stands in for the parent's, so the child inherits it the
       // same way.
       const resolveDelegateTarget = (modelSelection: ModelSelection) =>
-        resolveTargetRechecking({
-          parent: { thread: { ...parent.thread, projectId, modelSelection } },
-          target: input.target,
-          providers,
-        });
+        resolveTargetRechecking(
+          {
+            parent: { thread: { ...parent.thread, projectId, modelSelection } },
+            target: input.target,
+            providers,
+          },
+          recheckBy,
+        );
       // A stand-in model replaces an inherited one, which resolution does not check against the
       // account's models, so one the account no longer offers is caught here, in the snapshot
       // after any recheck of the account.
@@ -3988,6 +4032,8 @@ const make = Effect.gen(function* () {
         const parentNodeId = parentRun.rootNodeId;
         const providers = yield* loadProviders;
         const key = yield* requestKey(input.clientRequestId);
+        // Every thread's provider re-check shares the request's one wait.
+        const recheckBy = yield* recheckDeadline;
         const created = yield* Effect.forEach(
           input.threads,
           (request, index) =>
@@ -4033,14 +4079,17 @@ const make = Effect.gen(function* () {
                           provider.instanceId === committedThread.modelSelection.instanceId,
                       )?.supportedRuntimeModes,
                     }
-                  : yield* resolveTargetRechecking({
-                      parent,
-                      target:
-                        autoPick !== undefined
-                          ? { providerInstanceId: autoPick.instanceId }
-                          : request.target,
-                      providers,
-                    });
+                  : yield* resolveTargetRechecking(
+                      {
+                        parent,
+                        target:
+                          autoPick !== undefined
+                            ? { providerInstanceId: autoPick.instanceId }
+                            : request.target,
+                        providers,
+                      },
+                      recheckBy,
+                    );
               const target =
                 autoPick !== undefined
                   ? { ...resolved, modelSelection: autoPick }

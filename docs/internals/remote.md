@@ -125,10 +125,12 @@ Unlinking on the linking side only forgets the token.
   3 minutes for prompt-file fetches, and PR guide batches have 5 minutes for
   forge checks. T3 Connect still drops idle requests after about 100 s on
   relay routes. Background settings and scheduled-task reads and claims keep
-  their separate 20 s budget. Provider re-checks hold `orchestrator_capabilities`
-  and a delegation's target resolution for at most one wait piece (50 s); a
-  slower check finishes in the background, and the answer says it is still
-  running.
+  their separate 20 s budget. Provider re-checks hold `orchestrator_capabilities`,
+  `delegate_task` and `create_threads` for at most one wait piece (50 s) per
+  request, however many providers it checks (a role's and its fallback, or one
+  per thread). A request that arrives while a provider's check runs waits for
+  that check instead of starting another. A slower check finishes in the
+  background, and the answer says it is still running.
 - **A forwarded wait is split into calls of at most 50 s**, because the
   receiving `/mcp` sends nothing while a wait is open and T3 Connect's edge
   drops idle requests after about 100 s. A link's `terminal_write` instead

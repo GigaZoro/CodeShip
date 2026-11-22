@@ -306,7 +306,7 @@
 ## 2026-11-21 — Requests stop waiting when a linked machine goes quiet
 
 - When a linked machine stops answering, CodeShip detects it sooner so delegated work can retry without waiting for the connection to give up.
-- Asking which providers a machine can run, or delegating to one there that was last seen unusable, now answers within a minute even when checking that provider takes longer. The slow check finishes in the background, and the answer says it is still running, so a slow check on a linked machine no longer looks like the machine stopped answering.
+- Asking which providers a machine can run, or delegating to one there that was last seen unusable, now answers within a minute even when checking that provider takes longer, and even when a role's provider and its fallback, or several new chats' providers, all need a check. Asking again while a provider's check runs waits for that check instead of starting another. The slow check finishes in the background, and the answer says it is still running, so a slow check on a linked machine no longer looks like the machine stopped answering.
 
 ## 2026-11-21 — A task delegated to a machine that was away finishes sooner
 
