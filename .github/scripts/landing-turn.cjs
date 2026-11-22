@@ -100,19 +100,24 @@ function moveLease(lease, from, to) {
   throw new RemoteFailure(`git push failed: ${pushed.stderr}`);
 }
 
+/** Origin's lease commit (null: none) and the run id of a live one; an expired lease has no live holder. */
+function readLease(lease, now) {
+  const held = remoteLease(lease);
+  if (!held) return { held, liveRunId: null };
+  const holder = readHolder(lease, held);
+  // A lease nobody can read is one nobody can release, so it expires like any other.
+  const live = holder !== null && Date.parse(holder.expires_at) > now();
+  return { held, liveRunId: live ? holder.run_id : null };
+}
+
 /**
  * Takes the lease when it is free or expired. Returns the lease commit, or null while another lander holds it.
  * `runId` names one wait: a live lease that carries it is that wait's own, as when a take reached origin although its
  * push reported a failure.
  */
 function tryAcquire({ runId, now = Date.now, canTake = () => true, ...lease }) {
-  const held = remoteLease(lease);
-  if (held) {
-    const holder = readHolder(lease, held);
-    // A lease nobody can read is one nobody can release, so it expires like any other.
-    const expired = !holder || !(Date.parse(holder.expires_at) > now());
-    if (!expired) return holder.run_id === runId ? held : null;
-  }
+  const { held, liveRunId } = readLease(lease, now);
+  if (liveRunId !== null) return liveRunId === runId ? held : null;
   if (!canTake() || (held && !moveLease(lease, held, null))) return null;
   const acquiredAt = now();
   const sha = landingCommit(lease.cwd, {
@@ -184,24 +189,38 @@ function acquire({
     for (;;) {
       let failure = null;
       let firstInQueue = false;
-      const canTake = () => (firstInQueue = queue.canTake());
+      let polled = false;
       try {
+        // A take of its own that origin applied is its turn while it lives; an expired one goes back through the queue.
         if (tookMaybe) {
-          const held = remoteLease(options);
-          if (held && readHolder(options, held)?.run_id === runId) return held;
+          const { held, liveRunId } = readLease(options, now);
           tookMaybe = false;
+          if (liveRunId === runId) return held;
         }
-        if (waiting) queue.refresh();
-        if (canTake()) {
+        firstInQueue = queue.poll();
+        polled = true;
+        if (firstInQueue) {
           // Only the head polls the lease. It checks its place again before swapping a free or expired lease.
           tookMaybe = true;
-          const sha = tryAcquire({ ...options, runId, now, canTake });
+          const sha = tryAcquire({
+            ...options,
+            runId,
+            now,
+            canTake: () => (firstInQueue = queue.stillFirst()),
+          });
           tookMaybe = false;
           if (sha) return sha;
         }
       } catch (error) {
         if (!(error instanceof RemoteFailure)) throw error;
         failure = error;
+      }
+      // Joining and renewing its entry follow the take, so a failed renewal never keeps it from a free lease.
+      try {
+        if (polled) queue.refresh();
+      } catch (error) {
+        if (!(error instanceof RemoteFailure)) throw error;
+        failure ??= error;
       }
       if (clock() - started >= maxWaitMs) {
         throw (
@@ -215,12 +234,6 @@ function acquire({
       }
       if (!waiting) {
         waiting = true;
-        try {
-          queue.refresh();
-        } catch (error) {
-          if (!(error instanceof RemoteFailure)) throw error;
-          failure ??= error;
-        }
         process.stderr.write("landing turn: waiting for its turn in main's landing queue.\n");
       }
       if (failure) {
@@ -264,9 +277,18 @@ function verifyPush({ cwd, remote, env = process.env, refs }) {
   }
 }
 
-/** Seconds a check may spend on its longest step and still end, with the push, before the lease expires. */
-function checkBudgetSeconds(elapsedMs) {
-  return Math.max(1, Math.floor((LEASE_TTL_MS - LEASE_RESERVE_MS - elapsedMs) / 1000));
+/**
+ * Seconds a check may spend on its longest step and still end, with the push, before the lease expires: `leftMs` is
+ * what the lease had left when the turn started, `elapsedMs` the time since.
+ */
+function checkBudgetSeconds(leftMs, elapsedMs) {
+  return Math.max(1, Math.floor((leftMs - LEASE_RESERVE_MS - elapsedMs) / 1000));
+}
+
+/** What the lease commit `sha` has left; a take recovered after its answer was lost started before this turn. */
+function leaseLeftMs(cwd, sha, now) {
+  const message = git(cwd, ["show", "-s", "--format=%B", sha]).stdout;
+  return Date.parse(JSON.parse(message.split("\n")[0]).expires_at) - now();
 }
 
 function stoppedRebase(cwd) {
@@ -345,6 +367,7 @@ function land({
   check,
   branch = "main",
   turnClock = () => performance.now(),
+  now = Date.now,
   report = (text) => console.error(text),
   ...rest
 }) {
@@ -359,8 +382,9 @@ function land({
   // Found before the wait, not after a rebase that breaks the notes and checks that fail on them.
   const problem = notesMergeProblem(cwd);
   if (problem) throw new Error(problem);
-  return withTurn({ cwd, remote, ...rest }, (turn) => {
+  return withTurn({ cwd, remote, now, ...rest }, (turn) => {
     const turnStarted = turnClock();
+    const leftMs = leaseLeftMs(cwd, turn, now);
     // Into this turn's own ref: any other fetch in this checkout can rewrite FETCH_HEAD before it is read. Atomic,
     // because a named remote's fetch also updates its tracking ref, and a failure there must not leave this one behind.
     const fetched = `refs/worktree/landing-turn/${turn}`;
@@ -382,7 +406,7 @@ function land({
     }).ok;
     // Main gains release notes while a lander waits; the driver merges them on machines whose git config predates it.
     if (!contained) rebaseOnto(cwd, base);
-    if (!check(turn, base, checkBudgetSeconds(turnClock() - turnStarted)))
+    if (!check(turn, base, checkBudgetSeconds(leftMs, turnClock() - turnStarted)))
       return { status: "check-failed" };
     git(cwd, ["push", "--quiet", remote, `HEAD:refs/heads/${branch}`], {
       env: { [TURN_ENV]: turn },
