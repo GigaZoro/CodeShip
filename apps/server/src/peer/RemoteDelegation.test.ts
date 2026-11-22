@@ -742,6 +742,8 @@ const adapter = {
   openSession: () => Effect.die("No provider process needed"),
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 
+const isProjectOperationError = Schema.is(ProjectService.ProjectOperationError);
+
 /**
  * The laptop: a real orchestrator (in-memory SQLite) whose parent thread has
  * a live run, the real orchestrator toolkit, and RemoteDelegation. Built in
@@ -802,7 +804,7 @@ const makeLaptop = (
                   repositoryIdentity: null,
                 } as never),
               getWithRepositoryIdentity: () =>
-                identity instanceof ProjectService.ProjectOperationError
+                isProjectOperationError(identity)
                   ? Effect.fail(identity)
                   : Effect.succeedSome({
                       workspaceRoot: "/home/me/app",
