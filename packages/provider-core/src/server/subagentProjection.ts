@@ -170,6 +170,13 @@ export function makeSubagentConversationArtifacts(input: {
   return { message, turnItem };
 }
 
+/** The turn item types `subagentResultForRun` reads; load at least these for a run's result. */
+export const SUBAGENT_RESULT_TURN_ITEM_TYPES = [
+  "assistant_message",
+  "proposed_plan",
+  "error",
+] as const satisfies ReadonlyArray<OrchestrationV2TurnItem["type"]>;
+
 export function subagentResultForRun(
   projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems">,
   run: OrchestrationV2Run,
@@ -178,17 +185,23 @@ export function subagentResultForRun(
   readonly messageId: OrchestrationV2ConversationMessage["id"] | null;
   readonly turnItemId: OrchestrationV2TurnItem["id"] | null;
 } {
-  const turnItem =
+  // A plan-mode turn can end with a proposed plan and no assistant message; the plan is its result.
+  const latest =
     projection.turnItems
       .filter(
         (
           candidate,
-        ): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "assistant_message" }> =>
+        ): candidate is Extract<
+          OrchestrationV2TurnItem,
+          { readonly type: "assistant_message" | "proposed_plan" }
+        > =>
           candidate.runId === run.id &&
-          candidate.type === "assistant_message" &&
-          candidate.text.trim().length > 0,
+          ((candidate.type === "assistant_message" && candidate.text.trim().length > 0) ||
+            (candidate.type === "proposed_plan" && candidate.markdown.trim().length > 0)),
       )
       .toSorted((left, right) => right.ordinal - left.ordinal)[0] ?? null;
+  const turnItem = latest?.type === "assistant_message" ? latest : null;
+  const plan = latest?.type === "proposed_plan" ? latest : null;
   const messages = projection.messages.filter(
     (candidate) =>
       candidate.runId === run.id &&
@@ -212,6 +225,7 @@ export function subagentResultForRun(
       : undefined;
   const text =
     (failure?.type === "error" ? failure.failure.message : undefined) ??
+    plan?.markdown ??
     message?.text ??
     turnItem?.text ??
     (run.status === "completed"
@@ -219,8 +233,9 @@ export function subagentResultForRun(
       : `Child task ended with status ${run.status}.`);
   return {
     text,
-    messageId: failure === undefined ? (message?.id ?? turnItem?.messageId ?? null) : null,
-    turnItemId: failure?.id ?? turnItem?.id ?? null,
+    messageId:
+      failure === undefined && plan === null ? (message?.id ?? turnItem?.messageId ?? null) : null,
+    turnItemId: failure?.id ?? plan?.id ?? turnItem?.id ?? null,
   };
 }
 

@@ -199,6 +199,10 @@
 
 - New owner requests and accepted guest messages receive a demand ID. Steering, failover, and final review retain the original demand. Delegated questions and completions use their recorded sources. On-return compaction shares the demand ID of the following message.
 
+## 2026-11-22 — A delegated task in plan mode returns its plan
+
+- A delegated task that ran in plan mode and ended with a proposed plan reported "Child task completed without an assistant result" to the chat that started it. Its result is now the proposed plan.
+
 ## 2026-11-22 — Relay client installs keep each other's locks
 
 - CodeShip checks the version that each managed relay binary reports and reuses the exact pin even when an older release folder contains it. New installs use a separate cache tree and hold a SQLite transaction until they finish. The lock survives a host suspend, and the OS releases it if the installer exits.

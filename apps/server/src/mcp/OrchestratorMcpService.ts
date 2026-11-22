@@ -120,6 +120,7 @@ import * as UsageResetRedeemer from "../usage/UsageResetRedeemer.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
+  SUBAGENT_RESULT_TURN_ITEM_TYPES,
   subagentResultForRun,
   delegatedTaskProgress,
 } from "@t3tools/provider-core/server/subagentProjection";
@@ -1930,7 +1931,7 @@ const make = Effect.gen(function* () {
         messageRoles: ["assistant"],
         messageRunIds: resultRunIds,
         turnItemRunIds: resultRunIds,
-        turnItemTypes: ["assistant_message", "error"],
+        turnItemTypes: SUBAGENT_RESULT_TURN_ITEM_TYPES,
       })
       .pipe(Effect.mapError(threadManagementFailure));
     const childProjection = {
@@ -4256,7 +4257,7 @@ const make = Effect.gen(function* () {
               messageRoles: ["assistant"],
               messageRunIds: resultRunIds,
               turnItemRunIds: resultRunIds,
-              turnItemTypes: ["assistant_message", "error"],
+              turnItemTypes: SUBAGENT_RESULT_TURN_ITEM_TYPES,
             })
             .pipe(Effect.mapError(threadManagementFailure));
           if (
