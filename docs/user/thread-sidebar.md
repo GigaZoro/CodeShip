@@ -774,6 +774,11 @@ panel, or run **Start side chat** from the command palette. The side chat opens 
 a tab there, with its own composer. Side chats do not show in the
 sidebar. Find one again under **Side chats** in thread details.
 
+To read an existing thread alongside the current one, right-click its sidebar row and choose
+**Open in side panel**, or Alt-click (Option-click on Mac). In the command palette, highlight a
+thread and press **Alt+Enter**. Choose **Open in main view** to move it out of the panel.
+Use `mod+shift+t` to reopen a closed tab.
+
 A side chat works in the same folder as the thread. Its first reply asks before it
 edits files or runs commands. After that, it uses the permission mode you choose
 in its composer.
