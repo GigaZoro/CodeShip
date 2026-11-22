@@ -1,6 +1,6 @@
 ## 2026-11-22 — Unclosed display math no longer flattens the lists after it
 
-- A `$$` or `\[` that never closed turned every later list and quote in the message into plain paragraphs, even after a blank line. Display math now ends at a blank line, as in TeX, so an unclosed opener stays text and the rest of the message keeps its structure. Display math that contains a blank line now shows as text.
+- A `$$` or `\[` that never closed turned every later list and quote in the message into plain paragraphs, even after a blank line. Display math now ends at a blank line, as in TeX, so an unclosed opener stays text and the lists and quotes after the next blank line keep their structure. Display math that contains a blank line now shows as text.
 
 ## 2026-11-22 — Commands wait for memory before they start
 
