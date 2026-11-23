@@ -1082,6 +1082,7 @@ const make = Effect.gen(function* () {
         type: "message.dispatch",
         commandId: input.commandId,
         threadId: input.threadId,
+        sendToProjectId: input.projectId,
         messageId: input.messageId,
         ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
         ...(input.demandId === undefined ? {} : { demandId: input.demandId }),
@@ -1095,7 +1096,17 @@ const make = Effect.gen(function* () {
         dispatchMode,
         createdBy: input.createdBy,
         creationSource: input.creationSource,
-      });
+      }).pipe(
+        Effect.mapError((error) => {
+          if (error._tag !== "OrchestratorSendTargetUnavailableError") return error;
+          return error.reason === "archived"
+            ? new ThreadManagementThreadArchivedError({ threadId: input.threadId })
+            : new ThreadManagementThreadNotFoundError({
+                projectId: input.projectId,
+                threadId: input.threadId,
+              });
+        }),
+      );
     });
     const projection = yield* getProjectThreadRecords(input, ["runs", "messages", "turnItems"], {
       messageIds: [input.messageId],

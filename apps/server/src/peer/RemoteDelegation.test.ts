@@ -13,6 +13,8 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
+  RuntimeRequestId,
   ProviderThreadId,
   type Project,
   type ServerProvider,
@@ -104,6 +106,7 @@ interface BoxThread {
   readonly pageSize: Ref.Ref<number>;
   readonly holdRefill: Ref.Ref<boolean>;
   readonly beforeTail: Ref.Ref<Effect.Effect<void>>;
+  readonly launchCalls: Ref.Ref<number>;
   readonly launched: Ref.Ref<ThreadLaunch.ThreadLaunchInput | null>;
   readonly status: Ref.Ref<OrchestrationV2Run["status"]>;
   readonly reply: Ref.Ref<string | null>;
@@ -158,6 +161,7 @@ const makeBoxThread = Effect.gen(function* () {
     pageSize: yield* Ref.make(1),
     holdRefill: yield* Ref.make(false),
     beforeTail: yield* Ref.make<Effect.Effect<void>>(Effect.void),
+    launchCalls: yield* Ref.make(0),
     launched: yield* Ref.make<ThreadLaunch.ThreadLaunchInput | null>(null),
     status: yield* Ref.make<OrchestrationV2Run["status"]>("running"),
     reply: yield* Ref.make<string | null>("Working…"),
@@ -564,6 +568,7 @@ const boxToolkitLayer = (
     checkWorktreeBase: () => Effect.void,
     launch: (input) =>
       Effect.gen(function* () {
+        yield* Ref.update(thread.launchCalls, (count) => count + 1);
         const threadId = input.threadId!;
         const accepted = launches.get(threadId);
         if (accepted) {
@@ -1875,6 +1880,101 @@ it.effect("simultaneous local and remote requests with the same key accept one t
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect.each(["user_input", "command"] as const)(
+  "waiting on a retained local task with a pending %s upgrades its completion wake",
+  (kind) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* seedParent(a);
+        const commandId = CommandId.make(
+          "command:mcp:provider-session%3Alaptop-parent:delegate-task:retained-wait",
+        );
+        const accepted = yield* a.threads.dispatch({
+          type: "delegated_task.request",
+          parentThreadId,
+          parentRunId,
+          parentNodeId: parentRootNode,
+          commandId,
+          modelSelection,
+          createdBy: "agent",
+          creationSource: "mcp",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          task: "Review locally.",
+          completionWake: "settled_only",
+        });
+        const event = accepted.storedEvents.find(
+          ({ event }) => event.type === "subagent.updated",
+        )?.event;
+        if (event?.type !== "subagent.updated" || !event.payload.childThreadId)
+          return yield* Effect.die("Missing local task");
+        const task = event.payload;
+        const threadId = event.payload.childThreadId;
+        const [run] = (yield* a.threads.getThreadProjection(threadId)).runs;
+        if (!run?.rootNodeId) return yield* Effect.die("Missing child run root");
+        const nodeId = run.rootNodeId;
+        const now = yield* DateTime.now;
+        const requestId = RuntimeRequestId.make("request:retained-child");
+        yield* a.sink.write({
+          events: [
+            {
+              id: EventId.make("event:retained-request"),
+              type: "runtime-request.updated",
+              threadId,
+              runId: run.id,
+              nodeId,
+              occurredAt: now,
+              payload: {
+                id: requestId,
+                nodeId,
+                providerTurnId: null,
+                nativeRequestRef: null,
+                kind,
+                status: "pending",
+                responseCapability: {
+                  type: "live",
+                  providerSessionId: ProviderSessionId.make("session:retained-child"),
+                  supportsFeedback: false,
+                },
+                createdAt: now,
+                resolvedAt: null,
+              },
+            },
+          ],
+        });
+        const sql = Context.get(database, SqlClient.SqlClient);
+        yield* sql`DELETE FROM orchestration_command_receipts WHERE command_id = ${commandId}`;
+        const args = {
+          task: "Retry",
+          clientRequestId: "retained-wait",
+          target: { environmentId: box.environmentId },
+        };
+        const getTask = a.threads
+          .getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [task.id] })
+          .pipe(Effect.map((rows) => rows.subagents[0]));
+        expect((yield* a.call("delegate_task", args)).isError).toBe(false);
+        expect((yield* getTask)?.completionWake).toBe("settled_only");
+        const waited = yield* a.call("delegate_task", { ...args, mode: "wait", timeoutMs: 1000 });
+        expect(waited.isError, JSON.stringify(waited.content)).toBe(false);
+        expect(waited.structuredContent).toMatchObject({
+          taskId: task.id,
+          childThreadId: threadId,
+          waitTimedOut: false,
+          ...(kind === "user_input"
+            ? { hasPendingQuestion: true }
+            : { pendingApproval: { requestId } }),
+        });
+        expect((yield* getTask)?.completionWake).toBe("always");
+        expect(yield* a.threads.acceptedCommandSequence(commandId)).toBeUndefined();
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect.each(["remote only", "remote first", "local first", "missing receipt"] as const)(
   "replays the first delegation accepted with the historical remote command id (%s)",
   (order) =>
@@ -2391,10 +2491,10 @@ it.effect("fails the task when its thread there is gone, or the link here is", (
       const failed = yield* taskResult(a, gone.taskId);
       expect(failed?.status).toBe("failed");
       expect(failed?.result).toContain("was not found");
-      yield* Ref.set(thread.launched, null);
+      expect(yield* Ref.get(thread.launchCalls)).toBe(1);
       const replay = yield* delegateToBox(a);
       expect(replay).toMatchObject({ taskId: gone.taskId, status: "failed" });
-      expect(yield* Ref.get(thread.launched)).toBeNull();
+      expect(yield* Ref.get(thread.launchCalls)).toBe(1);
 
       // The link is forgotten here while the task runs there.
       yield* Ref.set(thread.gone, false);
