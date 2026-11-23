@@ -1,3 +1,7 @@
+## 2026-11-23 — Access checks for repeated thread launches
+
+- Retrying a keyed MCP thread launch checks the thread's current project, link access, and modes before returning its details.
+
 ## 2026-11-23 — Accounting for messages, failover and review
 
 - New owner requests and accepted guest messages receive a demand ID. Steering, failover, and final review retain the original demand. Delegated questions and completions use their recorded sources. On-return compaction shares the demand ID of the following message.

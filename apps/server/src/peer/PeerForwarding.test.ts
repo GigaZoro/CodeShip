@@ -158,7 +158,8 @@ const boxLaunches = (seen: Ref.Ref<Seen>) =>
           threadId: input.threadId,
           projection: {
             thread: {
-              id: input.threadId,
+              ...liveThreadShell(ThreadId.make(input.threadId ?? input.commandId), input),
+              linkOrigin: input.linkOrigin,
               projectId: input.projectId,
               modelSelection: input.modelSelection,
               title: input.title,

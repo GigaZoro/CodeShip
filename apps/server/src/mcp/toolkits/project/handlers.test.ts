@@ -80,6 +80,11 @@ const clientLaunchHarness = (input: {
   /** Where Settings saves a project's model; the legacy project field stays null. */
   readonly overrideModel?: ModelSelection;
   readonly launched: Array<ThreadLaunch.ThreadLaunchInput>;
+  readonly client?: Pick<McpInvocationContext.McpClientCaller, "linked" | "narrowedTo">;
+  readonly launchShell?: (
+    shell: OrchestrationV2ThreadShell,
+    read: "lookup" | "result",
+  ) => OrchestrationV2ThreadShell;
   readonly workspaceRoot?: string;
   readonly checkWorktreeBase?: ThreadLaunch.ThreadLaunchService["Service"]["checkWorktreeBase"];
   readonly webOrigin?: string;
@@ -107,6 +112,19 @@ const clientLaunchHarness = (input: {
   // The project's own default model, which a test can clear between launches.
   const projectDefaults: { model: ModelSelection | null } = {
     model: input.overrideModel === undefined ? modelSelection : null,
+  };
+  const launchShell = (launch: ThreadLaunch.ThreadLaunchInput, read: "lookup" | "result") => {
+    const shell = {
+      ...McpToolAccessTestkit.liveThreadShell(
+        ThreadId.make(launch.threadId ?? launch.commandId),
+        launch,
+      ),
+      projectId: launch.projectId,
+      modelSelection: launch.modelSelection,
+      title: launch.title,
+      ...(launch.linkOrigin === undefined ? {} : { linkOrigin: launch.linkOrigin }),
+    };
+    return input.launchShell?.(shell, read) ?? shell;
   };
   const layerDependencies = Layer.mergeAll(
     ServerSettings.layerTest({
@@ -150,6 +168,7 @@ const clientLaunchHarness = (input: {
               label: "Claude Code",
               access: input.runtimeModeCeiling,
               webOrigin: input.webOrigin,
+              ...input.client,
             }
           : undefined,
       issuedAt: 0,
@@ -161,16 +180,7 @@ const clientLaunchHarness = (input: {
         const caller = input.callerThreads?.find(({ shell }) => shell.id === threadId);
         if (caller !== undefined) return Effect.succeed(caller.shell);
         const launch = input.launched.find((candidate) => candidate.threadId === threadId);
-        return Effect.succeed(
-          launch === undefined
-            ? null
-            : ({
-                id: launch.threadId,
-                projectId: launch.projectId,
-                modelSelection: launch.modelSelection,
-                deletedAt: null,
-              } as unknown as OrchestrationV2ThreadShell),
-        );
+        return Effect.succeed(launch === undefined ? null : launchShell(launch, "lookup"));
       },
       getThreadRecords: (threadId) =>
         Effect.succeed({
@@ -206,12 +216,7 @@ const clientLaunchHarness = (input: {
         return Effect.succeed({
           threadId: launch.threadId,
           projection: {
-            thread: {
-              id: launch.threadId,
-              projectId: launch.projectId,
-              title: launch.title,
-              modelSelection: launch.modelSelection,
-            },
+            thread: launchShell(launch, "result"),
             runs: [],
             messages:
               launch.initialMessage === undefined
@@ -597,6 +602,50 @@ it.effect("a launch retried with the same clientRequestId replays the first one"
     expect(ids[2]).not.toEqual(ids[0]);
     // Without a key every launch is new.
     expect(ids[3]).not.toEqual(ids[4]);
+  }),
+);
+
+it.effect.each([
+  { change: { runtimeMode: "full-access" }, code: "runtime_mode_escalation_denied" },
+  { change: { interactionMode: "default" }, code: "interaction_mode_escalation_denied" },
+  { change: { projectId: ProjectId.make("other-project") }, code: "invalid_request" },
+  {
+    change: { linkOrigin: { sessionId: "other-link", label: "Other" } },
+    code: "capability_denied",
+  },
+] as const)("a keyed launch rechecks the current thread for $code", ({ change, code }) =>
+  Effect.gen(function* () {
+    const launched: ThreadLaunch.ThreadLaunchInput[] = [];
+    let changedAt: "lookup" | "result" | undefined;
+    const { projectId, dependencies } = clientLaunchHarness({
+      launched,
+      runtimeModeCeiling: "auto",
+      client: { linked: true, narrowedTo: { runtimeMode: "auto", interactionMode: "plan" } },
+      launchShell: (shell, read) => (read === changedAt ? { ...shell, ...change } : shell),
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const request = toolkit
+      .handle("t3_thread_launch", { projectId, title: "Test", clientRequestId: "launch-1" })
+      .pipe(
+        Stream.unwrap,
+        Stream.runCollect,
+        Effect.provide(dependencies),
+        Effect.map((replies) => replies.at(-1)?.result),
+      );
+
+    const first = yield* request;
+    expect(first).toMatchObject({ projectId });
+    expect(yield* request).toEqual(first);
+    changedAt = "lookup";
+    expect(yield* request).toMatchObject({ code });
+    expect(launched).toHaveLength(2);
+    changedAt = "result";
+    expect(yield* request).toMatchObject({ code });
+    expect(launched).toHaveLength(3);
   }),
 );
 

@@ -3,6 +3,7 @@ import {
   MessageId,
   ThreadId,
   OrchestratorMcpFailure,
+  type OrchestrationV2ThreadShell,
   ProjectId,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
@@ -34,7 +35,16 @@ import { withResolvedAttachments } from "../attachment/references.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
-import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
+import { assertSameLink } from "../../linkOrigin.ts";
+import {
+  assertTargetWithinLimits,
+  type Caller,
+  type CallerLimits,
+  newCommandId,
+  readCaller,
+  resolveProjectId,
+  unavailable,
+} from "../../threadAccess.ts";
 import { type LaunchWorkspaceStrategy, ProjectToolkit } from "./tools.ts";
 
 const isAboveCeilingError = Schema.is(OrchestratorRuntimeModeAboveCeilingError);
@@ -110,6 +120,25 @@ const launchCommandId = Effect.fn("mcp.launchCommandId")(function* (
   return CommandId.make(`mcp:launch:${Hex.encode(digest)}`);
 });
 
+const checkKeyedLaunchTarget = Effect.fn("mcp.checkKeyedLaunchTarget")(function* (
+  caller: Caller,
+  limits: CallerLimits,
+  projectId: ProjectId,
+  thread: Pick<
+    OrchestrationV2ThreadShell,
+    "id" | "projectId" | "deletedAt" | "runtimeMode" | "interactionMode" | "linkOrigin"
+  >,
+) {
+  if (thread.projectId !== projectId || thread.deletedAt !== null) {
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message: "The launch does not belong to a live thread in that project.",
+    });
+  }
+  yield* assertSameLink(caller, thread);
+  yield* assertTargetWithinLimits(limits, thread);
+});
+
 const access = Effect.gen(function* () {
   yield* readCaller();
   return yield* Project.ProjectService;
@@ -170,8 +199,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           input.clientRequestId === undefined
             ? null
             : yield* context.threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
-        const launchedModel =
-          launched === null || launched.deletedAt !== null ? undefined : launched.modelSelection;
+        const limits = { runtimeMode, interactionMode };
+        if (launched !== null) yield* checkKeyedLaunchTarget(context, limits, projectId, launched);
+        const launchedModel = launched?.modelSelection;
         const replaying = launchedModel !== undefined;
         if (!replaying && input.workspaceStrategy?.type === "existing_worktree") {
           const project = yield* readProject;
@@ -357,6 +387,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             ),
         );
         const thread = result.projection.thread;
+        // A concurrent request can accept the key after the shell lookup.
+        if (input.clientRequestId !== undefined)
+          yield* checkKeyedLaunchTarget(context, limits, projectId, thread);
         const run = result.projection.runs.find((run) => run.userMessageId === messageId);
         return {
           threadId: thread.id,
