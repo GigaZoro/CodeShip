@@ -31,7 +31,8 @@ import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
-import { layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
+import { originalDemandId } from "../orchestration-v2/demandId.ts";
+import { HERE_ENVIRONMENT_ID, layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -181,6 +182,7 @@ const withService = <A, E>(
     };
     readonly completedLaunches?: Set<string>;
     readonly failLaunches?: { remaining: number };
+    readonly threadManagement?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
     readonly gate?: Deferred.Deferred<void>;
     readonly gateForTask?: (input: LaunchInput) => Deferred.Deferred<void> | undefined;
     readonly relayHookBaseUrl?: string;
@@ -250,7 +252,7 @@ const withService = <A, E>(
         namedProjectsRoot: "/projects",
         isScratchProject: () => Effect.succeed(false),
       }),
-      Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+      Layer.mock(ThreadManagementService.ThreadManagementService)(options.threadManagement ?? {}),
       layerSharedTaskDependencies([], undefined, options.runConditionCheck),
       Layer.mock(SecretRequests.SecretRequests)({
         consume: ({ ref }) => {
@@ -1468,9 +1470,22 @@ it.effect(
           yield* TestClock.adjust("10 seconds");
           yield* drainPendingDispatch(workers);
           const launch = yield* Queue.take(launches);
+          if (accepted._tag !== "accepted")
+            return yield* Effect.die("Webhook delivery was not accepted");
+          assert.equal(
+            launch.initialMessage?.demandId,
+            originalDemandId(
+              "scheduled-task",
+              HERE_ENVIRONMENT_ID,
+              task.id,
+              task.incarnationId ?? task.createdAt,
+              "webhook",
+              accepted.deliveryId,
+            ),
+          );
           assert.equal(
             launch.commandId,
-            `scheduled-task:${task.id}:webhook:${accepted._tag === "accepted" && accepted.deliveryId}`,
+            `scheduled-task:${task.id}:webhook:${accepted.deliveryId}`,
           );
           assert.equal((yield* service.list()).tasks[0]!.runCount, 1);
           assert.equal(
@@ -1533,7 +1548,7 @@ it.effect("start failures release both replay keys and relay claims for redelive
           service.triggerWebhook(request),
           "ScheduledTaskService.runWebhookDelivery",
         );
-        yield* Queue.take(launches);
+        const first = yield* Queue.take(launches);
         assert.equal((yield* sql`SELECT * FROM scheduled_task_webhook_replay_keys`).length, 0);
         assert.equal((yield* sql`SELECT * FROM scheduled_task_webhook_relay_deliveries`).length, 0);
         const retry = yield* waitForSpan(
@@ -1541,11 +1556,402 @@ it.effect("start failures release both replay keys and relay claims for redelive
           "ScheduledTaskService.runWebhookDelivery",
         );
         assert.equal(retry._tag === "accepted" && retry.outcome, "accepted");
-        yield* Queue.take(launches);
+        const second = yield* Queue.take(launches);
+        assert.equal(first.commandId, second.commandId);
+        assert.equal(first.initialMessage?.messageId, second.initialMessage?.messageId);
+        assert.match(first.initialMessage?.demandId ?? "", /^demand:/);
+        assert.equal(first.initialMessage?.demandId, second.initialMessage?.demandId);
+        const { runs } = yield* service.listRuns({ id: task.id });
+        assert.deepEqual(
+          runs.map((run) => run.outcome),
+          ["succeeded", "failed"],
+        );
+        assert.equal(runs[0]!.startedAt, runs[1]!.startedAt);
+        assert.notEqual(runs[0]!.id, runs[1]!.id);
         assert.equal((yield* service.list()).tasks[0]!.lastRunStatus, "succeeded");
       }),
     { failLaunches: { remaining: 1 } },
   ),
+);
+
+it.effect.each([
+  "accepted",
+  "before prompt",
+  "legacy accepted",
+  "temporarily unreadable",
+  "late evidence",
+] as const)("startup and the pending worker settle one coalesced webhook attempt (%s)", (cut) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const gate = yield* Deferred.make<void>();
+    const workers = new Map<string, Effect.Effect<void>>();
+    const receipts = new Set<string>();
+    const prepared = yield* withService(
+      ({ service, launches }) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(
+            yield* webhookTaskInput({
+              prompt: "{{body}}",
+              schedule: {
+                type: "webhook",
+                dedupe: { coalesceKey: "{{headers.group}}", coalesceWindowSeconds: 10 },
+              },
+            }),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
+          const request = (value: string) =>
+            requestFor(task, {
+              headers: { group: "same" },
+              bodyText: value,
+              body: new TextEncoder().encode(value),
+              relayDeliveryId: value,
+            });
+          yield* service.triggerWebhook(request("first"));
+          const member = yield* service.triggerWebhook(request("first-member"));
+          assert.equal(member._tag === "accepted" && member.outcome, "coalesced");
+          yield* TestClock.adjust("10 seconds");
+          yield* service.triggerWebhook(request("next"));
+          yield* service.triggerWebhook(request("next-member"));
+          yield* workers.get("webhook-coalescing")!;
+          const call = yield* Queue.take(launches);
+          const message = call.initialMessage!.messageId!;
+          if (cut !== "before prompt") {
+            for (const [id, type] of [
+              [call.commandId, "thread.create"],
+              [call.commandId + ":initial-message", "message.dispatch"],
+            ] as const)
+              yield* sql`INSERT INTO orchestration_command_receipts
+                (command_id,aggregate_kind,aggregate_id,command_type,accepted_at,result_sequence,status,error)
+                VALUES (${id},'thread','thread-1',${type},'2026-01-01T00:00:00.000Z',1,'accepted',NULL)`;
+            receipts.add(message);
+          }
+          assert.deepEqual(yield* sql`SELECT outcome,thread_id FROM scheduled_task_runs`, [
+            { outcome: "running", thread_id: null },
+          ]);
+          assert.deepEqual(
+            yield* sql`SELECT state FROM scheduled_task_webhook_pending ORDER BY rowid`,
+            [{ state: "running" }, { state: "pending" }],
+          );
+          return { task, command: call.commandId, message };
+        }),
+      { sql, workers, gate },
+    );
+    if (cut === "legacy accepted") {
+      const columns = yield* sql<{
+        name: string;
+      }>`PRAGMA table_info(scheduled_task_webhook_pending)`;
+      if (columns.some((column) => column.name === "attempt_run_id"))
+        yield* sql`ALTER TABLE scheduled_task_webhook_pending DROP COLUMN attempt_run_id`;
+    }
+    const checkFinal = (service: ScheduledTaskService.ScheduledTaskService["Service"]) =>
+      Effect.gen(function* () {
+        const { runs } = yield* service.listRuns({ id: prepared.task.id });
+        assert.lengthOf(
+          runs.filter((run) => run.outcome === "succeeded"),
+          2,
+        );
+        assert.lengthOf(
+          runs.filter((run) => run.outcome === "failed"),
+          cut === "before prompt" ? 1 : 0,
+        );
+        assert.equal((yield* service.list()).tasks[0]!.runCount, 2);
+        const [daily] = yield* sql<{
+          count: number;
+        }>`SELECT SUM(count) AS count FROM scheduled_task_daily_counts
+          WHERE task_id=${prepared.task.id} AND outcome='succeeded'`;
+        assert.equal(daily?.count, 2);
+        assert.deepEqual(yield* sql`SELECT state FROM scheduled_task_webhook_pending`, []);
+        assert.equal(receipts.size, 2);
+      });
+    let visible = cut !== "late evidence";
+    let unreadable = cut === "temporarily unreadable";
+    const restarted = new Map<string, Effect.Effect<void>>();
+    yield* withService(
+      ({ service, launches }) =>
+        Effect.gen(function* () {
+          yield* drainPendingDispatch(restarted);
+          if (cut === "before prompt") {
+            const retried = yield* Queue.take(launches);
+            assert.equal(retried.commandId, prepared.command);
+            assert.equal(retried.initialMessage!.messageId, prepared.message);
+            receipts.add(retried.initialMessage!.messageId!);
+          }
+          assert.equal(
+            yield* Queue.size(launches),
+            0,
+            "startup's delivered prompt is never launched again",
+          );
+          assert.deepEqual(
+            yield* sql`SELECT state FROM scheduled_task_webhook_pending ORDER BY rowid`,
+            [...(visible ? [] : [{ state: "running" }]), { state: "pending" }],
+          );
+          assert.equal((yield* service.list()).tasks[0]!.runCount, visible ? 1 : 0);
+          yield* TestClock.adjust("10 seconds");
+          yield* drainPendingDispatch(restarted);
+          const next = yield* Queue.take(launches);
+          assert.notEqual(next.commandId, prepared.command);
+          assert.include(next.initialMessage!.text, "next-member");
+          receipts.add(next.initialMessage!.messageId!);
+          if (!visible) {
+            assert.equal((yield* service.list()).tasks[0]!.runCount, 1);
+            visible = true;
+            yield* drainPendingDispatch(restarted);
+            assert.equal(yield* Queue.size(launches), 0);
+          }
+          yield* checkFinal(service);
+        }),
+      {
+        sql,
+        workers: restarted,
+        threadManagement: {
+          getThreadShell: () =>
+            Effect.suspend(() => {
+              if (unreadable) {
+                unreadable = false;
+                return Effect.die("thread projection temporarily unavailable");
+              }
+              return Effect.succeed({ deletedAt: null, folder: null } as never);
+            }),
+          getThreadRecords: (_id, _tables, filters) =>
+            Effect.succeed({
+              messages: (filters?.messageIds ?? [])
+                .filter((id) => visible && receipts.has(id))
+                .map((id) => ({ id })),
+            } as never),
+        },
+      },
+    );
+    const again = new Map<string, Effect.Effect<void>>();
+    yield* withService(
+      ({ service, launches }) =>
+        Effect.gen(function* () {
+          yield* again.get("webhook-coalescing")!;
+          yield* checkFinal(service);
+          assert.equal(yield* Queue.size(launches), 0);
+        }),
+      { sql, workers: again },
+    );
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each([
+  { route: "launch", evidence: "delivered", succeeds: true },
+  { route: "bound", evidence: "delivered", succeeds: true },
+  { route: "launch", evidence: "unaccepted message command", succeeds: false },
+  { route: "bound", evidence: "missing exact prompt", succeeds: false },
+  { route: "launch", evidence: "conflicting thread receipts", succeeds: false },
+  { route: "bound", evidence: "receipt from before admission", succeeds: false },
+] as const)(
+  "restart resolves an immediate $route webhook cut after dispatch with $evidence",
+  ({ route, evidence, succeeds }) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const gate = yield* Deferred.make<void>();
+      const received = yield* Deferred.make<{ command: string; message: string }>();
+      const thread = route === "launch" ? "thread-created" : "thread-bound";
+      const relayId = "cut-before-completion";
+      const accepted = "scheduled-task:scheduled-task:hook:webhook:delivery:relay:" + relayId;
+      const prompt = "scheduled-task-message:scheduled-task:hook:webhook:delivery:relay:" + relayId;
+      const recordReceipt = (id: string, type: string, target: string) => sql`
+        INSERT INTO orchestration_command_receipts(command_id,aggregate_kind,aggregate_id,command_type,accepted_at,result_sequence,status,error)
+        VALUES (${id},'thread',${target},${type},'2026-01-01T00:00:00.000Z',1,'accepted',NULL)`;
+      if (evidence === "receipt from before admission")
+        yield* recordReceipt(accepted, "message.dispatch", thread);
+      const taskId = yield* withService(
+        ({ service, launches }) =>
+          Effect.gen(function* () {
+            const { task } = yield* service.upsert(
+              yield* webhookTaskInput(route === "bound" ? { threadId: thread } : {}),
+              ScheduledTaskService.CHANGED_IN_APP,
+            );
+            yield* service.triggerWebhook(requestFor(task, { relayDeliveryId: relayId }));
+            if (route === "launch") {
+              const call = yield* Queue.take(launches);
+              assert.equal(call.commandId, accepted);
+              assert.equal(call.initialMessage?.messageId, prompt);
+              yield* recordReceipt(accepted, "thread.create", thread);
+              if (evidence !== "unaccepted message command")
+                yield* recordReceipt(
+                  accepted + ":initial-message",
+                  "message.dispatch",
+                  evidence === "conflicting thread receipts" ? "different-thread" : thread,
+                );
+            } else {
+              assert.deepEqual(yield* Deferred.await(received), {
+                command: accepted,
+                message: prompt,
+              });
+              if (evidence !== "receipt from before admission")
+                yield* recordReceipt(accepted, "message.dispatch", thread);
+            }
+            assert.deepEqual(
+              yield* sql`SELECT outcome,thread_id FROM scheduled_task_runs WHERE task_id=${task.id}`,
+              [{ outcome: "running", thread_id: null }],
+            );
+            return task.id;
+          }),
+        {
+          sql,
+          gate,
+          threadManagement: {
+            sendToThread: (input) =>
+              Deferred.succeed(received, {
+                command: input.commandId,
+                message: input.messageId,
+              }).pipe(Effect.andThen(Effect.never)),
+          },
+        },
+      );
+      const deleted: string[] = [];
+      yield* withService(
+        ({ service, launches }) =>
+          Effect.gen(function* () {
+            const [run] = (yield* service.listRuns({ id: taskId })).runs;
+            assert.equal(run?.outcome, succeeds ? "succeeded" : "failed");
+            assert.equal(run?.threadId, succeeds ? thread : null);
+            assert.equal(
+              (yield* service.list()).tasks[0]?.lastRunStatus,
+              succeeds ? "succeeded" : "failed",
+            );
+            assert.equal(yield* Queue.size(launches), 0);
+            assert.deepEqual(deleted, []);
+          }),
+        {
+          sql,
+          threadManagement: {
+            getThreadShell: () => Effect.succeed({ deletedAt: null, folder: null } as never),
+            getThreadRecords: (id, _fields, filter) =>
+              Effect.succeed({
+                messages:
+                  id === thread &&
+                  filter?.messageIds?.[0] === prompt &&
+                  evidence !== "missing exact prompt"
+                    ? [{ id: prompt }]
+                    : [],
+              } as never),
+            getMessageCount: () => Effect.succeed(0),
+            dispatch: (cmd) =>
+              Effect.sync(() => {
+                deleted.push(cmd.type);
+                return { sequence: 1, storedEvents: [] } as never;
+              }),
+          },
+        },
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each(["saved attempts", "legacy latest"] as const)(
+  "two same-tick webhook deliveries retain both attempts and recover each delivered prompt (%s)",
+  (historyKind) =>
+    withService(({ service, sql, launches }) =>
+      Effect.gen(function* () {
+        const { task } = yield* service.upsert(
+          yield* webhookTaskInput(),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const accepted: LaunchInput[] = [];
+        for (const relayDeliveryId of ["first", "second"]) {
+          yield* waitForSpan(
+            service.triggerWebhook(requestFor(task, { relayDeliveryId })),
+            "ScheduledTaskService.runWebhookDelivery",
+          );
+          accepted.push(yield* Queue.take(launches));
+        }
+        const { runs } = yield* service.listRuns({ id: task.id });
+        assert.lengthOf(runs, 2);
+        assert.equal(runs[0]!.startedAt, runs[1]!.startedAt);
+        assert.notEqual(runs[0]!.id, runs[1]!.id);
+        assert.notEqual(accepted[0]!.commandId, accepted[1]!.commandId);
+        assert.notEqual(
+          accepted[0]!.initialMessage?.demandId,
+          accepted[1]!.initialMessage?.demandId,
+        );
+        const prompts = accepted.map((launch) => launch.initialMessage!.messageId!);
+        yield* sql`UPDATE scheduled_task_runs SET outcome='running',completed_at=NULL WHERE task_id=${task.id}`;
+        yield* sql`UPDATE scheduled_tasks SET last_run_status='running' WHERE task_id=${task.id}`;
+        if (historyKind === "legacy latest") {
+          // The old format could store only one webhook row for this clock tick.
+          yield* sql`DELETE FROM scheduled_task_runs WHERE run_id=${runs[1]!.id}`;
+          yield* sql`UPDATE scheduled_task_runs SET run_id=${task.id + ":" + Date.parse(runs[0]!.startedAt) + ":webhook"} WHERE task_id=${task.id}`;
+          yield* sql`UPDATE scheduled_tasks SET last_run_record_id=NULL WHERE task_id=${task.id}`;
+          yield* sql`ALTER TABLE scheduled_task_runs DROP COLUMN webhook_delivery_id`;
+        }
+        const lookedUp: string[] = [];
+        yield* withService(
+          ({ service: recovered }) =>
+            Effect.gen(function* () {
+              const history = yield* recovered.listRuns({ id: task.id });
+              assert.sameMembers(
+                lookedUp,
+                historyKind === "legacy latest" ? prompts.slice(-1) : prompts,
+              );
+              assert.deepEqual(
+                history.runs.map((row) => row.outcome),
+                historyKind === "legacy latest" ? ["succeeded"] : ["succeeded", "succeeded"],
+              );
+            }),
+          {
+            sql,
+            threadManagement: {
+              getThreadShell: () => Effect.succeed({ deletedAt: null, folder: null } as never),
+              getThreadRecords: (_thread, _tables, filter) => {
+                const id = filter?.messageIds?.[0];
+                if (id !== undefined) lookedUp.push(id);
+                return Effect.succeed({
+                  messages: id !== undefined && prompts.includes(id) ? [{ id }] : [],
+                } as never);
+              },
+              getMessageCount: () => Effect.succeed(1),
+            },
+          },
+        );
+      }),
+    ),
+);
+
+it.effect(
+  "a task recreated in the same tick discards its earlier queued delivery and completion",
+  () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      yield* withService(
+        ({ service, launches, sql }) =>
+          Effect.gen(function* () {
+            const input = yield* webhookTaskInput();
+            const { task } = yield* service.upsert(input, ScheduledTaskService.CHANGED_IN_APP);
+            const first = yield* waitForSpan(
+              service.triggerWebhook(requestFor(task)),
+              "ScheduledTaskService.runWebhookDelivery",
+            ).pipe(Effect.forkChild);
+            yield* Queue.take(launches);
+            const enqueued = yield* Deferred.make<void>();
+            const pending = yield* waitForSpan(
+              service
+                .triggerWebhook(requestFor(task))
+                .pipe(Effect.tap(() => Deferred.succeed(enqueued, undefined))),
+              "ScheduledTaskService.runWebhookDelivery",
+            ).pipe(Effect.forkChild);
+            yield* Deferred.await(enqueued);
+            yield* service.delete({ id: task.id });
+            const { task: replacement } = yield* service.upsert(
+              input,
+              ScheduledTaskService.CHANGED_IN_APP,
+            );
+            assert.equal(replacement.createdAt, task.createdAt);
+            yield* Deferred.succeed(gate, undefined);
+            yield* Fiber.join(first);
+            yield* Fiber.join(pending);
+            assert.equal(yield* Queue.size(launches), 0);
+            assert.equal((yield* service.list()).tasks[0]!.runCount, 0);
+            assert.isEmpty((yield* service.listRuns({ id: task.id })).runs);
+            assert.isEmpty(
+              yield* sql`SELECT thread_id FROM scheduled_task_threads WHERE task_id=${task.id}`,
+            );
+          }),
+        { gate },
+      );
+    }),
 );
 
 it.effect("a start failure releases the relay claim when the task row is replaced mid-run", () =>

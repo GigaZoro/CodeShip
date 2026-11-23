@@ -1051,7 +1051,7 @@ export const layer = Layer.effect(
     const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Semaphore.Semaphore>>(
       new Map(),
     );
-    // Include creation time so late deliveries cannot decrement a recreated task's count.
+    // Include the task incarnation so late deliveries cannot decrement a recreated task's count.
     const webhookQueued = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
     const webhookRateWindows = yield* Ref.make<ReadonlyMap<ScheduledTaskId, RateWindow>>(new Map());
     const webhookRejectedRateWindows = yield* Ref.make<ReadonlyMap<ScheduledTaskId, RateWindow>>(
@@ -1305,7 +1305,7 @@ export const layer = Layer.effect(
       BEGIN
         UPDATE scheduled_tasks SET usage_hold_json = NULL WHERE task_id = NEW.task_id;
       END`;
-    // A historical task keeps its creation timestamp as its local identity.
+    // A historical row retains its original timestamp component, including in stored webhook snapshots.
     const sameIncarnation = (task: ScheduledTask) =>
       sql`COALESCE(incarnation_id, created_at) = ${taskIncarnation(task)}`;
     // A timestamp alone cannot identify the last of two admissions in one clock tick.
@@ -1316,6 +1316,47 @@ export const layer = Layer.effect(
       yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN fallback_model_selections_json TEXT`;
     }
     const runColumns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_task_runs)`;
+    if (!runColumns.some((column) => column.name === "webhook_delivery_id")) {
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN webhook_delivery_id TEXT`;
+          // Only the last accepted admission has its delivery saved on pre-upgrade tasks.
+          yield* sql`UPDATE scheduled_task_runs AS r SET webhook_delivery_id=t.last_run_webhook_delivery_id
+        FROM scheduled_tasks AS t
+        WHERE r.task_id=t.task_id AND r.trigger='webhook' AND (
+          r.run_id=t.last_run_record_id OR (t.last_run_record_id IS NULL
+            AND t.last_run_trigger='webhook' AND t.last_run_at=r.started_at
+            AND r.run_id=t.task_id || ':' || CAST(ROUND(unixepoch(t.last_run_at, 'subsec') * 1000) AS INTEGER) || ':webhook')
+        )
+          AND t.last_run_webhook_delivery_id IS NOT NULL`;
+        }),
+      );
+    }
+    if (!runColumns.some((column) => column.name === "webhook_receipt_absent"))
+      yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN webhook_receipt_absent INTEGER`;
+    if (!runColumns.some((column) => column.name === "webhook_bound_thread_id"))
+      yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN webhook_bound_thread_id TEXT`;
+    const pendingColumns = yield* sql<{
+      name: string;
+    }>`PRAGMA table_info(scheduled_task_webhook_pending)`;
+    if (!pendingColumns.some((column) => column.name === "attempt_run_id"))
+      yield* sql`ALTER TABLE scheduled_task_webhook_pending ADD COLUMN attempt_run_id TEXT`;
+    // Older running windows didn't name their attempt. Prefer the task's admission (even if it
+    // crashed before writing history). Otherwise only adopt a unique attempt inside this window.
+    yield* sql`UPDATE scheduled_task_webhook_pending AS p SET attempt_run_id = (
+      SELECT CASE WHEN t.last_run_webhook_delivery_id = p.delivery_id AND t.last_run_trigger = 'webhook'
+        AND t.last_run_record_id IS NOT NULL AND t.last_run_at >= strftime('%Y-%m-%dT%H:%M:%fZ',p.due_at/1000.0,'unixepoch')
+        THEN t.last_run_record_id ELSE (
+          SELECT min(r.run_id) FROM scheduled_task_runs r WHERE r.task_id = p.task_id
+          AND r.trigger = 'webhook' AND r.webhook_delivery_id = p.delivery_id
+          AND r.started_at >= strftime('%Y-%m-%dT%H:%M:%fZ',p.due_at/1000.0,'unixepoch')
+          HAVING count(*) = 1
+        ) END FROM scheduled_tasks t WHERE t.task_id = p.task_id
+        AND CASE WHEN json_valid(p.task_json) THEN
+          COALESCE(json_extract(p.task_json,'$.incarnationId'),json_extract(p.task_json,'$.createdAt'))
+        END = COALESCE(t.incarnation_id,t.created_at)
+    ) WHERE p.state='running' AND p.attempt_run_id IS NULL`;
+
     if (!runColumns.some((column) => column.name === "usage_limit_json")) {
       yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN usage_limit_json TEXT`;
     }
@@ -2078,7 +2119,7 @@ export const layer = Layer.effect(
       readonly task: ScheduledTask;
       readonly startedAtIso: string;
       readonly trigger: ScheduledTaskRunTrigger;
-      readonly recordId: string | null;
+      readonly recordId: string;
       readonly scheduledFor: string | null;
       readonly webhookDeliveryId: string | null;
     }) =>
@@ -2092,7 +2133,7 @@ export const layer = Layer.effect(
             last_run_webhook_delivery_id = ${input.webhookDeliveryId},
             last_run_status = 'running',
             last_run_error = NULL
-        WHERE task_id = ${input.task.id} AND (${input.recordId} IS NULL OR ${sameIncarnation(input.task)})
+        WHERE task_id = ${input.task.id} AND ${sameIncarnation(input.task)}
         RETURNING task_id
       `.pipe(
         Effect.mapError((cause) =>
@@ -2109,7 +2150,7 @@ export const layer = Layer.effect(
       readonly id: ScheduledTaskId;
       readonly completedAtIso: string;
       readonly nextRunAtIso: string | null;
-      readonly recordId: string | null;
+      readonly recordId: string;
       readonly status: "succeeded" | "failed";
       readonly error: string | null;
       readonly startedAtIso: string;
@@ -2123,7 +2164,7 @@ export const layer = Layer.effect(
             run_count = run_count + 1
         WHERE task_id = ${input.id}
           AND last_run_status = 'running'
-          AND last_run_at = ${input.startedAtIso} AND last_run_record_id IS ${input.recordId}
+          AND last_run_at = ${input.startedAtIso} AND last_run_record_id = ${input.recordId}
         RETURNING task_id
       `.pipe(
         Effect.map((rows) => rows.length > 0),
@@ -2135,7 +2176,7 @@ export const layer = Layer.effect(
     // Old rows can identify their most recent trigger even when the history ID was not stored.
     const matchesLastRun = (recordId: string, trigger: string) => sql`(
       last_run_record_id = ${recordId} OR (
-        last_run_record_id IS NULL AND (last_run_trigger IS NULL OR last_run_trigger = 'webhook' OR last_run_trigger = ${trigger})
+        last_run_record_id IS NULL AND (last_run_trigger IS NULL OR last_run_trigger = ${trigger})
       )
     )`;
 
@@ -2193,7 +2234,11 @@ export const layer = Layer.effect(
       readonly startedAt: string;
       readonly completedAt: string | null;
       readonly outcome: "running" | "skipped";
-      readonly incarnation: string | null;
+      readonly webhookDeliveryId?: string | undefined;
+      readonly webhookMessageCommand?: string | undefined;
+      readonly webhookBoundThreadId?: string | null | undefined;
+      readonly chatFolder?: string | null | undefined;
+      readonly incarnation: string;
       readonly skipReason?: ScheduledTaskRunSkipReason;
       readonly ranOn?: EnvironmentId;
       readonly failover: ScheduledTaskRunFailover | null;
@@ -2205,7 +2250,8 @@ export const layer = Layer.effect(
         INSERT INTO scheduled_task_runs (
           run_id, task_id, trigger, scheduled_for, started_at, completed_at, outcome,
           skip_reason, ran_on, failover_from, failover_to, failover_reason, failover_mcp_servers_json,
-          check_json, usage_limit_json, memory_json
+          check_json, usage_limit_json, memory_json, webhook_delivery_id,
+          webhook_receipt_absent, webhook_bound_thread_id, chat_folder
         )
         SELECT ${record.id}, ${record.taskId}, ${record.trigger}, ${record.scheduledFor},
           ${record.startedAt}, ${record.completedAt}, ${record.outcome},
@@ -2215,9 +2261,15 @@ export const layer = Layer.effect(
           ${record.failover?.mcpServers === undefined ? null : encodeMcpServersJson(record.failover.mcpServers)},
           ${record.check === undefined ? null : JSON.stringify(record.check)},
           ${record.usageLimit === undefined ? null : encodeRunUsageLimitJson(record.usageLimit)},
-          ${record.memory === undefined ? null : encodeRunMemoryJson(record.memory)}
+          ${record.memory === undefined ? null : encodeRunMemoryJson(record.memory)}, ${record.webhookDeliveryId ?? null},
+          CASE WHEN ${record.webhookMessageCommand ?? null} IS NOT NULL THEN NOT EXISTS (
+            SELECT 1 FROM orchestration_command_receipts WHERE command_id = ${record.webhookMessageCommand ?? null}
+          ) AND NOT EXISTS (
+            SELECT 1 FROM scheduled_task_runs WHERE task_id = ${record.taskId}
+              AND webhook_delivery_id = ${record.webhookDeliveryId ?? null} AND outcome = 'running'
+          ) END, ${record.webhookBoundThreadId ?? null}, ${record.chatFolder ?? null}
         WHERE EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${record.taskId}
-          AND (${record.incarnation} IS NULL OR COALESCE(incarnation_id, created_at) = ${record.incarnation}))
+          AND COALESCE(incarnation_id, created_at) = ${record.incarnation})
         ON CONFLICT (run_id) DO NOTHING
       `.pipe(
         Effect.andThen(sql`
@@ -2298,7 +2350,7 @@ export const layer = Layer.effect(
     const releaseStuckRun = Effect.fn("ScheduledTaskService.releaseStuckRun")(
       function* (
         task: ScheduledTask,
-        recordId: string | null,
+        recordId: string,
         startedAtIso: string,
         message: string,
         pendingDeliveryId?: string,
@@ -2317,8 +2369,7 @@ export const layer = Layer.effect(
                 SELECT 1 FROM scheduled_task_webhook_pending
                 WHERE delivery_id = ${pendingDeliveryId ?? null} AND state = 'running'
               ) THEN 0 ELSE 1 END
-          WHERE task_id = ${task.id} AND last_run_status = 'running'
-            AND (${recordId} IS NULL OR (last_run_record_id = ${recordId} AND ${sameIncarnation(task)}))
+          WHERE task_id = ${task.id} AND ${sameIncarnation(task)} AND last_run_status = 'running' AND last_run_record_id = ${recordId}
         `;
         yield* notifyChanged;
       },
@@ -2482,21 +2533,17 @@ export const layer = Layer.effect(
         trigger === "scheduled" && fire?.catchUp === true ? "catch_up" : trigger;
       const timeAndTrigger = `${task.id}:${DateTime.toEpochMillis(startedAt)}:${recordTrigger}`;
       // Keep the original prefix: holder consent orders same-tick trigger kinds by run ID.
-      const runRecordId =
-        trigger === "webhook"
-          ? timeAndTrigger
-          : `${timeAndTrigger}:${yield* crypto.randomUUIDv4()}`;
-      const admissionId = trigger === "webhook" ? null : runRecordId;
+      const runRecordId = `${timeAndTrigger}:${yield* crypto.randomUUIDv4()}`;
       const run = Effect.gen(function* () {
         // Re-read stale poll snapshots so deleted, paused or postponed tasks cannot fire.
         const active = yield* findTask(task.id);
-        if (
-          active === null ||
-          (webhook === undefined && taskIncarnation(active) !== taskIncarnation(task))
-        ) {
+        if (active === null || taskIncarnation(active) !== taskIncarnation(task)) {
           if (webhook !== undefined) {
             return yield* new WebhookDeliverySkipped({
-              reason: "The task was deleted before this delivery ran.",
+              reason:
+                active === null
+                  ? "The task was deleted before this delivery ran."
+                  : "The task was replaced before this delivery ran.",
             });
           }
           if (trigger !== "scheduled") {
@@ -2528,15 +2575,13 @@ export const layer = Layer.effect(
         // Reject queued deliveries after pause, same-id recreation or trigger changes.
         if (webhook !== undefined) {
           const reason =
-            active.createdAt !== task.createdAt
-              ? "The task was replaced before this delivery ran."
-              : active.schedule.type !== "webhook"
-                ? "The task's trigger changed before this delivery ran."
-                : webhookPolicyBlock !== undefined
-                  ? webhookPolicyBlock
-                  : !active.enabled
-                    ? "The task was paused before this delivery ran."
-                    : null;
+            active.schedule.type !== "webhook"
+              ? "The task's trigger changed before this delivery ran."
+              : webhookPolicyBlock !== undefined
+                ? webhookPolicyBlock
+                : !active.enabled
+                  ? "The task was paused before this delivery ran."
+                  : null;
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
@@ -2544,7 +2589,7 @@ export const layer = Layer.effect(
           trigger === "scheduled" ? (fire?.scheduledFor ?? active.nextRunAt) : null;
         const started = {
           task: active,
-          recordId: admissionId,
+          recordId: runRecordId,
           startedAtIso,
           trigger: recordTrigger,
           scheduledFor,
@@ -2557,7 +2602,8 @@ export const layer = Layer.effect(
               Effect.gen(function* () {
                 yield* markRunning(started);
                 // Recovery must distinguish this delivery from other windows waiting on the same task.
-                yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
+                yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running', attempt_run_id = ${runRecordId}
+                  WHERE task_id = ${task.id} AND delivery_id = ${webhook.deliveryId} AND state IN ('dispatching', 'running')`;
               }),
             )
             .pipe(
@@ -2566,9 +2612,23 @@ export const layer = Layer.effect(
               ),
             );
 
+        const fireKey =
+          webhook === undefined
+            ? launchKey(runRecordId)
+            : `${active.id}:webhook:${webhook.deliveryId}`;
+        const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         yield* insertRunRecord({
-          incarnation: webhook === undefined ? taskIncarnation(task) : null,
+          incarnation: taskIncarnation(task),
           id: runRecordId,
+          webhookDeliveryId: webhook?.deliveryId,
+          ...(webhook === undefined
+            ? {}
+            : {
+                webhookMessageCommand:
+                  active.threadId === null ? `${commandId}:initial-message` : commandId,
+                webhookBoundThreadId: active.threadId,
+                chatFolder: active.threadId === null ? (active.group ?? null) : null,
+              }),
           taskId: active.id,
           trigger: recordTrigger,
           scheduledFor,
@@ -2580,14 +2640,9 @@ export const layer = Layer.effect(
         });
         yield* notifyChanged;
 
-        const fireKey =
-          webhook === undefined
-            ? launchKey(runRecordId)
-            : `${active.id}:webhook:${webhook.deliveryId}`;
-        const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const admissionKey =
           trigger !== "scheduled"
-            ? admissionId
+            ? (webhook?.deliveryId ?? runRecordId)
             : fire?.independentOccurrence !== undefined &&
                 active.shared?.runOn !== "one" &&
                 active.nextRunAt === task.nextRunAt &&
@@ -2655,7 +2710,7 @@ export const layer = Layer.effect(
               threadId,
               messageId,
               scheduledTaskId: active.id,
-              ...(trigger === "webhook" ? {} : { demandId }),
+              demandId,
               text,
               attachments: [],
               mode: "queue",
@@ -2709,7 +2764,7 @@ export const layer = Layer.effect(
                     initialMessage: {
                       messageId,
                       scheduledTaskId: active.id,
-                      ...(trigger === "webhook" ? {} : { demandId }),
+                      demandId,
                       ...(target.crossProviderFailoverFrom === undefined
                         ? {}
                         : { crossProviderFailoverFrom: target.crossProviderFailoverFrom }),
@@ -2764,7 +2819,7 @@ export const layer = Layer.effect(
             ...(threadId === null ? {} : { lastRunThreadId: threadId }),
           };
           if (current === null) return { recorded: completed, written: false };
-          if (webhook === undefined && taskIncarnation(current) !== taskIncarnation(active))
+          if (taskIncarnation(current) !== taskIncarnation(active))
             return { recorded: current, written: false };
           if (threadId !== null) {
             yield* recordRunThread(task.id, threadId, startedAtIso, runRecordId, recordTrigger);
@@ -2785,7 +2840,7 @@ export const layer = Layer.effect(
           // landed in the same millisecond.
           const completion = markCompleted({
             id: task.id,
-            recordId: admissionId,
+            recordId: runRecordId,
             completedAtIso: completed.updatedAt,
             nextRunAtIso: completed.nextRunAt,
             status: lastRunStatus,
@@ -2801,7 +2856,8 @@ export const layer = Layer.effect(
             else {
               const counted =
                 yield* sql`UPDATE scheduled_task_webhook_pending SET state = ${runSucceeded ? "completed" : "failed"}
-                WHERE delivery_id = ${webhook.deliveryId} AND state NOT IN ('completed', 'failed') RETURNING delivery_id`;
+                WHERE delivery_id = ${webhook.deliveryId} AND task_id = ${task.id}
+                  AND attempt_run_id = ${runRecordId} AND state = 'running' RETURNING delivery_id`;
               if (counted.length > 0) written = yield* completion;
             }
           }
@@ -2835,7 +2891,7 @@ export const layer = Layer.effect(
             ? Effect.void
             : releaseStuckRun(
                 task,
-                admissionId,
+                runRecordId,
                 startedAtIso,
                 errorMessage(cause),
                 webhook?.deliveryId,
@@ -4471,11 +4527,91 @@ export const layer = Layer.effect(
       );
     });
 
+    const webhookRecoveryThread = Effect.fnUntraced(function* (run: {
+      run_id: string;
+      task_id: ScheduledTaskId;
+      started_at: string;
+      webhook_delivery_id: string | null;
+      webhook_bound_thread_id: string | null;
+      webhook_receipt_absent: number | null;
+    }) {
+      if (run.webhook_delivery_id === null || run.webhook_receipt_absent === 0) return null;
+      const command = `scheduled-task:${run.task_id}:webhook:${run.webhook_delivery_id}`;
+      const initialMessage = `${command}:initial-message`;
+      const receipts = yield* sql<{
+        command_id: string;
+        command_type: string;
+        aggregate_kind: string;
+        aggregate_id: string;
+        status: string;
+        accepted_at: string;
+      }>`SELECT command_id, command_type, aggregate_kind, aggregate_id, status, accepted_at FROM orchestration_command_receipts
+        WHERE command_id IN (${command}, ${initialMessage})`.pipe(NodeSqliteClient.readOnly);
+      const root = receipts.find((row) => row.command_id === command);
+      if (root?.status !== "accepted" || root.aggregate_kind !== "thread") return null;
+      const launch = root.command_type === "thread.create";
+      const sent = launch ? receipts.find((row) => row.command_id === initialMessage) : root;
+      if (
+        sent?.status !== "accepted" ||
+        sent.command_type !== "message.dispatch" ||
+        sent.aggregate_kind !== "thread" ||
+        sent.aggregate_id !== root.aggregate_id ||
+        (!launch && receipts.length !== 1)
+      )
+        return null;
+      if (run.webhook_receipt_absent === null) {
+        // Old attempts did not snapshot receipt absence. A same-tick receipt cannot establish order.
+        if (!(Date.parse(sent.accepted_at) > Date.parse(run.started_at))) return null;
+      } else if (
+        launch
+          ? run.webhook_bound_thread_id !== null
+          : run.webhook_bound_thread_id !== sent.aggregate_id
+      ) {
+        return null;
+      }
+      // Receipt keys outlive an attempt. A successor or overlapping attempt makes ownership ambiguous.
+      const other = yield* sql`SELECT 1 FROM scheduled_task_runs
+        WHERE task_id=${run.task_id} AND webhook_delivery_id=${run.webhook_delivery_id} AND run_id<>${run.run_id}
+          AND (${run.webhook_receipt_absent} IS NULL OR outcome='running' OR
+            rowid > (SELECT rowid FROM scheduled_task_runs WHERE run_id=${run.run_id})) LIMIT 1`.pipe(
+        NodeSqliteClient.readOnly,
+      );
+      return other.length === 0 ? ThreadId.make(sent.aggregate_id) : null;
+    });
+
+    // Receipt keys can outlive an attempt. A committed message whose owning attempt or
+    // destination cannot be proved must not be sent or counted again by a pending worker.
+    const committedWindowPrompt = (taskId: ScheduledTaskId, deliveryId: string) => {
+      const command = `scheduled-task:${taskId}:webhook:${deliveryId}`;
+      return sql`SELECT 1 FROM orchestration_command_receipts
+        WHERE command_id IN (${command}, ${command + ":initial-message"})
+          AND aggregate_kind = 'thread' AND command_type = 'message.dispatch' AND status = 'accepted'
+        LIMIT 1`;
+    };
+
+    // The history row proves dispatch. The pending row owns the delivery's single task count,
+    // even when a later delivery is now the task's latest. Both writes commit or roll back together.
+    const finishRecoveredWindow = (taskId: ScheduledTaskId, deliveryId: string, runId: string) =>
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const changed = yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'completed'
+          WHERE task_id = ${taskId} AND delivery_id = ${deliveryId} AND state = 'running'
+            AND attempt_run_id = ${runId} AND EXISTS (SELECT 1 FROM scheduled_task_runs
+              WHERE task_id = ${taskId} AND run_id = ${runId} AND webhook_delivery_id = ${deliveryId}
+                AND trigger = 'webhook' AND outcome = 'succeeded')
+          RETURNING delivery_id`;
+          if (changed.length === 0) return false;
+          yield* sql`UPDATE scheduled_task_webhook_deliveries SET error = NULL WHERE delivery_id = ${deliveryId}`;
+          yield* sql`UPDATE scheduled_tasks SET run_count = run_count + 1 WHERE task_id = ${taskId}`;
+          return true;
+        }),
+      );
+
     // Nothing runs before startup finishes, so a run record still running was cut off. A cut run
     // whose chat got its prompt goes on after the restart: it keeps its chat, so the chat counts
     // toward the live-run limit and is filed with the task. A chat its launch made but never
     // prompted is deleted before the run settles as cut, unless the user wrote in it or moved it.
-    yield* Effect.gen(function* () {
+    const settleInterruptedRuns = Effect.fnUntraced(function* (onlyRunId?: string) {
       const cut = yield* sql<{
         readonly run_id: string;
         readonly task_id: ScheduledTaskId;
@@ -4483,22 +4619,41 @@ export const layer = Layer.effect(
         readonly chat_folder: string | null;
         readonly started_at: string;
         readonly trigger: string;
+        readonly webhook_delivery_id: string | null;
+        readonly webhook_bound_thread_id: string | null;
+        readonly webhook_receipt_absent: number | null;
       }>`
-        SELECT run_id, task_id, thread_id, chat_folder, started_at, trigger
+        SELECT run_id, task_id, thread_id, chat_folder, started_at, trigger, webhook_delivery_id,
+          webhook_bound_thread_id, webhook_receipt_absent
         FROM scheduled_task_runs WHERE outcome = 'running'
+          ${onlyRunId === undefined ? sql`` : sql`AND run_id = ${onlyRunId}`}
       `;
       const settled = yield* Effect.forEach(
         cut,
         (run) => {
-          if (run.thread_id === null) return Effect.succeed({ run, chat: null });
-          const threadId = ThreadId.make(run.thread_id);
           return Effect.gen(function* () {
+            const threadId =
+              run.thread_id === null
+                ? yield* webhookRecoveryThread(run)
+                : ThreadId.make(run.thread_id);
+            if (threadId === null) return { run, chat: null };
             const shell = yield* threadManagement.getThreadShell(threadId);
             if (shell === null || shell.deletedAt !== null) return { run, chat: null };
+            const expected = promptMessageId(
+              run.webhook_delivery_id === null
+                ? launchKey(run.run_id)
+                : `${run.task_id}:webhook:${run.webhook_delivery_id}`,
+            );
             const prompt = yield* threadManagement.getThreadRecords(threadId, ["messages"], {
-              messageIds: [promptMessageId(launchKey(run.run_id))],
+              messageIds: [expected],
             });
-            if (prompt.messages.length > 0) return { run, chat: threadId };
+            const delivered =
+              run.thread_id === null
+                ? prompt.messages.some((message) => message.id === expected)
+                : prompt.messages.length > 0;
+            if (delivered) return { run, chat: threadId };
+            // An inferred webhook destination can be an existing chat. Only clean up a named scheduled launch.
+            if (run.thread_id === null) return { run, chat: null };
             if (
               (yield* threadManagement.getMessageCount(threadId)) === 0 &&
               sameThreadFolder(shell.folder, run.chat_folder)
@@ -4522,7 +4677,7 @@ export const layer = Layer.effect(
             Effect.catchCause((cause) =>
               Effect.logWarning("Could not settle the chat of an interrupted scheduled task run", {
                 taskId: run.task_id,
-                threadId,
+                threadId: run.thread_id,
                 cause,
               }).pipe(Effect.as(null)),
             ),
@@ -4537,29 +4692,36 @@ export const layer = Layer.effect(
           (entry) => {
             if (entry === null) return Effect.void;
             const { run, chat } = entry;
-            return chat === null
-              ? sql`
-                  UPDATE scheduled_task_runs
-                  SET outcome = 'failed', error = ${INTERRUPTED_BY_RESTART},
-                      completed_at = ${completedAt}, thread_id = NULL
-                  WHERE run_id = ${run.run_id} AND outcome = 'running'
-                `
-              : Effect.gen(function* () {
-                  yield* recordRunThread(
-                    run.task_id,
-                    chat,
-                    run.started_at,
-                    run.run_id,
-                    run.trigger,
-                  );
-                  yield* recordTaskThread(run.task_id, chat, run.chat_folder);
-                  yield* sql`
-                    UPDATE scheduled_task_runs SET outcome = 'succeeded', completed_at = ${completedAt}
+            if (chat === null) {
+              return Effect.gen(function* () {
+                if (run.webhook_delivery_id !== null) {
+                  const [waiting] = yield* sql`SELECT 1 FROM scheduled_task_webhook_pending
+                    WHERE task_id = ${run.task_id} AND delivery_id = ${run.webhook_delivery_id}
+                      AND state = 'running' AND attempt_run_id = ${run.run_id}`;
+                  if (
+                    waiting !== undefined &&
+                    (yield* committedWindowPrompt(run.task_id, run.webhook_delivery_id)).length > 0
+                  )
+                    return;
+                }
+                yield* sql`UPDATE scheduled_task_runs
+                    SET outcome = 'failed', error = ${INTERRUPTED_BY_RESTART},
+                        completed_at = ${completedAt}, thread_id = NULL
+                    WHERE run_id = ${run.run_id} AND outcome = 'running'`;
+              });
+            }
+            return Effect.gen(function* () {
+              yield* recordRunThread(run.task_id, chat, run.started_at, run.run_id, run.trigger);
+              yield* recordTaskThread(run.task_id, chat, run.chat_folder);
+              yield* sql`
+                    UPDATE scheduled_task_runs SET outcome = 'succeeded', completed_at = ${completedAt}, thread_id = ${chat}
                     WHERE run_id = ${run.run_id} AND outcome = 'running'
                   `;
-                  // An earlier startup that could not read this chat settled the task as cut. While
-                  // this run is still the task's latest, the task takes its outcome and chat.
-                  const corrected = yield* sql`
+              if (run.webhook_delivery_id !== null)
+                yield* finishRecoveredWindow(run.task_id, run.webhook_delivery_id, run.run_id);
+              // An earlier startup that could not read this chat settled the task as cut. While
+              // this run is still the task's latest, the task takes its outcome and chat.
+              const corrected = yield* sql`
                     UPDATE scheduled_tasks
                     SET last_run_status = 'succeeded', last_run_error = NULL,
                         updated_at = ${completedAt}
@@ -4568,19 +4730,20 @@ export const layer = Layer.effect(
                       AND last_run_status = 'failed' AND last_run_error = ${INTERRUPTED_BY_RESTART}
                     RETURNING task_id
                   `;
-                  if (corrected.length > 0) {
-                    yield* sql`
+              if (corrected.length > 0) {
+                yield* sql`
                       INSERT INTO scheduled_task_sidebar (task_id, last_run_thread_id)
                       VALUES (${run.task_id}, ${chat})
                       ON CONFLICT (task_id) DO UPDATE SET last_run_thread_id = excluded.last_run_thread_id
                     `;
-                  }
-                });
+              }
+            });
           },
           { discard: true },
         ),
       );
-    }).pipe(
+    });
+    yield* settleInterruptedRuns().pipe(
       Effect.catch((cause) =>
         Effect.logWarning("Could not close interrupted schedule task run records", { cause }),
       ),
@@ -4602,7 +4765,7 @@ export const layer = Layer.effect(
               JOIN scheduled_tasks t ON t.task_id = r.task_id AND t.last_run_at = r.started_at
               WHERE t.task_id = ${row.task_id} AND r.outcome = 'succeeded'
                 AND (t.last_run_record_id = r.run_id OR (
-                  t.last_run_record_id IS NULL AND (t.last_run_trigger IS NULL OR t.last_run_trigger = 'webhook' OR t.last_run_trigger = r.trigger)
+                  t.last_run_record_id IS NULL AND (t.last_run_trigger IS NULL OR t.last_run_trigger = r.trigger)
                 ))
               LIMIT 1
             `;
@@ -4619,8 +4782,9 @@ export const layer = Layer.effect(
                     updated_at = ${iso(now)},
                     run_count = run_count + CASE WHEN EXISTS (
                       SELECT 1 FROM scheduled_task_webhook_pending
-                      WHERE task_id IS ${row.task_id} AND state = 'running'
-                        AND delivery_id = scheduled_tasks.last_run_webhook_delivery_id
+                      WHERE task_id IS ${row.task_id} AND delivery_id = scheduled_tasks.last_run_webhook_delivery_id
+                        AND (state = 'running' OR (state = 'completed'
+                          AND (attempt_run_id = scheduled_tasks.last_run_record_id OR scheduled_tasks.last_run_record_id IS NULL)))
                     ) THEN 0 ELSE 1 END
                 WHERE task_id IS ${row.task_id} AND last_run_status = 'running'
               `;
@@ -4637,8 +4801,9 @@ export const layer = Layer.effect(
                   updated_at = ${iso(now)},
                   run_count = run_count + CASE WHEN EXISTS (
                     SELECT 1 FROM scheduled_task_webhook_pending
-                    WHERE task_id IS ${row.task_id} AND state = 'running'
-                        AND delivery_id = scheduled_tasks.last_run_webhook_delivery_id
+                    WHERE task_id IS ${row.task_id} AND delivery_id = scheduled_tasks.last_run_webhook_delivery_id
+                        AND (state = 'running' OR (state = 'completed'
+                          AND (attempt_run_id = scheduled_tasks.last_run_record_id OR scheduled_tasks.last_run_record_id IS NULL)))
                   ) THEN 0 ELSE 1 END
               WHERE task_id IS ${row.task_id} AND last_run_status = 'running'
             `;
@@ -5952,12 +6117,12 @@ export const layer = Layer.effect(
       }
       const token = yield* newWebhookToken;
       const now = yield* localNow;
-      // Matching created_at keeps a rotation from landing on a task deleted
+      // Matching the local incarnation keeps a rotation from landing on a task deleted
       // and recreated under the same id since it was loaded.
       const updated = yield* sql<{ task_id: string }>`
           UPDATE scheduled_tasks
           SET webhook_token = ${token}, updated_at = ${iso(now)}
-          WHERE task_id = ${input.id} AND created_at = ${task.createdAt}
+          WHERE task_id = ${input.id} AND ${sameIncarnation(task)}
           RETURNING task_id
         `.pipe(
         Effect.mapError((cause) =>
@@ -6399,7 +6564,7 @@ export const layer = Layer.effect(
                 WHERE delivery_id = ${deliveryId} AND state = 'running' RETURNING delivery_id`;
                     if (counted.length > 0)
                       yield* sql`UPDATE scheduled_tasks SET run_count = run_count + 1
-                WHERE task_id = ${task.id} AND created_at = ${task.createdAt}`;
+                WHERE task_id = ${task.id} AND ${sameIncarnation(task)}`;
                   }),
                 )
                 .pipe(Effect.mapError(dedupeError));
@@ -6654,7 +6819,7 @@ export const layer = Layer.effect(
           const reserve = takeRateSlot(task.id, DateTime.toEpochMillis(now)).pipe(
             Effect.flatMap((slot) => (slot === "allowed" ? Effect.void : Effect.fail(slot))),
           );
-          const queueKey = `${task.id}\u0000${task.createdAt}`;
+          const queueKey = `${task.id}\u0000${taskIncarnation(task)}`;
           const checkCapacity = Effect.gen(function* () {
             const [row] = yield* sql<{
               count: number;
@@ -6669,19 +6834,31 @@ export const layer = Layer.effect(
             Effect.mapError((cause) => (cause === "queue_full" ? cause : dedupeError(cause))),
           );
           const admit = <A, E>(effect: Effect.Effect<A, E>) =>
-            sql.withTransaction(effect).pipe(
-              Effect.catch((cause) =>
-                cause === "first_rejected" || cause === "rejected" || cause === "queue_full"
-                  ? Effect.succeed({
-                      outcome:
-                        cause === "queue_full"
-                          ? ("queue_full" as const)
-                          : ("rate_limited" as const),
-                      log: cause === "first_rejected",
-                    })
-                  : Effect.fail(isScheduledTaskError(cause) ? cause : dedupeError(cause)),
-              ),
-            );
+            sql
+              .withTransaction(
+                Effect.gen(function* () {
+                  const current =
+                    yield* sql`SELECT 1 FROM scheduled_tasks WHERE task_id=${task.id} AND ${sameIncarnation(task)}`;
+                  if (current.length === 0)
+                    return yield* taskError("Schedule task was deleted or replaced.", {
+                      taskId: task.id,
+                    });
+                  return yield* effect;
+                }),
+              )
+              .pipe(
+                Effect.catch((cause) =>
+                  cause === "first_rejected" || cause === "rejected" || cause === "queue_full"
+                    ? Effect.succeed({
+                        outcome:
+                          cause === "queue_full"
+                            ? ("queue_full" as const)
+                            : ("rate_limited" as const),
+                        log: cause === "first_rejected",
+                      })
+                    : Effect.fail(isScheduledTaskError(cause) ? cause : dedupeError(cause)),
+                ),
+              );
           const deduped =
             schedule.dedupe === undefined
               ? "run"
@@ -6860,15 +7037,21 @@ export const layer = Layer.effect(
           // One worker per task waits on its permit, then drains persisted rows in order.
           // Other tasks remain independent and ticks never reload an active task's payloads.
           const dispatch = Effect.gen(function* () {
+            let after: { due_at: number; rowid: number } | undefined;
             while (true) {
               const [entry] = yield* sql<{
+                due_at: number;
+                rowid: number;
                 delivery_id: string;
+                attempt_run_id: string | null;
                 task_json: string;
                 request_json: string;
                 state: string;
               }>`
-              SELECT delivery_id, task_json, request_json, state FROM scheduled_task_webhook_pending
-              WHERE task_id = ${taskId} AND state IN ('dispatching', 'running', 'completed', 'failed') ORDER BY due_at, rowid LIMIT 1
+              SELECT due_at, rowid, delivery_id, attempt_run_id, task_json, request_json, state FROM scheduled_task_webhook_pending
+              WHERE task_id = ${taskId} AND state IN ('dispatching', 'running', 'completed', 'failed')
+                ${after === undefined ? sql`` : sql`AND (due_at, rowid) > (${after.due_at}, ${after.rowid})`}
+              ORDER BY due_at, rowid LIMIT 1
             `.pipe(NodeSqliteClient.readOnly);
               if (entry === undefined) return;
               const remove = sql`DELETE FROM scheduled_task_webhook_pending WHERE delivery_id = ${entry.delivery_id}`;
@@ -6879,6 +7062,43 @@ export const layer = Layer.effect(
                 }
                 yield* remove;
                 continue;
+              }
+              if (entry.state === "running") {
+                let outcome: string | undefined;
+                if (entry.attempt_run_id !== null) {
+                  const attempt = sql<{ outcome: string }>`SELECT outcome FROM scheduled_task_runs
+                    WHERE task_id = ${taskId} AND run_id = ${entry.attempt_run_id}
+                      AND webhook_delivery_id = ${entry.delivery_id}`;
+                  outcome = (yield* attempt)[0]?.outcome;
+                  if (outcome === "running") {
+                    yield* settleInterruptedRuns(entry.attempt_run_id);
+                    outcome = (yield* attempt)[0]?.outcome;
+                  }
+                  if (outcome === "succeeded") {
+                    yield* finishRecoveredWindow(taskId, entry.delivery_id, entry.attempt_run_id);
+                    yield* notifyChanged;
+                    continue;
+                  }
+                }
+                // Missing legacy attribution cannot justify another send when the delivery already
+                // has an accepted prompt or a successful attempt. Let independent windows drain.
+                const possibleSuccess =
+                  entry.attempt_run_id === null
+                    ? yield* sql`SELECT 1 FROM scheduled_task_runs WHERE task_id = ${taskId}
+                        AND webhook_delivery_id = ${entry.delivery_id} AND trigger = 'webhook'
+                        AND outcome = 'succeeded' AND started_at >= strftime('%Y-%m-%dT%H:%M:%fZ',${entry.due_at}/1000.0,'unixepoch') LIMIT 1`
+                    : [];
+                if (
+                  outcome === "running" ||
+                  possibleSuccess.length > 0 ||
+                  (yield* committedWindowPrompt(taskId, entry.delivery_id)).length > 0
+                ) {
+                  const detail = "Waiting for evidence of this webhook attempt's outcome.";
+                  yield* sql`UPDATE scheduled_task_webhook_deliveries SET error = ${detail}
+                    WHERE delivery_id = ${entry.delivery_id} AND error IS NOT ${detail}`;
+                  after = entry;
+                  continue;
+                }
               }
               const prepared = yield* Effect.gen(function* () {
                 const task = yield* decodePendingTask(entry.task_json);
