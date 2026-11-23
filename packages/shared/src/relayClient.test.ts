@@ -1113,7 +1113,7 @@ describe("RelayClient", () => {
             const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
 
             expect(yield* manager.resolve).toMatchObject({ executablePath: legacyPin });
-            yield* manager.pruneManagedVersions;
+            expect(yield* manager.pruneManagedVersions).toBe(true);
 
             expect(yield* fs.exists(old)).toBe(false);
             for (const file of preserved) {
@@ -1124,6 +1124,77 @@ describe("RelayClient", () => {
         { versions },
       );
     });
+
+    it.effect.each(["readDirectory", "stat", "version", "remove"] as const)(
+      "retries incomplete cache cleanup after %s recovers",
+      (operation) => {
+        const versions: Record<string, string> = {};
+        return run(
+          (baseDir) =>
+            Effect.gen(function* () {
+              const fs = yield* FileSystem.FileSystem;
+              const paths = yield* Path.Path;
+              const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+              const root = paths.join(baseDir, "tools", "cloudflared", "install");
+              const old = managedPathFor(paths, baseDir, "2025.9.0", hostPlatform);
+              const rollback = managedPathFor(paths, baseDir, "2026.1.0", hostPlatform);
+              versions[old] = "2025.9.0";
+              versions[rollback] = "2026.1.0";
+              yield* writeExecutable(old);
+              yield* writeExecutable(rollback);
+
+              let failing = true;
+              const failure = Effect.fail(
+                PlatformError.systemError({
+                  _tag: operation === "remove" ? "Busy" : "PermissionDenied",
+                  module: operation === "version" ? "ChildProcess" : "FileSystem",
+                  method: operation,
+                  pathOrDescriptor: operation === "readDirectory" ? root : old,
+                }),
+              );
+              const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir }).pipe(
+                Effect.provideService(
+                  FileSystem.FileSystem,
+                  FileSystem.make({
+                    ...fs,
+                    readDirectory: (dir) =>
+                      failing && operation === "readDirectory" && dir === root
+                        ? failure
+                        : fs.readDirectory(dir),
+                    stat: (file) =>
+                      failing && operation === "stat" && file === old ? failure : fs.stat(file),
+                    remove: (file, options) =>
+                      failing && operation === "remove" && file === old
+                        ? failure
+                        : fs.remove(file, options),
+                  }),
+                ),
+                Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, {
+                  ...spawner,
+                  string: (cmd, options) =>
+                    failing &&
+                    operation === "version" &&
+                    ChildProcess.isStandardCommand(cmd) &&
+                    cmd.command === old
+                      ? failure
+                      : spawner.string(cmd, options),
+                }),
+              );
+              expect(yield* manager.pruneManagedVersions).toBe(false);
+              expect(yield* fs.exists(old)).toBe(true);
+              expect(yield* fs.exists(rollback)).toBe(true);
+              if (operation === "readDirectory") {
+                expect((yield* manager.resolve).status).toBe("missing");
+              }
+              failing = false;
+              expect(yield* manager.pruneManagedVersions).toBe(true);
+              expect(yield* fs.exists(old)).toBe(false);
+              expect(yield* fs.exists(rollback)).toBe(true);
+            }),
+          { versions },
+        );
+      },
+    );
 
     it.effect("does not prune while an independent manager is installing", () => {
       const versions: Record<string, string> = {};

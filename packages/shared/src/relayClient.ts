@@ -154,7 +154,7 @@ export interface RelayClientShape {
   readonly installWithProgress: (
     report: (event: RelayClientInstallProgressEvent) => Effect.Effect<void>,
   ) => Effect.Effect<AvailableRelayClient, RelayClientInstallError>;
-  /** Returns true after a cleanup pass. A busy or unavailable cache can be retried on the next registration. */
+  /** Returns true once the cache was scanned and every eligible obsolete binary was removed. */
   readonly pruneManagedVersions: Effect.Effect<boolean>;
 }
 
@@ -279,12 +279,7 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
         .string(
           ChildProcess.make(key.executablePath, ["version"], { stdin: "ignore", stderr: "ignore" }),
         )
-        .pipe(
-          Effect.map(parseCloudflaredVersionOutput),
-          Effect.timeoutOption(VERSION_PROBE_TIMEOUT),
-          Effect.map(Option.getOrNull),
-          Effect.orElseSucceed(() => null),
-        ),
+        .pipe(Effect.map(parseCloudflaredVersionOutput), Effect.timeout(VERSION_PROBE_TIMEOUT)),
     {
       capacity: 16,
       timeToLive: (exit) =>
@@ -292,15 +287,15 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
     },
   );
   const probeVersion = Effect.fn("cloudflared.probeVersion")(function* (executablePath: string) {
-    const info = yield* fileSystem.stat(executablePath).pipe(Effect.option);
-    if (Option.isNone(info) || info.value.type !== "File") return null;
-    if (platform !== "win32" && (info.value.mode & 0o111) === 0) return null;
+    const info = yield* fileSystem.stat(executablePath);
+    if (info.type !== "File") return null;
+    if (platform !== "win32" && (info.mode & 0o111) === 0) return null;
     return yield* Cache.get(
       versionCache,
       new VersionProbeKey({
         executablePath,
-        size: Number(info.value.size),
-        mtimeMillis: Option.getOrUndefined(info.value.mtime)?.getTime() ?? 0,
+        size: Number(info.size),
+        mtimeMillis: Option.getOrUndefined(info.mtime)?.getTime() ?? 0,
       }),
     );
   });
@@ -309,7 +304,7 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
     executablePath: string,
     source: RelayClientExecutableSource,
   ) {
-    const version = yield* probeVersion(executablePath);
+    const version = yield* probeVersion(executablePath).pipe(Effect.orElseSucceed(() => null));
     if (version === null || compareCloudflaredVersions(version, CLOUDFLARED_MIN_VERSION) < 0) {
       return null;
     }
@@ -331,7 +326,7 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
 
   // A newer release directory belongs to another server version.
   const olderVersionsIn = Effect.fn("cloudflared.olderVersionsIn")(function* (root: string) {
-    const entries = yield* fileSystem.readDirectory(root).pipe(Effect.orElseSucceed(() => []));
+    const entries = yield* fileSystem.readDirectory(root);
     return entries.filter(
       (entry) =>
         /^\d{4}\.\d{1,2}\.\d+$/u.test(entry) &&
@@ -343,8 +338,8 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
     let fallback = yield* managedCandidate(CLOUDFLARED_VERSION);
     if (fallback?.version === CLOUDFLARED_VERSION) return fallback;
     const versions = new Set([
-      ...(yield* olderVersionsIn(installRoot)),
-      ...(yield* olderVersionsIn(managedRoot)),
+      ...(yield* olderVersionsIn(installRoot).pipe(Effect.orElseSucceed(() => []))),
+      ...(yield* olderVersionsIn(managedRoot).pipe(Effect.orElseSucceed(() => []))),
     ]);
     for (const version of [...versions].sort((a, b) => compareCloudflaredVersions(b, a))) {
       const candidate = yield* managedCandidate(version);
@@ -597,22 +592,24 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
       ({ reportedVersion }) =>
         compareCloudflaredVersions(reportedVersion, CLOUDFLARED_MIN_VERSION) >= 0,
     );
+    let complete = true;
     for (const entry of obsolete) {
       if (entry === rollback) continue;
       const { executable } = entry;
       yield* Effect.gen(function* () {
-        yield* fileSystem.remove(executable);
+        yield* fileSystem.remove(executable, { force: true });
         const directory = path.dirname(executable);
         yield* removeDirectoryIfEmpty(directory);
         yield* removeDirectoryIfEmpty(path.dirname(directory));
         yield* Effect.logInfo("Removed an older managed relay client", { executable });
       }).pipe(
-        Effect.catch((cause) =>
-          Effect.logDebug("Could not prune a relay client", { executable, cause }),
-        ),
+        Effect.catch((cause) => {
+          complete = false;
+          return Effect.logDebug("Could not prune a relay client", { executable, cause });
+        }),
       );
     }
-    return true;
+    return complete;
   }).pipe(
     Effect.scoped,
     Effect.catch((cause) =>
@@ -695,7 +692,9 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
       }
       yield* report("validating");
       // Verify the pin so mislabeled assets cannot cause repeated redownloads.
-      const installedVersion = yield* probeVersion(executablePath);
+      const installedVersion = yield* probeVersion(executablePath).pipe(
+        Effect.orElseSucceed(() => null),
+      );
       if (installedVersion !== CLOUDFLARED_VERSION) {
         return yield* new RelayClientInstallError({
           reason: "validation_failed",
