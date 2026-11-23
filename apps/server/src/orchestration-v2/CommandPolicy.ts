@@ -125,6 +125,21 @@ export function isActiveRun(run: OrchestrationV2Run): boolean {
   );
 }
 
+export function latestSteerableRun(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "providerTurns">,
+): OrchestrationV2Run | undefined {
+  return projection.runs
+    .filter(
+      (run) =>
+        run.status === "running" &&
+        run.activeAttemptId !== null &&
+        projection.providerTurns.some(
+          (turn) => turn.runAttemptId === run.activeAttemptId && turn.status === "running",
+        ),
+    )
+    .toSorted((left, right) => right.ordinal - left.ordinal)[0];
+}
+
 function providerTurnCapabilities(
   projection: OrchestrationV2ThreadProjection,
   run: OrchestrationV2Run,

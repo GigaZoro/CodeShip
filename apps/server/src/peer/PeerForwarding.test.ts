@@ -98,7 +98,36 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
       Effect.map((thread) => ({ thread, runs: [run("running")], runtimeRequests: [] }) as never),
     );
   return Layer.mock(ThreadManagement.ThreadManagementService)({
-    getThreadShell: shellOf,
+    hasReceipt: (
+      commandId,
+      target?: { readonly threadId: ThreadId; readonly commandType: string },
+    ) =>
+      Ref.get(seen).pipe(
+        Effect.map(
+          ({ launches, sends }) =>
+            (target?.commandType !== "thread.create" &&
+              sends.some(
+                (entry) =>
+                  entry.commandId === commandId &&
+                  (target === undefined || entry.threadId === target.threadId),
+              )) ||
+            (target?.commandType !== "message.dispatch" &&
+              launches.some(
+                (entry) =>
+                  entry.commandId === commandId &&
+                  (target === undefined || entry.threadId === target.threadId),
+              )),
+        ),
+      ),
+    getThreadShell: (threadId) =>
+      Effect.gen(function* () {
+        const { launches } = yield* Ref.get(seen);
+        const launch = launches.find(
+          (entry) => entry.threadId === threadId && entry.title === "Partial repair launch",
+        );
+        if (launch === undefined) return yield* shellOf(threadId);
+        return { ...(yield* linked), id: threadId, modelSelection: launch.modelSelection };
+      }),
     getProjectThreadRecords: (input) => projectionOf(input.threadId),
     getThreadRecords: (threadId) => projectionOf(threadId),
     listProjectThreads: () => linked.pipe(Effect.map((shell) => [shell] as never)),
@@ -153,7 +182,23 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
 const boxLaunches = (seen: Ref.Ref<Seen>) =>
   Layer.mock(ThreadLaunch.ThreadLaunchService)({
     launch: (input) =>
-      Ref.update(seen, (current) => ({ ...current, launches: [...current.launches, input] })).pipe(
+      Ref.updateAndGet(seen, (current) => ({
+        ...current,
+        launches: [...current.launches, input],
+      })).pipe(
+        Effect.tap(({ launches }) =>
+          input.title === "Partial repair launch" &&
+          launches.filter((entry) => entry.commandId === input.commandId).length === 1
+            ? Effect.fail(
+                new ThreadLaunch.ThreadLaunchError({
+                  commandId: input.commandId,
+                  projectId: input.projectId,
+                  operation: "dispatch-message",
+                  cause: "interrupted after create",
+                }),
+              )
+            : Effect.void,
+        ),
         Effect.as({
           threadId: input.threadId,
           projection: {
@@ -277,6 +322,7 @@ const mcpClient = McpSchema.McpServerClient.of({
  * caller whose modes the test picks. Its local threads never matter here.
  */
 const makeLaptop = Effect.gen(function* () {
+  const repairSource = yield* Ref.make<"available" | "missing" | "deleted">("available");
   const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
   const layerHere = Layer.mergeAll(
     McpHttpServer.layerOrchestratorToolkit,
@@ -318,6 +364,22 @@ const makeLaptop = Effect.gen(function* () {
                     : { runtimeMode: "full-access" },
                 ),
           ),
+        getThreadRecords: (threadId) =>
+          Ref.get(repairSource).pipe(
+            Effect.map(
+              (state) =>
+                ({
+                  thread: {
+                    ...liveThreadShell(threadId, { runtimeMode: "full-access" }),
+                    deletedAt: state === "deleted" ? "2026-01-01T00:00:00Z" : null,
+                  },
+                  runs:
+                    state !== "missing"
+                      ? [{ id: "run:repair", demandId: `demand:${"e".repeat(64)}` }]
+                      : [],
+                }) as never,
+            ),
+          ),
         getProjectThreadRecords: ({ threadId }) =>
           Effect.succeed({
             thread: liveThreadShell(threadId, { runtimeMode: "full-access" }),
@@ -355,6 +417,7 @@ const makeLaptop = Effect.gen(function* () {
       threadId: ThreadId.make(caller),
       providerSessionId: `provider-session:${caller}`,
       providerInstanceId: ProviderInstanceId.make("codex"),
+      demandId: `demand:${"d".repeat(64)}`,
     },
     client: undefined,
     capabilities,
@@ -375,7 +438,7 @@ const makeLaptop = Effect.gen(function* () {
         ),
         Effect.provideService(McpSchema.McpServerClient, mcpClient),
       );
-  return { links: Context.get(linking, PeerLinks.PeerLinks), call };
+  return { links: Context.get(linking, PeerLinks.PeerLinks), call, repairSource };
 });
 
 const failureOf = (result: McpSchema.CallToolResult) => {
@@ -630,8 +693,82 @@ it.effect("an agent's launch in a linked environment is top-level, whatever it c
       expect(failureOf(launched)).toBeUndefined();
       const [received] = (yield* Ref.get(seen)).launches;
       expect(received?.delegatedFrom).toBeUndefined();
+      expect(received?.initialMessage?.demandId).toBe(`demand:${"d".repeat(64)}`);
+      expect(received?.initialMessage?.demandOriginKind).toBeUndefined();
+      const repair = yield* a.call("thread:laptop-full", "t3_thread_launch", {
+        environmentId: box.environmentId,
+        projectId: boxProject,
+        title: "Repair",
+        message: "Continue the failed job.",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        demandOrigin: { kind: "repair", threadId: "thread:laptop-full", runId: "run:repair" },
+      });
+      expect(failureOf(repair)).toBeUndefined();
+      expect((yield* Ref.get(seen)).launches.at(-1)?.initialMessage).toMatchObject({
+        demandId: `demand:${"e".repeat(64)}`,
+        demandOriginKind: "repair",
+      });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "replays accepted forwarded repairs after the source disappears and refuses fresh work",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const seen = yield* Ref.make<Seen>(nothingSeen);
+        const linkSession = yield* Ref.make("");
+        const b = yield* serveBox(seen, linkSession);
+        const a = yield* makeLaptop;
+        yield* linkTo(a.links, b, "full-access");
+        yield* Ref.set(linkSession, (yield* b.linkedSessions)[0]!.sessionId);
+        const caller = "thread:laptop-full";
+        const common = {
+          environmentId: box.environmentId,
+          message: "Continue the failed job.",
+          demandOrigin: { kind: "repair", threadId: caller, runId: "run:repair" },
+        };
+        const send = { ...common, threadId: boxThread, clientRequestId: "repair-send" };
+        const launch = {
+          ...common,
+          clientRequestId: "repair-launch",
+          projectId: boxProject,
+          title: "Partial repair launch",
+          modelSelection: { instanceId: "codex", model: "gpt-5" },
+        };
+        const sent = yield* a.call(caller, "t3_thread_send", send);
+        expect(failureOf(sent)).toBeUndefined();
+        expect((yield* Ref.get(seen)).sends[0]?.demandId).toBe(`demand:${"e".repeat(64)}`);
+        expect((yield* a.call(caller, "t3_thread_launch", launch)).isError).toBe(true);
+        const created = (yield* Ref.get(seen)).launches[0]!;
+        expect(created.initialMessage).toMatchObject({
+          demandId: `demand:${"e".repeat(64)}`,
+          demandOriginKind: "repair",
+        });
+        yield* Ref.set(a.repairSource, "missing");
+        const repeated = yield* a.call(caller, "t3_thread_send", send);
+        expect(failureOf(repeated)).toBeUndefined();
+        expect(repeated.structuredContent).toEqual(sent.structuredContent);
+        const resumed = yield* a.call(caller, "t3_thread_launch", launch);
+        expect(failureOf(resumed)).toBeUndefined();
+        expect((yield* Ref.get(seen)).launches.at(-1)?.commandId).toBe(created.commandId);
+        for (const [tool, args] of [
+          ["t3_thread_send", { ...send, clientRequestId: "fresh-send" }],
+          ["t3_thread_launch", { ...launch, clientRequestId: "fresh-launch" }],
+          ["t3_thread_send", { ...send, threadId: usersThread }],
+        ] as const) {
+          expect((yield* a.call(caller, tool, args)).isError).toBe(true);
+        }
+        yield* Ref.set(a.repairSource, "deleted");
+        expect(
+          (yield* a.call(caller, "t3_thread_send", { ...send, clientRequestId: "fresh-deleted" }))
+            .isError,
+        ).toBe(true);
+        expect((yield* Ref.get(seen)).sends).toHaveLength(2);
+        expect((yield* Ref.get(seen)).launches).toHaveLength(2);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("brings a repository to a linked environment, only through full access", () =>

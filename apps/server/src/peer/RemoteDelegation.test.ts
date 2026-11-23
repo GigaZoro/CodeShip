@@ -22,10 +22,12 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -697,12 +699,13 @@ const makeLaptop = (
   Effect.gen(function* () {
     const linking = kept ?? (yield* layerLinkingEnvironment(laptop).pipe(Layer.build));
     const layerDatabase = Layer.succeedContext(database);
+    const adapterRegistry = ProviderAdapterRegistry.layerFromAdapters([adapter]);
     const layerOrchestrator = Layer.mergeAll(
       layerDatabase,
       ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
       ProviderReplayHarness.layerWithRegistry(
         { name: "remote-delegation-laptop" },
-        ProviderAdapterRegistry.layerFromAdapters([adapter]),
+        adapterRegistry,
         { databaseLayer: layerDatabase, runEffectWorker: false },
       ),
     ).pipe(
@@ -763,7 +766,7 @@ const makeLaptop = (
           getProviders: Effect.succeed(laptopProviders),
         }),
       ),
-      Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+      Layer.provide(adapterRegistry),
       Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
       Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
       Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
@@ -986,6 +989,30 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
       yield* linkTo(a.links, b, "full-access");
       yield* seedParent(a);
 
+      const delayed = yield* a.call(
+        "delegate_task",
+        {
+          task: "Earlier run's work.",
+          target: {
+            environmentId: box.environmentId,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+          mode: "async",
+          clientRequestId: "call-before-the-new-parent",
+        },
+        {
+          ...parentScope,
+          thread: {
+            ...parentScope.thread!,
+            runId: RunId.make("run:previous-parent"),
+            demandId: `demand:${"a".repeat(64)}`,
+          },
+        },
+      );
+      expect(delayed.isError).toBe(true);
+      expect(JSON.stringify(delayed.content)).toContain("parent_not_active");
+      expect(yield* Ref.get(thread.launched)).toBeNull();
       const delegated = yield* delegateToBox(a);
       expect(delegated).toMatchObject({
         status: "running",
@@ -1761,6 +1788,310 @@ it.effect("a task whose thread there waits on its own task ends with the answer 
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect.each(["local", "remote"] as const)(
+  "replays the first %s delegation when the same request key changes destination",
+  (first) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const peer = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, peer, "full-access");
+        yield* seedParent(a);
+
+        const local = a.call("delegate_task", {
+          task: "Run the suite locally.",
+          clientRequestId: "suite-on-box",
+        });
+        const remote = a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          clientRequestId: "suite-on-box",
+          target: { environmentId: box.environmentId, projectId: boxProject },
+        });
+        const original = yield* first === "local" ? local : remote;
+        expect(original.isError, JSON.stringify(original.content)).toBe(false);
+
+        const replay = yield* first === "local" ? remote : local;
+        expect(replay.isError, JSON.stringify(replay.content)).toBe(false);
+        expect(replay.structuredContent).toEqual(original.structuredContent);
+        expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(
+          1,
+        );
+        if (first === "local") expect(yield* Ref.get(thread.launched)).toBeNull();
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("simultaneous local and remote requests with the same key accept one task", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const peer = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, peer, "full-access");
+      yield* seedParent(a);
+
+      const remoteArrived = yield* Deferred.make<void>();
+      const allowRemote = yield* Deferred.make<void>();
+      const dispatch = a.threads.dispatch;
+      using _dispatch = vi
+        .spyOn(a.threads, "dispatch")
+        .mockImplementation((command) =>
+          command.type === "delegated_task.remote.request"
+            ? Deferred.succeed(remoteArrived, undefined).pipe(
+                Effect.andThen(Deferred.await(allowRemote)),
+                Effect.andThen(dispatch(command)),
+              )
+            : dispatch(command),
+        );
+      const pending = yield* delegateToBox(a).pipe(Effect.forkChild);
+      yield* Deferred.await(remoteArrived);
+      const local = yield* a.call("delegate_task", {
+        task: "Run the suite locally.",
+        clientRequestId: "suite-on-box",
+      });
+      expect(local.isError, JSON.stringify(local.content)).toBe(false);
+
+      yield* Deferred.succeed(allowRemote, undefined);
+      expect(yield* Fiber.join(pending)).toEqual(local.structuredContent);
+      expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(1);
+      expect(yield* Ref.get(thread.launched)).toBeNull();
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a local retry finds a task accepted with the historical remote command id", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* seedParent(a);
+      const remoteChild = {
+        environmentId: box.environmentId,
+        threadId: ThreadId.make("thread:legacy-delegation"),
+        label: "Box",
+      };
+      const receipt = yield* a.threads.dispatch({
+        type: "delegated_task.remote.request",
+        commandId: CommandId.make(
+          "command:mcp:provider-session%3Alaptop-parent:remote-delegate:suite-on-box",
+        ),
+        parentThreadId,
+        parentRunId,
+        parentNodeId: parentRootNode,
+        task: "Original remote task.",
+        driver: ProviderDriverKind.make("remote"),
+        modelSelection,
+        remoteChild,
+      });
+      const event = receipt.storedEvents.find(
+        ({ event }) => event.type === "subagent.updated",
+      )?.event;
+      if (event?.type !== "subagent.updated") return yield* Effect.die("Missing accepted task");
+
+      const replay = yield* a.call("delegate_task", {
+        task: "Run the suite locally.",
+        clientRequestId: "suite-on-box",
+      });
+      expect(replay.isError, JSON.stringify(replay.content)).toBe(false);
+      expect(replay.structuredContent).toMatchObject({ taskId: event.payload.id, remoteChild });
+      expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(1);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each(["no active parent run", "a newer run owned by another provider"] as const)(
+  "preserves remote observation guards with %s",
+  (observer) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const delegated = yield* delegateToBox(a);
+
+        yield* Ref.set(thread.reply, "Remote result remains available.");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        yield* taskResult(a, delegated.taskId);
+        yield* SubscriptionRef.changes(offers).pipe(
+          Stream.filter((seen) => seen.some((offer) => offer.threadId === parentThreadId)),
+          Stream.runHead,
+        );
+
+        const parent = yield* a.projections.getThreadRecords(
+          parentThreadId,
+          ["runs", "subagents"],
+          {
+            subagentIds: [delegated.taskId],
+          },
+        );
+        expect(parent.subagents[0]?.completionDelivery?.state).not.toBe("acknowledged");
+        const parentRun = parent.runs.find((run) => run.id === parentRunId);
+        if (parentRun === undefined) return yield* Effect.die("The parent run was not seeded.");
+        const now = yield* DateTime.now;
+        const otherInstanceId = ProviderInstanceId.make("codex-other");
+        const observingRun: OrchestrationV2Run =
+          observer === "no active parent run"
+            ? { ...parentRun, status: "completed", completedAt: now }
+            : {
+                id: RunId.make("run:laptop-other-provider"),
+                threadId: parentThreadId,
+                ordinal: parentRun.ordinal + 1,
+                providerInstanceId: otherInstanceId,
+                modelSelection: { instanceId: otherInstanceId, model: "gpt-5.4" },
+                providerThreadId: null,
+                userMessageId: MessageId.make("message:laptop-other-provider"),
+                rootNodeId: null,
+                activeAttemptId: null,
+                status: "preparing",
+                requestedAt: now,
+                startedAt: null,
+                completedAt: null,
+                checkpointId: null,
+                contextHandoffId: null,
+              };
+        yield* a.sink.write({
+          commandId: CommandId.make("command:change-remote-result-observer"),
+          events: [
+            {
+              id: EventId.make("event:change-remote-result-observer"),
+              type: "run.updated",
+              threadId: parentThreadId,
+              runId: observingRun.id,
+              providerInstanceId: observingRun.providerInstanceId,
+              occurredAt: now,
+              payload: observingRun,
+            },
+          ],
+        });
+
+        const status = yield* a.call("task_status", { taskId: delegated.taskId });
+        if (observer === "no active parent run") {
+          expect(status.isError).toBe(true);
+          expect(status.content).toEqual([
+            {
+              type: "text",
+              text: JSON.stringify({
+                _tag: "OrchestratorMcpFailure",
+                code: "parent_not_active",
+                message: "The calling provider no longer owns an active thread run.",
+              }),
+            },
+          ]);
+          const unacknowledged = yield* a.projections.getThreadRecords(
+            parentThreadId,
+            ["subagents"],
+            { subagentIds: [delegated.taskId] },
+          );
+          expect(unacknowledged.subagents[0]?.result).toBe("Remote result remains available.");
+          expect(unacknowledged.subagents[0]?.completionDelivery?.state).not.toBe("acknowledged");
+          return;
+        }
+        expect(status.isError, JSON.stringify(status.content)).not.toBe(true);
+        expect(status.structuredContent).toMatchObject({
+          status: "completed",
+          summary: "Remote result remains available.",
+        });
+        const acknowledged = yield* a.projections.getThreadRecords(parentThreadId, ["subagents"], {
+          subagentIds: [delegated.taskId],
+        });
+        expect(acknowledged.subagents[0]?.completionDelivery).toEqual({
+          state: "acknowledged",
+          observedByRunId: null,
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "overlapping delegations with one key launch only the recorded destination and owner",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const second = descriptorOf("environment-second-box", "Second box");
+        const firstThread = yield* makeBoxThread;
+        const secondThread = yield* makeBoxThread;
+        const firstBox = yield* serveBox(firstThread);
+        const secondBox = yield* servePeer(second, boxToolkitLayer(secondThread, boxProjects));
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, firstBox, "full-access");
+        yield* linkTo(a.links, secondBox, "full-access");
+        yield* seedParent(a);
+
+        // Both requests have finished preflight when the first recording commits.
+        const atRecord = yield* Ref.make(0);
+        const both = yield* Deferred.make<void>();
+        const dispatch = a.threads.dispatch;
+        const record = vi.spyOn(a.threads, "dispatch").mockImplementation((command) =>
+          command.type !== "delegated_task.remote.request"
+            ? dispatch(command)
+            : Effect.gen(function* () {
+                if ((yield* Ref.updateAndGet(atRecord, (count) => count + 1)) === 2)
+                  yield* Deferred.succeed(both, undefined);
+                yield* Deferred.await(both);
+                return yield* dispatch(command);
+              }),
+        );
+        const submit = (environmentId: typeof box.environmentId, demandId: string) =>
+          a.call(
+            "delegate_task",
+            {
+              target: { environmentId, projectId: boxProject },
+              task: "Run the suite.",
+              clientRequestId: "concurrent-suite",
+              mode: "async",
+            },
+            { ...parentScope, thread: { ...parentScope.thread!, runId: parentRunId, demandId } },
+          );
+        const firstOwner = `demand:${"a".repeat(64)}`,
+          secondOwner = `demand:${"b".repeat(64)}`;
+        const results = yield* Effect.all(
+          [submit(box.environmentId, firstOwner), submit(second.environmentId, secondOwner)],
+          { concurrency: 2 },
+        ).pipe(Effect.ensuring(Effect.sync(() => record.mockRestore())));
+        for (const result of results)
+          expect(result.isError, JSON.stringify(result.content)).toBe(false);
+        const [accepted] = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents;
+        expect(accepted?.remoteChild).toBeDefined();
+        const onFirst = accepted!.remoteChild!.environmentId === box.environmentId;
+        expect(accepted!.demandId).toBe(onFirst ? firstOwner : secondOwner);
+        for (const result of results)
+          expect(result.structuredContent).toMatchObject({
+            taskId: accepted!.id,
+            remoteChild: { environmentId: accepted!.remoteChild!.environmentId },
+          });
+        expect(yield* Ref.get(firstThread.launched)).toBe(
+          onFirst ? accepted!.remoteChild!.threadId : null,
+        );
+        expect(yield* Ref.get(secondThread.launched)).toBe(
+          onFirst ? null : accepted!.remoteChild!.threadId,
+        );
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("the same key from another provider session is another task", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -2138,6 +2469,10 @@ it.effect("fails the task when its thread there is gone, or the link here is", (
       const failed = yield* taskResult(a, gone.taskId);
       expect(failed?.status).toBe("failed");
       expect(failed?.result).toContain("was not found");
+      yield* Ref.set(thread.launched, null);
+      const replay = yield* delegateToBox(a);
+      expect(replay).toMatchObject({ taskId: gone.taskId, status: "failed" });
+      expect(yield* Ref.get(thread.launched)).toBeNull();
 
       // The link is forgotten here while the task runs there.
       yield* Ref.set(thread.gone, false);
@@ -2154,6 +2489,16 @@ it.effect("fails the task when its thread there is gone, or the link here is", (
       const unlinked = yield* taskResult(a, forgotten.taskId);
       expect(unlinked?.status).toBe("failed");
       expect(unlinked?.result).toContain("not linked to");
+      const offlineReplay = yield* a.call("delegate_task", {
+        task: "Replayed after the link was forgotten.",
+        target: { environmentId: box.environmentId },
+        clientRequestId: "forgotten",
+      });
+      expect(offlineReplay.isError, JSON.stringify(offlineReplay.content)).toBe(false);
+      expect(offlineReplay.structuredContent).toMatchObject({
+        taskId: forgotten.taskId,
+        status: "failed",
+      });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
