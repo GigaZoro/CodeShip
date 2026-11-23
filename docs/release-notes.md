@@ -1,3 +1,7 @@
+## 2026-11-23 — OpenCode questions and permissions
+
+- On resumed chats, OpenCode routes questions and permission requests to their originating turn when the native session identifies it.
+
 ## 2026-11-23 — Accounting for repairs and work-item requests
 
 - MCP launches and sends can carry the work item or repair run that owns them. A guarded restart applies only while its intended run is active. Linked repairs require a peer that supports origin accounting.
