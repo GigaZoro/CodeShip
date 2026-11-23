@@ -338,11 +338,16 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             )?.supportedRuntimeModes,
           });
         }
-        // A new thread owns no attachments yet, even on a replay: a replay claims again and
-        // keeps the copies its first launch accepted.
+        // An accepted first message owns its files even after the pending upload expires.
         const requested = input.attachments ?? [];
+        const accepted =
+          launched !== null && requested.length > 0
+            ? yield* context.threads
+                .getAcceptedLaunchAttachments(commandId, threadId, messageId)
+                .pipe(Effect.mapError(unavailable))
+            : undefined;
         const result = yield* withResolvedAttachments(
-          { requested, owned: [], context },
+          { requested: accepted ?? requested, owned: accepted ?? [], context },
           (attachments) =>
             ThreadMessageIntake.launchThread({
               commandId,
@@ -395,7 +400,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                     message: ThreadLaunch.LAUNCH_INTENT_MISMATCH,
                   });
                 }
-                // The administrator's ceiling refuses the mode; say so rather than "unavailable".
+                if (error._tag === "ThreadLaunchError" && error.operation === "recover-workspace")
+                  return new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: error.message,
+                  });
                 if (error._tag === "ThreadLaunchError" && isAboveCeilingError(error.cause)) {
                   return new OrchestratorMcpFailure({
                     code: "invalid_request",

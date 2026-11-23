@@ -175,6 +175,15 @@ const clientLaunchHarness = (input: {
       capabilities: new Set(["orchestration" as const]),
     }),
     Layer.mock(ThreadManagement.ThreadManagementService)({
+      getAcceptedLaunchAttachments: (commandId, threadId, messageId) =>
+        Effect.succeed(
+          input.launched.find(
+            (launch) =>
+              launch.commandId === commandId &&
+              launch.threadId === threadId &&
+              launch.initialMessage?.messageId === messageId,
+          )?.initialMessage?.attachments,
+        ),
       // A thread exists once a launch started it.
       getThreadShell: (threadId) => {
         const caller = input.callerThreads?.find(({ shell }) => shell.id === threadId);
@@ -786,8 +795,9 @@ it.effect(
         Effect.provide(McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)),
       );
 
-      yield* toolkit
+      const request = toolkit
         .handle("t3_thread_launch", {
+          clientRequestId: "retained-upload",
           title: "Fix",
           projectId,
           message: "Fix the bug in the screenshot",
@@ -795,6 +805,7 @@ it.effect(
         })
         .pipe(Stream.unwrap, Stream.runCollect);
 
+      const first = yield* request;
       const [launch] = launched;
       const sent = launch?.initialMessage?.attachments ?? [];
       const segment = toSafeThreadAttachmentSegment(launch?.threadId ?? "");
@@ -815,6 +826,11 @@ it.effect(
           .map((path) => path.slice(attachmentsDir.length + 1))
           .toSorted(),
       );
+      yield* fileSystem.remove(pathOf(upload));
+      const retainedFiles = (yield* fileSystem.readDirectory(attachmentsDir)).toSorted();
+      expect(yield* request).toEqual(first);
+      expect(launched[1]?.initialMessage?.attachments).toEqual(sent);
+      expect((yield* fileSystem.readDirectory(attachmentsDir)).toSorted()).toEqual(retainedFiles);
     }).pipe(Effect.provide(dependencies));
   },
 );

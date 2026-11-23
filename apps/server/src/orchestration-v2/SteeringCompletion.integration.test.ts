@@ -1437,6 +1437,23 @@ it.effect.each(["steer", "restart"] as const)(
           assert.equal(retry.delivery, first.delivery);
           assert.equal(retry.run.id, first.run.id);
           assert.isTrue(retry.dispatch.replayed);
+          yield* threads.dispatch({
+            type: "thread.archive",
+            commandId: CommandId.make("archive-after-completion"),
+            threadId,
+          });
+          const archived = yield* threads.sendToThread(input);
+          assert.equal(archived.delivery, first.delivery);
+          assert.equal(archived.run.id, first.run.id);
+          assert.isTrue(archived.dispatch.replayed);
+          const fresh = yield* Effect.flip(
+            threads.sendToThread({
+              ...input,
+              commandId: CommandId.make("new-after-archive"),
+              messageId: MessageId.make("new-after-archive"),
+            }),
+          );
+          assert.equal(fresh._tag, "ThreadManagementThreadArchivedError");
           assert.lengthOf(
             (yield* threads.getThreadProjection(threadId)).messages.filter(
               (row) => row.id === input.messageId,

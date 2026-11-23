@@ -1,6 +1,6 @@
 ## 2026-11-23 — Reliable retries for MCP commands
 
-- Retrying a keyed send recovers the accepted delivery after the run settles. A keyed thread launch can resume its original first message, and repeated delegations resolve to the task and destination first accepted.
+- Retrying a keyed send recovers the accepted delivery after the run settles or its thread is archived. A keyed thread launch can resume its original first message after the temporary upload expires. An interrupted idle worktree launch uses its recorded preparation state, and repeated delegations resolve to the task and destination first accepted.
 
 ## 2026-11-23 — Access checks for repeated thread launches
 

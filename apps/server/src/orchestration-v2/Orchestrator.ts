@@ -3187,6 +3187,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(command.launchIntentHash === undefined
         ? {}
         : { launchIntentHash: command.launchIntentHash }),
+      ...(command.initialWorkspacePreparation === undefined
+        ? {}
+        : { initialWorkspacePreparation: command.initialWorkspacePreparation }),
       createdBy: command.createdBy,
       creationSource: command.creationSource,
       id: command.threadId,

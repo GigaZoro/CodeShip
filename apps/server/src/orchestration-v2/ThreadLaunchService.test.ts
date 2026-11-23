@@ -276,6 +276,7 @@ function makeHarness(options: HarnessOptions = {}) {
   return {
     layer: Layer.mergeAll(
       layerLaunch,
+      layerReceipts,
       layerRegistry,
       layerThreadManagement,
       layerTitleRegeneration,
@@ -2259,6 +2260,138 @@ it.effect.each(["idle", "partial", "legacy partial", "legacy complete"] as const
   },
 );
 
+it.effect.each([
+  "create",
+  "workspace",
+  "checkout-start",
+  "setup-start",
+  "complete",
+  "legacy",
+] as const)("recovers an idle worktree from its durable preparation boundary (%s)", (stage) =>
+  Effect.gen(function* () {
+    const setupEntered = yield* Deferred.make<void>();
+    const finishSetup = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      runSetup: () =>
+        Deferred.succeed(setupEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(finishSetup)),
+          Effect.as({ status: "no-script" as const }),
+        ),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      const workspace = {
+        type: "worktree",
+        baseRef: "original-base",
+        branch: "accepted-worktree",
+      } as const;
+      const input = {
+        ...launchInput({ command: "idle-worktree", thread: "idle-thread", workspace }),
+        launchIntentHash: "a".repeat(64),
+        createdBy: "agent" as const,
+        creationSource: "mcp" as const,
+      };
+      if (stage === "create") {
+        const cut = vi
+          .spyOn(threads, "getThreadProjection")
+          .mockImplementationOnce(() => Effect.interrupt);
+        const initial = yield* launches.launch(input).pipe(Effect.exit);
+        cut.mockRestore();
+        assert.isTrue(Exit.isFailure(initial));
+        assert.deepEqual(
+          (yield* threads.getThreadProjection(input.threadId)).thread.initialWorkspacePreparation,
+          workspace,
+        );
+      } else {
+        yield* threads.dispatch({
+          type: "thread.create",
+          commandId: input.commandId,
+          threadId: input.threadId,
+          projectId,
+          title: input.title,
+          runtimeMode: input.runtimeMode,
+          interactionMode: input.interactionMode,
+          modelSelection,
+          branch: workspace.branch,
+          worktreePath: null,
+          createdBy: input.createdBy,
+          creationSource: input.creationSource,
+          launchIntentHash: input.launchIntentHash,
+          ...(stage === "legacy" ? {} : { initialWorkspacePreparation: workspace }),
+        });
+      }
+      const created = Option.getOrThrow(yield* receipts.getByCommandId(input.commandId));
+      const checkpoint = (phase: "checkout" | "setup" | "complete") =>
+        Effect.gen(function* () {
+          yield* receipts.insertIfAbsent({
+            commandId: CommandId.make(`${input.commandId}:idle-${phase}`),
+            threadId: input.threadId,
+            commandType: `thread-launch.idle-${phase}`,
+            acceptedAt: yield* DateTime.now,
+            resultSequence: created.resultSequence,
+            status: "accepted",
+            error: null,
+          });
+        });
+      if (stage !== "create" && stage !== "legacy") yield* checkpoint("checkout");
+      if (stage === "workspace" || stage === "setup-start" || stage === "complete") {
+        yield* threads.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make("idle-worktree:workspace"),
+          threadId: input.threadId,
+          branch: workspace.branch,
+          worktreePath: "/repo-worktrees/feature",
+        });
+      }
+      if (stage === "setup-start" || stage === "complete") yield* checkpoint("setup");
+      if (stage === "complete") yield* checkpoint("complete");
+
+      const retry = {
+        ...input,
+        workspaceStrategy: { ...workspace, baseRef: "changed-server-default" },
+      };
+      if (stage === "checkout-start" || stage === "setup-start" || stage === "legacy") {
+        const failure = yield* launches.launch(retry).pipe(Effect.flip);
+        assert.equal(failure._tag, "ThreadLaunchError");
+        if (failure._tag === "ThreadLaunchError")
+          assert.equal(failure.operation, "recover-workspace");
+      } else {
+        const result = yield* launches.launch(retry);
+        assert.isTrue(result.resumed);
+        assert.isEmpty(result.projection.runs);
+        if (stage !== "complete") {
+          yield* Deferred.await(setupEntered);
+          assert.equal(harness.runSetup.mock.calls.length, 1);
+          yield* launches.launch(retry);
+          assert.equal(harness.runSetup.mock.calls.length, 1);
+          yield* Deferred.succeed(finishSetup, undefined);
+          yield* (yield* WorktreeSetupTracker.WorktreeSetupTracker).stream(input.threadId).pipe(
+            Stream.filter((snapshot) => snapshot?.phase === "done"),
+            Stream.runHead,
+          );
+          const done = yield* receipts.getByCommandId(
+            CommandId.make("idle-worktree:idle-complete"),
+          );
+          assert.isTrue(Option.isSome(done));
+          yield* launches.launch(retry);
+        }
+      }
+      assert.equal(harness.createWorktree.mock.calls.length, stage === "create" ? 1 : 0);
+      if (stage === "create")
+        assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, workspace.baseRef);
+      assert.equal(
+        harness.runSetup.mock.calls.length,
+        stage === "create" || stage === "workspace" ? 1 : 0,
+      );
+      const final = yield* threads.getThreadProjection(input.threadId);
+      assert.isEmpty(final.messages);
+      assert.isEmpty(final.runs);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 it.effect("schedules an accepted preparing message exactly once across concurrent retries", () =>
   Effect.gen(function* () {
     const setupEntered = yield* Deferred.make<void>();
@@ -2441,6 +2574,24 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     );
     assert.isDefined(stored);
     assert.notEqual(stored.attachments[0]?.id, attachment.id);
+    assert.deepEqual(
+      yield* threads.getAcceptedLaunchAttachments(input.commandId, input.threadId, stored.id),
+      stored.attachments,
+    );
+    assert.isUndefined(
+      yield* threads.getAcceptedLaunchAttachments(
+        input.commandId,
+        ThreadId.make("other-thread"),
+        stored.id,
+      ),
+    );
+    assert.isUndefined(
+      yield* threads.getAcceptedLaunchAttachments(
+        CommandId.make("unaccepted-launch"),
+        input.threadId,
+        stored.id,
+      ),
+    );
     const record = stored.context?.records[0];
     assert.isDefined(record);
     assert.equal((record as { attachmentId: string }).attachmentId, stored.attachments[0]?.id);

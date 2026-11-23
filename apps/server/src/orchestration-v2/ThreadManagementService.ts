@@ -444,6 +444,14 @@ export interface ThreadManagementServiceShape {
       readonly threadId: ThreadId;
     },
   ) => Effect.Effect<boolean>;
+  readonly getAcceptedLaunchAttachments: (
+    commandId: CommandId,
+    threadId: ThreadId,
+    messageId: MessageId,
+  ) => Effect.Effect<
+    ReadonlyArray<ChatAttachment> | undefined,
+    Orchestrator.OrchestratorDispatchError
+  >;
   readonly acceptedCommandSequence: (
     commandId: CommandId,
   ) => Effect.Effect<number | undefined, Orchestrator.OrchestratorDispatchError>;
@@ -702,6 +710,32 @@ const make = Effect.gen(function* () {
               receipt.value.threadId === acceptedTarget.threadId)),
       ),
     );
+
+  const getAcceptedLaunchAttachments = Effect.fn(
+    "ThreadManagementService.getAcceptedLaunchAttachments",
+  )(function* (commandId: CommandId, threadId: ThreadId, messageId: MessageId) {
+    if (!(yield* hasReceipt(commandId, { threadId, commandType: "thread.create" }))) return;
+    const initialCommandId = CommandId.make(`${commandId}:initial-message`);
+    if (!(yield* hasReceipt(initialCommandId, { threadId, commandType: "message.dispatch" })))
+      return;
+    const events = yield* orchestrator.readCommandEvents({
+      commandId: initialCommandId,
+      type: "message.dispatch",
+    });
+    for (const { event } of events) {
+      if (
+        event.type === "message.updated" &&
+        event.threadId === threadId &&
+        event.payload.id === messageId
+      )
+        return event.payload.attachments;
+    }
+    return yield* new Orchestrator.OrchestratorDispatchError({
+      commandId: initialCommandId,
+      commandType: "message.dispatch",
+      cause: "The accepted initial message could not be recovered.",
+    });
+  });
 
   const acceptedCommandSequence: ThreadManagementServiceShape["acceptedCommandSequence"] = (
     commandId,
@@ -1020,11 +1054,6 @@ const make = Effect.gen(function* () {
     "ThreadManagementService.sendToThread",
   )(function* (input) {
     const target = yield* getProjectThreadRecords(input, ["runs", "providerTurns"]);
-    if (target.thread.archivedAt !== null) {
-      return yield* new ThreadManagementThreadArchivedError({
-        threadId: input.threadId,
-      });
-    }
     const receipt = Option.getOrUndefined(
       yield* receipts.getByCommandId(input.commandId).pipe(
         Effect.mapError(
@@ -1062,6 +1091,11 @@ const make = Effect.gen(function* () {
             type: "message.dispatch",
           }),
         };
+      }
+      if (target.thread.archivedAt !== null) {
+        return yield* new ThreadManagementThreadArchivedError({
+          threadId: input.threadId,
+        });
       }
       const steerableRun = latestSteerableRun(target);
       let dispatchMode: Extract<
@@ -1833,6 +1867,7 @@ const make = Effect.gen(function* () {
     isProviderInstanceEnabledForProject,
     hasReceipt,
     acceptedCommandSequence,
+    getAcceptedLaunchAttachments,
     waitForThread,
     organizeAfterRun,
     organizeThread,
