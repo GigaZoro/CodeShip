@@ -773,6 +773,7 @@ it.effect.each([
   { kind: "once", shortage: "usage" },
   { kind: "fixed_time", shortage: "usage" },
   { kind: "fixed_time", shortage: "legacy usage" },
+  { kind: "fixed_time", shortage: "late wake usage" },
   { kind: "interval", shortage: "memory" },
 ] as const)(
   "$kind demand after two $shortage skips and a scheduler restart",
@@ -844,7 +845,6 @@ it.effect.each([
       // clearing the shortage, so a second retry cannot replace the first due instant.
       const afterSkip = (due: string) =>
         Effect.gen(function* () {
-          yield* TestClock.setTime(Date.parse(due));
           const service = yield* ScheduledTaskService.ScheduledTaskService;
           const moved = yield* service.subscribeList().pipe(
             Stream.filter(({ tasks }) =>
@@ -865,15 +865,36 @@ it.effect.each([
           expect(yield* Ref.get(demand)).toBeUndefined();
           if (shortage === "legacy usage") {
             const sql = yield* SqlClient.SqlClient;
+            // Remove the cursor evidence written by newer versions as well.
+            const columns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_tasks)`;
+            if (columns.some((column) => column.name === "usage_hold_json"))
+              yield* sql`UPDATE scheduled_tasks SET usage_hold_json=NULL WHERE task_id=${task.id}`;
             yield* sql`UPDATE scheduled_task_runs
               SET usage_limit_json = json_remove(usage_limit_json, '$.heldOccurrence')
               WHERE task_id = ${task.id} AND skip_reason = 'usage_limited'`;
           }
           return current.nextRunAt!;
         }).pipe(Effect.provide(layer));
+      yield* TestClock.setTime(firstMs);
       const secondAt = yield* afterSkip(firstAt);
-      yield* Ref.set(resetAt, isoMs(Date.parse(secondAt) + 300_000));
+      // Waking after the grace period revisits 07:00. The 07:30 reset and original
+      // occurrence must survive even though history already contains that 07:00 skip.
+      const late = shortage === "late wake usage";
+      yield* Ref.set(resetAt, isoMs(late ? firstMs + 30 * 60_000 : Date.parse(secondAt) + 300_000));
+      // Advance with the scheduler stopped. Advancing a running TestClock polls each intermediate deadline.
+      yield* TestClock.setTime(late ? firstMs + 20 * 60_000 : Date.parse(secondAt));
       const thirdAt = yield* afterSkip(secondAt);
+      if (late) {
+        expect(secondAt).toBe(isoMs(firstMs + 5 * 60_000));
+        expect(thirdAt).toBe(isoMs(firstMs + 30 * 60_000));
+        const sql = yield* SqlClient.SqlClient;
+        const history =
+          yield* sql`SELECT scheduled_for, json_extract(usage_limit_json, '$.until') AS reset_at
+          FROM scheduled_task_runs WHERE task_id = ${task.id} AND skip_reason = 'usage_limited'`;
+        // The late poll caught up the same 07:00 occurrence. Its first skip still has the old
+        // reset, so passing this test requires recovering the occurrence from the moved cursor.
+        expect(history).toEqual([{ scheduled_for: firstAt, reset_at: secondAt }]);
+      }
       yield* Ref.set(resetAt, null);
       yield* TestClock.setTime(Date.parse(thirdAt));
       yield* Effect.gen(function* () {
