@@ -36,7 +36,8 @@
 
 ## 2026-11-22 — Relay client installs keep each other's locks
 
-- CodeShip checks the version that each managed relay binary reports and reuses the exact pin even when an older release folder contains it. New installs use their own directory and hold a SQLite transaction until they finish. The lock survives a host suspend, and the OS releases it if the installer exits.
+- CodeShip checks the version that each managed relay binary reports and reuses the exact pin even when an older release folder contains it. New installs use a separate cache tree and hold a SQLite transaction until they finish. The lock survives a host suspend, and the OS releases it if the installer exits.
+- Cleanup shares the install lock. It retains a rollback binary and removes only identified older executables for this machine’s platform and architecture from the new cache. Legacy files, staging files and binaries reporting the pin or a newer version are preserved.
 - A recent legacy lock gives the older installer time to finish. CodeShip can proceed in its own directory as soon as all identified legacy owners have exited, or after 30 minutes if ownership remains uncertain. It preserves the legacy lock and binary. Relay archive extraction has a two-minute timeout.
 
 ## 2026-11-22 — Long keys work for tasks on linked environments

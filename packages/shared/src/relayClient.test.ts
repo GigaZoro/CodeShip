@@ -108,9 +108,9 @@ const managedPathFor = (
     baseDir,
     "tools",
     "cloudflared",
+    ...(layout === "current" ? ["install"] : []),
     version,
     `${platform}-x64`,
-    ...(layout === "current" ? ["install"] : []),
     platform === "win32" ? "cloudflared.exe" : "cloudflared",
   );
 
@@ -290,6 +290,7 @@ describe("RelayClient", () => {
       const paths = yield* Path.Path;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
       const legacyLock = legacyLockPathFor(paths, baseDir, "win32");
+      yield* fs.makeDirectory(paths.dirname(legacyLock), { recursive: true });
       let claimed = false;
       const manager = yield* RelayClient.makeCloudflaredRelayClient({
         baseDir,
@@ -509,6 +510,7 @@ describe("RelayClient", () => {
         // The current owner's transaction remains held for the whole wait.
         const legacyLock = legacyLockPathFor(paths, baseDir);
         const legacyTime = DateTime.toDate(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+        yield* fs.makeDirectory(paths.dirname(legacyLock), { recursive: true });
         yield* fs.writeFileString(legacyLock, "legacy-installer");
         yield* fs.utimes(legacyLock, legacyTime, legacyTime);
         let retries = 0;
@@ -984,21 +986,140 @@ describe("RelayClient", () => {
               yield* manager.pruneManagedVersions;
               expect(
                 (yield* fileSystem.readDirectory(
-                  paths.join(baseDir, "tools", "cloudflared"),
+                  paths.join(baseDir, "tools", "cloudflared", "install"),
                 )).sort(),
               ).toEqual(["2026.1.0", RelayClient.CLOUDFLARED_VERSION, "2099.1.0"]);
 
               yield* fileSystem.remove(pinned);
               expect(yield* resolveWith).toMatchObject({ source: "managed", version: "2026.1.0" });
-              yield* fileSystem.remove(paths.join(baseDir, "tools", "cloudflared", "2026.1.0"), {
-                recursive: true,
-              });
+              yield* fileSystem.remove(newer);
               expect(yield* resolveWith).toMatchObject({ source: "path", version: "2026.9.3" });
             }),
           { versions },
         );
       },
     );
+
+    it.effect("prunes only older executables owned by the current cache", () => {
+      const versions: Record<string, string> = {};
+      return run(
+        (baseDir) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const paths = yield* Path.Path;
+            const pinned = RelayClient.CLOUDFLARED_VERSION;
+            const managed = (version: string, layout: "current" | "legacy" = "current") =>
+              managedPathFor(paths, baseDir, version, hostPlatform, layout);
+            const legacyPin = managed(pinned, "legacy");
+            const currentFallback = managed(pinned);
+            const legacyOld = managed("2025.9.0", "legacy");
+            const rollback = managed("2026.1.0");
+            const old = managed("2025.9.0");
+            const relocatedPin = managed("2025.8.0");
+            const upgraded = managed("2025.7.0");
+            const unreadableVersion = managed("2025.6.1");
+            const foreign = paths.join(
+              paths.dirname(paths.dirname(old)),
+              `${hostPlatform}-arm64`,
+              executableName,
+            );
+            const preserved = [
+              legacyPin,
+              currentFallback,
+              legacyOld,
+              paths.join(`${legacyOld}.lock`, `${process.pid}-legacy-installer`),
+              paths.join(paths.dirname(legacyOld), ".install-legacy", executableName),
+              rollback,
+              relocatedPin,
+              upgraded,
+              unreadableVersion,
+              foreign,
+              paths.join(paths.dirname(old), ".install-current", executableName),
+              `${old}.staged.tmp`,
+            ];
+            versions[legacyOld] = "2025.9.0";
+            versions[currentFallback] = "2026.9.3";
+            versions[rollback] = "2026.1.0";
+            versions[old] = "2025.9.0";
+            versions[upgraded] = "2099.1.0";
+            versions[unreadableVersion] = "unparseable";
+            for (const file of [...preserved, old]) yield* writeExecutable(file);
+            const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
+
+            expect(yield* manager.resolve).toMatchObject({ executablePath: legacyPin });
+            yield* manager.pruneManagedVersions;
+
+            expect(yield* fs.exists(old)).toBe(false);
+            for (const file of preserved) {
+              expect(yield* fs.readFileString(file), file).toBe("cloudflared");
+            }
+            expect(yield* manager.resolve).toMatchObject({ executablePath: legacyPin });
+          }),
+        { versions },
+      );
+    });
+
+    it.effect("does not prune while an independent manager is installing", () => {
+      const versions: Record<string, string> = {};
+      return run(
+        (baseDir) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const paths = yield* Path.Path;
+            const pinned = RelayClient.CLOUDFLARED_VERSION;
+            const currentPin = managedPathFor(paths, baseDir, pinned, hostPlatform);
+            const rollback = managedPathFor(paths, baseDir, "2026.1.0", hostPlatform);
+            const old = managedPathFor(paths, baseDir, "2025.9.0", hostPlatform);
+            versions[rollback] = "2026.1.0";
+            versions[old] = "2025.9.0";
+            yield* writeExecutable(rollback);
+            yield* writeExecutable(old);
+            const installer = yield* RelayClient.makeCloudflaredRelayClient({
+              baseDir,
+              releaseAsset: testReleaseAsset,
+            });
+            const pruner = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
+            const downloading = yield* Deferred.make<void>();
+            const installing = yield* installer
+              .installWithProgress((event) =>
+                event.type === "progress" && event.stage === "downloading"
+                  ? Deferred.succeed(downloading, undefined).pipe(Effect.andThen(Effect.never))
+                  : Effect.void,
+              )
+              .pipe(Effect.forkChild);
+            yield* Effect.raceFirst(
+              Deferred.await(downloading),
+              Fiber.join(installing).pipe(
+                Effect.andThen(Effect.die("Install finished without reaching the download gate")),
+              ),
+            );
+            const directory = paths.dirname(currentPin);
+            const staging = (yield* fs.readDirectory(directory)).filter((name) =>
+              name.startsWith(".install-"),
+            );
+            expect(staging).toHaveLength(1);
+            const activeArtifact = paths.join(directory, staging[0]!, "download.part");
+            yield* fs.writeFileString(activeArtifact, "active install");
+            const legacyPin = managedPathFor(paths, baseDir, pinned, hostPlatform, "legacy");
+            yield* writeExecutable(legacyPin);
+            const clock = yield* Clock.Clock;
+            yield* pruner.pruneManagedVersions.pipe(
+              Effect.provideService(Clock.Clock, {
+                ...clock,
+                sleep: () => Effect.die("Pruning must not wait for an active install"),
+              }),
+            );
+
+            expect(yield* fs.readFileString(activeArtifact)).toBe("active install");
+            expect(yield* fs.exists(old)).toBe(true);
+            yield* Fiber.interrupt(installing);
+            yield* pruner.pruneManagedVersions;
+            expect(yield* fs.exists(old)).toBe(false);
+            expect(yield* fs.exists(rollback)).toBe(true);
+          }),
+        { versions },
+      );
+    });
 
     it.effect(
       "keeps a self-updated managed binary as a fallback but still installs the pin",

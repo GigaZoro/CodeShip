@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- rmdir removes only empty directories.
+import * as NodeFSP from "node:fs/promises";
 import * as NodeSqlite from "node:sqlite";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
@@ -152,7 +154,7 @@ export interface RelayClientShape {
   readonly installWithProgress: (
     report: (event: RelayClientInstallProgressEvent) => Effect.Effect<void>,
   ) => Effect.Effect<AvailableRelayClient, RelayClientInstallError>;
-  /** Removes managed releases older than the pin, except the newest one. Call once the pin has connected. */
+  /** Reclaims this installer's obsolete binaries, keeping a rollback. Call once the pin has connected. */
   readonly pruneManagedVersions: Effect.Effect<void>;
 }
 
@@ -249,12 +251,12 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
   const releaseAsset = options.releaseAsset ?? resolveReleaseAsset(platform, arch);
   const loadCloudflaredConfig = Effect.suspend(() => CloudflaredConfig).pipe(Effect.orDie);
   const managedRoot = path.join(options.baseDir, "tools", "cloudflared");
+  const installRoot = path.join(managedRoot, "install");
   const legacyPathFor = (version: string) =>
     path.join(managedRoot, version, `${platform}-${arch}`, executableFileName(platform));
-  // Older installers remove their lock by pathname. Separate write locations keep that protocol
-  // from removing a current owner's lock while both generations share the same base directory.
+  // Older servers can recursively prune version directories. Keep all current writes outside them.
   const managedPathFor = (version: string) =>
-    path.join(path.dirname(legacyPathFor(version)), "install", executableFileName(platform));
+    path.join(installRoot, version, `${platform}-${arch}`, executableFileName(platform));
   const managedPath = managedPathFor(CLOUDFLARED_VERSION);
   const legacyLockPath = `${legacyPathFor(CLOUDFLARED_VERSION)}.lock`;
   // Never unlink this file. Its OS-held transaction ends on scope close or process exit.
@@ -319,24 +321,24 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
     return legacy?.version === CLOUDFLARED_VERSION ? legacy : (current ?? legacy);
   });
 
-  // Newer managed folders may belong to another server; never use or prune them.
-  const olderManagedVersions = Effect.gen(function* () {
-    const entries = yield* fileSystem
-      .readDirectory(managedRoot)
-      .pipe(Effect.orElseSucceed(() => []));
-    return entries
-      .filter(
-        (entry) =>
-          parseVersion(entry) !== null &&
-          compareCloudflaredVersions(entry, CLOUDFLARED_VERSION) < 0,
-      )
-      .sort((left, right) => compareCloudflaredVersions(right, left));
+  // A newer release directory belongs to another server version.
+  const olderVersionsIn = Effect.fn("cloudflared.olderVersionsIn")(function* (root: string) {
+    const entries = yield* fileSystem.readDirectory(root).pipe(Effect.orElseSucceed(() => []));
+    return entries.filter(
+      (entry) =>
+        /^\d{4}\.\d{1,2}\.\d+$/u.test(entry) &&
+        compareCloudflaredVersions(entry, CLOUDFLARED_VERSION) < 0,
+    );
   });
 
   const bestManagedClient = Effect.gen(function* () {
     let fallback = yield* managedCandidate(CLOUDFLARED_VERSION);
     if (fallback?.version === CLOUDFLARED_VERSION) return fallback;
-    for (const version of yield* olderManagedVersions) {
+    const versions = new Set([
+      ...(yield* olderVersionsIn(installRoot)),
+      ...(yield* olderVersionsIn(managedRoot)),
+    ]);
+    for (const version of [...versions].sort((a, b) => compareCloudflaredVersions(b, a))) {
       const candidate = yield* managedCandidate(version);
       if (candidate?.version === CLOUDFLARED_VERSION) return candidate;
       fallback ??= candidate;
@@ -388,19 +390,6 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
     if (pathExecutable) return pathExecutable;
     return releaseAsset ? missingStatus : unsupportedStatus;
   }).pipe(Effect.withSpan("cloudflared.resolve"));
-
-  const pruneManagedVersions: RelayClientShape["pruneManagedVersions"] = Effect.gen(function* () {
-    // Retain the newest older release for rollback or older servers that cannot redownload it.
-    for (const version of (yield* olderManagedVersions).slice(1)) {
-      // Windows cannot delete another server's running connector; retry next prune.
-      yield* fileSystem.remove(path.join(managedRoot, version), { recursive: true }).pipe(
-        Effect.tap(() => Effect.logInfo("Removed an older managed relay client", { version })),
-        Effect.catch((cause) =>
-          Effect.logDebug("Could not remove an older managed relay client", { version, cause }),
-        ),
-      );
-    }
-  }).pipe(Effect.withSpan("cloudflared.pruneManagedVersions"));
 
   const retryWhileWindowsLocked = <A>(effect: Effect.Effect<A, PlatformError.PlatformError>) =>
     effect.pipe(
@@ -511,38 +500,42 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
     );
   });
 
-  const acquireInstallLock = Effect.fn("cloudflared.acquireInstallLock")(function* () {
-    const writeFailure = (cause: unknown) =>
-      new RelayClientInstallError({
-        reason: "write_failed",
-        message: "Could not acquire the relay client installation lock.",
-        cause,
-      });
-    const installLocked = () =>
-      new RelayClientInstallError({
-        reason: "install_locked",
-        message: "Another relay client installation is still in progress.",
-      });
-    const db = yield* Effect.acquireRelease(
-      Effect.try({
-        try: () => new NodeSqlite.DatabaseSync(installLockPath, { timeout: 0 }),
-        catch: writeFailure,
-      }),
-      (connection) => Effect.sync(() => connection.close()),
+  const lockWriteFailure = (cause: unknown) =>
+    new RelayClientInstallError({
+      reason: "write_failed",
+      message: "Could not acquire the relay client installation lock.",
+      cause,
+    });
+  const openInstallDatabase = Effect.acquireRelease(
+    Effect.try({
+      try: () => new NodeSqlite.DatabaseSync(installLockPath, { timeout: 0 }),
+      catch: lockWriteFailure,
+    }),
+    (db) => Effect.sync(() => db.close()),
+  );
+  const tryBeginInstallTransaction = (db: NodeSqlite.DatabaseSync) =>
+    Effect.try(() => db.exec("BEGIN EXCLUSIVE")).pipe(
+      Effect.as(true),
+      Effect.catch(({ cause }) =>
+        cause instanceof Error &&
+        (("errcode" in cause &&
+          typeof cause.errcode === "number" &&
+          (cause.errcode & 0xff) === 5) ||
+          ("code" in cause && cause.code === "SQLITE_BUSY"))
+          ? Effect.succeed(false)
+          : Effect.fail(lockWriteFailure(cause)),
+      ),
     );
+
+  const acquireInstallLock = Effect.fn("cloudflared.acquireInstallLock")(function* () {
+    const db = yield* openInstallDatabase;
     yield* Effect.gen(function* () {
-      if (yield* legacyInstallPending) return yield* installLocked();
-      yield* Effect.try({
-        try: () => db.exec("BEGIN EXCLUSIVE"),
-        catch: (cause) =>
-          cause instanceof Error &&
-          (("errcode" in cause &&
-            typeof cause.errcode === "number" &&
-            (cause.errcode & 0xff) === 5) ||
-            ("code" in cause && cause.code === "SQLITE_BUSY"))
-            ? installLocked()
-            : writeFailure(cause),
-      });
+      if ((yield* legacyInstallPending) || !(yield* tryBeginInstallTransaction(db))) {
+        return yield* new RelayClientInstallError({
+          reason: "install_locked",
+          message: "Another relay client installation is still in progress.",
+        });
+      }
     }).pipe(
       Effect.retry({
         times: INSTALL_LOCK_RETRY_COUNT - 1,
@@ -552,6 +545,70 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
       }),
     );
   });
+
+  const removeDirectoryIfEmpty = (directory: string) =>
+    Effect.tryPromise(() => NodeFSP.rmdir(directory)).pipe(
+      Effect.catch(({ cause }) => {
+        const code = (cause as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTEMPTY" || code === "EEXIST") return Effect.void;
+        return Effect.logDebug("Could not remove an empty relay client directory", {
+          directory,
+          cause,
+        });
+      }),
+    );
+
+  const pruneManagedVersions: RelayClientShape["pruneManagedVersions"] = Effect.gen(function* () {
+    if (!(yield* fileSystem.exists(installRoot))) return;
+    const db = yield* openInstallDatabase;
+    if (!(yield* tryBeginInstallTransaction(db))) return;
+    const realRoot = yield* fileSystem.realPath(managedRoot);
+    const obsolete: Array<{ executable: string; reportedVersion: string }> = [];
+    for (const folder of yield* olderVersionsIn(installRoot)) {
+      const executable = managedPathFor(folder);
+      // Limit deletion to this namespace and architecture, including when the cache uses links.
+      const real = yield* fileSystem.realPath(executable).pipe(
+        Effect.asSome,
+        Effect.catchIf(isNotFound, () => Effect.succeed(Option.none<string>())),
+      );
+      if (
+        Option.isNone(real) ||
+        path.relative(realRoot, real.value) !== path.relative(managedRoot, executable)
+      )
+        continue;
+      const reportedVersion = yield* probeVersion(executable);
+      if (
+        reportedVersion !== null &&
+        compareCloudflaredVersions(reportedVersion, CLOUDFLARED_VERSION) < 0
+      ) {
+        obsolete.push({ executable, reportedVersion });
+      }
+    }
+    obsolete.sort((a, b) => compareCloudflaredVersions(b.reportedVersion, a.reportedVersion));
+    const rollback = obsolete.find(
+      ({ reportedVersion }) =>
+        compareCloudflaredVersions(reportedVersion, CLOUDFLARED_MIN_VERSION) >= 0,
+    );
+    for (const entry of obsolete) {
+      if (entry === rollback) continue;
+      const { executable } = entry;
+      yield* Effect.gen(function* () {
+        yield* fileSystem.remove(executable);
+        const directory = path.dirname(executable);
+        yield* removeDirectoryIfEmpty(directory);
+        yield* removeDirectoryIfEmpty(path.dirname(directory));
+        yield* Effect.logInfo("Removed an older managed relay client", { executable });
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.logDebug("Could not prune a relay client", { executable, cause }),
+        ),
+      );
+    }
+  }).pipe(
+    Effect.scoped,
+    Effect.catch((cause) => Effect.logDebug("Could not prune managed relay clients", { cause })),
+    Effect.withSpan("cloudflared.pruneManagedVersions"),
+  );
 
   const installUnlocked = Effect.fn("cloudflared.installUnlocked")(function* (
     report: (stage: RelayClientInstallProgressStage) => Effect.Effect<void>,
@@ -577,7 +634,7 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
 
     const managedDirectory = path.dirname(managedPath);
     yield* fileSystem
-      .makeDirectory(managedDirectory, { recursive: true })
+      .makeDirectory(managedRoot, { recursive: true })
       .pipe(
         wrapInstallFailure("write_failed", "Could not create the relay client tool directory."),
       );
@@ -598,6 +655,7 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
       const afterLock = yield* bestManagedClient;
       if (afterLock && isPinnedManagedRelayClient(afterLock)) return afterLock;
 
+      yield* fileSystem.makeDirectory(managedDirectory, { recursive: true });
       const tempDirectory = yield* fileSystem.makeTempDirectoryScoped({
         directory: managedDirectory,
         prefix: ".install-",
