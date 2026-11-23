@@ -5066,6 +5066,28 @@ describe("OrchestratorMcpService provider resolution", () => {
         baseRef: "develop",
       },
       {
+        name: "no remote, neither main nor master, a detached checkout",
+        remote: null,
+        remoteDefault: null,
+        refs: ["refs/heads/trunk", "HEAD"],
+        detached: true,
+        baseRef: "abc123",
+      },
+      {
+        name: "a single-branch clone of a feature branch, no recorded HEAD",
+        remote: "origin",
+        remoteDefault: null,
+        refs: ["refs/heads/topic", "refs/remotes/origin/topic"],
+        baseRef: "main",
+      },
+      {
+        name: "a single-branch clone of a feature branch, a recorded HEAD",
+        remote: "origin",
+        remoteDefault: "trunk",
+        refs: ["refs/heads/topic", "refs/remotes/origin/topic"],
+        baseRef: "trunk",
+      },
+      {
         name: "no recorded HEAD, remote main and a stale local master",
         remote: "origin",
         remoteDefault: null,
@@ -5114,7 +5136,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         refs: ["refs/remotes/upstream/main"],
         baseRef: "upstream/main",
       },
-    ])("$name starts from $baseRef", ({ remote, remoteDefault, refs, baseRef }) =>
+    ])("$name starts from $baseRef", ({ remote, remoteDefault, refs, detached, baseRef }) =>
       Effect.gen(function* () {
         const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
         const gitFailure = (cwd: string, detail: string) =>
@@ -5132,12 +5154,14 @@ describe("OrchestratorMcpService provider resolution", () => {
                   refs.includes(revision)
                     ? Effect.succeed({ commitSha: "abc123" })
                     : Effect.fail(gitFailure(cwd, "Needed a single revision")),
-                // Every repository here has its first local branch checked out.
+                // A repository here has its first local branch checked out unless detached.
                 resolveBranchName: () =>
                   Effect.succeed(
-                    refs
-                      .find((ref) => ref.startsWith("refs/heads/"))
-                      ?.slice("refs/heads/".length) ?? null,
+                    detached === true
+                      ? null
+                      : (refs
+                          .find((ref) => ref.startsWith("refs/heads/"))
+                          ?.slice("refs/heads/".length) ?? null),
                   ),
               },
               saved,

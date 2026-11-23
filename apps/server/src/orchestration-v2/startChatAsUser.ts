@@ -103,6 +103,30 @@ function firstRunnableSelection(
 const failure = (reason: StartChatAsUserError["reason"], detail: string) =>
   new StartChatAsUserError({ reason, detail });
 
+/** The first message takes the request's id too, so a repeated request finds its run. */
+const firstMessageId = (commandId: CommandId) => MessageId.make(commandId);
+
+/**
+ * Opens the chat a repeated request started once its first message went in. The start that sent it
+ * can have stopped before handing the run to workspace preparation, so this hands it over again;
+ * preparation runs once, on the workspace that start chose, however often it is asked.
+ */
+export const makeResumeChatAsUser = Effect.gen(function* () {
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const threadLaunch = yield* ThreadLaunch.ThreadLaunchService;
+  return Effect.fn("resumeChatAsUser")(function* (
+    commandId: CommandId,
+  ): Effect.fn.Return<StartChatAsUserResult, StartChatAsUserError> {
+    const threadId = ThreadId.make(commandId);
+    const { messages } = yield* threads
+      .getThreadRecords(threadId, ["messages"], { messageIds: [firstMessageId(commandId)] })
+      .pipe(Effect.mapError(() => failure("launch-failed", "Could not read the chat.")));
+    const runId = messages[0]?.runId ?? null;
+    if (runId !== null) yield* threadLaunch.prepareRun({ commandId, threadId, runId });
+    return { threadId, resumed: true };
+  });
+});
+
 /**
  * Starts a chat as the user, on the project's default model or else the first account that can
  * run it. For features that start a chat on the user's behalf.
@@ -194,7 +218,7 @@ export const makeStartChatAsUser = Effect.gen(function* () {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         workspaceStrategy,
         initialMessage: {
-          messageId: MessageId.make(input.commandId),
+          messageId: firstMessageId(input.commandId),
           text: input.text,
           attachments: [],
         },

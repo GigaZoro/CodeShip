@@ -2,6 +2,7 @@ import {
   fixChatTarget,
   type MonitoringChat,
   type MonitoringFindingRank,
+  type MonitoringOverviewView,
 } from "@t3tools/client-runtime/monitoring";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 
@@ -20,12 +21,15 @@ import { t, tn } from "~/i18n";
 export function MonitoringFindingRanking({
   ranks,
   chats,
+  view,
   activeCode,
   onSelect,
 }: {
   readonly ranks: ReadonlyArray<MonitoringFindingRank>;
   /** The chats the ranks were counted from. */
   readonly chats: ReadonlyArray<MonitoringChat>;
+  /** The window and filters that picked those chats. */
+  readonly view: MonitoringOverviewView;
   readonly activeCode: MonitoringFindingRank["code"] | null;
   readonly onSelect: (code: MonitoringFindingRank["code"] | null) => void;
 }) {
@@ -39,6 +43,7 @@ export function MonitoringFindingRanking({
           key={rank.code}
           rank={rank}
           chats={chats}
+          view={view}
           active={rank.code === activeCode}
           onSelect={onSelect}
         />
@@ -50,16 +55,18 @@ export function MonitoringFindingRanking({
 function FindingRankRow({
   rank,
   chats,
+  view,
   active,
   onSelect,
 }: {
   readonly rank: MonitoringFindingRank;
   readonly chats: ReadonlyArray<MonitoringChat>;
+  readonly view: MonitoringOverviewView;
   readonly active: boolean;
   readonly onSelect: (code: MonitoringFindingRank["code"] | null) => void;
 }) {
   const text = FINDING_TEXT[rank.code];
-  const fixChat = useMonitoringFixChat(fixChatTarget(chats, rank.code), rank.code);
+  const fixChat = useMonitoringFixChat(fixChatTarget(chats, rank.code, view), rank.code);
   return (
     <li className={cn("flex flex-col", active ? "bg-accent" : "hover:bg-accent/50")}>
       <div className="flex flex-col sm:flex-row sm:items-start">

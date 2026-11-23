@@ -15,6 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import {
+  makeResumeChatAsUser,
   makeStartChatAsUser,
   type StartChatAsUserResult,
 } from "../orchestration-v2/startChatAsUser.ts";
@@ -193,7 +194,9 @@ function chatLine(
     ...(hit.wastedMs > 0 ? [`${formatDuration(hit.wastedMs)} lost`] : []),
     ...(text.detail !== null && hit.detail !== null ? [text.detail(hit.detail)] : []),
   ];
-  const where = `thread ${hit.chat.threadId}, project ${project}, settled ${hit.chat.settledAt.slice(0, 10)}`;
+  // An id is copied as it is, since t3_thread_read needs it exact, and quoted, since it can hold
+  // a line break.
+  const where = `thread ${JSON.stringify(hit.chat.threadId)}, project ${project}, settled ${hit.chat.settledAt.slice(0, 10)}`;
   return `- ${quoted(hit.chat.title)} (${where})${facts.length > 0 ? `: ${facts.join("; ")}` : ""}`;
 }
 
@@ -226,6 +229,7 @@ const make = Effect.gen(function* () {
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const startChatAsUser = yield* makeStartChatAsUser;
+  const resumeChatAsUser = yield* makeResumeChatAsUser;
 
   const scratchProject = managedFolders.ensureScratchProject.pipe(
     Effect.map(({ projectId }) => projectId),
@@ -243,7 +247,9 @@ const make = Effect.gen(function* () {
       // the user, went in, even after its chats were analyzed again. Before that the chat has
       // nothing to work from, so the start goes on and the launch sends the message.
       if (started !== null && started.latestUserMessageAt !== null) {
-        return { threadId, resumed: true as const };
+        return yield* resumeChatAsUser(input.commandId).pipe(
+          Effect.mapError((error) => failure(error.reason, error.detail)),
+        );
       }
       const chats = yield* monitoring
         .summaries([...new Set(input.threadIds)])

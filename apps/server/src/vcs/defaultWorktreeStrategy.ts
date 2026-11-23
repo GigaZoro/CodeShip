@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 
 import type * as GitVcsDriver from "./GitVcsDriver.ts";
 
-const CONVENTIONAL_DEFAULT_BRANCHES = ["main", "master"];
+const CONVENTIONAL_DEFAULT_BRANCHES = ["main", "master"] as const;
 
 /**
  * Where a new worktree starts when its caller names no base: the project's default branch,
@@ -30,11 +30,12 @@ export const defaultWorktreeStrategy = Effect.fn("vcs.defaultWorktreeStrategy")(
         : yield* git
             .resolveDefaultBranchName(cwd, remoteName)
             .pipe(Effect.orElseSucceed(() => null));
-    const branches =
+    const branches: ReadonlyArray<string> =
       remoteDefault === null
         ? CONVENTIONAL_DEFAULT_BRANCHES
         : [remoteDefault, ...CONVENTIONAL_DEFAULT_BRANCHES];
-    if (remoteName !== null && fromOrigin) {
+    const fetchesFirst = remoteName !== null && fromOrigin;
+    if (fetchesFirst) {
       // Fetch does not update a recorded HEAD, so it can outlive the branch it names.
       for (const branch of branches) {
         // Launch resolves a bare name through a local branch's upstream, or else assumes `origin`.
@@ -47,11 +48,20 @@ export const defaultWorktreeStrategy = Effect.fn("vcs.defaultWorktreeStrategy")(
     for (const branch of branches) {
       if (yield* refExists(`refs/heads/${branch}`)) return branch;
     }
-    // A repository whose branches follow no convention, such as one with only `trunk`.
+    // The start fetches the branch, so it need not be here, as in a single-branch clone of a
+    // feature branch; starting from that checked-out branch would run on feature code.
+    if (fetchesFirst) return remoteDefault ?? CONVENTIONAL_DEFAULT_BRANCHES[0];
+    // A local start in a repository whose branches follow no convention, such as one with only
+    // `trunk`: its checked-out branch, or the commit a detached checkout is on.
     const checkedOut = yield* git
       .resolveBranchName(cwd, "HEAD")
       .pipe(Effect.orElseSucceed(() => null));
-    return checkedOut ?? "main";
+    if (checkedOut !== null) return checkedOut;
+    const head = yield* git.resolveCommit({ cwd, revision: "HEAD" }).pipe(
+      Effect.map(({ commitSha }) => commitSha),
+      Effect.orElseSucceed(() => null),
+    );
+    return head ?? CONVENTIONAL_DEFAULT_BRANCHES[0];
   });
   return {
     type: "worktree" as const,

@@ -105,10 +105,11 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
     t("Unknown project");
 
   const chats = overview.chats;
-  const scoped = useMemo(
-    () => filterChats(chats, { projectKey: scope.project, kind: scope.kind, model: scope.model }),
-    [chats, scope],
+  const scopeFilters = useMemo(
+    () => ({ projectKey: scope.project, kind: scope.kind, model: scope.model }),
+    [scope],
   );
+  const scoped = useMemo(() => filterChats(chats, scopeFilters), [chats, scopeFilters]);
   const totals = useMemo(() => totalsOf(scoped), [scoped]);
   const buckets = useMemo(() => sumTimeBuckets(scoped), [scoped]);
   const ranks = useMemo(() => rankFindings(scoped), [scoped]);
@@ -285,7 +286,10 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
                     </Text>
                   </Pressable>
                   <MonitoringFixChatAction
-                    target={fixChatTarget(scoped, rank.code)}
+                    target={fixChatTarget(scoped, rank.code, {
+                      days: windowChoice.days,
+                      filters: scopeFilters,
+                    })}
                     code={rank.code}
                   />
                 </View>

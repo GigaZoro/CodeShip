@@ -35,6 +35,7 @@ import {
   TIME_BUCKET_KEYS,
   type MonitoringChat,
   type MonitoringEnvironmentReport,
+  type MonitoringOverviewView,
 } from "./aggregate.ts";
 
 const zeroTime = {
@@ -197,6 +198,7 @@ describe("fixChatTarget", () => {
     count: 1,
     detail: null,
   });
+  const view = { days: 30, filters: {} };
 
   it("picks the environment and project that lost the most time and lists chats worst first", () => {
     const target = fixChatTarget(
@@ -208,9 +210,10 @@ describe("fixChatTarget", () => {
         chat("e", { projectId: ProjectId.make("p3"), findings: [] }, "env-b"),
       ],
       "slow_command",
+      view,
     );
     expect(target).toEqual({
-      origin: "overview",
+      origin: '["overview",30,null,null,null]',
       environmentId: "env-b",
       projectId: ProjectId.make("p2"),
       threadIds: ["d", "b", "c"],
@@ -221,7 +224,7 @@ describe("fixChatTarget", () => {
     const chats = Array.from({ length: MONITORING_FIX_CHAT_MAX_CHATS + 5 }, (_, index) =>
       chat(`t${index}`, { findings: [slow(index)] }),
     );
-    const target = fixChatTarget(chats, "slow_command");
+    const target = fixChatTarget(chats, "slow_command", view);
     expect(target?.threadIds).toHaveLength(MONITORING_FIX_CHAT_MAX_CHATS);
     expect(target?.threadIds[0]).toBe(`t${MONITORING_FIX_CHAT_MAX_CHATS + 4}`);
   });
@@ -233,11 +236,26 @@ describe("fixChatTarget", () => {
     const rest = Array.from({ length: MONITORING_FIX_CHAT_MAX_CHATS + 1 }, (_, index) =>
       chat(`r${index}`, { findings: [slow(99)] }),
     );
-    expect(fixChatTarget([...worst, ...rest], "slow_command")?.projectId).toBe("p1");
+    expect(fixChatTarget([...worst, ...rest], "slow_command", view)?.projectId).toBe("p1");
+  });
+
+  it("takes its place from the window and filters, not from the chats they show", () => {
+    const place = (chats: ReadonlyArray<MonitoringChat>, shown: MonitoringOverviewView) =>
+      fixChatTarget(chats, "slow_command", shown)?.origin;
+    const shown = [chat("a", { findings: [slow(1)] })];
+    expect(place([chat("b", { findings: [slow(2)] })], view)).toBe(place(shown, view));
+    for (const other of [
+      { days: 7, filters: {} },
+      { days: 30, filters: { projectKey: "env:p2" } },
+      { days: 30, filters: { kind: "agent" as const } },
+      { days: 30, filters: { model: "large" } },
+    ]) {
+      expect(place(shown, other)).not.toBe(place(shown, view));
+    }
   });
 
   it("is null when no chat has the weak point", () => {
-    expect(fixChatTarget([chat("a", { findings: [slow(1)] })], "retries")).toBeNull();
+    expect(fixChatTarget([chat("a", { findings: [slow(1)] })], "retries", view)).toBeNull();
   });
 });
 

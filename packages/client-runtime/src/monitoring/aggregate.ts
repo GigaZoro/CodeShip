@@ -443,8 +443,8 @@ export function rankFindings(
 
 export interface MonitoringFixChatTarget {
   /**
-   * The button's place on the page. A retry from the same place to the same machine resends the
-   * request it did not hear back from.
+   * The button's place: the chat, or the overview's window and filters. A retry from the same place
+   * to the same machine resends the request it did not hear back from.
    */
   readonly origin: string;
   readonly environmentId: EnvironmentId;
@@ -473,6 +473,12 @@ function addLoss<Key, Hit>(losses: Map<Key, Loss<Hit>>, key: Key, wastedMs: numb
   losses.set(key, loss);
 }
 
+/** What the overview shows: its window and the filters that pick its chats. */
+export interface MonitoringOverviewView {
+  readonly days: number;
+  readonly filters: MonitoringFilters;
+}
+
 /**
  * The chats a fix chat for one weak point reads. A chat runs on one environment and reads only that
  * one's chats, so it goes to the environment that lost the most time to the weak point, and starts
@@ -481,6 +487,7 @@ function addLoss<Key, Hit>(losses: Map<Key, Loss<Hit>>, key: Key, wastedMs: numb
 export function fixChatTarget(
   chats: ReadonlyArray<MonitoringChat>,
   code: MonitoringFindingCode,
+  { days, filters }: MonitoringOverviewView,
 ): MonitoringFixChatTarget | null {
   const byEnvironment = new Map<
     string,
@@ -500,7 +507,14 @@ export function fixChatTarget(
   const byProject = new Map<ProjectId, Loss<null>>();
   for (const hit of hits) addLoss(byProject, hit.summary.projectId, hit.wastedMs, null);
   return {
-    origin: "overview",
+    // Another window or filter shows other chats, so a press there asks for another chat.
+    origin: JSON.stringify([
+      "overview",
+      days,
+      filters.projectKey ?? null,
+      filters.kind ?? null,
+      filters.model ?? null,
+    ]),
     environmentId: EnvironmentId.make(environmentId),
     // Every chat it reads belongs to a project, so one always lost the most.
     projectId: mostLost(byProject)![0],

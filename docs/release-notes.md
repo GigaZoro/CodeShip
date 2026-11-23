@@ -2,7 +2,7 @@
 
 - Every weak point in **Monitoring**, in the overview ranking and in a chat's deep dive, has a **Fix root cause** button on web, desktop and mobile. It starts a chat in the project that lost the most time to the weak point, the way a new chat there would (in a worktree when the project uses them), with the affected chats listed worst first and what the weak point means, and asks the agent to trace it to its root cause and fix it there. A retry after a lost answer opens the chat the first attempt started instead of a second one.
 - Monitoring lists a chat under its current project and title after it was moved or renamed.
-- Scheduled tasks and agent-started chats that run in a worktree of a repository with neither `main` nor `master` start from its checked-out branch instead of failing.
+- A new worktree for a scheduled task, an agent-started chat or a Monitoring fix chat, in a repository whose default branch is neither `main` nor `master` nor recorded for its remote, starts from the checked-out branch (or its commit when detached) instead of failing. A worktree that starts from the remote still starts from its default branch.
 
 ## 2026-11-19 — Windows Git driver checks
 

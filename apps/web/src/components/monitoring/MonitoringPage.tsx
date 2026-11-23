@@ -230,11 +230,8 @@ function MonitoringOverview({
     );
   }
 
-  const scoped = filterChats(overview.chats, {
-    projectKey: filters.project,
-    kind: filters.kind,
-    model: filters.model,
-  });
+  const scope = { projectKey: filters.project, kind: filters.kind, model: filters.model };
+  const scoped = filterChats(overview.chats, scope);
   const listed = filterChats(scoped, { findingCode: filters.finding });
   const totals = totalsOf(scoped);
   const buckets = sumTimeBuckets(scoped);
@@ -370,6 +367,7 @@ function MonitoringOverview({
             <MonitoringFindingRanking
               ranks={ranks}
               chats={scoped}
+              view={{ days, filters: scope }}
               activeCode={filters.finding}
               onSelect={(finding) => onFiltersChange({ ...filters, finding })}
             />
