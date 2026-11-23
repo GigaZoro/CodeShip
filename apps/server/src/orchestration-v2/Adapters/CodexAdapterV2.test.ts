@@ -7277,15 +7277,14 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           }),
         );
 
-        yield* harness.runtime.startTurn(
-          makeCodexTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("attempt-codex-late-child"),
-            text: RESUME_PROMPT,
-          }),
-        );
+        const parentTurn = makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-codex-late-child"),
+          text: RESUME_PROMPT,
+        });
+        yield* harness.runtime.startTurn(parentTurn);
         yield* harness.awaitTerminal(1);
         assert.equal(harness.terminalEvents()[0]?.status, "completed");
         assert.lengthOf(harness.continuationRequests, 0);
@@ -7297,6 +7296,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.equal(harness.subagentUpdates().at(-1)?.subagent.status, "completed");
         assert.lengthOf(harness.continuationRequests, 1);
         assert.include(harness.continuationRequests[0]?.detail, "NATIVE_CHILD_16900_DONE");
+        assert.equal(harness.continuationRequests[0]?.demandSourceRunId, parentTurn.runId);
         assert.equal(harness.continuationRequests[0]?.delivery, "message_text");
       }).pipe(
         Effect.provide(

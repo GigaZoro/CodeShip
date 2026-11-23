@@ -1796,6 +1796,58 @@ describe("MuseAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("charges a late Muse background notification to the originating turn", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const offered =
+        yield* Deferred.make<ProviderContinuationRequests.ProviderContinuationRequest>();
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        undefined,
+        undefined,
+        runtimePolicy,
+        {
+          continuationRequests: { offer: (request) => Deferred.succeed(offered, request) },
+        },
+      );
+      const { nativeId } = yield* startConversation(harness, fake);
+      const child = {
+        itemId: "late-child",
+        kind: "subagent",
+        turnId: nativeId,
+        subagentId: "sub",
+        childSessionId: "child",
+        objective: "Inspect",
+      };
+      yield* fake.emit("item/started", {
+        turnId: nativeId,
+        item: { ...child, revision: 1, status: "inProgress", controlStatus: "running" },
+      });
+      yield* harness.takeEvent("app_thread.created");
+      yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
+      yield* harness.takeEvent("turn.terminal");
+      yield* fake.emit("item/updated", {
+        turnId: nativeId,
+        item: {
+          ...child,
+          revision: 2,
+          status: "inProgress",
+          controlStatus: "resultReady",
+          result: { summary: "Done" },
+        },
+      });
+      yield* harness.takeEvent(
+        "subagent.updated",
+        (event) => event.subagent.status === "completed",
+      );
+      yield* fake.emit("turn/started", { turnId: "background-report" });
+      const request = yield* Deferred.await(offered);
+      assert.equal(request.demandSourceRunId, RunId.make("run-1"));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("opens a prompt-and-result child thread for a native subagent", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakeMuse();

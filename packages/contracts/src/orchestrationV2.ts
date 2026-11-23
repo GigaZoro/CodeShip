@@ -790,6 +790,10 @@ export const ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE = "prompt_not_sent";
 export const AUTHENTICATION_FAILED_FAILURE_CODE = "authentication_failed";
 
 export const OrchestrationV2Run = Schema.Struct({
+  /** The original demand for this work. Historical runs can omit it. */
+  demandId: Schema.optional(
+    Schema.NullOr(Schema.String.check(Schema.isPattern(/^demand:[0-9a-f]{64}$/))),
+  ),
   id: RunId,
   threadId: ThreadId,
   ordinal: PositiveInt,
@@ -1078,6 +1082,8 @@ export function isAppOwnedTaskWork(task: {
 }
 
 export const OrchestrationV2Subagent = Schema.Struct({
+  /** Accounting owner captured when a local delegation was accepted. */
+  demandId: OrchestrationV2Run.fields.demandId,
   id: NodeId,
   threadId: ThreadId,
   runId: Schema.NullOr(RunId),
@@ -3464,6 +3470,7 @@ export const OrchestrationV2Command = Schema.Union([
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     senderThreadId: Schema.optional(ThreadId),
     idleCompaction: Schema.optional(OrchestrationV2IdleCompaction),
+    compactionForMessageId: Schema.optional(MessageId),
     commandId: CommandId,
     threadId: ThreadId,
     messageId: MessageId,
@@ -3988,10 +3995,12 @@ const OrchestrationV2InternalCommand = Schema.Union([
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
 
-type LaunchCommand = Extract<
-  OrchestrationV2Command,
-  { readonly type: "message.dispatch" | "delegated_task.request" }
->;
+type LaunchCommand =
+  | (Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> & {
+      readonly demandId?: string | null;
+      readonly demandSourceRunId?: RunId;
+    })
+  | Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>;
 export type OrchestrationV2ServerCommand =
   | Exclude<OrchestrationV2Command, LaunchCommand>
   | (LaunchCommand & {

@@ -143,6 +143,7 @@ function existingThreadIdsForCommand(
 }
 
 export interface ThreadManagementSendInput {
+  readonly demandId?: string;
   readonly projectId: ProjectId;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
@@ -1019,6 +1020,7 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       messageId: input.messageId,
       ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
+      ...(input.demandId === undefined ? {} : { demandId: input.demandId }),
       ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
       text: input.text,
       attachments: input.attachments,

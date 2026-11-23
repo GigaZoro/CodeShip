@@ -6996,9 +6996,14 @@ describe("AcpAdapterV2", () => {
           runtimePolicy,
         });
         const now = yield* DateTime.now;
-        yield* runtime.startTurn(
-          makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now }),
-        );
+        const sourceTurn = makeTurnInput({
+          threadId,
+          providerThread,
+          instanceId,
+          runtimePolicy,
+          now,
+        });
+        yield* runtime.startTurn(sourceTurn);
         yield* Deferred.await(promptSettled);
 
         const firstProviderTurnId = idAllocator.derive.providerTurn({
@@ -7079,6 +7084,7 @@ describe("AcpAdapterV2", () => {
           1,
           "root-session post-settle subagent terminal must offer a continuation",
         );
+        assert.equal(continuationRequests[0]?.demandSourceRunId, sourceTurn.runId);
         assert.isTrue(
           yield* hasPendingBackgroundWork,
           "interrupted unprojected terminal must pin hasPendingBackgroundWork until attach",

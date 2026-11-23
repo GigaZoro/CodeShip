@@ -87,6 +87,7 @@ import {
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import {
+  commonSource,
   backgroundWorkNotification,
   type BackgroundWorkReport,
 } from "@t3tools/provider-core/server/notification";
@@ -723,6 +724,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           if (status === "running") observedChildren.set(item.itemId, turn);
           else if (observedChildren.delete(item.itemId) && active !== turn)
             finishedBackground.push({
+              sourceRunId: turn.input.runId,
               kind: item.kind === "subagent" ? "subagent" : "background_task",
               label: item.objective ?? item.entryId ?? item.fallbackText,
               outcome:
@@ -1400,7 +1402,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           else if (!active && !wake) {
             const held = { nativeId: params.turnId, events: [] };
             wake = held;
-            const notification = backgroundWorkNotification(finishedBackground.splice(0));
+            const reports = finishedBackground.splice(0);
+            const notification = backgroundWorkNotification(reports);
+            const source = commonSource(reports.map((report) => report.sourceRunId));
             if (thread?.appThreadId && options.continuationRequests)
               yield* options.continuationRequests.offer({
                 threadId: thread.appThreadId,
@@ -1408,6 +1412,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                 driver: MUSE_PROVIDER,
                 detail: null,
                 ...(notification ? { notification } : {}),
+                ...(source === undefined ? {} : { demandSourceRunId: source }),
                 dispatchIfCurrent: (dispatch) =>
                   Effect.suspend(() => {
                     if (wake !== held) return Effect.succeedNone;

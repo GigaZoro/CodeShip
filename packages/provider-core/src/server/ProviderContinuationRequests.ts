@@ -16,6 +16,8 @@ import * as Queue from "effect/Queue";
 export interface ProviderContinuationRequest {
   readonly threadId: ThreadId;
   readonly providerThreadId: ProviderThreadId;
+  /** The originating app run, when the provider can identify it. */
+  readonly demandSourceRunId?: RunId;
   /** The session whose CLI started a buffered wake; a refused wake ends only that session. */
   readonly providerSessionId?: ProviderSessionId;
   readonly driver: ProviderDriverKind;

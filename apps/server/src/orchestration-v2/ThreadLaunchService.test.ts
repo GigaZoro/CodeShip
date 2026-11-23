@@ -1750,7 +1750,7 @@ it.effect.each(["failed", "interrupted"] as const)(
   },
 );
 
-it.effect("replays a server-allocated launch", () =>
+it.effect.each([false, true])("replays a server-allocated launch (given owner: %s)", (given) =>
   Effect.gen(function* () {
     const setupEntered = yield* Deferred.make<void>();
     const allowSetup = yield* Deferred.make<void>();
@@ -1770,9 +1770,20 @@ it.effect("replays a server-allocated launch", () =>
         message: "Only once",
         workspace: { type: "worktree", baseRef: "main" },
       });
-      const first = yield* launches.launch(rest);
+      const demandId = given ? `demand:${"a".repeat(64)}` : undefined;
+      const input =
+        demandId !== undefined
+          ? {
+              ...rest,
+              initialMessage: {
+                ...rest.initialMessage!,
+                demandId,
+              },
+            }
+          : rest;
+      const first = yield* launches.launch(input);
       yield* Deferred.await(setupEntered);
-      const retry = yield* launches.launch(rest);
+      const retry = yield* launches.launch(input);
       assert.equal(first.threadId, retry.threadId);
       assert.isFalse(first.resumed);
       assert.isTrue(retry.resumed);
@@ -1793,11 +1804,16 @@ it.effect("replays a server-allocated launch", () =>
         ),
         Stream.runHead,
       );
-      const settled = yield* launches.launch(rest);
+      const settled = yield* launches.launch(input);
       assert.equal(settled.threadId, first.threadId);
       assert.isTrue(settled.resumed);
       assert.equal(settled.projection.messages[0]?.id, first.projection.messages[0]?.id);
       assert.equal(settled.projection.runs[0]?.id, first.projection.runs[0]?.id);
+      const acceptedDemand = first.projection.runs[0]?.demandId;
+      assert.isString(acceptedDemand);
+      if (given) assert.equal(acceptedDemand, demandId);
+      assert.equal(retry.projection.runs[0]?.demandId, acceptedDemand);
+      assert.equal(settled.projection.runs[0]?.demandId, acceptedDemand);
       assert.equal(harness.runSetup.mock.calls.length, 1);
     }).pipe(Effect.provide(harness.layer));
   }),

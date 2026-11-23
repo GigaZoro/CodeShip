@@ -12163,6 +12163,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(harness.continuationRequests[0]?.threadId, harness.threadId);
         assert.equal(harness.continuationRequests[0]?.providerThreadId, harness.providerThread.id);
         assert.equal(harness.continuationRequests[0]?.driver, ClaudeAdapterV2.CLAUDE_PROVIDER);
+        assert.equal(
+          harness.continuationRequests[0]?.demandSourceRunId,
+          RunId.make("run-attempt-claude-wake-1"),
+        );
         assert.equal(harness.continuationRequests[0]?.detail, WAKE_SUMMARY);
 
         yield* harness.offerAndWait(wakeResult);
@@ -13147,16 +13151,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               event.type === "turn_item.updated" &&
               event.turnItem.nativeItemRef?.nativeId === nativeId,
           );
-        yield* harness.runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now,
-            attemptId: RunAttemptId.make("attempt-claude-live-idle-1"),
-            text: "Audit in the background.",
-            attachments: [],
-          }),
-        );
+        const originalTurn = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now,
+          attemptId: RunAttemptId.make("attempt-claude-live-idle-1"),
+          text: "Audit in the background.",
+          attachments: [],
+        });
+        yield* harness.runtime.startTurn(originalTurn);
         for (const frame of [
           makeSubagentTaskStartedFrame({
             taskId: TASK_ID,
@@ -13239,6 +13242,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           yield* Queue.offer(harness.sdkMessages, frame);
         }
         yield* harness.awaitContinuation(1);
+        assert.equal(harness.continuationRequests[0]?.demandSourceRunId, originalTurn.runId);
         yield* Queue.offer(
           harness.sdkMessages,
           makeResultFrame({

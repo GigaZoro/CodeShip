@@ -10043,6 +10043,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
 
   it.effect.each([
     "ordinary",
+    "legacy-ordinary",
     "fresh",
     "superseded",
     "bound-superseded",
@@ -10075,7 +10076,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       });
       const sql = yield* SqlClient.SqlClient;
       const taskId = ScheduledTaskId.make(`recovery-task:${scenario}`);
-      const scheduled = scenario !== "ordinary";
+      const scheduled = scenario !== "ordinary" && scenario !== "legacy-ordinary";
       const intervalMs = 60_000;
       const schedule = scenario.startsWith("fixed-")
         ? { type: "fixed_time", timeOfDay: "00:01" }
@@ -10127,9 +10128,11 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         createdBy: "user",
         creationSource: "web",
       });
-      const [source] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+      const [accepted] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
         OrchestrationV2Run,
       ];
+      const { demandId: _owner, ...historical } = accepted;
+      const source: OrchestrationV2Run = scenario === "legacy-ordinary" ? historical : accepted;
       // A newer run started while this one worked on, and the occurrence's window passed.
       if (scenario === "overlapped") {
         yield* sql`UPDATE scheduled_tasks SET last_run_at = ${DateTime.formatIso(DateTime.add(now, { minutes: 2 }))} WHERE task_id = ${taskId}`;
@@ -10341,6 +10344,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       }
       const skipped = ![
         "ordinary",
+        "legacy-ordinary",
         "fresh",
         "fixed-fresh",
         "manual-expired",
@@ -10369,14 +10373,13 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         );
         return;
       }
+      if (scenario === "ordinary") assert.isString(source.demandId);
+      if (scenario === "legacy-ordinary") assert.isUndefined(source.demandId);
       assert.deepEqual(
-        (yield* orchestrator.getThreadProjection(threadId)).runs.map((run) => [
-          run.providerInstanceId,
-          run.status,
-        ]),
+        after.runs.map((run) => [run.providerInstanceId, run.status, run.demandId]),
         [
-          [modelSelection.instanceId, "failed"],
-          [alternateInstanceId, "starting"],
+          [modelSelection.instanceId, "failed", source.demandId],
+          [alternateInstanceId, "starting", source.demandId ?? null],
         ],
       );
       assert.isUndefined(

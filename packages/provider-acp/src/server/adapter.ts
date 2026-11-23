@@ -15,6 +15,7 @@ import {
   type OrchestrationV2ProviderThreadNativeMetadata,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2RuntimeRequest,
+  type RunId,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
   type OrchestrationV2UserInputQuestion,
@@ -114,6 +115,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import {
   type BackgroundWork,
+  commonSource,
   type BackgroundWorkReport,
   backgroundWorkNotification,
 } from "@t3tools/provider-core/server/notification";
@@ -2039,6 +2041,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         // Grok re-prompts on stale monitor notices; suppress output until a genuine terminal or app turn.
         const suppressPostSettleMonitorPrompt = yield* Ref.make(false);
         const runningBackgroundTaskIds = yield* Ref.make<ReadonlySet<string>>(new Set());
+        const backgroundToolSources = new Map<string, RunId>();
         // Tombstones prevent mid-stream exit_code 0 and stale monitor events from resurrecting ended tasks.
         const endedBackgroundTaskIds = yield* Ref.make<ReadonlySet<string>>(new Set());
         const endedBackgroundTaskIdLimit = 128;
@@ -3616,6 +3619,19 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           }
           if (backgroundTaskId !== undefined) {
             context.toolCallIdsByBackgroundTaskId.set(backgroundTaskId, toolCall.toolCallId);
+            const key = sessionScopedId(context.nativeThreadId, backgroundTaskId);
+            if (
+              !context.promptSettled &&
+              !backgroundToolSources.has(key) &&
+              (toolStatus(toolCall.status) === "running" ||
+                toolStatus(toolCall.status) === "pending")
+            ) {
+              backgroundToolSources.set(key, context.input.runId);
+              if (backgroundToolSources.size > endedBackgroundTaskIdLimit) {
+                const oldest = backgroundToolSources.keys().next();
+                if (!oldest.done) backgroundToolSources.delete(oldest.value);
+              }
+            }
             if (flavor.isPersistentBackgroundTool?.(toolCall) === true) {
               context.persistentBackgroundTaskIds.add(backgroundTaskId);
             }
@@ -4308,7 +4324,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           );
           if (Option.isNone(pending)) return false;
           const { route, generation, reports } = pending.value;
-          const notification = backgroundWorkNotification([...reports.values()]);
+          const completed = [...reports.values()];
+          const notification = backgroundWorkNotification(completed);
+          const source = commonSource(completed.map((report) => report.sourceRunId));
           yield* Effect.logInfo("orchestration-v2.acp-wake-turn-detected", {
             driver,
             providerSessionId: input.providerSessionId,
@@ -4320,6 +4338,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             providerThreadId: route.providerThreadId,
             driver,
             detail: null,
+            ...(source === undefined ? {} : { demandSourceRunId: source }),
             ...(notification === null ? {} : { notification }),
             clearIfCurrent: () =>
               continuationPermit.withPermit(
@@ -5797,6 +5816,20 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           if (match.task.status !== "running" && match.task.status !== "pending") {
             return false;
           }
+          if (
+            status === "completed" ||
+            status === "failed" ||
+            status === "cancelled" ||
+            status === "interrupted"
+          ) {
+            yield* recordWakeReport(match.childSessionId ?? String(match.task.id), {
+              kind: "subagent",
+              childThreadId: match.childThreadId,
+              label: match.task.title ?? match.task.prompt,
+              outcome: status === "interrupted" ? "cancelled" : status,
+              sourceRunId: match.task.runId,
+            });
+          }
           if (!shouldProject) {
             yield* mutateCarryoverSubagentStatus(match, status, result);
           } else {
@@ -5825,6 +5858,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               kind: "subagent",
               label: known.task.title ?? known.task.prompt,
               outcome: notice.status,
+              sourceRunId: known.task.runId,
               childThreadId: known.childThreadId,
             });
           }
@@ -6520,6 +6554,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       yield* recordWakeReport(mutation.taskId, {
                         ...mutation.report,
                         outcome: mutation.status,
+                        sourceRunId:
+                          backgroundToolSources.get(
+                            sessionScopedId(mutation.sessionId, mutation.taskId),
+                          ) ?? null,
                       });
                     }
                     yield* applyLateBackgroundMutation(mutation.sessionId, mutation);
@@ -6784,6 +6822,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 yield* Ref.set(wakeReports, noWakeReports);
                 yield* Ref.set(continuationRequested, false);
                 yield* Ref.set(dispatchedContinuations, 0);
+                backgroundToolSources.clear();
                 yield* Ref.set(runningBackgroundTaskIds, new Set());
                 yield* Ref.set(endedBackgroundTaskIds, new Set());
                 yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
@@ -7220,6 +7259,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               yield* Ref.set(wakeBuffer, []);
               yield* Ref.set(wakeReports, noWakeReports);
               yield* Ref.set(continuationRequested, false);
+              backgroundToolSources.clear();
               yield* Ref.set(runningBackgroundTaskIds, new Set());
               yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
               yield* Ref.set(carryoverSubagents, null);
