@@ -16,6 +16,7 @@ import {
   repositoryGroupingKeyOf,
   repositoryMatchRank,
   scheduledTaskSharedProjectKey,
+  scheduledTaskInstantMs,
   type OrchestratorMcpSharedScheduledTasksResult,
   type ScheduledTaskApplySharedInput,
   type ScheduledTaskApplySharedResult,
@@ -372,6 +373,7 @@ const decodeFailingCheckJson = Schema.decodeUnknownEffect(
 );
 const ChangedByJson = Schema.fromJsonString(ScheduledTaskChangedBy);
 const decodeChangedByJson = Schema.decodeUnknownEffect(ChangedByJson);
+const decodeStoredChangedBy = Schema.decodeUnknownOption(ChangedByJson);
 const encodeChangedByJson = Schema.encodeSync(ChangedByJson);
 const decodeRunCheckJson = Schema.decodeUnknownOption(Schema.fromJsonString(ScheduledTaskRunCheck));
 const RunUsageLimitJson = Schema.fromJsonString(ScheduledTaskRunUsageLimit);
@@ -1709,13 +1711,28 @@ export const layer = Layer.effect(
       return task;
     });
 
+    // Inside the settings transaction, an equivalent edit keeps the exact stored spelling.
+    // This also preserves the hold when a prior version serialized the same schedule differently.
+    const keptScheduleJson = Effect.fnUntraced(function* (
+      id: ScheduledTaskId,
+      schedule: ScheduledTask["schedule"],
+    ) {
+      const [stored] = yield* sql<{
+        schedule_json: string;
+      }>`SELECT schedule_json FROM scheduled_tasks WHERE task_id = ${id}`;
+      return stored !== undefined &&
+        isSameSchedule(yield* decodeScheduleJson(stored.schedule_json), schedule)
+        ? stored.schedule_json
+        : null;
+    });
+
     // Run transitions own run-state columns; settings saves must not overwrite them.
     // Check existence in the write so edits cannot undo concurrent deletion.
     const saveTask = (
       task: ScheduledTask,
       requireExisting: boolean,
       /** The schedule this save read, when it left the schedule unchanged. */
-      keptSchedule: ScheduledTask["schedule"] | null,
+      keptSchedule: string | null,
       webhook: {
         readonly token: string | null;
         readonly secret: string | null;
@@ -1784,7 +1801,8 @@ export const layer = Layer.effect(
           description_json = COALESCE(excluded.description_json, scheduled_tasks.description_json),
           prompt = excluded.prompt,
           enabled = excluded.enabled,
-          schedule_json = excluded.schedule_json,
+          schedule_json = CASE WHEN scheduled_tasks.schedule_json = ${task.schedule.type === "fixed_time" ? keptSchedule : null}
+            THEN scheduled_tasks.schedule_json ELSE excluded.schedule_json END,
           project_id = excluded.project_id,
           thread_id = excluded.thread_id,
           workspace_strategy_json = excluded.workspace_strategy_json,
@@ -1797,11 +1815,7 @@ export const layer = Layer.effect(
           -- Keep a next_run_at that a finishing run moved during this save, unless
           -- another edit changed the schedule or enabled state meanwhile.
           next_run_at = CASE
-            WHEN ${keptSchedule === null ? 0 : 1} = 1
-              AND scheduled_tasks.schedule_json IN (
-                excluded.schedule_json,
-                ${keptSchedule === null ? null : JSON.stringify(keptSchedule)}
-              )
+            WHEN scheduled_tasks.schedule_json = ${keptSchedule}
               AND scheduled_tasks.enabled = excluded.enabled
             THEN scheduled_tasks.next_run_at
             ELSE excluded.next_run_at
@@ -4177,79 +4191,120 @@ export const layer = Layer.effect(
         return Option.getOrNull(Option.map(DateTime.make(task.schedule.runAt), iso));
       }
       if (task.schedule.type !== "fixed_time" || due === null) return due;
-      // A hold saved with the cursor is authoritative, including an unknown origin.
-      const [cursor] = yield* sql<{ usage_hold_json: string | null; updated_at: string }>`
-        SELECT usage_hold_json, updated_at FROM scheduled_tasks
+      const dueMs = scheduledTaskInstantMs(due);
+      if (dueMs === null) return null;
+      const localAt = (millis: number) =>
+        DateTime.subtract(now, { milliseconds: DateTime.toEpochMillis(now) - millis });
+      const previous = latestMissedFixedTimeRun(task.schedule, localAt(dueMs));
+      if (previous === null) return null;
+      const candidate = iso(previous.at);
+      const candidateMs = DateTime.toEpochMillis(previous.at);
+
+      const [cursor] = yield* sql<{
+        usage_hold_json: string | null;
+        updated_at: string;
+        changed_by_json: string | null;
+      }>`
+        SELECT usage_hold_json, updated_at, cb.changed_by_json FROM scheduled_tasks
+        LEFT JOIN scheduled_task_changed_by cb USING (task_id)
         WHERE task_id = ${task.id} AND ${sameIncarnation(task)} AND next_run_at = ${due}
       `.pipe(NodeSqliteClient.readOnly);
       if (cursor === undefined) return null;
+      // A current hold proves its configured occurrence even if an edit subsequently stamped updated_at.
       if (cursor.usage_hold_json !== null) {
         const hold = Option.getOrNull(decodeStoredUsageLimit(cursor.usage_hold_json));
-        return hold?.until === due &&
-          hold.heldOccurrence != null &&
+        return hold !== null &&
+          scheduledTaskInstantMs(hold.until) === dueMs &&
+          hold.heldOccurrence?.at != null &&
+          scheduledTaskInstantMs(hold.heldOccurrence.at) === candidateMs &&
           isSameSchedule(task.schedule, hold.heldOccurrence.schedule)
-          ? hold.heldOccurrence.at
+          ? candidate
           : null;
       }
-
-      const localAt = (millis: number) =>
-        DateTime.subtract(now, { milliseconds: DateTime.toEpochMillis(now) - millis });
-      const previous = latestMissedFixedTimeRun(task.schedule, localAt(Date.parse(due)));
-      if (previous === null) return null;
-      const candidate = iso(previous.at);
       // A configured occurrence is due in its own right, even with an older usage skip.
-      if (candidate === due) return due;
-      if (candidate < task.createdAt) return null;
+      if (candidateMs === dueMs) return candidate;
+      const createdMs = scheduledTaskInstantMs(task.createdAt);
+      const movedMs = scheduledTaskInstantMs(cursor.updated_at);
+      if (createdMs === null || createdMs > candidateMs || movedMs === null || movedMs > dueMs)
+        return null;
 
       // Older cursors have only run history. Read at most one more than the number of
       // retained usage skips, using (task_id, started_at). A missing or conflicting link
       // leaves this off-schedule deadline unattributed.
-      const history = yield* sql<{
-        run_id: string;
-        scheduled_for: string | null;
-        started_at: string;
-        outcome: string;
-        skip_reason: string | null;
-        usage_limit_json: string | null;
-      }>`SELECT run_id, scheduled_for, started_at, outcome, skip_reason, usage_limit_json
+      const history = yield* sql<
+        Pick<
+          RunRecordRow,
+          | "run_id"
+          | "trigger"
+          | "ran_on"
+          | "scheduled_for"
+          | "started_at"
+          | "completed_at"
+          | "outcome"
+          | "skip_reason"
+          | "usage_limit_json"
+        >
+      >`SELECT run_id, trigger, ran_on, scheduled_for, started_at, completed_at, outcome, skip_reason, usage_limit_json
         FROM scheduled_task_runs WHERE task_id = ${task.id} AND started_at >= ${candidate}
         ORDER BY started_at, rowid LIMIT ${QUIET_SKIP_RETENTION + 1}`.pipe(
         NodeSqliteClient.readOnly,
       );
       if (history.length === 0 || history.length > QUIET_SKIP_RETENTION) return null;
-      let deadline = candidate;
+      let deadline = candidateMs;
       for (const row of history) {
         if (
+          (row.trigger !== "scheduled" && row.trigger !== "catch_up") ||
+          (row.ran_on !== null && row.ran_on !== hereEnvironmentId) ||
           row.outcome !== "skipped" ||
           row.skip_reason !== "usage_limited" ||
+          row.completed_at === null ||
           row.scheduled_for === null ||
           row.usage_limit_json === null ||
           row.run_id !== `${task.id}:${row.scheduled_for}:usage_limited`
         )
           return null;
         const usage = Option.getOrNull(decodeStoredUsageLimit(row.usage_limit_json));
-        if (usage === null || row.scheduled_for > row.started_at || usage.until <= row.started_at)
+        const scheduledMs = scheduledTaskInstantMs(row.scheduled_for);
+        const startedMs = scheduledTaskInstantMs(row.started_at);
+        const completedMs = scheduledTaskInstantMs(row.completed_at);
+        const resetMs = usage === null ? null : scheduledTaskInstantMs(usage.until);
+        if (
+          usage === null ||
+          scheduledMs === null ||
+          startedMs === null ||
+          completedMs === null ||
+          resetMs === null ||
+          scheduledMs < candidateMs ||
+          scheduledMs > startedMs ||
+          startedMs > completedMs ||
+          completedMs > movedMs ||
+          resetMs <= completedMs
+        )
           return null;
         const held = usage.heldOccurrence;
         if (
           held !== undefined &&
-          (held === null || held.at !== candidate || !isSameSchedule(task.schedule, held.schedule))
+          (held?.at == null ||
+            scheduledTaskInstantMs(held.at) !== candidateMs ||
+            !isSameSchedule(task.schedule, held.schedule))
         )
           return null;
         // The oldest remaining row can itself name the occurrence when preceding skips were pruned.
-        if (row.scheduled_for !== deadline && !(row === history[0] && held?.at === candidate))
-          return null;
-        deadline = usage.until;
+        if (scheduledMs !== deadline && !(row === history[0] && held?.at != null)) return null;
+        deadline = resetMs;
       }
-      if (deadline === due) return candidate;
+      if (deadline === dueMs) return candidate;
 
-      // A late poll repointed the cursor to the configured time. Repeating the same skip
-      // advanced its reset but left its first history row intact (the skip ID is per occurrence).
-      // Only that transition can extend a fixed-time usage hold across an unrecorded deadline.
-      const movedMs = Date.parse(cursor.updated_at);
-      if (!Number.isFinite(movedMs) || movedMs >= Date.parse(due)) return null;
+      // A repeated hold can advance the cursor while keeping its first skip row.
+      // An intervening settings edit makes the missing reset impossible to infer.
+      const edit =
+        cursor.changed_by_json === null
+          ? null
+          : Option.getOrNull(decodeStoredChangedBy(cursor.changed_by_json));
+      const editedMs = edit === null ? null : scheduledTaskInstantMs(edit.at);
+      if (editedMs === null || editedMs >= candidateMs || movedMs >= dueMs) return null;
       const moved = localAt(movedMs);
-      if (!isMissedFixedTimeRun(task.schedule, DateTime.makeUnsafe(deadline), moved)) return null;
+      if (!isMissedFixedTimeRun(task.schedule, localAt(deadline), moved)) return null;
       const revisited = latestMissedFixedTimeRun(task.schedule, moved);
       return revisited?.catchUp && iso(revisited.at) === candidate ? candidate : null;
     });
@@ -5217,7 +5272,7 @@ export const layer = Layer.effect(
             yield* saveTask(
               keptText === undefined ? task : { ...task, prompt: keptText },
               input.requireExisting === true,
-              scheduleUnchanged ? existingTask.schedule : null,
+              scheduleUnchanged ? yield* keptScheduleJson(id, existingTask.schedule) : null,
               webhook,
             );
             if (placement !== undefined && (created || existingTask !== null)) {
@@ -5556,11 +5611,16 @@ export const layer = Layer.effect(
           const created = existingTask === null && !(yield* hasTask(id));
           const keptText = keepsOwnRead ? yield* storedPrompt(id) : undefined;
           const written = keptText === undefined ? saved : { ...saved, prompt: keptText };
-          yield* saveTask(written, false, scheduleUnchanged ? existingTask.schedule : null, {
-            token: null,
-            secret: null,
-            secretChanged: true,
-          });
+          yield* saveTask(
+            written,
+            false,
+            scheduleUnchanged ? yield* keptScheduleJson(id, existingTask.schedule) : null,
+            {
+              token: null,
+              secret: null,
+              secretChanged: true,
+            },
+          );
           if (placement !== undefined && created) yield* writePlacement([id], placement, now);
           yield* task.followsDefaultModel
             ? sql`INSERT INTO scheduled_task_default_model (task_id) VALUES (${id})

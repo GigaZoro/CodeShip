@@ -434,12 +434,13 @@ const runHistoryLayer = (
   sharedDependencies: ReturnType<
     typeof layerSharedTaskDependencies
   > = layerSharedTaskDependencies(),
+  scheduler: Layer.Layer<Scheduler.Scheduler> = Scheduler.layer,
 ) =>
   ScheduledTaskService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         NodeCrypto.layer,
-        Scheduler.layer,
+        scheduler,
         ServerSettings.layerTest(),
         memory,
         ManagedPolicy.layerTest(),
@@ -774,6 +775,8 @@ it.effect.each([
   { kind: "fixed_time", shortage: "usage" },
   { kind: "fixed_time", shortage: "legacy usage" },
   { kind: "fixed_time", shortage: "late wake usage" },
+  { kind: "fixed_time", shortage: "equivalent schedule edit" },
+  { kind: "fixed_time", shortage: "changed schedule edit" },
   { kind: "interval", shortage: "memory" },
 ] as const)(
   "$kind demand after two $shortage skips and a scheduler restart",
@@ -879,7 +882,8 @@ it.effect.each([
       const secondAt = yield* afterSkip(firstAt);
       // Waking after the grace period revisits 07:00. The 07:30 reset and original
       // occurrence must survive even though history already contains that 07:00 skip.
-      const late = shortage === "late wake usage";
+      const edit = shortage === "equivalent schedule edit" || shortage === "changed schedule edit";
+      const late = shortage === "late wake usage" || edit;
       yield* Ref.set(resetAt, isoMs(late ? firstMs + 30 * 60_000 : Date.parse(secondAt) + 300_000));
       // Advance with the scheduler stopped. Advancing a running TestClock polls each intermediate deadline.
       yield* TestClock.setTime(late ? firstMs + 20 * 60_000 : Date.parse(secondAt));
@@ -897,6 +901,43 @@ it.effect.each([
       }
       yield* Ref.set(resetAt, null);
       yield* TestClock.setTime(Date.parse(thirdAt));
+      if (edit) {
+        // As on a stopped scheduler, the app saves at 07:30 before the poll for that deadline.
+        const editLayer = runHistoryLayer(
+          () => Effect.die("editing a task cannot launch it"),
+          undefined,
+          undefined,
+          undefined,
+          Layer.mock(Scheduler.Scheduler)({ register: () => Effect.void }),
+        );
+        const equivalent = shortage === "equivalent schedule edit";
+        const changed = yield* Effect.gen(function* () {
+          const service = yield* ScheduledTaskService.ScheduledTaskService;
+          return yield* service.upsert(
+            yield* historyTask("Edited task", {
+              id: task.id,
+              schedule: {
+                type: "fixed_time",
+                timeOfDay: equivalent ? "7:00" : "08:00",
+                ...(equivalent ? { weekdays: [6, 5, 4, 3, 2, 1, 0, 1] } : {}),
+              },
+            }),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
+        }).pipe(Effect.provide(editLayer));
+        const sql = yield* SqlClient.SqlClient;
+        const [row] = yield* sql<{
+          usage_hold_json: string | null;
+        }>`SELECT usage_hold_json FROM scheduled_tasks WHERE task_id=${task.id}`;
+        if (equivalent) {
+          expect(changed.task.nextRunAt).toBe(thirdAt);
+          expect(row?.usage_hold_json).toBeTypeOf("string");
+        } else {
+          expect(changed.task.nextRunAt).toBe(isoMs(firstMs + 60 * 60_000));
+          expect(row?.usage_hold_json).toBeNull();
+          yield* TestClock.setTime(Date.parse(changed.task.nextRunAt!));
+        }
+      }
       yield* Effect.gen(function* () {
         const service = yield* ScheduledTaskService.ScheduledTaskService;
         const finished = yield* service.subscribeList().pipe(
@@ -918,7 +959,11 @@ it.effect.each([
           task.id,
           incarnation,
           "scheduled",
-          kind === "interval" ? thirdAt : firstAt,
+          kind === "interval"
+            ? thirdAt
+            : shortage === "changed schedule edit"
+              ? isoMs(firstMs + 60 * 60_000)
+              : firstAt,
         ),
       );
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
@@ -931,6 +976,17 @@ it.effect.each([
   { state: "a completed run after the old hold", expected: null },
   { state: "a cursor moved inside the grace period", expected: null },
   { state: "another schedule's hold", expected: null },
+  { state: "manual trigger", expected: null },
+  { state: "webhook trigger", expected: null },
+  { state: "a foreign machine", expected: null },
+  { state: "an observation after the cursor write", expected: null },
+  { state: "completion before observation", expected: null },
+  { state: "a malformed reset", expected: null },
+  { state: "a rollover reset", expected: null },
+  { state: "a later settings edit", expected: null },
+  { state: "missing edit evidence across a gap", expected: null },
+  { state: "an exact catch-up deadline without edit metadata", expected: 0 },
+  { state: "a malformed current origin", expected: null },
   { state: "the next configured slot", expected: 24 * 60 },
   { state: "a current cursor with unrelated history", expected: 0 },
 ] as const)("attributes a fixed-time cursor after upgrade with $state", ({ state, expected }) =>
@@ -944,13 +1000,23 @@ it.effect.each([
       DateTime.formatIso(DateTime.makeUnsafe(epoch + minutes * 60_000));
     yield* TestClock.setTime(epoch - 60_000);
     const demand = yield* Deferred.make<string | null | undefined>();
+    const healthy = yield* Deferred.make<string | null | undefined>();
     const layer = runHistoryLayer((input) =>
-      Deferred.succeed(demand, input.initialMessage?.demandId).pipe(
-        Effect.as({ threadId: ThreadId.make("upgraded"), resumed: false } as never),
-      ),
+      Deferred.succeed(
+        input.title === "Unaffected task" ? healthy : demand,
+        input.initialMessage?.demandId,
+      ).pipe(Effect.as({ threadId: ThreadId.make("upgraded"), resumed: false } as never)),
     );
     const { task } = yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
+      if (state === "a malformed reset") {
+        yield* service.upsert(
+          yield* historyTask("Unaffected task", {
+            schedule: { type: "fixed_time", timeOfDay: "07:30" },
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+      }
       return yield* service.upsert(
         yield* historyTask("Upgraded fixed time"),
         ScheduledTaskService.CHANGED_IN_APP,
@@ -995,11 +1061,43 @@ it.effect.each([
           (run_id, task_id, trigger, scheduled_for, started_at, completed_at, outcome)
           VALUES ('completed', ${task.id}, 'scheduled', ${at(5)}, ${at(5)}, ${at(5)}, 'succeeded')`;
     }
-    if (state === "a current cursor with unrelated history") {
+    if (state === "manual trigger" || state === "webhook trigger")
+      yield* sql`UPDATE scheduled_task_runs SET trigger=${state === "manual trigger" ? "manual" : "webhook"} WHERE task_id=${task.id}`;
+    if (state === "a foreign machine")
+      yield* sql`UPDATE scheduled_task_runs SET ran_on='other-machine' WHERE task_id=${task.id}`;
+    if (state === "a later settings edit")
+      yield* sql`UPDATE scheduled_task_changed_by SET changed_by_json=json_set(changed_by_json,'$.at',${at(observed)}) WHERE task_id=${task.id}`;
+    if (
+      state === "missing edit evidence across a gap" ||
+      state === "an exact catch-up deadline without edit metadata"
+    )
+      yield* sql`DELETE FROM scheduled_task_changed_by WHERE task_id=${task.id}`;
+    if (state === "an exact catch-up deadline without edit metadata") {
+      yield* sql`UPDATE scheduled_task_runs SET trigger='catch_up', started_at=${at(15)}, completed_at=${at(15)},
+        usage_limit_json=json_set(usage_limit_json,'$.until',${at(due)}) WHERE task_id=${task.id}`;
+    }
+    if (
+      state === "an observation after the cursor write" ||
+      state === "completion before observation"
+    ) {
+      yield* sql`UPDATE scheduled_task_runs SET started_at=${at(state === "an observation after the cursor write" ? 25 : 4)},
+        completed_at=${at(state === "an observation after the cursor write" ? 25 : 2)},
+        usage_limit_json=json_set(usage_limit_json,'$.until',${at(due)}) WHERE task_id=${task.id}`;
+    }
+    if (state === "a malformed reset" || state === "a rollover reset")
+      yield* sql`UPDATE scheduled_task_runs SET usage_limit_json=json_set(usage_limit_json,'$.until',
+        ${state === "a malformed reset" ? "unknown" : "2026-11-31T07:05:00Z"}) WHERE task_id=${task.id}`;
+    if (
+      state === "a current cursor with unrelated history" ||
+      state === "a malformed current origin"
+    ) {
       const held = {
         driver: "claude",
         until: at(due),
-        heldOccurrence: { at: at(0), schedule: task.schedule },
+        heldOccurrence: {
+          at: state === "a malformed current origin" ? "unknown" : at(0),
+          schedule: task.schedule,
+        },
       };
       yield* sql`UPDATE scheduled_tasks SET usage_hold_json=${JSON.stringify(held)} WHERE task_id=${task.id}`;
     }
@@ -1007,6 +1105,8 @@ it.effect.each([
     yield* Effect.gen(function* () {
       yield* ScheduledTaskService.ScheduledTaskService;
       yield* TestClock.adjust("6 seconds");
+      if (state === "a malformed reset")
+        expect(yield* Deferred.await(healthy)).toBeTypeOf("string");
       expect(yield* Deferred.await(demand)).toBe(
         expected === null
           ? null

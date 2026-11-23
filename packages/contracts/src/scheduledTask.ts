@@ -63,15 +63,15 @@ const YEAR_0000 = Date.parse("0000-01-01T00:00:00Z");
 const YEAR_10000 = Date.parse("+010000-01-01T00:00:00Z");
 
 /** Date.parse rolls impossible days like Feb 30 into the next month, so check the day too. */
-function isIsoWithOffset(value: string): boolean {
+export function scheduledTaskInstantMs(value: string): number | null {
   const match = ISO_WITH_OFFSET.exec(value);
   // The server stores UTC, which must stay a four-digit year to decode again.
   const time = Date.parse(value);
-  if (!match || !(time >= YEAR_0000 && time < YEAR_10000)) return false;
+  if (!match || !(time >= YEAR_0000 && time < YEAR_10000)) return null;
   const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
   const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
   const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
-  return days !== undefined && day >= 1 && day <= days;
+  return days !== undefined && day >= 1 && day <= days ? time : null;
 }
 
 // Checked by filter, not pattern, to keep the MCP tool schema small.
@@ -79,7 +79,8 @@ const ScheduledTaskOnceSchedule = Schema.Struct({
   type: Schema.Literal("once"),
   runAt: TrimmedNonEmptyString.check(
     Schema.makeFilter(
-      (value) => isIsoWithOffset(value) || "Expected an ISO date and time with an offset.",
+      (value) =>
+        scheduledTaskInstantMs(value) !== null || "Expected an ISO date and time with an offset.",
     ),
   ),
 });
