@@ -1,3 +1,7 @@
+## 2026-11-23 — Windows landing checks
+
+- The landing tests exercise lost Git push replies, expired leases, and large lists of changed files on Windows using temporary repositories.
+
 ## 2026-11-23 — OpenCode questions and permissions
 
 - On resumed chats, OpenCode routes questions and permission requests to their originating turn when the native session identifies it.

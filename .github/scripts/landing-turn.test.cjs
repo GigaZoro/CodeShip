@@ -196,18 +196,30 @@ async function reach(milestone, message, running) {
   if (ended) assert.fail(`${message}: the ${ended.name} lander ended: ${ended.result.stderr}`);
 }
 
-/** Origin applies the next take, then goes away before it answers, so the read that would confirm the take fails too. */
-function loseNextAnswer(origin, git) {
-  const hooks = path.join(origin, "hooks");
-  git(origin, "config", "core.hooksPath", hooks);
-  // It moves HEAD, not the repository: Windows will not rename a running process's current directory.
-  fs.writeFileSync(
-    path.join(hooks, "reference-transaction"),
-    '#!/bin/sh\n[ "$1" = committed ] && [ -e drop-ack ] && rm drop-ack && mv HEAD HEAD-away && kill -9 "$PPID"\nexit 0\n',
-    { mode: 0o755 },
+/** Apply one real lease push before reporting transport failure, optionally making the next read fail too. */
+function loseNextAnswer(lander, origin, git, disconnect = false) {
+  const marker = path.join(origin, "drop-ack");
+  fs.writeFileSync(marker, "");
+  git(
+    lander,
+    "config",
+    "remote.origin.receivepack",
+    [
+      "receive() {",
+      '  git-receive-pack "$1" || return $?',
+      '  if [ -f "$1/drop-ack" ] && git -C "$1" show-ref --verify --quiet refs/heads/landing-lease/main; then',
+      '    rm "$1/drop-ack" || return 1',
+      disconnect ? '    mv "$1/HEAD" "$1/HEAD-away" || return 1' : "",
+      "    return 1",
+      "  fi",
+      "  return 0",
+      "}; receive",
+    ].join("\n"),
   );
-  fs.writeFileSync(path.join(origin, "drop-ack"), "");
-  return () => fs.renameSync(path.join(origin, "HEAD-away"), path.join(origin, "HEAD"));
+  return {
+    marker,
+    reconnect: () => fs.renameSync(path.join(origin, "HEAD-away"), path.join(origin, "HEAD")),
+  };
 }
 
 /** Collects what the lander writes to stderr while `run` runs. */
@@ -1022,22 +1034,11 @@ test("a take whose push fails or times out is the lander's when origin took it, 
   const { root, origin, git, clone } = setup();
   try {
     const lander = clone("lander");
-    // Origin commits the take, then its receive-pack dies before it acknowledges the push.
-    const hooks = path.join(origin, "hooks");
-    git(origin, "config", "core.hooksPath", hooks);
-    fs.writeFileSync(
-      path.join(hooks, "reference-transaction"),
-      '#!/bin/sh\n[ "$1" = committed ] && [ -e drop-ack ] && rm drop-ack && kill -9 "$PPID"\nexit 0\n',
-      { mode: 0o755 },
-    );
-    fs.writeFileSync(path.join(origin, "drop-ack"), "");
+    const { marker } = loseNextAnswer(lander, origin, git);
 
-    const turn = acquire({ cwd: lander, remote: origin, maxWaitMs: 0 });
+    const turn = acquire({ cwd: lander, remote: "origin", maxWaitMs: 0 });
     assert.deepEqual(
-      [
-        fs.existsSync(path.join(origin, "drop-ack")),
-        git(origin, "rev-parse", "landing-lease/main"),
-      ],
+      [fs.existsSync(marker), git(origin, "rev-parse", "landing-lease/main")],
       [false, turn],
     );
     // The lease is its wait's by the run id that wait made: another wait that names the same id does not get it.
@@ -1052,14 +1053,15 @@ test("a take whose push fails or times out is the lander's when origin took it, 
     release({ cwd: lander, remote: path.join(root, "missing.git") }, turn);
     release({ cwd: lander, remote: origin }, turn);
 
-    // Origin stops answering and never takes the lease: the push runs out of time, which is a failed poll.
-    const stall = path.join(hooks, "pre-receive");
-    fs.writeFileSync(stall, "#!/bin/sh\nsleep 6\nexit 1\n", { mode: 0o755 });
+    // Origin stops answering and never takes the lease: the push runs out of time, which is a failed poll. The
+    // stalled receive-pack outlives the push it answers, so it waits outside this folder, which Windows would not
+    // delete while a process works in it.
+    git(lander, "config", "remote.origin.receivepack", "cd / && sleep 6 #");
     assert.throws(
-      () => acquire({ cwd: lander, remote: origin, maxWaitMs: 0, callMs: 2000 }),
+      () => acquire({ cwd: lander, remote: "origin", maxWaitMs: 0, callMs: 2000 }),
       /git push failed: did not finish within 2 seconds/,
     );
-    fs.rmSync(stall);
+    git(lander, "config", "--unset", "remote.origin.receivepack");
 
     git(lander, "config", "remote.origin.pushurl", path.join(root, "missing.git"));
     assert.throws(
@@ -1076,11 +1078,11 @@ test("a take that reached origin but lost its answer is the lander's although an
   try {
     const lander = clone("lander");
     const other = clone("other");
-    const comeBack = loseNextAnswer(origin, git);
+    const { reconnect } = loseNextAnswer(lander, origin, git, true);
     const epoch = Date.parse("2026-01-01T00:00:00Z");
     const pauses = [
       () => {
-        comeBack();
+        reconnect();
         // An entry older than the lander's own joins while the lander cannot tell whether its take applied.
         const sha = entryCommit(other, "other", epoch - 1000);
         git(other, "push", "-q", "origin", `${sha}:${QUEUE_PREFIX}other.1`);
@@ -1089,7 +1091,7 @@ test("a take that reached origin but lost its answer is the lander's although an
     let time = 0;
     const turn = acquire({
       cwd: lander,
-      remote: origin,
+      remote: "origin",
       clock: () => time,
       now: () => epoch,
       maxWaitMs: 2,
@@ -1116,14 +1118,14 @@ test("a take whose answer was lost goes back through the queue when its lease ex
   try {
     const lander = clone("lander");
     const other = clone("other");
-    const comeBack = loseNextAnswer(origin, git);
+    const { reconnect } = loseNextAnswer(lander, origin, git, true);
     const epoch = Date.parse("2026-01-01T00:00:00Z");
     let wall = epoch;
     let time = 0;
     let lost;
     const pauses = [
       () => {
-        comeBack();
+        reconnect();
         lost = git(origin, "rev-parse", LEASE_REF);
         // The lease runs out before the lander can tell its take applied, and an older entry joins meanwhile.
         wall = epoch + LEASE_TTL_MS;
@@ -1139,7 +1141,7 @@ test("a take whose answer was lost goes back through the queue when its lease ex
     ];
     const turn = acquire({
       cwd: lander,
-      remote: origin,
+      remote: "origin",
       clock: () => time,
       now: () => wall,
       sleep: () => {
@@ -1164,16 +1166,7 @@ test("a take whose lost answer is confirmed only after its lease expired goes ba
   try {
     const lander = clone("lander");
     const other = clone("other");
-    // Origin commits the take, then its receive-pack dies before it acknowledges the push; the read after it works.
-    const hooks = path.join(origin, "hooks");
-    git(origin, "config", "core.hooksPath", hooks);
-    fs.writeFileSync(
-      path.join(hooks, "reference-transaction"),
-      '#!/bin/sh\n[ "$1" = committed ] && [ -e drop-ack ] && rm drop-ack && kill -9 "$PPID"\nexit 0\n',
-      { mode: 0o755 },
-    );
-    const dropAck = path.join(origin, "drop-ack");
-    fs.writeFileSync(dropAck, "");
+    const { marker } = loseNextAnswer(lander, origin, git);
     const epoch = Date.parse("2026-01-01T00:00:00Z");
     const expired = epoch + LEASE_TTL_MS + 1000;
     let time = 0;
@@ -1194,10 +1187,10 @@ test("a take whose lost answer is confirmed only after its lease expired goes ba
     ];
     const turn = acquire({
       cwd: lander,
-      remote: origin,
+      remote: "origin",
       clock: () => time,
       // The lease runs out between the take and the read that confirms it.
-      now: () => (fs.existsSync(dropAck) ? epoch : expired),
+      now: () => (fs.existsSync(marker) ? epoch : expired),
       sleep: () => {
         const pause = pauses.shift();
         assert.ok(pause, "waited after the older entry went stale");
@@ -1337,18 +1330,25 @@ test("a landing lists other worktrees with unmerged work on the same files, and 
     add("unrelated", "other.txt");
     // A branch with more changed file names than spawnSync's default 1 MiB buffer holds.
     const bulk = path.join(root, "bulk");
-    git(mine, "worktree", "add", "-q", "-b", "bulk", bulk, base);
-    fs.mkdirSync(path.join(bulk, "d"));
-    for (let i = 0; i < 6000; i++)
-      fs.writeFileSync(path.join(bulk, "d", `${"x".repeat(200)}${i}`), "");
-    git(bulk, "add", ".");
-    git(bulk, "commit", "-qm", "bulk");
+    git(mine, "worktree", "add", "--no-checkout", "-q", "-b", "bulk", bulk, base);
+    const blob = git(bulk, "rev-parse", base + ":base.txt");
+    const names = Array.from({ length: 6000 }, (_, i) => "x".repeat(200) + i);
+    assert.ok(Buffer.byteLength(names.join("\n")) > 1024 * 1024);
+    const tree = execFileSync("git", ["-C", bulk, "mktree"], {
+      input:
+        [
+          git(bulk, "ls-tree", base),
+          ...names.map((name) => "100644 blob " + blob + "\t" + name),
+        ].join("\n") + "\n",
+      encoding: "utf8",
+    }).trim();
+    git(bulk, "update-ref", "HEAD", git(bulk, "commit-tree", tree, "-p", base, "-m", "bulk"), base);
     const found = overlappingWorktrees({ cwd: mine, base });
     assert.deepEqual(
       found.map(({ branch, files }) => ({ branch, files })),
       [{ branch: "overlapping", files: ["shared.txt"] }],
     );
-    assert.equal(found[0].worktree, path.join(root, "overlapping"));
+    assert.equal(path.normalize(found[0].worktree), path.join(root, "overlapping"));
 
     const reports = [];
     const result = land({
