@@ -182,6 +182,7 @@ const withService = <A, E>(
     };
     readonly completedLaunches?: Set<string>;
     readonly failLaunches?: { remaining: number };
+    readonly threadManagement?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
     readonly gate?: Deferred.Deferred<void>;
     readonly gateForTask?: (input: LaunchInput) => Deferred.Deferred<void> | undefined;
     readonly relayHookBaseUrl?: string;
@@ -251,7 +252,7 @@ const withService = <A, E>(
         namedProjectsRoot: "/projects",
         isScratchProject: () => Effect.succeed(false),
       }),
-      Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+      Layer.mock(ThreadManagementService.ThreadManagementService)(options.threadManagement ?? {}),
       layerSharedTaskDependencies([], undefined, options.runConditionCheck),
       Layer.mock(SecretRequests.SecretRequests)({
         consume: ({ ref }) => {
@@ -1477,7 +1478,7 @@ it.effect(
               "scheduled-task",
               HERE_ENVIRONMENT_ID,
               task.id,
-              task.createdAt,
+              task.incarnationId ?? task.createdAt,
               "webhook",
               accepted.deliveryId,
             ),
@@ -1547,7 +1548,7 @@ it.effect("start failures release both replay keys and relay claims for redelive
           service.triggerWebhook(request),
           "ScheduledTaskService.runWebhookDelivery",
         );
-        yield* Queue.take(launches);
+        const first = yield* Queue.take(launches);
         assert.equal((yield* sql`SELECT * FROM scheduled_task_webhook_replay_keys`).length, 0);
         assert.equal((yield* sql`SELECT * FROM scheduled_task_webhook_relay_deliveries`).length, 0);
         const retry = yield* waitForSpan(
@@ -1555,11 +1556,135 @@ it.effect("start failures release both replay keys and relay claims for redelive
           "ScheduledTaskService.runWebhookDelivery",
         );
         assert.equal(retry._tag === "accepted" && retry.outcome, "accepted");
-        yield* Queue.take(launches);
+        const second = yield* Queue.take(launches);
+        assert.equal(first.commandId, second.commandId);
+        assert.equal(first.initialMessage?.messageId, second.initialMessage?.messageId);
+        assert.match(first.initialMessage?.demandId ?? "", /^demand:/);
+        assert.equal(first.initialMessage?.demandId, second.initialMessage?.demandId);
+        const { runs } = yield* service.listRuns({ id: task.id });
+        assert.deepEqual(
+          runs.map((run) => run.outcome),
+          ["succeeded", "failed"],
+        );
+        assert.equal(runs[0]!.startedAt, runs[1]!.startedAt);
+        assert.notEqual(runs[0]!.id, runs[1]!.id);
         assert.equal((yield* service.list()).tasks[0]!.lastRunStatus, "succeeded");
       }),
     { failLaunches: { remaining: 1 } },
   ),
+);
+
+it.effect.each(["saved attempts", "legacy latest"] as const)(
+  "two same-tick webhook deliveries retain both attempts and recover each delivered prompt (%s)",
+  (historyKind) =>
+    withService(({ service, sql, launches }) =>
+      Effect.gen(function* () {
+        const { task } = yield* service.upsert(
+          yield* webhookTaskInput(),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const accepted: LaunchInput[] = [];
+        for (const relayDeliveryId of ["first", "second"]) {
+          yield* waitForSpan(
+            service.triggerWebhook(requestFor(task, { relayDeliveryId })),
+            "ScheduledTaskService.runWebhookDelivery",
+          );
+          accepted.push(yield* Queue.take(launches));
+        }
+        const { runs } = yield* service.listRuns({ id: task.id });
+        assert.lengthOf(runs, 2);
+        assert.equal(runs[0]!.startedAt, runs[1]!.startedAt);
+        assert.notEqual(runs[0]!.id, runs[1]!.id);
+        assert.notEqual(accepted[0]!.commandId, accepted[1]!.commandId);
+        assert.notEqual(
+          accepted[0]!.initialMessage?.demandId,
+          accepted[1]!.initialMessage?.demandId,
+        );
+        const prompts = accepted.map((launch) => launch.initialMessage!.messageId!);
+        yield* sql`UPDATE scheduled_task_runs SET outcome='running',completed_at=NULL WHERE task_id=${task.id}`;
+        yield* sql`UPDATE scheduled_tasks SET last_run_status='running' WHERE task_id=${task.id}`;
+        if (historyKind === "legacy latest") {
+          // The old format could store only one webhook row for this clock tick.
+          yield* sql`DELETE FROM scheduled_task_runs WHERE run_id=${runs[1]!.id}`;
+          yield* sql`UPDATE scheduled_task_runs SET run_id=${task.id + ":" + Date.parse(runs[0]!.startedAt) + ":webhook"} WHERE task_id=${task.id}`;
+          yield* sql`UPDATE scheduled_tasks SET last_run_record_id=NULL WHERE task_id=${task.id}`;
+          yield* sql`ALTER TABLE scheduled_task_runs DROP COLUMN webhook_delivery_id`;
+        }
+        const lookedUp: string[] = [];
+        yield* withService(
+          ({ service: recovered }) =>
+            Effect.gen(function* () {
+              const history = yield* recovered.listRuns({ id: task.id });
+              assert.sameMembers(
+                lookedUp,
+                historyKind === "legacy latest" ? prompts.slice(-1) : prompts,
+              );
+              assert.deepEqual(
+                history.runs.map((row) => row.outcome),
+                historyKind === "legacy latest" ? ["succeeded"] : ["succeeded", "succeeded"],
+              );
+            }),
+          {
+            sql,
+            threadManagement: {
+              getThreadShell: () => Effect.succeed({ deletedAt: null, folder: null } as never),
+              getThreadRecords: (_thread, _tables, filter) => {
+                const id = filter?.messageIds?.[0];
+                if (id !== undefined) lookedUp.push(id);
+                return Effect.succeed({
+                  messages: id !== undefined && prompts.includes(id) ? [{ id }] : [],
+                } as never);
+              },
+              getMessageCount: () => Effect.succeed(1),
+            },
+          },
+        );
+      }),
+    ),
+);
+
+it.effect(
+  "a task recreated in the same tick discards its earlier queued delivery and completion",
+  () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      yield* withService(
+        ({ service, launches, sql }) =>
+          Effect.gen(function* () {
+            const input = yield* webhookTaskInput();
+            const { task } = yield* service.upsert(input, ScheduledTaskService.CHANGED_IN_APP);
+            const first = yield* waitForSpan(
+              service.triggerWebhook(requestFor(task)),
+              "ScheduledTaskService.runWebhookDelivery",
+            ).pipe(Effect.forkChild);
+            yield* Queue.take(launches);
+            const enqueued = yield* Deferred.make<void>();
+            const pending = yield* waitForSpan(
+              service
+                .triggerWebhook(requestFor(task))
+                .pipe(Effect.tap(() => Deferred.succeed(enqueued, undefined))),
+              "ScheduledTaskService.runWebhookDelivery",
+            ).pipe(Effect.forkChild);
+            yield* Deferred.await(enqueued);
+            yield* service.delete({ id: task.id });
+            const { task: replacement } = yield* service.upsert(
+              input,
+              ScheduledTaskService.CHANGED_IN_APP,
+            );
+            assert.equal(replacement.createdAt, task.createdAt);
+            yield* Deferred.succeed(gate, undefined);
+            yield* Fiber.join(first);
+            yield* Fiber.join(pending);
+            assert.equal(yield* Queue.size(launches), 0);
+            assert.equal((yield* service.list()).tasks[0]!.runCount, 0);
+            assert.isEmpty((yield* service.listRuns({ id: task.id })).runs);
+            assert.isEmpty(
+              yield* sql`SELECT thread_id FROM scheduled_task_threads WHERE task_id=${task.id}`,
+            );
+          }),
+        { gate },
+      );
+    }),
 );
 
 it.effect("a start failure releases the relay claim when the task row is replaced mid-run", () =>

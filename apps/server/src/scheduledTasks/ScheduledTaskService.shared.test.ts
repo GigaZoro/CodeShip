@@ -27,6 +27,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { UpdateDrain } from "../cloud/updateDrain.ts";
 
+import { originalDemandId } from "../orchestration-v2/demandId.ts";
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -2040,7 +2041,18 @@ it.effect.each(["unshared", "every"] as const)(
                 yield* TestClock.setTime(DUE + delay);
                 yield* Deferred.succeed(activated, undefined);
                 yield* TestClock.adjust("6 seconds");
-                return yield* Ref.get(started);
+                const demand = yield* Ref.get(started);
+                expect(demand).toBe(
+                  originalDemandId(
+                    "scheduled-task",
+                    environmentId,
+                    task.id,
+                    task.incarnationId ?? task.createdAt,
+                    "scheduled",
+                    iso(DUE),
+                  ),
+                );
+                return demand;
               }),
             [],
             {
@@ -2058,8 +2070,83 @@ it.effect.each(["unshared", "every"] as const)(
       expect(here).toBeTypeOf("string");
       expect(other).toBeTypeOf("string");
       expect(other).not.toBe(here);
-      expect(yield* fire(HERE_ENVIRONMENT_ID, MINUTE_MS)).toBe(here);
+      yield* fire(HERE_ENVIRONMENT_ID, MINUTE_MS);
     }),
+);
+
+it.effect(
+  "task incarnations survive edits and restart and distinguish same-tick recreation from a legacy task",
+  () =>
+    withService(
+      (service, sql, restart) =>
+        Effect.gen(function* () {
+          const input = upsertInput({ shared: null });
+          const by = ScheduledTaskService.CHANGED_IN_APP;
+          const first = (yield* service.upsert(input, by)).task;
+          expect(first.incarnationId).toBeTypeOf("string");
+          expect(
+            (yield* service.upsert({ ...input, title: "Edited" }, by)).task.incarnationId,
+          ).toBe(first.incarnationId);
+          yield* restart((current) =>
+            Effect.gen(function* () {
+              expect((yield* taskOf(current))?.incarnationId).toBe(first.incarnationId);
+              yield* current.delete({ id: first.id });
+              const second = (yield* current.upsert(input, by)).task;
+              expect(second.createdAt).toBe(first.createdAt);
+              expect(second.incarnationId).toBeTypeOf("string");
+              expect(second.incarnationId).not.toBe(first.incarnationId);
+            }),
+          );
+          // A row created on the former schema retains its timestamp component on an edit and restart.
+          yield* sql`UPDATE scheduled_tasks SET incarnation_id=NULL WHERE task_id=${first.id}`;
+          yield* restart((current) =>
+            Effect.gen(function* () {
+              const legacy = (yield* current.upsert(input, by)).task;
+              expect(legacy.incarnationId ?? legacy.createdAt).toBe(first.createdAt);
+            }),
+          );
+        }),
+      [],
+      { idleScheduler: true },
+    ),
+);
+
+it.effect("the same scheduled instant belongs to the new task after a same-tick recreation", () =>
+  Effect.gen(function* () {
+    const launches: ThreadLaunchService.ThreadLaunchInput[] = [];
+    yield* withService(
+      (service) =>
+        Effect.gen(function* () {
+          const input = upsertInput({ shared: null, schedule: { type: "once", runAt: iso(DUE) } });
+          const create = service.upsert(input, ScheduledTaskService.CHANGED_IN_APP);
+          const first = (yield* create).task;
+          yield* TestClock.setTime(DUE);
+          yield* TestClock.adjust("6 seconds");
+          expect(launches).toHaveLength(1);
+          yield* TestClock.setTime(NOW);
+          yield* service.delete({ id: first.id });
+          const second = (yield* create).task;
+          expect(second.createdAt).toBe(first.createdAt);
+          yield* TestClock.setTime(DUE + 10000);
+          yield* TestClock.adjust("6 seconds");
+          expect(launches).toHaveLength(2);
+          const owners = launches.map((l) => l.initialMessage?.demandId);
+          expect(owners).toEqual([
+            expect.stringMatching(/^demand:/),
+            expect.stringMatching(/^demand:/),
+          ]);
+          expect(owners[1]).not.toBe(owners[0]);
+        }),
+      [],
+      {
+        launch: (input) =>
+          Effect.sync(() => {
+            launches.push(input);
+            return { threadId: ThreadId.make("thread:recreated") } as never;
+          }),
+      },
+    );
+  }),
 );
 
 it.effect("same-tick manual launches keep distinct stored receipts through restart", () =>
