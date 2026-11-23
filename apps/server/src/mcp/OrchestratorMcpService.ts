@@ -2854,7 +2854,7 @@ const make = Effect.gen(function* () {
                   ),
                 )).tasks.find((candidate) => candidate.id === input.scheduledTaskId);
         const lastRun = task === undefined ? null : yield* lastRunOf(task);
-        const holder = yield* scheduledTasks
+        const receipt = yield* scheduledTasks
           .claimOccurrence({
             taskId: input.scheduledTaskId,
             occurrence: input.occurrence,
@@ -2871,7 +2871,7 @@ const make = Effect.gen(function* () {
               ),
             ),
           );
-        return { holder };
+        return receipt;
       },
     ),
     updateScheduledTask: Effect.fn("OrchestratorMcpService.updateScheduledTask")(

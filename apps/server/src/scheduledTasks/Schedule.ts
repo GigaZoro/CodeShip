@@ -106,6 +106,35 @@ export function occurrenceSlot(schedule: ScheduledTaskSchedule, due: DateTime.Da
   return `${year}-${two(month)}-${two(day)}T${two(hour)}:${two(minute)}`;
 }
 
+/** Can a persisted instant and the fixed-time claim's offset-free clock reading identify each other uniquely? */
+export function hasUniqueFixedTimeSlot(
+  schedule: Extract<ScheduledTaskSchedule, { type: "fixed_time" }>,
+  due: DateTime.DateTime,
+  slot: string,
+): boolean {
+  const at = DateTime.toEpochMillis(due);
+  if (Date.parse(slot) !== at || !slot.endsWith(`T${schedule.timeOfDay.trim().padStart(5, "0")}`))
+    return false;
+  const local = DateTime.zoneMakeLocal();
+  const offsetAt = (instant: number) =>
+    DateTime.zonedOffset(DateTime.makeZonedUnsafe(instant, { timeZone: local }));
+  const offset = offsetAt(at);
+  // Ask about the offsets on both sides, then test the actual alternative instant (fold)
+  // and civil minute (gap). Other times on a transition day still have one interpretation.
+  return [-1, 1].every((direction) => {
+    const alternativeOffset = offsetAt(at + direction * 86_400_000);
+    if (alternativeOffset === offset) return true;
+    const alternativeInstant = DateTime.makeUnsafe(at + offset - alternativeOffset);
+    const alternativeSlot = DateTime.formatIso(DateTime.makeUnsafe(at + alternativeOffset)).slice(
+      0,
+      16,
+    );
+    return (
+      occurrenceSlot(schedule, alternativeInstant) !== slot && Date.parse(alternativeSlot) !== at
+    );
+  });
+}
+
 const MISSED_FIXED_TIME_GRACE_MS = 10 * MINUTE_MS;
 
 export function isMissedFixedTimeRun(
