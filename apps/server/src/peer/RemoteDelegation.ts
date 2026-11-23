@@ -9,6 +9,7 @@ import {
   type OrchestratorMcpThreadTimelineItem,
   type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Subagent,
+  type OrchestrationV2ThreadProjection,
   type ProjectId,
   type ProviderInstanceId,
   ProviderDriverKind,
@@ -87,11 +88,17 @@ export class RemoteDelegation extends Context.Service<
   {
     readonly delegate: (
       scope: ThreadScope,
+      parent: {
+        readonly thread: OrchestrationV2ThreadProjection["thread"];
+        readonly runId: RunId;
+        readonly nodeId: NodeId;
+      },
       input: OrchestratorMcpDelegateTaskInput & {
         readonly target: NonNullable<OrchestratorMcpDelegateTaskInput["target"]> & {
           readonly environmentId: EnvironmentId;
         };
       },
+      request: { readonly key: string; readonly commandId: CommandId },
     ) => Effect.Effect<{ readonly taskId: NodeId }, OrchestratorMcpFailure>;
     /**
      * Stops the task's thread there, then completes it here as cancelled. A
@@ -146,6 +153,7 @@ const make = Effect.gen(function* () {
   );
   // Followers live as long as this service, so shutting down stops them.
   const followers = yield* Scope.Scope;
+  const launching = new Set<NodeId>();
 
   // One follower runs per open task and holds what it read across a wait of
   // up to FOLLOW_WAIT_MS, so it reads its own task, never the parent's whole
@@ -296,41 +304,9 @@ const make = Effect.gen(function* () {
     );
 
   const delegate: RemoteDelegation["Service"]["delegate"] = Effect.fn("RemoteDelegation.delegate")(
-    function* (scope, input) {
+    function* (scope, parent, input, { key, commandId }) {
       const parentThreadId = scope.thread.threadId;
-      const key = input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
-      const commandId = CommandId.make(
-        `command:mcp:${encodeURIComponent(scope.requestNamespace)}:remote-delegate:${encodeURIComponent(key)}`,
-      );
       const taskId = derive.delegatedTaskNode({ commandId });
-      const parent = yield* threads
-        .getThreadRecords(parentThreadId, ["runs", "subagents"], { subagentIds: [taskId] })
-        .pipe(
-          Effect.mapError(
-            () =>
-              new OrchestratorMcpFailure({
-                code: "thread_not_found",
-                message: "The calling thread was not found.",
-              }),
-          ),
-        );
-      const parentRun = parent.runs
-        .filter(ThreadManagement.isActiveRun)
-        .toSorted((left, right) => right.ordinal - left.ordinal)[0];
-      if (
-        parentRun === undefined ||
-        parentRun.rootNodeId === null ||
-        parentRun.providerInstanceId !== scope.thread.providerInstanceId
-      ) {
-        return yield* new OrchestratorMcpFailure({
-          code: "parent_not_active",
-          message: "Delegated tasks require an active run owned by this MCP provider session.",
-        });
-      }
-      if (parent.subagents.some((task) => task.id === taskId && task.remoteChild !== undefined)) {
-        return { taskId };
-      }
-      const parentNodeId = parentRun.rootNodeId;
       const { target } = input;
       const workspaceStrategy =
         input.isolation === "worktree" ? yield* parentCommitWorktree(parent.thread) : undefined;
@@ -411,8 +387,8 @@ const make = Effect.gen(function* () {
           type: "delegated_task.remote.request",
           commandId,
           parentThreadId,
-          parentRunId: parentRun.id,
-          parentNodeId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.nodeId,
           task,
           ...(input.title === undefined ? {} : { title: input.title }),
           // The driver runs there; this side only labels the task with it.
@@ -541,9 +517,14 @@ const make = Effect.gen(function* () {
         Effect.flatMap((recorded) =>
           recorded.replayed
             ? Effect.succeed({ taskId })
-            : launch.pipe(
+            : Effect.sync(() => launching.add(taskId)).pipe(
+                Effect.andThen(launch),
                 Effect.ensuring(
-                  followOne(parentThreadId, taskId).pipe(Effect.forkIn(followers), Effect.asVoid),
+                  Effect.sync(() => launching.delete(taskId)).pipe(
+                    Effect.andThen(followOne(parentThreadId, taskId)),
+                    Effect.forkIn(followers),
+                    Effect.asVoid,
+                  ),
                 ),
               ),
         ),
@@ -965,6 +946,7 @@ const make = Effect.gen(function* () {
    */
   const followOne = (parentThreadId: ThreadId, taskId: NodeId) =>
     Effect.suspend(() => {
+      if (launching.has(taskId)) return Effect.void;
       const running = following.get(taskId);
       if (running !== undefined) {
         running.again = true;
@@ -1003,6 +985,7 @@ const make = Effect.gen(function* () {
       }
       const { reason } = input;
       const there = followScope(scope.thread, remote);
+      const launchInFlight = launching.has(task.id);
       // A later cancel stops what started there since; a retry of this one, nothing new.
       const key = `cancel:${encodeURIComponent(scope.requestNamespace)}:${
         input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie))
@@ -1010,14 +993,14 @@ const make = Effect.gen(function* () {
       if (task.result !== null) {
         yield* giveUpSettle(task.id);
         // Best effort: the result stands whether or not the stop gets there.
-        yield* stopThere(there, remote, key, reason).pipe(
+        yield* (launchInFlight ? Effect.void : stopThere(there, remote, key, reason)).pipe(
           Effect.andThen(
             complete(
               task.threadId,
               task.id,
               terminalStatus(task.status),
               task.result,
-              "stopped",
+              launchInFlight ? undefined : "stopped",
               remote.stopCount,
             ),
           ),
@@ -1033,10 +1016,14 @@ const make = Effect.gen(function* () {
       }
       // A link that is gone or a machine that is down still cancels the task
       // here; its follower keeps trying to stop it there, across restarts.
-      const unstopped = yield* stopThere(there, remote, key, reason).pipe(
-        Effect.as(undefined),
-        Effect.catch((error) => Effect.succeed(error.message)),
-      );
+      // The peer can have the thread before it has the initial run. The launch
+      // follower sends the stop after the launch finishes in that case.
+      const unstopped = launchInFlight
+        ? undefined
+        : yield* stopThere(there, remote, key, reason).pipe(
+            Effect.as(undefined),
+            Effect.catch((error) => Effect.succeed(error.message)),
+          );
       const cancelled = reason === undefined ? "Cancelled." : `Cancelled: ${reason}`;
       yield* complete(
         task.threadId,
@@ -1045,7 +1032,7 @@ const make = Effect.gen(function* () {
         unstopped === undefined
           ? cancelled
           : `${cancelled} It could not be stopped in ${remote.label} and may still run there: ${unstopped}`,
-        unstopped === undefined ? "stopped" : undefined,
+        unstopped === undefined && !launchInFlight ? "stopped" : undefined,
         remote.stopCount,
       ).pipe(
         Effect.tapError((cause) =>

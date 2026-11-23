@@ -3330,33 +3330,20 @@ const make = Effect.gen(function* () {
       };
     }),
     delegateTask: Effect.fn("OrchestratorMcpService.delegateTask")(function* (callerScope, input) {
-      const environmentId =
-        input.target === undefined
-          ? undefined
-          : PeerForwarding.remoteTarget(callerScope, input.target.environmentId);
-      if (input.target !== undefined && environmentId !== undefined) {
-        yield* requireCapability(callerScope);
-        const scope = yield* requireThreadScope(callerScope, "delegate_task");
-        // The task's child runs as an ordinary thread there; this thread keeps the task.
-        const { taskId } = yield* remoteDelegation.delegate(scope, {
-          ...input,
-          target: { ...input.target, environmentId },
-        });
-        return yield* input.mode === "wait"
-          ? awaitTask(scope, taskId, input.timeoutMs)
-          : readTask(scope, taskId, false, true);
-      }
-      const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
-      const foreignProjectId =
-        input.target?.projectId !== undefined && input.target.projectId !== parent.thread.projectId
-          ? input.target.projectId
-          : undefined;
-      if (foreignProjectId !== undefined && input.isolation !== "worktree") {
-        return yield* failure(
-          "invalid_request",
-          "A local task runs in this thread's project unless it gets its own checkout. Set isolation \"worktree\" to run in a new worktree of target.projectId's repository, omit target.projectId, or pass target.environmentId to run in that environment's project.",
-        );
-      }
+      yield* requireCapability(callerScope);
+      const scope = yield* requireThreadScope(callerScope, "delegate_task");
+      const key = yield* requestKey(input.clientRequestId);
+      const commandId = stableCommandId({ scope, requestKey: key, operation: "delegate-task" });
+      // The local command ID is shared by both routes. Also find remote tasks accepted before it was shared.
+      const taskIds = [
+        derive.delegatedTaskNode({ commandId }),
+        derive.delegatedTaskNode({
+          commandId: stableCommandId({ scope, requestKey: key, operation: "remote-delegate" }),
+        }),
+      ];
+      const parent = yield* threadManagement
+        .getThreadRecords(scope.thread.threadId, ["runs", "subagents"], { subagentIds: taskIds })
+        .pipe(Effect.mapError(threadManagementFailure));
       const parentRun = parent.runs
         .filter(ThreadManagementService.isActiveRun)
         .toSorted((left, right) => right.ordinal - left.ordinal)[0];
@@ -3370,13 +3357,44 @@ const make = Effect.gen(function* () {
           "Delegated tasks require an active run owned by this MCP provider session.",
         );
       }
+      const original = parent.subagents.find(
+        (task) => task.origin === "app_owned" && taskIds.includes(task.id),
+      );
+      if (original?.remoteChild !== undefined) {
+        yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
+        yield* resolveInteractionMode(parent.thread.interactionMode, input.interactionMode);
+        return yield* input.mode === "wait"
+          ? awaitTask(scope, original.id, input.timeoutMs)
+          : readTask(scope, original.id, false, true);
+      }
+      const environmentId =
+        original === undefined
+          ? PeerForwarding.remoteTarget(scope, input.target?.environmentId)
+          : undefined;
+      if (input.target !== undefined && environmentId !== undefined) {
+        const { taskId } = yield* remoteDelegation.delegate(
+          scope,
+          { thread: parent.thread, runId: parentRun.id, nodeId: parentRun.rootNodeId },
+          { ...input, target: { ...input.target, environmentId } },
+          { key, commandId },
+        );
+        return yield* input.mode === "wait"
+          ? awaitTask(scope, taskId, input.timeoutMs)
+          : readTask(scope, taskId, false, true);
+      }
+      const foreignProjectId =
+        original === undefined &&
+        input.target?.projectId !== undefined &&
+        input.target.projectId !== parent.thread.projectId
+          ? input.target.projectId
+          : undefined;
+      if (foreignProjectId !== undefined && input.isolation !== "worktree") {
+        return yield* failure(
+          "invalid_request",
+          "A local task runs in this thread's project unless it gets its own checkout. Set isolation \"worktree\" to run in a new worktree of target.projectId's repository, omit target.projectId, or pass target.environmentId to run in that environment's project.",
+        );
+      }
       const providers = yield* loadProviders;
-      const key = yield* requestKey(input.clientRequestId);
-      const commandId = stableCommandId({
-        scope,
-        requestKey: key,
-        operation: "delegate-task",
-      });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
       const committedThread = isRetryOfAcceptedDelegation
         ? yield* threadManagement

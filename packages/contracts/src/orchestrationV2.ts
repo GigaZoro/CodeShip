@@ -472,6 +472,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+  initialDelegationStopped: Schema.optional(Schema.Literal(true)),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(
     Schema.Union([
@@ -3463,6 +3464,7 @@ export const OrchestrationV2Command = Schema.Union([
     ...OrchestrationV2CreationFields,
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     senderThreadId: Schema.optional(ThreadId),
+    initialDelegationLaunch: Schema.optional(Schema.Literal(true)),
     idleCompaction: Schema.optional(OrchestrationV2IdleCompaction),
     commandId: CommandId,
     threadId: ThreadId,

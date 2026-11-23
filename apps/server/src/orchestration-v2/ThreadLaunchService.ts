@@ -1047,6 +1047,9 @@ const make = Effect.gen(function* () {
               ...(input.initialMessage.senderThreadId === undefined
                 ? {}
                 : { senderThreadId: input.initialMessage.senderThreadId }),
+              ...(input.delegatedFrom === undefined || input.linkOrigin === undefined
+                ? {}
+                : { initialDelegationLaunch: true as const }),
               attachments: input.initialMessage.attachments,
               ...(input.initialMessage.context ? { context: input.initialMessage.context } : {}),
               ...(input.generateTitle === true ? { titleSeed: input.title } : {}),

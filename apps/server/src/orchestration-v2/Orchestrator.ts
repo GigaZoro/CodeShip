@@ -6034,6 +6034,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
     let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    if (command.initialDelegationLaunch === true && projection.thread.initialDelegationStopped) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "The delegated thread was stopped before its first message.",
+      });
+    }
     const automaticSourceRunId =
       command.automaticContinuationOfRunId ??
       command.usageLimitContinuationOfRunId ??
@@ -13548,6 +13555,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     const now = yield* DateTime.now;
+    // A linked launch commits creation before its first message. Stop needs a
+    // durable fence even when there is no run to interrupt yet.
+    if (
+      projection.thread.delegatedFrom !== undefined &&
+      projection.runs.length === 0 &&
+      projection.thread.initialDelegationStopped !== true
+    ) {
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId: projection.thread.id,
+        occurredAt: now,
+        payload: { ...projection.thread, initialDelegationStopped: true, updatedAt: now },
+      });
+    }
     // Record that Stop reached the turn it could not interrupt and the thread's last executed
     // run, so a late tool call from their agent starts nothing.
     const executed = latestExecutedRun(projection.runs);

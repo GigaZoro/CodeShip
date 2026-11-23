@@ -1,6 +1,6 @@
 ## 2026-11-23 — Reliable retries for tasks on linked environments
 
-- Retrying an accepted task returns its original destination and status. A dropped connection or a temporary server read error cannot leave the task waiting for a server restart.
+- Retrying an accepted task returns its original destination and status, even if the retry names a different environment. A dropped connection or a temporary server read error cannot leave the task waiting for a server restart. Cancelling a task while its remote thread starts also stops its first run.
 
 ## 2026-11-22 — Long keys work for tasks on linked environments
 
