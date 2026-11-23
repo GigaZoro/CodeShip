@@ -2551,12 +2551,36 @@ describe("OrchestratorMcpService provider resolution", () => {
 
         yield* Effect.gen(function* () {
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-          const first = yield* service.delegateTask(scope, {
-            task: "Summarize the diff.",
-            target,
-            mode: "async",
-            clientRequestId: "delegate-driver-retry-after-disable-1",
-          });
+          const stale = yield* service
+            .delegateTask(
+              {
+                ...scope,
+                thread: {
+                  ...scope.thread!,
+                  runId: RunId.make("run:previous"),
+                  demandId: `demand:${"a".repeat(64)}`,
+                },
+              },
+              {
+                task: "Old request",
+                target,
+                mode: "async",
+                clientRequestId: "before-parent-changed",
+              },
+            )
+            .pipe(Effect.flip);
+          assert.equal(stale.code, "parent_not_active");
+          assert.lengthOf(yield* Ref.get(dispatched), 0);
+          const sourceDemand = `demand:${"b".repeat(64)}`;
+          const first = yield* service.delegateTask(
+            { ...scope, thread: { ...scope.thread!, runId: parentRunId, demandId: sourceDemand } },
+            {
+              task: "Summarize the diff.",
+              target,
+              mode: "async",
+              clientRequestId: "delegate-driver-retry-after-disable-1",
+            },
+          );
           assert.equal(first.status, "running");
           assert.equal(first.providerInstanceId, selection.instanceId);
           assert.equal(first.model, selection.model);
@@ -2565,6 +2589,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             modelSelection: ModelSelection;
           };
           assert.deepEqual(firstCommand.modelSelection, selection);
+          assert.propertyVal(firstCommand, "demandId", sourceDemand);
 
           assert.deepEqual(
             yield* service.delegateTask(scope, {
@@ -2738,7 +2763,14 @@ describe("OrchestratorMcpService provider resolution", () => {
               threads: [{ target: { driverKind: driver, model } }],
               clientRequestId: "create-retry",
             };
-            const first = yield* service.createThreads(scope, request);
+            const creationDemand = `demand:${"c".repeat(64)}`;
+            const first = yield* service.createThreads(
+              {
+                ...scope,
+                thread: { ...scope.thread!, demandId: creationDemand },
+              },
+              request,
+            );
             const child = first.threads[0]!;
             const selection = parentEnabled
               ? { instanceId: codexInstanceId, model: "gpt-5.4" }
@@ -2769,6 +2801,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             const started = yield* service.createThreads(scope, withPrompt);
             assert.equal(started.threads[0]?.threadId, child.threadId);
             const before = yield* orchestrator.getThreadProjection(child.threadId);
+            assert.equal(before.runs[0]?.demandId, creationDemand);
             assert.deepEqual(before.runs[0]?.modelSelection, selection);
             assert.equal(before.messages.length, 1);
 

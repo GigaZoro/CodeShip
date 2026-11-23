@@ -56,6 +56,7 @@ import { ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
+  OrchestrationV2DemandOrigin,
   OrchestrationV2RunStatus,
   OrchestrationV2TaskCommand,
   OrchestrationV2TurnItemStatus,
@@ -570,11 +571,15 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
+  demandOrigin: Schema.optional(OrchestrationV2DemandOrigin),
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   message: OrchestratorMcpPrompt,
   mode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
+  expectedActiveRunId: Schema.optional(
+    RunId.annotate({ description: "Restart only while this run is active." }),
+  ),
   continuationOfRunId: Schema.optional(
     RunId.annotate({
       description:
@@ -1378,6 +1383,7 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "thread_not_found",
       "run_not_found",
       "thread_not_sendable",
+      "expected_active_run_changed",
       "thread_not_interruptible",
       "invalid_request",
       "orchestration_error",

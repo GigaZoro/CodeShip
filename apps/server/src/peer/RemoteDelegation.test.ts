@@ -986,6 +986,30 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
       yield* linkTo(a.links, b, "full-access");
       yield* seedParent(a);
 
+      const delayed = yield* a.call(
+        "delegate_task",
+        {
+          task: "Earlier run's work.",
+          target: {
+            environmentId: box.environmentId,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+          mode: "async",
+          clientRequestId: "call-before-the-new-parent",
+        },
+        {
+          ...parentScope,
+          thread: {
+            ...parentScope.thread!,
+            runId: RunId.make("run:previous-parent"),
+            demandId: `demand:${"a".repeat(64)}`,
+          },
+        },
+      );
+      expect(delayed.isError).toBe(true);
+      expect(JSON.stringify(delayed.content)).toContain("parent_not_active");
+      expect(yield* Ref.get(thread.launched)).toBeNull();
       const delegated = yield* delegateToBox(a);
       expect(delegated).toMatchObject({
         status: "running",

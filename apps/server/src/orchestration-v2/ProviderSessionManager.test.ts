@@ -448,6 +448,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
               resumeCount: current.resumeCount + 1,
             })).pipe(Effect.as(threadInput.providerThread)),
           startTurn: () => options.startTurn ?? Effect.void,
+          compactThread: () => Effect.void,
           steerTurn: () => Effect.void,
           interruptTurn: () =>
             Ref.update(state, (current) => ({
@@ -1489,10 +1490,12 @@ it.effect(
             nativeThreadId: `native-${threadId}`,
           });
         const runId = idAllocator.derive.run({ threadId: sibling, ordinal: 1 });
-        yield* runtime.startTurn({
+        const demandId = `demand:${"b".repeat(64)}`;
+        const turnInput = {
           appThread: (yield* projectionStore.getThreadProjection(sibling)).thread,
           threadId: sibling,
           runId,
+          demandId,
           runOrdinal: 1,
           providerTurnOrdinal: 1,
           attemptId: idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 }),
@@ -1507,7 +1510,20 @@ it.effect(
           },
           modelSelection,
           runtimePolicy,
-        });
+        } satisfies ProviderAdapter.ProviderAdapterV2TurnInput;
+        yield* runtime.startTurn(turnInput);
+        const registry = yield* McpSessionRegistry.McpSessionRegistry;
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        const requestFrom = (id: ThreadId) =>
+          mcpSessions
+            .read(id)
+            .pipe(
+              Effect.flatMap((config) =>
+                registry.resolve(config!.authorizationHeader.replace(/^Bearer\s+/, "")),
+              ),
+            );
+        assert.equal((yield* requestFrom(sibling))?.thread.demandId, demandId);
+        assert.isUndefined((yield* requestFrom(stopping))?.thread.demandId);
         const release = (own: ThreadId) =>
           manager.releaseUnlessBusy({
             providerSessionId,
@@ -1555,6 +1571,9 @@ it.effect(
           runtimePolicy,
         });
         assert.equal((yield* startOnReleasedRuntime)._tag, "ProviderAdapterTurnStartError");
+        const staleCompact = yield* runtime.compactThread!(turnInput).pipe(Effect.flip);
+        assert.equal(staleCompact._tag, "ProviderAdapterTurnStartError");
+        assert.isUndefined((yield* requestFrom(sibling))?.thread.demandId);
         assert.isTrue(yield* release(sibling));
       }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60 * 60_000 })));
     }),

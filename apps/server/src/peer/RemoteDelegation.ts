@@ -31,7 +31,7 @@ import * as Stream from "effect/Stream";
 import * as Hex from "effect/encoding/Hex";
 import type * as Tool from "effect/ai/Tool";
 
-import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import {
   advertisedSlug,
@@ -310,6 +310,7 @@ const make = Effect.gen(function* () {
       if (
         parentRun === undefined ||
         parentRun.rootNodeId === null ||
+        (scope.thread.runId != null && parentRun.id !== scope.thread.runId) ||
         parentRun.providerInstanceId !== scope.thread.providerInstanceId
       ) {
         return yield* new OrchestratorMcpFailure({
@@ -403,6 +404,7 @@ const make = Effect.gen(function* () {
       const recorded = yield* threads
         .dispatch({
           type: "delegated_task.remote.request",
+          demandId: McpInvocationContext.invocationDemand(scope),
           commandId,
           parentThreadId: scope.thread.threadId,
           parentRunId: parentRun.id,
@@ -440,8 +442,9 @@ const make = Effect.gen(function* () {
         ),
         Effect.orElseSucceed(() => undefined),
       );
-      const taskId =
-        taskEvent?.event.type === "subagent.updated" ? taskEvent.event.payload.id : existing?.id;
+      const accepted =
+        taskEvent?.event.type === "subagent.updated" ? taskEvent.event.payload : existing;
+      const taskId = accepted?.id;
       if (taskId === undefined) {
         return yield* new OrchestratorMcpFailure({
           code: "orchestration_error",
@@ -452,23 +455,29 @@ const make = Effect.gen(function* () {
       // ended) has nothing to launch.
       if (taskEvent === undefined && existing?.result != null) return { taskId };
       const launched = yield* forwarding
-        .call(scope, ProjectToolkit.tools.t3_thread_launch, target.environmentId, {
-          ...where,
-          title: input.title ?? parent.thread.title,
-          modelSelection,
-          ...(runtimeMode === undefined ? {} : { runtimeMode }),
-          ...(interactionMode === undefined ? {} : { interactionMode }),
-          ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
-          message: task,
-          clientRequestId: yield* composedKey("delegate", scope.thread.threadId, key),
-          launchId: remoteThreadId,
-          // The thread there shows it is this thread's subagent, with a way back.
-          delegatedFrom: {
-            environmentId: hereId,
-            threadId: parent.thread.id,
-            title: parent.thread.title,
+        .call(
+          scope,
+          ProjectToolkit.tools.t3_thread_launch,
+          target.environmentId,
+          {
+            ...where,
+            title: input.title ?? parent.thread.title,
+            modelSelection,
+            ...(runtimeMode === undefined ? {} : { runtimeMode }),
+            ...(interactionMode === undefined ? {} : { interactionMode }),
+            ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+            message: task,
+            clientRequestId: yield* composedKey("delegate", scope.thread.threadId, key),
+            launchId: remoteThreadId,
+            // The thread there shows it is this thread's subagent, with a way back.
+            delegatedFrom: {
+              environmentId: hereId,
+              threadId: parent.thread.id,
+              title: parent.thread.title,
+            },
           },
-        })
+          accepted?.demandId ?? null,
+        )
         .pipe(
           Effect.filterOrElse(
             (result) => result.threadId === remoteThreadId,

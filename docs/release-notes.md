@@ -1,3 +1,7 @@
+## 2026-11-23 — Accounting for repairs and work-item requests
+
+- A repair can name the run that requested it, and work-item launches and sends can name the work item they serve. A guarded restart applies only while its intended run is active.
+
 ## 2026-11-23 — Message and review accounting
 
 - Each new turn started by an owner or an accepted guest message gets its own accounting ID. Steering, account failover and final review retain the original run’s ID. Guest messages with a different owner stay in the queue. Background reports and delegated follow-ups carry their source when it is known. Automatic compaction shares the ID of the message that triggered it.

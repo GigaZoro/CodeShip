@@ -34,7 +34,13 @@ import { withResolvedAttachments } from "../attachment/references.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
-import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
+import {
+  callerDemand,
+  newCommandId,
+  readCaller,
+  resolveProjectId,
+  unavailable,
+} from "../../threadAccess.ts";
 import { type LaunchWorkspaceStrategy, ProjectToolkit } from "./tools.ts";
 
 const isAboveCeilingError = Schema.is(OrchestratorRuntimeModeAboveCeilingError);
@@ -298,8 +304,13 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             )?.supportedRuntimeModes,
           });
         }
-        // A new thread owns no attachments yet, even on a replay: a replay claims again and
-        // keeps the copies its first launch accepted.
+        // On replay ThreadLaunchService reads the owner from its create receipt, even if
+        // it still has to send the initial message.
+        const demandId =
+          replaying || (input.message === undefined && !input.attachments?.length)
+            ? null
+            : yield* callerDemand(context, input.demandOrigin);
+        // Reclaim on replay and keep the attachment copies the first launch accepted.
         const requested = input.attachments ?? [];
         const result = yield* withResolvedAttachments(
           { requested, owned: [], context },
@@ -318,6 +329,14 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 : {
                     initialMessage: {
                       messageId,
+                      demandId,
+                      ...(demandId !== null &&
+                      (input.demandOrigin?.kind === "repair" ||
+                        (input.demandOrigin === undefined &&
+                          context.scope.client?.linked === true &&
+                          context.scope.client.demandOriginKind === "repair"))
+                        ? { demandOriginKind: "repair" as const }
+                        : {}),
                       ...(caller === undefined ? {} : { senderThreadId: caller.id }),
                       text: input.message ?? "",
                       attachments,

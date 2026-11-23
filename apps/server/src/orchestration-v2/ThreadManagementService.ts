@@ -63,6 +63,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import { latestSteerableRun } from "./CommandPolicy.ts";
 import * as AccountRouting from "./AccountRouting.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -143,7 +144,7 @@ function existingThreadIdsForCommand(
 }
 
 export interface ThreadManagementSendInput {
-  readonly demandId?: string;
+  readonly demandId?: string | null;
   readonly projectId: ProjectId;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
@@ -156,6 +157,7 @@ export interface ThreadManagementSendInput {
   readonly mode: ThreadManagementSendMode;
   /** Starts only while this stopped run is still the thread's latest (see the Orchestrator). */
   readonly manualContinuationOfRunId?: RunId;
+  readonly expectedActiveRunId?: RunId;
   readonly createdBy: OrchestrationV2Actor;
   readonly creationSource: OrchestrationV2CreationSource;
 }
@@ -619,21 +621,6 @@ export function latestActiveRun(
     .toSorted((left, right) => right.ordinal - left.ordinal)[0];
 }
 
-function latestSteerableRun(
-  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "providerTurns">,
-): OrchestrationV2Run | undefined {
-  return projection.runs
-    .filter(
-      (run) =>
-        run.status === "running" &&
-        run.activeAttemptId !== null &&
-        projection.providerTurns.some(
-          (turn) => turn.runAttemptId === run.activeAttemptId && turn.status === "running",
-        ),
-    )
-    .toSorted((left, right) => right.ordinal - left.ordinal)[0];
-}
-
 const SETTLE_AFTER_RUN_WAIT_MS = 24 * 60 * 60 * 1_000;
 const FORCE_STOP_REASON = "Force stopped by user";
 const FORCE_STOP_RELEASE_WAIT = "10 seconds";
@@ -995,7 +982,9 @@ const make = Effect.gen(function* () {
       OrchestrationV2Command,
       { readonly type: "message.dispatch" }
     >["dispatchMode"];
-    if (input.mode === "steer" || input.mode === "restart") {
+    if (input.mode === "restart" && input.expectedActiveRunId !== undefined) {
+      dispatchMode = { type: "restart_active", targetRunId: input.expectedActiveRunId };
+    } else if (input.mode === "steer" || input.mode === "restart") {
       if (steerableRun === undefined) {
         return yield* new ThreadManagementNoSteerableRunError({
           threadId: input.threadId,
@@ -1020,11 +1009,14 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       messageId: input.messageId,
       ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
-      ...(input.demandId === undefined ? {} : { demandId: input.demandId }),
       ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
+      ...(input.demandId === undefined ? {} : { demandId: input.demandId }),
       text: input.text,
       attachments: input.attachments,
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+      ...(input.expectedActiveRunId === undefined
+        ? {}
+        : { expectedActiveRunId: input.expectedActiveRunId }),
       ...(input.manualContinuationOfRunId === undefined
         ? {}
         : { manualContinuationOfRunId: input.manualContinuationOfRunId }),

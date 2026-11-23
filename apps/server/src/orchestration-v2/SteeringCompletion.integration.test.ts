@@ -1205,6 +1205,51 @@ it.effect("starts a steer that missed the turn on the saved next-turn selection"
   ),
 );
 
+it.effect("replays an accepted guarded restart after the running turn changes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { layer, startFirstTurn } = yield* nextTurnSelectionHarness("guarded-restart", true);
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threadId = yield* startFirstTurn;
+        const [run] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+        assert.isDefined(run);
+        const command = {
+          type: "message.dispatch",
+          threadId,
+          commandId: CommandId.make("guarded-restart"),
+          messageId: MessageId.make("message:guarded-restart"),
+          text: "Continue the same work.",
+          attachments: [],
+          demandId: run!.demandId ?? null,
+          expectedActiveRunId: run!.id,
+          dispatchMode: { type: "restart_active", targetRunId: run!.id },
+          createdBy: "agent",
+          creationSource: "mcp",
+        } as const;
+        const accepted = yield* orchestrator.dispatch(command);
+        assert.isUndefined(accepted.replayed);
+        const stale = yield* orchestrator
+          .dispatch({
+            ...command,
+            commandId: CommandId.make("another-guarded-restart"),
+            messageId: MessageId.make("message:another-guarded-restart"),
+          })
+          .pipe(Effect.flip);
+        assert.equal(stale.message, "expected_active_run_changed");
+        const replay = yield* orchestrator.dispatch(command);
+        assert.isTrue(replay.replayed);
+        assert.equal(replay.sequence, accepted.sequence);
+        const messages = (yield* orchestrator.getThreadProjection(threadId)).messages;
+        assert.lengthOf(
+          messages.filter((message) => message.id === command.messageId),
+          1,
+        );
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
 it.effect("starts a stop-and-send that arrives after the provider turn completed", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1231,6 +1276,30 @@ it.effect("starts a stop-and-send that arrives after the provider turn completed
           providerTurn: { ...turn, status: "completed", completedAt: yield* DateTime.now },
         });
         yield* Fiber.join(turnCompleted);
+
+        const guarded = {
+          type: "message.dispatch",
+          threadId,
+          commandId: CommandId.make("doctor-restart"),
+          messageId: MessageId.make("message:doctor-restart"),
+          text: "Recover stopped work.",
+          attachments: [],
+          expectedActiveRunId: first.runId,
+          dispatchMode: { type: "restart_active", targetRunId: first.runId },
+          createdBy: "agent",
+          creationSource: "mcp",
+        } as const;
+        const refused = yield* orchestrator.dispatch(guarded).pipe(Effect.flip);
+        assert.equal(refused.message, "expected_active_run_changed");
+        const again = yield* orchestrator.dispatch(guarded).pipe(Effect.flip);
+        assert.equal(again._tag, "OrchestratorCommandPreviouslyRejectedError");
+        if (again._tag === "OrchestratorCommandPreviouslyRejectedError")
+          assert.equal(again.detail, refused.message);
+        assert.isFalse(
+          (yield* orchestrator.getThreadProjection(threadId)).messages.some(
+            (message) => message.id === guarded.messageId,
+          ),
+        );
 
         // The composer still showed the turn running when the user chose Stop and send.
         yield* orchestrator.dispatch({

@@ -318,6 +318,11 @@ const makeLaptop = Effect.gen(function* () {
                     : { runtimeMode: "full-access" },
                 ),
           ),
+        getThreadRecords: (threadId) =>
+          Effect.succeed({
+            thread: liveThreadShell(threadId, { runtimeMode: "full-access" }),
+            runs: [{ id: "run:repair", demandId: `demand:${"e".repeat(64)}` }],
+          } as never),
         getProjectThreadRecords: ({ threadId }) =>
           Effect.succeed({
             thread: liveThreadShell(threadId, { runtimeMode: "full-access" }),
@@ -355,6 +360,7 @@ const makeLaptop = Effect.gen(function* () {
       threadId: ThreadId.make(caller),
       providerSessionId: `provider-session:${caller}`,
       providerInstanceId: ProviderInstanceId.make("codex"),
+      demandId: `demand:${"d".repeat(64)}`,
     },
     client: undefined,
     capabilities,
@@ -630,6 +636,21 @@ it.effect("an agent's launch in a linked environment is top-level, whatever it c
       expect(failureOf(launched)).toBeUndefined();
       const [received] = (yield* Ref.get(seen)).launches;
       expect(received?.delegatedFrom).toBeUndefined();
+      expect(received?.initialMessage?.demandId).toBe(`demand:${"d".repeat(64)}`);
+      expect(received?.initialMessage?.demandOriginKind).toBeUndefined();
+      const repair = yield* a.call("thread:laptop-full", "t3_thread_launch", {
+        environmentId: box.environmentId,
+        projectId: boxProject,
+        title: "Repair",
+        message: "Continue the failed job.",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        demandOrigin: { kind: "repair", threadId: "thread:laptop-full", runId: "run:repair" },
+      });
+      expect(failureOf(repair)).toBeUndefined();
+      expect((yield* Ref.get(seen)).launches.at(-1)?.initialMessage).toMatchObject({
+        demandId: `demand:${"e".repeat(64)}`,
+        demandOriginKind: "repair",
+      });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
