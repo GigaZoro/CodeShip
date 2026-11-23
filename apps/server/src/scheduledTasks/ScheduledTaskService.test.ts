@@ -658,7 +658,9 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
   Effect.gen(function* () {
     const scratch = ProjectId.make("project:scratch");
     const promoted = ProjectId.make("project:promoted");
-    const sends = yield* Ref.make<Array<{ projectId: ProjectId; commandId: string }>>([]);
+    const sends = yield* Ref.make<
+      Array<{ projectId: ProjectId; commandId: string; demandId: string | null | undefined }>
+    >([]);
     // Rebind lands first, then the promotion commits between the shell read and the retry.
     const shellProjects = yield* Ref.make([scratch, promoted]);
     const layer = ScheduledTaskService.layer.pipe(
@@ -672,7 +674,11 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
             sendToThread: (input) =>
               Ref.updateAndGet(sends, (all) => [
                 ...all,
-                { projectId: input.projectId, commandId: input.commandId },
+                {
+                  projectId: input.projectId,
+                  commandId: input.commandId,
+                  demandId: input.demandId,
+                },
               ]).pipe(
                 Effect.flatMap((all) =>
                   all.length < 3
@@ -731,6 +737,16 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
         [promoted, scratch, promoted],
       );
       assert.equal(new Set(attempts.map((attempt) => attempt.commandId)).size, 1);
+      assert.isString(attempts[0]?.demandId);
+      assert.equal(new Set(attempts.map((attempt) => attempt.demandId)).size, 1);
+      yield* service.runNow({ id: task.id });
+      const next = (yield* Ref.get(sends)).at(-1)!;
+      assert.isString(next.demandId);
+      assert.notEqual(next.demandId, attempts[0]?.demandId);
+      assert.notEqual(next.commandId, attempts[0]?.commandId);
+      const { runs } = yield* service.listRuns({ id: task.id });
+      assert.lengthOf(runs, 2);
+      assert.equal(runs[0]?.startedAt, runs[1]?.startedAt);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -1494,11 +1510,21 @@ it.effect.each([
             ...input,
             commandId: null,
             threadId: null,
-            initialMessage: { ...input.initialMessage, messageId: null, scheduledTaskId: null },
+            initialMessage: {
+              ...input.initialMessage,
+              messageId: null,
+              scheduledTaskId: null,
+              demandId: null,
+            },
           });
           const byTask = (id: string) =>
             launched.find((input) => input.initialMessage?.scheduledTaskId === id)!;
-          assert.deepEqual(comparable(byTask("task:checked")), comparable(byTask("task:plain")));
+          const checked = byTask("task:checked");
+          const plain = byTask("task:plain");
+          assert.isString(checked.initialMessage?.demandId);
+          assert.isString(plain.initialMessage?.demandId);
+          assert.notEqual(checked.initialMessage?.demandId, plain.initialMessage?.demandId);
+          assert.deepEqual(comparable(checked), comparable(plain));
           const [run] = yield* runsOf(service);
           assert.deepEqual(run?.check, check);
         }),

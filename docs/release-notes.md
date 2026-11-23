@@ -1,3 +1,7 @@
+## 2026-11-23 — Accounting for scheduled runs
+
+- Locally scheduled occurrences, webhook deliveries and manual starts carry their demand ID into new and existing chats. Two manual starts in the same millisecond keep separate history. Automatic one-machine shared runs remain unattributed when the scheduler cannot establish which occurrence a peer accepted.
+
 ## 2026-11-23 — Accounting for provider background work
 
 - Background completions in ACP, Claude, Codex and Muse carry their originating run when it can be identified. Duplicate ACP completion notices are counted once. Retrying a failed wake retains the original task even when a later task reuses its ID. Replacing an ACP runtime or a Muse host clears its pending reports.
