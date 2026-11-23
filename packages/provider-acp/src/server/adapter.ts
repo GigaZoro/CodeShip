@@ -1374,7 +1374,8 @@ type WakeTask = WakeEvidence & {
 // results or app-run payloads. An offered wave stays frozen while later terminals accumulate.
 export class AcpWakeEvidence {
   private readonly tasks = new Map<string, WakeTask>();
-  private readonly offered = new Map<string, WakeTask>();
+  private pending: WakeEvidence[] = [];
+  private offered: WakeEvidence[] = [];
   private readonly consumed = new Set<string>();
   private readonly registrations = new Set<string>();
   private dispatched = 0;
@@ -1386,21 +1387,18 @@ export class AcpWakeEvidence {
   }
 
   running(key: string) {
-    if (!this.tasks.has(key) && !this.offered.has(key) && !this.consumed.has(key)) this.begin(key);
+    if (!this.tasks.has(key) && !this.consumed.has(key)) this.begin(key);
   }
 
   start(key: string, source: RunId, registration: string) {
     const identity = sessionScopedId(key, registration);
     if (this.registrations.has(identity)) return;
     this.registrations.add(identity);
-    const task =
-      this.tasks.get(key) ?? this.begin(key, this.consumed.has(key) || this.offered.has(key));
+    const previous = this.tasks.get(key);
+    if (previous?.phase === "pending") this.detachTerminal(key, previous);
+    const task = this.tasks.get(key) ?? this.begin(key, this.consumed.has(key));
     // Multiple distinct producers can use the same native task ID. Its bare terminal cannot identify one of them.
-    if (
-      (task.hasSource && task.sourceRunId !== source) ||
-      (!task.hasSource && task.phase !== "running")
-    )
-      task.reused = true;
+    if (task.hasSource && task.sourceRunId !== source) task.reused = true;
     task.hasSource = true;
     task.sourceRunId = task.reused ? null : source;
     if (task.reused) delete task.report;
@@ -1408,7 +1406,7 @@ export class AcpWakeEvidence {
 
   terminal(key: string, report?: BackgroundWorkReport) {
     const existing = this.tasks.get(key);
-    if (existing === undefined && (this.consumed.has(key) || this.offered.has(key))) return;
+    if (existing === undefined && this.consumed.has(key)) return;
     const task = existing ?? this.begin(key);
     if (!task.reused && report?.sourceRunId !== undefined) {
       task.sourceRunId = task.hasSource
@@ -1432,31 +1430,29 @@ export class AcpWakeEvidence {
     this.consumed.add(key);
   }
 
+  private detachTerminal(key: string, task: WakeTask) {
+    this.pending.push({
+      sourceRunId: task.sourceRunId,
+      ...(task.report && { report: task.report }),
+    });
+    this.tasks.delete(key);
+    this.consumed.add(key);
+  }
+
   retryOffered() {
-    for (const [key, offered] of this.offered) {
-      const successor = this.tasks.get(key);
-      if (!successor) this.tasks.set(key, offered);
-      else {
-        // The previous dispatch failed while a new producer reused the same native ID.
-        successor.phase = "pending";
-        successor.reused = true;
-        successor.sourceRunId = null;
-        delete successor.report;
-      }
-    }
-    this.offered.clear();
+    // A failed dispatch returns only its completed work. A live producer may already reuse the key.
+    this.pending = this.offered.concat(this.pending);
+    this.offered = [];
   }
 
   offer(): WakeEvidence[] {
     this.retryOffered();
-    const reports: WakeEvidence[] = [];
     for (const [key, task] of this.tasks) {
-      if (task.phase !== "pending") continue;
-      this.offered.set(key, task);
-      this.tasks.delete(key);
-      reports.push({ sourceRunId: task.sourceRunId, ...(task.report && { report: task.report }) });
+      if (task.phase === "pending") this.detachTerminal(key, task);
     }
-    return reports;
+    this.offered = this.pending;
+    this.pending = [];
+    return this.offered;
   }
 
   accepted() {
@@ -1470,9 +1466,9 @@ export class AcpWakeEvidence {
   }
 
   consume(includePending = false) {
-    for (const key of this.offered.keys()) this.consumed.add(key);
-    this.offered.clear();
+    this.offered = [];
     if (!includePending) return;
+    this.pending = [];
     for (const [key, task] of this.tasks) {
       if (task.phase === "pending") this.handled(key);
     }
@@ -2169,6 +2165,24 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const endedBackgroundTaskIds = yield* Ref.make<ReadonlySet<string>>(new Set());
         const endedBackgroundTaskIdLimit = 128;
 
+        // Wake data, offers and native task IDs belong to the process that observed them.
+        const resetRuntimeWakes = continuationPermit.withPermit(
+          Effect.gen(function* () {
+            yield* Ref.update(continuationGeneration, (value) => value + 1);
+            wakeEvidence = new AcpWakeEvidence();
+            yield* Ref.set(continuationRequested, false);
+            yield* Ref.set(dispatchedContinuations, 0);
+            yield* Ref.set(wakeBuffer, []);
+            yield* Ref.set(runningBackgroundTaskIds, new Set());
+            yield* Ref.set(endedBackgroundTaskIds, new Set());
+            yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
+            yield* Ref.set(handledBackgroundTaskIdsInActiveTurn, new Set());
+            yield* Ref.set(carryoverSubagents, null);
+            yield* Ref.set(suppressPostSettleMonitorPrompt, false);
+            yield* Ref.set(lastTurnRoute, null);
+          }),
+        );
+
         const setBackgroundTaskRunning =
           /* Provider events include streaming deltas; avoid a span for each update. */
           Effect.fnUntraced(function* (taskId: string, running: boolean) {
@@ -2228,38 +2242,43 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           Effect.void;
 
         const nativeLogging = options.nativeLogging?.(input.threadId);
-        const handleRuntimeTerminationAtGeneration = (runtimeGeneration: number) =>
+        const handleRuntimeTerminationAtGeneration = (
+          runtimeGeneration: number,
+          error: EffectAcpErrors.AcpError,
+        ) =>
           runRuntimeCallbackAtGeneration(
             runtimeGeneration,
             Effect.gen(function* () {
               yield* Ref.set(runtimeRestartRequired, true);
-              yield* Ref.set(dispatchedContinuations, 0);
-              if (!followsAgentWorkState) return;
-              agentWork = { sessionUpdate: "state_update", state: "idle", stopReason: "error" };
-              for (const child of nativeChildren.values()) {
-                if (child.status !== "running") continue;
-                child.status = "failed";
-                child.result = null;
+              yield* quarantineNativeTransportAtGeneration(runtimeGeneration);
+              yield* advanceRuntimeCallbackGeneration;
+              yield* resetRuntimeWakes;
+              if (followsAgentWorkState) {
+                agentWork = { sessionUpdate: "state_update", state: "idle", stopReason: "error" };
+                for (const child of nativeChildren.values()) {
+                  if (child.status !== "running") continue;
+                  child.status = "failed";
+                  child.result = null;
+                }
+                for (const child of nativeChildren.values()) {
+                  if (
+                    child.subagent === undefined ||
+                    acpSubagentStatusIsTerminal(child.subagent.task.status)
+                  )
+                    continue;
+                  child.result = null;
+                  yield* publishNativeChildStatus(child, "failed");
+                }
+                agentRequests.clear();
               }
-              for (const child of nativeChildren.values()) {
-                if (
-                  child.subagent === undefined ||
-                  acpSubagentStatusIsTerminal(child.subagent.task.status)
-                )
-                  continue;
-                child.result = null;
-                yield* publishNativeChildStatus(child, "failed");
-              }
-              agentRequests.clear();
-              yield* Ref.set(wakeBuffer, []);
-              yield* Ref.set(continuationRequested, false);
               yield* cancelPendingRuntimeRequests();
               const context = yield* Ref.get(activeTurn);
               if (context !== null)
                 yield* finalizeTurn(
                   context,
                   "failed",
-                  makeProviderFailure({ class: "transport_error" }),
+                  flavor.promptFailure?.(error) ??
+                    makeProviderFailure({ class: "transport_error", cause: error }),
                 );
             }),
           ).pipe(Effect.asVoid);
@@ -2267,8 +2286,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           runtimeGeneration: number,
           mcpContext: AcpMcpContext,
           resumeSessionId?: string,
-          onTermination: AcpAdapterV2RuntimeInput["onTermination"] = () =>
-            handleRuntimeTerminationAtGeneration(runtimeGeneration),
+          onTermination: AcpAdapterV2RuntimeInput["onTermination"] = (error) =>
+            handleRuntimeTerminationAtGeneration(runtimeGeneration, error),
         ): AcpAdapterV2RuntimeInput => {
           return {
             cwd: input.runtimePolicy.cwd ?? process.cwd(),
@@ -6731,6 +6750,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           resumeSessionId?: string,
         ) {
           if (runtimeScope !== undefined) {
+            yield* runtimeCallbackPermit.withPermit(
+              Effect.gen(function* () {
+                yield* quarantineNativeTransportAtGeneration(
+                  yield* Ref.get(runtimeCallbackGeneration),
+                );
+                yield* advanceRuntimeCallbackGeneration;
+                yield* resetRuntimeWakes;
+              }),
+            );
             yield* Scope.close(runtimeScope, Exit.void);
           }
           runtimeScope = yield* Scope.make();
@@ -6746,6 +6774,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               Effect.provideService(AgentScope, agentScope),
               Effect.provideService(AgentScopeThreadId, threadId ?? undefined),
             );
+          return runtimeGeneration;
         });
 
         const startAcpRuntime = Effect.fnUntraced(function* (
@@ -6753,16 +6782,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           resumeSessionId?: string,
         ) {
           const startup = Effect.gen(function* () {
-            yield* spawnAcpRuntime(threadId, resumeSessionId);
-            yield* wireAcpRuntimeHandlers(runtime, yield* Ref.get(runtimeCallbackGeneration));
+            const generation = yield* spawnAcpRuntime(threadId, resumeSessionId);
+            yield* wireAcpRuntimeHandlers(runtime, generation);
             return yield* runtime.start();
           });
           return yield* flavor.withRuntimeStartup?.(startup) ?? startup;
         });
 
         const restartAcpRuntime = Effect.fnUntraced(function* (threadId: ThreadId | null) {
-          yield* spawnAcpRuntime(threadId);
-          yield* wireAcpRuntimeHandlers(runtime, yield* Ref.get(runtimeCallbackGeneration));
+          const generation = yield* spawnAcpRuntime(threadId);
+          yield* wireAcpRuntimeHandlers(runtime, generation);
         });
 
         const startReplacementAcpRuntime = Effect.fnUntraced(function* (
@@ -6788,7 +6817,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               candidateLifecycle,
               (current): readonly [Effect.Effect<void>, CandidateLifecycle] => {
                 if (current._tag === "Committed") {
-                  return [handleRuntimeTerminationAtGeneration(replacementGeneration), current];
+                  return [
+                    handleRuntimeTerminationAtGeneration(replacementGeneration, error),
+                    current,
+                  ];
                 }
                 return [
                   Effect.void,
@@ -6950,23 +6982,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               loadingMessageId: null,
               loadingIndex: 0,
             });
-            yield* continuationPermit.withPermit(
-              Effect.gen(function* () {
-                yield* Ref.update(continuationGeneration, (value) => value + 1);
-                yield* Ref.set(stoppedRunQuarantine, false);
-                yield* Ref.set(wakeBuffer, []);
-                wakeEvidence = new AcpWakeEvidence();
-                yield* Ref.set(continuationRequested, false);
-                yield* Ref.set(dispatchedContinuations, 0);
-                yield* Ref.set(runningBackgroundTaskIds, new Set());
-                yield* Ref.set(endedBackgroundTaskIds, new Set());
-                yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
-                yield* Ref.set(handledBackgroundTaskIdsInActiveTurn, new Set());
-                yield* Ref.set(carryoverSubagents, null);
-                yield* Ref.set(suppressPostSettleMonitorPrompt, false);
-                yield* Ref.set(lastTurnRoute, null);
-              }),
-            );
+            yield* resetRuntimeWakes;
+            yield* Ref.set(stoppedRunQuarantine, false);
           },
         );
 
@@ -7807,14 +7824,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 reason: "previous_turn_active",
               });
             }
-            const turnInput = yield* deliverableTurnInput(requestedTurnInput);
-            useProviderThreadIdentity(turnInput.providerThread);
+            useProviderThreadIdentity(requestedTurnInput.providerThread);
             // load/resume can invoke client methods; install the incoming policy before activation.
-            latestRuntimePolicy = turnInput.runtimePolicy;
-            const requestedSessionId = yield* nativeThreadId(driver, turnInput.providerThread);
-            const restartAfterInterrupt = yield* restartRuntimeAfterTeardownIfRequired(
-              turnInput.threadId,
+            latestRuntimePolicy = requestedTurnInput.runtimePolicy;
+            const requestedSessionId = yield* nativeThreadId(
+              driver,
+              requestedTurnInput.providerThread,
             );
+            const restartAfterInterrupt = yield* restartRuntimeAfterTeardownIfRequired(
+              requestedTurnInput.threadId,
+            );
+            const turnInput = yield* deliverableTurnInput(requestedTurnInput);
             const needsSessionActivation =
               (yield* Ref.get(activeSessionId)) !== requestedSessionId || restartAfterInterrupt;
             if (needsSessionActivation) {
@@ -8057,24 +8077,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               );
               context.promptSettled = true;
               context.promptSettledStatus = "completed";
-              if (drainedWakeCount === 0) {
-                if (continuationWasRequested && flavor.deferFinalizeForBackgroundWork === true) {
-                  if (hasDeferredBackgroundWork(context)) {
-                    yield* rearmDeferredFinalize(context);
-                  } else {
-                    yield* scheduleDeferredFinalize(context);
-                  }
-                } else {
-                  yield* finalizeTurn(context, "completed");
-                }
-                return;
-              }
-              if (!context.finalized) {
-                if (hasDeferredBackgroundWork(context)) {
-                  yield* rearmDeferredFinalize(context);
-                } else {
-                  yield* scheduleDeferredFinalize(context);
-                }
+              if (
+                !flavor.deferFinalizeForBackgroundWork ||
+                (drainedWakeCount === 0 && !continuationWasRequested)
+              ) {
+                yield* finalizeTurn(context, "completed");
+              } else {
+                yield* rearmDeferredFinalize(context);
               }
               return;
             }
