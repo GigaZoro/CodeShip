@@ -35,6 +35,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
+import * as TestClock from "effect/testing/TestClock";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -1880,6 +1881,91 @@ it.effect("simultaneous local and remote requests with the same key accept one t
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+const recordedCompletionWake = Effect.fn("test.recordedCompletionWake")(function* (
+  laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
+  taskId: NodeId,
+) {
+  const commandId = CommandId.make(
+    `command:mcp:${encodeURIComponent(parentScope.requestNamespace)}:delegated-task-completion-wake:${encodeURIComponent(taskId)}`,
+  );
+  const sequence = yield* laptopEnv.threads.acceptedCommandSequence(commandId);
+  expect(sequence).toBeDefined();
+  const events = yield* laptopEnv.orchestrator.readCommandEvents({
+    commandId,
+    type: "delegated_task.wake-policy",
+  });
+  const updates = events.flatMap(({ event }) =>
+    event.type === "subagent.updated" ? [event.payload] : [],
+  );
+  expect(updates).toHaveLength(1);
+  expect(updates[0]).toMatchObject({ id: taskId, completionWake: "always" });
+  const parent = yield* laptopEnv.threads.getThreadRecords(parentThreadId, ["subagents"], {
+    subagentIds: [taskId],
+  });
+  expect(parent.subagents).toEqual([
+    expect.objectContaining({ id: taskId, completionWake: "always" }),
+  ]);
+  return sequence;
+});
+
+it.effect("local and linked waits each record one completion wake for the actual task", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* serveBox(yield* makeBoxThread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const waiting = yield* Queue.unbounded<void>();
+      const readSequence = a.threads.getThreadEventSequence;
+      using _sequence = vi
+        .spyOn(a.threads, "getThreadEventSequence")
+        .mockImplementation((threadId) =>
+          readSequence(threadId).pipe(Effect.tap(() => Queue.offer(waiting, undefined))),
+        );
+      const sequences = [];
+      const taskIds = [];
+      for (const [key, target] of [
+        ["local-review", undefined],
+        ["linked-verification", { environmentId: box.environmentId }],
+      ] as const) {
+        const args = {
+          task: "Run the checks.",
+          clientRequestId: key,
+          mode: "wait",
+          timeoutMs: 10,
+          ...(target === undefined ? {} : { target }),
+        };
+        const wait = Effect.gen(function* () {
+          const caller = yield* a.call("delegate_task", args).pipe(Effect.forkChild);
+          yield* Effect.race(Queue.take(waiting), Fiber.join(caller));
+          yield* TestClock.adjust(args.timeoutMs);
+          return yield* Fiber.join(caller);
+        });
+        const initial = yield* wait;
+        expect(initial.isError, JSON.stringify(initial.content)).toBe(false);
+        const { taskId, waitTimedOut } = initial.structuredContent as {
+          taskId: NodeId;
+          waitTimedOut: boolean;
+        };
+        expect(waitTimedOut).toBe(true);
+        taskIds.push(taskId);
+        const sequence = yield* recordedCompletionWake(a, taskId);
+        sequences.push(sequence);
+        const retry = yield* wait;
+        expect(retry.isError, JSON.stringify(retry.content)).toBe(false);
+        expect(retry.structuredContent).toMatchObject({ taskId, waitTimedOut: true });
+        expect(yield* recordedCompletionWake(a, taskId)).toBe(sequence);
+      }
+      expect(new Set(taskIds).size).toBe(2);
+      expect(new Set(sequences).size).toBe(2);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect.each(["user_input", "command"] as const)(
   "waiting on a retained local task with a pending %s upgrades its completion wake",
   (kind) =>
@@ -1969,7 +2055,7 @@ it.effect.each(["user_input", "command"] as const)(
             ? { hasPendingQuestion: true }
             : { pendingApproval: { requestId } }),
         });
-        expect((yield* getTask)?.completionWake).toBe("always");
+        yield* recordedCompletionWake(a, task.id);
         expect(yield* a.threads.acceptedCommandSequence(commandId)).toBeUndefined();
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
