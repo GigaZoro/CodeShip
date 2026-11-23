@@ -1,3 +1,4 @@
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
@@ -26,6 +27,7 @@ import {
   type ThreadFolder,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -84,10 +86,13 @@ export interface ThreadLaunchInitialMessage {
   readonly context?: import("@t3tools/contracts").OrchestrationMessageContext | undefined;
 }
 
+export const LAUNCH_INTENT_MISMATCH = "The accepted creation cannot verify this launch request.";
 export interface ThreadLaunchInput {
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
+  /** Digest of the original keyed MCP request before applying server defaults or resolving uploads. */
+  readonly launchIntentHash?: string;
   readonly projectId: ProjectId;
   readonly title: string;
   readonly generateTitle?: boolean;
@@ -119,6 +124,7 @@ type PreparationInput = Pick<
   "commandId" | "projectId" | "workspaceStrategy" | "initialMessage"
 > & {
   readonly reusedWorktree?: { readonly baseRef: string };
+  readonly idleCreationSequence?: number;
 };
 
 export interface ThreadLaunchPreparationInput {
@@ -142,6 +148,7 @@ export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
     operation: Schema.Literals([
       "resolve-project",
       "read-receipt",
+      "recover-workspace",
       "generate-metadata",
       "provision-worktree",
       "run-setup-script",
@@ -158,6 +165,7 @@ export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
   },
 ) {
   override get message(): string {
+    if (this.operation === "recover-workspace" && typeof this.cause === "string") return this.cause;
     return `Thread launch ${this.commandId} failed during ${this.operation}.`;
   }
 }
@@ -237,6 +245,7 @@ const make = Effect.gen(function* () {
   const preparationScope = yield* Scope.make("sequential");
   // Preparation belongs to the run, so a replayed launch and a retry share one reservation.
   // The value is the command that owns it.
+  const idleRecovery = yield* KeyedLock.make<CommandId>();
   const scheduledLaunches = yield* Ref.make<ReadonlyMap<string, CommandId>>(new Map());
   yield* Effect.addFinalizer(() => Scope.close(preparationScope, Exit.void));
 
@@ -331,6 +340,34 @@ const make = Effect.gen(function* () {
       });
   });
 
+  type IdleStage = "checkout" | "setup" | "complete";
+
+  // Git and project setup are external writes. Claim each one before starting it; a crash cannot prove it safe to repeat.
+  const recordIdleStage = Effect.fn("ThreadLaunchService.recordIdleStage")(function* (
+    input: PreparationInput,
+    threadId: ThreadId,
+    stage: IdleStage,
+  ) {
+    if (input.idleCreationSequence === undefined) return;
+    const inserted = yield* receipts
+      .insertIfAbsent({
+        commandId: CommandId.make(`${input.commandId}:idle-${stage}`),
+        threadId,
+        commandType: `thread-launch.idle-${stage}`,
+        acceptedAt: yield* DateTime.now,
+        resultSequence: input.idleCreationSequence,
+        status: "accepted",
+        error: null,
+      })
+      .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+    if (!inserted)
+      return yield* mapError(
+        input,
+        "recover-workspace",
+        threadId,
+      )("Another preparation already claimed this workspace operation.");
+  });
+
   const prepareInBackground = Effect.fn("ThreadLaunchService.prepareInBackground")(function* (
     input: PreparationInput,
     threadId: ThreadId,
@@ -348,27 +385,30 @@ const make = Effect.gen(function* () {
     );
 
     const reused = input.reusedWorktree;
-    const tracked = input.workspaceStrategy.type === "worktree" || reused !== undefined;
+    const baseRef =
+      input.workspaceStrategy.type === "worktree"
+        ? input.workspaceStrategy.baseRef
+        : reused?.baseRef;
+    const tracked = baseRef !== undefined;
     let createdWorktreePath: string | null = null;
     let setupTerminalId: string | null = null;
     let workspaceRecorded = false;
-    let runReleased = false;
+    let workspaceCommitted = false;
     // Stop background renames before forgetting worktrees; completed renames record them again.
     let branchRename: Fiber.Fiber<unknown> | null = null;
-    if (input.workspaceStrategy.type === "worktree") {
-      yield* setupTracker.begin({
+    let owner: WorktreeSetupTracker.WorktreeSetupOwner | undefined;
+    if (tracked) {
+      owner = yield* setupTracker.begin({
         threadId,
+        ...(input.idleCreationSequence === undefined
+          ? {}
+          : { idleCreationSequence: input.idleCreationSequence }),
         branch: input.workspaceStrategy.branch ?? null,
-        baseRef: input.workspaceStrategy.baseRef,
-        stages: ["fetch", "checkout", "setup-script", "agent"],
-        fiber: yield* Effect.fiber,
-      });
-    } else if (reused !== undefined) {
-      yield* setupTracker.begin({
-        threadId,
-        branch: input.workspaceStrategy.branch ?? null,
-        baseRef: reused.baseRef,
-        stages: ["setup-script", "agent"],
+        baseRef,
+        stages:
+          input.workspaceStrategy.type === "worktree"
+            ? ["fetch", "checkout", "setup-script", "agent"]
+            : ["setup-script", "agent"],
         fiber: yield* Effect.fiber,
       });
     }
@@ -470,7 +510,7 @@ const make = Effect.gen(function* () {
                 .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)))
             : null;
         const shouldFetch = remote !== null;
-        yield* setupTracker.stageStatus(threadId, "fetch", shouldFetch ? "running" : "skipped");
+        yield* setupTracker.stageStatus(owner, "fetch", shouldFetch ? "running" : "skipped");
         if (remote !== null) {
           const remoteBase = yield* git
             .fetchWorktreeBaseCommit({
@@ -484,7 +524,7 @@ const make = Effect.gen(function* () {
             baseRefName = `refs/remotes/${remoteBase.remoteRefName}`;
           }
         }
-        if (shouldFetch) yield* setupTracker.stageStatus(threadId, "fetch", "done");
+        if (shouldFetch) yield* setupTracker.stageStatus(owner, "fetch", "done");
         if (
           branch !== null &&
           isTemporaryWorktreeBranch(branch) &&
@@ -497,7 +537,9 @@ const make = Effect.gen(function* () {
         ) {
           branch = flattenTemporaryWorktreeBranchName(branch);
         }
-        yield* setupTracker.stageStatus(threadId, "checkout", "running");
+        yield* setupTracker.stageStatus(owner, "checkout", "running");
+        if (input.idleCreationSequence !== undefined)
+          yield* recordIdleStage(input, threadId, "checkout");
         const worktree = yield* git
           .createWorktree(
             {
@@ -514,7 +556,7 @@ const make = Effect.gen(function* () {
                     createdWorktreePath = path;
                   }),
                 onCheckoutProgress: (progress) =>
-                  setupTracker.stage(threadId, "checkout", { percent: progress.percent }),
+                  setupTracker.stage(owner, "checkout", { percent: progress.percent }),
               },
             },
           )
@@ -522,8 +564,8 @@ const make = Effect.gen(function* () {
         worktreePath = worktree.worktree.path;
         branch = worktree.worktree.refName;
         createdWorktreePath = worktreePath;
-        yield* setupTracker.update(threadId, (snapshot) => ({ ...snapshot, worktreePath, branch }));
-        yield* setupTracker.stageStatus(threadId, "checkout", "done");
+        yield* setupTracker.update(owner, (snapshot) => ({ ...snapshot, worktreePath, branch }));
+        yield* setupTracker.stageStatus(owner, "checkout", "done");
       }
 
       // Do not rewrite reused worktrees; that could undo the original branch rename.
@@ -533,6 +575,15 @@ const make = Effect.gen(function* () {
             type: "thread.metadata.update",
             commandId: CommandId.make(`${input.commandId}:workspace`),
             threadId,
+            ...(input.idleCreationSequence === undefined
+              ? {}
+              : {
+                  expectedWorktreePath:
+                    input.workspaceStrategy.type === "existing_worktree"
+                      ? input.workspaceStrategy.worktreePath
+                      : null,
+                  expectedBranch: input.workspaceStrategy.branch ?? null,
+                }),
             branch,
             worktreePath,
           })
@@ -632,7 +683,9 @@ const make = Effect.gen(function* () {
           })
           .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
       }
-      yield* setupTracker.stageStatus(threadId, "setup-script", "running");
+      yield* setupTracker.stageStatus(owner, "setup-script", "running");
+      if (input.idleCreationSequence !== undefined)
+        yield* recordIdleStage(input, threadId, "setup");
       const setup =
         worktreePath === null
           ? ({ status: "no-script" } as const)
@@ -642,11 +695,11 @@ const make = Effect.gen(function* () {
                 projectId: input.projectId,
                 projectCwd: project.workspaceRoot,
                 worktreePath,
-                ...(tracked
+                ...(tracked || input.idleCreationSequence !== undefined
                   ? {
                       observeCompletion: {
                         onOutputLine: (line: string) =>
-                          setupTracker.appendTail(threadId, "setup-script", line),
+                          setupTracker.appendTail(owner, "setup-script", line),
                       },
                     }
                   : {}),
@@ -661,7 +714,7 @@ const make = Effect.gen(function* () {
       let awaitAsyncSetup = Effect.void;
       if (setup.status === "started") {
         setupTerminalId = setup.terminalId;
-        yield* setupTracker.update(threadId, (snapshot) => ({
+        yield* setupTracker.update(owner, (snapshot) => ({
           ...snapshot,
           setupScript: {
             name: setup.scriptName,
@@ -672,21 +725,24 @@ const make = Effect.gen(function* () {
         if (setup.completion) {
           const awaitCompletion = Effect.gen(function* () {
             const completion = yield* setup.completion!;
-            yield* setupTracker.stage(threadId, "setup-script", {
+            yield* setupTracker.stage(owner, "setup-script", {
               status: completion.exitCode === 0 ? "done" : "failed",
               detail: `exited with ${completion.exitCode ?? "no exit code"}`,
             });
-            if (completion.exitCode !== 0 && !setup.async)
+            if (
+              completion.exitCode !== 0 &&
+              (!setup.async || input.idleCreationSequence !== undefined)
+            )
               return yield* mapError(
                 input,
                 "run-setup-script",
                 threadId,
               )(`Setup script exited with ${completion.exitCode ?? "no exit code"}.`);
           });
-          if (setup.async) {
+          if (setup.async && input.idleCreationSequence === undefined) {
             awaitAsyncSetup = awaitCompletion.pipe(
               Effect.catchCause((cause) =>
-                setupTracker.stage(threadId, "setup-script", {
+                setupTracker.stage(owner, "setup-script", {
                   status: "failed",
                   detail: failureDetail(Cause.squash(cause)),
                 }),
@@ -696,13 +752,13 @@ const make = Effect.gen(function* () {
             yield* awaitCompletion;
           }
         } else {
-          yield* setupTracker.stageStatus(threadId, "setup-script", "done");
+          yield* setupTracker.stageStatus(owner, "setup-script", "done");
         }
       } else {
-        yield* setupTracker.stageStatus(threadId, "setup-script", "skipped");
+        yield* setupTracker.stageStatus(owner, "setup-script", "skipped");
       }
-      yield* setupTracker.markUncancellable(threadId);
-      yield* setupTracker.stageStatus(threadId, "agent", "running");
+      yield* setupTracker.markUncancellable(owner);
+      yield* setupTracker.stageStatus(owner, "agent", "running");
       if (runId !== null) {
         yield* threads
           .dispatch({
@@ -715,21 +771,35 @@ const make = Effect.gen(function* () {
             Effect.mapError(mapError(input, "release-run", threadId)),
             Effect.tap(() =>
               Effect.sync(() => {
-                runReleased = true;
+                workspaceCommitted = true;
               }),
             ),
             Effect.uninterruptible,
           );
       }
-      yield* setupTracker.stageStatus(threadId, "agent", "done");
+      yield* setupTracker.stageStatus(owner, "agent", "done");
       yield* awaitAsyncSetup;
-      yield* setupTracker.finish(threadId, "done");
+      if (input.idleCreationSequence !== undefined) {
+        // The receipt commits the external work. Replay can finish its progress without redoing it.
+        yield* recordIdleStage(input, threadId, "complete").pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              workspaceCommitted = true;
+            }),
+          ),
+          Effect.andThen(setupTracker.finish(owner, "done")),
+          Effect.uninterruptible,
+        );
+      } else {
+        yield* setupTracker.finish(owner, "done");
+      }
     }).pipe(
       Effect.onError((cause) =>
         Effect.gen(function* () {
+          if (workspaceCommitted && input.idleCreationSequence !== undefined) return;
           const cancelled = Cause.hasInterruptsOnly(cause);
           yield* setupTracker.finish(
-            threadId,
+            owner,
             cancelled ? "cancelled" : "failed",
             cancelled ? null : failureDetail(Cause.squash(cause)),
           );
@@ -740,7 +810,7 @@ const make = Effect.gen(function* () {
           if (
             tracked &&
             createdWorktreePath &&
-            ((cancelled && !runReleased) || !workspaceRecorded)
+            ((cancelled && !workspaceCommitted) || !workspaceRecorded)
           ) {
             if (branchRename !== null) yield* Fiber.interrupt(branchRename);
             const removedPath = createdWorktreePath;
@@ -754,6 +824,9 @@ const make = Effect.gen(function* () {
                       type: "thread.metadata.update",
                       commandId: CommandId.make(`${input.commandId}:cancel-workspace`),
                       threadId,
+                      ...(input.idleCreationSequence === undefined
+                        ? {}
+                        : { expectedWorktreePath: removedPath }),
                       worktreePath: null,
                       branch: null,
                     })
@@ -882,6 +955,105 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const resumeIdleWorktree = Effect.fn("ThreadLaunchService.resumeIdleWorktree")(function* (
+    input: ThreadLaunchInput,
+    strategy: Exclude<ThreadLaunchWorkspaceStrategy, { readonly type: "root" }>,
+    thread: OrchestrationV2ThreadProjection["thread"],
+    creationSequence: number,
+    hasRecordedStrategy: boolean,
+  ) {
+    const threadId = thread.id;
+    if (!(yield* reservePreparation(input.commandId, null))) return;
+    const recover = mapError(input, "recover-workspace", threadId);
+    const stageRecorded = (stage: IdleStage) =>
+      readReceipt(input, CommandId.make(`${input.commandId}:idle-${stage}`)).pipe(
+        Effect.flatMap((row) => {
+          if (Option.isNone(row)) return Effect.succeed(false);
+          return row.value.threadId === threadId &&
+            row.value.status === "accepted" &&
+            row.value.commandType === `thread-launch.idle-${stage}` &&
+            row.value.resultSequence === creationSequence
+            ? Effect.succeed(true)
+            : Effect.fail(
+                recover("This workspace preparation receipt belongs to another operation."),
+              );
+        }),
+      );
+    yield* Effect.gen(function* () {
+      if (yield* stageRecorded("complete")) {
+        yield* setupTracker.reconcileIdle(threadId, creationSequence, "done");
+        return yield* releasePreparation(input.commandId, null);
+      }
+      if (!hasRecordedStrategy)
+        return yield* recover(
+          "This earlier idle launch did not record its workspace preparation. The checkout and setup cannot be safely repeated.",
+        );
+      if (yield* stageRecorded("setup"))
+        return yield* recover(
+          "The workspace setup was claimed but has no completion receipt. Its outcome is unknown.",
+        );
+      const workspaceCommandId = CommandId.make(`${input.commandId}:workspace`);
+      const binding = yield* readReceipt(input, workspaceCommandId);
+      let preparation: PreparationInput = {
+        commandId: input.commandId,
+        projectId: input.projectId,
+        workspaceStrategy: strategy,
+        idleCreationSequence: creationSequence,
+      };
+      if (Option.isSome(binding)) {
+        if (
+          binding.value.threadId !== threadId ||
+          binding.value.commandType !== "thread.metadata.update" ||
+          binding.value.status !== "accepted"
+        )
+          return yield* recover("The checkout has no accepted binding to this thread.");
+        // Replay the accepted binding to read its original path even if the user has since moved the thread.
+        const bound = yield* threads
+          .dispatch({ type: "thread.metadata.update", commandId: workspaceCommandId, threadId })
+          .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+        const event = bound.storedEvents.find(
+          ({ event }) => event.type === "thread.metadata-updated",
+        )?.event;
+        if (
+          event?.type !== "thread.metadata-updated" ||
+          event.payload.worktreePath === null ||
+          event.payload.worktreePath !== thread.worktreePath ||
+          event.payload.branch !== thread.branch
+        ) {
+          return yield* recover("The thread no longer has the workspace bound by this launch.");
+        }
+        preparation = {
+          ...preparation,
+          workspaceStrategy: {
+            type: "existing_worktree",
+            worktreePath: event.payload.worktreePath,
+            ...(thread.branch === null ? {} : { branch: thread.branch }),
+          },
+          ...(strategy.type === "worktree"
+            ? { reusedWorktree: { baseRef: strategy.baseRef } }
+            : {}),
+        };
+      } else {
+        if (yield* stageRecorded("checkout"))
+          return yield* recover(
+            "The checkout was claimed but has no workspace binding. Its outcome is unknown.",
+          );
+        const initialPath = strategy.type === "existing_worktree" ? strategy.worktreePath : null;
+        if (thread.worktreePath !== initialPath || thread.branch !== (strategy.branch ?? null)) {
+          return yield* recover("The thread workspace changed before its checkout started.");
+        }
+      }
+      yield* schedulePreparation(preparation, threadId, null);
+    }).pipe(
+      Effect.tapError((error) =>
+        error.operation === "recover-workspace"
+          ? setupTracker.reconcileIdle(threadId, creationSequence, "failed", failureDetail(error))
+          : Effect.void,
+      ),
+      Effect.onError(() => releasePreparation(input.commandId, null)),
+    );
+  });
+
   const launch: ThreadLaunchService["Service"]["launch"] = Effect.fn("ThreadLaunchService.launch")(
     function* (request) {
       // Scratch has no Git repository. Normalize before folder allocation so
@@ -991,6 +1163,12 @@ const make = Effect.gen(function* () {
                 interactionMode: input.interactionMode,
                 branch: initialBranch,
                 worktreePath: initialWorktreePath,
+                ...(input.initialMessage === undefined
+                  ? { initialWorkspacePreparation: workspaceStrategy }
+                  : {}),
+                ...(input.launchIntentHash === undefined
+                  ? {}
+                  : { launchIntentHash: input.launchIntentHash }),
                 ...(input.importedNativeThread === undefined
                   ? {}
                   : { importedNativeThread: input.importedNativeThread }),
@@ -1017,6 +1195,20 @@ const make = Effect.gen(function* () {
         if (project.id !== input.projectId) {
           return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
         }
+        // A concurrent caller can lose the claim after reading no receipt. Its dispatch replays the winning event.
+        const creation = claimed.storedEvents.find(
+          ({ event }) => event.type === "thread.created",
+        )?.event;
+        const acceptedThread = creation?.type === "thread.created" ? creation.payload : undefined;
+        const acceptedHash = acceptedThread?.launchIntentHash;
+        if (
+          acceptedHash !== undefined &&
+          (acceptedHash !== input.launchIntentHash ||
+            (acceptedThread?.initialWorkspacePreparation !== undefined &&
+              input.initialMessage !== undefined))
+        ) {
+          return yield* mapError(input, "read-receipt", threadId)(LAUNCH_INTENT_MISMATCH);
+        }
         let runId: RunId | null = null;
         let messageSequence: number | undefined;
         let messageWasAlreadyAccepted = false;
@@ -1024,6 +1216,19 @@ const make = Effect.gen(function* () {
           const messageCommandId = CommandId.make(`${input.commandId}:initial-message`);
           const messageReceipt = yield* readReceipt(input, messageCommandId);
           messageWasAlreadyAccepted = Option.isSome(messageReceipt);
+          if (
+            claimed.replayed === true &&
+            input.launchIntentHash !== undefined &&
+            acceptedHash === undefined &&
+            !(
+              Option.isSome(messageReceipt) &&
+              messageReceipt.value.status === "accepted" &&
+              messageReceipt.value.commandType === "message.dispatch" &&
+              messageReceipt.value.threadId === threadId
+            )
+          ) {
+            return yield* mapError(input, "read-receipt", threadId)(LAUNCH_INTENT_MISMATCH);
+          }
           const messageId =
             input.initialMessage.messageId ??
             (yield* ids.allocate
@@ -1108,7 +1313,24 @@ const make = Effect.gen(function* () {
                 branch: workspaceStrategy.branch,
               }
             : workspaceStrategy;
-        if (shouldSchedule && preparingRun?.workspacePreparation !== undefined) {
+        // Older Scratch launches recorded the folder at creation, even when requested at the root.
+        const idleStrategy =
+          acceptedThread?.initialWorkspacePreparation ??
+          (acceptedThread?.worktreePath != null
+            ? { type: "existing_worktree" as const, worktreePath: acceptedThread.worktreePath }
+            : workspaceStrategy);
+        if (runId === null && idleStrategy.type !== "root" && input.reuseExistingThread !== true) {
+          yield* idleRecovery.withLock(
+            input.commandId,
+            resumeIdleWorktree(
+              input,
+              idleStrategy,
+              projection.thread,
+              claimed.sequence,
+              acceptedThread?.initialWorkspacePreparation !== undefined,
+            ),
+          );
+        } else if (shouldSchedule && preparingRun?.workspacePreparation !== undefined) {
           // The run's own preparation, so a replay reuses a checkout an earlier attempt bound.
           yield* startRunPreparation({
             commandId: input.commandId,

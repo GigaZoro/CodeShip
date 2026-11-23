@@ -437,7 +437,21 @@ export interface ThreadManagementServiceShape {
     readonly instanceId: ProviderInstanceId;
   }) => Effect.Effect<boolean>;
   /** Receipt replays start no work; skip enablement checks with the same command id so settings cannot reject accepted retries. */
-  readonly hasReceipt: (commandId: CommandId) => Effect.Effect<boolean>;
+  readonly hasReceipt: (
+    commandId: CommandId,
+    acceptedTarget?: {
+      readonly commandType: "thread.create" | "message.dispatch";
+      readonly threadId: ThreadId;
+    },
+  ) => Effect.Effect<boolean>;
+  readonly getAcceptedLaunchAttachments: (
+    commandId: CommandId,
+    threadId: ThreadId,
+    messageId: MessageId,
+  ) => Effect.Effect<
+    ReadonlyArray<ChatAttachment> | undefined,
+    Orchestrator.OrchestratorDispatchError
+  >;
   readonly acceptedCommandSequence: (
     commandId: CommandId,
   ) => Effect.Effect<number | undefined, Orchestrator.OrchestratorDispatchError>;
@@ -696,11 +710,52 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const hasReceipt: ThreadManagementServiceShape["hasReceipt"] = (commandId) =>
+  const receiptMatches = (
+    commandId: CommandId,
+    acceptedTarget?: {
+      readonly threadId: ThreadId;
+      readonly commandType: "thread.create" | "message.dispatch";
+    },
+  ) =>
     readReceipt(commandId).pipe(
-      Effect.map(Option.isSome),
-      Effect.orElseSucceed(() => false),
+      Effect.map(
+        (receipt) =>
+          Option.isSome(receipt) &&
+          (acceptedTarget === undefined ||
+            (receipt.value.status === "accepted" &&
+              receipt.value.commandType === acceptedTarget.commandType &&
+              receipt.value.threadId === acceptedTarget.threadId)),
+      ),
     );
+
+  const hasReceipt: ThreadManagementServiceShape["hasReceipt"] = (commandId, acceptedTarget) =>
+    receiptMatches(commandId, acceptedTarget).pipe(Effect.orElseSucceed(() => false));
+
+  const getAcceptedLaunchAttachments = Effect.fn(
+    "ThreadManagementService.getAcceptedLaunchAttachments",
+  )(function* (commandId: CommandId, threadId: ThreadId, messageId: MessageId) {
+    if (!(yield* receiptMatches(commandId, { threadId, commandType: "thread.create" }))) return;
+    const initialCommandId = CommandId.make(`${commandId}:initial-message`);
+    if (!(yield* receiptMatches(initialCommandId, { threadId, commandType: "message.dispatch" })))
+      return;
+    const events = yield* orchestrator.readCommandEvents({
+      commandId: initialCommandId,
+      type: "message.dispatch",
+    });
+    for (const { event } of events) {
+      if (
+        event.type === "message.updated" &&
+        event.threadId === threadId &&
+        event.payload.id === messageId
+      )
+        return event.payload.attachments;
+    }
+    return yield* new Orchestrator.OrchestratorDispatchError({
+      commandId: initialCommandId,
+      commandType: "message.dispatch",
+      cause: "The accepted initial message could not be recovered.",
+    });
+  });
 
   const acceptedCommandSequence: ThreadManagementServiceShape["acceptedCommandSequence"] = (
     commandId,
@@ -1824,6 +1879,7 @@ const make = Effect.gen(function* () {
     isProviderInstanceEnabledForProject,
     hasReceipt,
     acceptedCommandSequence,
+    getAcceptedLaunchAttachments,
     waitForThread,
     organizeAfterRun,
     organizeThread,

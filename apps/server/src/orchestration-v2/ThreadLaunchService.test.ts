@@ -28,6 +28,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -276,6 +277,7 @@ function makeHarness(options: HarnessOptions = {}) {
   return {
     layer: Layer.mergeAll(
       layerLaunch,
+      layerReceipts,
       layerRegistry,
       layerThreadManagement,
       layerTitleRegeneration,
@@ -2189,6 +2191,366 @@ it.effect(
     }),
 );
 
+it.effect.each(["idle", "partial", "legacy partial", "legacy complete"] as const)(
+  "a keyed MCP launch recovers only the initial work its creation accepted (%s)",
+  (state) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const input = {
+        ...launchInput({
+          command: "keyed-launch",
+          thread: "keyed-thread",
+          message: "Original work",
+        }),
+        createdBy: "agent" as const,
+        creationSource: "mcp" as const,
+      };
+      const { initialMessage, ...idle } = input;
+      const hash = "a".repeat(64);
+      const first = {
+        ...(state === "idle" ? idle : input),
+        ...(state.startsWith("legacy") ? {} : { launchIntentHash: hash }),
+      };
+      if (state === "partial" || state === "legacy partial") {
+        const dispatch = threads.dispatch;
+        const interrupted = vi
+          .spyOn(threads, "dispatch")
+          .mockImplementation((command) =>
+            command.type === "message.dispatch" ? Effect.interrupt : dispatch(command),
+          );
+        const attempt = yield* launches.launch(first).pipe(Effect.exit);
+        interrupted.mockRestore();
+        assert.isTrue(Exit.isFailure(attempt));
+      } else {
+        yield* launches.launch(first);
+      }
+      if (state === "legacy complete") {
+        const recovered = yield* launches.launch({ ...input, launchIntentHash: hash });
+        assert.isTrue(recovered.resumed);
+        assert.lengthOf(recovered.projection.runs, 1);
+        assert.equal(recovered.projection.messages[0]?.text, "Original work");
+        return;
+      }
+      const changed = yield* launches
+        .launch({
+          ...input,
+          launchIntentHash: "b".repeat(64),
+          initialMessage: { ...initialMessage!, text: "Different work" },
+        })
+        .pipe(Effect.flip);
+      assert.equal(changed._tag, "ThreadLaunchError");
+      assert.isEmpty((yield* threads.getThreadProjection(input.threadId)).runs);
+      if (state === "legacy partial") {
+        assert.isTrue(
+          Exit.isFailure(
+            yield* launches.launch({ ...input, launchIntentHash: hash }).pipe(Effect.exit),
+          ),
+        );
+      } else {
+        const recovered = yield* launches.launch(first);
+        assert.lengthOf(recovered.projection.runs, state === "idle" ? 0 : 1);
+        assert.equal(
+          recovered.projection.messages[0]?.text,
+          state === "idle" ? undefined : "Original work",
+        );
+        assert.isTrue((yield* launches.launch(first)).resumed);
+      }
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect.each([
+  "create",
+  "workspace",
+  "checkout-start",
+  "setup-start",
+  "complete",
+  "legacy",
+  "legacy-scratch",
+  "concurrent-setup-read",
+] as const)("recovers an idle worktree from its durable preparation boundary (%s)", (stage) =>
+  Effect.gen(function* () {
+    const setupEntered = yield* Deferred.make<void>();
+    const finishSetup = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      runSetup: () =>
+        Deferred.succeed(setupEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(finishSetup)),
+          Effect.as({ status: "no-script" as const }),
+        ),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      const workspace = {
+        type: "worktree",
+        baseRef: "original-base",
+        branch: "accepted-worktree",
+      } as const;
+      const input = {
+        ...launchInput({ command: "idle-worktree", thread: "idle-thread", workspace }),
+        launchIntentHash: "a".repeat(64),
+        createdBy: "agent" as const,
+        creationSource: "mcp" as const,
+      };
+      if (stage === "create") {
+        const cut = vi
+          .spyOn(threads, "getThreadProjection")
+          .mockImplementationOnce(() => Effect.interrupt);
+        const initial = yield* launches.launch(input).pipe(Effect.exit);
+        cut.mockRestore();
+        assert.isTrue(Exit.isFailure(initial));
+        assert.deepEqual(
+          (yield* threads.getThreadProjection(input.threadId)).thread.initialWorkspacePreparation,
+          workspace,
+        );
+      } else {
+        yield* threads.dispatch({
+          type: "thread.create",
+          commandId: input.commandId,
+          threadId: input.threadId,
+          projectId,
+          title: input.title,
+          runtimeMode: input.runtimeMode,
+          interactionMode: input.interactionMode,
+          modelSelection,
+          branch: workspace.branch,
+          worktreePath: stage === "legacy-scratch" ? "/scratch/accepted-folder" : null,
+          createdBy: input.createdBy,
+          creationSource: input.creationSource,
+          launchIntentHash: input.launchIntentHash,
+          ...(stage.startsWith("legacy") ? {} : { initialWorkspacePreparation: workspace }),
+        });
+      }
+      const created = Option.getOrThrow(yield* receipts.getByCommandId(input.commandId));
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      if (stage === "setup-start" || stage === "complete" || stage === "concurrent-setup-read") {
+        yield* tracker.begin({
+          threadId: input.threadId,
+          ...(stage === "concurrent-setup-read"
+            ? {}
+            : { idleCreationSequence: created.resultSequence }),
+          branch: workspace.branch,
+          baseRef: workspace.baseRef,
+          stages: ["setup-script"],
+          fiber: null,
+        });
+      }
+      const checkpoint = (phase: "checkout" | "setup" | "complete") =>
+        Effect.gen(function* () {
+          yield* receipts.insertIfAbsent({
+            commandId: CommandId.make(`${input.commandId}:idle-${phase}`),
+            threadId: input.threadId,
+            commandType: `thread-launch.idle-${phase}`,
+            acceptedAt: yield* DateTime.now,
+            resultSequence: created.resultSequence,
+            status: "accepted",
+            error: null,
+          });
+        });
+      if (stage !== "create" && !stage.startsWith("legacy")) yield* checkpoint("checkout");
+      if (stage === "workspace" || stage === "setup-start" || stage === "complete") {
+        yield* threads.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make("idle-worktree:workspace"),
+          threadId: input.threadId,
+          branch: workspace.branch,
+          worktreePath: "/repo-worktrees/feature",
+        });
+      }
+      if (stage === "setup-start" || stage === "complete" || stage === "concurrent-setup-read")
+        yield* checkpoint("setup");
+      if (stage === "complete") yield* checkpoint("complete");
+
+      const retry = {
+        ...input,
+        workspaceStrategy:
+          stage === "legacy-scratch"
+            ? { type: "root" as const }
+            : { ...workspace, baseRef: "changed-server-default" },
+      };
+      if (stage === "concurrent-setup-read") {
+        const reading = yield* Deferred.make<void>();
+        const resumeRead = yield* Deferred.make<void>();
+        const getReceipt = receipts.getByCommandId;
+        const pause = vi
+          .spyOn(receipts, "getByCommandId")
+          .mockImplementation((id) =>
+            id === "idle-worktree:idle-complete"
+              ? Deferred.succeed(reading, undefined).pipe(
+                  Effect.andThen(Deferred.await(resumeRead)),
+                  Effect.andThen(getReceipt(id)),
+                )
+              : getReceipt(id),
+          );
+        const first = yield* launches.launch(retry).pipe(Effect.result, Effect.forkChild);
+        yield* Deferred.await(reading);
+        const second = yield* launches.launch(retry).pipe(Effect.result, Effect.forkChild);
+        yield* TestClock.adjust("0 millis");
+        yield* Deferred.succeed(resumeRead, undefined);
+        const results = yield* Effect.all([Fiber.join(first), Fiber.join(second)]);
+        pause.mockRestore();
+        for (const result of results) {
+          assert.ok(Result.isFailure(result));
+          assert.propertyVal(result.failure, "operation", "recover-workspace");
+        }
+      } else if (
+        stage === "checkout-start" ||
+        stage === "setup-start" ||
+        stage.startsWith("legacy")
+      ) {
+        const failure = yield* launches.launch(retry).pipe(Effect.flip);
+        assert.equal(failure._tag, "ThreadLaunchError");
+        if (failure._tag === "ThreadLaunchError")
+          assert.equal(failure.operation, "recover-workspace");
+      } else {
+        const result = yield* launches.launch(retry);
+        assert.isTrue(result.resumed);
+        assert.isEmpty(result.projection.runs);
+        if (stage !== "complete") {
+          yield* Deferred.await(setupEntered);
+          assert.equal(harness.runSetup.mock.calls.length, 1);
+          yield* launches.launch(retry);
+          assert.equal(harness.runSetup.mock.calls.length, 1);
+          yield* Deferred.succeed(finishSetup, undefined);
+          yield* (yield* WorktreeSetupTracker.WorktreeSetupTracker).stream(input.threadId).pipe(
+            Stream.filter((snapshot) => snapshot?.phase === "done"),
+            Stream.runHead,
+          );
+          const done = yield* receipts.getByCommandId(
+            CommandId.make("idle-worktree:idle-complete"),
+          );
+          assert.isTrue(Option.isSome(done));
+          yield* launches.launch(retry);
+        }
+      }
+      if (stage === "setup-start") {
+        const uncertain = yield* tracker.get(input.threadId);
+        assert.equal(uncertain?.phase, "failed");
+        assert.include(uncertain?.error ?? "", "outcome is unknown");
+      }
+      if (stage === "complete") assert.equal((yield* tracker.get(input.threadId))?.phase, "done");
+      if (stage === "concurrent-setup-read")
+        assert.equal((yield* tracker.get(input.threadId))?.phase, "running");
+      assert.equal(harness.createWorktree.mock.calls.length, stage === "create" ? 1 : 0);
+      if (stage === "create")
+        assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, workspace.baseRef);
+      assert.equal(
+        harness.runSetup.mock.calls.length,
+        stage === "create" || stage === "workspace" ? 1 : 0,
+      );
+      const final = yield* threads.getThreadProjection(input.threadId);
+      assert.isEmpty(final.messages);
+      assert.isEmpty(final.runs);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect.each([false, true])(
+  "reconciles interrupted idle completion without changing a newer setup (replacement: %s)",
+  (replace) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const worker = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
+      const finish = tracker.finish;
+      const cut = vi.spyOn(tracker, "finish").mockImplementation((...args) =>
+        args[1] === "done"
+          ? Effect.gen(function* () {
+              yield* Deferred.succeed(worker, yield* Effect.fiber);
+              return yield* Effect.interrupt;
+            })
+          : finish(...args),
+      );
+      const input = launchInput({
+        command: "idle-tracker",
+        thread: "idle-tracker-thread",
+        workspace: { type: "worktree", baseRef: "main", branch: "accepted-worktree" },
+      });
+      yield* launches.launch(input);
+      yield* Fiber.await(yield* Deferred.await(worker));
+      cut.mockRestore();
+      assert.lengthOf(harness.removeWorktree.mock.calls, 0);
+      if (replace) {
+        yield* tracker.begin({
+          threadId: input.threadId,
+          branch: "newer",
+          baseRef: "main",
+          stages: ["agent"],
+          fiber: null,
+        });
+      }
+      const before = yield* tracker.get(input.threadId);
+      const result = yield* launches.launch(input);
+      const after = yield* tracker.get(input.threadId);
+      if (replace) {
+        assert.equal(after?.phase, "running");
+        assert.deepEqual(after, before);
+      } else {
+        assert.equal(after?.phase, "done");
+      }
+      yield* launches.launch(input);
+      assert.deepEqual(yield* tracker.get(input.threadId), after);
+      assert.lengthOf(harness.createWorktree.mock.calls, 1);
+      assert.lengthOf(harness.runSetup.mock.calls, 1);
+      assert.equal(result.projection.thread.worktreePath, "/repo-worktrees/feature");
+      assert.equal(
+        (yield* threads.getThreadProjection(input.threadId)).thread.worktreePath,
+        result.projection.thread.worktreePath,
+      );
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect("a delayed idle launch leaves replacement setup progress and cancellation alone", () =>
+  Effect.gen(function* () {
+    const oldWorker = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
+    const finishSetup = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      runSetup: () =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(oldWorker, yield* Effect.fiber);
+          yield* Deferred.await(finishSetup);
+          return { status: "no-script" as const };
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const input = launchInput({
+        command: "delayed-idle",
+        thread: "delayed-thread",
+        workspace: { type: "worktree", baseRef: "main", branch: "accepted-worktree" },
+      });
+      yield* launches.launch(input);
+      const worker = yield* Deferred.await(oldWorker);
+      const replacement = yield* Effect.forkChild(Effect.never);
+      yield* tracker.begin({
+        threadId: input.threadId,
+        branch: "newer",
+        baseRef: "main",
+        stages: ["agent"],
+        fiber: replacement,
+      });
+      const initial = yield* tracker.get(input.threadId);
+      yield* Deferred.succeed(finishSetup, undefined);
+      yield* Fiber.await(worker);
+      assert.deepEqual(yield* tracker.get(input.threadId), initial);
+      const replay = yield* launches.launch(input);
+      assert.equal(replay.projection.thread.worktreePath, "/repo-worktrees/feature");
+      assert.deepEqual(yield* tracker.get(input.threadId), initial);
+      assert.isTrue(yield* tracker.cancel(input.threadId));
+      assert.lengthOf(harness.createWorktree.mock.calls, 1);
+      assert.lengthOf(harness.runSetup.mock.calls, 1);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 it.effect("schedules an accepted preparing message exactly once across concurrent retries", () =>
   Effect.gen(function* () {
     const setupEntered = yield* Deferred.make<void>();
@@ -2371,6 +2733,36 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     );
     assert.isDefined(stored);
     assert.notEqual(stored.attachments[0]?.id, attachment.id);
+    assert.deepEqual(
+      yield* threads.getAcceptedLaunchAttachments(input.commandId, input.threadId, stored.id),
+      stored.attachments,
+    );
+    assert.isUndefined(
+      yield* threads.getAcceptedLaunchAttachments(
+        input.commandId,
+        ThreadId.make("other-thread"),
+        stored.id,
+      ),
+    );
+    assert.isUndefined(
+      yield* threads.getAcceptedLaunchAttachments(
+        CommandId.make("unaccepted-launch"),
+        input.threadId,
+        stored.id,
+      ),
+    );
+    const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+    const offline = vi
+      .spyOn(receipts, "getByCommandId")
+      .mockImplementationOnce((commandId) =>
+        Effect.fail(new CommandReceiptStore.CommandReceiptStoreReadError({ commandId })),
+      );
+    const unavailable = yield* threads
+      .getAcceptedLaunchAttachments(input.commandId, input.threadId, stored.id)
+      .pipe(Effect.result);
+    offline.mockRestore();
+    assert.ok(Result.isFailure(unavailable));
+    assert.equal(unavailable.failure.commandType, "receipt.read");
     const record = stored.context?.records[0];
     assert.isDefined(record);
     assert.equal((record as { attachmentId: string }).attachmentId, stored.attachments[0]?.id);

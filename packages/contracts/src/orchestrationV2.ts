@@ -454,7 +454,29 @@ const StoredHiddenArtifacts = Schema.Array(Schema.String).pipe(
   Schema.catchDecoding(() => Effect.succeedSome([])),
 );
 
+export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("root"),
+    branch: Schema.optional(TrimmedNonEmptyString),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("existing_worktree"),
+    worktreePath: TrimmedNonEmptyString,
+    branch: Schema.optional(TrimmedNonEmptyString),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("worktree"),
+    baseRef: TrimmedNonEmptyString,
+    branch: Schema.optional(TrimmedNonEmptyString),
+    startFromOrigin: Schema.optional(Schema.Boolean),
+  }),
+]);
+export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
+  typeof OrchestrationV2ThreadLaunchWorkspaceStrategy.Type;
+
 export const OrchestrationV2AppThread = Schema.Struct({
+  initialWorkspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+  launchIntentHash: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,
@@ -752,26 +774,6 @@ export const OrchestrationV2RunDelegatedCompletionUpdated = Schema.Struct({
 });
 export type OrchestrationV2RunDelegatedCompletionUpdated =
   typeof OrchestrationV2RunDelegatedCompletionUpdated.Type;
-
-export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("root"),
-    branch: Schema.optional(TrimmedNonEmptyString),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("existing_worktree"),
-    worktreePath: TrimmedNonEmptyString,
-    branch: Schema.optional(TrimmedNonEmptyString),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("worktree"),
-    baseRef: TrimmedNonEmptyString,
-    branch: Schema.optional(TrimmedNonEmptyString),
-    startFromOrigin: Schema.optional(Schema.Boolean),
-  }),
-]);
-export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
-  typeof OrchestrationV2ThreadLaunchWorkspaceStrategy.Type;
 
 /**
  * An automatic start (a restart, network or usage-limit continuation) waits here until memory
@@ -4001,8 +4003,13 @@ type LaunchCommand =
       readonly demandSourceRunId?: RunId;
     })
   | Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>;
+type CreateThreadCommand = Extract<OrchestrationV2Command, { readonly type: "thread.create" }>;
 export type OrchestrationV2ServerCommand =
-  | Exclude<OrchestrationV2Command, LaunchCommand>
+  | Exclude<OrchestrationV2Command, LaunchCommand | CreateThreadCommand>
+  | (CreateThreadCommand & {
+      readonly launchIntentHash?: string;
+      readonly initialWorkspacePreparation?: OrchestrationV2ThreadLaunchWorkspaceStrategy;
+    })
   | (LaunchCommand & {
       readonly crossProviderFailoverFrom?: ProviderInstanceId;
       readonly requestedModelSelection?: ModelSelection;

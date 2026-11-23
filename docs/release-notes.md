@@ -1,3 +1,7 @@
+## 2026-11-23 — Recover interrupted thread launches
+
+- Retrying a keyed thread launch uses the original first message and its saved attachments. Idle worktree setup resumes from its recorded checkout or reports which operation has an unknown outcome.
+
 ## 2026-11-23 — Replay of accepted sends and delegations
 
 - Retrying a keyed send recovers its original delivery after the run settles or its thread is archived. Repeated delegations resolve to the task and destination first accepted.

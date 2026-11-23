@@ -175,6 +175,15 @@ const clientLaunchHarness = (input: {
       capabilities: new Set(["orchestration" as const]),
     }),
     Layer.mock(ThreadManagement.ThreadManagementService)({
+      getAcceptedLaunchAttachments: (commandId, threadId, messageId) =>
+        Effect.succeed(
+          input.launched.find(
+            (launch) =>
+              launch.commandId === commandId &&
+              launch.threadId === threadId &&
+              launch.initialMessage?.messageId === messageId,
+          )?.initialMessage?.attachments,
+        ),
       // A thread exists once a launch started it.
       getThreadShell: (threadId) => {
         const caller = input.callerThreads?.find(({ shell }) => shell.id === threadId);
@@ -579,12 +588,12 @@ it.effect("a launch retried with the same clientRequestId replays the first one"
         McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
       ),
     );
-    const launch = (clientRequestId: string | undefined) =>
+    const launch = (clientRequestId: string | undefined, message: string | null = "Fix the bug") =>
       toolkit
         .handle("t3_thread_launch", {
           title: "Fix",
           projectId,
-          message: "Fix the bug",
+          ...(message === null ? {} : { message }),
           ...(clientRequestId === undefined ? {} : { clientRequestId }),
         })
         .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
@@ -594,6 +603,14 @@ it.effect("a launch retried with the same clientRequestId replays the first one"
     yield* launch("fix-2");
     yield* launch(undefined);
     yield* launch(undefined);
+    yield* launch("fix-1", null);
+    yield* launch("fix-1", "Different work");
+    const hashes = launched.map((input) => input.launchIntentHash);
+    expect(hashes[0]).toMatch(/^[0-9a-f]{64}$/);
+    expect(hashes[1]).toBe(hashes[0]);
+    expect(hashes.slice(3, 5)).toEqual([undefined, undefined]);
+    expect(hashes[5]).toMatch(/^[0-9a-f]{64}$/);
+    expect(new Set([hashes[0], hashes[5], hashes[6]]).size).toBe(3);
     const ids = launched.map((input) => [input.commandId, input.threadId]);
     // The same key sends the same command and thread ids, which the launch
     // service replays instead of starting a second thread.
@@ -778,8 +795,9 @@ it.effect(
         Effect.provide(McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)),
       );
 
-      yield* toolkit
+      const request = toolkit
         .handle("t3_thread_launch", {
+          clientRequestId: "retained-upload",
           title: "Fix",
           projectId,
           message: "Fix the bug in the screenshot",
@@ -787,6 +805,7 @@ it.effect(
         })
         .pipe(Stream.unwrap, Stream.runCollect);
 
+      const first = yield* request;
       const [launch] = launched;
       const sent = launch?.initialMessage?.attachments ?? [];
       const segment = toSafeThreadAttachmentSegment(launch?.threadId ?? "");
@@ -807,6 +826,11 @@ it.effect(
           .map((path) => path.slice(attachmentsDir.length + 1))
           .toSorted(),
       );
+      yield* fileSystem.remove(pathOf(upload));
+      const retainedFiles = (yield* fileSystem.readDirectory(attachmentsDir)).toSorted();
+      expect(yield* request).toEqual(first);
+      expect(launched[1]?.initialMessage?.attachments).toEqual(sent);
+      expect((yield* fileSystem.readDirectory(attachmentsDir)).toSorted()).toEqual(retainedFiles);
     }).pipe(Effect.provide(dependencies));
   },
 );

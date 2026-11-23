@@ -18,46 +18,58 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
-import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+
+/** A running worker holds the instance returned by begin. Its idle launch can also be recovered by receipt. */
+export interface WorktreeSetupOwner {
+  readonly threadId: ThreadId;
+  readonly idleCreationSequence?: number;
+}
 
 export class WorktreeSetupTracker extends Context.Service<
   WorktreeSetupTracker,
   {
     readonly begin: (input: {
       readonly threadId: ThreadId;
+      readonly idleCreationSequence?: number;
       readonly branch: string | null;
       readonly baseRef: string | null;
       readonly stages: ReadonlyArray<WorktreeSetupStageId>;
       readonly fiber: Fiber.Fiber<unknown, unknown> | null;
-    }) => Effect.Effect<void>;
+    }) => Effect.Effect<WorktreeSetupOwner>;
     readonly update: (
-      threadId: ThreadId,
+      owner: WorktreeSetupOwner | undefined,
       mutate: (snapshot: WorktreeSetupSnapshot) => WorktreeSetupSnapshot,
     ) => Effect.Effect<void>;
     readonly stage: (
-      threadId: ThreadId,
+      owner: WorktreeSetupOwner | undefined,
       stageId: WorktreeSetupStageId,
       patch: Partial<Omit<WorktreeSetupStage, "id">>,
     ) => Effect.Effect<void>;
     readonly stageStatus: (
-      threadId: ThreadId,
+      owner: WorktreeSetupOwner | undefined,
       stageId: WorktreeSetupStageId,
       status: WorktreeSetupStageStatus,
       detail?: string | null,
     ) => Effect.Effect<void>;
     readonly appendTail: (
-      threadId: ThreadId,
+      owner: WorktreeSetupOwner | undefined,
       stageId: WorktreeSetupStageId,
       line: string,
     ) => Effect.Effect<void>;
     readonly finish: (
-      threadId: ThreadId,
+      owner: WorktreeSetupOwner | undefined,
       phase: "done" | "failed" | "cancelled",
       error?: string | null,
     ) => Effect.Effect<WorktreeSetupSnapshot | null>;
     /** Call just before dispatch so late cancellation cannot roll back a started agent's thread. */
-    readonly markUncancellable: (threadId: ThreadId) => Effect.Effect<void>;
+    readonly markUncancellable: (owner: WorktreeSetupOwner | undefined) => Effect.Effect<void>;
+    readonly reconcileIdle: (
+      threadId: ThreadId,
+      creationSequence: number,
+      phase: "done" | "failed",
+      error?: string,
+    ) => Effect.Effect<void>;
     readonly cancel: (threadId: ThreadId) => Effect.Effect<boolean>;
     readonly get: (threadId: ThreadId) => Effect.Effect<WorktreeSetupSnapshot | null>;
     readonly stream: (threadId: ThreadId) => Stream.Stream<WorktreeSetupSnapshot | null>;
@@ -77,6 +89,7 @@ const FINISHED_RETENTION = "30 seconds";
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 interface TrackedSetup {
+  readonly owner: WorktreeSetupOwner;
   readonly snapshot: WorktreeSetupSnapshot;
   readonly fiber: Fiber.Fiber<unknown, unknown> | null;
 }
@@ -94,57 +107,43 @@ function emptyStage(id: WorktreeSetupStageId): WorktreeSetupStage {
 }
 
 export const make = Effect.gen(function* () {
-  const setups = yield* Ref.make(new Map<ThreadId, TrackedSetup>());
+  const scope = yield* Effect.scope;
+  const setups = new Map<ThreadId, TrackedSetup>();
   const changes = yield* PubSub.unbounded<{
     readonly threadId: ThreadId;
     readonly snapshot: WorktreeSetupSnapshot | null;
   }>();
-  const retentionFibers = new Map<ThreadId, Fiber.Fiber<void, never>>();
-  // Keep sequences increasing across setups so existing subscribers accept the next setup's first snapshot.
-  const lastSequenceByThread = new Map<ThreadId, number>();
-
-  const publish = (threadId: ThreadId, snapshot: WorktreeSetupSnapshot | null) =>
-    PubSub.publish(changes, { threadId, snapshot }).pipe(Effect.asVoid);
-
   const modify = (
-    threadId: ThreadId,
+    owner: WorktreeSetupOwner | undefined,
     mutate: (tracked: TrackedSetup) => TrackedSetup,
   ): Effect.Effect<WorktreeSetupSnapshot | null> =>
-    Ref.modify(setups, (current) => {
-      const existing = current.get(threadId);
-      if (!existing) return [null, current] as const;
-      const nextTracked = mutate(existing);
-      const nextSnapshot = {
-        ...nextTracked.snapshot,
-        sequence: existing.snapshot.sequence + 1,
-      };
-      lastSequenceByThread.set(threadId, nextSnapshot.sequence);
-      const next = new Map(current);
-      next.set(threadId, { ...nextTracked, snapshot: nextSnapshot });
-      return [nextSnapshot, next] as const;
-    }).pipe(Effect.tap((snapshot) => (snapshot ? publish(threadId, snapshot) : Effect.void)));
+    Effect.sync(() => {
+      if (owner === undefined) return null;
+      const existing = setups.get(owner.threadId);
+      if (existing?.owner !== owner || existing.snapshot.phase !== "running") return null;
+      const changed = mutate(existing);
+      const snapshot = { ...changed.snapshot, sequence: existing.snapshot.sequence + 1 };
+      setups.set(owner.threadId, { ...changed, snapshot });
+      PubSub.publishUnsafe(changes, { threadId: owner.threadId, snapshot });
+      return snapshot;
+    });
 
-  const clearRetention = (threadId: ThreadId) => {
-    const fiber = retentionFibers.get(threadId);
-    retentionFibers.delete(threadId);
-    return fiber ? Fiber.interrupt(fiber).pipe(Effect.ignore) : Effect.void;
-  };
-
-  const remove = (threadId: ThreadId) =>
-    Ref.update(setups, (current) => {
-      if (!current.has(threadId)) return current;
-      const next = new Map(current);
-      next.delete(threadId);
-      return next;
-    }).pipe(
-      Effect.andThen(publish(threadId, null)),
-      // After retention, subscribers see null and accept any sequence; the counter can reset.
-      Effect.tap(() => Effect.sync(() => lastSequenceByThread.delete(threadId))),
-    );
+  // A timer may outlive its setup if a new preparation starts during retention.
+  const expire = (owner: WorktreeSetupOwner) =>
+    Effect.sync(() => {
+      if (setups.get(owner.threadId)?.owner !== owner) return;
+      setups.delete(owner.threadId);
+      PubSub.publishUnsafe(changes, { threadId: owner.threadId, snapshot: null });
+    });
 
   const begin: WorktreeSetupTracker["Service"]["begin"] = Effect.fn("WorktreeSetupTracker.begin")(
     function* (input) {
-      yield* clearRetention(input.threadId);
+      const owner: WorktreeSetupOwner = {
+        threadId: input.threadId,
+        ...(input.idleCreationSequence === undefined
+          ? {}
+          : { idleCreationSequence: input.idleCreationSequence }),
+      };
       const startedAt = yield* nowIso;
       const ordered = WORKTREE_SETUP_STAGE_ORDER.filter((id) => input.stages.includes(id));
       const snapshot: WorktreeSetupSnapshot = {
@@ -158,25 +157,21 @@ export const make = Effect.gen(function* () {
         setupScript: null,
         stages: ordered.map(emptyStage),
         error: null,
-        sequence: (lastSequenceByThread.get(input.threadId) ?? -1) + 1,
+        sequence: (setups.get(input.threadId)?.snapshot.sequence ?? -1) + 1,
       };
-      lastSequenceByThread.set(input.threadId, snapshot.sequence);
-      yield* Ref.update(setups, (current) => {
-        const next = new Map(current);
-        next.set(input.threadId, { snapshot, fiber: input.fiber });
-        return next;
-      });
-      yield* publish(input.threadId, snapshot);
+      setups.set(input.threadId, { owner, snapshot, fiber: input.fiber });
+      PubSub.publishUnsafe(changes, { threadId: input.threadId, snapshot });
+      return owner;
     },
   );
 
-  const update: WorktreeSetupTracker["Service"]["update"] = (threadId, mutate) =>
-    modify(threadId, (tracked) => ({ ...tracked, snapshot: mutate(tracked.snapshot) })).pipe(
+  const update: WorktreeSetupTracker["Service"]["update"] = (owner, mutate) =>
+    modify(owner, (tracked) => ({ ...tracked, snapshot: mutate(tracked.snapshot) })).pipe(
       Effect.asVoid,
     );
 
-  const stage: WorktreeSetupTracker["Service"]["stage"] = (threadId, stageId, patch) =>
-    update(threadId, (snapshot) => ({
+  const stage: WorktreeSetupTracker["Service"]["stage"] = (owner, stageId, patch) =>
+    update(owner, (snapshot) => ({
       ...snapshot,
       stages: snapshot.stages.map((entry) =>
         entry.id === stageId
@@ -190,14 +185,14 @@ export const make = Effect.gen(function* () {
     }));
 
   const stageStatus: WorktreeSetupTracker["Service"]["stageStatus"] = (
-    threadId,
+    owner,
     stageId,
     status,
     detail,
   ) =>
     nowIso.pipe(
       Effect.flatMap((at) =>
-        update(threadId, (snapshot) => ({
+        update(owner, (snapshot) => ({
           ...snapshot,
           stages: snapshot.stages.map((entry) => {
             if (entry.id !== stageId) return entry;
@@ -216,8 +211,8 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  const appendTail: WorktreeSetupTracker["Service"]["appendTail"] = (threadId, stageId, line) =>
-    update(threadId, (snapshot) => ({
+  const appendTail: WorktreeSetupTracker["Service"]["appendTail"] = (owner, stageId, line) =>
+    update(owner, (snapshot) => ({
       ...snapshot,
       stages: snapshot.stages.map((entry) =>
         entry.id === stageId
@@ -233,9 +228,10 @@ export const make = Effect.gen(function* () {
 
   const finish: WorktreeSetupTracker["Service"]["finish"] = Effect.fn(
     "WorktreeSetupTracker.finish",
-  )(function* (threadId, phase, error) {
+  )(function* (owner, phase, error) {
     const endedAt = yield* nowIso;
-    const snapshot = yield* modify(threadId, (tracked) => ({
+    const snapshot = yield* modify(owner, (tracked) => ({
+      ...tracked,
       fiber: null,
       snapshot: {
         ...tracked.snapshot,
@@ -256,35 +252,36 @@ export const make = Effect.gen(function* () {
         ),
       },
     }));
-    if (!snapshot) return null;
-    yield* clearRetention(threadId);
-    const fiber = yield* remove(threadId).pipe(
-      Effect.delay(FINISHED_RETENTION),
-      Effect.ensuring(
-        Effect.sync(() => {
-          if (retentionFibers.get(threadId) === fiber) retentionFibers.delete(threadId);
-        }),
-      ),
-      Effect.forkDetach,
-    );
-    retentionFibers.set(threadId, fiber);
+    if (!snapshot || owner === undefined) return null;
+    yield* expire(owner).pipe(Effect.delay(FINISHED_RETENTION), Effect.forkIn(scope));
     return snapshot;
-  });
+  }, Effect.uninterruptible);
 
-  const markUncancellable: WorktreeSetupTracker["Service"]["markUncancellable"] = (threadId) =>
-    Ref.update(setups, (current) => {
-      const existing = current.get(threadId);
-      if (!existing || existing.fiber === null) return current;
-      const next = new Map(current);
-      next.set(threadId, { ...existing, fiber: null });
-      return next;
+  const markUncancellable: WorktreeSetupTracker["Service"]["markUncancellable"] = (owner) =>
+    Effect.sync(() => {
+      if (owner === undefined) return;
+      const current = setups.get(owner.threadId);
+      if (current?.owner === owner && current.fiber !== null)
+        setups.set(owner.threadId, { ...current, fiber: null });
+    });
+
+  const reconcileIdle: WorktreeSetupTracker["Service"]["reconcileIdle"] = (
+    threadId,
+    sequence,
+    phase,
+    error,
+  ) =>
+    Effect.suspend(() => {
+      const owner = setups.get(threadId)?.owner;
+      return owner?.idleCreationSequence === sequence
+        ? finish(owner, phase, error).pipe(Effect.asVoid)
+        : Effect.void;
     });
 
   const cancel: WorktreeSetupTracker["Service"]["cancel"] = Effect.fn(
     "WorktreeSetupTracker.cancel",
   )(function* (threadId) {
-    const current = yield* Ref.get(setups);
-    const tracked = current.get(threadId);
+    const tracked = setups.get(threadId);
     if (!tracked || tracked.snapshot.phase !== "running" || !tracked.fiber) {
       return false;
     }
@@ -293,7 +290,7 @@ export const make = Effect.gen(function* () {
   });
 
   const get: WorktreeSetupTracker["Service"]["get"] = (threadId) =>
-    Ref.get(setups).pipe(Effect.map((current) => current.get(threadId)?.snapshot ?? null));
+    Effect.sync(() => setups.get(threadId)?.snapshot ?? null);
 
   // One-slot sliding mailboxes bound slow WebSockets to the newest setup snapshot.
   const stream: WorktreeSetupTracker["Service"]["stream"] = (threadId) =>
@@ -328,6 +325,7 @@ export const make = Effect.gen(function* () {
     appendTail,
     finish,
     markUncancellable,
+    reconcileIdle,
     cancel,
     get,
     stream,

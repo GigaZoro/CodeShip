@@ -3157,7 +3157,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   const dispatchThreadCreate = Effect.fn("orchestrationV2.dispatch.threadCreate")(function* (
-    command: Extract<OrchestrationV2Command, { readonly type: "thread.create" }>,
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.create" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
   ) {
     yield* Effect.annotateCurrentSpan({
@@ -3184,6 +3184,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
+      ...(command.launchIntentHash === undefined
+        ? {}
+        : { launchIntentHash: command.launchIntentHash }),
+      ...(command.initialWorkspacePreparation === undefined
+        ? {}
+        : { initialWorkspacePreparation: command.initialWorkspacePreparation }),
       createdBy: command.createdBy,
       creationSource: command.creationSource,
       id: command.threadId,
