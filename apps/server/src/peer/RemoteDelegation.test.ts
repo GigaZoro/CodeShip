@@ -67,6 +67,8 @@ import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts
 import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
+import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
+import * as PeerMcpClient from "./PeerMcpClient.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
@@ -87,11 +89,6 @@ const instanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
 const modelSelection = { instanceId, model: "gpt-5.4" };
 
-type LaunchedWith = Pick<
-  ThreadLaunch.ThreadLaunchInput,
-  "modelSelection" | "runtimeMode" | "interactionMode"
->;
-
 /** The thread the box launches for the task, which the test finishes. */
 interface TimelineEntry {
   readonly id: TurnItemId;
@@ -105,19 +102,7 @@ interface BoxThread {
   readonly pageSize: Ref.Ref<number>;
   readonly holdRefill: Ref.Ref<boolean>;
   readonly beforeTail: Ref.Ref<Effect.Effect<void>>;
-  readonly launched: Ref.Ref<ThreadId | null>;
-  /** The link session that launched it, as the box stamps it. */
-  readonly linkOrigin: Ref.Ref<{ readonly sessionId: string; readonly label: string } | null>;
-  /** The parent the launch names, so the thread there can link back to it. */
-  readonly delegatedFrom: Ref.Ref<ThreadLaunch.ThreadLaunchInput["delegatedFrom"] | null>;
-  /** The model and modes it was launched with. */
-  readonly launchedWith: Ref.Ref<LaunchedWith | null>;
-  /** The workspace the thread there was launched with. */
-  readonly workspaceStrategy: Ref.Ref<ThreadLaunch.ThreadLaunchInput["workspaceStrategy"] | null>;
-  /** The project the thread there was launched in. */
-  readonly launchedProject: Ref.Ref<ProjectId | null>;
-  /** The first message the thread there was launched with. */
-  readonly message: Ref.Ref<string | null>;
+  readonly launched: Ref.Ref<ThreadLaunch.ThreadLaunchInput | null>;
   readonly status: Ref.Ref<OrchestrationV2Run["status"]>;
   readonly reply: Ref.Ref<string | null>;
   readonly error: Ref.Ref<string | null>;
@@ -171,17 +156,7 @@ const makeBoxThread = Effect.gen(function* () {
     pageSize: yield* Ref.make(1),
     holdRefill: yield* Ref.make(false),
     beforeTail: yield* Ref.make<Effect.Effect<void>>(Effect.void),
-    launched: yield* Ref.make<ThreadId | null>(null),
-    linkOrigin: yield* Ref.make<{ readonly sessionId: string; readonly label: string } | null>(
-      null,
-    ),
-    delegatedFrom: yield* Ref.make<ThreadLaunch.ThreadLaunchInput["delegatedFrom"] | null>(null),
-    launchedWith: yield* Ref.make<LaunchedWith | null>(null),
-    workspaceStrategy: yield* Ref.make<ThreadLaunch.ThreadLaunchInput["workspaceStrategy"] | null>(
-      null,
-    ),
-    launchedProject: yield* Ref.make<ProjectId | null>(null),
-    message: yield* Ref.make<string | null>(null),
+    launched: yield* Ref.make<ThreadLaunch.ThreadLaunchInput | null>(null),
     status: yield* Ref.make<OrchestrationV2Run["status"]>("running"),
     reply: yield* Ref.make<string | null>("Working…"),
     error: yield* Ref.make<string | null>(null),
@@ -278,30 +253,50 @@ const laptopProviders = [
   },
 ] as unknown as ReadonlyArray<ServerProvider>;
 
+interface BoxLaunch {
+  input: ThreadLaunch.ThreadLaunchInput;
+  state: BoxThread;
+  runId: RunId;
+  laterRunId: RunId;
+}
+
 const serveBox = (thread: BoxThread, projects = boxProjects) => {
-  return servePeer(box, boxToolkitLayer(thread, projects));
+  const launches = new Map<ThreadId, BoxLaunch>();
+  return servePeer(box, boxToolkitLayer(thread, projects, launches)).pipe(
+    Effect.map((peer) => ({ ...peer, launches })),
+  );
 };
 
 const boxRunId = RunId.make("run:box");
 const boxLaterRunId = RunId.make("run:box-later");
 
-const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) => {
-  const runId = boxRunId;
+const boxToolkitLayer = (
+  thread: BoxThread,
+  projects: ReadonlyArray<Project>,
+  launches: Map<ThreadId, BoxLaunch>,
+) => {
   const interrupts = new Set<string>();
-  const shellOf = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      if ((yield* Ref.get(thread.launched)) !== threadId) return null;
-      const linkOrigin = yield* Ref.get(thread.linkOrigin);
-      return {
-        ...liveThreadShell(threadId, { runtimeMode: "full-access" }),
-        projectId: boxProject,
-        ...(linkOrigin === null ? {} : { linkOrigin }),
-      };
-    });
-  const runOf = (status: OrchestrationV2Run["status"]) =>
+  const shellOf = (threadId: ThreadId) => {
+    const input = launches.get(threadId)?.input;
+    return Effect.succeed(
+      input
+        ? {
+            ...liveThreadShell(threadId, input),
+            projectId: input.projectId,
+            title: input.title,
+            modelSelection: input.modelSelection,
+            providerInstanceId: input.modelSelection.instanceId,
+            createdBy: input.createdBy,
+            creationSource: input.creationSource,
+            ...(input.linkOrigin && { linkOrigin: input.linkOrigin }),
+          }
+        : null,
+    );
+  };
+  const runOf = (threadId: ThreadId, status: OrchestrationV2Run["status"]) =>
     ({
-      id: runId,
-      threadId: ThreadId.make("thread:box"),
+      id: launches.get(threadId)!.runId,
+      threadId,
       ordinal: 1,
       status,
       modelSelection,
@@ -312,37 +307,47 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
   const projectionOf = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const shell = yield* shellOf(threadId);
-      const status = yield* Ref.get(thread.status);
-      const runless = yield* Ref.get(thread.runless);
-      const laterRun = yield* Ref.get(thread.laterRun);
-      const question = yield* Ref.get(thread.question);
-      return shell === null
-        ? (null as never)
-        : {
-            ...idleThreadProjection(shell),
-            runs: runless
-              ? []
-              : [
-                  runOf(status),
-                  ...(laterRun === null
-                    ? []
-                    : [{ ...runOf(laterRun), id: boxLaterRunId, ordinal: 2 }]),
-                ],
-            runtimeRequests: question
-              ? [
-                  {
-                    id: "request:box-question",
-                    runId,
-                    kind: "user_input",
-                    status: "pending",
-                  } as never,
-                ]
-              : [],
-          };
+      const launch = launches.get(threadId);
+      if (!launch || !shell) return null as never;
+      const { state, input, runId, laterRunId } = launch;
+      const status = yield* Ref.get(state.status);
+      const runless = yield* Ref.get(state.runless);
+      const laterRun = yield* Ref.get(state.laterRun);
+      const question = yield* Ref.get(state.question);
+      return {
+        ...idleThreadProjection(shell),
+        runs:
+          runless || !input.initialMessage?.messageId
+            ? []
+            : [
+                {
+                  ...runOf(threadId, status),
+                  userMessageId: input.initialMessage.messageId,
+                },
+                ...(laterRun === null
+                  ? []
+                  : [{ ...runOf(threadId, laterRun), id: laterRunId, ordinal: 2 }]),
+              ],
+        runtimeRequests: question
+          ? [
+              {
+                id: "request:box-question",
+                runId,
+                kind: "user_input",
+                status: "pending",
+              } as never,
+            ]
+          : [],
+      };
     });
   // One record per command id, as its receipt replays a repeat.
-  const recordStop = (commandId: string, kind: "interrupt" | "thread.stop" | "delegated-tasks") =>
+  const recordStop = (
+    threadId: ThreadId,
+    commandId: string,
+    kind: "interrupt" | "thread.stop" | "delegated-tasks",
+  ) =>
     Effect.gen(function* () {
+      const thread = launches.get(threadId)!.state;
       if (interrupts.has(`${kind}:${commandId}`)) return;
       interrupts.add(`${kind}:${commandId}`);
       yield* Ref.update(thread.stops, (seen) => [...seen, kind]);
@@ -357,6 +362,7 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
     getThreadRecords: (threadId) => projectionOf(threadId),
     waitForThread: (input) =>
       Effect.gen(function* () {
+        const { state: thread, runId, laterRunId } = launches.get(input.threadId)!;
         yield* Ref.update(thread.waitedFor, (seen) => [...seen, input.runId]);
         // A thread with no run has nothing to wait for.
         if (yield* Ref.get(thread.runless)) {
@@ -386,7 +392,7 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
             run: { id: runId, status: yield* Ref.get(thread.status) } as OrchestrationV2Run,
             timedOut: Option.isNone(settled),
             ...(Option.isSome(settled)
-              ? { resultRun: { id: boxLaterRunId, status: "completed" } as OrchestrationV2Run }
+              ? { resultRun: { id: laterRunId, status: "completed" } as OrchestrationV2Run }
               : {}),
           };
         }
@@ -395,7 +401,7 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
         return {
           threadId: input.threadId,
           run: {
-            id: later ? boxLaterRunId : runId,
+            id: later ? laterRunId : runId,
             status: later ? "completed" : yield* Ref.get(thread.status),
           } as OrchestrationV2Run,
           timedOut: Option.isNone(done),
@@ -403,6 +409,7 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
       }),
     getTimelinePage: (threadId, options) =>
       Effect.gen(function* () {
+        const { state: thread, runId, laterRunId } = launches.get(threadId)!;
         if (options.afterPosition === 299 && options.itemId === undefined) {
           yield* Ref.getAndSet(thread.beforeTail, Effect.void).pipe(Effect.flatten);
         }
@@ -438,7 +445,7 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
               : [
                   {
                     id: TurnItemId.make("item:later-reply"),
-                    runId: boxLaterRunId,
+                    runId: laterRunId,
                     text: later,
                     type: "assistant_message",
                   },
@@ -448,7 +455,7 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
               : [
                   {
                     id: TurnItemId.make("item:later-error"),
-                    runId: boxLaterRunId,
+                    runId: laterRunId,
                     text: laterError,
                     type: "error",
                   },
@@ -503,14 +510,15 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
         };
       }),
     interruptThread: (input) =>
-      recordStop(input.commandId, "interrupt").pipe(
-        Effect.as({ type: "interrupt_requested", run: runOf("running") } as never),
+      recordStop(input.threadId, input.commandId, "interrupt").pipe(
+        Effect.as({ type: "interrupt_requested", run: runOf(input.threadId, "running") } as never),
       ),
     dispatch: (command) =>
       command.type === "thread.stop"
-        ? recordStop(command.commandId, "thread.stop").pipe(
+        ? recordStop(command.threadId, command.commandId, "thread.stop").pipe(
             Effect.tap(() =>
               Effect.gen(function* () {
+                const thread = launches.get(command.threadId)!.state;
                 if (!(yield* Ref.getAndSet(thread.holdFirstStop, false))) return;
                 yield* Deferred.succeed(thread.stopStarted, undefined);
                 yield* Deferred.await(thread.releaseStop);
@@ -519,9 +527,10 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
             Effect.as({ sequence: 0, storedEvents: [] } as never),
           )
         : Effect.die(`The box does not expect ${command.type}`),
-    stopDelegatedTasks: (input) => recordStop(input.commandId, "delegated-tasks"),
-    organizeThread: (input) =>
-      input.action === "settle"
+    stopDelegatedTasks: (input) => recordStop(input.threadId, input.commandId, "delegated-tasks"),
+    organizeThread: (input) => {
+      const thread = launches.get(input.threadId)!.state;
+      return input.action === "settle"
         ? Ref.modify(thread.dropSettles, (left) => [left, Math.max(0, left - 1)]).pipe(
             Effect.flatMap((left) =>
               left > 0
@@ -537,59 +546,40 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
                   ),
             ),
           )
-        : Effect.die(`The box does not expect ${input.action}`),
-    sendToThread: (input) =>
-      Ref.update(thread.sent, (seen) => [...seen, input.text]).pipe(
+        : Effect.die(`The box does not expect ${input.action}`);
+    },
+    sendToThread: (input) => {
+      const { state: thread, laterRunId } = launches.get(input.threadId)!;
+      return Ref.update(thread.sent, (seen) => [...seen, input.text]).pipe(
         Effect.as({
-          run: { id: boxLaterRunId, status: "running" },
+          run: { id: laterRunId, status: "running" },
           delivery: "started",
         } as never),
-      ),
+      );
+    },
   });
   const layerBoxLaunches = Layer.mock(ThreadLaunch.ThreadLaunchService)({
     checkWorktreeBase: () => Effect.void,
     launch: (input) =>
-      Ref.get(thread.runless).pipe(
-        Effect.flatMap((runless) =>
-          Ref.set(thread.launched, input.threadId!).pipe(
-            Effect.andThen(Ref.set(thread.linkOrigin, input.linkOrigin ?? null)),
-            Effect.andThen(Ref.set(thread.delegatedFrom, input.delegatedFrom ?? null)),
-            Effect.andThen(Ref.set(thread.launchedProject, input.projectId)),
-            Effect.andThen(Ref.set(thread.workspaceStrategy, input.workspaceStrategy)),
-            Effect.andThen(Ref.set(thread.message, input.initialMessage?.text ?? null)),
-            Effect.andThen(
-              Ref.set(thread.launchedWith, {
-                modelSelection: input.modelSelection,
-                runtimeMode: input.runtimeMode,
-                interactionMode: input.interactionMode,
-              }),
-            ),
-            Effect.andThen(Effect.flatten(Ref.get(thread.afterLaunch))),
-            Effect.as({
-              threadId: input.threadId,
-              projection: {
-                thread: {
-                  id: input.threadId,
-                  projectId: input.projectId,
-                  title: input.title,
-                  modelSelection: input.modelSelection,
-                },
-                runs:
-                  input.initialMessage?.messageId && !runless
-                    ? [
-                        {
-                          id: runId,
-                          status: "running",
-                          userMessageId: input.initialMessage.messageId,
-                        },
-                      ]
-                    : [],
-              },
-              resumed: false,
-            } as unknown as ThreadLaunch.ThreadLaunchResult),
-          ),
-        ),
-      ),
+      Effect.gen(function* () {
+        const threadId = input.threadId!;
+        const accepted = launches.get(threadId);
+        if (accepted) {
+          if (accepted.input.commandId !== input.commandId)
+            return yield* Effect.die("A different command already launched this box thread");
+          return { threadId, projection: yield* projectionOf(threadId), resumed: true };
+        }
+        const state = launches.size === 0 ? thread : yield* makeBoxThread;
+        launches.set(threadId, {
+          state,
+          input,
+          runId: state === thread ? boxRunId : RunId.make(`run:${threadId}`),
+          laterRunId: state === thread ? boxLaterRunId : RunId.make(`later:${threadId}`),
+        });
+        yield* Ref.set(state.launched, input);
+        yield* Effect.flatten(Ref.get(thread.afterLaunch));
+        return { threadId, projection: yield* projectionOf(threadId), resumed: false };
+      }),
   });
   return Layer.mergeAll(
     McpHttpServer.layerOrchestratorToolkit,
@@ -973,6 +963,46 @@ const taskResult = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>, ta
       ),
     );
 
+it.effect("the box replays a keyed launch with its original run's current status", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const linking = yield* Layer.build(layerLinkingEnvironment(laptop));
+      yield* linkTo(Context.get(linking, PeerLinks.PeerLinks), b, "full-access");
+      const client = Context.get(linking, PeerMcpClient.PeerMcpClient);
+      const hooks = yield* Ref.make(0);
+      yield* Ref.set(
+        thread.afterLaunch,
+        Ref.update(hooks, (count) => count + 1),
+      );
+      const launch = (clientRequestId: string, message: string) =>
+        client.call({
+          environmentId: box.environmentId,
+          tool: "t3_thread_launch",
+          limits: { runtimeMode: "full-access", interactionMode: "default" },
+          arguments: {
+            projectId: boxProject,
+            modelSelection: { instanceId: boxCodex, model: "gpt-5.4" },
+            title: "Remote suite",
+            clientRequestId,
+            message,
+          },
+          success: ProjectToolkit.tools.t3_thread_launch.successSchema,
+        });
+      const first = yield* launch("suite-a", "Original suite");
+      expect(first).toMatchObject({ runId: boxRunId, status: "running" });
+      yield* Ref.set(thread.status, "completed");
+      const second = yield* launch("suite-b", "Another suite");
+      expect(second.status).toBe("running");
+      expect(yield* launch("suite-a", "Changed suite")).toEqual({ ...first, status: "completed" });
+      expect(yield* Ref.get(hooks)).toBe(2);
+      expect(second.runId).not.toBe(first.runId);
+      expect((yield* Ref.get(thread.launched))?.initialMessage?.text).toBe("Original suite");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("a task delegated to the box wakes the laptop's parent when it ends there", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -993,13 +1023,13 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
         remoteChild: { environmentId: box.environmentId, label: "Box" },
       });
       // The box launched it in the project with the same repository.
-      expect(yield* Ref.get(thread.launched)).toBe(delegated.remoteChild.threadId);
+      expect((yield* Ref.get(thread.launched))?.threadId).toBe(delegated.remoteChild.threadId);
       // Its link opens the thread there, so the parent can mention it like any other.
       expect(delegated.link).toBe(
         `<t3-thread://v2/${box.environmentId}/${delegated.remoteChild.threadId}>`,
       );
       // ...naming the parent here, so the thread there links back to it.
-      expect(yield* Ref.get(thread.delegatedFrom)).toEqual({
+      expect((yield* Ref.get(thread.launched))?.delegatedFrom).toEqual({
         environmentId: laptop.environmentId,
         threadId: parentThreadId,
         title: "Laptop parent",
@@ -1244,7 +1274,7 @@ it.effect("a task named only by environment inherits the parent's model, within 
       });
       expect(result.isError, JSON.stringify(result.content)).toBe(false);
       // The parent's model by its slug, the given option over its own, and the link's modes.
-      expect(yield* Ref.get(thread.launchedWith)).toEqual({
+      expect(yield* Ref.get(thread.launched)).toMatchObject({
         modelSelection: { ...modelSelection, options: [{ ...effort, value: "max" }, tier] },
         runtimeMode: "auto-accept-edits",
         interactionMode: "default",
@@ -1265,7 +1295,8 @@ it.effect("a task named only by environment inherits the parent's model, within 
           clientRequestId: `named:${name}`,
         });
         expect(named.isError, JSON.stringify(named.content)).toBe(false);
-        expect((yield* Ref.get(thread.launchedWith))?.modelSelection).toEqual({
+        const { remoteChild } = named.structuredContent as { remoteChild: { threadId: ThreadId } };
+        expect(b.launches.get(remoteChild.threadId)?.input.modelSelection).toEqual({
           ...modelSelection,
           model: name,
           options: [{ ...effort, value: "max" }, ...inheritedOptions],
@@ -1319,7 +1350,7 @@ it.effect("a task from a No-project chat runs in the box's No project", () =>
         target: { environmentId: box.environmentId },
       });
       expect(result.isError, JSON.stringify(result.content)).toBe(false);
-      expect(yield* Ref.get(thread.launchedProject)).toBe(boxScratchProject);
+      expect((yield* Ref.get(thread.launched))?.projectId).toBe(boxScratchProject);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
@@ -1397,7 +1428,7 @@ it.effect.each([
           target: { environmentId: box.environmentId },
         });
         expect(result.isError, JSON.stringify(result.content)).toBe(false);
-        expect(yield* Ref.get(thread.launchedProject)).toBe(boxProject);
+        expect((yield* Ref.get(thread.launched))?.projectId).toBe(boxProject);
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
@@ -1468,7 +1499,7 @@ it.effect("a task named only by driver runs on the box's own instance of it", ()
         target: { environmentId: box.environmentId, driverKind: driver, model: "gpt-5.4" },
       });
       expect(result.isError, JSON.stringify(result.content)).toBe(false);
-      expect((yield* Ref.get(thread.launchedWith))?.modelSelection).toEqual({
+      expect((yield* Ref.get(thread.launched))?.modelSelection).toEqual({
         instanceId: boxCodex,
         model: "gpt-5.4",
       });
@@ -1521,7 +1552,7 @@ it.effect("starts a task there in a new worktree from the parent's pushed commit
         isolation: "worktree",
       });
       expect(result.isError, JSON.stringify(result.content)).toBe(false);
-      expect(yield* Ref.get(thread.workspaceStrategy)).toEqual({
+      expect((yield* Ref.get(thread.launched))?.workspaceStrategy).toEqual({
         type: "worktree",
         baseRef: parentCommit,
         startFromOrigin: true,
@@ -1704,7 +1735,7 @@ it.effect("a task's result is its own run's whole last reply, not a later run's"
       expect(result.isError, JSON.stringify(result.content)).toBe(false);
       const { taskId } = result.structuredContent as { taskId: NodeId };
       // The role reaches the thread there, as it does a child here.
-      expect(yield* Ref.get(thread.message)).toBe(
+      expect((yield* Ref.get(thread.launched))?.initialMessage?.text).toBe(
         "Act as the review sub-agent for this task.\n\nReview the diff.",
       );
 
@@ -2147,10 +2178,16 @@ it.effect("fails the task when its thread there is gone, or the link here is", (
           target: { environmentId: box.environmentId },
           clientRequestId: "forgotten",
         })
-        .pipe(Effect.map((result) => result.structuredContent as { taskId: NodeId }));
+        .pipe(
+          Effect.map(
+            (result) =>
+              result.structuredContent as { taskId: NodeId; remoteChild: { threadId: ThreadId } },
+          ),
+        );
       yield* a.links.unlink(box.environmentId);
-      yield* Ref.set(thread.status, "completed");
-      yield* Deferred.succeed(thread.finished, undefined);
+      const second = b.launches.get(forgotten.remoteChild.threadId)!.state;
+      yield* Ref.set(second.status, "completed");
+      yield* Deferred.succeed(second.finished, undefined);
       const unlinked = yield* taskResult(a, forgotten.taskId);
       expect(unlinked?.status).toBe("failed");
       expect(unlinked?.result).toContain("not linked to");

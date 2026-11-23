@@ -1,3 +1,7 @@
+## 2026-11-23 — Remote delegation test coverage
+
+- Remote delegation tests now exercise keyed launches with the destination thread’s actual project, modes, and link ownership.
+
 ## 2026-11-23 — Access checks for repeated thread launches
 
 - Retrying a keyed MCP thread launch checks the thread's current project, link access, and modes before returning its details.
