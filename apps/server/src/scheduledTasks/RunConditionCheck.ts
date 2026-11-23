@@ -20,6 +20,8 @@ import * as ThreadPageCheckAccess from "../threadPage/ThreadPageCheckAccess.ts";
 
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_DETAIL_LENGTH = 300;
+// With the block's fixed words and the longest reason, the block stays within 500 characters.
+const MAX_UNIT_LENGTH = 150;
 const SHELL_OPERATOR = /[|&;<>]/u;
 
 type RunConditionCommandError = "unclosed_quote" | "shell_operator" | "empty";
@@ -64,13 +66,15 @@ export function runConditionCommandProblem(text: string): string | undefined {
       : "The check needs a command.";
 }
 
-const cleanLine = (line: string): string | null => {
+const cleanLine = (line: string, maxLength = MAX_DETAIL_LENGTH): string | null => {
   const clean = line
-    .replace(/\s+/gu, " ")
+    .replace(/\s/gu, " ")
     .replace(/\p{Cc}/gu, "")
+    .replace(/ +/gu, " ")
     .trim();
   if (clean === "") return null;
-  return clean.length > MAX_DETAIL_LENGTH ? `${clean.slice(0, MAX_DETAIL_LENGTH - 1)}…` : clean;
+  if (clean.length <= maxLength) return clean;
+  return `${clean.slice(0, maxLength - 1).replace(/[\uD800-\uDBFF]$/u, "")}…`;
 };
 
 const lastRawLine = (output: string): string | null =>
@@ -78,7 +82,15 @@ const lastRawLine = (output: string): string | null =>
 
 const parseObject = (text: string): object | null => {
   try {
-    const parsed: unknown = JSON.parse(text);
+    const parsed: unknown = JSON.parse(
+      text,
+      (key, value: unknown, context?: { source?: string }) => {
+        if (key !== "unit" || typeof value !== "number") return value;
+        // A fractional or exponent literal can round to a safe integer during JSON parsing.
+        const source = context?.source;
+        return source && /^-?\d+$/u.test(source) && Number.isSafeInteger(value) ? source : null;
+      },
+    );
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -113,27 +125,60 @@ const jsonReason = (answer: object): string | null =>
       ? cleanLine(answer.error)
       : null;
 
+const jsonUnit = (answer: object): string | null =>
+  "unit" in answer && typeof answer.unit === "string"
+    ? cleanLine(answer.unit, MAX_UNIT_LENGTH)
+    : null;
+
 /**
- * Why the check answered as it did: the `reason` or `error` of the JSON object stdout ends with,
- * else that answer itself; a failed check prefers stderr's last line to a stdout log line. Output
- * cut at the size cap has lost its real ending, so it is not used.
+ * `detail`: why the check answered as it did: the `reason` or `error` of the JSON object stdout
+ * ends with, else that answer itself; a failed check prefers stderr's last line to a stdout log
+ * line. `unit`: that object's `unit`. Output cut at the size cap has lost its real ending, so it
+ * is not used.
  */
-function runCheckDetail(
+function runCheckAnswer(
   output: {
     readonly stdout: string;
     readonly stderr: string;
     readonly stdoutTruncated: boolean;
     readonly stderrTruncated: boolean;
   },
-  failedCheck: boolean,
-): string | null {
+  outcome: "run" | "skip" | "failed",
+): { readonly detail: string | null; readonly unit: string | null } {
   const answer = output.stdoutTruncated ? null : stdoutAnswer(output.stdout);
+  const unit = answer?.json == null ? null : jsonUnit(answer.json);
   const reason = answer?.json == null ? null : jsonReason(answer.json);
-  if (reason !== null) return reason;
+  if (reason !== null || (outcome === "run" && answer?.json != null))
+    return { detail: reason, unit };
   const stderrLine = output.stderrTruncated ? null : lastRawLine(output.stderr);
   const stdoutDetail = answer === null ? null : cleanLine(answer.text);
   const stderrDetail = stderrLine === null ? null : cleanLine(stderrLine);
-  return failedCheck ? (stderrDetail ?? stdoutDetail) : (stdoutDetail ?? stderrDetail);
+  return {
+    detail: outcome === "failed" ? (stderrDetail ?? stdoutDetail) : (stdoutDetail ?? stderrDetail),
+    unit,
+  };
+}
+
+/**
+ * The prompt a chat started after its run condition found work gets: the task's prompt, then a
+ * block naming the check's reason and unit, so the chat starts on that work instead of looking
+ * for it again. It is part of the message, so the chat's history shows what the model read.
+ */
+export function promptWithRunCondition(
+  prompt: string,
+  check: ScheduledTaskRunCheck | undefined,
+): string {
+  if (check?.outcome !== "run") return prompt;
+  // Cleaned again, so the block stays bounded whoever built the check.
+  const reason = check.detail === null ? null : cleanLine(check.detail);
+  const unit = check.unit === undefined ? null : cleanLine(check.unit, MAX_UNIT_LENGTH);
+  if (reason === null && unit === null) return prompt;
+  const block = [
+    "Run condition found work.",
+    ...(reason === null ? [] : [`Reason: ${reason}`]),
+    ...(unit === null ? [] : [`Unit: ${unit}`]),
+  ].join("\n");
+  return `${prompt.trimEnd()}\n\n${block}`;
 }
 
 export class RunConditionCheck extends Context.Service<
@@ -200,11 +245,13 @@ const make = Effect.gen(function* () {
           if (output.timedOut) return failed("timeout", null);
           const exitCode = output.code === null ? null : Number(output.code);
           if (exitCode === 0) {
+            const { detail, unit } = runCheckAnswer(output, "run");
             return {
               outcome: "run",
               failure: null,
               exitCode,
-              detail: runCheckDetail(output, false),
+              detail,
+              ...(unit === null ? {} : { unit }),
             };
           }
           if (exitCode === RUN_CONDITION_SKIP_EXIT_CODE) {
@@ -212,10 +259,10 @@ const make = Effect.gen(function* () {
               outcome: "skip",
               failure: null,
               exitCode,
-              detail: runCheckDetail(output, false),
+              detail: runCheckAnswer(output, "skip").detail,
             };
           }
-          return failed("exit_code", runCheckDetail(output, true), exitCode);
+          return failed("exit_code", runCheckAnswer(output, "failed").detail, exitCode);
         }),
         Effect.catch((error) =>
           Effect.succeed(

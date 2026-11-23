@@ -200,7 +200,7 @@ that would run the task, in the project's folder:
 
 | The command exits with                         | What happens                                                                                    |
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| 0                                              | The chat starts as usual.                                                                       |
+| 0                                              | The chat starts, and its first message ends with what the check found.                          |
 | 10                                             | Nothing starts. **Run history** lists the time as skipped, and the task's row shows the reason. |
 | Anything else, no answer in time, cannot start | The chat starts anyway, and **Run history** says the check failed.                              |
 
@@ -208,6 +208,24 @@ The reason is the last line the command prints. When the output ends with a
 JSON object, on one line or indented over several, its `reason` field (or
 `error`, when it has no `reason`) is used instead, such as
 `{"needsRun": false, "reason": "No open pull requests"}`.
+
+When the command exits with 0, the chat's first message is the task's prompt
+followed by what the check found, so the agent starts on that work instead of
+looking for it again:
+
+```text
+Run condition found work.
+Reason: Pull request 41 waits for review
+Unit: PR #41
+```
+
+`Unit` is the JSON object's `unit` field, a string or a safe integer written without a decimal point or exponent, naming the one
+piece of work to take, such as a work item, a pull request or a settlement id.
+Quote numeric IDs larger than 9007199254740991 to preserve their digits. A successful JSON answer without a reason or error omits the reason line.
+Each line is folded onto one line, without control characters, and shortened:
+the reason to 300 characters and the unit to 150. A line with nothing to say is
+left out, and with neither the message is the prompt alone. **Run history**
+shows the same reason and unit.
 
 When the last 3 scheduled checks on a machine all fail, the task's row shows a
 warning with the latest reason, since each of those runs started anyway. The

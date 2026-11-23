@@ -182,6 +182,45 @@ describe("RunConditionCheck", () => {
         [
           Effect.succeed(
             output({
+              stdout: `checking\n${JSON.stringify({ needs_run: true, reason: "New unit", unit: "AB#6663" }, null, 2)}\n`,
+            }),
+          ),
+          { outcome: "run", failure: null, exitCode: 0, detail: "New unit", unit: "AB#6663" },
+        ],
+        [
+          Effect.succeed(output({ stdout: '{"reason":"Settlement","unit":6663}\n' })),
+          { outcome: "run", failure: null, exitCode: 0, detail: "Settlement", unit: "6663" },
+        ],
+        [
+          Effect.succeed(
+            output({
+              stdout: `${JSON.stringify({ reason: "Review", unit: ` PR\n#41\u0007 ${"x".repeat(200)}` })}\n`,
+            }),
+          ),
+          {
+            outcome: "run",
+            failure: null,
+            exitCode: 0,
+            detail: "Review",
+            unit: `PR #41 ${"x".repeat(142)}…`,
+          },
+        ],
+        [
+          Effect.succeed(output({ stdout: '{"reason":"Review","unit":{"id":41}}\n' })),
+          { outcome: "run", failure: null, exitCode: 0, detail: "Review" },
+        ],
+        [
+          Effect.succeed(
+            output({
+              code: ChildProcessSpawner.ExitCode(10),
+              stdout: '{"reason":"Nothing claimable","unit":"AB#6663"}\n',
+            }),
+          ),
+          { outcome: "skip", failure: null, exitCode: 10, detail: "Nothing claimable" },
+        ],
+        [
+          Effect.succeed(
+            output({
               code: ChildProcessSpawner.ExitCode(10),
               stdout: "checking\n  No open\tpull\u0007 requests  \n\n",
             }),
@@ -248,7 +287,7 @@ describe("RunConditionCheck", () => {
         ],
         [
           Effect.succeed(output({ stdout: `${JSON.stringify({ needsRun: true }, null, 2)}\n` })),
-          { outcome: "run", failure: null, exitCode: 0, detail: '{ "needsRun": true }' },
+          { outcome: "run", failure: null, exitCode: 0, detail: null },
         ],
         [
           Effect.succeed(
@@ -322,6 +361,35 @@ describe("RunConditionCheck", () => {
     }),
   );
 
+  it.effect.each([
+    { stdout: '{"reason":"Review","unit":9007199254740993}', detail: "Review", unit: null },
+    { stdout: '{"unit":9007199254740991}', detail: null, unit: "9007199254740991" },
+    { stdout: '{"unit":"PR #41"}', detail: null, unit: "PR #41" },
+    { stdout: '{"unit":9007199254740990.9}', detail: null, unit: null },
+    { stdout: '{"unit":1e-400}', detail: null, unit: null },
+    {
+      stdout: JSON.stringify({ unit: `${"x".repeat(148)}😀z` }),
+      detail: null,
+      unit: `${"x".repeat(148)}…`,
+    },
+    { stdout: "{}", detail: null, unit: null },
+    { stdout: JSON.stringify({ reason: "A \u0007 B" }), detail: "A B", unit: null },
+  ])("carries the check fields from $stdout to the prompt", ({ stdout, detail, unit }) =>
+    Effect.gen(function* () {
+      const { result } = yield* runCheck(Effect.succeed(output({ stdout })));
+      assert.equal(result.detail, detail);
+      assert.equal(result.unit, unit ?? undefined);
+      const lines = [
+        ...(detail === null ? [] : [`Reason: ${detail}`]),
+        ...(unit === null ? [] : [`Unit: ${unit}`]),
+      ];
+      assert.equal(
+        RunConditionCheck.promptWithRunCondition("Task", result),
+        lines.length ? `Task\n\nRun condition found work.\n${lines.join("\n")}` : "Task",
+      );
+    }),
+  );
+
   it.effect("does not run when a policy forbids full access", () =>
     Effect.gen(function* () {
       const { result, calls, grant } = yield* runCheck(Effect.succeed(output({})), {
@@ -341,4 +409,50 @@ describe("RunConditionCheck", () => {
       });
     }),
   );
+});
+
+describe("promptWithRunCondition", () => {
+  const PROMPT = "Run the polybot-governance skill.\n";
+  const found = (overrides: Partial<ScheduledTaskRunCheck>): ScheduledTaskRunCheck => ({
+    outcome: "run",
+    failure: null,
+    exitCode: 0,
+    detail: null,
+    ...overrides,
+  });
+
+  it("ends the prompt with the reason and unit of a check that found work", () => {
+    const rows: ReadonlyArray<readonly [ScheduledTaskRunCheck | undefined, string]> = [
+      [
+        found({ detail: "New unit", unit: "AB#6663" }),
+        "Run the polybot-governance skill.\n\nRun condition found work.\nReason: New unit\nUnit: AB#6663",
+      ],
+      [
+        found({ detail: "3 open PRs" }),
+        "Run the polybot-governance skill.\n\nRun condition found work.\nReason: 3 open PRs",
+      ],
+      [
+        found({ unit: "PR #41" }),
+        "Run the polybot-governance skill.\n\nRun condition found work.\nUnit: PR #41",
+      ],
+      [found({}), PROMPT],
+      [found({ detail: "  ", unit: "\u0007" }), PROMPT],
+      [{ outcome: "skip", failure: null, exitCode: 10, detail: "No work", unit: "AB#1" }, PROMPT],
+      [{ outcome: "failed", failure: "exit_code", exitCode: 2, detail: "auth failed" }, PROMPT],
+      [undefined, PROMPT],
+    ];
+    for (const [check, expected] of rows) {
+      assert.equal(RunConditionCheck.promptWithRunCondition(PROMPT, check), expected);
+    }
+  });
+
+  it("keeps the block to one line per field and at most 500 characters", () => {
+    const prompt = RunConditionCheck.promptWithRunCondition(
+      PROMPT,
+      found({ detail: `Reason\n${"r".repeat(2_000)}`, unit: `Unit:\r\n${"u".repeat(2_000)}` }),
+    );
+    const block = prompt.slice(PROMPT.trimEnd().length + 2);
+    assert.lengthOf(block.split("\n"), 3);
+    assert.isAtMost(block.length, 500);
+  });
 });

@@ -269,6 +269,12 @@ export function runCheckText(check: ScheduledTaskRunCheck | null | undefined): s
       : t("The check found no work: {detail}", { detail });
   }
   if (check.outcome === "run") {
+    const unit = check.unit?.trim() ?? "";
+    if (unit !== "") {
+      return detail === ""
+        ? t("The check found work for {unit}.", { unit })
+        : t("The check found work for {unit}: {detail}", { unit, detail });
+    }
     return detail === "" ? null : t("The check found work: {detail}", { detail });
   }
   const failed =

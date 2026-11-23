@@ -2527,7 +2527,9 @@ export const layer = Layer.effect(
             : null;
         const prompt: typeof read =
           shortAfterRead === null
-            ? read
+            ? Result.map(read, (text) =>
+                RunConditionCheck.promptWithRunCondition(text, fire?.check),
+              )
             : Result.fail(
                 taskError(
                   `This machine's memory was short when the prompt file arrived (${MemoryAdmission.describeMemoryShortage(shortAfterRead)}), so the chat did not start.`,

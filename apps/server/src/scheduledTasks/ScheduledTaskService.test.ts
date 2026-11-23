@@ -1505,6 +1505,39 @@ it.effect.each([
     ),
 );
 
+// The run condition's contract with the chat it starts: skills read these lines to take the work.
+it.effect.each([
+  {
+    name: "a JSON answer's reason and unit",
+    check: { ...FOUND_WORK, detail: "New unit", unit: "AB#6663" },
+    block: "Run condition found work.\nReason: New unit\nUnit: AB#6663",
+  },
+  {
+    name: "a plain answer's reason line",
+    check: { ...FOUND_WORK, detail: "3 open PRs" },
+    block: "Run condition found work.\nReason: 3 open PRs",
+  },
+] satisfies ReadonlyArray<{ name: string; check: ScheduledTaskRunCheck; block: string }>)(
+  "a check that found work starts the chat with $name at the end of its first prompt",
+  ({ check, block }) =>
+    withRunConditions(
+      () => Effect.succeed(check),
+      ({ service, poll, launches }) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(
+            conditionTask(),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
+          yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
+          yield* poll;
+          const launched = yield* Queue.take(launches);
+          assert.equal(launched.initialMessage?.text, `Review the open pull requests\n\n${block}`);
+          const [run] = yield* runsOf(service);
+          assert.deepEqual(run?.check, check);
+        }),
+    ),
+);
+
 it.effect("lists a task's run condition as failing once its last 3 checks here failed", () =>
   withRunConditions(
     () => Effect.succeed(FOUND_WORK),

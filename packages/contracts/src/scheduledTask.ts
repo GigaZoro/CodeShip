@@ -368,6 +368,11 @@ export const ScheduledTaskRunCheck = Schema.Struct({
    * last line. Why, for one that could not start.
    */
   detail: Schema.NullOr(Schema.String),
+  /**
+   * The `unit` (a work item, pull request, settlement id) of the JSON object a check that found
+   * work ends with. Absent when it named none, and from servers without it.
+   */
+  unit: Schema.optional(Schema.String),
 });
 export type ScheduledTaskRunCheck = typeof ScheduledTaskRunCheck.Type;
 

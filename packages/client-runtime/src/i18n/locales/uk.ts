@@ -12143,6 +12143,8 @@ const catalog: MessageCatalog = {
     "Перевірка не вдалася, тому чат усе одно запущено.",
   "The check found no work: {detail}": "Перевірка не виявила роботи: {detail}",
   "The check found no work.": "Перевірка не виявила роботи.",
+  "The check found work for {unit}: {detail}": "Перевірка виявила роботу для {unit}: {detail}",
+  "The check found work for {unit}.": "Перевірка виявила роботу для {unit}.",
   "The check found work: {detail}": "Перевірка виявила роботу: {detail}",
   "The checkout is ready on `{branch}`. Point a thread at it from the branch picker, then ask again.":
     "Чекаут готовий на `{branch}`. Вкажіть чату цю гілку в списку гілок і запитайте знову.",
