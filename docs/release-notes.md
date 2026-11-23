@@ -1,3 +1,7 @@
+## 2026-11-23 — Replay of accepted sends and delegations
+
+- Retrying a keyed send recovers its original delivery after the run settles or its thread is archived. Repeated delegations resolve to the task and destination first accepted.
+
 ## 2026-11-23 — Access checks for repeated thread launches
 
 - Retrying a keyed MCP thread launch checks the thread's current project, link access, and modes before returning its details.
