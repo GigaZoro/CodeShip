@@ -2189,6 +2189,76 @@ it.effect(
     }),
 );
 
+it.effect.each(["idle", "partial", "legacy partial", "legacy complete"] as const)(
+  "a keyed MCP launch recovers only the initial work its creation accepted (%s)",
+  (state) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const input = {
+        ...launchInput({
+          command: "keyed-launch",
+          thread: "keyed-thread",
+          message: "Original work",
+        }),
+        createdBy: "agent" as const,
+        creationSource: "mcp" as const,
+      };
+      const { initialMessage, ...idle } = input;
+      const hash = "a".repeat(64);
+      const first = {
+        ...(state === "idle" ? idle : input),
+        ...(state.startsWith("legacy") ? {} : { launchIntentHash: hash }),
+      };
+      if (state === "partial" || state === "legacy partial") {
+        const dispatch = threads.dispatch;
+        const interrupted = vi
+          .spyOn(threads, "dispatch")
+          .mockImplementation((command) =>
+            command.type === "message.dispatch" ? Effect.interrupt : dispatch(command),
+          );
+        const attempt = yield* launches.launch(first).pipe(Effect.exit);
+        interrupted.mockRestore();
+        assert.isTrue(Exit.isFailure(attempt));
+      } else {
+        yield* launches.launch(first);
+      }
+      if (state === "legacy complete") {
+        const recovered = yield* launches.launch({ ...input, launchIntentHash: hash });
+        assert.isTrue(recovered.resumed);
+        assert.lengthOf(recovered.projection.runs, 1);
+        assert.equal(recovered.projection.messages[0]?.text, "Original work");
+        return;
+      }
+      const changed = yield* launches
+        .launch({
+          ...input,
+          launchIntentHash: "b".repeat(64),
+          initialMessage: { ...initialMessage!, text: "Different work" },
+        })
+        .pipe(Effect.flip);
+      assert.equal(changed._tag, "ThreadLaunchError");
+      assert.isEmpty((yield* threads.getThreadProjection(input.threadId)).runs);
+      if (state === "legacy partial") {
+        assert.isTrue(
+          Exit.isFailure(
+            yield* launches.launch({ ...input, launchIntentHash: hash }).pipe(Effect.exit),
+          ),
+        );
+      } else {
+        const recovered = yield* launches.launch(first);
+        assert.lengthOf(recovered.projection.runs, state === "idle" ? 0 : 1);
+        assert.equal(
+          recovered.projection.messages[0]?.text,
+          state === "idle" ? undefined : "Original work",
+        );
+        assert.isTrue((yield* launches.launch(first)).resumed);
+      }
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
 it.effect("schedules an accepted preparing message exactly once across concurrent retries", () =>
   Effect.gen(function* () {
     const setupEntered = yield* Deferred.make<void>();

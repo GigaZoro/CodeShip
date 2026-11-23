@@ -455,6 +455,7 @@ const StoredHiddenArtifacts = Schema.Array(Schema.String).pipe(
 );
 
 export const OrchestrationV2AppThread = Schema.Struct({
+  launchIntentHash: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,
@@ -4001,8 +4002,10 @@ type LaunchCommand =
       readonly demandSourceRunId?: RunId;
     })
   | Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>;
+type CreateThreadCommand = Extract<OrchestrationV2Command, { readonly type: "thread.create" }>;
 export type OrchestrationV2ServerCommand =
-  | Exclude<OrchestrationV2Command, LaunchCommand>
+  | Exclude<OrchestrationV2Command, LaunchCommand | CreateThreadCommand>
+  | (CreateThreadCommand & { readonly launchIntentHash?: string })
   | (LaunchCommand & {
       readonly crossProviderFailoverFrom?: ProviderInstanceId;
       readonly requestedModelSelection?: ModelSelection;

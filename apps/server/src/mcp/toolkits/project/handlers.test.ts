@@ -579,12 +579,12 @@ it.effect("a launch retried with the same clientRequestId replays the first one"
         McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
       ),
     );
-    const launch = (clientRequestId: string | undefined) =>
+    const launch = (clientRequestId: string | undefined, message: string | null = "Fix the bug") =>
       toolkit
         .handle("t3_thread_launch", {
           title: "Fix",
           projectId,
-          message: "Fix the bug",
+          ...(message === null ? {} : { message }),
           ...(clientRequestId === undefined ? {} : { clientRequestId }),
         })
         .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
@@ -594,6 +594,14 @@ it.effect("a launch retried with the same clientRequestId replays the first one"
     yield* launch("fix-2");
     yield* launch(undefined);
     yield* launch(undefined);
+    yield* launch("fix-1", null);
+    yield* launch("fix-1", "Different work");
+    const hashes = launched.map((input) => input.launchIntentHash);
+    expect(hashes[0]).toMatch(/^[0-9a-f]{64}$/);
+    expect(hashes[1]).toBe(hashes[0]);
+    expect(hashes.slice(3, 5)).toEqual([undefined, undefined]);
+    expect(hashes[5]).toMatch(/^[0-9a-f]{64}$/);
+    expect(new Set([hashes[0], hashes[5], hashes[6]]).size).toBe(3);
     const ids = launched.map((input) => [input.commandId, input.threadId]);
     // The same key sends the same command and thread ids, which the launch
     // service replays instead of starting a second thread.

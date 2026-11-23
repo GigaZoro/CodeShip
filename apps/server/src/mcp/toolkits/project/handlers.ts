@@ -27,6 +27,7 @@ import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import { defaultWorktreeStrategy } from "../../../vcs/defaultWorktreeStrategy.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as DateTime from "effect/DateTime";
+import { stableStringify } from "@t3tools/shared/relaySigning";
 import { withAutoAccount } from "@t3tools/shared/model";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -151,6 +152,15 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         const scope = yield* McpInvocationContext.McpInvocationContext;
         const context = yield* readCaller();
         const { caller } = context;
+        // Bind the supplied request before resolving uploads, workspace defaults or a model.
+        const launchIntentHash =
+          input.clientRequestId === undefined
+            ? undefined
+            : Hex.encode(
+                yield* (yield* Crypto.Crypto)
+                  .digest("SHA-256", new TextEncoder().encode(stableStringify(input)))
+                  .pipe(Effect.mapError(unavailable)),
+              );
         // A retry with the same key replays the first launch: the ids derive
         // from the caller and the key, and the launch service replays a
         // command it already accepted.
@@ -336,6 +346,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           (attachments) =>
             ThreadMessageIntake.launchThread({
               commandId,
+              ...(launchIntentHash === undefined ? {} : { launchIntentHash }),
               threadId,
               projectId,
               title: input.title,
@@ -373,6 +384,15 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                   return new OrchestratorMcpFailure({
                     code: "invalid_request",
                     message: error.message,
+                  });
+                }
+                if (
+                  error._tag === "ThreadLaunchError" &&
+                  error.cause === ThreadLaunch.LAUNCH_INTENT_MISMATCH
+                ) {
+                  return new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: ThreadLaunch.LAUNCH_INTENT_MISMATCH,
                   });
                 }
                 // The administrator's ceiling refuses the mode; say so rather than "unavailable".

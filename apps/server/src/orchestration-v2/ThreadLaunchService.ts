@@ -84,10 +84,13 @@ export interface ThreadLaunchInitialMessage {
   readonly context?: import("@t3tools/contracts").OrchestrationMessageContext | undefined;
 }
 
+export const LAUNCH_INTENT_MISMATCH = "The accepted creation cannot verify this launch request.";
 export interface ThreadLaunchInput {
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
+  /** Digest of the original keyed MCP request before applying server defaults or resolving uploads. */
+  readonly launchIntentHash?: string;
   readonly projectId: ProjectId;
   readonly title: string;
   readonly generateTitle?: boolean;
@@ -991,6 +994,9 @@ const make = Effect.gen(function* () {
                 interactionMode: input.interactionMode,
                 branch: initialBranch,
                 worktreePath: initialWorktreePath,
+                ...(input.launchIntentHash === undefined
+                  ? {}
+                  : { launchIntentHash: input.launchIntentHash }),
                 ...(input.importedNativeThread === undefined
                   ? {}
                   : { importedNativeThread: input.importedNativeThread }),
@@ -1017,6 +1023,15 @@ const make = Effect.gen(function* () {
         if (project.id !== input.projectId) {
           return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
         }
+        // A concurrent caller can lose the claim after reading no receipt. Its dispatch replays the winning event.
+        const creation = claimed.storedEvents.find(
+          ({ event }) => event.type === "thread.created",
+        )?.event;
+        const acceptedHash =
+          creation?.type === "thread.created" ? creation.payload.launchIntentHash : undefined;
+        if (acceptedHash !== undefined && acceptedHash !== input.launchIntentHash) {
+          return yield* mapError(input, "read-receipt", threadId)(LAUNCH_INTENT_MISMATCH);
+        }
         let runId: RunId | null = null;
         let messageSequence: number | undefined;
         let messageWasAlreadyAccepted = false;
@@ -1024,6 +1039,19 @@ const make = Effect.gen(function* () {
           const messageCommandId = CommandId.make(`${input.commandId}:initial-message`);
           const messageReceipt = yield* readReceipt(input, messageCommandId);
           messageWasAlreadyAccepted = Option.isSome(messageReceipt);
+          if (
+            claimed.replayed === true &&
+            input.launchIntentHash !== undefined &&
+            acceptedHash === undefined &&
+            !(
+              Option.isSome(messageReceipt) &&
+              messageReceipt.value.status === "accepted" &&
+              messageReceipt.value.commandType === "message.dispatch" &&
+              messageReceipt.value.threadId === threadId
+            )
+          ) {
+            return yield* mapError(input, "read-receipt", threadId)(LAUNCH_INTENT_MISMATCH);
+          }
           const messageId =
             input.initialMessage.messageId ??
             (yield* ids.allocate

@@ -1,3 +1,7 @@
+## 2026-11-23 — Reliable retries for MCP commands
+
+- Retrying a keyed send recovers the accepted delivery after the run settles. A keyed thread launch can resume its original first message, and repeated delegations resolve to the task and destination first accepted.
+
 ## 2026-11-23 — Access checks for repeated thread launches
 
 - Retrying a keyed MCP thread launch checks the thread's current project, link access, and modes before returning its details.

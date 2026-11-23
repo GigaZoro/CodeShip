@@ -25,6 +25,11 @@ import * as Stream from "effect/Stream";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
+import * as ThreadManagement from "./ThreadManagementService.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as Layer from "effect/Layer";
 import * as Orchestrator from "./Orchestrator.ts";
 import { queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -1372,6 +1377,75 @@ it.effect("starts a steer that missed the turn on the saved next-turn selection"
       }).pipe(Effect.provide(layer));
     }),
   ),
+);
+
+it.effect.each(["steer", "restart"] as const)(
+  "an accepted %s send replays after its run settles",
+  (mode) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+          "receipt-after-settle",
+          true,
+        );
+        const management = ThreadManagement.layer.pipe(
+          Layer.provideMerge(layer),
+          Layer.provide(ServerSettings.layerTest()),
+          Layer.provide(
+            CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const threadId = yield* startFirstTurn;
+          const [run] = (yield* threads.getThreadProjection(threadId)).runs;
+          assert.isDefined(run);
+          assert(typeof run.demandId === "string");
+          const input = {
+            mode,
+            projectId: ProjectId.make("project:receipt-after-settle"),
+            threadId,
+            commandId: CommandId.make("ordinary-send"),
+            messageId: MessageId.make("ordinary-send"),
+            text: "Continue",
+            attachments: [],
+            demandId: run.demandId,
+            createdBy: "agent" as const,
+            creationSource: "mcp" as const,
+          };
+          assert.isUndefined(yield* threads.acceptedCommandSequence(input.commandId));
+          const first = yield* threads.sendToThread(input);
+          assert.equal(
+            yield* threads.acceptedCommandSequence(input.commandId),
+            first.dispatch.sequence,
+          );
+          assert.equal(first.delivery, mode === "restart" ? "restarted" : "steered");
+          const sink = yield* EventSink.EventSinkV2;
+          const now = yield* DateTime.now;
+          const snapshot = yield* threads.getThreadProjection(threadId);
+          yield* sink.write({
+            events: snapshot.runs.map((row) => ({
+              id: EventId.make(`settled:${row.id}`),
+              type: "run.updated",
+              threadId,
+              runId: row.id,
+              occurredAt: now,
+              payload: { ...row, status: "completed", completedAt: now },
+            })),
+          });
+          const retry = yield* threads.sendToThread(input);
+          assert.equal(retry.delivery, first.delivery);
+          assert.equal(retry.run.id, first.run.id);
+          assert.isTrue(retry.dispatch.replayed);
+          assert.lengthOf(
+            (yield* threads.getThreadProjection(threadId)).messages.filter(
+              (row) => row.id === input.messageId,
+            ),
+            1,
+          );
+        }).pipe(Effect.provide(management));
+      }),
+    ),
 );
 
 it.effect("starts a stop-and-send that arrives after the provider turn completed", () =>
