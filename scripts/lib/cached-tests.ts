@@ -15,6 +15,11 @@ interface CachedTestTask {
       };
 }
 
+/** Git, Vitest filters and cache keys use slash-separated paths on every host. */
+export function relativeTestPath(base: string, target: string): string {
+  return NodePath.relative(base, target).split(NodePath.sep).join("/");
+}
+
 export function matchesTestPath(file: string, filters: Array<string>) {
   return (
     filters.length === 0 ||
@@ -95,8 +100,8 @@ export function cachedTestTasks(
     for (const group of groups) {
       const key = NodeCrypto.createHash("sha256").update(group.join("\0")).digest("hex");
       tasks[`test-cache:${key}`] = {
-        command: `${command} ${group.map((file) => `'${NodePath.relative(directory, NodePath.join(root, file)).replaceAll("'", "'\"'\"'")}'`).join(" ")}`,
-        ...(directory === root ? {} : { cwd: NodePath.relative(root, directory) }),
+        command: `${command} ${group.map((file) => `'${relativeTestPath(directory, NodePath.join(root, file)).replaceAll("'", "'\"'\"'")}'`).join(" ")}`,
+        ...(directory === root ? {} : { cwd: relativeTestPath(root, directory) }),
         cache: uncached.includes(group[0]!)
           ? false
           : {

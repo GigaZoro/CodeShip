@@ -21,3 +21,15 @@ export function positiveInteger(value: string, flag: string): number {
     throw new Error(flag + " must be a positive safe integer.");
   return number;
 }
+
+export function nonNegativeInteger(value: string, flag: string): number {
+  const number = Number(value);
+  if (!/^(?:0|[1-9][0-9]*)$/.test(value) || !Number.isSafeInteger(number))
+    throw new Error(flag + " must be a non-negative safe integer.");
+  return number;
+}
+
+export function nonBlankPath(value: string, label: string): string {
+  if (value.trim().length === 0) throw new Error(label + " must be a non-blank path.");
+  return value;
+}

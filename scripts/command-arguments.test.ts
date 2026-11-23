@@ -86,6 +86,7 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
   ],
   "../infra/task-cache/scripts/install.ts": [
     [["--uninstal"], 1, unknownOption("--uninstal")],
+    [["--uninstall", "--entrypoint="], 1, "--entrypoint must be a non-blank path."],
     [
       ["--uninstall", "--entrypoint", "custom.js"],
       1,
@@ -431,6 +432,53 @@ describe("command-line scripts", () => {
     expect(parseCachedTestArguments(["--", "--help"]).values.help).toBe(true);
   });
 
+  it.each([
+    [["--shard=", "apps/server"], "Shard must be index/count"],
+    [["--shard=2/1", "apps/server"], "Shard must be index/count"],
+    [["--shard=1/9007199254740992", "apps/server"], "Shard must be index/count"],
+    [["--shard=1/2"], "Sharding requires exactly one test project directory"],
+    [["--shard=1/2", "server", "shared"], "Sharding requires exactly one test project directory"],
+    [["--verify-hits="], "--verify-hits must be a non-negative safe integer."],
+    [["--verify-hits=-1"], "--verify-hits must be a non-negative safe integer."],
+    [["--verify-hits=9007199254740992"], "--verify-hits must be a non-negative safe integer."],
+    [["--group-size=0"], "--group-size must be a positive safe integer."],
+    [["--concurrency=1e3"], "--concurrency must be a positive safe integer."],
+    [["--report="], "--report must be a non-blank path."],
+    [["--uncached", "ok.test.ts", "--uncached= "], "--uncached must be a non-blank path."],
+    [[""], "Test file or directory must be a non-blank path."],
+  ] as const)("rejects cached runner args %j before discovery", (argv, message) => {
+    expect(() => parseCachedTestArguments(argv)).toThrow(message);
+  });
+
+  it("accepts cached runner paths, repeated exceptions and the package runner separator", () => {
+    const args = parseCachedTestArguments([
+      "--",
+      "--group-size=2",
+      "--concurrency=9007199254740991",
+      "--verify-hits=0",
+      "--shard=01/02",
+      "--report= reports/my report.json ",
+      "--uncached",
+      "tests/first file.test.ts",
+      "--uncached=tests/second file.test.ts",
+      "project with spaces",
+    ]);
+    expect(args).toMatchObject({
+      groupSize: 2,
+      concurrency: Number.MAX_SAFE_INTEGER,
+      verifyHits: 0,
+      values: {
+        shard: "01/02",
+        report: " reports/my report.json ",
+        uncached: ["tests/first file.test.ts", "tests/second file.test.ts"],
+      },
+      positionals: ["project with spaces"],
+    });
+    expect(parseCachedTestArguments(["--", "--", "--literal-path"]).positionals).toEqual([
+      "--literal-path",
+    ]);
+  });
+
   it("rejects mobile behavior values that would be ignored or reach the device runner", () => {
     expect(() => parseBehaviorArguments(["--list", "--device", "iphone-18-pro"])).toThrow(
       "--list must be used alone.",
@@ -476,6 +524,15 @@ describe("command-line scripts", () => {
     expect(
       parseE2eArguments(["--platform", "ios", "--platform", "android", "--no-review"]).review,
     ).toBe(false);
+  });
+
+  it("accepts the package runner separator for mobile behavior and e2e", () => {
+    const behavior = ["--device", "iphone-18-pro", "--samples", "1"];
+    const e2e = ["--platform", "ios", "--no-review"];
+    expect(parseBehaviorArguments(["--", ...behavior])).toEqual(parseBehaviorArguments(behavior));
+    expect(parseE2eArguments(["--", ...e2e])).toEqual(parseE2eArguments(e2e));
+    expect(() => parseBehaviorArguments(["--", "--", ...behavior])).toThrow();
+    expect(() => parseE2eArguments(["--", "--", ...e2e])).toThrow();
   });
 
   it("refuses other options alongside screenshot help", () => {

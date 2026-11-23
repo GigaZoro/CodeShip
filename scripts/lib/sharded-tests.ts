@@ -2,13 +2,17 @@
 import * as NodePath from "node:path";
 import { createVitest } from "vite-plus/test/node";
 
-export async function shardedTestFiles(root: string, shard: string) {
+export function validateShard(shard: string): void {
   const match = /^(\d+)\/(\d+)$/.exec(shard);
   const index = Number(match?.[1]);
   const count = Number(match?.[2]);
   if (!Number.isSafeInteger(index) || !Number.isSafeInteger(count) || index < 1 || index > count) {
     throw new Error("Shard must be index/count with 1 <= index <= count");
   }
+}
+
+export async function shardedTestFiles(root: string, shard: string) {
+  validateShard(shard);
   const context = await createVitest("test", { root, watch: false, shard });
   try {
     const files = await context.globTestSpecifications();

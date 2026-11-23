@@ -3,7 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { parseCommandLine, positiveInteger } from "./lib/command-line.ts";
+import { nonBlankPath, parseCommandLine, positiveInteger } from "./lib/command-line.ts";
 
 const HELP = `Usage:
   node scripts/render-metrics.ts run [--out <file>] [--runs <n>]
@@ -118,7 +118,8 @@ export function parseRenderMetricsArguments(argv: ReadonlyArray<string>) {
       args,
       options: { out: { type: "string" }, runs: { type: "string", default: "3" } },
     });
-    return { command, out: values.out, runs: positiveInteger(values.runs, "--runs") } as const;
+    const out = values.out === undefined ? undefined : nonBlankPath(values.out, "--out");
+    return { command, out, runs: positiveInteger(values.runs, "--runs") } as const;
   }
   if (command === "compare") {
     const { values, positionals } = parseCommandLine({
@@ -127,8 +128,13 @@ export function parseRenderMetricsArguments(argv: ReadonlyArray<string>) {
       options: { top: { type: "string", default: "10" } },
     });
     const [before, after, ...unread] = positionals;
-    if (before && after && unread.length === 0) {
-      return { command, before, after, top: positiveInteger(values.top, "--top") } as const;
+    if (before !== undefined && after !== undefined && unread.length === 0) {
+      return {
+        command,
+        before: nonBlankPath(before, "Before report"),
+        after: nonBlankPath(after, "After report"),
+        top: positiveInteger(values.top, "--top"),
+      } as const;
     }
   }
   if (command === undefined || ((command === "--help" || command === "-h") && args.length === 0)) {

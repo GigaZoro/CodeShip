@@ -91,6 +91,38 @@ describe("render metrics arguments", () => {
     );
   });
 
+  it.each(["", " \t"])("refuses blank output paths %j before running", (path) => {
+    expect(() => parseRenderMetricsArguments(["run", "--out=" + path])).toThrow(
+      "--out must be a non-blank path.",
+    );
+  });
+
+  it("rejects invalid compare inputs and retains the exact supplied paths", () => {
+    expect(() => parseRenderMetricsArguments(["compare", "", "after.json"])).toThrow(
+      "Before report must be a non-blank path.",
+    );
+    expect(() => parseRenderMetricsArguments(["compare", "before.json", " "])).toThrow(
+      "After report must be a non-blank path.",
+    );
+    expect(() =>
+      parseRenderMetricsArguments(["compare", "before.json", "after.json", "--top=0x10"]),
+    ).toThrow("--top must be a positive safe integer.");
+    expect(
+      parseRenderMetricsArguments([
+        "compare",
+        "--top=9007199254740991",
+        "--",
+        " before report.json ",
+        "--after-report.json",
+      ]),
+    ).toEqual({
+      command: "compare",
+      before: " before report.json ",
+      after: "--after-report.json",
+      top: Number.MAX_SAFE_INTEGER,
+    });
+  });
+
   it.each(["--help", "-h"])("accepts %s only as a standalone argument", (flag) => {
     expect(parseRenderMetricsArguments([flag])).toEqual({ command: "help" });
     expect(() => parseRenderMetricsArguments([flag, "--no-such-argument"])).toThrow("Usage:");

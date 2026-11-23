@@ -6,9 +6,36 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
-import { cachedTestTasks, matchesTestPath } from "./cached-tests.ts";
+import { cachedTestTasks, matchesTestPath, relativeTestPath } from "./cached-tests.ts";
 
 describe("cachedTestTasks", () => {
+  it("matches Git and shard selections to the same package, file and cache exception", () => {
+    const root = NodePath.resolve(import.meta.dirname, "../..");
+    const project = NodePath.join(root, "apps", "server");
+    const file = NodePath.join(project, "src", "worker.test.ts");
+    const gitFile = "apps/server/src/worker.test.ts";
+    const shardFile = relativeTestPath(root, file);
+    const filter = relativeTestPath(root, project);
+    expect(shardFile).toBe(gitFile);
+    expect(matchesTestPath(gitFile, [filter])).toBe(true);
+    expect(matchesTestPath(shardFile, [filter])).toBe(true);
+    const tasks = cachedTestTasks(
+      JSON.stringify({
+        files: [gitFile, shardFile],
+        groupSize: 1,
+        uncached: [relativeTestPath(root, file)],
+      }),
+      root,
+    );
+    const fileTasks = Object.entries(tasks).filter(([name]) => name !== "test-cache");
+    expect(fileTasks).toHaveLength(1);
+    expect(fileTasks[0]![1]).toMatchObject({
+      cache: false,
+      cwd: "apps/server",
+      command: "vp test run 'src/worker.test.ts'",
+    });
+  });
+
   it("selects every test for a checkout-root path", () => {
     const root = NodePath.resolve(import.meta.dirname, "../..");
     for (const path of [".", root]) {
@@ -102,9 +129,9 @@ describe("cachedTestTasks", () => {
     try {
       await NodeFSP.mkdir(NodePath.join(directory, "node_modules"));
       await NodeFSP.symlink(
-        NodePath.join(root, "node_modules/vite-plus"),
+        await NodeFSP.realpath(NodePath.join(root, "node_modules/vite-plus")),
         NodePath.join(directory, "node_modules/vite-plus"),
-        "dir",
+        "junction",
       );
       await write("package.json", '{"type":"module"}');
       await write(

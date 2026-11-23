@@ -24,6 +24,9 @@ for (const flag of ["uninstall", "non-interactive"]) {
     throw new Error("Pass --" + flag + " at most once.");
   }
 }
+if (options.entrypoint.some((entrypoint) => entrypoint.trim().length === 0)) {
+  throw new Error("--entrypoint must be a non-blank path.");
+}
 if (options.uninstall && (options.entrypoint.length > 0 || options["non-interactive"])) {
   throw new Error("--uninstall cannot be combined with --entrypoint or --non-interactive.");
 }

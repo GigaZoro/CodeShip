@@ -133,7 +133,7 @@ async function runTarget(
 
 export function parseBehaviorArguments(args: ReadonlyArray<string>) {
   const { values, tokens } = parseCommandLine({
-    args,
+    args: args[0] === "--" ? args.slice(1) : args,
     options: {
       list: { type: "boolean" },
       device: { type: "string", multiple: true, default: [] },
@@ -141,6 +141,9 @@ export function parseBehaviorArguments(args: ReadonlyArray<string>) {
       case: { type: "string" },
     },
   });
+  if (tokens.some((token) => token.kind === "option-terminator")) {
+    throw new Error("Pass -- only once at the start of the command.");
+  }
   if (values.list && tokens.length !== 1) throw new Error("--list must be used alone.");
   const unknown = values.device.filter((id) => !TARGETS.some((target) => target.id === id));
   if (unknown.length)

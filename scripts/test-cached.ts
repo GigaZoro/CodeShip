@@ -3,10 +3,16 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import { parseCommandLine } from "./lib/command-line.ts";
+import {
+  nonBlankPath,
+  nonNegativeInteger,
+  parseCommandLine,
+  positiveInteger,
+} from "./lib/command-line.ts";
 
-import { matchesTestPath } from "./lib/cached-tests.ts";
-import { shardedTestFiles } from "./lib/sharded-tests.ts";
+import { localVitePlusCommand } from "./check-changed-command.ts";
+import { matchesTestPath, relativeTestPath } from "./lib/cached-tests.ts";
+import { shardedTestFiles, validateShard } from "./lib/sharded-tests.ts";
 
 const root = NodePath.resolve(import.meta.dirname, "..");
 export function parseCachedTestArguments(args: ReadonlyArray<string>) {
@@ -25,38 +31,41 @@ export function parseCachedTestArguments(args: ReadonlyArray<string>) {
   });
   if (result.values.help && result.tokens.length !== 1)
     throw new Error("--help must be used alone.");
-  return result;
+  const { values, positionals } = result;
+  const groupSize = positiveInteger(values["group-size"], "--group-size");
+  const concurrency = positiveInteger(values.concurrency, "--concurrency");
+  const verifyHits = nonNegativeInteger(values["verify-hits"], "--verify-hits");
+  if (values.shard !== undefined) {
+    validateShard(values.shard);
+    if (positionals.length !== 1)
+      throw new Error("Sharding requires exactly one test project directory");
+  }
+  if (values.report !== undefined) nonBlankPath(values.report, "--report");
+  for (const file of values.uncached) nonBlankPath(file, "--uncached");
+  for (const path of positionals) nonBlankPath(path, "Test file or directory");
+  return { ...result, groupSize, concurrency, verifyHits };
 }
 
 if (import.meta.main) {
-  const { values, positionals } = parseCachedTestArguments(process.argv.slice(2));
+  const { values, positionals, groupSize, concurrency, verifyHits } = parseCachedTestArguments(
+    process.argv.slice(2),
+  );
   if (values.help) {
     console.log(
       "vp run test:cached [--group-size 1] [--concurrency 1] [--shard index/count] [--uncached file] [test files or directories]",
     );
     process.exit(0);
   }
-  const groupSize = Number(values["group-size"]);
-  const concurrency = Number(values.concurrency);
-  const verifyHits = Number(values["verify-hits"]);
-  if (!Number.isSafeInteger(verifyHits) || verifyHits < 0)
-    throw new Error("Invalid verification count");
-  if (![groupSize, concurrency].every((value) => Number.isSafeInteger(value) && value > 0)) {
-    throw new Error("Group size and concurrency must be positive integers");
-  }
-  if (values.shard && positionals.length !== 1) {
-    throw new Error("Sharding requires exactly one test project directory");
-  }
   const candidates = values.shard
     ? (await shardedTestFiles(NodePath.resolve(positionals[0]!), values.shard)).map((file) =>
-        NodePath.relative(root, file),
+        relativeTestPath(root, file),
       )
     : NodeChildProcess.execFileSync(
         "git",
         ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
       ).split("\0");
-  const filters = positionals.map((path) => NodePath.relative(root, NodePath.resolve(path)));
+  const filters = positionals.map((path) => relativeTestPath(root, NodePath.resolve(path)));
   const isSelectable = (file: string) =>
     /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file) &&
     !file.startsWith(".repos/") &&
@@ -80,13 +89,12 @@ if (import.meta.main) {
     T3_CACHED_TESTS: JSON.stringify({
       files,
       groupSize,
-      uncached: values.uncached.map((file) => NodePath.relative(root, NodePath.resolve(file))),
+      uncached: values.uncached.map((file) => relativeTestPath(root, NodePath.resolve(file))),
     }),
   };
   const started = performance.now();
   const result = NodeChildProcess.spawnSync(
-    NodePath.join(root, "node_modules/.bin/vp"),
-    ["run", "--concurrency-limit", String(concurrency), "test-cache"],
+    ...localVitePlusCommand(["run", "--concurrency-limit", String(concurrency), "test-cache"]),
     {
       cwd: root,
       env,
@@ -126,8 +134,7 @@ if (import.meta.main) {
         console.log(`Verifying cached result without cache: ${task.task_name}`);
         const start = performance.now();
         const audit = NodeChildProcess.spawnSync(
-          NodePath.join(root, "node_modules/.bin/vp"),
-          ["run", "--no-cache", "--remote-cache", "off", task.task_name],
+          ...localVitePlusCommand(["run", "--no-cache", "--remote-cache", "off", task.task_name]),
           { cwd: root, env, stdio: "inherit" },
         );
         if (audit.error) throw audit.error;

@@ -146,7 +146,7 @@ async function runPose(
 
 export function parseE2eArguments(args: ReadonlyArray<string>) {
   const { values, tokens } = parseCommandLine({
-    args,
+    args: args[0] === "--" ? args.slice(1) : args,
     options: {
       list: { type: "boolean" },
       pose: { type: "string", multiple: true, default: [] },
@@ -155,6 +155,9 @@ export function parseE2eArguments(args: ReadonlyArray<string>) {
       "no-review": { type: "boolean" },
     },
   });
+  if (tokens.some((token) => token.kind === "option-terminator")) {
+    throw new Error("Pass -- only once at the start of the command.");
+  }
   if (values.list && tokens.length !== 1) throw new Error("--list must be used alone.");
   const unknown = values.pose.filter((id) => !POSES.some((pose) => pose.id === id));
   if (unknown.length) throw new Error("Unknown pose " + unknown.join(", ") + ". Run with --list.");
