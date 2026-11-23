@@ -1,3 +1,7 @@
+## 2026-11-23 — OpenCode questions and permissions
+
+- On resumed chats, OpenCode routes questions and permission requests to their originating turn when the native session identifies it.
+
 ## 2026-11-23 — Replay of accepted sends and delegations
 
 - Retrying a keyed send recovers its original delivery after the run settles or its thread is archived. Repeated delegations resolve to the task and destination first accepted.

@@ -25,6 +25,7 @@ import {
 import { OpenCodeSettings } from "../settings.ts";
 import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";
+import * as TestClock from "effect/testing/TestClock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -199,6 +200,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
     text = "hello",
     startProviderThread: OrchestrationV2ProviderThread = providerThread,
     turnPolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy = policy,
+    ordinal = 1,
   ) =>
     runtime.startTurn({
       appThread: {
@@ -225,10 +227,12 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
         deletedAt: null,
       },
       threadId,
-      runId: RunId.make(`run-opencode-${suffix}`),
-      runOrdinal: 1,
-      providerTurnOrdinal: 1,
-      attemptId: RunAttemptId.make(`attempt-opencode-${suffix}`),
+      runId: RunId.make(`run-opencode-${suffix}${ordinal === 1 ? "" : `-${ordinal}`}`),
+      runOrdinal: ordinal,
+      providerTurnOrdinal: ordinal,
+      attemptId: RunAttemptId.make(
+        `attempt-opencode-${suffix}${ordinal === 1 ? "" : `-${ordinal}`}`,
+      ),
       rootNodeId: NodeId.make(`node-opencode-${suffix}`),
       providerThread: startProviderThread,
       message: {
@@ -660,6 +664,169 @@ describe("OpenCodeAdapterV2", () => {
                 hasSubagents: false,
               },
         );
+      }).pipe(
+        Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+        Effect.scoped,
+      ),
+  );
+
+  it.effect.each(["permission", "question"] as const)(
+    "routes each OpenCode %s to the turn proven by its native message",
+    (kind) =>
+      Effect.gen(function* () {
+        const events = asyncEventStream();
+        const prompts: string[] = [];
+        const denied: string[] = [];
+        let foundChild = false;
+        const harness = yield* makeOpenCodeRuntimeHarness("callback-owner", "root", {
+          event: { subscribe: async () => ({ stream: events.stream }) },
+          session: {
+            create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+            get: async ({ sessionID }: { sessionID: string }) => ({
+              data: {
+                id: sessionID,
+                time: { created: 1, updated: 1 },
+                ...(sessionID === "child" && foundChild ? { parentID: "root" } : {}),
+              },
+            }),
+            update: async () => ({ data: true }),
+            messages: async () => ({ data: [] }),
+            message: async ({
+              sessionID,
+              messageID,
+            }: {
+              sessionID: string;
+              messageID: string;
+            }) => ({
+              data: {
+                info: {
+                  role: "assistant",
+                  id: messageID,
+                  sessionID,
+                  parentID: messageID === "lookup-B" ? prompts[1] : prompts[0],
+                },
+              },
+            }),
+            promptAsync: async ({ messageID }: { messageID: string }) => {
+              prompts.push(messageID);
+              return { data: true };
+            },
+          },
+          permission: {
+            reply: async ({ requestID, reply }: { requestID: string; reply: string }) => {
+              if (reply === "reject") denied.push(requestID);
+              return { data: true };
+            },
+          },
+          question: {
+            reject: async ({ requestID }: { requestID: string }) => {
+              denied.push(requestID);
+              return { data: true };
+            },
+          },
+        });
+        const push = (event: unknown) => Effect.promise(() => events.push(event));
+        const ask = (id: string, sessionID: string, assistant?: string) =>
+          push({
+            type: kind === "permission" ? "permission.asked" : "question.asked",
+            properties: {
+              id,
+              sessionID,
+              ...(kind === "permission"
+                ? { permission: "bash", metadata: {}, always: [], patterns: ["ls"] }
+                : { questions: [{ header: "Choice", question: "Proceed?", options: [] }] }),
+              ...(assistant === undefined
+                ? {}
+                : { tool: { messageID: assistant, callID: "tool-" + assistant } }),
+            },
+          });
+        const assistant = (sessionID: string, id: string, parentID: string) =>
+          push({
+            type: "message.updated",
+            properties: {
+              sessionID,
+              info: { id, sessionID, role: "assistant", parentID, time: { created: 2 } },
+            },
+          });
+        const snapshot = (providerThread = harness.providerThread) =>
+          harness.runtime.readThreadSnapshot({ providerThread });
+        yield* harness.startTurn();
+        yield* push({
+          type: "message.updated",
+          properties: {
+            sessionID: "root",
+            info: { id: prompts[0], sessionID: "root", role: "user", time: { created: 1 } },
+          },
+        });
+        yield* assistant("root", "assistant-A", prompts[0]!);
+        yield* ask("first", "root", "assistant-A");
+        // Its ancestry will only resolve after the parent advances.
+        yield* ask("delayed-child", "child");
+        yield* push({ type: "session.idle", properties: { sessionID: "root" } });
+        const afterFirst = yield* snapshot();
+        {
+          const first = afterFirst.runtimeRequests.find(
+            (row) => row.nativeRequestRef?.nativeId === "first",
+          );
+          assert.equal(first?.providerTurnId, afterFirst.providerTurns[0]?.id);
+          assert.equal(first?.status, "cancelled");
+        }
+        yield* harness.startTurn("next", harness.providerThread, harness.policy, 2);
+        foundChild = true;
+        // Neither re-observing an old assistant nor a matching-looking tool on its message makes it B's call.
+        yield* assistant("root", "assistant-A", prompts[0]!);
+        yield* push({
+          type: "message.part.updated",
+          properties: {
+            sessionID: "root",
+            part: {
+              id: "stale-tool",
+              sessionID: "root",
+              messageID: "assistant-A",
+              type: "tool",
+              callID: "tool-assistant-A",
+              tool: "read",
+              state: { status: "pending", input: { filePath: "README.md" }, raw: "" },
+            },
+          },
+        });
+        yield* ask("late", "root", "assistant-A");
+        yield* ask("ambiguous", "root");
+        yield* ask("valid-B", "root", "assistant-B");
+        yield* ask("lookup-B", "root", "lookup-B");
+        yield* assistant("root", "assistant-B", prompts[1]!);
+        yield* TestClock.adjust("8 seconds");
+        const afterSecond = yield* snapshot();
+        const asked = afterSecond.runtimeRequests.filter((row) => row.status === "pending");
+        assert.sameMembers(
+          asked.map((row) => row.nativeRequestRef?.nativeId),
+          ["valid-B", "lookup-B"],
+        );
+        assert.isTrue(
+          asked.every((row) => row.providerTurnId === afterSecond.providerTurns.at(-1)?.id),
+        );
+        assert.sameMembers(denied, ["late", "ambiguous", "delayed-child"]);
+
+        // A resumed native session can contain requests from before this runtime registered it.
+        const resumed = yield* harness.runtime.resumeThread({
+          providerThread: {
+            ...harness.providerThread,
+            nativeThreadRef: { driver: OPENCODE_PROVIDER, nativeId: "resumed", strength: "strong" },
+          },
+        });
+        yield* harness.startTurn("resume", resumed);
+        yield* ask("unknown-on-resume", "resumed");
+        yield* assistant("resumed", "current-on-resume", prompts[2]!);
+        yield* ask("valid-on-resume", "resumed", "current-on-resume");
+        yield* TestClock.adjust("8 seconds");
+        const resumedPending = (yield* snapshot(resumed)).runtimeRequests.filter(
+          (row) => row.status === "pending",
+        );
+        assert.deepEqual(
+          resumedPending.map((row) => row.nativeRequestRef?.nativeId),
+          ["valid-on-resume"],
+        );
+        assert.include(denied, "unknown-on-resume");
       }).pipe(
         Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
         Effect.scoped,
