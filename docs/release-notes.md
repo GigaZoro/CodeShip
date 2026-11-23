@@ -1,3 +1,7 @@
+## 2026-11-23 — Replay of accepted sends and delegations
+
+- Retrying a keyed send recovers its original delivery after the run settles or its thread is archived. Repeated delegations resolve to the task and destination first accepted.
+
 ## 2026-11-23 — A scheduled chat starts with what its run condition found
 
 - When a task's **Check before running** command finds work, the chat it starts now gets the check's reason, and the `unit` its JSON answer names (a work item, a pull request or a settlement id), at the end of its first message, so the agent starts on that work instead of looking for it again. **Run history** shows the same reason and unit.
