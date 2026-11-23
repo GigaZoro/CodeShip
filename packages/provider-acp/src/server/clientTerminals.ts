@@ -116,6 +116,7 @@ export interface AcpClientTerminals {
     sessionId: string,
     terminalId: string,
   ) => AcpTerminalOutputSnapshot | undefined;
+  readonly hasUnreleased: () => boolean;
   readonly readCommandLine: (terminalId: string) => string | undefined;
   readonly disposeAll: Effect.Effect<void>;
 }
@@ -396,6 +397,7 @@ export const makeAcpClientTerminals = Effect.fn("makeAcpClientTerminals")(functi
     kill: logged("terminal/kill", kill),
     release: logged("terminal/release", release),
     readOutputSnapshot,
+    hasUnreleased: () => Array.from(terminals.values()).some((terminal) => !terminal.released),
     readCommandLine,
     disposeAll,
   };

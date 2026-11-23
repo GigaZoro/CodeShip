@@ -1707,8 +1707,23 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               agentTerminalsById.get(sessionScopedId(sessionId, terminalId))?.command;
             return command === undefined ? [] : [command];
           });
-        // Client terminals run with server privileges; apply turn policy and prior user approvals.
-        const clientPolicyGrants = makeAcpClientPolicyGrants();
+        // ACP terminal/create identifies a native session and transport, but has no prompt ID.
+        // Only one actual prompt on that pair can establish a terminal's owner.
+        type TerminalPromptOwner = {
+          readonly threadId: ThreadId;
+          readonly attemptId: ActiveAcpTurn["input"]["attemptId"];
+          readonly providerTurnId: ActiveAcpTurn["providerTurnId"];
+          readonly policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+          readonly unique: boolean;
+          readonly dispatched: Deferred.Deferred<void>;
+          readonly wireSettled: ActiveAcpTurn["promptWireSettled"];
+          readonly grants: ReturnType<typeof makeAcpClientPolicyGrants>;
+        };
+        let terminalPromptOwners = new Map<string, TerminalPromptOwner>();
+        const ownsTerminalPrompt = (owner: TerminalPromptOwner, turn: ActiveAcpTurn) =>
+          owner.threadId === turn.input.threadId &&
+          owner.attemptId === turn.input.attemptId &&
+          owner.providerTurnId === turn.providerTurnId;
         let latestRuntimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy =
           input.runtimePolicy;
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
@@ -6046,7 +6061,6 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         // Post-settle background work retains the latest turn policy.
         const clientPolicyContext = Effect.map(Ref.get(activeTurn), (context) => ({
           policy: context?.input.runtimePolicy ?? latestRuntimePolicy,
-          turnKey: context === null ? null : String(context.providerTurnId),
         }));
 
         const denyClientRequest = (operation: string, disposition: "ask" | "deny") =>
@@ -6065,26 +6079,56 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             ),
           );
 
-        const guardClientTerminalCreate = clientPolicyContext.pipe(
-          Effect.flatMap(({ policy, turnKey }) => {
-            const disposition = acpClientExecuteDisposition(policy);
-            if (
-              disposition === "allow" ||
-              (disposition === "ask" && clientPolicyGrants.allowsExecute(turnKey))
-            ) {
-              return Effect.void;
-            }
-            return denyClientRequest("terminal/create", disposition);
-          }),
-        );
+        const terminalPromptOwner = Effect.fnUntraced(function* (
+          sessionId: string,
+          targetRuntime: AcpSessionRuntime.AcpSessionRuntime["Service"],
+        ) {
+          const owner = terminalPromptOwners.get(sessionId);
+          const turn = yield* Ref.get(activeTurn);
+          if (
+            targetRuntime !== runtime ||
+            !owner?.unique ||
+            !(yield* Deferred.isDone(owner.dispatched)) ||
+            (turn !== null && !ownsTerminalPrompt(owner, turn)) ||
+            (yield* Ref.get(stoppedRunQuarantine)) ||
+            (yield* Ref.get(runtimeRestartRequired))
+          )
+            return;
+          return { owner, turn };
+        });
 
         const wireAcpRuntimeTerminalHandlers = Effect.fnUntraced(function* (
           targetRuntime: AcpSessionRuntime.AcpSessionRuntime["Service"],
+          generation: number,
         ) {
           if (clientTerminals === undefined) return;
-          yield* targetRuntime.handleCreateTerminal((request) =>
-            guardClientTerminalCreate.pipe(Effect.andThen(clientTerminals.create(request))),
-          );
+          terminalPromptOwners = new Map();
+          const unidentified = () =>
+            EffectAcpErrors.AcpRequestError.internalError(
+              "ACP terminal/create could not identify its originating native prompt.",
+            );
+          yield* targetRuntime.handleCreateTerminal((request) => {
+            const receivedOwner = terminalPromptOwners.get(request.sessionId);
+            return runRuntimeCallbackAtGeneration(
+              generation,
+              Effect.gen(function* () {
+                const binding = yield* terminalPromptOwner(request.sessionId, targetRuntime);
+                if (!binding || binding.owner !== receivedOwner) return yield* unidentified();
+                const { owner, turn } = binding;
+                const disposition = acpClientExecuteDisposition(owner.policy);
+                if (
+                  disposition !== "allow" &&
+                  (disposition !== "ask" ||
+                    !owner.grants.allowsExecute(
+                      turn === null ? null : String(owner.providerTurnId),
+                    ))
+                ) {
+                  return yield* denyClientRequest("terminal/create", disposition);
+                }
+                return yield* clientTerminals.create(request);
+              }),
+            ).pipe(Effect.flatMap((result) => Effect.fromOption(result, unidentified)));
+          });
           yield* targetRuntime.handleTerminalOutput(clientTerminals.output);
           yield* targetRuntime.handleTerminalWaitForExit(clientTerminals.waitForExit);
           yield* targetRuntime.handleTerminalKill(clientTerminals.kill);
@@ -6168,7 +6212,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             yield* wireAcpRuntimeMcpHandlers(targetRuntime, runtimeMcpBridge);
           }
           if (handlerOptions.terminals !== false) {
-            yield* wireAcpRuntimeTerminalHandlers(targetRuntime);
+            yield* wireAcpRuntimeTerminalHandlers(targetRuntime, handlerGeneration);
           }
           if (handlerOptions.sessionUpdates !== false) {
             yield* targetRuntime.handleSessionUpdate((rawNotification) =>
@@ -6177,6 +6221,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           }
           yield* targetRuntime.handleRequestPermission((nativeParams, requestContext) =>
             Effect.gen(function* () {
+              const receivedOwner = terminalPromptOwners.get(nativeParams.sessionId);
               const trackedTurn = yield* Ref.get(activeTurn);
               const params =
                 trackedTurn !== null && nativeParams.sessionId === (yield* Ref.get(activeSessionId))
@@ -6206,9 +6251,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 yield* userInput.acknowledgeNativeResponse;
                 return response ?? ({ outcome: { outcome: "cancelled" } } as const);
               }
+              const parsedPermission = parsePermissionRequest(params);
+              const clientExecute =
+                clientTerminals !== undefined && parsedPermission.kind === "execute";
               const dispositionFor = (policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
                 (flavor.permissionDisposition ?? acpPermissionDisposition)(policy, params);
-              if (followsAgentWorkState && dispositionFor(latestRuntimePolicy) === "ask") {
+              if (
+                !clientExecute &&
+                followsAgentWorkState &&
+                dispositionFor(latestRuntimePolicy) === "ask"
+              ) {
                 if (!(yield* awaitRequestTurn(handlerGeneration)))
                   return { outcome: { outcome: "cancelled" } } as const;
               }
@@ -6216,9 +6268,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 handlerGeneration,
                 Effect.gen(function* () {
                   const context = yield* Ref.get(activeTurn);
-                  const disposition = dispositionFor(
-                    context?.input.runtimePolicy ?? latestRuntimePolicy,
-                  );
+                  const binding = clientExecute
+                    ? yield* terminalPromptOwner(params.sessionId, targetRuntime)
+                    : undefined;
+                  const disposition =
+                    clientExecute && (!binding || binding.owner !== receivedOwner)
+                      ? "deny"
+                      : dispositionFor(
+                          binding?.owner.policy ??
+                            context?.input.runtimePolicy ??
+                            latestRuntimePolicy,
+                        );
                   if (disposition === "allow") {
                     const optionId = selectAutoApprovedPermissionOption(params);
                     return {
@@ -6230,7 +6290,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     };
                   }
                   // v1 agents can ask while configureSession runs; with no turn there is no one to ask.
-                  if (disposition === "deny" || (context === null && !followsAgentWorkState)) {
+                  if (
+                    disposition === "deny" ||
+                    (context === null && (clientExecute || !followsAgentWorkState))
+                  ) {
                     const optionId = selectPermissionOptionId(params, "decline");
                     return {
                       _tag: "Immediate" as const,
@@ -6279,7 +6342,6 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 requestId,
                 transportRequestId: pendingTransportRequestId,
               } = admitted.value.pending;
-              const parsedPermission = parsePermissionRequest(params);
               const decision = yield* Deferred.await(pendingDecision).pipe(
                 Effect.ensuring(
                   runRuntimeCallbackAtGeneration(
@@ -6292,16 +6354,6 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   ).pipe(Effect.asVoid),
                 ),
               );
-              if (
-                parsedPermission.kind !== "unknown" &&
-                (decision === "accept" || decision === "acceptForSession")
-              ) {
-                clientPolicyGrants.recordApproval({
-                  kind: providerRequestKind(parsedPermission.kind),
-                  scope: decision === "acceptForSession" ? "session" : "turn",
-                  turnKey: String(context.providerTurnId),
-                });
-              }
               const response = (() => {
                 if (decision === "cancel") {
                   return { outcome: { outcome: "cancelled" } } as const;
@@ -6313,7 +6365,23 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               })();
               const checked = yield* runRuntimeCallbackAtGeneration(
                 handlerGeneration,
-                Effect.succeed(response),
+                Effect.gen(function* () {
+                  if (
+                    clientExecute &&
+                    response.outcome.outcome === "selected" &&
+                    (decision === "accept" || decision === "acceptForSession")
+                  ) {
+                    const binding = yield* terminalPromptOwner(params.sessionId, targetRuntime);
+                    if (!binding || binding.turn !== context || context.finalized)
+                      return { outcome: { outcome: "cancelled" } } as const;
+                    binding.owner.grants.recordApproval({
+                      kind: "command",
+                      scope: decision === "acceptForSession" ? "session" : "turn",
+                      turnKey: String(context.providerTurnId),
+                    });
+                  }
+                  return response;
+                }),
               );
               if (Option.isNone(checked)) return yield* Effect.never;
               yield* acknowledgeNativeResponse(handlerGeneration, pendingTransportRequestId);
@@ -6705,7 +6773,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     yield* readMcpContext(threadId),
                     replacementExit.value.started.sessionId,
                   );
-                  yield* wireAcpRuntimeTerminalHandlers(replacementExit.value.replacementRuntime);
+                  yield* wireAcpRuntimeTerminalHandlers(
+                    replacementExit.value.replacementRuntime,
+                    replacementGeneration,
+                  );
                   yield* commitSessionState(replacementExit.value.started);
                   while (true) {
                     const buffered = stagedSessionUpdates.splice(0, stagedSessionUpdates.length);
@@ -7570,8 +7641,41 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           };
         });
 
+        const hasPendingBackgroundWork = Effect.gen(function* () {
+          const rootSessionId = yield* Ref.get(activeSessionId);
+          if (
+            followsAgentWorkState &&
+            rootSessionId !== null &&
+            hasWorkingDescendant(rootSessionId)
+          )
+            return true;
+          if (
+            followsAgentWorkState &&
+            (agentWork?.state === "running" ||
+              agentWork?.state === "requires_action" ||
+              agentRequests.size > 0)
+          )
+            return true;
+          if ((yield* Ref.get(wakeBuffer)).length > 0) return true;
+          if (yield* Ref.get(continuationRequested)) return true;
+          if ((yield* Ref.get(runningBackgroundTaskIds)).size > 0) return true;
+          const active = yield* Ref.get(activeTurn);
+          if (
+            active !== null &&
+            [...active.subagents.values()].some(acpSubagentHasPendingBackgroundWork)
+          ) {
+            return true;
+          }
+          const carryover = yield* Ref.get(carryoverSubagents);
+          if (carryover !== null && carryover.subagents.some(acpSubagentHasPendingBackgroundWork)) {
+            return true;
+          }
+          return false;
+        });
+
         const restartRuntimeAfterTeardownIfRequired = Effect.fnUntraced(function* (
           threadId: ThreadId | null,
+          preserveSnapshot = false,
         ) {
           const restartRequired = yield* Ref.get(runtimeRestartRequired);
           if (!restartRequired) return false;
@@ -7581,13 +7685,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           yield* Ref.set(activeSessionSetup, null);
           yield* Ref.set(activeSelection, null);
           yield* Ref.set(activeInteractionMode, null);
-          yield* Ref.set(snapshot, {
-            order: [],
-            messages: new Map(),
-            loadingRole: null,
-            loadingMessageId: null,
-            loadingIndex: 0,
-          });
+          if (!preserveSnapshot)
+            yield* Ref.set(snapshot, {
+              order: [],
+              messages: new Map(),
+              loadingRole: null,
+              loadingMessageId: null,
+              loadingIndex: 0,
+            });
           return true;
         });
 
@@ -7641,13 +7746,52 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             // load/resume can invoke client methods; install the incoming policy before activation.
             latestRuntimePolicy = turnInput.runtimePolicy;
             const requestedSessionId = yield* nativeThreadId(driver, turnInput.providerThread);
+            const previousPrompt = terminalPromptOwners.get(requestedSessionId);
+            const sameSessionExecute =
+              previousPrompt?.threadId === turnInput.threadId &&
+              previousPrompt.grants.allowsExecute(null);
+            let resumingIdleTransport = false;
+            if (
+              clientTerminals !== undefined &&
+              previousPrompt !== undefined &&
+              (canLoadSession || canResumeSession) &&
+              acpClientExecuteDisposition(turnInput.runtimePolicy) !== "deny" &&
+              !acpIsProviderContinuationMessage(turnInput.message)
+            ) {
+              // A second prompt on the same wire cannot distinguish a late terminal request.
+              // Resume the settled session on a fresh transport only while nothing owns the old one.
+              yield* runtimeCallbackPermit.withPermit(
+                Effect.gen(function* () {
+                  if (
+                    (yield* Ref.get(runtimeRestartRequired)) ||
+                    (yield* Ref.get(pendingRuntimeRequests)).size > 0 ||
+                    (yield* Ref.get(nativeResponseAcknowledgements)).size > 0 ||
+                    clientTerminals.hasUnreleased() ||
+                    (yield* hasPendingBackgroundWork) ||
+                    (yield* Ref.get(dispatchedContinuations)) > 0 ||
+                    !(yield* Deferred.isDone(previousPrompt.wireSettled))
+                  )
+                    return;
+                  resumingIdleTransport = true;
+                  yield* advanceRuntimeCallbackGeneration;
+                  yield* Ref.set(runtimeRestartRequired, true);
+                }),
+              );
+            }
             const restartAfterInterrupt = yield* restartRuntimeAfterTeardownIfRequired(
               turnInput.threadId,
+              resumingIdleTransport && !canLoadSession,
             );
             const needsSessionActivation =
               (yield* Ref.get(activeSessionId)) !== requestedSessionId || restartAfterInterrupt;
             if (needsSessionActivation) {
               const activated = yield* activateSession(requestedSessionId, turnInput.threadId);
+              if (resumingIdleTransport && activated.sessionId !== requestedSessionId) {
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver,
+                  detail: "The replacement ACP transport resumed a different native session.",
+                });
+              }
               yield* Ref.set(activeSessionId, activated.sessionId);
               yield* setActiveSessionSetup(activated);
               yield* configureSession(activated, turnInput.modelSelection, turnInput.runtimePolicy);
@@ -7914,7 +8058,29 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 ? undefined
                 : yield* flavor.watchPromptOutcome(requestedSessionId);
             const promptGeneration = yield* Ref.get(runtimeCallbackGeneration);
-            yield* runtime.prompt({ prompt: promptParts!.prompt }).pipe(
+            const terminalPromptDispatched =
+              clientTerminals === undefined ? undefined : yield* Deferred.make<void>();
+            if (terminalPromptDispatched !== undefined) {
+              terminalPromptOwners.set(requestedSessionId, {
+                threadId: turnInput.threadId,
+                attemptId: turnInput.attemptId,
+                providerTurnId,
+                policy: turnInput.runtimePolicy,
+                dispatched: terminalPromptDispatched,
+                wireSettled: promptWireSettled,
+                unique: !terminalPromptOwners.has(requestedSessionId),
+                grants: makeAcpClientPolicyGrants(
+                  sameSessionExecute && (!restartAfterInterrupt || resumingIdleTransport),
+                ),
+              });
+            }
+            const nativePrompt = runtime.prompt(
+              { prompt: promptParts!.prompt },
+              terminalPromptDispatched === undefined
+                ? undefined
+                : { dispatched: terminalPromptDispatched },
+            );
+            yield* nativePrompt.pipe(
               Effect.tap(() =>
                 Ref.update(promptInstructionStates, (current) => {
                   if (promptParts?.instructionState === undefined) return current;
@@ -8148,40 +8314,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               }),
           ...(postSettleContinuationEnabled || followsAgentWorkState
             ? {
-                hasPendingBackgroundWork: Effect.gen(function* () {
-                  const rootSessionId = yield* Ref.get(activeSessionId);
-                  if (
-                    followsAgentWorkState &&
-                    rootSessionId !== null &&
-                    hasWorkingDescendant(rootSessionId)
-                  )
-                    return true;
-                  if (
-                    followsAgentWorkState &&
-                    (agentWork?.state === "running" ||
-                      agentWork?.state === "requires_action" ||
-                      agentRequests.size > 0)
-                  )
-                    return true;
-                  if ((yield* Ref.get(wakeBuffer)).length > 0) return true;
-                  if (yield* Ref.get(continuationRequested)) return true;
-                  if ((yield* Ref.get(runningBackgroundTaskIds)).size > 0) return true;
-                  const active = yield* Ref.get(activeTurn);
-                  if (
-                    active !== null &&
-                    [...active.subagents.values()].some(acpSubagentHasPendingBackgroundWork)
-                  ) {
-                    return true;
-                  }
-                  const carryover = yield* Ref.get(carryoverSubagents);
-                  if (
-                    carryover !== null &&
-                    carryover.subagents.some(acpSubagentHasPendingBackgroundWork)
-                  ) {
-                    return true;
-                  }
-                  return false;
-                }),
+                hasPendingBackgroundWork,
               }
             : {}),
           ensureThread: Effect.fn("AcpAdapterV2.ensureThread")(

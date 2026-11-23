@@ -1,3 +1,7 @@
+## 2026-11-23 — Terminal requests on resumed ACP sessions
+
+- An ACP provider that uses CodeShip terminals must identify the prompt that requested the terminal. On supported idle sessions, CodeShip resumes the conversation on a fresh connection so the next prompt can use its own command permissions.
+
 ## 2026-11-23 — Accounting for repairs and work-item requests
 
 - MCP launches and sends can carry the work item or repair run that owns them. A guarded restart applies only while its intended run is active. Linked repairs require a peer that supports origin accounting.

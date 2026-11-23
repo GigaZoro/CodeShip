@@ -2930,8 +2930,9 @@ describe("AcpAdapterV2", () => {
                 Effect.sync(() => {
                   createTerminal = next;
                 }).pipe(Effect.andThen(runtime.handleCreateTerminal(next))),
-              prompt: () =>
+              prompt: (_payload, options) =>
                 Effect.gen(function* () {
+                  if (options?.dispatched) yield* Deferred.succeed(options.dispatched, undefined);
                   assert.isDefined(handler);
                   assert.isDefined(createTerminal);
                   const fallbackTerminal = yield* createTerminal(
@@ -4212,6 +4213,157 @@ describe("AcpAdapterV2", () => {
       }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
+  it.effect.each([
+    { transport: "resumed", firstMode: "full-access", expected: [1, 2] },
+    { transport: "shared", firstMode: "full-access", expected: [1, 1] },
+    { transport: "shared", firstMode: "approval-required", expected: [0, 0] },
+    { transport: "disabled", firstMode: "full-access", expected: [0, 0] },
+    { transport: "read-only", firstMode: "full-access", expected: [1, 1] },
+  ] as const)(
+    "identifies a terminal by its native prompt and transport ($transport, first=$firstMode)",
+    ({ transport, firstMode, expected }) =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const path = yield* Path.Path;
+        const handlers: Array<
+          Parameters<AcpSessionRuntime.AcpSessionRuntime["Service"]["handleCreateTerminal"]>[0]
+        > = [];
+        let admissions = 0;
+        const admissionsFromRetiredTransports: number[] = [];
+        const admissionsBeforeDispatch: number[] = [];
+        const promptTransports = new Set<number>();
+        const request = { sessionId: "mock-session-1", command: "fixture-command" };
+        const callTerminal = (handler: (typeof handlers)[number]) =>
+          handler(request, { requestId: "fixture-create", method: "terminal/create" }).pipe(
+            Effect.exit,
+          );
+        const instanceId = ProviderInstanceId.make("acp-test-terminal-owner");
+        const adapter = yield* makeAcpAdapterV2({
+          instanceId,
+          selfInvocation: yield* resolveSelfInvocation(),
+          ...(transport === "disabled" ? {} : { clientTerminals: {} }),
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            makeRuntime: makeMockRuntime({
+              childProcessSpawner,
+              mockAgentPath: yield* path.fromFileUrl(
+                new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+              ),
+              wrapRuntime: (runtime, generation) => ({
+                ...runtime,
+                start: () =>
+                  runtime.start().pipe(
+                    Effect.map((started) =>
+                      transport !== "shared"
+                        ? started
+                        : {
+                            ...started,
+                            initializeResult: {
+                              ...started.initializeResult,
+                              agentCapabilities: {
+                                ...started.initializeResult.agentCapabilities,
+                                loadSession: false,
+                                sessionCapabilities: {},
+                              },
+                            },
+                          },
+                    ),
+                  ),
+                handleCreateTerminal: (handler) =>
+                  Effect.sync(() => {
+                    handlers.push(handler);
+                  }).pipe(Effect.andThen(runtime.handleCreateTerminal(handler))),
+                prompt: (_payload, options) =>
+                  Effect.gen(function* () {
+                    promptTransports.add(generation);
+                    const current = handlers.at(-1);
+                    if (current !== undefined) {
+                      const before = admissions;
+                      yield* callTerminal(current);
+                      admissionsBeforeDispatch.push(admissions - before);
+                    }
+                    if (options?.dispatched) yield* Deferred.succeed(options.dispatched, undefined);
+                    if (handlers.length > 1) {
+                      // A callback already queued on the old transport still names the same session.
+                      const before = admissions;
+                      yield* callTerminal(handlers[0]!);
+                      admissionsFromRetiredTransports.push(admissions - before);
+                    }
+                    if (current !== undefined) yield* callTerminal(current);
+                    return { stopReason: "end_turn" as const };
+                  }),
+              }),
+            }),
+          },
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, {
+            ...childProcessSpawner,
+            spawn: () =>
+              Effect.sync(() => {
+                admissions++;
+              }).pipe(Effect.andThen(Effect.die("Synthetic terminal admission"))),
+          }),
+        );
+        const threadId = ThreadId.make("thread-acp-terminal-owner");
+        const modelSelection = { instanceId, model: "default" } as const;
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: firstMode,
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("session-acp-terminal-owner"),
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const counts: number[] = [];
+        for (const ordinal of [1, 2]) {
+          yield* runtime.startTurn(
+            makeTurnInput({
+              threadId,
+              providerThread,
+              instanceId,
+              ordinal,
+              now: yield* DateTime.now,
+              runtimePolicy:
+                ordinal === 1
+                  ? runtimePolicy
+                  : {
+                      ...runtimePolicy,
+                      runtimeMode: "full-access",
+                      ...(transport === "read-only"
+                        ? {
+                            approvalPolicy: "never",
+                            sandboxPolicy: { type: "readOnly" },
+                          }
+                        : {}),
+                    },
+            }),
+          );
+          yield* runtime.events.pipe(
+            Stream.filter((event) => event.type === "turn.terminal"),
+            Stream.runHead,
+          );
+          counts.push(admissions);
+        }
+        assert.deepEqual(counts, [...expected]);
+        assert.deepEqual(admissionsBeforeDispatch, transport === "disabled" ? [] : [0, 0]);
+        assert.equal(promptTransports.size, transport === "resumed" ? 2 : 1);
+        assert.deepEqual(admissionsFromRetiredTransports, transport === "resumed" ? [0] : []);
+        assert.equal(
+          handlers.length,
+          transport === "resumed" ? 2 : transport === "disabled" ? 0 : 1,
+        );
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
   it.effect("negotiates and executes optional native session forks through the ACP runtime", () =>
     Effect.gen(function* () {
       const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -4357,30 +4509,25 @@ describe("AcpAdapterV2", () => {
       ) {
         return yield* Effect.die("ACP runtime must register terminal handlers");
       }
-      const unknownTerminal = yield* createTerminal(
-        {
-          sessionId: "mock-child-session-without-credential-scope",
-          command: process.execPath,
-          args: ["-e", "process.stdout.write(process.env.T3_ACP_MCP_AUTHORIZATION ?? '')"],
-        },
+      const unowned = yield* createTerminal(
+        { sessionId: "mock-child-session-without-credential-scope", command: "test-terminal" },
         { requestId: "test-unknown-terminal-create", method: "terminal/create" },
-      );
-      yield* waitForTerminalExit(
-        {
-          sessionId: "mock-child-session-without-credential-scope",
-          terminalId: unknownTerminal.terminalId,
-        },
-        { requestId: "test-unknown-terminal-wait", method: "terminal/wait_for_exit" },
-      );
-      const unknownTerminalOutput = yield* readTerminalOutput(
-        {
-          sessionId: "mock-child-session-without-credential-scope",
-          terminalId: unknownTerminal.terminalId,
-        },
-        { requestId: "test-unknown-terminal-output", method: "terminal/output" },
-      );
-      assert.equal(unknownTerminalOutput.output, "");
+      ).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(unowned));
 
+      yield* runtime.startTurn(
+        makeTurnInput({
+          threadId: targetThreadId,
+          providerThread: forkedProviderThread,
+          instanceId,
+          runtimePolicy,
+          now: yield* DateTime.now,
+        }),
+      );
+      yield* runtime.events.pipe(
+        Stream.filter((event) => event.type === "turn.terminal"),
+        Stream.runHead,
+      );
       const terminal = yield* createTerminal(
         {
           sessionId: "mock-session-1-fork",

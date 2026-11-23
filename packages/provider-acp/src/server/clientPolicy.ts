@@ -233,8 +233,8 @@ export interface AcpClientPolicyGrants {
 }
 
 /** ACP cannot link commands to terminals; command approvals grant execution for the turn or accepted session. */
-export function makeAcpClientPolicyGrants(): AcpClientPolicyGrants {
-  let sessionExecute = false;
+export function makeAcpClientPolicyGrants(resumedSessionExecute = false): AcpClientPolicyGrants {
+  let sessionExecute = resumedSessionExecute;
   let turnExecute: string | null = null;
   return {
     recordApproval: (input) => {

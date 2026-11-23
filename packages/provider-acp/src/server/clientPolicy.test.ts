@@ -337,6 +337,17 @@ describe("makeAcpClientPolicyGrants", () => {
     assert.isTrue(grants.allowsExecute(null));
   });
 
+  it.each(["turn", "session"] as const)(
+    "retains only session approval when resuming (%s)",
+    (scope) => {
+      const previous = makeAcpClientPolicyGrants();
+      previous.recordApproval({ kind: "command", scope, turnKey: "first" });
+      const resumed = makeAcpClientPolicyGrants(previous.allowsExecute(null));
+      assert.equal(resumed.allowsExecute("second"), scope === "session");
+      assert.equal(resumed.allowsExecute("first"), scope === "session");
+    },
+  );
+
   it("drops a turn's command grant when a later turn approves one", () => {
     const grants = makeAcpClientPolicyGrants();
     grants.recordApproval({ kind: "command", scope: "turn", turnKey: "turn-1" });
