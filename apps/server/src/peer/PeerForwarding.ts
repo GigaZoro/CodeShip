@@ -61,6 +61,8 @@ export class PeerForwarding extends Context.Service<
       tool: T,
       environmentId: EnvironmentId,
       params: Tool.Parameters<T>,
+      /** A delegation uses the owner of its durable parent-run receipt, even when unknown. */
+      recordedDemandId?: string | null,
     ) => Effect.Effect<Tool.Success<T>, OrchestratorMcpFailure>;
     /** `orchestrator_capabilities` there. */
     readonly readCapabilities: (
@@ -147,6 +149,7 @@ const make = Effect.gen(function* () {
     success: Schema.Top,
     environmentId: EnvironmentId,
     params: unknown,
+    recordedDemandId?: string | null,
   ) {
     const caller = yield* forwardingCaller(scope);
     const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
@@ -154,14 +157,16 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
     const { environmentId: _target, demandOrigin, ...args } = encoded;
     const demand =
-      toolName === "t3_thread_launch" || toolName === "t3_thread_send"
-        ? yield* callerDemand(
-            caller,
-            demandOrigin === undefined
-              ? undefined
-              : yield* decodeDemandOrigin(demandOrigin).pipe(Effect.mapError(unavailable)),
-          )
-        : null;
+      recordedDemandId !== undefined
+        ? recordedDemandId
+        : toolName === "t3_thread_launch" || toolName === "t3_thread_send"
+          ? yield* callerDemand(
+              caller,
+              demandOrigin === undefined
+                ? undefined
+                : yield* decodeDemandOrigin(demandOrigin).pipe(Effect.mapError(unavailable)),
+            )
+          : null;
     // A pending upload lives here, so it cannot go with the call.
     if (Array.isArray(args.attachments) && args.attachments.length > 0) {
       return yield* new OrchestratorMcpFailure({
@@ -260,7 +265,13 @@ const make = Effect.gen(function* () {
     Effect.flatMap((enabled) => (enabled ? Effect.void : Effect.fail(linkedEnvironmentsOff))),
   );
 
-  const call: PeerForwarding["Service"]["call"] = (scope, tool, environmentId, params) => {
+  const call: PeerForwarding["Service"]["call"] = (
+    scope,
+    tool,
+    environmentId,
+    params,
+    recordedDemandId,
+  ) => {
     const forwarded: Effect.Effect<
       Tool.Success<typeof tool>,
       OrchestratorMcpFailure
@@ -270,7 +281,15 @@ const make = Effect.gen(function* () {
           environmentId,
           params as OrchestratorMcpThreadWaitInput,
         ) as Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure>)
-      : forward(scope, tool.name, tool.parametersSchema, tool.successSchema, environmentId, params);
+      : forward(
+          scope,
+          tool.name,
+          tool.parametersSchema,
+          tool.successSchema,
+          environmentId,
+          params,
+          recordedDemandId,
+        );
     return Effect.andThen(requireEnabled, forwarded);
   };
 

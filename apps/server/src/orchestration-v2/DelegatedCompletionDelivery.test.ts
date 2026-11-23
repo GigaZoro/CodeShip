@@ -1233,6 +1233,7 @@ const seedRestartCancelledChild = (input: {
   readonly completionWake: "always" | "settled_only";
   readonly continuationPending: boolean;
   readonly runStatus?: "cancelled" | "completed";
+  readonly demandId?: string;
   readonly lostWork?: OrchestrationV2Run["restartCancelledBackgroundWork"];
   readonly now: DateTime.Utc;
 }) =>
@@ -1318,6 +1319,7 @@ const seedRestartCancelledChild = (input: {
       status: input.runStatus ?? "cancelled",
       now: input.now,
     });
+    if (input.demandId !== undefined) Object.assign(childRun.payload, { demandId: input.demandId });
     yield* eventSink.writeWithEffects({
       commandId: reconcileCommandId(input.name),
       events: [
@@ -2064,6 +2066,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
           parentRunId,
           rootNodeId,
           name: "question-answer-child",
+          demandId: `demand:${"a".repeat(64)}`,
           completionWake: "always",
           continuationPending: false,
           now,
@@ -2190,6 +2193,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
           (run) => run.userMessageId === MessageId.make(`async-answer:${requestId}`),
         );
         assert.isDefined(answerRun?.delegatedTaskId);
+        assert.equal(answerRun?.demandId, `demand:${"a".repeat(64)}`);
         const followup = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
           (task) => task.id === answerRun?.delegatedTaskId,
         );

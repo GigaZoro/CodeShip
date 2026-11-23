@@ -3,7 +3,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   EnvironmentId,
-  type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ThreadShell,
+  RunId,
   type Project,
   ProjectId,
   ProviderInstanceId,
@@ -62,19 +63,20 @@ interface ThreadFixture {
   readonly deletedAt?: string | null;
 }
 
-const makeProjection = (overrides: ThreadFixture = {}): OrchestrationV2ThreadProjection =>
+const sourceRunId = RunId.make("run:worktree-handoff");
+const sourceDemand = `demand:${"b".repeat(64)}`;
+const makeThread = (overrides: ThreadFixture = {}): OrchestrationV2ThreadShell =>
   ({
-    thread: {
-      id: threadId,
-      projectId,
-      title: "Worktree test thread",
-      branch: null,
-      worktreePath: null,
-      archivedAt: null,
-      deletedAt: null,
-      ...overrides,
-    },
-  }) as OrchestrationV2ThreadProjection;
+    activeRunId: sourceRunId,
+    id: threadId,
+    projectId,
+    title: "Worktree test thread",
+    branch: null,
+    worktreePath: null,
+    archivedAt: null,
+    deletedAt: null,
+    ...overrides,
+  }) as OrchestrationV2ThreadShell;
 
 const project: Project = {
   id: projectId,
@@ -138,7 +140,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
         : ["dev", "feature/taken", "feature/taken-idle"],
     ),
   );
-  const getThreadRecords = vi.fn((id: ThreadId) => {
+  const getThreadShell = vi.fn((id: ThreadId) => {
     if (options.threadReadError === "dispatch") {
       return Effect.fail(
         new OrchestratorDispatchError({
@@ -147,7 +149,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
         }),
       ) as never;
     }
-    if (options.threadReadFailsOnRecheck === true && getThreadRecords.mock.calls.length > 1) {
+    if (options.threadReadFailsOnRecheck === true && getThreadShell.mock.calls.length > 1) {
       return Effect.fail(
         new OrchestratorDispatchError({
           commandId: CommandId.make("command:test:recheck"),
@@ -157,22 +159,20 @@ const makeHarness = (options: HarnessOptions = {}) => {
     }
     if (
       options.threadAttachedOnRecheck === true &&
-      getThreadRecords.mock.calls.length > 1 &&
+      getThreadShell.mock.calls.length > 1 &&
       thread !== null
     ) {
-      return Effect.succeed(
-        makeProjection({ ...thread, worktreePath: "/worktrees/project/raced" }),
-      );
+      return Effect.succeed(makeThread({ ...thread, worktreePath: "/worktrees/project/raced" }));
     }
     if (
       options.threadArchivedOnRecheck === true &&
-      getThreadRecords.mock.calls.length > 1 &&
+      getThreadShell.mock.calls.length > 1 &&
       thread !== null
     ) {
-      return Effect.succeed(makeProjection({ ...thread, archivedAt: "2026-01-02T00:00:00.000Z" }));
+      return Effect.succeed(makeThread({ ...thread, archivedAt: "2026-01-02T00:00:00.000Z" }));
     }
     return id === threadId && thread !== null
-      ? Effect.succeed(makeProjection(thread))
+      ? Effect.succeed(makeThread(thread))
       : Effect.fail(new OrchestratorProjectionError({ threadId: id }));
   });
   const sendToThread = vi.fn((_: unknown) => {
@@ -293,7 +293,17 @@ const makeHarness = (options: HarnessOptions = {}) => {
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           dispatch,
-          getThreadRecords,
+          getThreadShell,
+          getThreadRecords: () =>
+            Effect.succeed({
+              runs: [
+                {
+                  id: sourceRunId,
+                  providerInstanceId: scope.thread!.providerInstanceId,
+                  demandId: sourceDemand,
+                },
+              ],
+            } as never),
           sendToThread,
         } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
         Layer.mock(ProjectService.ProjectService)({
@@ -601,6 +611,9 @@ describe("t3_worktree_handoff", () => {
 
       expect(harness.dispatch).toHaveBeenCalledTimes(1);
       expect(harness.sendToThread).toHaveBeenCalledTimes(1);
+      expect(harness.sendToThread).toHaveBeenCalledWith(
+        expect.objectContaining({ demandId: sourceDemand }),
+      );
       expect(harness.runForThread).toHaveBeenCalledTimes(1);
     }),
   );

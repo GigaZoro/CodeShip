@@ -2139,9 +2139,9 @@ it.effect("reports one concurrent same-command launch as new and the rest as res
   }),
 );
 
-it.effect(
-  "does not report a retry as resumed when the earlier attempt only claimed the thread",
-  () =>
+it.effect.each([`demand:${"a".repeat(64)}`, null])(
+  "preserves the initial demand %s when the earlier attempt only claimed the thread",
+  (originalDemandId) =>
     Effect.gen(function* () {
       const harness = makeHarness();
       yield* Effect.gen(function* () {
@@ -2152,21 +2152,29 @@ it.effect(
           thread: "thread:launch:claimed-only",
           message: "Counted once",
         });
-        yield* threads.dispatch({
-          type: "thread.create",
-          commandId: input.commandId,
-          threadId: input.threadId,
-          projectId: input.projectId,
-          title: input.title,
-          modelSelection: input.modelSelection,
-          runtimeMode: input.runtimeMode,
-          interactionMode: input.interactionMode,
-          branch: null,
-          worktreePath: null,
-          createdBy: input.createdBy,
-          creationSource: input.creationSource,
+        const dispatch = threads.dispatch;
+        const stopped = vi
+          .spyOn(threads, "dispatch")
+          .mockImplementation((command) =>
+            command.type === "message.dispatch" ? Effect.interrupt : dispatch(command),
+          );
+        const first = yield* launches
+          .launch({
+            ...input,
+            initialMessage: { ...input.initialMessage!, demandId: originalDemandId },
+          })
+          .pipe(Effect.exit);
+        stopped.mockRestore();
+        assert.isTrue(Exit.isFailure(first));
+        assert.isEmpty((yield* threads.getThreadProjection(input.threadId)).runs);
+        const retried = yield* launches.launch({
+          ...input,
+          initialMessage: {
+            ...input.initialMessage!,
+            demandId: originalDemandId === null ? `demand:${"b".repeat(64)}` : null,
+          },
         });
-        const retried = yield* launches.launch(input);
+        assert.equal(retried.projection.runs[0]?.demandId, originalDemandId);
         assert.isFalse(retried.resumed);
         assert.isTrue((yield* launches.launch(input)).resumed);
       }).pipe(Effect.provide(harness.layer));

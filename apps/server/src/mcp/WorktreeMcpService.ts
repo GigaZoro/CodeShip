@@ -22,6 +22,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
+import { callerDemand } from "./threadAccess.ts";
 import type { McpInvocationScope, McpThreadInvocationScope } from "./McpInvocationContext.ts";
 
 export class WorktreeMcpService extends Context.Service<
@@ -84,7 +85,7 @@ const make = Effect.gen(function* () {
         );
 
   const loadThread = (scope: McpThreadInvocationScope) =>
-    threadManagement.getThreadRecords(scope.thread.threadId, []).pipe(
+    threadManagement.getThreadShell(scope.thread.threadId).pipe(
       Effect.mapError((error) =>
         error._tag === "OrchestratorProjectionError"
           ? failure("thread_not_found", `Thread '${scope.thread.threadId}' was not found.`)
@@ -94,7 +95,8 @@ const make = Effect.gen(function* () {
             ),
       ),
       Effect.filterOrFail(
-        (projection) => projection.thread.deletedAt === null,
+        (thread): thread is NonNullable<typeof thread> =>
+          thread !== null && thread.deletedAt === null,
         () => failure("thread_not_found", `Thread '${scope.thread.threadId}' was not found.`),
       ),
     );
@@ -147,18 +149,24 @@ const make = Effect.gen(function* () {
         `Thread '${scope.thread.threadId}' is already attached to worktree '${worktreePath}'.`,
       );
 
-    const projection = yield* loadThread(scope);
-    if (projection.thread.worktreePath !== null) {
-      return yield* alreadyInWorktree(projection.thread.worktreePath);
+    const thread = yield* loadThread(scope);
+    if (thread.worktreePath !== null) {
+      return yield* alreadyInWorktree(thread.worktreePath);
     }
-    if (projection.thread.archivedAt !== null) {
+    if (thread.archivedAt !== null) {
       return yield* failure(
         "invalid_request",
         `Thread '${scope.thread.threadId}' is archived and cannot be handed off to a worktree.`,
       );
     }
 
-    const project = yield* loadProject(scope, projection.thread.projectId);
+    const demandId =
+      input.continuationPrompt === undefined
+        ? null
+        : yield* callerDemand({ scope, threads: threadManagement, caller: thread }).pipe(
+            asOperationFailed("Unable to resolve the handoff's source run"),
+          );
+    const project = yield* loadProject(scope, thread.projectId);
     const projectCwd = project.workspaceRoot;
 
     const localStatus = yield* gitWorkflow
@@ -266,10 +274,10 @@ const make = Effect.gen(function* () {
         const recheckAndBind = Effect.gen(function* () {
           // A concurrent UI binding may have landed during git work; do not orphan a second worktree.
           const recheck = yield* loadThread(scope);
-          if (recheck.thread.worktreePath !== null) {
-            return yield* alreadyInWorktree(recheck.thread.worktreePath);
+          if (recheck.worktreePath !== null) {
+            return yield* alreadyInWorktree(recheck.worktreePath);
           }
-          if (recheck.thread.archivedAt !== null) {
+          if (recheck.archivedAt !== null) {
             return yield* failure(
               "invalid_request",
               `Thread '${scope.thread.threadId}' was archived while the worktree was being created; the handoff was rolled back.`,
@@ -310,8 +318,9 @@ const make = Effect.gen(function* () {
               ? Effect.succeed<WorktreeMcpContinuationStatus>({ status: "skipped" })
               : threadManagement
                   .sendToThread({
-                    projectId: projection.thread.projectId,
+                    projectId: thread.projectId,
                     commandId: ids.continuationCommandId,
+                    demandId,
                     threadId: scope.thread.threadId,
                     messageId: ids.continuationMessageId,
                     text: input.continuationPrompt,
@@ -340,7 +349,7 @@ const make = Effect.gen(function* () {
           setupScript = yield* setupScriptRunner
             .runForThread({
               threadId: scope.thread.threadId,
-              projectId: projection.thread.projectId,
+              projectId: thread.projectId,
               projectCwd,
               worktreePath,
               project: {
@@ -412,15 +421,15 @@ const make = Effect.gen(function* () {
     function* (callerScope) {
       yield* requireCapability(callerScope);
       const scope = yield* requireThreadScope(callerScope);
-      const projection = yield* loadThread(scope);
-      const project = yield* loadProject(scope, projection.thread.projectId);
+      const thread = yield* loadThread(scope);
+      const project = yield* loadProject(scope, thread.projectId);
 
       const defaultStartFromOrigin = yield* readDefaultStartFromOrigin;
 
       const result: WorktreeMcpStatusResult = {
-        attached: projection.thread.worktreePath !== null,
-        worktreePath: projection.thread.worktreePath,
-        branch: projection.thread.branch,
+        attached: thread.worktreePath !== null,
+        worktreePath: thread.worktreePath,
+        branch: thread.branch,
         projectWorkspaceRoot: project.workspaceRoot,
         defaultStartFromOrigin,
       };

@@ -1,5 +1,8 @@
 import { assert, it } from "@effect/vitest";
 import {
+  CheckpointId,
+  CheckpointRef,
+  CheckpointScopeId,
   CommandId,
   MessageId,
   EventId,
@@ -38,6 +41,7 @@ import * as UnattendedApprovalReactor from "./UnattendedApprovalReactor.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import { finalReviewCommand } from "./FinalReview.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
@@ -952,6 +956,101 @@ it.effect("settles only the stopped run's background work, once", () =>
       `${commandItem(2)}:running`,
       `${commandItem(3)}:running`,
     ]);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("carries the original request through a final review and its delegated reviewer", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:review-demand");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-review-demand"),
+      threadId,
+      projectId: ProjectId.make("project:review-demand"),
+      title: "Implementation",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("start-owner-demand"),
+      threadId,
+      messageId: MessageId.make("message:owner-demand"),
+      text: "Make the change",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const now = yield* DateTime.now;
+    const owner = (yield* projections.getThreadProjection(threadId)).runs[0]!;
+    assert.isString(owner.demandId);
+    yield* projections.apply({
+      id: EventId.make("event:review-owner-complete"),
+      type: "run.updated",
+      threadId,
+      runId: owner.id,
+      occurredAt: now,
+      payload: { ...owner, status: "completed", completedAt: now },
+    });
+    const projection = yield* projections.getThreadProjection(threadId);
+    const review = finalReviewCommand({
+      projection: {
+        ...projection,
+        checkpoints: [
+          {
+            id: CheckpointId.make("review-checkpoint"),
+            threadId,
+            scopeId: CheckpointScopeId.make("review-scope"),
+            runId: owner.id,
+            nodeId: owner.rootNodeId!,
+            parentCheckpointId: null,
+            ordinalWithinScope: 1,
+            appRunOrdinal: owner.ordinal,
+            ref: CheckpointRef.make("refs/t3/review"),
+            status: "ready",
+            files: [{ path: "app.ts", kind: "modified", additions: 1, deletions: 0 }],
+            capturedAt: now,
+          },
+        ],
+      },
+      runId: owner.id,
+      settings: {
+        finalReviewByDefault: true,
+        finalReviewModelSelections: [modelSelection],
+        finalReviewInstructions: "",
+      },
+      providers: [],
+    });
+    assert.isNotNull(review);
+    yield* orchestrator.dispatch(review!);
+    const coordinator = (yield* projections.getThreadProjection(threadId)).runs.find(
+      (run) => run.userMessageId === review!.messageId,
+    )!;
+    assert.equal(coordinator.demandId, owner.demandId);
+    yield* orchestrator.dispatch({
+      type: "delegated_task.request",
+      commandId: CommandId.make("delegate-final-review"),
+      parentThreadId: threadId,
+      parentRunId: coordinator.id,
+      parentNodeId: coordinator.rootNodeId!,
+      task: "Review the change",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    const task = (yield* projections.getThreadProjection(threadId)).subagents[0]!;
+    const reviewer = (yield* projections.getThreadProjection(task.childThreadId!)).runs[0]!;
+    assert.equal(reviewer.demandId, owner.demandId);
   }).pipe(Effect.provide(layerTest)),
 );
 

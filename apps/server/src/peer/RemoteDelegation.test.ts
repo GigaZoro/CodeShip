@@ -21,7 +21,7 @@ import {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
-import { expect, it } from "@effect/vitest";
+import { expect, it, vi } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -68,6 +68,7 @@ import * as SourceControlRepositoryService from "../sourceControl/SourceControlR
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
+import * as PeerMcpClient from "./PeerMcpClient.ts";
 import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 import * as CommandRunner from "../commandRunner/CommandRunner.ts";
@@ -977,6 +978,87 @@ const taskResult = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>, ta
           : undefined,
       ),
     );
+
+it.effect(
+  "a remote launch and its receipt replay keep the demand recorded before its parent changed",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+        const peerClient = Context.get(linking, PeerMcpClient.PeerMcpClient);
+        const launchDemands: Array<string | undefined> = [];
+        const observedClient = PeerMcpClient.PeerMcpClient.of({
+          ...peerClient,
+          call: (input) => {
+            if (input.tool === "t3_thread_launch") launchDemands.push(input.demandId);
+            return peerClient.call(input);
+          },
+        });
+        const a = yield* makeLaptop(
+          database,
+          offers,
+          Context.add(linking, PeerMcpClient.PeerMcpClient, observedClient),
+        );
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+
+        const parent = (yield* a.threads.getThreadRecords(parentThreadId, ["runs"])).runs[0]!;
+        const nextRunId = RunId.make("run:laptop-next-parent");
+        const now = yield* DateTime.now;
+        const nextRun = {
+          ...parent,
+          id: nextRunId,
+          ordinal: parent.ordinal + 1,
+          demandId: `demand:${"b".repeat(64)}`,
+          rootNodeId: NodeId.make("node:laptop-next-parent:root"),
+          userMessageId: MessageId.make("message:next-parent"),
+        };
+        // The next turn owns the same provider session before the remote launch is sent.
+        const dispatch = a.threads.dispatch;
+        vi.spyOn(a.threads, "dispatch").mockImplementation((command) =>
+          dispatch(command).pipe(
+            Effect.tap((result) =>
+              command.type === "delegated_task.remote.request" && !result.replayed
+                ? a.sink
+                    .write({
+                      events: [
+                        {
+                          id: EventId.make("event:end-original-parent"),
+                          type: "run.updated",
+                          threadId: parentThreadId,
+                          runId: parent.id,
+                          occurredAt: now,
+                          payload: { ...parent, status: "completed", completedAt: now },
+                        },
+                        {
+                          id: EventId.make("event:start-next-parent"),
+                          type: "run.created",
+                          threadId: parentThreadId,
+                          runId: nextRunId,
+                          occurredAt: now,
+                          payload: nextRun,
+                        },
+                      ],
+                    })
+                    .pipe(Effect.orDie)
+                : Effect.void,
+            ),
+          ),
+        );
+        const first = yield* delegateToBox(a);
+        expect((yield* a.threads.getThreadShell(parentThreadId))?.activeRunId).toBe(nextRunId);
+        expect(yield* Ref.get(thread.demandId)).toBe(parentDemandId);
+        expect((yield* delegateToBox(a)).taskId).toBe(first.taskId);
+        expect(launchDemands).toEqual([parentDemandId, parentDemandId]);
+      }),
+    ),
+);
 
 it.effect("a task delegated to the box wakes the laptop's parent when it ends there", () =>
   Effect.scoped(

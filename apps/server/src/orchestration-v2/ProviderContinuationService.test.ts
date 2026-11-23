@@ -167,6 +167,7 @@ describe("ProviderContinuationService", () => {
           providerThreadId,
           driver,
           detail: "Delegated task completed.",
+          demandSourceRunId: parentRunId,
           notification: {
             source: { kind: "monitor" },
             outcome: "updated",
@@ -178,7 +179,9 @@ describe("ProviderContinuationService", () => {
           readonly creationSource: string;
           readonly text: string;
           readonly notification: OrchestrationV2Notification;
+          readonly demandSourceRunId?: RunId;
         };
+        assert.equal(command.demandSourceRunId, parentRunId);
         assert.notEqual(command.creationSource, "provider");
         assert.equal(command.creationSource, "server");
         assert.equal(command.text, "Delegated task completed.");

@@ -488,6 +488,8 @@ interface RunRecordRow {
 /** What a scheduled run is for: the time it serves, and whether it catches up a missed one. */
 interface ScheduledFire {
   readonly scheduledFor: string | null;
+  /** The slot this machine claimed for all copies of a one-machine task. */
+  readonly claimSlot?: string;
   readonly catchUp: boolean;
   /** What the task's run condition answered for this occurrence. */
   readonly check?: ScheduledTaskRunCheck;
@@ -2504,12 +2506,16 @@ export const layer = Layer.effect(
             : `${active.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = promptMessageId(fireKey);
-        const demandId = originalDemandId(
-          "occurrence",
-          active.id,
-          trigger,
-          webhook?.deliveryId ?? scheduledFor ?? fireKey,
-        );
+        const demandId =
+          fire?.claimSlot !== undefined
+            ? originalDemandId("occurrence", active.id, "claim", fire.claimSlot)
+            : originalDemandId(
+                "occurrence",
+                hereEnvironmentId,
+                active.id,
+                trigger,
+                webhook?.deliveryId ?? scheduledFor ?? fireKey,
+              );
         // A webhook prompt was rendered from the row when the request arrived. A prompt file is
         // read for each run, and a failed read fails the run: it never runs an earlier read's text.
         const read: Result.Result<
@@ -3943,7 +3949,7 @@ export const layer = Layer.effect(
           replaces: EnvironmentId | null,
           liveRunsElsewhere: SharedTaskPeerCheck.PeerCheckResult["liveRunsElsewhere"],
         ) {
-          const fire = { scheduledFor: occurrence, catchUp: catchingUp };
+          const fire = { scheduledFor: occurrence, catchUp: catchingUp, claimSlot: slot };
           // The limit counts the task's runs that still work on every machine.
           // With its sharing, so the skip lands on the slot every copy runs.
           if (yield* skippedAtLiveRunLimit(shared, fire, liveRunsElsewhere)) return;

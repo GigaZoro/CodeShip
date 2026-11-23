@@ -969,7 +969,10 @@ const withoutMemoryAdmission = (run: OrchestrationV2Run): OrchestrationV2Run => 
 
 /** A message a person typed in a client, not one an agent, the server or a scheduled task sent. */
 const typedByPersonInClient = (
-  command: Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>,
+  command: Pick<
+    OrchestrationV2ConversationMessage,
+    "createdBy" | "creationSource" | "scheduledTaskId"
+  >,
 ) =>
   command.createdBy === "user" &&
   (command.creationSource === "web" || command.creationSource === "mobile") &&
@@ -3147,7 +3150,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   const dispatchThreadCreate = Effect.fn("orchestrationV2.dispatch.threadCreate")(function* (
-    command: Extract<OrchestrationV2Command, { readonly type: "thread.create" }>,
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.create" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
   ) {
     yield* Effect.annotateCurrentSpan({
@@ -3215,7 +3218,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       threadId: command.threadId,
       providerInstanceId: command.modelSelection.instanceId,
       occurredAt: now,
-      payload: thread,
+      payload:
+        command.initialDemandId === undefined
+          ? thread
+          : { ...thread, initialDemandId: command.initialDemandId },
     });
     if (command.importedNativeThread !== undefined) {
       yield* emitEvent({
@@ -6309,6 +6315,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
     }
+    const demandSourceRunId =
+      command.manualContinuationOfRunId ??
+      automaticSourceRunId ??
+      command.delegatedCompletion?.parentRunId ??
+      command.demandSourceRunId;
+    // Undefined lets a person's steering message join the target demand; a new turn starts its own.
+    let incomingDemand: string | null | undefined;
+    if (demandSourceRunId !== undefined) {
+      incomingDemand =
+        projection.runs.find((run) => run.id === demandSourceRunId)?.demandId ?? null;
+    } else if (command.demandId !== undefined) {
+      incomingDemand = command.demandId;
+    } else if (command.scheduledTaskId !== undefined) {
+      incomingDemand = originalDemandId("occurrence", command.scheduledTaskId, command.messageId);
+    } else if (command.guestMessageId !== undefined) {
+      incomingDemand = originalDemandId("message", command.threadId, command.messageId);
+    } else if (!typedByPersonInClient(command)) {
+      incomingDemand = null;
+    }
     let dispatchMode = resolveMessageDispatchIntent(
       projection,
       command.dispatchMode,
@@ -6317,6 +6342,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (dispatchMode.type === "steer_active" || dispatchMode.type === "restart_active") {
       const targetRunId = dispatchMode.targetRunId;
       const target = projection.runs.find((run) => run.id === targetRunId);
+      if (target !== undefined) {
+        const targetDemand = target.demandId ?? null;
+        if (incomingDemand === undefined) incomingDemand = targetDemand;
+        else if (incomingDemand !== targetDemand) dispatchMode = { type: "queue_after_active" };
+      }
       const turn = latestProviderTurnForAttempt(
         projection.providerTurns.filter((candidate) => candidate.nodeId === target?.rootNodeId),
         target?.activeAttemptId,
@@ -6459,6 +6489,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       if (
         active !== undefined &&
+        (active.demandId ?? null) === incomingDemand &&
         activeTurn !== undefined &&
         providerThread?.providerSessionId != null &&
         (activeMessage === undefined || !isNativeMaintenanceCommand(activeMessage))
@@ -6616,21 +6647,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       steerRunId !== null && (yield* stopReachedRun(command, command.threadId, steerRunId))
         ? projection.runs.find((run) => run.id === steerRunId)
         : undefined;
-    const demandSourceRunId =
-      command.manualContinuationOfRunId ??
-      automaticSourceRunId ??
-      command.delegatedCompletion?.parentRunId ??
-      command.demandSourceRunId;
-    const originDemand = () => {
-      if (demandSourceRunId !== undefined)
-        return projection.runs.find((run) => run.id === demandSourceRunId)?.demandId ?? null;
-      if (command.demandId !== undefined) return command.demandId;
-      if (command.scheduledTaskId !== undefined)
-        return originalDemandId("occurrence", command.scheduledTaskId, command.messageId);
-      if (typedByPersonInClient(command) || command.guestMessageId !== undefined)
-        return originalDemandId("message", command.threadId, command.messageId);
-      return null;
-    };
+    const demandId =
+      incomingDemand === undefined
+        ? originalDemandId("message", command.threadId, command.messageId)
+        : incomingDemand;
     const queueBehindRun = activeRun ?? worktreeMissingRun ?? stoppedSteerRun;
     const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
     const startsOrQueuesRun =
@@ -6778,7 +6798,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(crossProviderFailoverFrom === undefined ? {} : { crossProviderFailoverFrom }),
         providerThreadId: queuedProviderThread.id,
         userMessageId: command.messageId,
-        demandId: originDemand(),
+        demandId,
         rootNodeId,
         activeAttemptId: attemptId,
         status: "queued",
@@ -7139,7 +7159,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(crossProviderFailoverFrom === undefined ? {} : { crossProviderFailoverFrom }),
         providerThreadId,
         userMessageId: command.messageId,
-        demandId: originDemand(),
+        demandId,
         rootNodeId,
         activeAttemptId: attemptId,
         status: dispatchMode.type === "defer_start" ? "preparing" : "starting",
@@ -7890,7 +7910,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       modelSelection,
       providerThreadId: providerThread.id,
       userMessageId: command.messageId,
-      demandId: originDemand(),
+      demandId,
       rootNodeId,
       activeAttemptId: attemptId,
       status: "starting",
@@ -10472,8 +10492,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             dispatchMode = { type: "steer_active", targetRunId: activeRun.id };
           }
         }
+        const sourceRunId = approvalTurnItem?.runId ?? requestNode?.runId;
         const answer = {
           type: "message.dispatch" as const,
+          ...(sourceRunId == null ? { demandId: null } : { demandSourceRunId: sourceRunId }),
           commandId: command.commandId,
           threadId: command.threadId,
           messageId: MessageId.make(`async-answer:${command.requestId}`),
@@ -10833,6 +10855,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         targetRunId: stops ? target.id : undefined,
         reason: "Stopped to apply /goal",
         now,
+      });
+    }
+    // A person can choose to use their queued message as input to the running turn.
+    // Machine work already belongs to its own demand, including an explicitly unknown owner.
+    if (
+      target !== undefined &&
+      (target.demandId ?? null) !== (queuedRun.demandId ?? null) &&
+      !(
+        typedByPersonInClient(queuedMessage) &&
+        (queuedRun.demandId === undefined ||
+          queuedRun.demandId === originalDemandId("message", command.threadId, queuedMessage.id))
+      )
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "This message has a different accounting owner and must run as a separate turn.",
       });
     }
     yield* emitEvent({

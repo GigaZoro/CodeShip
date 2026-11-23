@@ -2084,11 +2084,16 @@ const OrchestrationV2EventBase = Schema.Struct({
   occurredAt: Schema.DateTimeUtc,
 });
 
+// The create receipt precedes initial-message dispatch. Keep its owner only on that event.
+const initialLaunchDemand = {
+  initialDemandId: Schema.optional(Schema.NullOr(OrchestrationV2DemandId)),
+};
+
 export const OrchestrationV2DomainEvent = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
     type: Schema.Literal("thread.created"),
-    payload: OrchestrationV2AppThread,
+    payload: Schema.Struct({ ...OrchestrationV2AppThread.fields, ...initialLaunchDemand }),
   }),
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
@@ -3038,7 +3043,7 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
     type: Schema.Literal("thread.created"),
-    payload: OrchestrationV2AppThreadJson,
+    payload: Schema.Struct({ ...OrchestrationV2AppThreadJson.fields, ...initialLaunchDemand }),
   }),
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
@@ -4011,8 +4016,10 @@ type LaunchCommand = Extract<
   OrchestrationV2Command,
   { readonly type: "message.dispatch" | "delegated_task.request" }
 >;
+type CreateThreadCommand = Extract<OrchestrationV2Command, { readonly type: "thread.create" }>;
 export type OrchestrationV2ServerCommand =
-  | Exclude<OrchestrationV2Command, LaunchCommand>
+  | Exclude<OrchestrationV2Command, LaunchCommand | CreateThreadCommand>
+  | (CreateThreadCommand & { readonly initialDemandId?: string | null })
   | (LaunchCommand & {
       readonly demandId?: string | null;
       readonly demandSourceRunId?: RunId;

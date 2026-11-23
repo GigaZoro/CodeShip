@@ -440,35 +440,44 @@ const make = Effect.gen(function* () {
         ),
         Effect.orElseSucceed(() => undefined),
       );
-      const taskId =
-        taskEvent?.event.type === "subagent.updated" ? taskEvent.event.payload.id : existing?.id;
-      if (taskId === undefined) {
+      const recordedTask =
+        taskEvent?.event.type === "subagent.updated" ? taskEvent.event.payload : existing;
+      if (recordedTask === undefined) {
         return yield* new OrchestratorMcpFailure({
           code: "orchestration_error",
           message: "The delegated task was not recorded.",
         });
       }
+      const taskId = recordedTask.id;
       // A replayed request whose task already has its result (its thread was found gone, or it
       // ended) has nothing to launch.
       if (taskEvent === undefined && existing?.result != null) return { taskId };
+      const recordedDemandId =
+        parent.runs.find((run) => run.id === recordedTask.runId)?.demandId ?? null;
       const launched = yield* forwarding
-        .call(scope, ProjectToolkit.tools.t3_thread_launch, target.environmentId, {
-          ...where,
-          title: input.title ?? parent.thread.title,
-          modelSelection,
-          ...(runtimeMode === undefined ? {} : { runtimeMode }),
-          ...(interactionMode === undefined ? {} : { interactionMode }),
-          ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
-          message: task,
-          clientRequestId: yield* composedKey("delegate", scope.thread.threadId, key),
-          launchId: remoteThreadId,
-          // The thread there shows it is this thread's subagent, with a way back.
-          delegatedFrom: {
-            environmentId: hereId,
-            threadId: parent.thread.id,
-            title: parent.thread.title,
+        .call(
+          scope,
+          ProjectToolkit.tools.t3_thread_launch,
+          target.environmentId,
+          {
+            ...where,
+            title: input.title ?? parent.thread.title,
+            modelSelection,
+            ...(runtimeMode === undefined ? {} : { runtimeMode }),
+            ...(interactionMode === undefined ? {} : { interactionMode }),
+            ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+            message: task,
+            clientRequestId: yield* composedKey("delegate", scope.thread.threadId, key),
+            launchId: remoteThreadId,
+            // The thread there shows it is this thread's subagent, with a way back.
+            delegatedFrom: {
+              environmentId: hereId,
+              threadId: parent.thread.id,
+              title: parent.thread.title,
+            },
           },
-        })
+          recordedDemandId,
+        )
         .pipe(
           Effect.filterOrElse(
             (result) => result.threadId === remoteThreadId,

@@ -304,12 +304,13 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             )?.supportedRuntimeModes,
           });
         }
-        // A new thread owns no attachments yet, even on a replay: a replay claims again and
-        // keeps the copies its first launch accepted.
+        // On replay ThreadLaunchService reads the owner from its create receipt, even if
+        // it still has to send the initial message.
         const demandId =
           replaying || (input.message === undefined && !input.attachments?.length)
             ? null
             : yield* callerDemand(context, input.demandOrigin);
+        // Reclaim on replay and keep the attachment copies the first launch accepted.
         const requested = input.attachments ?? [];
         const result = yield* withResolvedAttachments(
           { requested, owned: [], context },

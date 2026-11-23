@@ -230,7 +230,7 @@ export const explicitDemand = Effect.fn("mcp.explicitDemand")(function* (
 });
 
 export const callerDemand = Effect.fn("mcp.callerDemand")(function* (
-  context: Caller,
+  context: Pick<Caller, "scope" | "threads" | "caller">,
   origin?: OrchestrationV2DemandOrigin,
 ) {
   if (origin !== undefined) return yield* explicitDemand(context, origin);

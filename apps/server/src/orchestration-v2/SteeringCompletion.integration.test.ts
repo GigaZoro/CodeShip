@@ -394,6 +394,12 @@ it.effect.each(
         ]);
         assert.equal(steerCalls, timing === "during delivery" ? 1 : 0);
         const final = yield* orchestrator.getThreadProjection(threadId);
+        const original = final.runs.find((run) => run.id === first.runId)!;
+        assert.isString(original.demandId);
+        assert.equal(
+          final.runs.find((run) => run.id === started[1]?.runId)?.demandId,
+          original.demandId,
+        );
         if (!mailbox) {
           assert.equal(
             final.turnItems.find(
@@ -709,6 +715,76 @@ it.effect("sends a selected held message once and preserves the remaining queue 
           })
           .pipe(Effect.flip);
         assert.equal(duplicate._tag, "OrchestratorDispatchError");
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
+it.effect("a busy run takes steering only from its own demand", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { started, steered, interrupted, layer, startFirstTurn } =
+        yield* nextTurnSelectionHarness("steering-demand", true);
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = yield* startFirstTurn;
+        const [first] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+        assert.isString(first!.demandId);
+        const send = (
+          text: string,
+          demandId: string | null,
+          mode: "steer_active" | "restart_active",
+        ) =>
+          orchestrator.dispatch({
+            type: "message.dispatch",
+            threadId,
+            commandId: CommandId.make(text),
+            messageId: MessageId.make(`message:${text}`),
+            text,
+            attachments: [],
+            dispatchMode: { type: mode, targetRunId: first!.id },
+            demandId,
+            createdBy: "agent",
+            creationSource: "mcp",
+          });
+        const other = `demand:${"2".repeat(64)}`;
+        yield* send("other", other, "steer_active");
+        yield* send("other", other, "steer_active");
+        yield* send("unknown", null, "restart_active");
+        yield* send("same", first!.demandId!, "steer_active");
+        yield* worker.drain();
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(
+          started.map((turn) => turn.runId),
+          [first!.id],
+        );
+        assert.deepEqual(steered, ["same"]);
+        assert.deepEqual(interrupted, []);
+        const queued = projection.runs.filter((run) => run.status === "queued");
+        assert.deepEqual(
+          queued.map((run) => [run.userMessageId, run.demandId]),
+          [
+            [MessageId.make("message:other"), other],
+            [MessageId.make("message:unknown"), null],
+          ],
+        );
+        const promotion = yield* orchestrator
+          .dispatch({
+            type: "queued-message.promote-to-steer",
+            commandId: CommandId.make("promote-other"),
+            threadId,
+            queuedRunId: queued[0]!.id,
+            targetRunId: first!.id,
+          })
+          .pipe(Effect.flip);
+        assert.equal(promotion._tag, "OrchestratorDispatchError");
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (run) => run.id === queued[0]!.id,
+          )?.status,
+          "queued",
+        );
       }).pipe(Effect.provide(layer));
     }),
   ),

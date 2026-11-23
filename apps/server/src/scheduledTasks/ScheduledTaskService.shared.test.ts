@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import {
+  EnvironmentId,
   OrchestratorMcpFailure,
   ProjectId,
   ProviderDriverKind,
@@ -23,8 +24,10 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vite-plus/test";
 
 import { UpdateDrain } from "../cloud/updateDrain.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -142,6 +145,7 @@ const withService = <A, E>(
   ) => Effect.Effect<A, E>,
   projects: ReadonlyArray<TestSharedProject> = [repoProject, plainProject],
   extras: {
+    readonly environmentId?: EnvironmentId;
     readonly peerCheck?: Layer.Layer<SharedTaskPeerCheck.SharedTaskPeerCheck>;
     readonly launch?: ThreadLaunchService.ThreadLaunchService["Service"]["launch"];
     readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
@@ -174,6 +178,11 @@ const withService = <A, E>(
           MemoryAdmission.layerTest(),
           ManagedPolicy.layerTest(),
           layerSharedTaskDependencies(projects, extras.peerCheck, extras.runConditionCheck),
+          extras.environmentId === undefined
+            ? Layer.empty
+            : Layer.mock(ServerEnvironment.ServerEnvironmentIdentity)({
+                getEnvironmentId: Effect.succeed(extras.environmentId),
+              }),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)(
             extras.launch === undefined ? {} : { launch: extras.launch },
           ),
@@ -973,7 +982,7 @@ const runScenario = <A, E>(
   body: (scenario: {
     readonly service: ScheduledTaskService.ScheduledTaskService["Service"];
     readonly sql: SqlClient.SqlClient;
-    readonly launches: Queue.Queue<unknown>;
+    readonly launches: Queue.Queue<ThreadLaunchService.ThreadLaunchInput>;
     readonly peerCalls: Ref.Ref<
       ReadonlyArray<{ peers: ReadonlyArray<string>; occurrence: string; since: string }>
     >;
@@ -991,10 +1000,13 @@ const runScenario = <A, E>(
   /** Gives the task a run condition, counting the checks run here. */
   checks?: Ref.Ref<number>,
   checkAnswer: ScheduledTaskRunCheck = { outcome: "run", failure: null, exitCode: 0, detail: null },
-  threadManagement?: Partial<ThreadManagementService.ThreadManagementService["Service"]>,
+  environment: {
+    readonly environmentId?: EnvironmentId;
+    readonly threadManagement?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
+  } = {},
 ) =>
   Effect.gen(function* () {
-    const launches = yield* Queue.unbounded<unknown>();
+    const launches = yield* Queue.unbounded<ThreadLaunchService.ThreadLaunchInput>();
     const peerCalls = yield* Ref.make<
       ReadonlyArray<{ peers: ReadonlyArray<string>; occurrence: string; since: string }>
     >([]);
@@ -1104,7 +1116,7 @@ const runScenario = <A, E>(
                 run: () => Ref.update(checks, (n) => n + 1).pipe(Effect.as(checkAnswer)),
               }),
             }),
-        ...(threadManagement === undefined ? {} : { threadManagement }),
+        ...environment,
       },
     );
   });
@@ -1735,7 +1747,7 @@ it.effect("a machine waiting its turn stops its own last-run chat once it stalle
       undefined,
       undefined,
       undefined,
-      threadManagement,
+      { threadManagement },
     );
   }),
 );
@@ -1981,6 +1993,101 @@ it.effect.each([
         expect(yield* Ref.get(scenario.peerCalls)).toHaveLength(answers.length);
       }),
     ),
+);
+
+it.effect(
+  "a one-machine fixed-time takeover keeps the demand of the same local slot across zones",
+  () =>
+    Effect.gen(function* () {
+      const schedule = { type: "fixed_time", timeOfDay: "09:00" };
+      vi.stubEnv("TZ", "Europe/Kyiv");
+      const initial = yield* runScenario(
+        [OTHER, HERE_ENVIRONMENT_ID],
+        NO_RUN_THERE,
+        (scenario) =>
+          Effect.gen(function* () {
+            const due = (yield* nextRunAtOf(scenario.sql))!;
+            expect(due).toBe("2026-09-10T06:00:00.000Z");
+            yield* scenario.tick(Date.parse(due) + 1_000);
+            const launch = yield* Queue.take(scenario.launches);
+            expect(yield* Ref.get(scenario.peerClaims)).toEqual(["2026-09-10T09:00"]);
+            return launch.initialMessage?.demandId;
+          }),
+        schedule,
+        undefined,
+        undefined,
+        { environmentId: EnvironmentId.make(OTHER) },
+      );
+      expect(initial).toBeTypeOf("string");
+
+      vi.stubEnv("TZ", "UTC");
+      yield* runScenario(
+        [OTHER, HERE_ENVIRONMENT_ID],
+        [WORKING_THERE, NO_RUN_THERE],
+        (scenario) =>
+          Effect.gen(function* () {
+            expect(yield* nextRunAtOf(scenario.sql)).toBe("2026-09-10T09:00:00.000Z");
+            yield* Ref.set(scenario.peerCopies, new Map([[OTHER, OTHER]]));
+            yield* Ref.set(scenario.failed, new Set([OTHER]));
+            yield* fireWhenDue(scenario);
+            yield* fireWhenDue(scenario);
+            yield* scenario.tick(Date.parse((yield* nextRunAtOf(scenario.sql))!) + 1_000);
+            const launch = yield* Queue.take(scenario.launches);
+            expect(yield* Ref.get(scenario.peerClaims)).toEqual([
+              "2026-09-10T09:00",
+              "2026-09-10T09:00",
+            ]);
+            expect(launch.initialMessage?.demandId).toBe(initial);
+          }),
+        schedule,
+      );
+    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs()))),
+);
+
+it.effect.each(["unshared", "every"] as const)(
+  "an independently fired %s task has its own demand on each environment",
+  (sharing) =>
+    Effect.gen(function* () {
+      const fire = (environmentId: EnvironmentId) =>
+        Effect.gen(function* () {
+          const started = yield* Deferred.make<string | null | undefined>();
+          const activated = yield* Deferred.make<void>();
+          return yield* withService(
+            (service) =>
+              Effect.gen(function* () {
+                const { task } = yield* service.upsert(
+                  upsertInput({
+                    shared:
+                      sharing === "unshared"
+                        ? null
+                        : { runOn: "every", excludedEnvironmentIds: [] },
+                    schedule: { type: "once", runAt: iso(DUE) },
+                  }),
+                  ScheduledTaskService.CHANGED_IN_APP,
+                );
+                expect(task.nextRunAt).toBe(iso(DUE));
+                yield* TestClock.setTime(DUE);
+                yield* Deferred.succeed(activated, undefined);
+                yield* TestClock.adjust("6 seconds");
+                return yield* Deferred.await(started);
+              }),
+            [],
+            {
+              environmentId,
+              activation: Deferred.await(activated),
+              launch: (input) =>
+                Deferred.succeed(started, input.initialMessage?.demandId).pipe(
+                  Effect.as({ threadId: ThreadId.make("thread-independent") } as never),
+                ),
+            },
+          );
+        });
+      const here = yield* fire(HERE_ENVIRONMENT_ID);
+      const other = yield* fire(EnvironmentId.make(OTHER));
+      expect(here).toBeTypeOf("string");
+      expect(other).toBeTypeOf("string");
+      expect(other).not.toBe(here);
+    }),
 );
 
 // A holder still claiming or starting its run has none in its list yet, like one whose run failed.

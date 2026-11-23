@@ -684,6 +684,8 @@ it.effect("sending attachments copies one from the caller's thread into the targ
     name: "screenshot.png",
     sizeBytes: 3,
   });
+  const sendingRun = RunId.make("run:attachment-owner");
+  const sourceDemand = `demand:${"d".repeat(64)}`;
   const sent: Array<ReadonlyArray<ChatAttachment>> = [];
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -724,10 +726,21 @@ it.effect("sending attachments copies one from the caller's thread into the targ
         Layer.provide(Layer.mock(ServerSecretStore.ServerSecretStore)({})),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
-            getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
+            getThreadShell: (id) =>
+              Effect.succeed({
+                ...McpToolAccessTestkit.liveThreadShell(id),
+                activeRunId: id === threadId ? sendingRun : null,
+              }),
             getThreadRecords: (id) =>
               Effect.succeed({
                 messages: [{ attachments: id === threadId ? [callers] : [] }],
+                runs: [
+                  {
+                    id: sendingRun,
+                    providerInstanceId: scope.thread!.providerInstanceId,
+                    demandId: sourceDemand,
+                  },
+                ],
               } as never),
             getProjectThreadRecords: () =>
               Effect.succeed({
@@ -736,6 +749,7 @@ it.effect("sending attachments copies one from the caller's thread into the targ
               } as never),
             sendToThread: (input) =>
               Effect.sync(() => {
+                expect(input.demandId).toBe(sourceDemand);
                 sent.push(input.attachments);
                 return {
                   message: { attachments: input.attachments },
