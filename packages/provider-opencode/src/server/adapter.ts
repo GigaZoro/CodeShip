@@ -1938,14 +1938,21 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           return true;
         });
 
+        const takeSettledRequest = (nativeRequestId: string) => {
+          rememberSettledRequest(nativeRequestId);
+          const pending = pendingRequestsByNativeId.get(nativeRequestId);
+          if (pending !== undefined) {
+            pendingRequests.delete(String(pending.requestId));
+            pendingRequestsByNativeId.delete(nativeRequestId);
+          }
+          return pending;
+        };
+
         const resolveRuntimeRequest = Effect.fnUntraced(function* (
-          nativeRequestId: string,
+          pending: PendingOpenCodeRequest | undefined,
           status: "resolved" | "cancelled",
         ) {
-          const pending = pendingRequestsByNativeId.get(nativeRequestId);
           if (pending === undefined) return;
-          pendingRequests.delete(String(pending.requestId));
-          pendingRequestsByNativeId.delete(nativeRequestId);
           const now = yield* DateTime.now;
           const current = pending.state.runtimeRequests.get(String(pending.requestId));
           if (current !== undefined) {
@@ -1976,7 +1983,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               countsForRun: false,
               providerThreadId: pending.state.providerThread.id,
               providerTurnId: pending.turn.providerTurnId,
-              nativeItemRef: providerRef(nativeRequestId),
+              nativeItemRef: providerRef(pending.nativeRequestId),
               runtimeRequestId: pending.requestId,
               checkpointScopeId: null,
               startedAt: pending.createdAt,
@@ -2156,8 +2163,10 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               pending.turn.providerTurnId === turn.providerTurnId ||
               pending.nativeSessionId === state.nativeSessionId
             ) {
-              rememberSettledRequest(pending.nativeRequestId);
-              yield* resolveRuntimeRequest(pending.nativeRequestId, "cancelled");
+              yield* resolveRuntimeRequest(
+                takeSettledRequest(pending.nativeRequestId),
+                "cancelled",
+              );
             }
           }
           yield* emitProviderTurn(state, turn, status, completedAt);
@@ -2633,6 +2642,12 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
         });
 
         const handleEvent = Effect.fnUntraced(function* (event: OpenCodeEvent) {
+          const settledRequest =
+            event.type === "permission.replied" ||
+            event.type === "question.replied" ||
+            event.type === "question.rejected"
+              ? takeSettledRequest(event.properties.requestID)
+              : undefined;
           const requestTurns =
             event.type === "permission.asked" || event.type === "question.asked"
               ? requestTurnsAtReceipt()
@@ -2700,12 +2715,10 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               return;
             case "permission.replied":
             case "question.replied":
-              rememberSettledRequest(event.properties.requestID);
-              yield* resolveRuntimeRequest(event.properties.requestID, "resolved");
+              yield* resolveRuntimeRequest(settledRequest, "resolved");
               return;
             case "question.rejected":
-              rememberSettledRequest(event.properties.requestID);
-              yield* resolveRuntimeRequest(event.properties.requestID, "cancelled");
+              yield* resolveRuntimeRequest(settledRequest, "cancelled");
               return;
             case "session.created":
             case "session.updated": {
