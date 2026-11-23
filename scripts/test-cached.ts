@@ -11,7 +11,12 @@ import {
 } from "./lib/command-line.ts";
 
 import { localVitePlusCommand } from "./check-changed-command.ts";
-import { matchesTestPath, relativeTestPath, testPathResolver } from "./lib/cached-tests.ts";
+import {
+  matchesTestPath,
+  missingVitePlusTestEnv,
+  relativeTestPath,
+  testPathResolver,
+} from "./lib/cached-tests.ts";
 import { shardedTestFiles, validateShard } from "./lib/sharded-tests.ts";
 
 const root = NodePath.resolve(import.meta.dirname, "..");
@@ -56,15 +61,34 @@ if (import.meta.main) {
     );
     process.exit(0);
   }
-  const candidates = values.shard
-    ? (await shardedTestFiles(NodePath.resolve(positionals[0]!), values.shard)).map((file) =>
-        relativeTestPath(root, file),
-      )
-    : NodeChildProcess.execFileSync(
-        "git",
-        ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-        { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
-      ).split("\0");
+  let candidates: string[];
+  if (values.shard) {
+    // Only discovery runs in this Node process. The task launcher supplies its own runtime defaults.
+    const discoveryEnv = {
+      ...Object.fromEntries(missingVitePlusTestEnv()),
+      TEST: "true",
+      VITEST: "true",
+      NODE_ENV: process.env.NODE_ENV ?? "test",
+    };
+    const previous = Object.keys(discoveryEnv).map((name) => [name, process.env[name]] as const);
+    Object.assign(process.env, discoveryEnv);
+    try {
+      candidates = (await shardedTestFiles(NodePath.resolve(positionals[0]!), values.shard)).map(
+        (file) => relativeTestPath(root, file),
+      );
+    } finally {
+      for (const [name, value] of previous) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  } else {
+    candidates = NodeChildProcess.execFileSync(
+      "git",
+      ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+      { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    ).split("\0");
+  }
   const canonicalPath = testPathResolver(root);
   const resolveEntered = (path: string) =>
     canonicalPath(relativeTestPath(root, NodePath.resolve(path)));

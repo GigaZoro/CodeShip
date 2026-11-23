@@ -1,6 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off - the standalone runner uses Vitest's Node API.
 import * as NodePath from "node:path";
-import { createCLI, startVitest, type Reporter, type TestSpecification } from "vite-plus/test/node";
+import {
+  createCLI,
+  startVitest,
+  type Reporter,
+  type TestModule,
+  type TestSpecification,
+} from "vite-plus/test/node";
 import { validateNestedVitestOptions } from "./cached-vitest-options.ts";
 
 async function runCachedTestGroup(argv: string[]) {
@@ -18,13 +24,15 @@ async function runCachedTestGroup(argv: string[]) {
   if (!files.length) throw new Error("A cached test group requires at least one test file");
   const requested = new Set(files.map((file) => NodePath.resolve(file)));
   validateNestedVitestOptions(packageArgs, cli);
-  const { args, options } = cli.parse([process.execPath, "vitest", "run", ...packageArgs], {
-    run: false,
-  });
+  const { args: filters, options } = cli.parse(
+    [process.execPath, "vitest", "run", ...packageArgs],
+    {
+      run: false,
+    },
+  );
   if (!cli.matchedCommand) throw new Error("The package test command must run tests");
   cli.matchedCommand.checkUnknownOptions();
   cli.matchedCommand.checkOptionValue();
-  const filters: string[] = [...args, ...(options["--"] ?? [])];
 
   // The Vitest CLI treats --exclude as additional to the project's configured excludes.
   if (options.exclude) {
@@ -34,26 +42,35 @@ async function runCachedTestGroup(argv: string[]) {
   if (filters.some((filter) => filter.includes(":"))) options.includeTaskLocation ??= true;
   if (typeof options.typecheck?.only === "boolean") options.typecheck.enabled ??= true;
 
-  let scheduled: ReadonlyArray<TestSpecification> = [];
+  const identity = (spec: TestSpecification) =>
+    JSON.stringify([spec.project.name, spec.moduleId, spec.pool]);
+  let scheduled: string[] = [];
+  const active = new Map<string, string>();
+  const finished = new Set<string>();
+  let ambiguousModule: string | undefined;
   let completed = false;
   const member = (file: string) => requested.has(NodePath.resolve(file));
+  function observeModule(module: TestModule) {
+    const spec = module.toTestSpecification();
+    const key = identity(spec);
+    const previous = active.get(spec.taskId);
+    // Vitest routes worker results by a hash. While two live specs share that hash,
+    // even a terminal reporter event cannot identify which worker produced it.
+    if (previous !== undefined && previous !== key) ambiguousModule ??= spec.moduleId;
+    finished.delete(key);
+    active.set(spec.taskId, key);
+  }
   const observer: Reporter = {
     onInit(vitest) {
-      for (const project of vitest.projects) {
-        // Retain the project's globs, CLI filters and separate typecheck pool. Restrict
-        // discovery before Vitest starts global setup or schedules any file in the group.
-        const discover = project.globTestFiles.bind(project);
-        project.globTestFiles = async (filters) => {
-          const { testFiles, typecheckTestFiles } = await discover(filters);
-          return {
-            testFiles: testFiles.filter(member),
-            typecheckTestFiles: typecheckTestFiles.filter(member),
-          };
-        };
-      }
+      // Vitest 5's start() uses this manager directly. Its glob resolves every
+      // file:line filter before we narrow the specifications sent to the sequencer.
+      const discovery: Pick<typeof vitest, "globTestSpecifications"> = vitest["specifications"];
+      const discover = discovery.globTestSpecifications.bind(discovery);
+      discovery.globTestSpecifications = async (filters) =>
+        (await discover(filters)).filter((spec) => member(spec.moduleId));
     },
     onTestRunStart(specs) {
-      scheduled = specs;
+      scheduled = specs.map(identity);
       const found = new Set(specs.map((spec) => NodePath.resolve(spec.moduleId)));
       const missing = [...requested].filter((file) => !found.has(file));
       if (missing.length) throw new Error("Vitest did not discover: " + missing.join(", "));
@@ -61,19 +78,28 @@ async function runCachedTestGroup(argv: string[]) {
       if (extra.length)
         throw new Error("Unexpected test files in cache group: " + extra.join(", "));
     },
-    onTestRunEnd(modules, errors, reason) {
-      const finished = new Set(
-        modules.filter((module) => ["passed", "skipped"].includes(module.state())),
-      );
+    onTestModuleQueued: observeModule,
+    onTestModuleCollected: observeModule,
+    onTestModuleEnd(module) {
+      const spec = module.toTestSpecification();
+      const key = identity(spec);
+      if (active.get(spec.taskId) !== key) return;
+      active.delete(spec.taskId);
+      if (["passed", "skipped"].includes(module.state())) finished.add(key);
+      else finished.delete(key);
+    },
+    onTestRunEnd(_modules, errors, reason) {
       completed =
         reason === "passed" &&
         !errors.length &&
+        active.size === 0 &&
+        ambiguousModule === undefined &&
         scheduled.length > 0 &&
-        scheduled.every((spec) => spec.testModule !== undefined && finished.has(spec.testModule));
+        scheduled.every((key) => finished.has(key));
     },
   };
   const context = await startVitest(
-    filters,
+    [...filters],
     { ...options, run: true, watch: false },
     {
       plugins: [
@@ -92,6 +118,11 @@ async function runCachedTestGroup(argv: string[]) {
   );
   try {
     if (!process.exitCode && !completed) {
+      if (ambiguousModule !== undefined) {
+        throw new Error(
+          "Overlapping Vitest tasks shared a result ID while running " + ambiguousModule,
+        );
+      }
       throw new Error("Vitest did not complete the requested test group: " + files.join(", "));
     }
   } finally {

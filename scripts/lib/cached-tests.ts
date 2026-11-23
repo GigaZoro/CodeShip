@@ -3,6 +3,17 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
+// vp test supplies these defaults before Node loads Vitest, preserving even empty overrides.
+const vitePlusTestDefaults = {
+  JS_RUNTIME_NAME: process.release.name,
+  JS_RUNTIME_VERSION: process.versions.node,
+  NODE_PACKAGE_MANAGER: "vite-plus",
+};
+
+export function missingVitePlusTestEnv() {
+  return Object.entries(vitePlusTestDefaults).filter(([name]) => process.env[name] === undefined);
+}
+
 interface CachedTestTask {
   command: string;
   cwd?: string;
@@ -10,6 +21,7 @@ interface CachedTestTask {
   cache:
     | false
     | {
+        env: Array<string>;
         input: Array<string | { auto: true }>;
         output: Array<string>;
       };
@@ -126,6 +138,10 @@ export function cachedTestTasks(
     files.push(file);
   }
   const tasks: Record<string, CachedTestTask> = {};
+  const nodeCommand = [
+    ...missingVitePlusTestEnv().map(([name, value]) => `${name}=${quoteArgument(value)}`),
+    "node",
+  ].join(" ");
   const sorted = [...new Set(files)].sort();
   const packages = new Map<string, Array<string>>();
   for (const file of sorted) {
@@ -173,11 +189,12 @@ export function cachedTestTasks(
         return quoteArgument("./" + relative);
       });
       tasks[`test-cache:${key}`] = {
-        command: `node ${quoteArgument(runner)} ${filters.join(" ")} --${options}`,
+        command: `${nodeCommand} ${quoteArgument(runner)} ${filters.join(" ")} --${options}`,
         ...(directory === root ? {} : { cwd: relativeTestPath(root, directory) }),
         cache: uncached.includes(group[0]!)
           ? false
           : {
+              env: Object.keys(vitePlusTestDefaults),
               // Vitest reads and rewrites these caches while running otherwise unchanged tests.
               input: [
                 { auto: true },

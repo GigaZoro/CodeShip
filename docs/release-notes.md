@@ -15,6 +15,7 @@
 ## 2026-11-23 — Cached test results
 
 - The cached test runner applies the package’s Vitest configuration and checks that every selected file produced a result in each scheduled project before caching success.
+- Package filters and runtime settings follow `vp test run`. If overlapping projects produce results that Vitest cannot attribute to a single project, the runner reports an incomplete group and leaves it uncached.
 - A stale Git entry beneath a directory replaced by a file no longer interrupts selection of other tests.
 
 ## 2026-11-23 — Relay executable validation

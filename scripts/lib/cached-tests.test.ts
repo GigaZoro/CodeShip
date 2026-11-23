@@ -32,7 +32,9 @@ describe("cachedTestTasks", () => {
     expect(fileTasks[0]![1]).toMatchObject({
       cache: false,
       cwd: "apps/server",
-      command: "node '../../scripts/lib/run-cached-test-group.ts' './src/worker.test.ts' --",
+      command: expect.stringContaining(
+        "node '../../scripts/lib/run-cached-test-group.ts' './src/worker.test.ts' --",
+      ),
     });
   });
 
@@ -62,7 +64,7 @@ describe("cachedTestTasks", () => {
       JSON.stringify({ files: ["src/a'$(touch injected).test.ts"], groupSize: 1 }),
     );
     const task = Object.entries(tasks).find(([key]) => key !== "test-cache")![1];
-    expect(task.command).toBe(
+    expect(task.command).toContain(
       "node 'scripts/lib/run-cached-test-group.ts' './src/a'\"'\"'$(touch injected).test.ts' --",
     );
   });
@@ -80,9 +82,10 @@ describe("cachedTestTasks", () => {
   it("accepts spec files discovered by Vitest", () => {
     const tasks = cachedTestTasks(JSON.stringify({ files: ["src/example.spec.ts"], groupSize: 1 }));
     expect(
-      Object.values(tasks).some(
-        (task) =>
-          task.command === "node 'scripts/lib/run-cached-test-group.ts' './src/example.spec.ts' --",
+      Object.values(tasks).some((task) =>
+        task.command.endsWith(
+          "node 'scripts/lib/run-cached-test-group.ts' './src/example.spec.ts' --",
+        ),
       ),
     ).toBe(true);
   });
@@ -95,6 +98,7 @@ describe("cachedTestTasks", () => {
   const withFixture = async (
     body: (fixture: {
       directory: string;
+      runtimeEnv: NodeJS.ProcessEnv;
       write: (file: string, content: string) => Promise<void>;
       run: (files?: Array<string>, uncached?: Array<string>) => Promise<number | null>;
       cli: (...args: Array<string>) => Promise<NodeChildProcess.SpawnSyncReturns<string>>;
@@ -115,6 +119,11 @@ describe("cachedTestTasks", () => {
     const env = Object.fromEntries(
       Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")),
     );
+    const runtimeEnv: NodeJS.ProcessEnv = {
+      JS_RUNTIME_NAME: undefined,
+      JS_RUNTIME_VERSION: undefined,
+      NODE_PACKAGE_MANAGER: undefined,
+    };
     const git = (...args: Array<string>) =>
       NodeChildProcess.execFileSync("git", args, {
         cwd: directory,
@@ -127,8 +136,11 @@ describe("cachedTestTasks", () => {
         encoding: "utf8",
         env: {
           ...env,
+          ...runtimeEnv,
           // Each command must initialize Vitest's environment before loading the package config.
           TEST: undefined,
+          VITEST: undefined,
+          NODE_ENV: undefined,
           NODE_OPTIONS: "",
           VP_REMOTE_CACHE: "off",
           VITE_CACHE_PATH: NodePath.join(directory, "cache"),
@@ -211,7 +223,7 @@ describe("cachedTestTasks", () => {
       );
       await write("fixture.txt", "hello");
       git("init", "--quiet");
-      await body({ directory, write, run, cli, packageTest, hits, git });
+      await body({ directory, runtimeEnv, write, run, cli, packageTest, hits, git });
     } finally {
       await NodeFSP.rm(directory, { recursive: true, force: true });
     }
@@ -442,28 +454,61 @@ describe("cachedTestTasks", () => {
   const executionReceipt = (directory: string, file: string) =>
     NodeFSP.readFile(NodePath.join(directory, "pkg", file + ".ran"), "utf8");
 
-  it("refuses to cache a file when a configured project did not run it", () =>
-    withTestPackage("vp test run", async ({ write, cli, hits }) => {
-      await write(
-        "pkg/vite.config.ts",
-        `import {BaseSequencer} from "vite-plus/test/node";
+  it.each([
+    ["first", "second"],
+    // These project names give Vitest's file tasks the same internal ID.
+    ["Aa", "BB"],
+  ])(
+    "refuses to cache a file when only project %s ran and %s was skipped by the sequencer",
+    (first, second) =>
+      withTestPackage("vp test run --passWithNoTests", async ({ write, cli, hits }) => {
+        await write(
+          "pkg/vite.config.ts",
+          `import {BaseSequencer} from "vite-plus/test/node";
         class FirstOnly extends BaseSequencer {
-          sort(specs) { return specs.filter(spec => spec.project.name === "first"); }
+          sort(specs) { return specs.filter(spec => spec.project.name === ${JSON.stringify(first)}); }
         }
         export default {test:{sequence:{sequencer:FirstOnly},projects:[
-          {test:{name:"first",include:["*.test.ts"]}},
-          {test:{name:"second",include:["*.test.ts"]}}
+          {test:{name:${JSON.stringify(first)},include:["*.test.ts"]}},
+          {test:{name:${JSON.stringify(second)},include:["*.test.ts"]}}
         ]}};`,
-      );
-      await write("pkg/Shared.test.ts", recordExecution);
-      for (const result of [await cli("pkg/Shared.test.ts"), await cli("pkg/Shared.test.ts")]) {
-        expect(result.status, result.stdout + result.stderr).toBe(1);
-        expect(result.stdout + result.stderr).toContain(
-          "did not complete the requested test group",
         );
-      }
-      expect(await hits()).toBe(0);
-    }));
+        await write("pkg/Shared.test.ts", recordExecution);
+        for (const result of [await cli("pkg/Shared.test.ts"), await cli("pkg/Shared.test.ts")]) {
+          expect(result.status, result.stdout + result.stderr).toBe(1);
+          expect(result.stdout + result.stderr).toContain(
+            "did not complete the requested test group",
+          );
+        }
+        expect(await hits()).toBe(0);
+      }),
+  );
+
+  it("caches completed projects with colliding task IDs when each completion can be identified", () =>
+    withTestPackage(
+      "vp test run --no-file-parallelism",
+      async ({ directory, write, cli, hits }) => {
+        await write(
+          "pkg/vite.config.ts",
+          `export default {test:{projects:[
+        {test:{name:"Aa",sequence:{groupOrder:1}}},
+        {test:{name:"BB",sequence:{groupOrder:2}}}
+      ]}};`,
+        );
+        await write(
+          "pkg/Shared.test.ts",
+          'import {test} from "vite-plus/test"; import {writeFileSync} from "node:fs"; test("project", ({task}) => writeFileSync(task.file.projectName + ".ran", "ran"));',
+        );
+        const cold = await cli("pkg/Shared.test.ts");
+        expect(cold.status, cold.stdout + cold.stderr).toBe(0);
+        for (const name of ["Aa", "BB"])
+          expect(await executionReceipt(directory, name)).toBe("ran");
+        expect(await hits()).toBe(0);
+        const repeat = await cli("pkg/Shared.test.ts");
+        expect(repeat.status, repeat.stdout + repeat.stderr).toBe(0);
+        expect(await hits()).toBe(1);
+      },
+    ));
 
   it("applies both configured and command-line excludes before caching a requested file", () =>
     withTestPackage(
@@ -499,6 +544,91 @@ describe("cachedTestTasks", () => {
         code: "ENOENT",
       });
     }));
+
+  it("keeps trailing package arguments out of Vitest's file filters", () =>
+    withTestPackage(
+      "vp test run First.test.ts -- Second.test.ts",
+      async ({ directory, write, packageTest, cli, hits }) => {
+        await write("pkg/First.test.ts", recordExecution);
+        await write("pkg/Second.test.ts", recordExecution);
+        const ordinary = packageTest("pkg", "First.test.ts", "--", "Second.test.ts");
+        expect(ordinary.status, ordinary.stdout + ordinary.stderr).toBe(0);
+        expect(await executionReceipt(directory, "First.test.ts")).toBe("ran");
+        const outside = await cli("pkg/Second.test.ts");
+        expect(outside.status, outside.stdout + outside.stderr).toBe(1);
+        await expect(executionReceipt(directory, "Second.test.ts")).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+        expect(await hits()).toBe(0);
+      },
+    ));
+
+  it("validates package file-and-line filters before selecting one cache group", () =>
+    withTestPackage(
+      "vp test run First.test.ts:2 Second.test.ts:2",
+      async ({ directory, write, packageTest, cli }) => {
+        const test =
+          'import {test} from "vite-plus/test"; import {writeFileSync} from "node:fs";\ntest("selected line", () => writeFileSync(import.meta.filename + ".ran", "ran"));\ntest("other line", () => { throw new Error("unselected line ran") });';
+        for (const file of ["First.test.ts", "Second.test.ts"]) await write("pkg/" + file, test);
+        const ordinary = packageTest("pkg", "First.test.ts:2", "Second.test.ts:2");
+        expect(ordinary.status, ordinary.stdout + ordinary.stderr).toBe(0);
+        for (const file of ["First.test.ts", "Second.test.ts"]) {
+          expect(await executionReceipt(directory, file)).toBe("ran");
+          await NodeFSP.unlink(NodePath.join(directory, "pkg", file + ".ran"));
+        }
+        const result = await cli("pkg/First.test.ts");
+        expect(result.status, result.stdout + result.stderr).toBe(0);
+        expect(await executionReceipt(directory, "First.test.ts")).toBe("ran");
+        await expect(executionReceipt(directory, "Second.test.ts")).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      },
+    ));
+
+  it("loads the package config with the same runtime environment as vp test", () =>
+    withTestPackage(
+      "vp test run",
+      async ({ directory, runtimeEnv, write, packageTest, cli, hits }) => {
+        await write(
+          "pkg/vite.config.ts",
+          `import {writeFileSync} from "node:fs";
+        const {JS_RUNTIME_NAME, JS_RUNTIME_VERSION, NODE_PACKAGE_MANAGER} = process.env;
+        writeFileSync("runtime.json", JSON.stringify([JS_RUNTIME_NAME, JS_RUNTIME_VERSION, NODE_PACKAGE_MANAGER]));
+        const ready = NODE_PACKAGE_MANAGER !== undefined && process.env.TEST === "true" && process.env.VITEST === "true" && process.env.NODE_ENV === "test";
+        export default {test:{include:ready ? ["*.test.ts"] : []}};`,
+        );
+        await write("pkg/Selected.test.ts", recordExecution);
+        const runtimeFile = NodePath.join(directory, "pkg/runtime.json");
+        const ordinary = packageTest("pkg", "Selected.test.ts");
+        expect(ordinary.status, ordinary.stdout + ordinary.stderr).toBe(0);
+        const runtime = JSON.parse(await NodeFSP.readFile(runtimeFile, "utf8"));
+        expect(runtime).toEqual(["node", expect.stringMatching(/^\d+\./), "vite-plus"]);
+        await NodeFSP.unlink(runtimeFile);
+        await NodeFSP.unlink(NodePath.join(directory, "pkg/Selected.test.ts.ran"));
+        const result = await cli("pkg/Selected.test.ts");
+        expect(result.status, result.stdout + result.stderr).toBe(0);
+        expect(JSON.parse(await NodeFSP.readFile(runtimeFile, "utf8"))).toEqual(runtime);
+        expect(await executionReceipt(directory, "Selected.test.ts")).toBe("ran");
+        const shardReport = NodePath.join(directory, "shard-report.json");
+        const shard = await cli("--shard", "1/1", "pkg", "--report", shardReport);
+        expect(shard.status, shard.stdout + shard.stderr).toBe(0);
+        expect(JSON.parse(await NodeFSP.readFile(shardReport, "utf8")).files).toEqual([
+          "pkg/Selected.test.ts",
+        ]);
+        runtimeEnv.JS_RUNTIME_NAME = "";
+        runtimeEnv.JS_RUNTIME_VERSION = "custom version";
+        runtimeEnv.NODE_PACKAGE_MANAGER = "custom manager";
+        const overridden = packageTest("pkg", "Selected.test.ts");
+        expect(overridden.status, overridden.stdout + overridden.stderr).toBe(0);
+        const expected = JSON.parse(await NodeFSP.readFile(runtimeFile, "utf8"));
+        expect(expected).toEqual(["", "custom version", "custom manager"]);
+        await NodeFSP.unlink(runtimeFile);
+        const changed = await cli("pkg/Selected.test.ts");
+        expect(changed.status, changed.stdout + changed.stderr).toBe(0);
+        expect(await hits()).toBe(0);
+        expect(JSON.parse(await NodeFSP.readFile(runtimeFile, "utf8"))).toEqual(expected);
+      },
+    ));
 
   it("rejects an unknown nested Vitest option before running a cached test", () =>
     withTestPackage("vp test run --sequence.shufle=true", async ({ directory, write, cli }) => {
