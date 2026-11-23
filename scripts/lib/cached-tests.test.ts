@@ -92,6 +92,7 @@ describe("cachedTestTasks", () => {
       directory: string;
       write: (file: string, content: string) => Promise<void>;
       run: (files?: Array<string>, uncached?: Array<string>) => Promise<number | null>;
+      cli: (...args: Array<string>) => Promise<NodeChildProcess.SpawnSyncReturns<string>>;
       hits: () => Promise<number>;
     }) => Promise<void>,
   ) => {
@@ -99,6 +100,35 @@ describe("cachedTestTasks", () => {
     const root = NodePath.resolve(import.meta.dirname, "../..");
     const write = (file: string, content: string) =>
       NodeFSP.writeFile(NodePath.join(directory, file), content);
+    const cli = async (...args: Array<string>) => {
+      const scripts = NodePath.join(directory, "scripts");
+      await NodeFSP.mkdir(scripts, { recursive: true });
+      for (const name of ["test-cached.ts", "check-changed-command.ts"]) {
+        await NodeFSP.copyFile(NodePath.join(root, "scripts", name), NodePath.join(scripts, name));
+      }
+      await NodeFSP.symlink(import.meta.dirname, NodePath.join(scripts, "lib"), "junction");
+      await write(".gitignore", "node_modules/\ncache/\nscripts/\n");
+      const env = Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")),
+      );
+      NodeChildProcess.execFileSync("git", ["init", "--quiet", directory], { env });
+      return NodeChildProcess.spawnSync(
+        process.execPath,
+        [NodePath.join(scripts, "test-cached.ts"), ...args],
+        {
+          cwd: directory,
+          encoding: "utf8",
+          env: {
+            ...env,
+            NODE_OPTIONS: "",
+            VP_REMOTE_CACHE: "off",
+            VITE_CACHE_PATH: NodePath.join(directory, "cache"),
+            PATH: `${NodePath.join(root, "node_modules/.bin")}${NodePath.delimiter}${process.env.PATH}`,
+          },
+          timeout: 30_000,
+        },
+      );
+    };
     const run = (files = ["a.test.ts", "b.test.ts"], uncached: Array<string> = []) =>
       new Promise<number | null>((resolve, reject) => {
         const child = NodeChildProcess.spawn(
@@ -147,11 +177,57 @@ describe("cachedTestTasks", () => {
         'import {test,expect} from "vite-plus/test"; test("independent",()=>expect(1).toBe(1));',
       );
       await write("fixture.txt", "hello");
-      await body({ directory, write, run, hits });
+      await body({ directory, write, run, cli, hits });
     } finally {
       await NodeFSP.rm(directory, { recursive: true, force: true });
     }
   };
+
+  it("dispatches a dash-prefixed test path as the only Vitest filter", () =>
+    withFixture(async ({ write, cli }) => {
+      await write("a.test.ts", 'throw new Error("Unselected sibling was run");');
+      await write(
+        "--literal-path.test.ts",
+        'import {test} from "vite-plus/test"; test("selected", () => {});',
+      );
+      const result = await cli("--", "--", "--literal-path.test.ts");
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+    }));
+
+  it("selects a path and applies its cache exception using the filesystem's case rules", () =>
+    withFixture(async ({ directory, write, cli }) => {
+      await write(
+        "Choice.test.ts",
+        'import {test} from "vite-plus/test"; test("first spelling", () => {});',
+      );
+      const alternate = "CHOICE.TEST.TS";
+      const caseInsensitive = await NodeFSP.access(NodePath.join(directory, alternate)).then(
+        () => true,
+        () => false,
+      );
+      if (!caseInsensitive) {
+        await write(
+          "choice.test.ts",
+          'throw new Error("Distinct case-sensitive sibling was run");',
+        );
+      }
+      const selected = caseInsensitive ? alternate : "Choice.test.ts";
+      const result = await cli("--uncached", selected, selected);
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      const summary = await NodeFSP.readFile(
+        NodePath.join(directory, "cache/v18/last-summary.json"),
+        "utf8",
+      );
+      const tasks = JSON.parse(summary).tasks as Array<{
+        task_name: string;
+        result: Record<string, unknown>;
+      }>;
+      const fileTasks = tasks.filter((task) => task.task_name.includes("test-cache:"));
+      expect(fileTasks).toHaveLength(1);
+      expect(fileTasks[0]!.result).toMatchObject({ Spawned: { cache_status: "Disabled" } });
+    }));
 
   it("reuses individual results and invalidates filesystem inputs", () =>
     withFixture(async ({ write, run, hits }) => {

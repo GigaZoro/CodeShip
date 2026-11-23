@@ -11,7 +11,7 @@ import {
 } from "./lib/command-line.ts";
 
 import { localVitePlusCommand } from "./check-changed-command.ts";
-import { matchesTestPath, relativeTestPath } from "./lib/cached-tests.ts";
+import { matchesTestPath, relativeTestPath, resolveTestPath } from "./lib/cached-tests.ts";
 import { shardedTestFiles, validateShard } from "./lib/sharded-tests.ts";
 
 const root = NodePath.resolve(import.meta.dirname, "..");
@@ -65,7 +65,9 @@ if (import.meta.main) {
         ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
       ).split("\0");
-  const filters = positionals.map((path) => relativeTestPath(root, NodePath.resolve(path)));
+  const filters = positionals.map((path) =>
+    resolveTestPath(root, NodePath.resolve(path), candidates),
+  );
   const isSelectable = (file: string) =>
     /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file) &&
     !file.startsWith(".repos/") &&
@@ -89,7 +91,7 @@ if (import.meta.main) {
     T3_CACHED_TESTS: JSON.stringify({
       files,
       groupSize,
-      uncached: values.uncached.map((file) => relativeTestPath(root, NodePath.resolve(file))),
+      uncached: values.uncached.map((file) => resolveTestPath(root, NodePath.resolve(file), files)),
     }),
   };
   const started = performance.now();

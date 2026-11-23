@@ -20,6 +20,40 @@ export function relativeTestPath(base: string, target: string): string {
   return NodePath.relative(base, target).split(NodePath.sep).join("/");
 }
 
+/** Use the spelling from discovery when both paths name the same directory entry. */
+export function resolveTestPath(root: string, target: string, candidates: ReadonlyArray<string>) {
+  const requested = relativeTestPath(root, target);
+  if (!requested) return requested;
+  const parts = requested.split("/");
+  const folded = requested.toLowerCase();
+  const alternatives = new Set<string>();
+  for (const file of candidates) {
+    if (file === requested || file.startsWith(requested + "/")) return requested;
+    const normalized = file.toLowerCase();
+    if (normalized === folded || normalized.startsWith(folded + "/")) {
+      alternatives.add(file.split("/", parts.length).join("/"));
+    }
+  }
+  if (alternatives.size === 0 || !NodeFS.existsSync(target)) return requested;
+  for (const alternative of alternatives) {
+    if (!NodeFS.existsSync(NodePath.join(root, alternative))) continue;
+    let parent = root;
+    const sameEntry = alternative.split("/").every((name, index) => {
+      const entered = parts[index]!;
+      if (entered !== name) {
+        // Check each directory: case sensitivity can differ within one checkout, and
+        // two distinct names can even be hard links to the same underlying file.
+        const names = NodeFS.readdirSync(parent);
+        if (names.includes(name) && names.includes(entered)) return false;
+      }
+      parent = NodePath.join(parent, name);
+      return true;
+    });
+    if (sameEntry) return alternative;
+  }
+  return requested;
+}
+
 export function matchesTestPath(file: string, filters: Array<string>) {
   return (
     filters.length === 0 ||
@@ -99,8 +133,13 @@ export function cachedTestTasks(
     groups.push(...entries.filter((file) => uncached.includes(file)).map((file) => [file]));
     for (const group of groups) {
       const key = NodeCrypto.createHash("sha256").update(group.join("\0")).digest("hex");
+      const filters = group.map((file) => {
+        const relative = relativeTestPath(directory, NodePath.join(root, file));
+        const filter = relative.startsWith("-") ? "./" + relative : relative;
+        return "'" + filter.replaceAll("'", "'\"'\"'") + "'";
+      });
       tasks[`test-cache:${key}`] = {
-        command: `${command} ${group.map((file) => `'${relativeTestPath(directory, NodePath.join(root, file)).replaceAll("'", "'\"'\"'")}'`).join(" ")}`,
+        command: `${command} ${filters.join(" ")}`,
         ...(directory === root ? {} : { cwd: relativeTestPath(root, directory) }),
         cache: uncached.includes(group[0]!)
           ? false
