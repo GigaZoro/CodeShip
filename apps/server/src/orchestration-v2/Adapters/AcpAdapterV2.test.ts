@@ -4215,6 +4215,9 @@ describe("AcpAdapterV2", () => {
 
   it.effect.each([
     { transport: "resumed", firstMode: "full-access", expected: [1, 2] },
+    { transport: "resume-only", firstMode: "full-access", expected: [1, 2] },
+    { transport: "incapable", firstMode: "full-access", expected: [1, 1] },
+    { transport: "running-terminal", firstMode: "full-access", expected: [1, 1] },
     { transport: "shared", firstMode: "full-access", expected: [1, 1] },
     { transport: "shared", firstMode: "approval-required", expected: [0, 0] },
     { transport: "disabled", firstMode: "full-access", expected: [0, 0] },
@@ -4229,6 +4232,11 @@ describe("AcpAdapterV2", () => {
           Parameters<AcpSessionRuntime.AcpSessionRuntime["Service"]["handleCreateTerminal"]>[0]
         > = [];
         let admissions = 0;
+        const activations: string[] = [];
+        let sessionUpdate:
+          | Parameters<AcpSessionRuntime.AcpSessionRuntime["Service"]["handleSessionUpdate"]>[0]
+          | undefined;
+        const rotated = transport === "resumed" || transport === "resume-only";
         const admissionsFromRetiredTransports: number[] = [];
         const admissionsBeforeDispatch: number[] = [];
         const promptTransports = new Set<number>();
@@ -4255,7 +4263,11 @@ describe("AcpAdapterV2", () => {
                 start: () =>
                   runtime.start().pipe(
                     Effect.map((started) =>
-                      transport !== "shared"
+                      transport !== "shared" &&
+                      !(
+                        generation > 1 &&
+                        (transport === "resume-only" || transport === "incapable")
+                      )
                         ? started
                         : {
                             ...started,
@@ -4264,12 +4276,25 @@ describe("AcpAdapterV2", () => {
                               agentCapabilities: {
                                 ...started.initializeResult.agentCapabilities,
                                 loadSession: false,
-                                sessionCapabilities: {},
+                                sessionCapabilities:
+                                  transport === "resume-only" ? { resume: {} } : {},
                               },
                             },
                           },
                     ),
                   ),
+                loadSession: (...args) => {
+                  activations.push("load");
+                  return runtime.loadSession(...args);
+                },
+                resumeSession: (...args) => {
+                  activations.push("resume");
+                  return runtime.resumeSession(...args);
+                },
+                handleSessionUpdate: (handler) => {
+                  sessionUpdate = handler;
+                  return runtime.handleSessionUpdate(handler);
+                },
                 handleCreateTerminal: (handler) =>
                   Effect.sync(() => {
                     handlers.push(handler);
@@ -4277,6 +4302,16 @@ describe("AcpAdapterV2", () => {
                 prompt: (_payload, options) =>
                   Effect.gen(function* () {
                     promptTransports.add(generation);
+                    if (transport === "running-terminal" && sessionUpdate) {
+                      yield* sessionUpdate({
+                        sessionId: request.sessionId,
+                        update: {
+                          sessionUpdate: "terminal_update",
+                          terminalId: "detached-terminal",
+                          command: "fixture-command",
+                        },
+                      });
+                    }
                     const current = handlers.at(-1);
                     if (current !== undefined) {
                       const before = admissions;
@@ -4353,14 +4388,12 @@ describe("AcpAdapterV2", () => {
           );
           counts.push(admissions);
         }
+        if (transport === "resume-only") assert.deepEqual(activations, ["resume"]);
         assert.deepEqual(counts, [...expected]);
         assert.deepEqual(admissionsBeforeDispatch, transport === "disabled" ? [] : [0, 0]);
-        assert.equal(promptTransports.size, transport === "resumed" ? 2 : 1);
-        assert.deepEqual(admissionsFromRetiredTransports, transport === "resumed" ? [0] : []);
-        assert.equal(
-          handlers.length,
-          transport === "resumed" ? 2 : transport === "disabled" ? 0 : 1,
-        );
+        assert.equal(promptTransports.size, rotated ? 2 : 1);
+        assert.deepEqual(admissionsFromRetiredTransports, rotated ? [0] : []);
+        assert.equal(handlers.length, rotated ? 2 : transport === "disabled" ? 0 : 1);
       }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 

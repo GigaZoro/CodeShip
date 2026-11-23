@@ -6102,6 +6102,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           generation: number,
         ) {
           if (clientTerminals === undefined) return;
+          agentTerminalsById.clear();
           terminalPromptOwners = new Map();
           const unidentified = () =>
             EffectAcpErrors.AcpRequestError.internalError(
@@ -6667,6 +6668,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           commitSessionState: (
             replacement: AcpSessionRuntime.AcpSessionRuntimeStartResult,
           ) => Effect.Effect<void>,
+          rotation?: { sessionId: string; idle: Effect.Effect<boolean> },
         ) {
           const previousScope = runtimeScope;
           const previousGeneration = yield* Ref.get(runtimeCallbackGeneration);
@@ -6727,7 +6729,22 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             );
             yield* wireAcpRuntimeMcpHandlers(replacementRuntime, replacementMcpBridge);
             const started = yield* replacementRuntime.start();
-            return { replacementRuntime, started };
+            if (!rotation) return { replacementRuntime, started };
+            const advertised = started.initializeResult.agentCapabilities;
+            const activation = acpMcpActivation(mcpContext);
+            const resumed =
+              advertised?.sessionCapabilities?.resume != null
+                ? yield* replacementRuntime.resumeSession(rotation.sessionId, activation)
+                : advertised?.loadSession === true
+                  ? yield* replacementRuntime.loadSession(rotation.sessionId, activation)
+                  : yield* EffectAcpErrors.AcpRequestError.internalError(
+                      "Replacement cannot restore this session",
+                    );
+            if (resumed.sessionId !== rotation.sessionId)
+              return yield* EffectAcpErrors.AcpRequestError.internalError(
+                "Replacement restored a different session",
+              );
+            return { replacementRuntime, started: resumed };
           });
           const replacementExit = yield* Effect.exit(
             (flavor.withRuntimeStartup?.(startup) ?? startup).pipe(
@@ -6749,6 +6766,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               Effect.uninterruptible(
                 Effect.gen(function* () {
                   yield* awaitAdmittedNativeResponses;
+                  if (rotation && !(yield* rotation.idle))
+                    return yield* EffectAcpErrors.AcpRequestError.internalError(
+                      "Previous transport has active work",
+                    );
                   yield* wireAcpRuntimeHandlers(
                     replacementExit.value.replacementRuntime,
                     replacementGeneration,
@@ -7760,38 +7781,54 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             ) {
               // A second prompt on the same wire cannot distinguish a late terminal request.
               // Resume the settled session on a fresh transport only while nothing owns the old one.
-              yield* runtimeCallbackPermit.withPermit(
-                Effect.gen(function* () {
-                  if (
-                    (yield* Ref.get(runtimeRestartRequired)) ||
-                    (yield* Ref.get(pendingRuntimeRequests)).size > 0 ||
-                    (yield* Ref.get(nativeResponseAcknowledgements)).size > 0 ||
-                    clientTerminals.hasUnreleased() ||
-                    (yield* hasPendingBackgroundWork) ||
-                    (yield* Ref.get(dispatchedContinuations)) > 0 ||
-                    !(yield* Deferred.isDone(previousPrompt.wireSettled))
-                  )
-                    return;
-                  resumingIdleTransport = true;
-                  yield* advanceRuntimeCallbackGeneration;
-                  yield* Ref.set(runtimeRestartRequired, true);
-                }),
-              );
+              const idle = Effect.gen(function* () {
+                return (
+                  !(yield* Ref.get(runtimeRestartRequired)) &&
+                  (yield* Ref.get(pendingRuntimeRequests)).size === 0 &&
+                  (yield* Ref.get(nativeResponseAcknowledgements)).size === 0 &&
+                  !clientTerminals.hasUnreleased() &&
+                  !Array.from(agentTerminalsById.values()).some(
+                    (terminal) => terminal.exitStatus === undefined,
+                  ) &&
+                  !(yield* hasPendingBackgroundWork) &&
+                  (yield* Ref.get(dispatchedContinuations)) === 0 &&
+                  (yield* Deferred.isDone(previousPrompt.wireSettled))
+                );
+              });
+              if (yield* runtimeCallbackPermit.withPermit(idle)) {
+                const replacement = yield* Effect.result(
+                  startReplacementAcpRuntime(
+                    turnInput.threadId,
+                    (candidate) =>
+                      Effect.gen(function* () {
+                        yield* Ref.set(activeSessionId, candidate.sessionId);
+                        if (
+                          candidate.initializeResult.agentCapabilities?.sessionCapabilities
+                            ?.resume == null
+                        )
+                          yield* Ref.set(snapshot, {
+                            order: [],
+                            messages: new Map(),
+                            loadingRole: null,
+                            loadingMessageId: null,
+                            loadingIndex: 0,
+                          });
+                        yield* setActiveSessionSetup(candidate);
+                        yield* Ref.set(activeSelection, null);
+                      }),
+                    { sessionId: requestedSessionId, idle },
+                  ),
+                );
+                resumingIdleTransport = Result.isSuccess(replacement);
+              }
             }
             const restartAfterInterrupt = yield* restartRuntimeAfterTeardownIfRequired(
               turnInput.threadId,
-              resumingIdleTransport && !canLoadSession,
             );
             const needsSessionActivation =
               (yield* Ref.get(activeSessionId)) !== requestedSessionId || restartAfterInterrupt;
             if (needsSessionActivation) {
               const activated = yield* activateSession(requestedSessionId, turnInput.threadId);
-              if (resumingIdleTransport && activated.sessionId !== requestedSessionId) {
-                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                  driver,
-                  detail: "The replacement ACP transport resumed a different native session.",
-                });
-              }
               yield* Ref.set(activeSessionId, activated.sessionId);
               yield* setActiveSessionSetup(activated);
               yield* configureSession(activated, turnInput.modelSelection, turnInput.runtimePolicy);
