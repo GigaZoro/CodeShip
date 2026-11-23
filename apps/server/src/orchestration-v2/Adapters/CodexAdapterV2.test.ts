@@ -2360,6 +2360,268 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
   );
 
+  it.effect.each(["execCommandApproval", "applyPatchApproval"] as const)(
+    "binds legacy %s to its first turn or matching live call after reuse and resume",
+    (method) =>
+      Effect.gen(function* () {
+        const fresh = "legacy-callback-fresh";
+        const resumed = "legacy-callback-resumed";
+        const callKind = method === "execCommandApproval" ? "commandExecution" : "fileChange";
+        const preamble = (thread: string, turn: string) =>
+          codexReplayPreamble({
+            nativeThreadId: thread,
+            nativeTurnId: turn,
+            prompt: "Review the file.",
+          });
+        const start = (thread: string, turn: string, id: number) =>
+          preamble(thread, turn)
+            .slice(5)
+            .map((entry) =>
+              "label" in entry && entry.label === "turn/start"
+                ? withReplayRequestId(entry, id)
+                : entry,
+            );
+        const item = (
+          threadId: string,
+          turnId: string,
+          id: string,
+          kind: "commandExecution" | "fileChange",
+          phase: "started" | "completed" = "started",
+        ): CodexReplay.CodexAppServerReplayEntry => ({
+          type: "emit_inbound",
+          label: id + "-" + phase,
+          frame: {
+            method: "item/" + phase,
+            params: {
+              threadId,
+              turnId,
+              ...(phase === "started" ? { startedAtMs: 1 } : { completedAtMs: 2 }),
+              item: {
+                id,
+                type: kind,
+                status: phase === "started" ? "inProgress" : "completed",
+                ...(kind === "commandExecution"
+                  ? {
+                      command: "pwd",
+                      cwd: "/workspace",
+                      commandActions: [],
+                      aggregatedOutput: null,
+                      exitCode: null,
+                      durationMs: null,
+                    }
+                  : { changes: [] }),
+              },
+            },
+          },
+        });
+        const ask = (
+          thread: string,
+          callId: string,
+          id: number,
+          decision: "approved" | "abort" | "approved_for_session",
+        ): ReadonlyArray<CodexReplay.CodexAppServerReplayEntry> => [
+          {
+            type: "emit_inbound",
+            label: callId + " request",
+            frame: {
+              id,
+              method,
+              params: {
+                conversationId: thread,
+                callId,
+                ...(method === "execCommandApproval"
+                  ? {
+                      approvalId: "approval-" + id,
+                      command: ["pwd"],
+                      cwd: "/workspace",
+                      parsedCmd: [],
+                    }
+                  : { fileChanges: {} }),
+              },
+            },
+          },
+          {
+            type: "expect_outbound",
+            label: callId + " response",
+            frame: { id, result: { decision } },
+          },
+        ];
+        const done = (threadId: string, turnId: string): CodexReplay.CodexAppServerReplayEntry => ({
+          type: "emit_inbound",
+          label: turnId + " done",
+          frame: {
+            method: "turn/completed",
+            params: {
+              threadId,
+              turn: makeCodexReplayTurn({ id: turnId, status: "completed" }),
+            },
+          },
+        });
+        const [pendingFirst, cancelFirst] = ask(fresh, "unanswered-first-call", 108, "abort");
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "legacy-owner-" + method,
+            entries: [
+              ...preamble(fresh, "one"),
+              pendingFirst!,
+              ...ask(fresh, "first-call", 100, "approved"),
+              done(fresh, "one"),
+              cancelFirst!,
+              // The server sends its final usage reading after it receives the pending call's abort.
+              {
+                type: "emit_inbound",
+                label: "usage after the terminal cancellation",
+                frame: {
+                  method: "thread/tokenUsage/updated",
+                  params: {
+                    threadId: fresh,
+                    turnId: "one",
+                    tokenUsage: {
+                      total: untrackedUsage,
+                      last: untrackedUsage,
+                      modelContextWindow: 200_000,
+                    },
+                  },
+                },
+              },
+              ...start(fresh, "two", 4),
+              item(
+                fresh,
+                "two",
+                "wrong-kind",
+                callKind === "fileChange" ? "commandExecution" : "fileChange",
+              ),
+              ...ask(fresh, "wrong-kind", 101, "abort"),
+              item(
+                fresh,
+                "two",
+                "wrong-kind",
+                callKind === "fileChange" ? "commandExecution" : "fileChange",
+                "completed",
+              ),
+              item("another-thread", "two", "wrong-thread", callKind),
+              ...ask(fresh, "wrong-thread", 102, "abort"),
+              item(fresh, "two", "second-call", callKind),
+              ...ask(fresh, "second-call", 103, "approved_for_session"),
+              ...ask(fresh, "first-call", 104, "abort"),
+              item(fresh, "two", "second-call", callKind, "completed"),
+              ...ask(fresh, "second-call", 105, "abort"),
+              done(fresh, "two"),
+              {
+                type: "expect_outbound",
+                label: "resume",
+                frame: {
+                  id: 5,
+                  method: "thread/resume",
+                  params: {
+                    threadId: resumed,
+                    excludeTurns: true,
+                    config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "resume",
+                frame: { id: 5, result: { thread: { id: resumed, updatedAt: 123 } } },
+              },
+              ...start(resumed, "three", 6),
+              ...ask(resumed, "missing-on-resume", 106, "abort"),
+              item(resumed, "three", "resumed-call", callKind),
+              ...ask(resumed, "resumed-call", 107, "approved"),
+              item(resumed, "three", "resumed-call", callKind, "completed"),
+              done(resumed, "three"),
+            ],
+          }),
+        );
+        const run = (providerThread: OrchestrationV2ProviderThread, ordinal: number) =>
+          Effect.gen(function* () {
+            yield* harness.runtime.startTurn({
+              ...makeCodexTestTurnInput({
+                threadId: harness.threadId,
+                providerThread,
+                now: yield* DateTime.now,
+                attemptId: RunAttemptId.make("legacy-attempt-" + ordinal),
+                text: "Review the file.",
+              }),
+              providerTurnOrdinal: ordinal,
+              runOrdinal: ordinal,
+            });
+          });
+        const answer = (nativeId: string, turn: string, decision: ProviderApprovalDecision) =>
+          Effect.gen(function* () {
+            const request = () =>
+              harness.events.flatMap((event) =>
+                event.type === "runtime_request.updated" &&
+                event.runtimeRequest.nativeRequestRef?.nativeId === nativeId
+                  ? [event.runtimeRequest]
+                  : [],
+              )[0];
+            yield* harness.until(() => request() !== undefined);
+            const active = harness.events.flatMap((event) =>
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.nativeTurnRef?.nativeId === turn
+                ? [event.providerTurn]
+                : [],
+            )[0];
+            assert.isDefined(active);
+            assert.equal(request()!.providerTurnId, active!.id);
+            yield* harness.runtime.respondToRuntimeRequest({ requestId: request()!.id, decision });
+          });
+        yield* run(harness.providerThread, 1);
+        yield* harness.until(() =>
+          harness.events.some(
+            (event) =>
+              event.type === "runtime_request.updated" &&
+              event.runtimeRequest.nativeRequestRef?.nativeId ===
+                (method === "execCommandApproval" ? "approval-108" : "unanswered-first-call"),
+          ),
+        );
+        yield* answer(
+          method === "execCommandApproval" ? "approval-100" : "first-call",
+          "one",
+          "accept",
+        );
+        yield* harness.awaitTerminal(1);
+        yield* harness.until(() =>
+          harness.handledNotifications.includes("thread/tokenUsage/updated"),
+        );
+        yield* run(harness.providerThread, 2);
+        yield* answer(
+          method === "execCommandApproval" ? "approval-103" : "second-call",
+          "two",
+          "acceptForSession",
+        );
+        yield* harness.awaitTerminal(2);
+        const history = yield* harness.runtime.resumeThread({
+          providerThread: {
+            ...harness.providerThread,
+            nativeThreadRef: {
+              driver: ProviderDriverKind.make("codex"),
+              nativeId: resumed,
+              strength: "strong",
+            },
+          },
+        });
+        yield* run(history, 3);
+        yield* answer(
+          method === "execCommandApproval" ? "approval-107" : "resumed-call",
+          "three",
+          "accept",
+        );
+        yield* harness.awaitTerminal(3);
+        assert.lengthOf(
+          harness.events.filter((event) => event.type === "runtime_request.updated"),
+          4,
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
   it.effect("stops asking for commands the user allowed for the session", () =>
     Effect.scoped(
       Effect.gen(function* () {

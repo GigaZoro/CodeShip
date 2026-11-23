@@ -1,3 +1,7 @@
+## 2026-11-23 — Codex approvals after a conversation resumes
+
+- Legacy Codex command and patch approvals follow the native item that requested them. CodeShip declines an approval when a later turn cannot establish which item owns it.
+
 ## 2026-11-23 — Accounting for repairs and work-item requests
 
 - MCP launches and sends can carry the work item or repair run that owns them. A guarded restart applies only while its intended run is active. Linked repairs require a peer that supports origin accounting.

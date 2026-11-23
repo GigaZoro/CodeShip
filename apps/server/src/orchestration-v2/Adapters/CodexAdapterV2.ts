@@ -1393,6 +1393,7 @@ type PendingCodexRuntimeRequest =
   | {
       readonly type: "approval";
       readonly requestKind: ProviderRequestKind;
+      readonly legacySource?: { readonly context: ActiveCodexTurnContext; readonly callId: string };
       readonly decision: Deferred.Deferred<ProviderApprovalDecision, never>;
     }
   | {
@@ -2132,13 +2133,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           string,
           { readonly runtimeMode: RuntimeMode; readonly kinds: Set<ProviderRequestKind> }
         >();
+        // Only a native thread created here can accept an untagged legacy call before item/started.
+        // null is a new thread whose first native turn has yet to be registered.
+        const firstLegacyApprovalTurns = new Map<string, string | null>();
         /** Bind answers to the request's approval set so mode changes invalidate late answers. */
-        const endSessionApprovalsOnModeChange = (context: ActiveCodexTurnContext) => {
+        const beginTurnApprovals = (context: ActiveCodexTurnContext) => {
           const nativeThreadId = context.providerThread.nativeThreadRef?.nativeId;
+          if (nativeThreadId == null) return;
+          const firstTurn = firstLegacyApprovalTurns.get(nativeThreadId);
+          if (firstTurn === null)
+            firstLegacyApprovalTurns.set(nativeThreadId, context.nativeTurnId);
+          else if (firstTurn !== context.nativeTurnId)
+            firstLegacyApprovalTurns.delete(nativeThreadId);
           if (
-            nativeThreadId != null &&
             sessionApprovals.get(nativeThreadId)?.runtimeMode !==
-              context.input.runtimePolicy.runtimeMode
+            context.input.runtimePolicy.runtimeMode
           ) {
             sessionApprovals.delete(nativeThreadId);
           }
@@ -2354,7 +2363,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             return next;
           });
           beginTurnTokenUsage(context);
-          endSessionApprovalsOnModeChange(context);
+          beginTurnApprovals(context);
           yield* Ref.update(activeTurns, (current) => {
             const updated = new Map(current);
             updated.set(input.nativeTurnId, context);
@@ -2929,7 +2938,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runningCompactionItemIds: new Set(),
             };
             beginTurnTokenUsage(activeContext);
-            endSessionApprovalsOnModeChange(activeContext);
+            beginTurnApprovals(activeContext);
             yield* Ref.update(activeTurns, (current) => {
               const updated = new Map(current);
               updated.set(turn.nativeTurnId, activeContext);
@@ -3094,6 +3103,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return;
             }
 
+            // spawnAgent's reply identifies a newly created child. A later activity notification alone does not.
+            if (
+              input.emitInitialPrompt &&
+              (yield* findActiveTurn(input.context.nativeTurnId)) === input.context
+            ) {
+              firstLegacyApprovalTurns.set(input.nativeThreadId, null);
+            }
             const now = yield* DateTime.now;
             const subagentNodeId = idAllocator.derive.nodeFromProviderItem({
               driver: CODEX_PROVIDER,
@@ -5018,7 +5034,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         yield* client.handleServerNotification("item/started", (payload) =>
           Effect.gen(function* () {
             const context = yield* findActiveTurn(payload.turnId);
-            if (context === undefined) {
+            if (
+              context === undefined ||
+              ((payload.item.type === "commandExecution" || payload.item.type === "fileChange") &&
+                context.providerThread.nativeThreadRef?.nativeId !== payload.threadId)
+            ) {
               return;
             }
 
@@ -5182,6 +5202,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return;
             }
             const { context, settled } = resolved;
+            if (
+              (payload.item.type === "commandExecution" || payload.item.type === "fileChange") &&
+              context.providerThread.nativeThreadRef?.nativeId !== payload.threadId
+            )
+              return;
 
             if (payload.item.type === "reasoning") {
               yield* completeReasoning(payload.turnId, payload.item);
@@ -5760,141 +5785,135 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }).pipe(Effect.orDie),
         );
 
+        const legacyApprovalContext = Effect.fnUntraced(function* (
+          threadId: string,
+          callId: string,
+          kind: "command" | "file-change",
+        ) {
+          const active = yield* Ref.get(activeTurns);
+          const interrupted = yield* Ref.get(interruptingNativeTurns);
+          const commands = yield* Ref.get(runningCommandItemsByTurn);
+          const settled = yield* Ref.get(settledTurns);
+          const nativeThreadMatches = (turn: ActiveCodexTurnContext) =>
+            turn.providerThread.nativeThreadRef?.nativeId === threadId;
+          const hasCall = (turn: ActiveCodexTurnContext) =>
+            kind === "command"
+              ? commands.get(turn.nativeTurnId)?.has(callId) === true
+              : turn.fileChangeKindsByItem.has(callId);
+          if ([...settled.values()].some((turn) => nativeThreadMatches(turn) && hasCall(turn)))
+            return undefined;
+          const turns = [...active.values()].filter(nativeThreadMatches);
+          const matched = turns.filter(hasCall);
+          if (matched.length > 1) return undefined;
+          const turn = matched[0] ?? turns[0];
+          if (turn === undefined || interrupted.has(turn.nativeTurnId)) return undefined;
+          if (matched.length === 1) return turn;
+          return turns.length === 1 &&
+            firstLegacyApprovalTurns.get(threadId) === turn.nativeTurnId &&
+            !turn.itemPositions.has(callId)
+            ? turn
+            : undefined;
+        });
+
+        const requestLegacyApproval = Effect.fnUntraced(function* (
+          threadId: string,
+          callId: string,
+          nativeRequestId: string,
+          kind: "command" | "file-change",
+          prompt: string | null,
+        ) {
+          const admitted = yield* turnTerminalizationPermit.withPermits(1)(
+            Effect.gen(function* () {
+              const context = yield* legacyApprovalContext(threadId, callId, kind);
+              if (context === undefined) return "abort" as const;
+              const allowance = sessionAllowance(threadId, context);
+              if (allowance.has(kind)) return "approved_for_session" as const;
+              const artifacts = yield* buildApprovalRequestArtifacts({
+                context,
+                nativeItemId: callId,
+                nativeRequestId,
+                requestKind: kind,
+                prompt,
+              });
+              const requestId = String(artifacts.request.id);
+              const existing = (yield* Ref.get(pendingRuntimeRequests)).get(requestId);
+              if (existing !== undefined) {
+                return existing.type === "approval" &&
+                  existing.requestKind === kind &&
+                  existing.legacySource?.context === context &&
+                  existing.legacySource.callId === callId
+                  ? { context, requestId, decision: existing.decision, allowance }
+                  : ("abort" as const);
+              }
+              const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
+              yield* Ref.update(pendingRuntimeRequests, (current) =>
+                new Map(current).set(requestId, {
+                  type: "approval",
+                  requestKind: kind,
+                  legacySource: { context, callId },
+                  decision,
+                }),
+              );
+              yield* emitProviderEvent({
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              });
+              yield* emitProviderEvent({
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              });
+              yield* emitProviderEvent({
+                type: "runtime_request.updated",
+                driver: CODEX_PROVIDER,
+                threadId: artifacts.node.threadId,
+                runtimeRequest: artifacts.request,
+              });
+              return { context, requestId, decision, allowance };
+            }),
+          );
+          if (typeof admitted === "string") return { decision: admitted };
+          const resolved = yield* Deferred.await(admitted.decision).pipe(
+            Effect.ensuring(
+              Ref.update(pendingRuntimeRequests, (current) => {
+                const pending = current.get(admitted.requestId);
+                if (pending?.type !== "approval" || pending.decision !== admitted.decision)
+                  return current;
+                const updated = new Map(current);
+                updated.delete(admitted.requestId);
+                return updated;
+              }),
+            ),
+          );
+          return yield* turnTerminalizationPermit.withPermits(1)(
+            Effect.gen(function* () {
+              if ((yield* legacyApprovalContext(threadId, callId, kind)) !== admitted.context)
+                return { decision: "abort" as const };
+              if (resolved === "acceptForSession" || resolved === "acceptAlways")
+                admitted.allowance.add(kind);
+              return { decision: approvalDecisionToLegacyReviewDecision(resolved) };
+            }),
+          );
+        });
+
         yield* client.handleServerRequest("execCommandApproval", (payload) =>
-          Effect.gen(function* () {
-            const context = yield* findActiveTurnByNativeThreadId(payload.conversationId);
-            if (context === undefined) {
-              return yield* toProtocolError(
-                `No active Codex turn context for exec approval thread ${payload.conversationId}.`,
-                payload,
-              );
-            }
-            const allowance = sessionAllowance(payload.conversationId, context);
-            if (allowance.has("command")) {
-              return {
-                decision: "approved_for_session",
-              } satisfies CodexSchema.ExecCommandApprovalResponse;
-            }
-
-            const nativeRequestId = payload.approvalId ?? payload.callId;
-            const artifacts = yield* buildApprovalRequestArtifacts({
-              context,
-              nativeItemId: payload.callId,
-              nativeRequestId,
-              requestKind: "command",
-              prompt: payload.reason ?? payload.command.join(" "),
-            });
-            const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
-            yield* Ref.update(pendingRuntimeRequests, (current) => {
-              const updated = new Map(current);
-              updated.set(String(artifacts.request.id), {
-                type: "approval",
-                requestKind: "command",
-                decision,
-              });
-              return updated;
-            });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: artifacts.node,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
-            });
-            yield* emitProviderEvent({
-              type: "runtime_request.updated",
-              driver: CODEX_PROVIDER,
-              threadId: artifacts.node.threadId,
-              runtimeRequest: artifacts.request,
-            });
-
-            const resolved = yield* Deferred.await(decision).pipe(
-              Effect.ensuring(
-                Ref.update(pendingRuntimeRequests, (current) => {
-                  const updated = new Map(current);
-                  updated.delete(String(artifacts.request.id));
-                  return updated;
-                }),
-              ),
-            );
-            if (resolved === "acceptForSession" || resolved === "acceptAlways") {
-              allowance.add("command");
-            }
-            return {
-              decision: approvalDecisionToLegacyReviewDecision(resolved),
-            } satisfies CodexSchema.ExecCommandApprovalResponse;
-          }).pipe(Effect.orDie),
+          requestLegacyApproval(
+            payload.conversationId,
+            payload.callId,
+            payload.approvalId ?? payload.callId,
+            "command",
+            payload.reason ?? payload.command.join(" "),
+          ).pipe(Effect.orDie),
         );
-
         yield* client.handleServerRequest("applyPatchApproval", (payload) =>
-          Effect.gen(function* () {
-            const context = yield* findActiveTurnByNativeThreadId(payload.conversationId);
-            if (context === undefined) {
-              return yield* toProtocolError(
-                `No active Codex turn context for apply patch approval thread ${payload.conversationId}.`,
-                payload,
-              );
-            }
-            const allowance = sessionAllowance(payload.conversationId, context);
-            if (allowance.has("file-change")) {
-              return {
-                decision: "approved_for_session",
-              } satisfies CodexSchema.ApplyPatchApprovalResponse;
-            }
-
-            const artifacts = yield* buildApprovalRequestArtifacts({
-              context,
-              nativeItemId: payload.callId,
-              nativeRequestId: payload.callId,
-              requestKind: "file-change",
-              prompt: codexFileChangeApprovalPrompt(payload) ?? null,
-            });
-            const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
-            yield* Ref.update(pendingRuntimeRequests, (current) => {
-              const updated = new Map(current);
-              updated.set(String(artifacts.request.id), {
-                type: "approval",
-                requestKind: "file-change",
-                decision,
-              });
-              return updated;
-            });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: artifacts.node,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
-            });
-            yield* emitProviderEvent({
-              type: "runtime_request.updated",
-              driver: CODEX_PROVIDER,
-              threadId: artifacts.node.threadId,
-              runtimeRequest: artifacts.request,
-            });
-
-            const resolved = yield* Deferred.await(decision).pipe(
-              Effect.ensuring(
-                Ref.update(pendingRuntimeRequests, (current) => {
-                  const updated = new Map(current);
-                  updated.delete(String(artifacts.request.id));
-                  return updated;
-                }),
-              ),
-            );
-            if (resolved === "acceptForSession" || resolved === "acceptAlways") {
-              allowance.add("file-change");
-            }
-            return {
-              decision: approvalDecisionToLegacyReviewDecision(resolved),
-            } satisfies CodexSchema.ApplyPatchApprovalResponse;
-          }).pipe(Effect.orDie),
+          requestLegacyApproval(
+            payload.conversationId,
+            payload.callId,
+            payload.callId,
+            "file-change",
+            codexFileChangeApprovalPrompt(payload) ?? null,
+          ).pipe(Effect.orDie),
         );
 
         yield* client.handleServerRequest("item/tool/requestUserInput", (payload) =>
@@ -6300,6 +6319,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const current = (yield* Ref.get(activeTurns)).get(input.nativeTurnId);
               if (current !== input.context) {
                 return false;
+              }
+              const threadId = input.context.providerThread.nativeThreadRef?.nativeId;
+              if (threadId && firstLegacyApprovalTurns.get(threadId) === input.nativeTurnId) {
+                firstLegacyApprovalTurns.delete(threadId);
+              }
+              for (const pending of (yield* Ref.get(pendingRuntimeRequests)).values()) {
+                if (
+                  pending.type === "approval" &&
+                  pending.legacySource?.context === input.context
+                ) {
+                  yield* Deferred.succeed(pending.decision, "cancel");
+                }
               }
               input.context.fileChangeKindsByItem.clear();
               const providerRetry = yield* Ref.modify(providerRetries, (current) => {
@@ -7279,6 +7310,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   }),
                 ),
               ),
+              Effect.tap((response) =>
+                Effect.sync(() => {
+                  if (response.thread.turns.length === 0)
+                    firstLegacyApprovalTurns.set(response.thread.id, null);
+                }),
+              ),
               Effect.map((response): OrchestrationV2ProviderThread =>
                 providerThreadFromCodexThread({
                   appThreadId: threadInput.threadId,
@@ -7302,6 +7339,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           resumeThread: Effect.fn("CodexAdapterV2.resumeThread")(
             function* (threadInput) {
               const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
+              firstLegacyApprovalTurns.delete(nativeThreadId);
               const appThreadId = threadInput.threadId ?? threadInput.providerThread.appThreadId;
               const resume = client.raw.request("thread/resume", {
                 threadId: nativeThreadId,
