@@ -31,7 +31,8 @@ import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
-import { layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
+import { originalDemandId } from "../orchestration-v2/demandId.ts";
+import { HERE_ENVIRONMENT_ID, layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -1468,9 +1469,22 @@ it.effect(
           yield* TestClock.adjust("10 seconds");
           yield* drainPendingDispatch(workers);
           const launch = yield* Queue.take(launches);
+          if (accepted._tag !== "accepted")
+            return yield* Effect.die("Webhook delivery was not accepted");
+          assert.equal(
+            launch.initialMessage?.demandId,
+            originalDemandId(
+              "scheduled-task",
+              HERE_ENVIRONMENT_ID,
+              task.id,
+              task.createdAt,
+              "webhook",
+              accepted.deliveryId,
+            ),
+          );
           assert.equal(
             launch.commandId,
-            `scheduled-task:${task.id}:webhook:${accepted._tag === "accepted" && accepted.deliveryId}`,
+            `scheduled-task:${task.id}:webhook:${accepted.deliveryId}`,
           );
           assert.equal((yield* service.list()).tasks[0]!.runCount, 1);
           assert.equal(

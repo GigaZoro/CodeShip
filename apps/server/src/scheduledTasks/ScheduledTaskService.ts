@@ -110,6 +110,7 @@ import * as SharedTaskPeerCheck from "./SharedTaskPeerCheck.ts";
 import * as PromptFileReader from "./PromptFileReader.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import { originalDemandId } from "../orchestration-v2/demandId.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Metrics from "../observability/Metrics.ts";
@@ -486,6 +487,8 @@ interface RunRecordRow {
 
 /** What a scheduled run is for: the time it serves, and whether it catches up a missed one. */
 interface ScheduledFire {
+  /** This machine owns this occurrence independently of peer claims. */
+  readonly independentlyScheduled?: true;
   readonly scheduledFor: string | null;
   readonly catchUp: boolean;
   /** What the task's run condition answered for this occurrence. */
@@ -1269,6 +1272,10 @@ export const layer = Layer.effect(
       )
     `;
     const taskColumns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_tasks)`;
+    // A timestamp alone cannot identify the last of two admissions in one clock tick.
+    if (!taskColumns.some((column) => column.name === "last_run_record_id")) {
+      yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN last_run_record_id TEXT`;
+    }
     if (!taskColumns.some((column) => column.name === "fallback_model_selections_json")) {
       yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN fallback_model_selections_json TEXT`;
     }
@@ -2031,6 +2038,7 @@ export const layer = Layer.effect(
       readonly id: ScheduledTaskId;
       readonly startedAtIso: string;
       readonly trigger: ScheduledTaskRunTrigger;
+      readonly recordId: string;
       readonly scheduledFor: string | null;
       readonly webhookDeliveryId: string | null;
     }) =>
@@ -2038,6 +2046,7 @@ export const layer = Layer.effect(
         UPDATE scheduled_tasks
         SET updated_at = ${input.startedAtIso},
             last_run_at = ${input.startedAtIso},
+            last_run_record_id = ${input.recordId},
             last_run_trigger = ${input.trigger},
             last_run_scheduled_for = ${input.scheduledFor},
             last_run_webhook_delivery_id = ${input.webhookDeliveryId},
@@ -2060,6 +2069,7 @@ export const layer = Layer.effect(
       readonly id: ScheduledTaskId;
       readonly completedAtIso: string;
       readonly nextRunAtIso: string | null;
+      readonly recordId: string;
       readonly status: "succeeded" | "failed";
       readonly error: string | null;
       readonly startedAtIso: string;
@@ -2073,7 +2083,7 @@ export const layer = Layer.effect(
             run_count = run_count + 1
         WHERE task_id = ${input.id}
           AND last_run_status = 'running'
-          AND last_run_at = ${input.startedAtIso}
+          AND last_run_at = ${input.startedAtIso} AND last_run_record_id = ${input.recordId}
         RETURNING task_id
       `.pipe(
         Effect.map((rows) => rows.length > 0),
@@ -2082,15 +2092,29 @@ export const layer = Layer.effect(
         ),
       );
 
+    // Old rows can identify their most recent trigger even when the history ID was not stored.
+    const matchesLastRun = (recordId: string, trigger: string) => sql`(
+      last_run_record_id = ${recordId} OR (
+        last_run_record_id IS NULL AND (last_run_trigger IS NULL OR last_run_trigger = ${trigger})
+      )
+    )`;
+
     // Guarded like markCompleted, so a run cannot stamp a task recreated under its id.
     // Bookkeeping: failing it must not fail a run that already dispatched.
-    const recordRunThread = (id: ScheduledTaskId, threadId: ThreadId, startedAtIso: string) =>
+    const recordRunThread = (
+      id: ScheduledTaskId,
+      threadId: ThreadId,
+      startedAtIso: string,
+      recordId: string,
+      trigger: string,
+    ) =>
       sql`
         INSERT INTO scheduled_task_sidebar (task_id, last_run_thread_id)
         SELECT ${id}, ${threadId}
         WHERE EXISTS (
           SELECT 1 FROM scheduled_tasks
           WHERE task_id = ${id} AND last_run_status = 'running' AND last_run_at = ${startedAtIso}
+            AND ${matchesLastRun(recordId, trigger)}
         )
         ON CONFLICT (task_id) DO UPDATE SET last_run_thread_id = excluded.last_run_thread_id
       `.pipe(
@@ -2232,6 +2256,7 @@ export const layer = Layer.effect(
     const releaseStuckRun = Effect.fn("ScheduledTaskService.releaseStuckRun")(
       function* (
         task: ScheduledTask,
+        recordId: string,
         startedAtIso: string,
         message: string,
         pendingDeliveryId?: string,
@@ -2250,11 +2275,11 @@ export const layer = Layer.effect(
                 SELECT 1 FROM scheduled_task_webhook_pending
                 WHERE delivery_id = ${pendingDeliveryId ?? null} AND state = 'running'
               ) THEN 0 ELSE 1 END
-          WHERE task_id = ${task.id} AND last_run_status = 'running'
+          WHERE task_id = ${task.id} AND last_run_status = 'running' AND last_run_record_id = ${recordId}
         `;
         yield* notifyChanged;
       },
-      (effect, task, _startedAtIso, _message, _pendingDeliveryId) =>
+      (effect, task, _recordId, _startedAtIso, _message, _pendingDeliveryId) =>
         effect.pipe(
           Effect.catch((cause) =>
             Effect.logWarning("Could not release stuck schedule task run", {
@@ -2408,7 +2433,10 @@ export const layer = Layer.effect(
       const startedAtIso = iso(startedAt);
       const recordTrigger: ScheduledTaskRunTrigger =
         trigger === "scheduled" && fire?.catchUp === true ? "catch_up" : trigger;
-      const runRecordId = `${task.id}:${DateTime.toEpochMillis(startedAt)}:${recordTrigger}`;
+      const timeAndTrigger = `${task.id}:${DateTime.toEpochMillis(startedAt)}:${recordTrigger}`;
+      // Keep the original prefix: holder consent orders same-tick trigger kinds by run ID.
+      const runRecordId =
+        trigger === "manual" ? `${timeAndTrigger}:${yield* crypto.randomUUIDv4()}` : timeAndTrigger;
       const run = Effect.gen(function* () {
         // Re-read stale poll snapshots so deleted, paused or postponed tasks cannot fire.
         const active = yield* findTask(task.id);
@@ -2463,6 +2491,7 @@ export const layer = Layer.effect(
           trigger === "scheduled" ? (fire?.scheduledFor ?? active.nextRunAt) : null;
         const started = {
           id: active.id,
+          recordId: runRecordId,
           startedAtIso,
           trigger: recordTrigger,
           scheduledFor,
@@ -2501,6 +2530,27 @@ export const layer = Layer.effect(
           webhook === undefined
             ? launchKey(runRecordId)
             : `${active.id}:webhook:${webhook.deliveryId}`;
+        const admissionKey =
+          trigger !== "scheduled"
+            ? (webhook?.deliveryId ?? runRecordId)
+            : fire?.independentlyScheduled === true &&
+                active.shared?.runOn !== "one" &&
+                active.createdAt === task.createdAt &&
+                active.nextRunAt === task.nextRunAt &&
+                isSameSchedule(active.schedule, task.schedule)
+              ? fire.scheduledFor
+              : null;
+        const demandId =
+          admissionKey === null
+            ? null
+            : originalDemandId(
+                "scheduled-task",
+                hereEnvironmentId,
+                active.id,
+                active.createdAt,
+                trigger,
+                admissionKey,
+              );
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = promptMessageId(fireKey);
         // A webhook prompt was rendered from the row when the request arrived. A prompt file is
@@ -2550,6 +2600,7 @@ export const layer = Layer.effect(
               threadId,
               messageId,
               scheduledTaskId: active.id,
+              demandId,
               text,
               attachments: [],
               mode: "queue",
@@ -2603,6 +2654,7 @@ export const layer = Layer.effect(
                     initialMessage: {
                       messageId,
                       scheduledTaskId: active.id,
+                      demandId,
                       ...(target.crossProviderFailoverFrom === undefined
                         ? {}
                         : { crossProviderFailoverFrom: target.crossProviderFailoverFrom }),
@@ -2658,7 +2710,7 @@ export const layer = Layer.effect(
           };
           if (current === null) return { recorded: completed, written: false };
           if (threadId !== null) {
-            yield* recordRunThread(task.id, threadId, startedAtIso);
+            yield* recordRunThread(task.id, threadId, startedAtIso, runRecordId, recordTrigger);
             yield* recordTaskThread(
               task.id,
               threadId,
@@ -2672,11 +2724,11 @@ export const layer = Layer.effect(
             error: lastRunError,
             failover: target.type === "launch" && Result.isSuccess(prompt) ? target.failover : null,
           });
-          // startedAtIso in the guard ensures this writes only to the row this
-          // run marked as running — a task deleted mid-run and recreated with
-          // the same id (idempotent commandId replay) must not be stamped.
+          // The admission ID still names this run if another start or a same-ID recreation
+          // landed in the same millisecond.
           const completion = markCompleted({
             id: task.id,
+            recordId: runRecordId,
             completedAtIso: completed.updatedAt,
             nextRunAtIso: completed.nextRunAt,
             status: lastRunStatus,
@@ -2724,7 +2776,13 @@ export const layer = Layer.effect(
           // which can read the chat, settles both rows as it does after a crash.
           serviceScope.state._tag === "Closed"
             ? Effect.void
-            : releaseStuckRun(task, startedAtIso, errorMessage(cause), webhook?.deliveryId).pipe(
+            : releaseStuckRun(
+                task,
+                runRecordId,
+                startedAtIso,
+                errorMessage(cause),
+                webhook?.deliveryId,
+              ).pipe(
                 Effect.andThen(
                   localNow.pipe(
                     Effect.flatMap((now) =>
@@ -4036,7 +4094,11 @@ export const layer = Layer.effect(
       `.pipe(NodeSqliteClient.readOnly);
       const sharing = runOn?.run_on === "one" ? (yield* findTask(task.id))?.shared : null;
       if (sharing != null) return yield* settleOneMachineOccurrence(task, sharing, now, catchUp);
-      const fire = { scheduledFor: task.nextRunAt, catchUp };
+      const fire: ScheduledFire = {
+        scheduledFor: task.nextRunAt,
+        catchUp,
+        independentlyScheduled: true,
+      };
       if (yield* skippedAtLiveRunLimit(task, fire, [])) return;
       if (yield* skippedForMemory(task, fire)) return;
       if (yield* skippedForUsage(task, fire)) return;
@@ -4237,8 +4299,9 @@ export const layer = Layer.effect(
         readonly thread_id: string | null;
         readonly chat_folder: string | null;
         readonly started_at: string;
+        readonly trigger: string;
       }>`
-        SELECT run_id, task_id, thread_id, chat_folder, started_at
+        SELECT run_id, task_id, thread_id, chat_folder, started_at, trigger
         FROM scheduled_task_runs WHERE outcome = 'running'
       `;
       const settled = yield* Effect.forEach(
@@ -4299,7 +4362,13 @@ export const layer = Layer.effect(
                   WHERE run_id = ${run.run_id} AND outcome = 'running'
                 `
               : Effect.gen(function* () {
-                  yield* recordRunThread(run.task_id, chat, run.started_at);
+                  yield* recordRunThread(
+                    run.task_id,
+                    chat,
+                    run.started_at,
+                    run.run_id,
+                    run.trigger,
+                  );
                   yield* recordTaskThread(run.task_id, chat, run.chat_folder);
                   yield* sql`
                     UPDATE scheduled_task_runs SET outcome = 'succeeded', completed_at = ${completedAt}
@@ -4312,6 +4381,7 @@ export const layer = Layer.effect(
                     SET last_run_status = 'succeeded', last_run_error = NULL,
                         updated_at = ${completedAt}
                     WHERE task_id = ${run.task_id} AND last_run_at = ${run.started_at}
+                      AND ${matchesLastRun(run.run_id, run.trigger)}
                       AND last_run_status = 'failed' AND last_run_error = ${INTERRUPTED_BY_RESTART}
                     RETURNING task_id
                   `;
@@ -4345,9 +4415,12 @@ export const layer = Layer.effect(
           Effect.gen(function* () {
             // From the stored run, so a run kept by a startup that a restart then cut still counts.
             const kept = yield* sql`
-              SELECT 1 FROM scheduled_task_runs
-              WHERE task_id = ${row.task_id} AND started_at = ${row.last_run_at}
-                AND outcome = 'succeeded'
+              SELECT 1 FROM scheduled_task_runs r
+              JOIN scheduled_tasks t ON t.task_id = r.task_id AND t.last_run_at = r.started_at
+              WHERE t.task_id = ${row.task_id} AND r.outcome = 'succeeded'
+                AND (t.last_run_record_id = r.run_id OR (
+                  t.last_run_record_id IS NULL AND (t.last_run_trigger IS NULL OR t.last_run_trigger = r.trigger)
+                ))
               LIMIT 1
             `;
             const started = kept.length > 0;
@@ -5784,7 +5857,7 @@ export const layer = Layer.effect(
           error, skip_reason, ran_on, failover_from, failover_to, failover_reason,
           failover_mcp_servers_json, check_json, usage_limit_json, memory_json
         FROM scheduled_task_runs WHERE task_id = ${input.id}
-        ORDER BY started_at DESC, run_id DESC
+        ORDER BY started_at DESC, rowid DESC
         LIMIT ${RUN_HISTORY_RETENTION + QUIET_SKIP_REASONS.length * QUIET_SKIP_RETENTION}
       `.pipe(
         NodeSqliteClient.readOnly,

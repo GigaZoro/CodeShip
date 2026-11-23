@@ -1,3 +1,7 @@
+## 2026-11-23 — Accounting for scheduled runs
+
+- Locally scheduled occurrences, webhook deliveries and manual starts carry their demand ID into new and existing chats. Two manual starts in the same millisecond keep separate history. Automatic one-machine shared runs remain unattributed when the scheduler cannot establish which occurrence a peer accepted.
+
 ## 2026-11-23 — Access checks for repeated thread launches
 
 - Retrying a keyed MCP thread launch checks the thread's current project, link access, and modes before returning its details.

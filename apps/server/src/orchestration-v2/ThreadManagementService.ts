@@ -143,7 +143,7 @@ function existingThreadIdsForCommand(
 }
 
 export interface ThreadManagementSendInput {
-  readonly demandId?: string;
+  readonly demandId?: string | null;
   readonly projectId: ProjectId;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
