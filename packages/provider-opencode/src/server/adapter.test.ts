@@ -682,26 +682,13 @@ describe("OpenCodeAdapterV2", () => {
         const prompts: string[] = [];
         const denied: string[] = [];
         const replies: string[] = [];
-        const baseClock = yield* Clock.Clock;
-        const settling = yield* Deferred.make<void>();
-        const finishSettlement = yield* Deferred.make<void>();
+        const settling = yield* Queue.unbounded<void>();
+        const finishSettlement = yield* Queue.unbounded<void>();
         const outgoing = yield* Deferred.make<void>();
         const finishLogging = yield* Deferred.make<void>();
         const rejectionFinished = yield* Deferred.make<void>();
         let finalRejection = false;
-        let pauseSettlement = false;
         let pauseRejection = false;
-        const clock: Clock.Clock = {
-          ...baseClock,
-          currentTimeMillis: Effect.suspend(() => {
-            if (!pauseSettlement) return baseClock.currentTimeMillis;
-            pauseSettlement = false;
-            return Deferred.succeed(settling, undefined).pipe(
-              Effect.andThen(Deferred.await(finishSettlement)),
-              Effect.andThen(baseClock.currentTimeMillis),
-            );
-          }),
-        };
         let observeSettlement = false;
         const logger: ProviderEventLoggers.EventNdjsonLogger = {
           filePath: "/tmp/opencode-callback-events.ndjson",
@@ -711,9 +698,14 @@ describe("OpenCodeAdapterV2", () => {
               const { method, direction } = (
                 entry as { event: { payload: { method: string; direction: string } } }
               ).event.payload;
-              if (observeSettlement && direction === "incoming" && method === kind + ".replied") {
+              if (
+                observeSettlement &&
+                direction === "incoming" &&
+                (method === kind + ".replied" || method === "question.rejected")
+              ) {
                 observeSettlement = false;
-                pauseSettlement = true;
+                yield* Queue.offer(settling, undefined);
+                yield* Queue.take(finishSettlement);
               }
               if (
                 pauseRejection &&
@@ -792,7 +784,7 @@ describe("OpenCodeAdapterV2", () => {
           },
           {},
           { nativeEventLogger: logger },
-        ).pipe(Effect.provideService(Clock.Clock, clock));
+        );
         const push = (event: unknown) => Effect.promise(() => events.push(event));
         const ask = (id: string, sessionID: string, assistant?: string) =>
           push({
@@ -875,15 +867,15 @@ describe("OpenCodeAdapterV2", () => {
         );
         assert.sameMembers(denied, ["late", "ambiguous", "delayed-child"]);
 
-        const settle = (requestID: string) =>
+        const settle = (requestID: string, method = kind + ".replied") =>
           push({
-            type: kind + ".replied",
+            type: method,
             properties: { sessionID: "root", requestID, reply: "once", answers: [] },
           });
         const valid = asked.find((row) => row.nativeRequestRef?.nativeId === "valid-B")!;
         observeSettlement = true;
         const resolving = yield* settle("valid-B").pipe(Effect.forkChild);
-        yield* Deferred.await(settling);
+        yield* Queue.take(settling);
         const raced = yield* harness.runtime
           .respondToRuntimeRequest({
             requestId: valid.id,
@@ -892,16 +884,23 @@ describe("OpenCodeAdapterV2", () => {
               : { decision: "accept" as const }),
           })
           .pipe(Effect.exit);
-        yield* Deferred.succeed(finishSettlement, undefined);
+        yield* Queue.offer(finishSettlement, undefined);
         yield* Fiber.join(resolving);
         pauseRejection = true;
         yield* ask("settled-elsewhere", "root");
         const retryDeadline = yield* TestClock.adjust("8 seconds").pipe(Effect.forkChild);
         yield* Deferred.await(outgoing);
-        yield* settle("settled-elsewhere");
+        observeSettlement = true;
+        const remoteSettlement = yield* settle(
+          "settled-elsewhere",
+          kind === "question" ? "question.rejected" : "permission.replied",
+        ).pipe(Effect.forkChild);
+        yield* Queue.take(settling);
         yield* Deferred.succeed(finishLogging, undefined);
         yield* Fiber.join(retryDeadline);
         yield* Deferred.await(rejectionFinished);
+        yield* Queue.offer(finishSettlement, undefined);
+        yield* Fiber.join(remoteSettlement);
         assert.deepEqual(
           {
             refused: Exit.isFailure(raced),
