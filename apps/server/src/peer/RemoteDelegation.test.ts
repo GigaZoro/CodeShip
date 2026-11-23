@@ -21,11 +21,12 @@ import {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
-import { expect, it } from "@effect/vitest";
+import { expect, it, vi } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -1061,6 +1062,132 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
         state: "acknowledged",
         observedByRunId: parentRunId,
       });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a disconnected caller's accepted task launches once at its original destination", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const other = descriptorOf("environment-second-box", "Second box");
+      const otherThread = yield* makeBoxThread;
+      const otherPeer = yield* servePeer(other, boxToolkitLayer(otherThread, boxProjects));
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* linkTo(a.links, otherPeer, "full-access");
+      yield* seedParent(a);
+
+      const recorded = yield* Deferred.make<void>();
+      const send = yield* Deferred.make<void>();
+      const launched = yield* Deferred.make<void>();
+      const launches = yield* Ref.make(0);
+      yield* Ref.set(
+        thread.afterLaunch,
+        Ref.update(launches, (count) => count + 1).pipe(
+          Effect.andThen(Deferred.succeed(launched, undefined)),
+          Effect.asVoid,
+        ),
+      );
+      const dispatch = a.threads.dispatch;
+      using _dispatch = vi
+        .spyOn(a.threads, "dispatch")
+        .mockImplementation((command) =>
+          dispatch(command).pipe(
+            Effect.tap((result) =>
+              command.type === "delegated_task.remote.request" && !result.replayed
+                ? Deferred.succeed(recorded, undefined).pipe(Effect.andThen(Deferred.await(send)))
+                : Effect.void,
+            ),
+          ),
+        );
+
+      const initiatingCall = yield* delegateToBox(a).pipe(Effect.forkChild);
+      yield* Deferred.await(recorded);
+      const replay = yield* a.call("delegate_task", {
+        clientRequestId: "suite-on-box",
+        task: "Work from the replay.",
+        target: { environmentId: other.environmentId, projectId: boxProject },
+      });
+      expect(replay.isError).toBe(false);
+      expect(replay.structuredContent).toMatchObject({
+        remoteChild: { environmentId: box.environmentId },
+      });
+      expect(yield* Ref.get(otherThread.launched)).toBeNull();
+      expect(yield* Ref.get(launches)).toBe(0);
+
+      yield* Fiber.interrupt(initiatingCall);
+      yield* Deferred.succeed(send, undefined);
+      yield* Deferred.await(launched);
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+
+      const { taskId } = replay.structuredContent as { taskId: NodeId };
+      expect(yield* taskResult(a, taskId)).toMatchObject({ status: "completed" });
+      expect(yield* Ref.get(launches)).toBe(1);
+      expect(yield* Ref.get(thread.message)).toContain("Run the full suite on the box.");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("reconciles an accepted remote task after a post-commit projection read fails", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+
+      const recorded = yield* Deferred.make<NodeId>();
+      let failNextTaskRead = false;
+      const dispatch = a.threads.dispatch;
+      const getThreadRecords = a.threads.getThreadRecords;
+      using _dispatch = vi.spyOn(a.threads, "dispatch").mockImplementation((command) =>
+        dispatch(command).pipe(
+          Effect.tap((result) => {
+            if (command.type !== "delegated_task.remote.request" || result.replayed) {
+              return Effect.void;
+            }
+            const event = result.storedEvents.find(
+              ({ event }) => event.type === "subagent.updated",
+            )?.event;
+            if (event?.type !== "subagent.updated") return Effect.die("Missing accepted task");
+            failNextTaskRead = true;
+            return Deferred.succeed(recorded, event.payload.id).pipe(Effect.asVoid);
+          }),
+        ),
+      );
+      using _read = vi.spyOn(a.threads, "getThreadRecords").mockImplementation((...args) => {
+        const [threadId, fields] = args;
+        if (failNextTaskRead && threadId === parentThreadId && fields[0] === "subagents") {
+          failNextTaskRead = false;
+          return Effect.fail(new Orchestrator.OrchestratorProjectionError({ threadId }));
+        }
+        return getThreadRecords(...args);
+      });
+
+      const reply = yield* a.call("delegate_task", {
+        task: "Run the full suite on the box.",
+        target: { environmentId: box.environmentId, projectId: boxProject },
+        clientRequestId: "suite-on-box",
+      });
+      expect(reply.isError).toBe(true);
+      expect(yield* Ref.get(thread.launched)).toBeNull();
+
+      const taskId = yield* Deferred.await(recorded);
+      expect(yield* taskResult(a, taskId)).toMatchObject({ status: "failed" });
+      expect(yield* delegateToBox(a)).toMatchObject({ taskId, status: "failed" });
+      expect(yield* Ref.get(thread.launched)).toBeNull();
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
@@ -2116,6 +2243,37 @@ it.effect("keeps a successful remote reply despite an error item in the run's ac
         status: "completed",
         result: "Recovered and completed the task.",
       });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("replays the original terminal remote task without dispatching it again", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+
+      yield* Ref.set(thread.gone, true);
+      const gone = yield* delegateToBox(a);
+      expect(yield* taskResult(a, gone.taskId)).toMatchObject({ status: "failed" });
+      yield* a.links.unlink(box.environmentId);
+      using dispatch = vi.spyOn(a.threads, "dispatch");
+
+      expect(yield* delegateToBox(a)).toMatchObject({
+        taskId: gone.taskId,
+        status: "failed",
+        remoteChild: gone.remoteChild,
+      });
+      expect(
+        dispatch.mock.calls.some(([command]) => command.type === "delegated_task.remote.request"),
+      ).toBe(false);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

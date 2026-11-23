@@ -1,3 +1,7 @@
+## 2026-11-23 — Reliable retries for tasks on linked environments
+
+- Retrying an accepted task returns its original destination and status. A dropped connection or a temporary server read error cannot leave the task waiting for a server restart.
+
 ## 2026-11-22 — Long keys work for tasks on linked environments
 
 - Starting or cancelling a task on a linked environment no longer fails when the chat's request key is at the 256-character limit.
