@@ -154,6 +154,8 @@ export interface ThreadManagementSendInput {
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly modelSelection?: ModelSelection;
+  /** Recover the named receipt without admitting a fresh message. */
+  readonly receiptOnly?: boolean;
   readonly mode: ThreadManagementSendMode;
   /** Starts only while this stopped run is still the thread's latest (see the Orchestrator). */
   readonly manualContinuationOfRunId?: RunId;
@@ -990,62 +992,99 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
       });
     }
-    const steerableRun = latestSteerableRun(target);
-    let dispatchMode: Extract<
-      OrchestrationV2Command,
-      { readonly type: "message.dispatch" }
-    >["dispatchMode"];
-    if (input.mode === "restart" && input.expectedActiveRunId !== undefined) {
-      dispatchMode = { type: "restart_active", targetRunId: input.expectedActiveRunId };
-    } else if (input.mode === "steer" || input.mode === "restart") {
-      if (steerableRun === undefined) {
-        return yield* new ThreadManagementNoSteerableRunError({
-          threadId: input.threadId,
-          mode: input.mode,
+    const receipt = Option.getOrUndefined(
+      yield* receipts.getByCommandId(input.commandId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new Orchestrator.OrchestratorDispatchError({
+              commandId: input.commandId,
+              commandType: "message.dispatch",
+              cause,
+            }),
+        ),
+      ),
+    );
+    const dispatched = yield* Effect.gen(function* () {
+      if (
+        receipt?.status === "accepted" &&
+        receipt.threadId === input.threadId &&
+        receipt.commandType === "message.dispatch"
+      ) {
+        return {
+          sequence: receipt.resultSequence,
+          replayed: true as const,
+          storedEvents: yield* orchestrator.readCommandEvents({
+            commandId: input.commandId,
+            type: "message.dispatch",
+          }),
+        };
+      }
+      if (input.receiptOnly === true) {
+        return yield* new Orchestrator.OrchestratorDispatchError({
+          commandId: input.commandId,
+          commandType: "message.dispatch",
+          cause: "No accepted send for this thread.",
         });
       }
-      dispatchMode = {
-        type: input.mode === "steer" ? "steer_active" : "restart_active",
-        targetRunId: steerableRun.id,
-      };
-    } else if (input.mode === "auto" && steerableRun !== undefined) {
-      dispatchMode = { type: "steer_active", targetRunId: steerableRun.id };
-    } else {
-      dispatchMode = {
-        type: input.mode === "queue" ? "queue_after_active" : "start_immediately",
-      };
-    }
+      const steerableRun = latestSteerableRun(target);
+      let dispatchMode: Extract<
+        OrchestrationV2Command,
+        { readonly type: "message.dispatch" }
+      >["dispatchMode"];
+      if (input.mode === "restart" && input.expectedActiveRunId !== undefined) {
+        dispatchMode = { type: "restart_active", targetRunId: input.expectedActiveRunId };
+      } else if (input.mode === "steer" || input.mode === "restart") {
+        if (steerableRun === undefined) {
+          return yield* new ThreadManagementNoSteerableRunError({
+            threadId: input.threadId,
+            mode: input.mode,
+          });
+        }
+        dispatchMode = {
+          type: input.mode === "steer" ? "steer_active" : "restart_active",
+          targetRunId: steerableRun.id,
+        };
+      } else if (input.mode === "auto" && steerableRun !== undefined) {
+        dispatchMode = { type: "steer_active", targetRunId: steerableRun.id };
+      } else {
+        dispatchMode = {
+          type: input.mode === "queue" ? "queue_after_active" : "start_immediately",
+        };
+      }
 
-    const dispatched = yield* dispatch({
-      type: "message.dispatch",
-      commandId: input.commandId,
-      threadId: input.threadId,
-      messageId: input.messageId,
-      ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
-      ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
-      ...(input.demandId === undefined ? {} : { demandId: input.demandId }),
-      text: input.text,
-      attachments: input.attachments,
-      ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
-      ...(input.expectedActiveRunId === undefined
-        ? {}
-        : { expectedActiveRunId: input.expectedActiveRunId }),
-      ...(input.manualContinuationOfRunId === undefined
-        ? {}
-        : { manualContinuationOfRunId: input.manualContinuationOfRunId }),
-      dispatchMode,
-      createdBy: input.createdBy,
-      creationSource: input.creationSource,
+      return yield* dispatch({
+        type: "message.dispatch",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        messageId: input.messageId,
+        ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
+        ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
+        ...(input.demandId === undefined ? {} : { demandId: input.demandId }),
+        text: input.text,
+        attachments: input.attachments,
+        ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+        ...(input.expectedActiveRunId === undefined
+          ? {}
+          : { expectedActiveRunId: input.expectedActiveRunId }),
+        ...(input.manualContinuationOfRunId === undefined
+          ? {}
+          : { manualContinuationOfRunId: input.manualContinuationOfRunId }),
+        dispatchMode,
+        createdBy: input.createdBy,
+        creationSource: input.creationSource,
+      });
     });
     const projection = yield* getProjectThreadRecords(input, ["runs", "messages", "turnItems"], {
       messageIds: [input.messageId],
       turnItemTypes: ["user_message"],
     });
     const message = projection.messages.find((candidate) => candidate.id === input.messageId);
-    const run =
-      message?.runId === null || message?.runId === undefined
-        ? undefined
-        : projection.runs.find((candidate) => candidate.id === message.runId);
+    const acceptedMessage = dispatched.storedEvents.find(
+      ({ event }) => event.type === "message.updated" && event.payload.id === input.messageId,
+    )?.event;
+    const runId =
+      acceptedMessage?.type === "message.updated" ? acceptedMessage.payload.runId : undefined;
+    const run = projection.runs.find((candidate) => candidate.id === runId);
     const turnItem =
       projection.turnItems.find(
         (
@@ -1053,24 +1092,31 @@ const make = Effect.gen(function* () {
         ): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> =>
           candidate.type === "user_message" && candidate.messageId === input.messageId,
       ) ?? null;
+    const created = dispatched.storedEvents.find(
+      ({ event }) => event.type === "run.created" && event.payload.id === runId,
+    )?.event;
     if (
       message === undefined ||
       run === undefined ||
-      (turnItem === null && run.status !== "queued")
+      (turnItem === null &&
+        !(created?.type === "run.created" && created.payload.status === "queued"))
     ) {
       return yield* new ThreadManagementDurableRunProjectionError({
         threadId: input.threadId,
         messageId: input.messageId,
       });
     }
+    // The receipt records the accepted delivery even if the message later moved or its run settled.
     const delivery: ThreadManagementSendResult["delivery"] =
-      turnItem === null || turnItem.inputIntent === "queued_turn"
-        ? "queued"
-        : turnItem.inputIntent === "turn_start"
-          ? "started"
-          : input.mode === "restart"
-            ? "restarted"
-            : "steered";
+      created?.type === "run.created"
+        ? created.payload.status === "queued"
+          ? "queued"
+          : "started"
+        : dispatched.storedEvents.some(
+              ({ event }) => event.type === "run-attempt.created" && event.runId === runId,
+            )
+          ? "restarted"
+          : "steered";
     return { dispatch: dispatched, projection, message, run, turnItem, delivery };
   });
 

@@ -2218,6 +2218,73 @@ it.effect.each([`demand:${"a".repeat(64)}`, null])(
     }),
 );
 
+it.effect.each(["idle", "partial", "legacy partial"] as const)(
+  "a receipt-only launch can do only the work accepted at creation (%s)",
+  (state) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const input = {
+        ...launchInput({
+          command: "repair-key",
+          thread: "repair-thread",
+          message: "Original repair",
+        }),
+        createdBy: "agent" as const,
+        creationSource: "mcp" as const,
+      };
+      const { initialMessage, ...idle } = input;
+      const issued = {
+        ...(state === "idle" ? idle : input),
+        ...(state === "legacy partial" ? {} : { launchIntentHash: "a".repeat(64) }),
+      };
+      if (state === "idle") {
+        yield* launches.launch(issued);
+      } else {
+        const dispatch = threads.dispatch;
+        const pause = vi
+          .spyOn(threads, "dispatch")
+          .mockImplementation((command) =>
+            command.type === "message.dispatch" ? Effect.interrupt : dispatch(command),
+          );
+        const first = yield* launches.launch(issued).pipe(Effect.exit);
+        pause.mockRestore();
+        assert.isTrue(Exit.isFailure(first));
+      }
+      const replay = { ...input, launchIntentHash: "b".repeat(64), receiptOnly: true };
+      const changed = yield* launches
+        .launch({
+          ...replay,
+          initialMessage: { ...initialMessage!, text: "Unaccepted work" },
+        })
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(changed));
+      assert.isEmpty((yield* threads.getThreadProjection(input.threadId)).runs);
+      if (state === "legacy partial") {
+        assert.isTrue(
+          Exit.isFailure(
+            yield* launches
+              .launch({ ...replay, launchIntentHash: "a".repeat(64) })
+              .pipe(Effect.exit),
+          ),
+        );
+      } else {
+        const accepted = yield* launches.launch({
+          ...issued,
+          launchIntentHash: "a".repeat(64),
+          receiptOnly: true,
+        });
+        assert.lengthOf(accepted.projection.runs, state === "idle" ? 0 : 1);
+        assert.equal(
+          accepted.projection.messages[0]?.text,
+          state === "idle" ? undefined : initialMessage!.text,
+        );
+      }
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
 it.effect("schedules an accepted preparing message exactly once across concurrent retries", () =>
   Effect.gen(function* () {
     const setupEntered = yield* Deferred.make<void>();

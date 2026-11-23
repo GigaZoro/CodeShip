@@ -25,6 +25,11 @@ import * as Stream from "effect/Stream";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
+import * as ThreadManagement from "./ThreadManagementService.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as Layer from "effect/Layer";
 import * as Orchestrator from "./Orchestrator.ts";
 import { queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -1369,6 +1374,122 @@ it.effect("starts a steer that missed the turn on the saved next-turn selection"
         assert.equal(started[1]?.message.messageId, MessageId.make("message:steer"));
         assert.deepEqual(started[1]?.modelSelection, composerSelection);
         assert.deepEqual(projection.thread.modelSelection, composerSelection);
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
+it.effect.each(["steer", "restart"] as const)(
+  "an accepted %s send replays after its run settles",
+  (mode) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+          "receipt-after-settle",
+          true,
+        );
+        const management = ThreadManagement.layer.pipe(
+          Layer.provideMerge(layer),
+          Layer.provide(ServerSettings.layerTest()),
+          Layer.provide(
+            CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const threadId = yield* startFirstTurn;
+          const [run] = (yield* threads.getThreadProjection(threadId)).runs;
+          const input = {
+            mode,
+            projectId: ProjectId.make("project:receipt-after-settle"),
+            threadId,
+            commandId: CommandId.make("repair"),
+            messageId: MessageId.make("repair"),
+            text: "Repair",
+            attachments: [],
+            demandId: run!.demandId ?? null,
+            createdBy: "agent" as const,
+            creationSource: "mcp" as const,
+          };
+          const first = yield* threads.sendToThread(input);
+          assert.equal(first.delivery, mode === "restart" ? "restarted" : "steered");
+          const sink = yield* EventSink.EventSinkV2;
+          const now = yield* DateTime.now;
+          const snapshot = yield* threads.getThreadProjection(threadId);
+          yield* sink.write({
+            events: snapshot.runs.map((row) => ({
+              id: EventId.make(`settled:${row.id}`),
+              type: "run.updated",
+              threadId,
+              runId: row.id,
+              occurredAt: now,
+              payload: { ...row, status: "completed", completedAt: now },
+            })),
+          });
+          const retry = yield* threads.sendToThread({ ...input, demandId: null });
+          assert.equal(retry.delivery, first.delivery);
+          assert.equal(retry.run.id, first.run.id);
+          assert.isTrue(retry.dispatch.replayed);
+          assert.lengthOf(
+            (yield* threads.getThreadProjection(threadId)).messages.filter(
+              (row) => row.id === input.messageId,
+            ),
+            1,
+          );
+        }).pipe(Effect.provide(management));
+      }),
+    ),
+);
+
+it.effect("a guarded repair restart refuses two unknown owners without queuing a run", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { interrupted, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        "guarded-unknown",
+        true,
+      );
+      yield* Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const threadId = yield* startFirstTurn;
+        const [run] = (yield* engine.getThreadProjection(threadId)).runs;
+        assert.isDefined(run);
+        const sink = yield* EventSink.EventSinkV2;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("unknown-owner"),
+              type: "run.updated",
+              runId: run.id,
+              threadId,
+              occurredAt: yield* DateTime.now,
+              payload: { ...run, demandId: null },
+            },
+          ],
+        });
+        const command = {
+          type: "message.dispatch",
+          threadId,
+          commandId: CommandId.make("guarded-unknown"),
+          messageId: MessageId.make("guarded-unknown"),
+          text: "Repair",
+          attachments: [],
+          demandId: null,
+          expectedActiveRunId: run.id,
+          dispatchMode: { type: "restart_active", targetRunId: run.id },
+          createdBy: "agent",
+          creationSource: "mcp",
+        } as const;
+        const refusal = yield* engine.dispatch(command).pipe(Effect.flip);
+        assert.equal(
+          refusal._tag === "OrchestratorDispatchError" && String(refusal.cause),
+          "A guarded restart must restart its expected run.",
+        );
+        const after = yield* engine.getThreadProjection(threadId);
+        assert.lengthOf(after.runs, 1);
+        assert.isFalse(after.messages.some((message) => message.id === command.messageId));
+        yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+        assert.deepEqual(interrupted, []);
+        assert.deepEqual(steered, []);
       }).pipe(Effect.provide(layer));
     }),
   ),

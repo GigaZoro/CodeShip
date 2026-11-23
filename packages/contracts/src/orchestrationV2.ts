@@ -460,6 +460,7 @@ export const OrchestrationV2DemandId = Schema.String.check(
 
 export const EXPECTED_ACTIVE_RUN_CHANGED = "expected_active_run_changed";
 export const OrchestrationV2AppThread = Schema.Struct({
+  launchIntentHash: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))),
   initialDemandId: Schema.optional(Schema.NullOr(OrchestrationV2DemandId)),
   initialDemandOriginKind: Schema.optional(Schema.Literal("repair")),
   ...OrchestrationV2CreationFields,
@@ -4022,6 +4023,7 @@ type CreateThreadCommand = Extract<OrchestrationV2Command, { readonly type: "thr
 export type OrchestrationV2ServerCommand =
   | Exclude<OrchestrationV2Command, LaunchCommand | CreateThreadCommand>
   | (CreateThreadCommand & {
+      readonly launchIntentHash?: string;
       readonly initialDemandId?: string | null;
       readonly initialDemandOriginKind?: "repair";
     })

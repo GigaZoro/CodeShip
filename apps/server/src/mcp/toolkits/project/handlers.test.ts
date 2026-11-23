@@ -77,6 +77,7 @@ const advertisedProvider = (
 const clientLaunchHarness = (input: {
   readonly runtimeModeCeiling: RuntimeMode;
   readonly defaultRuntimeMode?: RuntimeMode;
+  readonly receiptReplay?: { runtimeMode: RuntimeMode; interactionMode: "default" | "plan" };
   readonly fallbackModel?: ModelSelection;
   readonly providers?: readonly ServerProvider[];
   /** Where Settings saves a project's model; the legacy project field stays null. */
@@ -152,16 +153,36 @@ const clientLaunchHarness = (input: {
               label: "Claude Code",
               access: input.runtimeModeCeiling,
               webOrigin: input.webOrigin,
+              ...(input.receiptReplay === undefined
+                ? {}
+                : {
+                    linked: true,
+                    replayDemandReceipt: true,
+                    narrowedTo: {
+                      runtimeMode: "auto" as const,
+                      interactionMode: "plan" as const,
+                    },
+                  }),
             }
           : undefined,
       issuedAt: 0,
       capabilities: new Set(["orchestration" as const]),
     }),
     Layer.mock(ThreadManagement.ThreadManagementService)({
+      hasReceipt: () => Effect.succeed(input.receiptReplay !== undefined),
       // A thread exists once a launch started it.
       getThreadShell: (threadId) => {
         const caller = input.callerThreads?.find(({ shell }) => shell.id === threadId);
         if (caller !== undefined) return Effect.succeed(caller.shell);
+        if (input.receiptReplay !== undefined)
+          return Effect.succeed({
+            id: threadId,
+            projectId,
+            modelSelection,
+            deletedAt: null,
+            ...input.receiptReplay,
+            linkOrigin: { sessionId: "session-1", label: "test" },
+          } as OrchestrationV2ThreadShell);
         const launch = input.launched.find((candidate) => candidate.threadId === threadId);
         return Effect.succeed(
           launch === undefined
@@ -607,6 +628,44 @@ it.effect("a launch steps an inherited mode down to the provider's, and refuses 
     const offered = yield* launchPi("approval-required");
     expect(offered.launched[0]?.runtimeMode).toBe("approval-required");
   }),
+);
+
+it.effect.each([
+  {
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    code: "runtime_mode_escalation_denied",
+  },
+  { runtimeMode: "auto", interactionMode: "default", code: "interaction_mode_escalation_denied" },
+] as const)(
+  "a receipt-only launch checks the live shell against $code",
+  ({ runtimeMode, interactionMode, code }) =>
+    Effect.gen(function* () {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "auto",
+        launched,
+        receiptReplay: { runtimeMode, interactionMode },
+      });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const replies = yield* toolkit
+        .handle("t3_thread_launch", {
+          clientRequestId: "repair-1",
+          projectId,
+          title: "Repair",
+          message: "Original repair",
+          interactionMode: "plan",
+        })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      expect(replies.at(-1)?.result).toMatchObject({ code });
+      expect(launched).toHaveLength(0);
+    }),
 );
 
 it.effect("a launch retried with the same clientRequestId replays the first one", () =>

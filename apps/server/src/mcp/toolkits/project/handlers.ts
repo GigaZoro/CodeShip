@@ -27,6 +27,7 @@ import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import { defaultWorktreeStrategy } from "../../../vcs/defaultWorktreeStrategy.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as DateTime from "effect/DateTime";
+import { stableStringify } from "@t3tools/shared/relaySigning";
 import { withAutoAccount } from "@t3tools/shared/model";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -36,6 +37,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
 import {
+  assertTargetWithinLimits,
   callerDemand,
   newCommandId,
   readCaller,
@@ -206,6 +208,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             });
           }
           yield* assertSameLink(context, launched);
+          yield* assertTargetWithinLimits({ runtimeMode, interactionMode }, launched);
         }
         if (!replaying && input.workspaceStrategy?.type === "existing_worktree") {
           const project = yield* readProject;
@@ -338,6 +341,15 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           replaying || (input.message === undefined && !input.attachments?.length)
             ? null
             : yield* callerDemand(context, input.demandOrigin);
+        const launchIntentHash =
+          input.clientRequestId === undefined ||
+          (scope.client?.linked !== true && input.demandOrigin?.kind !== "repair")
+            ? undefined
+            : Hex.encode(
+                yield* (yield* Crypto.Crypto)
+                  .digest("SHA-256", new TextEncoder().encode(stableStringify(input)))
+                  .pipe(Effect.mapError(unavailable)),
+              );
         // Reclaim on replay and keep the attachment copies the first launch accepted.
         const requested = input.attachments ?? [];
         const result = yield* withResolvedAttachments(
@@ -345,6 +357,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           (attachments) =>
             ThreadMessageIntake.launchThread({
               commandId,
+              ...(launchIntentHash === undefined ? {} : { launchIntentHash }),
+              ...(scope.client?.replayDemandReceipt === true ? { receiptOnly: true } : {}),
               threadId,
               projectId,
               title: input.title,
@@ -404,6 +418,10 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             ),
         );
         const thread = result.projection.thread;
+        if (scope.client?.replayDemandReceipt === true) {
+          yield* assertSameLink(context, thread);
+          yield* assertTargetWithinLimits({ runtimeMode, interactionMode }, thread);
+        }
         const run = result.projection.runs.find((run) => run.userMessageId === messageId);
         return {
           threadId: thread.id,

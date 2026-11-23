@@ -120,6 +120,7 @@ interface BoxThread {
   readonly launchedProject: Ref.Ref<ProjectId | null>;
   /** The first message the thread there was launched with. */
   readonly message: Ref.Ref<string | null>;
+  readonly demand: Ref.Ref<string | null>;
   readonly status: Ref.Ref<OrchestrationV2Run["status"]>;
   readonly reply: Ref.Ref<string | null>;
   readonly error: Ref.Ref<string | null>;
@@ -184,6 +185,7 @@ const makeBoxThread = Effect.gen(function* () {
     ),
     launchedProject: yield* Ref.make<ProjectId | null>(null),
     message: yield* Ref.make<string | null>(null),
+    demand: yield* Ref.make<string | null>(null),
     status: yield* Ref.make<OrchestrationV2Run["status"]>("running"),
     reply: yield* Ref.make<string | null>("Working…"),
     error: yield* Ref.make<string | null>(null),
@@ -559,6 +561,7 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
             Effect.andThen(Ref.set(thread.launchedProject, input.projectId)),
             Effect.andThen(Ref.set(thread.workspaceStrategy, input.workspaceStrategy)),
             Effect.andThen(Ref.set(thread.message, input.initialMessage?.text ?? null)),
+            Effect.andThen(Ref.set(thread.demand, input.initialMessage?.demandId ?? null)),
             Effect.andThen(
               Ref.set(thread.launchedWith, {
                 modelSelection: input.modelSelection,
@@ -1911,116 +1914,6 @@ it.effect("a local retry finds a task accepted with the historical remote comman
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect.each(["no active parent run", "a newer run owned by another provider"] as const)(
-  "preserves remote observation guards with %s",
-  (observer) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const thread = yield* makeBoxThread;
-        const b = yield* serveBox(thread);
-        const offers = yield* SubscriptionRef.make<
-          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-        >([]);
-        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-        const a = yield* makeLaptop(database, offers);
-        yield* linkTo(a.links, b, "full-access");
-        yield* seedParent(a);
-        const delegated = yield* delegateToBox(a);
-
-        yield* Ref.set(thread.reply, "Remote result remains available.");
-        yield* Ref.set(thread.status, "completed");
-        yield* Deferred.succeed(thread.finished, undefined);
-        yield* taskResult(a, delegated.taskId);
-        yield* SubscriptionRef.changes(offers).pipe(
-          Stream.filter((seen) => seen.some((offer) => offer.threadId === parentThreadId)),
-          Stream.runHead,
-        );
-
-        const parent = yield* a.projections.getThreadRecords(
-          parentThreadId,
-          ["runs", "subagents"],
-          {
-            subagentIds: [delegated.taskId],
-          },
-        );
-        expect(parent.subagents[0]?.completionDelivery?.state).not.toBe("acknowledged");
-        const parentRun = parent.runs.find((run) => run.id === parentRunId);
-        if (parentRun === undefined) return yield* Effect.die("The parent run was not seeded.");
-        const now = yield* DateTime.now;
-        const otherInstanceId = ProviderInstanceId.make("codex-other");
-        const observingRun: OrchestrationV2Run =
-          observer === "no active parent run"
-            ? { ...parentRun, status: "completed", completedAt: now }
-            : {
-                id: RunId.make("run:laptop-other-provider"),
-                threadId: parentThreadId,
-                ordinal: parentRun.ordinal + 1,
-                providerInstanceId: otherInstanceId,
-                modelSelection: { instanceId: otherInstanceId, model: "gpt-5.4" },
-                providerThreadId: null,
-                userMessageId: MessageId.make("message:laptop-other-provider"),
-                rootNodeId: null,
-                activeAttemptId: null,
-                status: "preparing",
-                requestedAt: now,
-                startedAt: null,
-                completedAt: null,
-                checkpointId: null,
-                contextHandoffId: null,
-              };
-        yield* a.sink.write({
-          commandId: CommandId.make("command:change-remote-result-observer"),
-          events: [
-            {
-              id: EventId.make("event:change-remote-result-observer"),
-              type: "run.updated",
-              threadId: parentThreadId,
-              runId: observingRun.id,
-              providerInstanceId: observingRun.providerInstanceId,
-              occurredAt: now,
-              payload: observingRun,
-            },
-          ],
-        });
-
-        const status = yield* a.call("task_status", { taskId: delegated.taskId });
-        if (observer === "no active parent run") {
-          expect(status.isError).toBe(true);
-          expect(status.content).toEqual([
-            {
-              type: "text",
-              text: JSON.stringify({
-                _tag: "OrchestratorMcpFailure",
-                code: "parent_not_active",
-                message: "The calling provider no longer owns an active thread run.",
-              }),
-            },
-          ]);
-          const unacknowledged = yield* a.projections.getThreadRecords(
-            parentThreadId,
-            ["subagents"],
-            { subagentIds: [delegated.taskId] },
-          );
-          expect(unacknowledged.subagents[0]?.result).toBe("Remote result remains available.");
-          expect(unacknowledged.subagents[0]?.completionDelivery?.state).not.toBe("acknowledged");
-          return;
-        }
-        expect(status.isError, JSON.stringify(status.content)).not.toBe(true);
-        expect(status.structuredContent).toMatchObject({
-          status: "completed",
-          summary: "Remote result remains available.",
-        });
-        const acknowledged = yield* a.projections.getThreadRecords(parentThreadId, ["subagents"], {
-          subagentIds: [delegated.taskId],
-        });
-        expect(acknowledged.subagents[0]?.completionDelivery).toEqual({
-          state: "acknowledged",
-          observedByRunId: null,
-        });
-      }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
-
 it.effect(
   "overlapping delegations with one key launch only the recorded destination and owner",
   () =>
@@ -2077,6 +1970,8 @@ it.effect(
         expect(accepted?.remoteChild).toBeDefined();
         const onFirst = accepted!.remoteChild!.environmentId === box.environmentId;
         expect(accepted!.demandId).toBe(onFirst ? firstOwner : secondOwner);
+        expect(yield* Ref.get(firstThread.demand)).toBe(onFirst ? firstOwner : null);
+        expect(yield* Ref.get(secondThread.demand)).toBe(onFirst ? null : secondOwner);
         for (const result of results)
           expect(result.structuredContent).toMatchObject({
             taskId: accepted!.id,

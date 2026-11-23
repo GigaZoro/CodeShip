@@ -89,6 +89,10 @@ export interface ThreadLaunchInput {
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
+  /** Digest of the original keyed MCP request, before mutable server defaults or upload resolution. */
+  readonly launchIntentHash?: string;
+  /** A linked repair whose source disappeared may finish only a previously accepted launch. */
+  readonly receiptOnly?: boolean;
   readonly projectId: ProjectId;
   readonly title: string;
   readonly generateTitle?: boolean;
@@ -913,6 +917,20 @@ const make = Effect.gen(function* () {
       }
 
       const launchReceipt = yield* readReceipt(input, input.commandId);
+      if (
+        input.receiptOnly === true &&
+        (input.launchIntentHash === undefined ||
+          Option.isNone(launchReceipt) ||
+          launchReceipt.value.status !== "accepted" ||
+          launchReceipt.value.commandType !== "thread.create" ||
+          launchReceipt.value.threadId !== input.threadId)
+      ) {
+        return yield* mapError(
+          input,
+          "read-receipt",
+          input.threadId,
+        )("No accepted launch of this thread.");
+      }
       yield* threads.assertProviderInstanceEnabled({
         projectId: input.projectId,
         commandId: input.commandId,
@@ -992,6 +1010,9 @@ const make = Effect.gen(function* () {
                 interactionMode: input.interactionMode,
                 branch: initialBranch,
                 worktreePath: initialWorktreePath,
+                ...(input.launchIntentHash === undefined
+                  ? {}
+                  : { launchIntentHash: input.launchIntentHash }),
                 ...(input.initialMessage?.demandId === undefined
                   ? {}
                   : { initialDemandId: input.initialMessage.demandId }),
@@ -1025,21 +1046,46 @@ const make = Effect.gen(function* () {
         if (project.id !== input.projectId) {
           return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
         }
+        const creation = claimed.storedEvents.find(
+          ({ event }) => event.type === "thread.created",
+        )?.event;
+        const acceptedThread = creation?.type === "thread.created" ? creation.payload : undefined;
+        // The creation receipt is the commit boundary: even simultaneous callers see the winner's intent.
+        if (
+          (acceptedThread?.launchIntentHash !== undefined &&
+            acceptedThread.launchIntentHash !== input.launchIntentHash) ||
+          (input.receiptOnly === true && acceptedThread?.launchIntentHash === undefined)
+        ) {
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )("The accepted creation does not verify this launch request.");
+        }
         let runId: RunId | null = null;
         let messageSequence: number | undefined;
         let messageWasAlreadyAccepted = false;
         if (input.initialMessage !== undefined) {
-          const creation = claimed.storedEvents.find(
-            (stored) => stored.event.type === "thread.created",
-          )?.event;
           // On replay, only the original create can say which demand owned this launch.
           const demandId =
-            creation?.type === "thread.created"
-              ? creation.payload.initialDemandId
-              : input.initialMessage.demandId;
+            acceptedThread === undefined
+              ? input.initialMessage.demandId
+              : acceptedThread.initialDemandId;
           const messageCommandId = CommandId.make(`${input.commandId}:initial-message`);
           const messageReceipt = yield* readReceipt(input, messageCommandId);
           messageWasAlreadyAccepted = Option.isSome(messageReceipt);
+          if (
+            claimed.replayed === true &&
+            input.launchIntentHash !== undefined &&
+            acceptedThread?.launchIntentHash === undefined &&
+            !messageWasAlreadyAccepted
+          ) {
+            return yield* mapError(
+              input,
+              "read-receipt",
+              threadId,
+            )("A legacy creation cannot verify a pending initial message.");
+          }
           const messageId =
             input.initialMessage.messageId ??
             (yield* ids.allocate

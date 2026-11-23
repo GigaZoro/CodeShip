@@ -4339,6 +4339,7 @@ const make = Effect.gen(function* () {
           threadId: input.threadId,
           ...(parent === undefined ? {} : { senderThreadId: parent.thread.id }),
           demandId,
+          ...(scope.client?.replayDemandReceipt === true ? { receiptOnly: true } : {}),
           messageId,
           text: input.message,
           attachments: [],

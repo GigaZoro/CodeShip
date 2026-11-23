@@ -204,6 +204,9 @@ const boxLaunches = (seen: Ref.Ref<Seen>) =>
           projection: {
             thread: {
               id: input.threadId,
+              runtimeMode: input.runtimeMode,
+              interactionMode: input.interactionMode,
+              linkOrigin: input.linkOrigin,
               projectId: input.projectId,
               modelSelection: input.modelSelection,
               title: input.title,
@@ -752,7 +755,16 @@ it.effect(
         expect(repeated.structuredContent).toEqual(sent.structuredContent);
         const resumed = yield* a.call(caller, "t3_thread_launch", launch);
         expect(failureOf(resumed)).toBeUndefined();
-        expect((yield* Ref.get(seen)).launches.at(-1)?.commandId).toBe(created.commandId);
+        const retried = (yield* Ref.get(seen)).launches.at(-1)!;
+        expect(retried.commandId).toBe(created.commandId);
+        expect(created.launchIntentHash).toMatch(/^[a-f0-9]{64}$/);
+        expect(retried.launchIntentHash).toBe(created.launchIntentHash);
+        expect(retried.receiptOnly).toBe(true);
+        // This box substitutes a recording launch service. The SQLite service separately tests rejection.
+        yield* a.call(caller, "t3_thread_launch", { ...launch, message: "Different work" });
+        const changed = (yield* Ref.get(seen)).launches.at(-1)!;
+        expect(changed.commandId).toBe(created.commandId);
+        expect(changed.launchIntentHash).not.toBe(created.launchIntentHash);
         for (const [tool, args] of [
           ["t3_thread_send", { ...send, clientRequestId: "fresh-send" }],
           ["t3_thread_launch", { ...launch, clientRequestId: "fresh-launch" }],
@@ -766,7 +778,7 @@ it.effect(
             .isError,
         ).toBe(true);
         expect((yield* Ref.get(seen)).sends).toHaveLength(2);
-        expect((yield* Ref.get(seen)).launches).toHaveLength(2);
+        expect((yield* Ref.get(seen)).launches).toHaveLength(3);
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
