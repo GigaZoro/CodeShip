@@ -1,3 +1,7 @@
+## 2026-11-23 — Replay of accepted sends and delegations
+
+- Retrying a keyed send recovers its original delivery after the run settles or its thread is archived. Repeated delegations resolve to the task and destination first accepted.
+
 ## 2026-11-23 — Accounting for provider background work
 
 - Background completions in ACP, Claude, Codex and Muse carry their originating run when it can be identified. Duplicate ACP completion notices are counted once. Retrying a failed wake retains the original task even when a later task reuses its ID. Replacing an ACP runtime or a Muse host clears its pending reports.
