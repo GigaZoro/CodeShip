@@ -119,8 +119,9 @@ const CLOUDFLARED_RELEASE_ASSETS: Readonly<
 
 const INSTALL_LOCK_RETRY_COUNT = 100;
 const INSTALL_LOCK_RETRY_DELAY = "100 millis";
-// Legacy locks have no owner; allow both ten-minute download stages and the install tail.
-const INSTALL_LOCK_LEGACY_STALE_MS = 30 * 60 * 1_000;
+// Longer than the install's bounded downloads and extraction. An abandoned legacy lock only delays new installs.
+const INSTALL_LOCK_STALE_MS = 30 * 60 * 1_000;
+const EXTRACT_TIMEOUT = "2 minutes";
 const VERSION_PROBE_TIMEOUT = "10 seconds";
 
 const ACTIVATE_RETRY_COUNT = 40;
@@ -216,6 +217,8 @@ function parseLockOwnerPid(owner: string): number | null {
   return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
 
+const isNotFound = (error: PlatformError.PlatformError) => error.reason._tag === "NotFound";
+
 const wrapInstallFailure =
   (
     reason: RelayClientInstallError["reason"],
@@ -257,9 +260,14 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
   const releaseAsset = options.releaseAsset ?? resolveReleaseAsset(platform, arch);
   const loadCloudflaredConfig = Effect.suspend(() => CloudflaredConfig).pipe(Effect.orDie);
   const managedRoot = path.join(options.baseDir, "tools", "cloudflared");
-  const managedPathFor = (version: string) =>
+  const legacyPathFor = (version: string) =>
     path.join(managedRoot, version, `${platform}-${arch}`, executableFileName(platform));
+  // Older installers remove their lock by pathname. Separate write locations keep that protocol
+  // from removing a current owner's lock while both generations share the same base directory.
+  const managedPathFor = (version: string) =>
+    path.join(path.dirname(legacyPathFor(version)), "install", executableFileName(platform));
   const managedPath = managedPathFor(CLOUDFLARED_VERSION);
+  const legacyLockPath = `${legacyPathFor(CLOUDFLARED_VERSION)}.lock`;
 
   const isExecutableFile = Effect.fn("cloudflared.isExecutableFile")(function* (
     executablePath: string,
@@ -322,6 +330,16 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
     return { status: "available", executablePath, source, version } satisfies AvailableRelayClient;
   });
 
+  const managedCandidate = Effect.fn("cloudflared.managedCandidate")(function* (
+    version: string,
+    expectedVersion?: string,
+  ) {
+    return (
+      (yield* compatibleCandidate(managedPathFor(version), "managed", expectedVersion)) ??
+      (yield* compatibleCandidate(legacyPathFor(version), "managed", expectedVersion))
+    );
+  });
+
   // Newer managed folders may belong to another server; never use or prune them.
   const olderManagedVersions = Effect.gen(function* () {
     const entries = yield* fileSystem
@@ -374,10 +392,10 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
       );
       return missingStatus;
     }
-    const pinned = yield* compatibleCandidate(managedPath, "managed");
+    const pinned = yield* managedCandidate(CLOUDFLARED_VERSION);
     if (pinned) return pinned;
     for (const version of yield* olderManagedVersions) {
-      const older = yield* compatibleCandidate(managedPathFor(version), "managed");
+      const older = yield* managedCandidate(version);
       if (older) return older;
     }
     const pathExecutable = yield* resolvePathExecutable;
@@ -398,14 +416,17 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
     }
   }).pipe(Effect.withSpan("cloudflared.pruneManagedVersions"));
 
-  const renameWhenUnlocked = (from: string, to: string) =>
-    fileSystem.rename(from, to).pipe(
+  const retryWhileWindowsLocked = <A>(effect: Effect.Effect<A, PlatformError.PlatformError>) =>
+    effect.pipe(
       Effect.retry({
         times: ACTIVATE_RETRY_COUNT,
         schedule: Schedule.spaced(ACTIVATE_RETRY_DELAY),
         while: (error) => platform === "win32" && isWindowsRenameLock(error),
       }),
     );
+
+  const renameWhenUnlocked = (from: string, to: string) =>
+    retryWhileWindowsLocked(fileSystem.rename(from, to));
 
   const runCommand = Effect.fn("cloudflared.runCommand")(function* (
     command: string,
@@ -481,9 +502,60 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
     lockPath: string,
     owner: string,
   ) {
-    yield* fileSystem.remove(path.join(lockPath, owner), { force: true }).pipe(Effect.ignore);
+    yield* retryWhileWindowsLocked(
+      fileSystem.remove(path.join(lockPath, owner), { force: true }),
+    ).pipe(
+      // A left entry holds the lock only until it is INSTALL_LOCK_STALE_MS old.
+      Effect.ignore({ log: "Error", message: "Could not release a relay client install lock" }),
+    );
     // A replacement contains a different owner entry, so rmdir cannot remove it.
     yield* removeEmptyLock(lockPath);
+  });
+
+  const statIfPresent = (target: string) =>
+    fileSystem.stat(target).pipe(
+      Effect.asSome,
+      Effect.catchIf(isNotFound, () => Effect.succeed(Option.none<FileSystem.File.Info>())),
+    );
+
+  const isExpired = (info: FileSystem.File.Info, now: number) =>
+    Option.isSome(info.mtime) && now - info.mtime.value.getTime() > INSTALL_LOCK_STALE_MS;
+
+  const renameOnto = (directory: string, lockPath: string) =>
+    fileSystem.rename(directory, lockPath).pipe(
+      Effect.as(true),
+      Effect.catchIf(isLockContention, () => Effect.succeed(false)),
+    );
+
+  // A dead pid frees its entry at once, and age frees one whose pid another process now uses.
+  const recoverAbandonedOwners = Effect.fn("cloudflared.recoverAbandonedOwners")(function* (
+    lockPath: string,
+    now: number,
+  ) {
+    const owners = yield* fileSystem.readDirectory(lockPath).pipe(
+      Effect.asSome,
+      // The lock was released, or replaced by a file, since the stat.
+      Effect.catchIf(
+        (error) => isNotFound(error) || error.reason._tag === "BadResource",
+        () => Effect.succeed(Option.none<ReadonlyArray<string>>()),
+      ),
+    );
+    if (Option.isNone(owners)) return true;
+    let recovered = owners.value.length === 0;
+    for (const entry of owners.value) {
+      const pid = parseLockOwnerPid(entry);
+      const info = yield* statIfPresent(path.join(lockPath, entry));
+      if (
+        Option.isNone(info) ||
+        (pid !== null && !isProcessAlive(pid)) ||
+        isExpired(info.value, now)
+      ) {
+        yield* releaseOwnedLock(lockPath, entry);
+        recovered = true;
+      }
+    }
+    if (recovered) yield* removeEmptyLock(lockPath);
+    return recovered;
   });
 
   const acquireInstallLock = Effect.fn("cloudflared.acquireInstallLock")(function* (
@@ -497,45 +569,20 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
     );
     yield* fileSystem.writeFileString(path.join(candidate, owner), "");
     for (let attempt = 0; attempt < INSTALL_LOCK_RETRY_COUNT; attempt += 1) {
-      // A legacy lock is a file, and Windows renames a directory over a file instead of refusing it.
-      let lockInfo = yield* fileSystem.stat(lockPath).pipe(Effect.option);
-      if (Option.isNone(lockInfo) || lockInfo.value.type === "Directory") {
-        const acquired = yield* Effect.acquireRelease(
-          // Publish a populated directory atomically, with no ownerless acquisition window.
-          fileSystem.rename(candidate, lockPath),
-          () => releaseOwnedLock(lockPath, owner),
-        ).pipe(
-          Effect.as(true),
-          Effect.catchIf(isLockContention, () => Effect.succeed(false)),
-        );
-        if (acquired) return;
-        lockInfo = yield* fileSystem.stat(lockPath).pipe(Effect.option);
+      const legacy = yield* statIfPresent(legacyLockPath);
+      if (Option.isSome(legacy) && !isExpired(legacy.value, yield* Clock.currentTimeMillis)) {
+        yield* Effect.sleep(INSTALL_LOCK_RETRY_DELAY);
+        continue;
       }
+      const acquired = yield* Effect.acquireRelease(renameOnto(candidate, lockPath), (published) =>
+        published ? releaseOwnedLock(lockPath, owner) : Effect.void,
+      );
+      if (acquired) return;
+      const lockInfo = yield* statIfPresent(lockPath);
       if (Option.isNone(lockInfo)) continue;
+      const now = yield* Clock.currentTimeMillis;
       if (lockInfo.value.type === "Directory") {
-        const owners = yield* fileSystem
-          .readDirectory(lockPath)
-          .pipe(Effect.orElseSucceed(() => []));
-        let recovered = owners.length === 0;
-        for (const entry of owners) {
-          const pid = parseLockOwnerPid(entry);
-          if (pid !== null && !isProcessAlive(pid)) {
-            yield* releaseOwnedLock(lockPath, entry);
-            recovered = true;
-          }
-        }
-        if (recovered) {
-          yield* removeEmptyLock(lockPath);
-          continue;
-        }
-      } else {
-        const now = yield* Clock.currentTimeMillis;
-        const mtime = lockInfo.value.mtime;
-        if (Option.isSome(mtime) && now - mtime.value.getTime() > INSTALL_LOCK_LEGACY_STALE_MS) {
-          // Nonrecursive removal also refuses a populated directory that replaced this file.
-          yield* fileSystem.remove(lockPath, { force: true }).pipe(Effect.ignore);
-          continue;
-        }
+        if (yield* recoverAbandonedOwners(lockPath, now)) continue;
       }
       yield* Effect.sleep(INSTALL_LOCK_RETRY_DELAY);
     }
@@ -558,7 +605,7 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
         message: `${CLOUDFLARED_PATH_ENV_NAME} must point to cloudflared ${CLOUDFLARED_MIN_VERSION} or newer.`,
       });
     }
-    const existing = yield* compatibleCandidate(managedPath, "managed", CLOUDFLARED_VERSION);
+    const existing = yield* managedCandidate(CLOUDFLARED_VERSION, CLOUDFLARED_VERSION);
     if (existing) return existing;
     if (!releaseAsset) {
       return yield* new RelayClientInstallError({
@@ -588,7 +635,7 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
       }),
     );
     return yield* Effect.gen(function* () {
-      const afterLock = yield* compatibleCandidate(managedPath, "managed", CLOUDFLARED_VERSION);
+      const afterLock = yield* managedCandidate(CLOUDFLARED_VERSION, CLOUDFLARED_VERSION);
       if (afterLock) return afterLock;
 
       const tempDirectory = yield* fileSystem.makeTempDirectoryScoped({
@@ -608,6 +655,7 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
       const executablePath = path.join(tempDirectory, executableFileName(platform));
       if (releaseAsset.archive === "tgz") {
         yield* runCommand("tar", ["-xzf", archivePath, "-C", tempDirectory]).pipe(
+          Effect.timeout(EXTRACT_TIMEOUT),
           wrapInstallFailure("write_failed", "Could not extract the relay client."),
         );
       }

@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -101,6 +102,7 @@ const managedPathFor = (
   baseDir: string,
   version: string,
   platform: NodeJS.Platform = "linux",
+  layout: "current" | "legacy" = "current",
 ) =>
   paths.join(
     baseDir,
@@ -108,11 +110,16 @@ const managedPathFor = (
     "cloudflared",
     version,
     `${platform}-x64`,
+    ...(layout === "current" ? ["install"] : []),
     platform === "win32" ? "cloudflared.exe" : "cloudflared",
   );
 
-const lockPathFor = (paths: Path.Path, baseDir: string) =>
-  `${managedPathFor(paths, baseDir, RelayClient.CLOUDFLARED_VERSION)}.lock`;
+const lockPathFor = (
+  paths: Path.Path,
+  baseDir: string,
+  platform: NodeJS.Platform = "linux",
+  layout: "current" | "legacy" = "current",
+) => `${managedPathFor(paths, baseDir, RelayClient.CLOUDFLARED_VERSION, platform, layout)}.lock`;
 
 // The simulated platform's exec bits live here because NTFS cannot hold them.
 const withModeModel = (fileSystem: FileSystem.FileSystem) => {
@@ -200,6 +207,8 @@ const makeLockedRenames = (
     return { locked, renames, firstAttempt };
   });
 
+const staleLockTime = DateTime.toDate(DateTime.makeUnsafe("2026-01-01T00:00:00Z"));
+
 const testBinary = new TextEncoder().encode("test-cloudflared-binary");
 const testReleaseAsset = {
   url: "https://example.test/cloudflared",
@@ -207,9 +216,17 @@ const testReleaseAsset = {
   archive: "binary",
 } as const;
 
+// A simulated Windows renames over files on every host, so a lock test never relies on rename refusing one.
+const layerWindowsRenames = Layer.effect(
+  FileSystem.FileSystem,
+  Effect.map(FileSystem.FileSystem, (fileSystem) => FileSystem.make(renamingOverFiles(fileSystem))),
+).pipe(Layer.provide(layerNodeServices));
+
 const layerInstallRuntime = (platform: NodeJS.Platform) =>
   Layer.mergeAll(
-    layerNodeServices,
+    platform === "win32"
+      ? Layer.mergeAll(layerNodeServices, layerWindowsRenames)
+      : layerNodeServices,
     layerHttpClient(testBinary),
     layerSpawner([]),
     layerHostRuntime({ PATH: "" }, platform),
@@ -261,7 +278,12 @@ describe("RelayClient", () => {
       const fileSystem = yield* FileSystem.FileSystem;
       const paths = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
-      const lockPath = lockPathFor(paths, baseDir);
+      const lockPath = lockPathFor(
+        paths,
+        baseDir,
+        "win32",
+        kind === "live owner" ? "current" : "legacy",
+      );
       const owner = `${process.pid}-still-running`;
       yield* fileSystem.makeDirectory(paths.dirname(lockPath), {
         recursive: true,
@@ -270,21 +292,16 @@ describe("RelayClient", () => {
         yield* fileSystem.makeDirectory(lockPath);
         yield* fileSystem.writeFileString(paths.join(lockPath, owner), "");
       } else {
-        yield* fileSystem.writeFileString(lockPath, "");
+        yield* fileSystem.writeFileString(lockPath, "legacy-installer");
       }
       const written = yield* fileSystem.stat(lockPath);
-      yield* TestClock.setTime(
-        Option.getOrThrow(written.mtime).getTime() + (kind === "live owner" ? 3_600_000 : 6_000),
-      );
+      yield* TestClock.setTime(Option.getOrThrow(written.mtime).getTime() + 6_000);
       const waiting = yield* Deferred.make<void>();
       const clock = yield* Clock.Clock;
       const manager = yield* RelayClient.makeCloudflaredRelayClient({
         baseDir,
         releaseAsset: testReleaseAsset,
-      }).pipe(
-        // Every host renames over a file here as Windows does, so a legacy lock never relies on rename refusing it.
-        Effect.provideService(FileSystem.FileSystem, renamingOverFiles(fileSystem)),
-      );
+      });
       const installing = yield* manager.install.pipe(
         Effect.provideService(Clock.Clock, {
           ...clock,
@@ -297,8 +314,129 @@ describe("RelayClient", () => {
       if (kind === "live owner") {
         expect(yield* fileSystem.readDirectory(lockPath)).toEqual([owner]);
       } else {
-        expect(yield* fileSystem.readFileString(lockPath)).toBe("");
+        expect(yield* fileSystem.readFileString(lockPath)).toBe("legacy-installer");
       }
+    }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("win32"))),
+  );
+
+  it.effect("installs separately when a legacy installer claims its path after inspection", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
+      const legacyLock = lockPathFor(paths, baseDir, "win32", "legacy");
+      let claimed = false;
+      const manager = yield* RelayClient.makeCloudflaredRelayClient({
+        baseDir,
+        releaseAsset: testReleaseAsset,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          stat: (target) =>
+            fs.stat(target).pipe(
+              Effect.tapError(() =>
+                target === legacyLock && !claimed
+                  ? fs.writeFileString(legacyLock, "legacy-installer", { flag: "wx" }).pipe(
+                      Effect.tap(() =>
+                        Effect.sync(() => {
+                          claimed = true;
+                        }),
+                      ),
+                    )
+                  : Effect.void,
+              ),
+            ),
+        }),
+      );
+      expect(yield* manager.install).toMatchObject({
+        status: "available",
+        executablePath: managedPathFor(paths, baseDir, RelayClient.CLOUDFLARED_VERSION, "win32"),
+      });
+      expect(claimed).toBe(true);
+      expect(yield* fs.readFileString(legacyLock)).toBe("legacy-installer");
+    }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("win32"))),
+  );
+
+  it.effect.each(["legacy file", "owned directory"] as const)(
+    "preserves a %s that replaced a stale legacy lock after inspection",
+    (replacement) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const paths = yield* Path.Path;
+        const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-cloudflared-test-",
+        });
+        const lockPath = lockPathFor(paths, baseDir, "win32", "legacy");
+        const owner = `${process.pid}-fresh-installer`;
+        yield* fileSystem.makeDirectory(paths.dirname(lockPath), { recursive: true });
+        yield* fileSystem.writeFileString(lockPath, "");
+        // The replacement's real mtime is after this clock, so only the stale lock looks expired.
+        yield* fileSystem.utimes(lockPath, staleLockTime, staleLockTime);
+        yield* TestClock.setTime(staleLockTime.getTime() + 3_600_000);
+        let replaced = false;
+        // A second process clears the stale lock, then a third acquires that same path.
+        const replaceStaleLock = Effect.suspend(() => {
+          if (replaced) return Effect.void;
+          replaced = true;
+          return fileSystem
+            .remove(lockPath)
+            .pipe(
+              Effect.andThen(
+                replacement === "legacy file"
+                  ? fileSystem.writeFileString(lockPath, "fresh-installer")
+                  : fileSystem
+                      .makeDirectory(lockPath)
+                      .pipe(
+                        Effect.andThen(fileSystem.writeFileString(paths.join(lockPath, owner), "")),
+                      ),
+              ),
+            );
+        });
+        const manager = yield* RelayClient.makeCloudflaredRelayClient({
+          baseDir,
+          releaseAsset: testReleaseAsset,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fileSystem,
+            stat: (target) =>
+              fileSystem
+                .stat(target)
+                .pipe(Effect.tap(() => (target === lockPath ? replaceStaleLock : Effect.void))),
+          }),
+        );
+        expect(yield* manager.install).toMatchObject({
+          status: "available",
+          executablePath: managedPathFor(paths, baseDir, RelayClient.CLOUDFLARED_VERSION, "win32"),
+        });
+        expect(replaced).toBe(true);
+        if (replacement === "legacy file") {
+          expect(yield* fileSystem.readFileString(lockPath)).toBe("fresh-installer");
+        } else {
+          expect(yield* fileSystem.readDirectory(lockPath)).toEqual([owner]);
+        }
+        const entries = yield* fileSystem.readDirectory(paths.dirname(lockPath));
+        expect(entries.filter((entry) => entry.startsWith(".lock-stale-"))).toEqual([]);
+      }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("win32"))),
+  );
+
+  it.effect("replaces a lock whose owner's pid another process now uses", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
+      const lockPath = lockPathFor(paths, baseDir);
+      const reused = paths.join(lockPath, `${process.pid}-crashed-installer`);
+      yield* fileSystem.makeDirectory(lockPath, { recursive: true });
+      yield* fileSystem.writeFileString(reused, "");
+      yield* fileSystem.utimes(reused, staleLockTime, staleLockTime);
+      yield* TestClock.setTime(staleLockTime.getTime() + 3_600_000);
+      const manager = yield* RelayClient.makeCloudflaredRelayClient({
+        baseDir,
+        releaseAsset: testReleaseAsset,
+      });
+
+      expect(yield* manager.install).toMatchObject({ status: "available" });
+      expect(yield* fileSystem.exists(lockPath)).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
   );
 
@@ -325,14 +463,14 @@ describe("RelayClient", () => {
     }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
   );
 
-  it.effect("replaces an empty install lock left by an exited installer", () =>
+  it.effect("installs alongside a stale file left by a legacy installer", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const paths = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
-      const lockPath = lockPathFor(paths, baseDir);
+      const lockPath = lockPathFor(paths, baseDir, "linux", "legacy");
       yield* fileSystem.makeDirectory(paths.dirname(lockPath), {
         recursive: true,
       });
@@ -347,7 +485,7 @@ describe("RelayClient", () => {
       });
 
       expect(yield* manager.install).toMatchObject({ status: "available" });
-      expect(yield* fileSystem.exists(lockPath)).toBe(false);
+      expect(yield* fileSystem.readFileString(lockPath)).toBe("");
     }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
   );
 
@@ -734,6 +872,37 @@ describe("RelayClient", () => {
         { versions },
       );
     });
+
+    it.effect("reuses an existing pinned install in the legacy directory", () =>
+      run((baseDir) =>
+        Effect.gen(function* () {
+          const paths = yield* Path.Path;
+          const fs = yield* FileSystem.FileSystem;
+          const legacy = managedPathFor(
+            paths,
+            baseDir,
+            RelayClient.CLOUDFLARED_VERSION,
+            hostPlatform,
+            "legacy",
+          );
+          yield* writeExecutable(legacy);
+          const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
+          expect(yield* manager.resolve).toMatchObject({
+            source: "managed",
+            executablePath: legacy,
+          });
+          expect(yield* manager.install).toMatchObject({
+            source: "managed",
+            executablePath: legacy,
+          });
+          expect(
+            yield* fs.exists(
+              managedPathFor(paths, baseDir, RelayClient.CLOUDFLARED_VERSION, hostPlatform),
+            ),
+          ).toBe(false);
+        }),
+      ),
+    );
 
     it.effect("reports an outdated override as missing", () => {
       const versions: Record<string, string> = {};
