@@ -7,6 +7,7 @@ import {
   type ProviderInstanceId,
   type ProviderInteractionMode,
   type RuntimeMode,
+  type RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -34,6 +35,10 @@ export interface McpThreadCaller {
   readonly threadId: ThreadId;
   readonly providerSessionId: string;
   readonly providerInstanceId: ProviderInstanceId;
+  /** The run bound to this credential when the request authenticated. */
+  readonly runId?: RunId | null;
+  /** The demand shared by every turn that could have sent this authenticated request. */
+  readonly demandId?: string | null;
   /** A delegated child task; its parent owns the work it hands back. */
   readonly subagent?: boolean;
 }
@@ -52,6 +57,10 @@ export interface McpClientCaller {
    * it narrows what the link may ask for (`t3_link_back`); it never widens access.
    */
   readonly linkedFrom?: EnvironmentId | undefined;
+  readonly demandId?: string;
+  readonly demandOriginKind?: "repair";
+  /** A linked caller can recover only work this request already owns on this machine. */
+  readonly replayDemandReceipt?: true;
   /**
    * Narrower modes the client asked for on this request (`T3-Mode-Limit`):
    * another environment passing on the limits of the agent it calls for.
@@ -68,6 +77,12 @@ export interface McpClientCaller {
  * `clientModeCeiling`), so a client gains nothing by sending a broad one.
  */
 export const MODE_LIMIT_HEADER = "t3-mode-limit";
+export const DEMAND_ID_HEADER = "t3-demand-id";
+export const DEMAND_ORIGIN_KIND_HEADER = "t3-demand-origin-kind";
+/** Linked peers advertise version 1 on authenticated responses and request receipt-only recovery on calls. */
+export const DEMAND_PROTOCOL_HEADER = "t3-demand-protocol";
+export const DEMAND_PROTOCOL_VERSION = "1";
+export const DEMAND_RECEIPT_ONLY = "receipt-only";
 
 export interface ClientModes {
   readonly runtimeMode: RuntimeMode;
@@ -144,6 +159,9 @@ export interface McpInvocationScope {
   /** False while the Linked environments beta is off here; `/mcp` reads it per request. */
   readonly linkedEnvironments?: boolean;
 }
+
+export const invocationDemand = (scope: McpInvocationScope): string | null =>
+  (scope.thread === undefined ? scope.client?.demandId : scope.thread.demandId) ?? null;
 
 /**
  * T3.CodeShip renders `t3-thread://` links as thread chips. Other MCP clients cannot open them, so

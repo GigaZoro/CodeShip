@@ -74,7 +74,8 @@ export type ThreadLaunchWorkspaceStrategy =
     };
 
 export interface ThreadLaunchInitialMessage {
-  readonly demandId?: string;
+  readonly demandId?: string | null;
+  readonly demandOriginKind?: "repair";
   readonly messageId?: MessageId;
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly crossProviderFailoverFrom?: ProviderInstanceId;
@@ -991,6 +992,13 @@ const make = Effect.gen(function* () {
                 interactionMode: input.interactionMode,
                 branch: initialBranch,
                 worktreePath: initialWorktreePath,
+                ...(input.initialMessage?.demandId === undefined
+                  ? {}
+                  : { initialDemandId: input.initialMessage.demandId }),
+                ...(input.initialMessage?.demandOriginKind === "repair" &&
+                input.initialMessage.demandId != null
+                  ? { initialDemandOriginKind: "repair" as const }
+                  : {}),
                 ...(input.importedNativeThread === undefined
                   ? {}
                   : { importedNativeThread: input.importedNativeThread }),
@@ -1021,6 +1029,14 @@ const make = Effect.gen(function* () {
         let messageSequence: number | undefined;
         let messageWasAlreadyAccepted = false;
         if (input.initialMessage !== undefined) {
+          const creation = claimed.storedEvents.find(
+            (stored) => stored.event.type === "thread.created",
+          )?.event;
+          // On replay, only the original create can say which demand owned this launch.
+          const demandId =
+            creation?.type === "thread.created"
+              ? creation.payload.initialDemandId
+              : input.initialMessage.demandId;
           const messageCommandId = CommandId.make(`${input.commandId}:initial-message`);
           const messageReceipt = yield* readReceipt(input, messageCommandId);
           messageWasAlreadyAccepted = Option.isSome(messageReceipt);
@@ -1036,9 +1052,7 @@ const make = Effect.gen(function* () {
               threadId,
               messageId,
               text: input.initialMessage.text,
-              ...(input.initialMessage.demandId === undefined
-                ? {}
-                : { demandId: input.initialMessage.demandId }),
+              ...(demandId === undefined ? {} : { demandId }),
               ...(input.initialMessage.scheduledTaskId === undefined
                 ? {}
                 : {

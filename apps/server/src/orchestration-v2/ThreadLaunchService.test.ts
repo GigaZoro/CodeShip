@@ -2155,9 +2155,9 @@ it.effect("reports one concurrent same-command launch as new and the rest as res
   }),
 );
 
-it.effect(
-  "does not report a retry as resumed when the earlier attempt only claimed the thread",
-  () =>
+it.effect.each([`demand:${"a".repeat(64)}`, null])(
+  "preserves the initial demand %s when the earlier attempt only claimed the thread",
+  (originalDemandId) =>
     Effect.gen(function* () {
       const harness = makeHarness();
       yield* Effect.gen(function* () {
@@ -2168,21 +2168,50 @@ it.effect(
           thread: "thread:launch:claimed-only",
           message: "Counted once",
         });
-        yield* threads.dispatch({
-          type: "thread.create",
-          commandId: input.commandId,
-          threadId: input.threadId,
-          projectId: input.projectId,
-          title: input.title,
-          modelSelection: input.modelSelection,
-          runtimeMode: input.runtimeMode,
-          interactionMode: input.interactionMode,
-          branch: null,
-          worktreePath: null,
-          createdBy: input.createdBy,
-          creationSource: input.creationSource,
+        const dispatch = threads.dispatch;
+        const stopped = vi
+          .spyOn(threads, "dispatch")
+          .mockImplementation((command) =>
+            command.type === "message.dispatch" ? Effect.interrupt : dispatch(command),
+          );
+        const first = yield* launches
+          .launch({
+            ...input,
+            initialMessage: {
+              ...input.initialMessage!,
+              demandId: originalDemandId,
+              demandOriginKind: "repair",
+            },
+          })
+          .pipe(Effect.exit);
+        stopped.mockRestore();
+        assert.isTrue(Exit.isFailure(first));
+        const claimed = yield* threads.getThreadProjection(input.threadId);
+        assert.isEmpty(claimed.runs);
+        assert.equal(
+          claimed.thread.initialDemandOriginKind,
+          originalDemandId === null ? undefined : "repair",
+        );
+        const creation = yield* threads
+          .streamStoredEventsFrom({ threadId: input.threadId })
+          .pipe(Stream.runHead);
+        const event = Option.getOrThrow(creation).event;
+        assert.equal(event.type, "thread.created");
+        if (event.type === "thread.created") {
+          assert.equal(event.payload.initialDemandId, originalDemandId);
+          assert.equal(
+            event.payload.initialDemandOriginKind,
+            claimed.thread.initialDemandOriginKind,
+          );
+        }
+        const retried = yield* launches.launch({
+          ...input,
+          initialMessage: {
+            ...input.initialMessage!,
+            demandId: originalDemandId === null ? `demand:${"b".repeat(64)}` : null,
+          },
         });
-        const retried = yield* launches.launch(input);
+        assert.equal(retried.projection.runs[0]?.demandId, originalDemandId);
         assert.isFalse(retried.resumed);
         assert.isTrue((yield* launches.launch(input)).resumed);
       }).pipe(Effect.provide(harness.layer));

@@ -14,6 +14,7 @@ import * as Schema from "effect/Schema";
 import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration-v2/Orchestrator.ts";
 import * as AccountRouting from "../../../orchestration-v2/AccountRouting.ts";
 import * as MemoryAdmission from "../../../resourceTelemetry/MemoryAdmission.ts";
+import { assertSameLink } from "../../linkOrigin.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Project from "../../../project/ProjectService.ts";
@@ -34,7 +35,13 @@ import { withResolvedAttachments } from "../attachment/references.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
-import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
+import {
+  callerDemand,
+  newCommandId,
+  readCaller,
+  resolveProjectId,
+  unavailable,
+} from "../../threadAccess.ts";
 import { type LaunchWorkspaceStrategy, ProjectToolkit } from "./tools.ts";
 
 const isAboveCeilingError = Schema.is(OrchestratorRuntimeModeAboveCeilingError);
@@ -137,6 +144,19 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             : ThreadId.make(commandId);
         const messageId = MessageId.make(commandId);
         if (
+          scope.client?.replayDemandReceipt === true &&
+          (input.clientRequestId === undefined ||
+            !(yield* context.threads.hasReceipt(commandId, {
+              commandType: "thread.create",
+              threadId,
+            })))
+        ) {
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "This repair launch has no accepted creation receipt for that thread.",
+          });
+        }
+        if (
           input.scratch === true &&
           (input.projectId !== undefined || input.workspaceStrategy !== undefined)
         )
@@ -173,6 +193,20 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         const launchedModel =
           launched === null || launched.deletedAt !== null ? undefined : launched.modelSelection;
         const replaying = launchedModel !== undefined;
+        if (scope.client?.replayDemandReceipt === true) {
+          if (
+            launched === null ||
+            launched.deletedAt !== null ||
+            launched.projectId !== projectId
+          ) {
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message:
+                "The accepted repair launch does not belong to a live thread in that project.",
+            });
+          }
+          yield* assertSameLink(context, launched);
+        }
         if (!replaying && input.workspaceStrategy?.type === "existing_worktree") {
           const project = yield* readProject;
           if (project === undefined)
@@ -298,8 +332,13 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             )?.supportedRuntimeModes,
           });
         }
-        // A new thread owns no attachments yet, even on a replay: a replay claims again and
-        // keeps the copies its first launch accepted.
+        // On replay ThreadLaunchService reads the owner from its create receipt, even if
+        // it still has to send the initial message.
+        const demandId =
+          replaying || (input.message === undefined && !input.attachments?.length)
+            ? null
+            : yield* callerDemand(context, input.demandOrigin);
+        // Reclaim on replay and keep the attachment copies the first launch accepted.
         const requested = input.attachments ?? [];
         const result = yield* withResolvedAttachments(
           { requested, owned: [], context },
@@ -318,6 +357,14 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 : {
                     initialMessage: {
                       messageId,
+                      demandId,
+                      ...(demandId !== null &&
+                      (input.demandOrigin?.kind === "repair" ||
+                        (input.demandOrigin === undefined &&
+                          context.scope.client?.linked === true &&
+                          context.scope.client.demandOriginKind === "repair"))
+                        ? { demandOriginKind: "repair" as const }
+                        : {}),
                       ...(caller === undefined ? {} : { senderThreadId: caller.id }),
                       text: input.message ?? "",
                       attachments,

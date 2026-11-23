@@ -421,6 +421,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
 });
 
 it("readThread and sendToThread reach threads in other projects", async () => {
+  const sentDemands: Array<string | null | undefined> = [];
   let parentShell: OrchestrationV2ThreadShell | null = null;
   let parentRuns: ReadonlyArray<unknown> = [
     makeRun({ id: RunId.make("run-parent-live"), ordinal: 1, status: "running" }),
@@ -513,11 +514,13 @@ it("readThread and sendToThread reach threads in other projects", async () => {
                     threadId: input.threadId,
                   }),
                 ),
-          sendToThread: () =>
-            Effect.succeed({
+          sendToThread: (input) => {
+            sentDemands.push(input.demandId);
+            return Effect.succeed({
               run: { id: "run-foreign", status: "queued" },
               delivery: "started",
-            } as unknown as ThreadManagementService.ThreadManagementSendResult),
+            } as unknown as ThreadManagementService.ThreadManagementSendResult);
+          },
         } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
         ServerSettings.layerTest(),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
@@ -560,6 +563,19 @@ it("readThread and sendToThread reach threads in other projects", async () => {
     });
     expect(sent.threadId).toBe(foreignThreadId);
 
+    const workItem = { kind: "work_item", key: "ado:diamonddogtrade:21" } as const;
+    yield* service.sendToThread(makeScope(), {
+      threadId: foreignThreadId,
+      message: "Claim it",
+      demandOrigin: workItem,
+    });
+    yield* service.sendToThread(makeScope(), {
+      threadId: foreignThreadId,
+      message: "Retry it",
+      demandOrigin: workItem,
+    });
+    expect(sentDemands[1]).toMatch(/^demand:[0-9a-f]{64}$/);
+    expect(sentDemands[2]).toBe(sentDemands[1]);
     parentRuns = [];
     yield* service.readThread(makeScope(), { threadId: foreignThreadId });
     const stale = yield* service

@@ -1,3 +1,7 @@
+## 2026-11-23 — Accounting for repairs and work-item requests
+
+- A repair can name the run that requested it, and work-item launches and sends can name the work item they serve. A guarded restart applies only while its intended run is active. Linked repairs require a peer that advertises origin support. Retrying an accepted request reuses its recorded launch or send.
+
 ## 2026-11-23 — Accounting for messages, failover and review
 
 - New owner requests and accepted guest messages receive a demand ID. Steering, failover, and final review retain the original demand. Delegated questions and completions use their recorded sources. Automatic compaction shares the ID of the message that triggered it.

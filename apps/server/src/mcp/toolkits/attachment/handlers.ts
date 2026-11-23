@@ -82,6 +82,7 @@ export const layer = McpToolAccess.toLayer(
                   threadId: projection.thread.id,
                   commandId,
                   messageId,
+                  demandId: McpInvocationContext.invocationDemand(context.scope),
                   ...(caller === undefined ? {} : { senderThreadId: caller.id }),
                   text: input.message ?? "",
                   attachments,
