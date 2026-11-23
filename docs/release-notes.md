@@ -1,3 +1,7 @@
+## 2026-11-23 — Replay of accepted sends and delegations
+
+- Retrying a keyed send recovers its original delivery after the run settles or its thread is archived. Repeated delegations resolve to the task and destination first accepted.
+
 ## 2026-11-23 — Replay tests release their temporary files
 
 - Provider replay tests remove their temporary directories when they finish, fail, or are interrupted, preventing repeated runs from filling the disk.
