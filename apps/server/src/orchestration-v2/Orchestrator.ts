@@ -4468,6 +4468,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       occurredAt: now,
       payload: updatedThread,
     });
+    if (command.type === "thread.metadata.update" && command.preparationOwner !== undefined) {
+      const { runId, bound } = command.preparationOwner;
+      const { runs } = yield* projectionStore
+        .getThreadRecords(command.threadId, ["runs"], { runIds: [runId] })
+        .pipe(mapDispatchError(command));
+      const run = runs.find((candidate) => candidate.id === runId);
+      if (run?.workspacePreparation === undefined) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "The workspace preparation no longer belongs to this run.",
+        });
+      }
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "run.updated",
+        threadId: command.threadId,
+        runId,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...run,
+          preparationWorkspace: {
+            bound,
+            worktreePath: updatedThread.worktreePath,
+            branch: updatedThread.branch,
+          },
+        },
+      });
+    }
     // Archiving ends the guest share, so its waiting files go too.
     yield* releaseGuestAttachments(command, thread.guestShare, updatedThread.guestShare, effects);
 
@@ -6054,6 +6086,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
     let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    const accepted = command.expectedLaunchWorkspace;
+    if (
+      accepted !== undefined &&
+      (accepted.worktreePath !== projection.thread.worktreePath ||
+        accepted.branch !== projection.thread.branch)
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        stale: true,
+        cause: "The thread workspace changed before the launch's initial message was accepted.",
+      });
+    }
     const automaticSourceRunId =
       command.automaticContinuationOfRunId ??
       command.usageLimitContinuationOfRunId ??
@@ -7204,7 +7249,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? {}
           : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
         ...(dispatchMode.type === "defer_start" && dispatchMode.workspaceStrategy !== undefined
-          ? { workspacePreparation: dispatchMode.workspaceStrategy }
+          ? {
+              workspacePreparation: dispatchMode.workspaceStrategy,
+              preparationWorkspace: {
+                bound: false,
+                worktreePath: projection.thread.worktreePath,
+                branch: projection.thread.branch,
+              },
+            }
           : {}),
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...wakeWorkStartedAt(projection.runs, command),
@@ -11361,6 +11413,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
       const now = yield* DateTime.now;
+      const binding = state.run.preparationWorkspace;
+      if (
+        binding !== undefined &&
+        (binding.worktreePath !== projection.thread.worktreePath ||
+          binding.branch !== projection.thread.branch)
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          stale: true,
+          cause: "The thread no longer has the workspace prepared by this run.",
+        });
+      }
       const resolvedRuntimePolicy = yield* runtimePolicy
         .resolve({ thread: projection.thread, modelSelection: state.run.modelSelection })
         .pipe(mapDispatchError(command));

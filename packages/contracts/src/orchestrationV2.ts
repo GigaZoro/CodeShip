@@ -454,6 +454,18 @@ const StoredHiddenArtifacts = Schema.Array(Schema.String).pipe(
   Schema.catchDecoding(() => Effect.succeedSome([])),
 );
 
+const WorkspaceLocation = Schema.Struct({
+  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  branch: Schema.NullOr(TrimmedNonEmptyString),
+});
+type WorkspaceLocation = typeof WorkspaceLocation.Type;
+
+/** The shell accepted for preparation, or the checkout this run subsequently bound. */
+const PreparationWorkspace = Schema.Struct({
+  ...WorkspaceLocation.fields,
+  bound: Schema.Boolean,
+});
+
 export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("root"),
@@ -832,6 +844,7 @@ export const OrchestrationV2Run = Schema.Struct({
   ),
   delegatedCompletion: Schema.optional(OrchestrationV2DelegatedCompletionCohort),
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+  preparationWorkspace: Schema.optional(PreparationWorkspace),
   memoryAdmission: Schema.optional(OrchestrationV2RunMemoryAdmission),
 });
 export type OrchestrationV2Run = typeof OrchestrationV2Run.Type;
@@ -4002,11 +4015,16 @@ type LaunchCommand =
   | (Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> & {
       readonly demandId?: string | null;
       readonly demandSourceRunId?: RunId;
+      readonly expectedLaunchWorkspace?: WorkspaceLocation;
     })
   | Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>;
 type CreateThreadCommand = Extract<OrchestrationV2Command, { readonly type: "thread.create" }>;
+type MetadataCommand = Extract<OrchestrationV2Command, { readonly type: "thread.metadata.update" }>;
 export type OrchestrationV2ServerCommand =
-  | Exclude<OrchestrationV2Command, LaunchCommand | CreateThreadCommand>
+  | Exclude<OrchestrationV2Command, LaunchCommand | CreateThreadCommand | MetadataCommand>
+  | (MetadataCommand & {
+      readonly preparationOwner?: { readonly runId: RunId; readonly bound: boolean };
+    })
   | (CreateThreadCommand & {
       readonly launchIntentHash?: string;
       readonly initialLaunchKind?: OrchestrationV2AppThread["initialLaunchKind"];

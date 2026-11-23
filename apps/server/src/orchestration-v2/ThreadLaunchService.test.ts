@@ -239,6 +239,7 @@ function makeHarness(options: HarnessOptions = {}) {
       Layer.mergeAll(
         layerExternalServices,
         layerThreadManagement,
+        layerDatabase,
         layerReceipts,
         IdAllocator.layer,
       ),
@@ -2334,6 +2335,199 @@ it.effect.each(["Scratch root", "changed default base"] as const)(
       }
       assert.isTrue((yield* launches.launch(retry)).resumed);
       assert.lengthOf(harness.runSetup.mock.calls, 1);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect.each(["Git", "Scratch"])(
+  "a first-message retry refuses a shell rebound before message acceptance (%s)",
+  (kind) => {
+    const harness = kind === "Scratch" ? scratchHarness() : makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const input = {
+        ...launchInput({
+          command: "keyed-rebound",
+          thread: "rebound",
+          message: "Prepare this project",
+          workspace: worktreeStrategy,
+        }),
+        launchIntentHash: "b".repeat(64),
+      };
+      const dispatch = threads.dispatch;
+      let cut = true;
+      const intercept = vi.spyOn(threads, "dispatch").mockImplementation((command) => {
+        if (command.type !== "message.dispatch") return dispatch(command);
+        if (cut) return Effect.interrupt;
+        return dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make("move-draft"),
+          threadId: input.threadId,
+          worktreePath: "/somewhere-else",
+          branch: "other",
+        }).pipe(Effect.andThen(dispatch(command)));
+      });
+      assert.isTrue(Exit.isFailure(yield* launches.launch(input).pipe(Effect.exit)));
+      cut = false;
+      const recovered = yield* launches.launch(input).pipe(Effect.exit);
+      intercept.mockRestore();
+      assert.isTrue(Exit.isFailure(recovered));
+      const actual = yield* threads.getThreadProjection(input.threadId);
+      assert.isEmpty(actual.messages);
+      assert.isEmpty(actual.runs);
+      assert.equal(actual.thread.worktreePath, "/somewhere-else");
+      assert.equal(actual.thread.branch, "other");
+      assert.isEmpty(harness.createWorktree.mock.calls);
+      assert.isEmpty(harness.runSetup.mock.calls);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect.each([
+  "owned",
+  "legacy owned",
+  "different path",
+  "legacy different path",
+  "different branch",
+  "cleared path",
+])("a preparation retry proves the checkout bound by an earlier memory admission (%s)", (state) => {
+  let fetches = 0;
+  let setups = 0;
+  const harness = makeHarness({
+    fetchWorktreeBaseCommit: () =>
+      fetches++ === 0
+        ? Effect.fail(
+            new GitCommandError({
+              operation: "fetch",
+              command: "git",
+              cwd: project.workspaceRoot,
+              detail: GIT_REMOTE_UNREACHABLE_DETAIL,
+              exitCode: 128,
+            }),
+          )
+        : Effect.succeed({ commitSha: "accepted", remoteRefName: "origin/main" }),
+    runSetup: () =>
+      setups++ === 0
+        ? Effect.die("setup interrupted")
+        : Effect.succeed({ status: "no-script" as const }),
+  });
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const input = launchInput({
+      command: "recover",
+      thread: "recover-thread",
+      message: "Build",
+      workspace: { ...worktreeStrategy, branch: "feature" },
+    });
+    const first = yield* launches.launch(input);
+    const runId = first.projection.runs[0]!.id;
+    const threadId = input.threadId;
+    yield* preparationSettled(threadId);
+    yield* launches.retryPreparation({
+      commandId: CommandId.make("automatic"),
+      threadId,
+      runId,
+      automatic: true,
+    });
+    const admit = CommandId.make("generated-admission-owner");
+    yield* threads.dispatch({ type: "run.memory-admit", commandId: admit, threadId, runId });
+    yield* launches.prepareRun({ commandId: admit, threadId, runId });
+    const completion = (prefix: string) =>
+      threads.streamStoredEventsFrom({ threadId, eventType: "run.updated" }).pipe(
+        Stream.filter(
+          (entry) =>
+            entry.commandId === `${prefix}:fail` || entry.commandId === `${prefix}:release`,
+        ),
+        Stream.runHead,
+      );
+    yield* completion(admit);
+    const path = "/repo-worktrees/feature";
+    assert.deepEqual(
+      harness.runSetup.mock.calls.map(([setup]) => setup.worktreePath),
+      [path],
+    );
+    if (state.startsWith("legacy")) {
+      // Earlier admissions recorded progress and the metadata bind, without a run-owned location.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = json_remove(payload_json, '$.preparationWorkspace') WHERE run_id = ${runId}`;
+    }
+    const owned = state.endsWith("owned");
+    const expectedPath = state.endsWith("different path")
+      ? "/other"
+      : state === "cleared path"
+        ? null
+        : path;
+    const expectedBranch = state === "different branch" ? "other" : "feature";
+    if (!owned)
+      yield* threads.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("rebind"),
+        threadId,
+        worktreePath: expectedPath,
+        branch: expectedBranch,
+      });
+    const retry = CommandId.make("different-manual-owner");
+    yield* launches.retryPreparation({ commandId: retry, threadId, runId });
+    yield* completion(retry);
+    const actual = yield* threads.getThreadProjection(threadId);
+    assert.equal(actual.runs[0]?.status, owned ? "starting" : "failed");
+    assert.equal(actual.thread.worktreePath, expectedPath);
+    assert.equal(actual.thread.branch, expectedBranch);
+    assert.deepEqual(
+      harness.runSetup.mock.calls.map(([setup]) => setup.worktreePath),
+      owned ? [path, path] : [path],
+    );
+    assert.lengthOf(harness.createWorktree.mock.calls, 1);
+    assert.isEmpty(harness.removeWorktree.mock.calls);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect.each(["before binding", "before setup", "during setup"])(
+  "a concurrent workspace edit during preparation keeps its checkout (%s)",
+  (at) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const input = launchInput({
+        command: "binding-race",
+        thread: "binding-race-thread",
+        message: "Build",
+        workspace: { type: "worktree", baseRef: "main", branch: "feature" },
+      });
+      const dispatch = threads.dispatch;
+      const move = dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("user-edit"),
+        threadId: input.threadId,
+        worktreePath: "/other",
+        branch: "another",
+      });
+      const intercept = vi.spyOn(threads, "dispatch").mockImplementation((command) => {
+        if (at === "before binding" && command.commandId === "binding-race:workspace")
+          return move.pipe(Effect.andThen(dispatch(command)));
+        if (at === "before setup" && command.commandId === "binding-race:progress:setup")
+          return dispatch(command).pipe(Effect.tap(() => move));
+        if (at === "during setup" && command.commandId === "binding-race:release")
+          return move.pipe(Effect.andThen(dispatch(command)));
+        return dispatch(command);
+      });
+      yield* launches.launch(input);
+      const actual = yield* preparationSettled(input.threadId);
+      intercept.mockRestore();
+      assert.equal(actual.runs[0]?.status, "failed");
+      assert.equal(actual.thread.worktreePath, "/other");
+      assert.equal(actual.thread.branch, "another");
+      assert.deepEqual(
+        harness.runSetup.mock.calls.map(([setup]) => setup.worktreePath),
+        at === "during setup" ? ["/repo-worktrees/feature"] : [],
+      );
+      assert.notInclude(
+        harness.removeWorktree.mock.calls.map(([checkout]) => checkout.path),
+        "/other",
+      );
     }).pipe(Effect.provide(harness.layer));
   },
 );
