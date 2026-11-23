@@ -25,13 +25,14 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
+import { originalDemandId } from "../orchestration-v2/demandId.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
-import { layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
+import { HERE_ENVIRONMENT_ID, layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
@@ -542,7 +543,7 @@ it.effect(
         });
         // It launches under its scheduled fire's key, where startup recovery looks for its prompt.
         expect(yield* Ref.get(prompts)).toEqual([
-          `scheduled-task-message:${caughtUp?.id.replace(/:catch_up$/, ":scheduled")}`,
+          `scheduled-task-message:${caughtUp?.id.replace(":catch_up:", ":scheduled:")}`,
         ]);
         expect((yield* service.listRuns({ id: off.id })).runs).toMatchObject([
           { outcome: "skipped", skipReason: "missed", scheduledFor: isoAt(13, 7) },
@@ -765,6 +766,261 @@ it.effect.each([
         ]);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each([
+  { kind: "once", shortage: "memory" },
+  { kind: "once", shortage: "usage" },
+  { kind: "fixed_time", shortage: "usage" },
+  { kind: "fixed_time", shortage: "legacy usage" },
+  { kind: "fixed_time", shortage: "late wake usage" },
+  { kind: "interval", shortage: "memory" },
+] as const)(
+  "$kind demand after two $shortage skips and a scheduler restart",
+  ({ kind, shortage }) =>
+    Effect.gen(function* () {
+      const first = DateTime.makeZonedUnsafe(
+        { year: 2026, month: 11, day: 10, hour: 7, minute: 0, second: 0, millisecond: 0 },
+        { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+      );
+      const firstMs = DateTime.toEpochMillis(first);
+      const firstAt = DateTime.formatIso(DateTime.toUtc(first));
+      const isoMs = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+      yield* TestClock.setTime(firstMs - 60_000);
+      const resetAt = yield* Ref.make<string | null>(isoMs(firstMs + 300_000));
+      const demand = yield* Ref.make<string | null | undefined>(undefined);
+      const layer = runHistoryLayer(
+        (input) =>
+          Ref.set(demand, input.initialMessage?.demandId).pipe(
+            Effect.as({ threadId: ThreadId.make("thread-after-hold"), resumed: false } as never),
+          ),
+        Layer.mock(AccountRouting.AccountRouting)({
+          scheduledRunBlock: () =>
+            Ref.get(resetAt).pipe(
+              Effect.map((until) =>
+                shortage !== "memory" && until !== null
+                  ? {
+                      driver: ProviderDriverKind.make("claude"),
+                      until,
+                      accounts: [ProviderInstanceId.make("claude_primary")],
+                    }
+                  : null,
+              ),
+            ),
+          failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
+        }),
+        Layer.mock(MemoryAdmission.MemoryAdmission)({
+          shortage: Ref.get(resetAt).pipe(
+            Effect.map((until) =>
+              shortage === "memory" && until !== null
+                ? {
+                    kind: "compressor" as const,
+                    totalBytes: 100,
+                    compressorBytes: 60,
+                    compressorShareLimit: 0.35,
+                    pressure: "normal" as const,
+                  }
+                : null,
+            ),
+          ),
+        }),
+      );
+      const task = yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        return (yield* service.upsert(
+          yield* historyTask("Held occurrence", {
+            schedule:
+              kind === "once"
+                ? { type: kind, runAt: firstAt }
+                : kind === "fixed_time"
+                  ? { type: kind, timeOfDay: "07:00" }
+                  : { type: kind, everyMs: 60_000 },
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        )).task;
+      }).pipe(Effect.provide(layer));
+      expect(task.nextRunAt).toBe(firstAt);
+
+      // Each service starts from the persisted cursor. Keep both admissions blocked before
+      // clearing the shortage, so a second retry cannot replace the first due instant.
+      const afterSkip = (due: string) =>
+        Effect.gen(function* () {
+          const service = yield* ScheduledTaskService.ScheduledTaskService;
+          const moved = yield* service.subscribeList().pipe(
+            Stream.filter(({ tasks }) =>
+              tasks.some(
+                (entry) =>
+                  entry.id === task.id &&
+                  entry.nextRunAt !== null &&
+                  Date.parse(entry.nextRunAt) > Date.parse(due),
+              ),
+            ),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* TestClock.adjust("6 seconds");
+          yield* Fiber.join(moved);
+          const current = (yield* service.list()).tasks.find((entry) => entry.id === task.id)!;
+          expect(Date.parse(current.nextRunAt!)).toBeGreaterThan(Date.parse(due));
+          expect(yield* Ref.get(demand)).toBeUndefined();
+          if (shortage === "legacy usage") {
+            const sql = yield* SqlClient.SqlClient;
+            // Remove the cursor evidence written by newer versions as well.
+            const columns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_tasks)`;
+            if (columns.some((column) => column.name === "usage_hold_json"))
+              yield* sql`UPDATE scheduled_tasks SET usage_hold_json=NULL WHERE task_id=${task.id}`;
+            yield* sql`UPDATE scheduled_task_runs
+              SET usage_limit_json = json_remove(usage_limit_json, '$.heldOccurrence')
+              WHERE task_id = ${task.id} AND skip_reason = 'usage_limited'`;
+          }
+          return current.nextRunAt!;
+        }).pipe(Effect.provide(layer));
+      yield* TestClock.setTime(firstMs);
+      const secondAt = yield* afterSkip(firstAt);
+      // Waking after the grace period revisits 07:00. The 07:30 reset and original
+      // occurrence must survive even though history already contains that 07:00 skip.
+      const late = shortage === "late wake usage";
+      yield* Ref.set(resetAt, isoMs(late ? firstMs + 30 * 60_000 : Date.parse(secondAt) + 300_000));
+      // Advance with the scheduler stopped. Advancing a running TestClock polls each intermediate deadline.
+      yield* TestClock.setTime(late ? firstMs + 20 * 60_000 : Date.parse(secondAt));
+      const thirdAt = yield* afterSkip(secondAt);
+      if (late) {
+        expect(secondAt).toBe(isoMs(firstMs + 5 * 60_000));
+        expect(thirdAt).toBe(isoMs(firstMs + 30 * 60_000));
+        const sql = yield* SqlClient.SqlClient;
+        const history =
+          yield* sql`SELECT scheduled_for, json_extract(usage_limit_json, '$.until') AS reset_at
+          FROM scheduled_task_runs WHERE task_id = ${task.id} AND skip_reason = 'usage_limited'`;
+        // The late poll caught up the same 07:00 occurrence. Its first skip still has the old
+        // reset, so passing this test requires recovering the occurrence from the moved cursor.
+        expect(history).toEqual([{ scheduled_for: firstAt, reset_at: secondAt }]);
+      }
+      yield* Ref.set(resetAt, null);
+      yield* TestClock.setTime(Date.parse(thirdAt));
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const finished = yield* service.subscribeList().pipe(
+          Stream.filter(({ tasks }) =>
+            tasks.some((entry) => entry.id === task.id && entry.lastRunStatus === "succeeded"),
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("6 seconds");
+        yield* Fiber.join(finished);
+        expect((yield* service.listRuns({ id: task.id })).runs[0]?.outcome).toBe("succeeded");
+      }).pipe(Effect.provide(layer));
+      const incarnation = task.incarnationId ?? task.createdAt;
+      expect(yield* Ref.get(demand)).toBe(
+        originalDemandId(
+          "scheduled-task",
+          HERE_ENVIRONMENT_ID,
+          task.id,
+          incarnation,
+          "scheduled",
+          kind === "interval" ? thirdAt : firstAt,
+        ),
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each([
+  { state: "missing column, interrupted catch-up", expected: 0 },
+  { state: "null column, interrupted catch-up", expected: 0 },
+  { state: "unrelated earlier occurrence", expected: null },
+  { state: "a completed run after the old hold", expected: null },
+  { state: "a cursor moved inside the grace period", expected: null },
+  { state: "another schedule's hold", expected: null },
+  { state: "the next configured slot", expected: 24 * 60 },
+  { state: "a current cursor with unrelated history", expected: 0 },
+] as const)("attributes a fixed-time cursor after upgrade with $state", ({ state, expected }) =>
+  Effect.gen(function* () {
+    const first = DateTime.makeZonedUnsafe(
+      { year: 2026, month: 11, day: 10, hour: 7, minute: 0, second: 0, millisecond: 0 },
+      { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+    );
+    const epoch = DateTime.toEpochMillis(first);
+    const at = (minutes: number) =>
+      DateTime.formatIso(DateTime.makeUnsafe(epoch + minutes * 60_000));
+    yield* TestClock.setTime(epoch - 60_000);
+    const demand = yield* Deferred.make<string | null | undefined>();
+    const layer = runHistoryLayer((input) =>
+      Deferred.succeed(demand, input.initialMessage?.demandId).pipe(
+        Effect.as({ threadId: ThreadId.make("upgraded"), resumed: false } as never),
+      ),
+    );
+    const { task } = yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      return yield* service.upsert(
+        yield* historyTask("Upgraded fixed time"),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
+    }).pipe(Effect.provide(layer));
+    const sql = yield* SqlClient.SqlClient;
+    const due = state === "the next configured slot" ? 24 * 60 : 30;
+    const observed = state === "a cursor moved inside the grace period" ? 10 : 20;
+    // Restore the old scheduler's persisted state, with the service stopped: the initial 07:00
+    // skip reset at 07:05, and its duplicate at 07:20 moved the cursor but could not replace it.
+    if (state === "missing column, interrupted catch-up") {
+      yield* sql`DROP TRIGGER scheduled_task_clear_usage_hold`;
+      yield* sql`ALTER TABLE scheduled_tasks DROP COLUMN usage_hold_json`;
+    }
+    yield* sql`UPDATE scheduled_tasks SET next_run_at=${at(due)}, updated_at=${at(observed)},
+        incarnation_id=NULL WHERE task_id=${task.id}`;
+    const skip = state === "unrelated earlier occurrence" ? -24 * 60 : 0;
+    const usage = {
+      driver: "claude",
+      until: at(skip + 5),
+      ...(state === "another schedule's hold" || state === "null column, interrupted catch-up"
+        ? {
+            heldOccurrence: {
+              at: at(skip),
+              schedule:
+                state === "another schedule's hold"
+                  ? { type: "fixed_time", timeOfDay: "08:00" }
+                  : task.schedule,
+            },
+          }
+        : {}),
+    };
+    yield* sql`INSERT INTO scheduled_task_runs
+        (run_id, task_id, trigger, scheduled_for, started_at, completed_at, outcome, skip_reason, usage_limit_json)
+        VALUES (${task.id + ":" + at(skip) + ":usage_limited"}, ${task.id}, 'scheduled',
+          ${at(skip)}, ${at(skip)}, ${at(skip)}, 'skipped', 'usage_limited', ${JSON.stringify(usage)})`;
+    if (
+      state === "a completed run after the old hold" ||
+      state === "a current cursor with unrelated history"
+    ) {
+      yield* sql`INSERT INTO scheduled_task_runs
+          (run_id, task_id, trigger, scheduled_for, started_at, completed_at, outcome)
+          VALUES ('completed', ${task.id}, 'scheduled', ${at(5)}, ${at(5)}, ${at(5)}, 'succeeded')`;
+    }
+    if (state === "a current cursor with unrelated history") {
+      const held = {
+        driver: "claude",
+        until: at(due),
+        heldOccurrence: { at: at(0), schedule: task.schedule },
+      };
+      yield* sql`UPDATE scheduled_tasks SET usage_hold_json=${JSON.stringify(held)} WHERE task_id=${task.id}`;
+    }
+    yield* TestClock.setTime(Date.parse(at(due)));
+    yield* Effect.gen(function* () {
+      yield* ScheduledTaskService.ScheduledTaskService;
+      yield* TestClock.adjust("6 seconds");
+      expect(yield* Deferred.await(demand)).toBe(
+        expected === null
+          ? null
+          : originalDemandId(
+              "scheduled-task",
+              HERE_ENVIRONMENT_ID,
+              task.id,
+              task.createdAt,
+              "scheduled",
+              at(expected),
+            ),
+      );
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect(

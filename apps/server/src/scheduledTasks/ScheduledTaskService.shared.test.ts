@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import {
+  EnvironmentId,
   OrchestratorMcpFailure,
   ProjectId,
   ProviderDriverKind,
@@ -26,6 +27,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { UpdateDrain } from "../cloud/updateDrain.ts";
 
+import { originalDemandId } from "../orchestration-v2/demandId.ts";
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -37,6 +39,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as RunConditionCheck from "./RunConditionCheck.ts";
@@ -142,6 +145,7 @@ const withService = <A, E>(
   ) => Effect.Effect<A, E>,
   projects: ReadonlyArray<TestSharedProject> = [repoProject, plainProject],
   extras: {
+    readonly environmentId?: EnvironmentId;
     readonly peerCheck?: Layer.Layer<SharedTaskPeerCheck.SharedTaskPeerCheck>;
     readonly launch?: ThreadLaunchService.ThreadLaunchService["Service"]["launch"];
     readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
@@ -174,6 +178,11 @@ const withService = <A, E>(
           MemoryAdmission.layerTest(),
           ManagedPolicy.layerTest(),
           layerSharedTaskDependencies(projects, extras.peerCheck, extras.runConditionCheck),
+          extras.environmentId === undefined
+            ? Layer.empty
+            : Layer.mock(ServerEnvironment.ServerEnvironmentIdentity)({
+                getEnvironmentId: Effect.succeed(extras.environmentId),
+              }),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)(
             extras.launch === undefined ? {} : { launch: extras.launch },
           ),
@@ -973,7 +982,7 @@ const runScenario = <A, E>(
   body: (scenario: {
     readonly service: ScheduledTaskService.ScheduledTaskService["Service"];
     readonly sql: SqlClient.SqlClient;
-    readonly launches: Queue.Queue<unknown>;
+    readonly launches: Queue.Queue<ThreadLaunchService.ThreadLaunchInput>;
     readonly peerCalls: Ref.Ref<
       ReadonlyArray<{ peers: ReadonlyArray<string>; occurrence: string; since: string }>
     >;
@@ -994,7 +1003,7 @@ const runScenario = <A, E>(
   threadManagement?: Partial<ThreadManagementService.ThreadManagementService["Service"]>,
 ) =>
   Effect.gen(function* () {
-    const launches = yield* Queue.unbounded<unknown>();
+    const launches = yield* Queue.unbounded<ThreadLaunchService.ThreadLaunchInput>();
     const peerCalls = yield* Ref.make<
       ReadonlyArray<{ peers: ReadonlyArray<string>; occurrence: string; since: string }>
     >([]);
@@ -1215,11 +1224,35 @@ it.effect(
     runScenario([HERE_ENVIRONMENT_ID, OTHER], NO_RUN_THERE, (scenario) =>
       Effect.gen(function* () {
         yield* scenario.tick(DUE + 1_000);
-        yield* Queue.take(scenario.launches);
+        const launch = yield* Queue.take(scenario.launches);
+        expect(launch.initialMessage?.demandId).toBeNull();
         expect(yield* Ref.get(scenario.peerCalls)).toEqual([
           { peers: [OTHER], occurrence: iso(DUE), since: iso(DUE - 30 * MINUTE_MS) },
         ]);
         expect((yield* Ref.get(scenario.peerCopies)).get(OTHER)).toBe(HERE_ENVIRONMENT_ID);
+
+        // Run now is a separate local admission. Starting in the very same tick keeps the
+        // scheduler's original scheduled-versus-manual tie order for transfer consent.
+        const id = (yield* taskOf(scenario.service))!.id;
+        const [scheduled] = (yield* scenario.service.listRuns({ id })).runs;
+        yield* TestClock.setTime(Date.parse(scheduled!.startedAt));
+        yield* scenario.service.runNow({ id });
+        expect(yield* Queue.size(scenario.launches)).toBe(1);
+        const manual = yield* Queue.take(scenario.launches);
+        expect(manual.initialMessage?.demandId).toMatch(/^demand:/);
+        const [last] = (yield* scenario.service.listRuns({ id })).runs;
+        expect(last?.trigger).toBe("manual");
+        expect(last?.startedAt).toBe(scheduled?.startedAt);
+        expect(
+          yield* scenario.service.claimOccurrence({
+            taskId: id,
+            occurrence: iso(DUE),
+            holder: EnvironmentId.make(OTHER),
+            replaces: HERE_ENVIRONMENT_ID,
+            by: EnvironmentId.make(OTHER),
+            lastRunFailed: true,
+          }),
+        ).toBe(OTHER);
       }),
     ),
 );
@@ -1983,6 +2016,214 @@ it.effect.each([
     ),
 );
 
+it.effect.each(["unshared", "every"] as const)(
+  "an independently fired %s task has its own demand on each environment",
+  (sharing) =>
+    Effect.gen(function* () {
+      const fire = (environmentId: EnvironmentId, delay = 0) =>
+        Effect.gen(function* () {
+          const started = yield* Ref.make<string | null | undefined>(undefined);
+          const activated = yield* Deferred.make<void>();
+          return yield* withService(
+            (service) =>
+              Effect.gen(function* () {
+                const { task } = yield* service.upsert(
+                  upsertInput({
+                    shared:
+                      sharing === "unshared"
+                        ? null
+                        : { runOn: "every", excludedEnvironmentIds: [] },
+                    schedule: { type: "once", runAt: iso(DUE) },
+                  }),
+                  ScheduledTaskService.CHANGED_IN_APP,
+                );
+                expect(task.nextRunAt).toBe(iso(DUE));
+                yield* TestClock.setTime(DUE + delay);
+                yield* Deferred.succeed(activated, undefined);
+                yield* TestClock.adjust("6 seconds");
+                const demand = yield* Ref.get(started);
+                expect(demand).toBe(
+                  originalDemandId(
+                    "scheduled-task",
+                    environmentId,
+                    task.id,
+                    task.incarnationId ?? task.createdAt,
+                    "scheduled",
+                    iso(DUE),
+                  ),
+                );
+                return demand;
+              }),
+            [],
+            {
+              environmentId,
+              activation: Deferred.await(activated),
+              launch: (input) =>
+                Ref.set(started, input.initialMessage?.demandId).pipe(
+                  Effect.as({ threadId: ThreadId.make("thread-independent") } as never),
+                ),
+            },
+          );
+        });
+      const here = yield* fire(HERE_ENVIRONMENT_ID);
+      const other = yield* fire(EnvironmentId.make(OTHER));
+      expect(here).toBeTypeOf("string");
+      expect(other).toBeTypeOf("string");
+      expect(other).not.toBe(here);
+      yield* fire(HERE_ENVIRONMENT_ID, MINUTE_MS);
+    }),
+);
+
+it.effect(
+  "task incarnations survive edits and restart and distinguish same-tick recreation from a legacy task",
+  () =>
+    withService(
+      (service, sql, restart) =>
+        Effect.gen(function* () {
+          const input = upsertInput({ shared: null });
+          const by = ScheduledTaskService.CHANGED_IN_APP;
+          const first = (yield* service.upsert(input, by)).task;
+          expect(first.incarnationId).toBeTypeOf("string");
+          expect(
+            (yield* service.upsert({ ...input, title: "Edited" }, by)).task.incarnationId,
+          ).toBe(first.incarnationId);
+          yield* restart((current) =>
+            Effect.gen(function* () {
+              expect((yield* taskOf(current))?.incarnationId).toBe(first.incarnationId);
+              yield* current.delete({ id: first.id });
+              const second = (yield* current.upsert(input, by)).task;
+              expect(second.createdAt).toBe(first.createdAt);
+              expect(second.incarnationId).toBeTypeOf("string");
+              expect(second.incarnationId).not.toBe(first.incarnationId);
+            }),
+          );
+          // A row created on the former schema retains its timestamp component on an edit and restart.
+          yield* sql`UPDATE scheduled_tasks SET incarnation_id=NULL WHERE task_id=${first.id}`;
+          yield* restart((current) =>
+            Effect.gen(function* () {
+              const legacy = (yield* current.upsert(input, by)).task;
+              expect(legacy.incarnationId ?? legacy.createdAt).toBe(first.createdAt);
+            }),
+          );
+        }),
+      [],
+      { idleScheduler: true },
+    ),
+);
+
+it.effect("the same scheduled instant belongs to the new task after a same-tick recreation", () =>
+  Effect.gen(function* () {
+    const launches: ThreadLaunchService.ThreadLaunchInput[] = [];
+    yield* withService(
+      (service) =>
+        Effect.gen(function* () {
+          const input = upsertInput({ shared: null, schedule: { type: "once", runAt: iso(DUE) } });
+          const create = service.upsert(input, ScheduledTaskService.CHANGED_IN_APP);
+          const first = (yield* create).task;
+          yield* TestClock.setTime(DUE);
+          yield* TestClock.adjust("6 seconds");
+          expect(launches).toHaveLength(1);
+          yield* TestClock.setTime(NOW);
+          yield* service.delete({ id: first.id });
+          const second = (yield* create).task;
+          expect(second.createdAt).toBe(first.createdAt);
+          yield* TestClock.setTime(DUE + 10000);
+          yield* TestClock.adjust("6 seconds");
+          expect(launches).toHaveLength(2);
+          const owners = launches.map((l) => l.initialMessage?.demandId);
+          expect(owners).toEqual([
+            expect.stringMatching(/^demand:/),
+            expect.stringMatching(/^demand:/),
+          ]);
+          expect(owners[1]).not.toBe(owners[0]);
+        }),
+      [],
+      {
+        launch: (input) =>
+          Effect.sync(() => {
+            launches.push(input);
+            return { threadId: ThreadId.make("thread:recreated") } as never;
+          }),
+      },
+    );
+  }),
+);
+
+it.effect("same-tick manual launches keep distinct stored receipts through restart", () =>
+  Effect.gen(function* () {
+    const launched: ThreadLaunchService.ThreadLaunchInput[] = [];
+    yield* withService(
+      (service, sql, restart) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(
+            upsertInput({ shared: null }),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
+          yield* service.runNow({ id: task.id });
+          yield* service.runNow({ id: task.id });
+          const { runs } = yield* service.listRuns({ id: task.id });
+          expect(runs).toHaveLength(2);
+          expect(runs[0]?.startedAt).toBe(runs[1]?.startedAt);
+          expect(launched.map((x) => x.initialMessage?.demandId)).toEqual([
+            expect.stringMatching(/^demand:/),
+            expect.stringMatching(/^demand:/),
+          ]);
+          expect(launched[0]?.initialMessage?.demandId).not.toBe(
+            launched[1]?.initialMessage?.demandId,
+          );
+          expect(runs.map((row) => `scheduled-task:${row.id}`)).toEqual(
+            launched.map((x) => x.commandId).reverse(),
+          );
+          const last = runs[0]!;
+          yield* sql`UPDATE scheduled_tasks SET last_run_status='running' WHERE task_id=${task.id}`;
+          yield* sql`UPDATE scheduled_task_runs SET outcome='running',thread_id=NULL,completed_at=NULL WHERE run_id=${last.id}`;
+          yield* restart((service) =>
+            Effect.gen(function* () {
+              expect((yield* taskOf(service))?.lastRunStatus).toBe("failed");
+            }),
+          );
+        }),
+      [],
+      {
+        idleScheduler: true,
+        launch: (input) =>
+          Effect.sync(() => {
+            launched.push(input);
+            return { threadId: ThreadId.make(`thread:manual-${launched.length}`) } as never;
+          }),
+      },
+    );
+  }),
+);
+
+it.effect.each(["manual", "scheduled"] as const)(
+  "restart uses the saved trigger on historical same-tick admissions (%s)",
+  (trigger) =>
+    withService(
+      (service, sql, restart) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(
+            upsertInput({ shared: null }),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
+          // Pre-ID records from an older server. The last task trigger survives even when its pointer does not.
+          yield* sql`UPDATE scheduled_tasks SET last_run_at=${iso(NOW)},last_run_status='running',last_run_trigger=${trigger} WHERE task_id=${task.id}`;
+          yield* sql`INSERT INTO scheduled_task_runs(run_id,task_id,trigger,started_at,outcome) VALUES
+            (${task.id + ":" + NOW + ":scheduled"},${task.id},'scheduled',${iso(NOW)},'succeeded'),
+            (${task.id + ":" + NOW + ":manual"},${task.id},'manual',${iso(NOW)},'failed')`;
+          yield* restart((recovered) =>
+            Effect.gen(function* () {
+              expect((yield* taskOf(recovered))?.lastRunStatus).toBe(
+                trigger === "scheduled" ? "succeeded" : "failed",
+              );
+            }),
+          );
+        }),
+      [],
+      { idleScheduler: true },
+    ),
+);
+
 // A holder still claiming or starting its run has none in its list yet, like one whose run failed.
 it.effect(
   "a later machine takes over a run that ended only once the holder's own copy agrees",
@@ -1999,7 +2240,8 @@ it.effect(
 
         yield* Ref.set(scenario.failed, new Set([OTHER]));
         yield* scenario.tick(Date.parse((yield* nextRunAtOf(scenario.sql))!) + 1_000);
-        yield* Queue.take(scenario.launches);
+        const takeover = yield* Queue.take(scenario.launches);
+        expect(takeover.initialMessage?.demandId).toBeNull();
         expect((yield* Ref.get(scenario.peerCopies)).get(OTHER)).toBe(HERE_ENVIRONMENT_ID);
         expect(yield* claimsOf(scenario.sql)).toEqual([
           { occurrence_at: iso(DUE), holder_environment_id: HERE_ENVIRONMENT_ID },
