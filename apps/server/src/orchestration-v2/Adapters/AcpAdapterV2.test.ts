@@ -19,6 +19,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CheckpointId,
   EnvironmentId,
+  MessageId,
   type ModelSelection,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -750,6 +751,7 @@ describe("AcpAdapterV2", () => {
           now,
           ordinal: 3,
           messageCreatedBy: "agent",
+          messageId: offeredContinuation!.messageId!,
           messageCreationSource: "provider",
           messageText: "Background task completed.",
         }),
@@ -6845,6 +6847,7 @@ describe("AcpAdapterV2", () => {
       assert.isTrue(yield* hasPendingBackgroundWork, "buffered spawn ACK still requires a drain");
 
       const continuationNow = yield* DateTime.now;
+      yield* continuationRequests[0]!.dispatchIfCurrent!(Effect.void);
       const continuationInput = makeTurnInput({
         threadId,
         providerThread,
@@ -6853,6 +6856,7 @@ describe("AcpAdapterV2", () => {
         now: continuationNow,
         ordinal: 2,
         messageCreatedBy: "agent",
+        messageId: continuationRequests[0]!.messageId!,
         messageCreationSource: "provider",
         messageText: "Background task completed.",
       });
@@ -7148,6 +7152,7 @@ describe("AcpAdapterV2", () => {
         );
 
         const continuationNow = yield* DateTime.now;
+        yield* continuationRequests[0]!.dispatchIfCurrent!(Effect.void);
         yield* runtime.startTurn(
           makeTurnInput({
             threadId,
@@ -7157,6 +7162,7 @@ describe("AcpAdapterV2", () => {
             now: continuationNow,
             ordinal: 3,
             messageCreatedBy: "agent",
+            messageId: continuationRequests[0]!.messageId!,
             messageCreationSource: "provider",
             messageText: "Background task completed.",
           }),
@@ -7862,6 +7868,7 @@ describe("AcpAdapterV2", () => {
           now: yield* DateTime.now,
           ordinal: 3,
           messageCreatedBy: "agent",
+          messageId: continuationRequest.messageId!,
           messageCreationSource: "provider",
           messageText: "Background task completed.",
         }),
@@ -8580,6 +8587,8 @@ describe("AcpAdapterV2", () => {
     const extensions: AcpAdapterV2ExtensionContext[] = [];
     const inputs: AcpAdapterV2RuntimeInput[] = [];
     const offers: ProviderContinuationRequests.ProviderContinuationRequest[] = [];
+    let replyToPrompt = false;
+    const sent: string[] = [];
     const prompts = yield* Queue.unbounded<Deferred.Deferred<EffectAcpSchema.PromptResponse>>();
     const path = yield* Path.Path;
     const mock = makeMockRuntime({
@@ -8593,8 +8602,17 @@ describe("AcpAdapterV2", () => {
           Effect.sync(() => {
             updates.push(handler);
           }).pipe(Effect.andThen(service.handleSessionUpdate(handler))),
-        prompt: () =>
+        prompt: ({ prompt }) =>
           Effect.gen(function* () {
+            if (replyToPrompt) {
+              sent.push(
+                prompt
+                  .filter((block) => block.type === "text")
+                  .map((block) => block.text)
+                  .join("\n"),
+              );
+              return { stopReason: "end_turn" } as const;
+            }
             const gate = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
             yield* Queue.offer(prompts, gate);
             return yield* Deferred.await(gate);
@@ -8681,19 +8699,25 @@ describe("AcpAdapterV2", () => {
         status: "completed",
         report: { kind: "command", label },
       });
-    const text = (processIndex: number) =>
+    const text = (processIndex: number, output = "Result available") =>
       updates[processIndex]!({
         sessionId,
         update: {
           sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: "Result available" },
+          content: { type: "text", text: output },
         },
       });
     const terminate = () =>
       inputs[0]!.onTermination!(
         new EffectAcpErrors.AcpTransportError({ detail: "Mock runtime terminated", cause: "test" }),
       );
-    const attach = Effect.fnUntraced(function* (ordinal: number) {
+    const attach = Effect.fnUntraced(function* (
+      ordinal: number,
+      messageId: MessageId | undefined,
+      messageText = "Background task completed.",
+      user = false,
+    ) {
+      replyToPrompt = true;
       yield* session.startTurn(
         makeTurnInput({
           threadId,
@@ -8702,19 +8726,28 @@ describe("AcpAdapterV2", () => {
           runtimePolicy,
           ordinal,
           now: yield* DateTime.now,
-          messageCreatedBy: "agent",
-          messageCreationSource: "provider",
-          messageText: "Background task completed.",
+          ...(messageId === undefined ? {} : { messageId }),
+          messageCreatedBy: user ? "user" : "agent",
+          messageCreationSource: user ? "web" : "provider",
+          messageText,
         }),
       );
-      const done = yield* session.events.pipe(
-        Stream.filter((event) => event.type === "turn.terminal"),
-        Stream.runHead,
+      const events = yield* session.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
       );
-      assert.equal(Option.getOrThrow(done).status, "completed");
+      replyToPrompt = false;
+      assert.isTrue(
+        events.some((event) => event.type === "turn.terminal" && event.status === "completed"),
+      );
+      return events.flatMap((event) =>
+        event.type === "message.updated" && event.message.role === "assistant"
+          ? [event.message.text]
+          : [],
+      );
     });
     const resume = session.resumeThread({ providerThread, modelSelection, runtimePolicy });
-    return { turn, end, text, terminate, offers, inputs, resume, attach };
+    return { turn, end, text, terminate, offers, inputs, resume, attach, sent };
   });
 
   it.effect("a failed ACP wake keeps its producer through a later turn reusing its task ID", () =>
@@ -8732,12 +8765,44 @@ describe("AcpAdapterV2", () => {
       assert.equal(offers[1]?.demandSourceRunId, source);
       assert.deepEqual(offers[1]?.notification, offers[0]?.notification);
       assert.isTrue(Option.isSome(yield* offers[1]!.dispatchIfCurrent!(Effect.void)));
-      yield* attach(3);
+      yield* attach(3, offers[1]!.messageId);
       yield* end(0, "successor");
       yield* text(0);
       assert.lengthOf(offers, 3);
       assert.isUndefined(offers[2]?.demandSourceRunId);
       assert.isUndefined(offers[2]?.notification);
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.effect("an accepted ACP wake drains only the matching message from its own runtime", () =>
+    Effect.gen(function* () {
+      const { turn, end, text, offers, attach, sent, terminate, resume } = yield* wakeRuntime();
+      yield* turn(1, true);
+      yield* end(0, "original task");
+      yield* text(0, "old process result");
+      const old = offers[0]!;
+      assert.isTrue(Option.isSome(yield* old.dispatchIfCurrent!(Effect.void)));
+      yield* terminate();
+      yield* resume;
+      yield* turn(2, true);
+      yield* end(1, "replacement task");
+      yield* text(1, "replacement process result");
+      const fresh = offers[1]!;
+      // The old message was already enqueued, but the new offer still awaits its dispatch.
+      assert.deepEqual(yield* attach(3, old.messageId, "deliver old wake"), []);
+      assert.include(sent.at(-1)!, "deliver old wake");
+      assert.isTrue(Option.isSome(yield* fresh.dispatchIfCurrent!(Effect.void)));
+      assert.deepEqual(yield* attach(4, fresh.messageId, "ordinary user input", true), []);
+      assert.include(sent.at(-1)!, "ordinary user input");
+      assert.deepEqual(
+        yield* attach(5, MessageId.make("unrecognized-wake"), "deliver legacy wake"),
+        [],
+      );
+      assert.include(sent.at(-1)!, "deliver legacy wake");
+      assert.include(yield* attach(6, fresh.messageId), "replacement process result");
+      assert.lengthOf(sent, 3);
+      assert.deepEqual(yield* attach(7, fresh.messageId, "replayed delivered wake"), []);
+      assert.include(sent.at(-1)!, "replayed delivered wake");
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
@@ -8929,6 +8994,7 @@ describe("AcpAdapterV2", () => {
       yield* endCommand("task-b", "sleep b");
       assert.lengthOf(continuationRequests, 1);
 
+      yield* continuationRequests[0]!.dispatchIfCurrent!(Effect.void);
       yield* runtime.startTurn(
         makeTurnInput({
           threadId,
@@ -8938,6 +9004,7 @@ describe("AcpAdapterV2", () => {
           now: yield* DateTime.now,
           ordinal: 2,
           messageCreatedBy: "agent",
+          messageId: continuationRequests[0]!.messageId!,
           messageCreationSource: "provider",
           messageText: "Background task completed.",
         }),
