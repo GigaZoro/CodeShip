@@ -514,6 +514,52 @@ it.effect.each([
   }),
 );
 
+it.effect.each([undefined, null, 42, `demand:${"3".repeat(64)}`] as const)(
+  "a proof value %s never changes the peer vote",
+  (value) =>
+    Effect.gen(function* () {
+      const result = yield* claim({
+        answer: () => Effect.succeedSome({ holder: PEER, accountingSourceKey: value }),
+      });
+      expect(result.answered).toEqual([
+        {
+          environmentId: PEER,
+          holder: PEER,
+          ...(typeof value === "string" ? { accountingSourceKey: value } : {}),
+        },
+      ]);
+      expect(result.unchecked).toEqual([]);
+    }),
+);
+it.effect.each([undefined, false, "true", true] as const)(
+  "a fresh claim needs explicit boolean evidence from the voting peer (%s)",
+  (value) =>
+    Effect.gen(function* () {
+      const result = yield* claim({
+        answer: () => Effect.succeedSome({ holder: PEER, accountingFresh: value }),
+      });
+      expect(result.answered).toEqual([
+        {
+          environmentId: PEER,
+          holder: PEER,
+          ...(value === true ? { accountingFresh: true } : {}),
+        },
+      ]);
+      expect(result.unchecked).toEqual([]);
+    }),
+);
+it.effect.each([
+  { accountingFresh: true, accountingSourceKey: 42 },
+  { accountingFresh: true, accountingSourceKey: `demand:${"3".repeat(64)}` },
+  { accountingFresh: "true", accountingSourceKey: `demand:${"3".repeat(64)}` },
+])("contradictory accounting evidence preserves only the vote (%j)", (fields) =>
+  Effect.gen(function* () {
+    const result = yield* claim({
+      answer: () => Effect.succeedSome({ holder: PEER, ...fields }),
+    });
+    expect(result).toEqual({ answered: [{ environmentId: PEER, holder: PEER }], unchecked: [] });
+  }),
+);
 it.effect("a claim records the holder the peer answers with", () =>
   Effect.gen(function* () {
     const asked: Array<unknown> = [];

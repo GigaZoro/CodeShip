@@ -1,3 +1,7 @@
+## 2026-11-23 — Scheduled run accounting
+
+- Scheduled runs carry the accounting ID of their occurrence through launch and account failover. Shared civil-time runs retain the original ID when the accepting machines can verify it. Two manual starts in one millisecond have distinct receipts.
+
 ## 2026-11-23 — Message and review accounting
 
 - Each new turn started by an owner or an accepted guest message gets its own accounting ID. Steering, account failover and final review retain the original run’s ID. Guest messages with a different owner stay in the queue. Background reports and delegated follow-ups carry their source when it is known. Automatic compaction shares the ID of the message that triggered it.
