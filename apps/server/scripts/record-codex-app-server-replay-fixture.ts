@@ -56,12 +56,13 @@ import { codexReplayRecordingOutputRecords } from "./codexReplayRecordingRecords
 import { makeReplayRecorderDeferredRegistry } from "./replayRecorderDeferredRegistry.ts";
 import {
   parseRecorderArguments,
+  recorderEnvironmentValue,
   replayScenarioNames,
   validateReplayOutput,
 } from "./replayRecorderArguments.ts";
 
 const CODEX_REPLAY_PLAN_MODE_DEVELOPER_INSTRUCTIONS =
-  process.env.T3_CODEX_REPLAY_PLAN_DEVELOPER_INSTRUCTIONS ??
+  recorderEnvironmentValue("T3_CODEX_REPLAY_PLAN_DEVELOPER_INSTRUCTIONS") ??
   "You are in Plan mode. Prefer request_user_input for clarifying questions. When presenting a complete plan, wrap it in <proposed_plan> and </proposed_plan>.";
 // Match V2 adapter frames so recordings replay unchanged.
 const CODEX_CLIENT_CAPABILITIES = {
@@ -198,10 +199,8 @@ export function parseReplayArguments(args: ReadonlyArray<string>, env: NodeJS.Pr
     },
     args,
   );
-  const requested = [
-    ...values.scenario,
-    ...(env.T3_CODEX_REPLAY_SCENARIOS === undefined ? [] : [env.T3_CODEX_REPLAY_SCENARIOS]),
-  ];
+  const environmentScenarios = env.T3_CODEX_REPLAY_SCENARIOS;
+  const requested = [...values.scenario, ...(environmentScenarios ? [environmentScenarios] : [])];
   const names = replayScenarioNames(requested.length > 0 ? requested : ["simple"]);
   const expanded = names.flatMap((name) => {
     if (name === "all") return SCENARIO_NAMES;
@@ -224,9 +223,16 @@ export function parseReplayArguments(args: ReadonlyArray<string>, env: NodeJS.Pr
     throw new Error("Pass either --out or --out-dir.");
   }
   // An explicit CLI destination takes precedence over environment defaults.
-  const out = values.out ?? (values["out-dir"] === undefined ? env.T3_CODEX_REPLAY_OUT : undefined);
+  const out =
+    values.out ??
+    (values["out-dir"] === undefined
+      ? recorderEnvironmentValue("T3_CODEX_REPLAY_OUT", env)
+      : undefined);
   const outDir =
-    values["out-dir"] ?? (values.out === undefined ? env.T3_CODEX_REPLAY_OUT_DIR : undefined);
+    values["out-dir"] ??
+    (values.out === undefined
+      ? recorderEnvironmentValue("T3_CODEX_REPLAY_OUT_DIR", env)
+      : undefined);
   if (out !== undefined && outDir !== undefined) {
     throw new Error("Set either T3_CODEX_REPLAY_OUT or T3_CODEX_REPLAY_OUT_DIR.");
   }
@@ -236,7 +242,7 @@ export function parseReplayArguments(args: ReadonlyArray<string>, env: NodeJS.Pr
     requestedScenarios: SCENARIO_NAMES.filter((name) => selected.has(name)),
     out,
     outDir,
-    model: values.model ?? env.T3_CODEX_REPLAY_MODEL,
+    model: values.model ?? recorderEnvironmentValue("T3_CODEX_REPLAY_MODEL", env),
   };
 }
 
@@ -1517,7 +1523,8 @@ if (import.meta.main) {
           yield* runScenario({
             scenario,
             model: model ?? scenario.model ?? CODEX_REPLAY_DEFAULT_MODEL,
-            outPath: out ?? (outDir ? path.join(outDir, scenario.fileName) : defaultOutPath),
+            outPath:
+              out ?? (outDir === undefined ? defaultOutPath : path.join(outDir, scenario.fileName)),
           });
         }),
       { concurrency: 1 },

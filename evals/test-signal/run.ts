@@ -6,7 +6,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import * as NodeUtil from "node:util";
+import { parseCommandLine } from "../../scripts/lib/command-line.ts";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -15,7 +15,7 @@ import { proxyConfig } from "../shared/proxy.ts";
 import { cases, type Case } from "./cases.ts";
 import { grade, testRange, type Comment } from "./grade.ts";
 
-const { values } = NodeUtil.parseArgs({
+const { values } = parseCommandLine({
   options: {
     out: { type: "string" },
     model: { type: "string", multiple: true },

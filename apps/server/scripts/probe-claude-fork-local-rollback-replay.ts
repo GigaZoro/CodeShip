@@ -17,7 +17,7 @@ import {
 } from "../src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import { makeCheckpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
-import { parseRecorderArguments } from "./replayRecorderArguments.ts";
+import { parseRecorderArguments, recorderEnvironmentValue } from "./replayRecorderArguments.ts";
 
 const SCENARIO = "thread_fork_native_fork_local_rollback";
 const DEFAULT_OUTPUT = new URL(
@@ -28,7 +28,7 @@ const CLAUDE_PROVIDER = "claudeAgent" as const;
 const PROTOCOL = "claude-agent-sdk.query" as const;
 const MODEL_SELECTION = {
   instanceId: ProviderInstanceId.make(CLAUDE_PROVIDER),
-  model: process.env.T3_CLAUDE_REPLAY_MODEL ?? "claude-sonnet-4-6",
+  model: recorderEnvironmentValue("T3_CLAUDE_REPLAY_MODEL") ?? "claude-sonnet-4-6",
 } as const;
 const SOURCE_PROMPT =
   "For this fork-local rollback fixture, respond with exactly: fork local source alpha";
@@ -206,12 +206,14 @@ function encodeTranscript(input: {
   ].join("\n");
 }
 
-const { values: options } = parseRecorderArguments({
-  options: { out: { type: "string" } },
-});
+const { values: options } = parseRecorderArguments(
+  { options: { out: { type: "string" } } },
+  process.argv.slice(2),
+);
 const outputPath = options.out ?? DEFAULT_OUTPUT;
+const configuredSessionId = recorderEnvironmentValue("T3_CLAUDE_REPLAY_SESSION_ID");
 const cwd =
-  process.env.T3_CLAUDE_REPLAY_CWD ??
+  recorderEnvironmentValue("T3_CLAUDE_REPLAY_CWD") ??
   (await makeCheckpointWorkspace(`claude-agent-sdk-record-${SCENARIO}`));
 const cwdRealPath = await Effect.runPromise(
   Effect.gen(function* () {
@@ -224,8 +226,7 @@ const pathFragments = [
   [cwdRealPath, `/tmp/claude-replay-${SCENARIO}`],
   [process.env.HOME ?? "", "/home/replay-user"],
 ] as const;
-const sessionId =
-  process.env.T3_CLAUDE_REPLAY_SESSION_ID ?? (await Effect.runPromise(randomUuidV4));
+const sessionId = configuredSessionId ?? (await Effect.runPromise(randomUuidV4));
 const entries: Array<ProviderReplayEntry> = [];
 const metadata: Record<string, unknown> = {
   prompts: [SOURCE_PROMPT, FORK_FIRST_PROMPT, FORK_SECOND_PROMPT, FORK_AFTER_ROLLBACK_PROMPT],

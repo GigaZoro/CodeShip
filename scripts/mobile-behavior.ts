@@ -153,11 +153,33 @@ export function parseBehaviorArguments(args: ReadonlyArray<string>) {
     passThrough.push("--samples", String(positiveInteger(values.samples, "--samples")));
   }
   if (values.case !== undefined) {
-    const unknownCases = values.case
-      .split(",")
-      .map((id) => id.trim())
-      .filter((id) => !CASES.some((testCase) => testCase.id === id));
+    const ids = values.case.split(",").map((id) => id.trim());
+    const unknownCases = ids.filter((id) => !CASES.some((testCase) => testCase.id === id));
     if (unknownCases.length) throw new Error("Unknown case id(s): " + JSON.stringify(unknownCases));
+    // The runner on a device with no case to run fails only after the dev client build and the device lease.
+    const selectedCases = CASES.filter((testCase) => ids.includes(testCase.id));
+    const runsOn = (testCase: (typeof CASES)[number], target: Target) =>
+      testCase.poses?.includes(target.behaviorPose) ?? true;
+    const nowhere = selectedCases.filter(
+      (testCase) => !targets.some((target) => runsOn(testCase, target)),
+    );
+    if (nowhere.length)
+      throw new Error(
+        "Case(s) " +
+          nowhere.map((testCase) => testCase.id).join(", ") +
+          " run on none of the devices " +
+          targets.map((target) => target.id).join(", ") +
+          ".",
+      );
+    const idle = targets.filter(
+      (target) => !selectedCases.some((testCase) => runsOn(testCase, target)),
+    );
+    if (idle.length)
+      throw new Error(
+        "No selected case runs on " +
+          idle.map((target) => target.id).join(", ") +
+          "; pass --device to leave it out.",
+      );
     passThrough.push("--case", values.case);
   }
   return { list: values.list === true, targets, passThrough };

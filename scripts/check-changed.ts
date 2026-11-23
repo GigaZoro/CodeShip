@@ -56,6 +56,7 @@ import { REAL_HISTORY_ENV } from "../.github/scripts/git-history.cjs";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { checkNodeRuntime } from "../.github/scripts/check-node-runtime.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
+import { isRepositoryCommandSource } from "./lib/repository-command-source.ts";
 
 const GiB = 1024 ** 3;
 // The test step's limit grows by this much per selected file: server tests run one at a time.
@@ -468,6 +469,10 @@ export const testsReaching = (input: {
   };
 
   const tests = new Set<string>();
+  const argumentGuard = "scripts/command-arguments.test.ts";
+  if (input.files.has(argumentGuard) && input.changed.some(isRepositoryCommandSource)) {
+    tests.add(argumentGuard);
+  }
   const importers = new Map<string, Array<string>>();
   const testsByDir = new Map<string, Array<string>>();
   for (const file of input.files) {
@@ -504,7 +509,7 @@ export const testsReaching = (input: {
   const isBarrel = (file: string) =>
     CODE.test(file) &&
     input.read(file).replace(COMMENT, "").replace(RE_EXPORT, "").trim().length === 0;
-  const queue = input.changed.filter((file) => !isBarrel(file));
+  const queue = input.changed.filter((file) => !input.files.has(file) || !isBarrel(file));
   const seen = new Set(queue);
   for (let index = 0; index < queue.length; index += 1) {
     for (const importer of importers.get(queue[index]!) ?? []) {
@@ -971,7 +976,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     { concurrency: 64, discard: true },
   );
   for (const test of testsReaching({
-    changed: present,
+    changed: files,
     files: workspaceFiles,
     packages,
     read: (file) => contents.get(file) ?? "",

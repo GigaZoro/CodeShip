@@ -2,14 +2,14 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
-import * as NodeUtil from "node:util";
+import { parseCommandLine } from "../../../scripts/lib/command-line.ts";
 
 // oxlint-disable-next-line t3code/no-global-process-runtime -- The native compiler targets the actual host; this script has no Effect runtime.
 const hostArch = process.arch;
 // oxlint-disable-next-line t3code/no-global-process-runtime -- Native compilation only runs on the actual Linux host.
 const hostPlatform = process.platform;
 
-const { values } = NodeUtil.parseArgs({
+const { values } = parseCommandLine({
   options: { output: { type: "string" }, arch: { type: "string", default: hostArch } },
 });
 

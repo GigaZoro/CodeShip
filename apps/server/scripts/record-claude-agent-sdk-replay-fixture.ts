@@ -74,7 +74,7 @@ import {
   validateClaudeReplayRecordingSelection,
   type ClaudeRecordingQueryMode,
 } from "./claudeReplayRecordingConfig.ts";
-import { parseClaudeReplayArguments } from "./replayRecorderArguments.ts";
+import { parseClaudeReplayArguments, recorderEnvironmentValue } from "./replayRecorderArguments.ts";
 
 const CLAUDE_RECORDINGS = {
   simple: {
@@ -300,10 +300,10 @@ const CLAUDE_RECORDINGS = {
   },
 } as const;
 
-const options = parseClaudeReplayArguments();
+const options = parseClaudeReplayArguments(process.argv.slice(2), process.env);
 
 function selectedQueryMode(defaultMode: ClaudeRecordingQueryMode): ClaudeRecordingQueryMode {
-  const raw = options["query-mode"] ?? process.env.T3_CLAUDE_REPLAY_QUERY_MODE;
+  const raw = options.queryMode;
   if (raw === undefined) {
     return defaultMode;
   }
@@ -325,7 +325,7 @@ function selectedQueryMode(defaultMode: ClaudeRecordingQueryMode): ClaudeRecordi
   );
 }
 
-const scenario = options.scenario ?? process.env.T3_CLAUDE_REPLAY_SCENARIO ?? "simple";
+const scenario = options.scenario;
 const recording = CLAUDE_RECORDINGS[scenario as keyof typeof CLAUDE_RECORDINGS];
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -367,13 +367,13 @@ function runFileSystem<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>)
 }
 
 function selectedPrompts(): ReadonlyArray<string> {
-  if (process.env.T3_CLAUDE_REPLAY_PROMPTS !== undefined) {
-    return process.env.T3_CLAUDE_REPLAY_PROMPTS.split("\n---\n").filter(
-      (prompt) => prompt.length > 0,
-    );
+  const prompts = recorderEnvironmentValue("T3_CLAUDE_REPLAY_PROMPTS");
+  if (prompts !== undefined) {
+    return prompts.split("\n---\n").filter((prompt) => prompt.length > 0);
   }
-  if (process.env.T3_CLAUDE_REPLAY_PROMPT !== undefined) {
-    return [process.env.T3_CLAUDE_REPLAY_PROMPT];
+  const prompt = recorderEnvironmentValue("T3_CLAUDE_REPLAY_PROMPT");
+  if (prompt !== undefined) {
+    return [prompt];
   }
   return recording.prompts;
 }
@@ -419,12 +419,15 @@ async function makeToolCallReadOnlyRecordingWorkspace(): Promise<string> {
   return TOOL_CALL_READ_ONLY_WORKSPACE_ROOT;
 }
 
+const configuredModel = recorderEnvironmentValue("T3_CLAUDE_REPLAY_MODEL");
+const sessionId = recorderEnvironmentValue("T3_CLAUDE_REPLAY_SESSION_ID");
+const configuredCwd = recorderEnvironmentValue("T3_CLAUDE_REPLAY_CWD");
 const cwd =
-  process.env.T3_CLAUDE_REPLAY_CWD ??
+  configuredCwd ??
   (scenario === "tool_call_read_only"
     ? await makeToolCallReadOnlyRecordingWorkspace()
     : await makeCheckpointWorkspace(`claude-agent-sdk-record-${scenario}`));
-const shouldRemoveCwd = process.env.T3_CLAUDE_REPLAY_CWD === undefined;
+const shouldRemoveCwd = configuredCwd === undefined;
 
 const expectedAbsentWorkspacePaths =
   "expectedAbsentWorkspacePaths" in recording ? recording.expectedAbsentWorkspacePaths : [];
@@ -492,12 +495,10 @@ try {
     prompts,
     modelSelection: {
       ...CLAUDE_MODEL_SELECTION,
-      model: process.env.T3_CLAUDE_REPLAY_MODEL ?? CLAUDE_MODEL_SELECTION.model,
+      model: configuredModel ?? CLAUDE_MODEL_SELECTION.model,
     },
     cwd,
-    ...(process.env.T3_CLAUDE_REPLAY_SESSION_ID === undefined
-      ? {}
-      : { sessionId: process.env.T3_CLAUDE_REPLAY_SESSION_ID }),
+    ...(sessionId === undefined ? {} : { sessionId }),
     queryMode,
     ...("enableTools" in recording && recording.enableTools === true ? { enableTools: true } : {}),
     ...(queryPolicy.tools === undefined ? {} : { tools: queryPolicy.tools }),

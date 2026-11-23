@@ -34,6 +34,7 @@ import { makeGrokAcpRuntime } from "@t3tools/provider-grok/testing";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import {
   parseRecorderArguments,
+  recorderEnvironmentValue,
   replayScenarioNames,
   validateReplayOutput,
 } from "./replayRecorderArguments.ts";
@@ -425,7 +426,10 @@ const recordScenario = Effect.fn("recordGrokScenario")(function* (
   };
 
   const tee = makeWireTee();
-  const settings = { ...DEFAULT_GROK_SETTINGS, binaryPath: process.env.T3_GROK_BIN ?? "grok" };
+  const settings = {
+    ...DEFAULT_GROK_SETTINGS,
+    binaryPath: recorderEnvironmentValue("T3_GROK_BIN") ?? "grok",
+  };
   const layerRegistry = ProviderAdapterRegistry.layerFromAdaptersEffect(
     Effect.gen(function* () {
       const environment = yield* HostProcess.Environment;

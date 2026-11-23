@@ -7,7 +7,7 @@ import { autoModeModelFor } from "@t3tools/shared/serverSettings";
  * README.md for how to run it and add cases.
  */
 import * as NodeChildProcess from "node:child_process";
-import * as NodeUtil from "node:util";
+import { parseCommandLine } from "../../scripts/lib/command-line.ts";
 import * as NodeVM from "node:vm";
 import * as NodeZlib from "node:zlib";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -2184,7 +2184,7 @@ const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const string = { type: "string" } as const;
 
 const main = Effect.gen(function* () {
-  const { values } = NodeUtil.parseArgs({
+  const { values } = parseCommandLine({
     options: {
       model: string,
       provider: string,

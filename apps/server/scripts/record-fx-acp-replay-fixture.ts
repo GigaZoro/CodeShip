@@ -33,6 +33,7 @@ import { runOrchestratorV2Scenario } from "../src/orchestration-v2/testkit/Orche
 import * as ProviderReplayHarness from "../src/orchestration-v2/testkit/ProviderReplayHarness.ts";
 import {
   parseRecorderArguments,
+  recorderEnvironmentValue,
   replayScenarioNames,
   validateReplayOutput,
 } from "./replayRecorderArguments.ts";
@@ -380,7 +381,10 @@ const recordScenario = Effect.fn("recordFxScenario")(function* (
   };
 
   const tee = makeWireTee();
-  const settings = { ...DEFAULT_FX_SETTINGS, binaryPath: process.env.T3_FX_BIN ?? "fx" };
+  const settings = {
+    ...DEFAULT_FX_SETTINGS,
+    binaryPath: recorderEnvironmentValue("T3_FX_BIN") ?? "fx",
+  };
   const layerRegistry = ProviderAdapterRegistry.layerFromAdaptersEffect(
     Effect.gen(function* () {
       const environment = yield* HostProcess.Environment;

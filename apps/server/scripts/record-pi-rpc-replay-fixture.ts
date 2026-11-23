@@ -30,7 +30,7 @@ import {
   checkpointWorkspace,
   makeCheckpointWorkspace,
 } from "@t3tools/provider-testing/replayWorkspace";
-import { parseRecorderArguments } from "./replayRecorderArguments.ts";
+import { parseRecorderArguments, recorderEnvironmentValue } from "./replayRecorderArguments.ts";
 
 // Exclude user context; --approve lets the throwaway workspace's `.pi/settings.json` load.
 const HERMETIC_LAUNCH_ARGS =
@@ -39,9 +39,10 @@ const HERMETIC_LAUNCH_ARGS =
 const WORKSPACE_PI_SETTINGS = { compaction: { keepRecentTokens: 50 } };
 const CLOCK_TICK = Duration.millis(20);
 
-const { values: options } = parseRecorderArguments({
-  options: { scenario: { type: "string" }, out: { type: "string" } },
-});
+const { values: options } = parseRecorderArguments(
+  { options: { scenario: { type: "string" }, out: { type: "string" } } },
+  process.argv.slice(2),
+);
 
 const scenario = options.scenario;
 const fixture = ORCHESTRATOR_REPLAY_FIXTURES.find((entry) => entry.name === scenario);
@@ -53,7 +54,7 @@ if (fixture === undefined || variant === undefined) {
   throw new Error(`Pass --scenario with a fixture that registers Pi: ${names.join(", ")}`);
 }
 
-const piBinary = process.env.T3_PI_BIN ?? "pi";
+const piBinary = recorderEnvironmentValue("T3_PI_BIN") ?? "pi";
 const [modelProvider, ...modelId] = variant.modelSelection.model.split("/");
 const launchArgs = `--provider ${modelProvider} --model ${modelId.join("/")} ${HERMETIC_LAUNCH_ARGS}`;
 const home = process.env.HOME ?? "";

@@ -8,6 +8,8 @@ import { parseBehaviorArguments } from "./mobile-behavior.ts";
 import { parseE2eArguments } from "./mobile-e2e.ts";
 import { parseShowcaseCliArgs } from "./mobile-showcase.ts";
 import { parseRenderMetricsArguments } from "./render-metrics.ts";
+import { parseCachedTestArguments } from "./test-cached.ts";
+import { isRepositoryCommandSource } from "./lib/repository-command-source.ts";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 
 const root = NodePath.resolve(import.meta.dirname, "..");
@@ -49,10 +51,6 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
       1,
       "Usage: node .github/scripts/release-notes.cjs check|render",
     ],
-  ],
-  "../apps/mobile/scripts/generate-uniwind-themes.mts": [
-    [["--chek"], 1, unknownOption("--chek")],
-    [["--check", "--check"], 1, "Pass --check at most once."],
   ],
   "../apps/mobile/scripts/upload-sourcemaps.mts": [
     [
@@ -121,10 +119,6 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
   "./render-metrics.ts": [
     [["compare", "before.json", "after.json", UNREAD], 1, unknownOption(UNREAD)],
   ],
-  "./test-cached.ts": [
-    [[UNREAD], 1, unknownOption(UNREAD)],
-    [["--help", "positional"], 1, "--help must be used alone."],
-  ],
   "./upstream-sync.ts": ["begin", "status", "land", "check"].map((command) => [
     [command, UNREAD],
     2,
@@ -133,6 +127,7 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
 };
 
 const PARSER_CHECKS = {
+  "./test-cached.ts": parseCachedTestArguments,
   "./mobile-behavior.ts": parseBehaviorArguments,
   "./mobile-e2e.ts": parseE2eArguments,
   "./mobile-showcase.ts": parseShowcaseCliArgs,
@@ -142,12 +137,27 @@ const PARSER_CHECKS = {
 
 /** Argv readers whose command line is delegated, or whose parser is exercised by its own tests. */
 const EXEMPT: Readonly<Record<string, string>> = {
+  "../apps/mobile/scripts/generate-uniwind-themes.mts":
+    "the mobile theme tests exercise the CLI in a disposable project",
   "../apps/desktop/scripts/ensure-electron-runtime.mjs":
     "reads only its own path, to tell it was run",
   "../apps/desktop/scripts/verify-preload-bundle.mjs":
     "reads only its own path, to tell it was run",
-  "../apps/server/scripts/replayRecorderArguments.ts":
-    "covered by the replay recorder parser tests",
+  "../apps/server/scripts/probe-claude-fork-local-rollback-replay.ts":
+    "uses the shared replay parser",
+  "../apps/server/scripts/record-claude-agent-sdk-replay-fixture.ts":
+    "covered by the Claude replay parser tests",
+  "../apps/server/scripts/record-muse-msp-replay-fixture.ts": "uses the shared replay parser",
+  "../apps/server/scripts/record-pi-rpc-replay-fixture.ts": "uses the shared replay parser",
+  "../apps/desktop/scripts/build-browser-secret.mjs":
+    "uses parseCommandLine before invoking the compiler",
+  "../apps/server/scripts/verify-background-live.ts":
+    "uses parseCommandLine before launching services",
+  "./smoke-desktop-app.ts": "uses parseCommandLine before launching the desktop app",
+  "../evals/test-signal/run.ts": "uses parseCommandLine before invoking a model",
+  "../evals/thread-titles/run.ts": "uses parseCommandLine before invoking a model",
+  "../evals/mcp-tool-use/run.ts": "uses parseCommandLine before invoking a model",
+  "./lib/command-line.ts": "implements the shared parser and forwards its caller's config",
   "../apps/server/scripts/record-codex-app-server-replay-fixture.ts":
     "covered by the replay recorder parser tests",
   "../apps/server/scripts/record-fx-acp-replay-fixture.ts":
@@ -162,9 +172,6 @@ const EXEMPT: Readonly<Record<string, string>> = {
 
 const toRepositoryPath = (file: string) => NodePath.posix.normalize("scripts/" + file);
 
-const SKIPPED_DIRECTORY = /^(?:src|test|tests|__tests__|fixtures|testkit|node_modules)$/;
-const CODE = /\.[cm]?[jt]sx?$/;
-
 /** Tracked scripts outside vendored repositories, app sources and tests, with their text. */
 function trackedScripts(): ReadonlyArray<{ readonly file: string; readonly text: string }> {
   const listed = NodeChildProcess.execFileSync(
@@ -178,16 +185,7 @@ function trackedScripts(): ReadonlyArray<{ readonly file: string; readonly text:
   );
   return listed
     .split("\0")
-    .filter(
-      (file) =>
-        CODE.test(file) &&
-        !file.startsWith(".repos/") &&
-        !/\.test\.[cm]?[jt]sx?$/.test(file) &&
-        !file
-          .split("/")
-          .slice(0, -1)
-          .some((part) => SKIPPED_DIRECTORY.test(part)),
-    )
+    .filter(isRepositoryCommandSource)
     .flatMap((file) => {
       const full = NodePath.join(root, file);
       // A sparse checkout leaves some tracked files out of the tree.
@@ -195,13 +193,17 @@ function trackedScripts(): ReadonlyArray<{ readonly file: string; readonly text:
     });
 }
 
+// parseArgs reads process.argv when its config names no args, and parseCommandLine hands its config to parseArgs.
+const DEFAULT_ARGV_PARSERS = new Set(["parseArgs", "parseCommandLine"]);
+
 function readsArgv(text: string): boolean {
-  if (!text.includes("argv")) return false;
+  if (!text.includes("argv") && !/\b(?:parseArgs|parseCommandLine)\b/.test(text)) return false;
   // These scripts embed Node source in strings, so keep finding the global spelling there too.
   if (/\bprocess\s*\.\s*argv\b/.test(text)) return true;
   const module = ts.createSourceFile("script.ts", text, ts.ScriptTarget.Latest, true);
   const processNames = new Set(["process"]);
   const argvNames = new Set<string>();
+  const parserNames = new Set(DEFAULT_ARGV_PARSERS);
   const isProcessModule = (node: ts.Node | undefined) =>
     node !== undefined && ts.isStringLiteralLike(node) && /^(node:)?process$/.test(node.text);
   const addBinding = (name: ts.BindingName) => {
@@ -225,6 +227,19 @@ function readsArgv(text: string): boolean {
     );
   };
   const collectImports = (node: ts.Node): void => {
+    if (
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      /^(?:(?:node:)?util|.*\/command-line\.ts)$/.test(node.moduleSpecifier.text)
+    ) {
+      const bindings = node.importClause?.namedBindings;
+      if (bindings && ts.isNamedImports(bindings)) {
+        for (const binding of bindings.elements) {
+          if (DEFAULT_ARGV_PARSERS.has((binding.propertyName ?? binding.name).text))
+            parserNames.add(binding.name.text);
+        }
+      }
+    }
     if (ts.isImportDeclaration(node) && isProcessModule(node.moduleSpecifier)) {
       const clause = node.importClause;
       if (clause?.name) processNames.add(clause.name.text);
@@ -268,7 +283,29 @@ function readsArgv(text: string): boolean {
     ts.forEachChild(node, collectDestructuring);
   };
   collectDestructuring(module);
+  // A spread alone cannot prove that the caller supplied args.
+  const passesArgs = (config: ts.Expression | undefined) =>
+    config !== undefined &&
+    ts.isObjectLiteralExpression(config) &&
+    config.properties.some(
+      (property) =>
+        property.name !== undefined &&
+        (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
+        property.name.text === "args",
+    );
+  const calleeName = (callee: ts.Expression) =>
+    ts.isIdentifier(callee)
+      ? callee.text
+      : ts.isPropertyAccessExpression(callee)
+        ? callee.name.text
+        : undefined;
   const visit = (node: ts.Node): boolean | undefined => {
+    if (
+      ts.isCallExpression(node) &&
+      parserNames.has(calleeName(node.expression) ?? "") &&
+      !passesArgs(node.arguments[0])
+    )
+      return true;
     if (
       ts.isPropertyAccessExpression(node) &&
       node.name.text === "argv" &&
@@ -295,29 +332,13 @@ function readsArgv(text: string): boolean {
 }
 
 const releaseNotes = "../.github/scripts/release-notes.cjs";
-const themes = "../apps/mobile/scripts/generate-uniwind-themes.mts";
-const themeDependencies = [
-  "../apps/mobile/package.json",
-  "../apps/mobile/src/lib/mobileTheme.ts",
-  "./lib/command-line.ts",
-];
-
 function commandPath(file: string, sandbox: string): string {
-  if (file !== releaseNotes && file !== themes) return NodePath.join(root, toRepositoryPath(file));
-  for (const source of file === themes ? [file, ...themeDependencies] : [file]) {
-    const path = toRepositoryPath(source);
-    const target = NodePath.join(sandbox, path);
-    NodeFS.mkdirSync(NodePath.dirname(target), { recursive: true });
-    NodeFS.copyFileSync(NodePath.join(root, path), target);
-  }
-  if (file === themes) {
-    NodeFS.symlinkSync(
-      NodePath.join(root, "apps/mobile/node_modules"),
-      NodePath.join(sandbox, "apps/mobile/node_modules"),
-      "junction",
-    );
-  }
-  return NodePath.join(sandbox, toRepositoryPath(file));
+  const path = toRepositoryPath(file);
+  if (file !== releaseNotes) return NodePath.join(root, path);
+  const target = NodePath.join(sandbox, path);
+  NodeFS.mkdirSync(NodePath.dirname(target), { recursive: true });
+  NodeFS.copyFileSync(NodePath.join(root, path), target);
+  return target;
 }
 
 function expectRefusal(
@@ -329,9 +350,6 @@ function expectRefusal(
   expect(result.output).toContain(diagnostic);
 }
 
-// @test-input ../**/scripts/**/*.{ts,mts,cts,tsx,js,mjs,cjs,jsx}
-// @test-input ../.github/scripts/**/*.{ts,mts,cts,tsx,js,mjs,cjs,jsx}
-// @test-input ../evals/**/*.{ts,mts,cts,tsx,js,mjs,cjs,jsx}
 describe("command-line scripts", () => {
   const scripts = trackedScripts();
 
@@ -343,6 +361,10 @@ describe("command-line scripts", () => {
       ),
     );
     expect(readers.filter((file) => !listed.has(file))).toEqual([]);
+    const exemptNonReaders = Object.keys(EXEMPT)
+      .map(toRepositoryPath)
+      .filter((file) => !readers.includes(file));
+    expect(exemptNonReaders).toEqual([]);
     const tracked = new Set(scripts.map(({ file }) => file));
     expect([...listed].filter((file) => !tracked.has(file))).toEqual([]);
   });
@@ -357,6 +379,10 @@ describe("command-line scripts", () => {
     '(await import("node:process")).argv;',
     '(await import("node:process")).default.argv;',
     'import * as runtime from "node:process"; const { argv: args } = runtime; args.slice(2);',
+    'import * as NodeUtil from "node:util"; NodeUtil.parseArgs({ options: {} });',
+    'import { parseArgs } from "node:util"; parseArgs();',
+    'import { parseArgs as read } from "node:util"; read({ ...defaults });',
+    'import { parseCommandLine } from "./lib/command-line.ts"; parseCommandLine({ options: {} });',
   ])("discovers argv in %s", (source) => {
     expect(readsArgv(source)).toBe(true);
   });
@@ -365,6 +391,7 @@ describe("command-line scripts", () => {
     expect(readsArgv('import runtime from "node:process"; runtime.env; const argv = [];')).toBe(
       false,
     );
+    expect(readsArgv('parseCommandLine({ args: ["--check"], options: {} });')).toBe(false);
   });
 
   it("requires the specific refusal and exit status", () => {
@@ -394,6 +421,13 @@ describe("command-line scripts", () => {
     expect(loose).toEqual([]);
   });
 
+  it("checks cached-runner help before starting any test work", () => {
+    expect(() => parseCachedTestArguments(["--help", "positional"])).toThrow(
+      "--help must be used alone.",
+    );
+    expect(parseCachedTestArguments(["--", "--help"]).values.help).toBe(true);
+  });
+
   it("rejects mobile behavior values that would be ignored or reach the device runner", () => {
     expect(() => parseBehaviorArguments(["--list", "--device", "iphone-18-pro"])).toThrow(
       "--list must be used alone.",
@@ -407,6 +441,24 @@ describe("command-line scripts", () => {
     expect(
       parseBehaviorArguments(["--device", "iphone-18-pro", "--samples", "1"]).passThrough,
     ).toEqual(["--samples", "1"]);
+  });
+
+  it("rejects a mobile behavior case that no selected device runs", () => {
+    expect(() => parseBehaviorArguments(["--case", "folded-duo-back-opens-right-thread"])).toThrow(
+      "Case(s) folded-duo-back-opens-right-thread run on none of the devices iphone-18-pro, ipad-pro-13.",
+    );
+    expect(() =>
+      parseBehaviorArguments([
+        "--device",
+        "iphone-18-pro",
+        "--case",
+        "scroll-up-never-teleports,folded-duo-back-opens-right-thread",
+      ]),
+    ).toThrow("run on none of the devices iphone-18-pro.");
+    expect(parseBehaviorArguments(["--case", "scroll-up-never-teleports"]).passThrough).toEqual([
+      "--case",
+      "scroll-up-never-teleports",
+    ]);
   });
 
   it("rejects mobile e2e values before dispatch", () => {
@@ -433,7 +485,8 @@ describe("command-line scripts", () => {
   const empty = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-command-arguments-"));
   afterAll(() => NodeFS.rmSync(empty, { recursive: true, force: true }));
 
-  it.each([releaseNotes, themes])("runs %s from a disposable copy", (file) => {
+  it("runs the release notes command from a disposable copy", () => {
+    const file = releaseNotes;
     const sandbox = NodeFS.mkdtempSync(NodePath.join(empty, "copy-"));
     const path = commandPath(file, sandbox);
     expect(NodePath.relative(sandbox, NodeFS.realpathSync(path))).toBe(

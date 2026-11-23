@@ -440,11 +440,13 @@ describe("check:changed", () => {
     "infra/task-cache/scripts/install.ts",
     "infra/tool/scripts/added.mts",
     ".github/scripts/added.cjs",
-  ])("selects a test that declares a runtime input matching %s", (changed) => {
+    "tools/added.ts",
+    "removed.ts",
+  ])("selects the repository command guard when %s changes", (changed) => {
     const test = "scripts/command-arguments.test.ts";
     const sources = new Map([
       [test, NodeFS.readFileSync(new URL("./command-arguments.test.ts", import.meta.url), "utf8")],
-      [changed, "export const command = 1;"],
+      ...(changed === "removed.ts" ? [] : [[changed, "export const command = 1;"] as const]),
     ]);
     assert.deepStrictEqual(
       testsReaching({
