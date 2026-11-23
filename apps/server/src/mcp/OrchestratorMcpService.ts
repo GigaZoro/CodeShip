@@ -2854,13 +2854,16 @@ const make = Effect.gen(function* () {
                   ),
                 )).tasks.find((candidate) => candidate.id === input.scheduledTaskId);
         const lastRun = task === undefined ? null : yield* lastRunOf(task);
-        const holder = yield* scheduledTasks
+        const receipt = yield* scheduledTasks
           .claimOccurrence({
             taskId: input.scheduledTaskId,
             occurrence: input.occurrence,
             holder: input.holder,
             replaces: input.replaces,
             by: caller,
+            ...(input.accountingProposalKey === undefined
+              ? {}
+              : { accountingProposalKey: input.accountingProposalKey }),
             lastRunFailed: lastRun?.outcome === "failed" && lastRun.stopped !== true,
           })
           .pipe(
@@ -2871,7 +2874,7 @@ const make = Effect.gen(function* () {
               ),
             ),
           );
-        return { holder };
+        return receipt;
       },
     ),
     updateScheduledTask: Effect.fn("OrchestratorMcpService.updateScheduledTask")(

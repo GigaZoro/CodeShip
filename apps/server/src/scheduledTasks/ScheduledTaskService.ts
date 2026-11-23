@@ -17,6 +17,9 @@ import {
   repositoryMatchRank,
   scheduledTaskSharedProjectKey,
   type OrchestratorMcpSharedScheduledTasksResult,
+  type OrchestratorMcpClaimScheduledTaskOccurrenceResult,
+  ScheduledClaimEvidence,
+  ScheduledClaimProposal,
   type ScheduledTaskApplySharedInput,
   type ScheduledTaskApplySharedResult,
   type ScheduledTaskSharedRevision,
@@ -124,6 +127,7 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import {
+  hasUniqueFixedTimeSlot,
   isMissedFixedTimeRun,
   isSameSchedule,
   latestAlignedIntervalRunAt,
@@ -328,6 +332,11 @@ const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
 const decodeDescription = Schema.decodeUnknownEffect(
   Schema.optional(Schema.NullOr(ScheduledTaskDescription)),
 );
+const validClaimProposal = Schema.is(ScheduledClaimProposal);
+const ClaimEvidenceJson = Schema.fromJsonString(ScheduledClaimEvidence);
+const readClaimEvidence = Schema.decodeUnknownOption(ClaimEvidenceJson);
+const encodeClaimEvidence = Schema.encodeSync(ClaimEvidenceJson);
+
 const DescriptionJson = Schema.fromJsonString(Schema.NullOr(ScheduledTaskDescription));
 const decodeDescriptionJson = Schema.decodeUnknownEffect(DescriptionJson);
 const encodeDescriptionJson = Schema.encodeSync(DescriptionJson);
@@ -500,6 +509,13 @@ interface RunRecordRow {
 
 /** What a scheduled run is for: the time it serves, and whether it catches up a missed one. */
 interface ScheduledFire {
+  readonly sharedOrigin?: {
+    readonly key: string | null;
+    readonly claimInstant: string;
+    readonly ballot: string | null;
+    readonly previousAdmission: string | null;
+    readonly revision: ScheduledTaskSharedRevision;
+  };
   /** This machine owns this occurrence independently of peer claims. */
   readonly independentOccurrence?: string | null;
   readonly scheduledFor: string | null;
@@ -619,11 +635,12 @@ export class ScheduledTaskService extends Context.Service<
       readonly occurrence: string;
       readonly holder: EnvironmentId;
       readonly replaces: EnvironmentId | null;
+      readonly accountingProposalKey?: unknown;
       /** The machine asking. */
       readonly by: EnvironmentId;
       /** This machine's last run failed and nobody stopped it. */
       readonly lastRunFailed?: boolean;
-    }) => Effect.Effect<EnvironmentId, ScheduledTaskError>;
+    }) => Effect.Effect<OrchestratorMcpClaimScheduledTaskOccurrenceResult, ScheduledTaskError>;
     /** Brings this machine's copy of a shared task up to a newer revision; an older one changes nothing. */
     readonly applyShared: (
       input: ScheduledTaskApplySharedInput,
@@ -1087,6 +1104,7 @@ export const layer = Layer.effect(
         {
           readonly incarnation: string;
           readonly occurrenceDueMs: number;
+          readonly revision: ScheduledTaskSharedRevision;
           readonly deferredTo: string;
           readonly catchUp: boolean;
           /** The machine whose run of this occurrence was still going at the last check. */
@@ -1181,6 +1199,23 @@ export const layer = Layer.effect(
         PRIMARY KEY (task_id, occurrence_at)
       )
     `;
+    const claimColumns = yield* sql<{
+      name: string;
+    }>`PRAGMA table_info(scheduled_task_occurrence_claims)`;
+    if (!claimColumns.some(({ name }) => name === "accounting_ballot_json"))
+      yield* sql`ALTER TABLE scheduled_task_occurrence_claims ADD COLUMN accounting_ballot_json TEXT`;
+    if (!claimColumns.some(({ name }) => name === "accounting_admitted_key"))
+      yield* sql`ALTER TABLE scheduled_task_occurrence_claims ADD COLUMN accounting_admitted_key TEXT`;
+    // An older client opening this database may move a holder without writing any evidence.
+    yield* sql`CREATE TRIGGER IF NOT EXISTS scheduled_task_legacy_claim_moved
+      AFTER UPDATE OF holder_environment_id ON scheduled_task_occurrence_claims
+      WHEN NEW.holder_environment_id <> OLD.holder_environment_id
+        AND NEW.accounting_ballot_json IS OLD.accounting_ballot_json
+        AND (NEW.accounting_ballot_json IS NOT NULL OR NEW.accounting_admitted_key IS NOT NULL)
+      BEGIN
+        UPDATE scheduled_task_occurrence_claims SET accounting_ballot_json=NULL, accounting_admitted_key=NULL
+        WHERE task_id=NEW.task_id AND occurrence_at=NEW.occurrence_at;
+      END`;
     // The latest time a fixed-time run came due while an update drained; it holds the occurrence at
     // or before then. The install restarts the server, so the hold outlives the drain and the run
     // starts after it however late. It lasts while the task's next_run_at is next_run_at: a check a
@@ -2594,7 +2629,7 @@ export const layer = Layer.effect(
                 isSameSchedule(active.schedule, task.schedule)
               ? fire.independentOccurrence
               : null;
-        const demandId =
+        let demandId =
           admissionKey === null
             ? null
             : originalDemandId(
@@ -2605,6 +2640,29 @@ export const layer = Layer.effect(
                 trigger,
                 admissionKey,
               );
+        const sharedOrigin = fire?.sharedOrigin;
+        if (sharedOrigin !== undefined) {
+          const saved = yield* sql`UPDATE scheduled_task_occurrence_claims
+            SET accounting_admitted_key = ${sharedOrigin.key}
+            WHERE task_id = ${active.id} AND occurrence_at = ${sharedOrigin.claimInstant}
+              AND holder_environment_id = ${hereEnvironmentId} AND accounting_ballot_json IS ${sharedOrigin.ballot}
+              AND accounting_admitted_key IS ${sharedOrigin.previousAdmission}
+              AND EXISTS (
+                SELECT 1 FROM scheduled_tasks t JOIN scheduled_task_shared sh USING (task_id)
+                WHERE t.task_id = ${active.id} AND ${sameIncarnation(active)}
+                  AND sh.run_on = 'one' AND sh.revision_at = ${sharedOrigin.revision.at}
+                  AND sh.revision_environment_id = ${sharedOrigin.revision.environmentId}
+              )
+            RETURNING task_id`.pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Could not persist the scheduled occurrence's accounting source", {
+                taskId: active.id,
+                cause,
+              }).pipe(Effect.as([])),
+            ),
+          );
+          demandId = saved.length > 0 ? sharedOrigin.key : null;
+        }
         const messageId = promptMessageId(fireKey);
         // A webhook prompt was rendered from the row when the request arrived. A prompt file is
         // read for each run, and a failed read fails the run: it never runs an earlier read's text.
@@ -3717,9 +3775,9 @@ export const layer = Layer.effect(
     // holder's copy agrees only once this machine gave the occurrence up, or its run of it failed
     // after reaching a chat. Age never counts: a run still being claimed or started looks idle to
     // the machines watching it, and a run cut off while starting may have started its chat.
-    const claimOccurrence: ScheduledTaskService["Service"]["claimOccurrence"] = Effect.fn(
-      "ScheduledTaskService.claimOccurrence",
-    )(function* (input) {
+    const recordClaim = Effect.fn("ScheduledTaskService.claimOccurrence")(function* (
+      input: Parameters<ScheduledTaskService["Service"]["claimOccurrence"]>[0],
+    ) {
       const occurrenceMs = Date.parse(input.occurrence);
       if (!Number.isFinite(occurrenceMs)) {
         return yield* taskError("The occurrence is not a valid time.", { taskId: input.taskId });
@@ -3757,38 +3815,66 @@ export const layer = Layer.effect(
                 (row.gave_up === 1 || (input.lastRunFailed === true && row.failed_in_chat === 1)),
             ),
           );
+      const proposal = validClaimProposal(input.accountingProposalKey)
+        ? input.accountingProposalKey
+        : undefined;
+      const readClaim = sql<{
+        holder_environment_id: EnvironmentId;
+        accounting_ballot_json: string | null;
+        accounting_admitted_key: string | null;
+      }>`
+        SELECT holder_environment_id, accounting_ballot_json, accounting_admitted_key FROM scheduled_task_occurrence_claims
+        WHERE task_id = ${input.taskId} AND occurrence_at = ${occurrence}`;
       const [row] = yield* sql
         .withTransaction(
-          agrees.pipe(
-            Effect.flatMap((agreed) =>
-              handingOn
-                ? sql`
-                UPDATE scheduled_task_occurrence_claims
-                SET holder_environment_id = ${input.holder}, claimed_at = ${iso(now)}
-                WHERE task_id = ${input.taskId} AND occurrence_at = ${occurrence}
-                  AND holder_environment_id = ${input.by}
-              `
-                : sql`
-                INSERT INTO scheduled_task_occurrence_claims
-                  (task_id, occurrence_at, holder_environment_id, claimed_at)
-                VALUES (${input.taskId}, ${occurrence}, ${input.holder}, ${iso(now)})
-                ON CONFLICT (task_id, occurrence_at) DO UPDATE SET
-                  holder_environment_id = excluded.holder_environment_id,
-                  claimed_at = excluded.claimed_at
-                WHERE holder_environment_id <> excluded.holder_environment_id
-                  AND holder_environment_id = ${input.replaces}
-                  AND ${agreed ? 1 : 0} = 1
-              `,
-            ),
-            Effect.andThen(sql`
-              DELETE FROM scheduled_task_occurrence_claims
-              WHERE claimed_at < ${iso(DateTime.makeUnsafe(nowMs - ONE_MACHINE_CLAIM_RETENTION_MS))}
-            `),
-            Effect.andThen(sql<{ readonly holder_environment_id: EnvironmentId }>`
-              SELECT holder_environment_id FROM scheduled_task_occurrence_claims
+          Effect.gen(function* () {
+            const agreed = yield* agrees;
+            const [before] = yield* readClaim;
+            const old = Option.getOrUndefined(readClaimEvidence(before?.accounting_ballot_json));
+            let ballot: ScheduledClaimEvidence | undefined;
+            if (!handingOn && proposal !== undefined) {
+              if (before === undefined && input.replaces === null) {
+                ballot = { kind: "fresh", predecessor: null, candidate: input.holder, proposal };
+              } else if (
+                input.replaces !== null &&
+                before?.holder_environment_id === input.replaces &&
+                old?.candidate === input.replaces &&
+                old.proposal === proposal
+              ) {
+                // Each copy attests its own role. Receiving a proposal never grants holder provenance.
+                if (
+                  input.replaces !== hereEnvironmentId ||
+                  before.accounting_admitted_key === proposal
+                ) {
+                  ballot = {
+                    kind: input.replaces === hereEnvironmentId ? "holder" : "witness",
+                    predecessor: input.replaces,
+                    candidate: input.holder,
+                    proposal,
+                  };
+                }
+              }
+            }
+            const receipt = ballot === undefined ? null : encodeClaimEvidence(ballot);
+            if (handingOn) {
+              yield* sql`UPDATE scheduled_task_occurrence_claims
+              SET holder_environment_id = ${input.holder}, claimed_at = ${iso(now)},
+                  accounting_admitted_key = NULL, accounting_ballot_json = NULL
               WHERE task_id = ${input.taskId} AND occurrence_at = ${occurrence}
-            `),
-          ),
+                AND holder_environment_id = ${input.by}`;
+            } else {
+              yield* sql`INSERT INTO scheduled_task_occurrence_claims
+                (task_id, occurrence_at, holder_environment_id, claimed_at, accounting_ballot_json)
+              VALUES (${input.taskId}, ${occurrence}, ${input.holder}, ${iso(now)}, ${receipt})
+              ON CONFLICT (task_id, occurrence_at) DO UPDATE SET
+                holder_environment_id = excluded.holder_environment_id, claimed_at = excluded.claimed_at,
+                accounting_admitted_key = NULL, accounting_ballot_json = excluded.accounting_ballot_json
+              WHERE holder_environment_id <> excluded.holder_environment_id
+                AND holder_environment_id = ${input.replaces} AND ${agreed ? 1 : 0} = 1`;
+            }
+            yield* sql`DELETE FROM scheduled_task_occurrence_claims WHERE claimed_at < ${iso(DateTime.makeUnsafe(nowMs - ONE_MACHINE_CLAIM_RETENTION_MS))}`;
+            return yield* readClaim;
+          }),
         )
         .pipe(
           Effect.mapError((cause) =>
@@ -3806,8 +3892,32 @@ export const layer = Layer.effect(
           { taskId: input.taskId },
         );
       }
-      return row.holder_environment_id;
+      const holder = row.holder_environment_id;
+      const evidence = Option.getOrUndefined(readClaimEvidence(row.accounting_ballot_json));
+      const role =
+        input.replaces === null
+          ? "fresh"
+          : input.replaces === hereEnvironmentId
+            ? "holder"
+            : "witness";
+      const receipt: OrchestratorMcpClaimScheduledTaskOccurrenceResult =
+        !handingOn &&
+        holder === input.holder &&
+        evidence?.kind === role &&
+        evidence.candidate === input.holder &&
+        evidence.predecessor === input.replaces &&
+        evidence.proposal === proposal
+          ? { holder, accountingEvidence: evidence }
+          : { holder };
+      return {
+        receipt,
+        ballot: row.accounting_ballot_json,
+        previousAdmission: row.accounting_admitted_key,
+      };
     });
+
+    const claimOccurrence: ScheduledTaskService["Service"]["claimOccurrence"] = (input) =>
+      recordClaim(input).pipe(Effect.map(({ receipt }) => receipt));
 
     // Gives up this machine's own claim, so a machine that reaches a quorum may take it.
     const releaseOccurrence = (taskId: ScheduledTaskId, occurrence: string) =>
@@ -3831,11 +3941,23 @@ export const layer = Layer.effect(
         occurrence: string,
         plan: OneMachinePlan,
         replaces: EnvironmentId | null,
+        proposal: string | null,
       ) {
         const here = hereEnvironmentId;
         const unchecked: Array<ScheduledTaskOneMachineDecision["unchecked"][number]> = [];
         const held = new Set<EnvironmentId>();
         const others: Array<EnvironmentId> = [];
+        const proposalInput = proposal === null ? {} : { accountingProposalKey: proposal };
+        const proves = (
+          evidence: ScheduledClaimEvidence | undefined,
+          kind: ScheduledClaimEvidence["kind"],
+        ) =>
+          evidence !== undefined &&
+          evidence.kind === kind &&
+          evidence.proposal === proposal &&
+          evidence.candidate === here &&
+          evidence.predecessor === replaces;
+        let previousHolderProved = replaces === null;
         if (replaces !== null) {
           const consent = yield* peerCheck.claim({
             taskId,
@@ -3843,34 +3965,65 @@ export const layer = Layer.effect(
             holder: here,
             replaces,
             peers: [replaces],
+            ...proposalInput,
           });
           unchecked.push(...consent.unchecked);
           const agreed = consent.answered[0]?.holder;
           if (agreed !== here) return { holder: agreed ?? replaces, unchecked };
+          previousHolderProved =
+            consent.answered[0]?.environmentId === replaces &&
+            proves(consent.answered[0].accountingEvidence, "holder");
           held.add(replaces);
         }
-        const local = yield* claimOccurrence({
+        const local = yield* recordClaim({
           taskId,
           occurrence,
           holder: here,
           replaces,
           by: here,
+          ...proposalInput,
         });
-        if (local === here) held.add(here);
-        else others.push(local);
+        if (local.receipt.holder === here) held.add(here);
+        else others.push(local.receipt.holder);
         const answer = yield* peerCheck.claim({
           taskId,
           occurrence,
           holder: here,
           replaces,
           peers: plan.members.filter((id) => id !== here && id !== replaces),
+          ...proposalInput,
         });
         unchecked.push(...answer.unchecked);
         for (const peer of answer.answered) {
           if (peer.holder === here) held.add(peer.environmentId);
           else others.push(peer.holder);
         }
-        if (holdsQuorum(plan.members, held)) return { holder: here, unchecked };
+        if (holdsQuorum(plan.members, held)) {
+          const role = replaces === null ? "fresh" : "witness";
+          const verified =
+            previousHolderProved &&
+            proves(local.receipt.accountingEvidence, role) &&
+            plan.members.every(
+              (id) =>
+                id === here ||
+                id === replaces ||
+                answer.answered.some(
+                  (peer) =>
+                    peer.environmentId === id &&
+                    peer.holder === here &&
+                    proves(peer.accountingEvidence, role),
+                ),
+            );
+          return {
+            holder: here,
+            unchecked,
+            proof: {
+              key: verified ? proposal : null,
+              ballot: local.ballot,
+              previousAdmission: local.previousAdmission,
+            },
+          };
+        }
         const placeOf = (id: EnvironmentId) => {
           const index = plan.order.indexOf(id);
           return index === -1 ? plan.order.length : index;
@@ -3953,6 +4106,7 @@ export const layer = Layer.effect(
             new Map(current).set(task.id, {
               incarnation: taskIncarnation(task),
               occurrenceDueMs,
+              revision: resumed ? deferral.revision : sharing.revision,
               deferredTo,
               catchUp: catchingUp,
               watching,
@@ -4084,7 +4238,27 @@ export const layer = Layer.effect(
           // A machine that could not start it claims nothing, so the next machine may run it.
           if (yield* skippedForMemory(task, fire)) return;
           if (yield* skippedForUsage(task, fire)) return;
-          const claim = yield* claimOneMachineOccurrence(task.id, slot, plan, replaces);
+          const fixed = task.schedule.type === "fixed_time";
+          const identifiable =
+            Date.parse(sharing.revision.at) <= occurrenceDueMs &&
+            (!resumed ||
+              compareScheduledTaskSharedRevisions(deferral.revision, sharing.revision) === 0) &&
+            (task.schedule.type !== "fixed_time" ||
+              hasUniqueFixedTimeSlot(task.schedule, occurrenceDue, slot));
+          // Copies agree on the persisted sharing revision and claim slot. Their local task
+          // incarnations can differ, including after importing the same shared definition.
+          const sourceKey = identifiable
+            ? originalDemandId(
+                "scheduled-task-claim",
+                task.id,
+                task.createdAt,
+                sharing.revision.at,
+                sharing.revision.environmentId,
+                fixed ? "civil" : "instant",
+                slot,
+              )
+            : null;
+          const claim = yield* claimOneMachineOccurrence(task.id, slot, plan, replaces, sourceKey);
           yield* logUnchecked(claim.unchecked);
           if (claim.holder !== null && claim.holder !== hereEnvironmentId) {
             // A machine already judged ended needs no second wait for the machines before this one.
@@ -4109,7 +4283,18 @@ export const layer = Layer.effect(
               }),
             ),
           );
-          return yield* startScheduledRun(task, fire);
+          return yield* startScheduledRun(task, {
+            ...fire,
+            ...(claim.proof === undefined
+              ? {}
+              : {
+                  sharedOrigin: {
+                    ...claim.proof,
+                    claimInstant: iso(DateTime.makeUnsafe(Date.parse(slot))),
+                    revision: sharing.revision,
+                  },
+                }),
+          });
         });
         // Every machine, also while watching one, since any of them may hold a run outside the
         // claims, such as one on an older version.

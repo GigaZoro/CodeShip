@@ -530,6 +530,43 @@ it.effect("a claim records the holder the peer answers with", () =>
   }),
 );
 
+const proposal = `demand:${"a".repeat(64)}`;
+const transfer = { kind: "witness" as const, candidate: HERE, predecessor: PEER, proposal };
+
+it.effect.each([
+  {
+    name: "admitted previous holder",
+    fields: { accountingEvidence: { ...transfer, kind: "holder" } },
+    known: true,
+  },
+  { name: "persisted witness ballot", fields: { accountingEvidence: transfer }, known: true },
+  {
+    name: "fresh ballot",
+    fields: { accountingEvidence: { ...transfer, kind: "fresh", predecessor: null } },
+    known: true,
+  },
+  { name: "legacy holder key", fields: { accountingSourceKey: proposal }, known: false },
+  {
+    name: "witness with no predecessor",
+    fields: { accountingEvidence: { ...transfer, predecessor: null } },
+    known: false,
+  },
+  {
+    name: "malformed proposal",
+    fields: { accountingEvidence: { ...transfer, proposal: "unknown" } },
+    known: false,
+  },
+])("a $name reply preserves the peer vote", ({ fields, known }) =>
+  claim({ answer: () => Effect.succeedSome({ holder: HERE, ...fields }) }).pipe(
+    Effect.map((answer) =>
+      expect(answer).toEqual({
+        answered: [{ environmentId: PEER, holder: HERE, ...(known ? fields : {}) }],
+        unchecked: [],
+      }),
+    ),
+  ),
+);
+
 it.effect.each([
   {
     name: "the link expired",
