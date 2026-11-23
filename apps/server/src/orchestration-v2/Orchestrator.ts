@@ -310,6 +310,11 @@ export class OrchestratorProviderAdapterError extends Schema.TaggedError<Orchest
   }
 }
 
+export class OrchestratorSendTargetUnavailableError extends Schema.TaggedError<OrchestratorSendTargetUnavailableError>()(
+  "OrchestratorSendTargetUnavailableError",
+  { threadId: ThreadId, reason: Schema.Literals(["not_found", "archived"]) },
+) {}
+
 export class OrchestratorSubagentThreadReadOnlyError extends Schema.TaggedError<OrchestratorSubagentThreadReadOnlyError>()(
   "OrchestratorSubagentThreadReadOnlyError",
   { commandId: CommandId, threadId: ThreadId },
@@ -415,6 +420,7 @@ export const OrchestratorV2Error = Schema.Union([
   OrchestratorCommandPreviouslyRejectedError,
   OrchestratorCommandIdConflictError,
   OrchestratorSubagentThreadReadOnlyError,
+  OrchestratorSendTargetUnavailableError,
   OrchestratorThreadAboveModeLimitError,
   OrchestratorRuntimeModeAboveCeilingError,
   OrchestratorContinuationSnoozedError,
@@ -14915,6 +14921,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
             ),
           );
+        if (command.sendToProjectId !== undefined) {
+          if (thread.projectId !== command.sendToProjectId || thread.deletedAt !== null)
+            return yield* new OrchestratorSendTargetUnavailableError({
+              threadId: command.threadId,
+              reason: "not_found",
+            });
+          if (thread.archivedAt !== null)
+            return yield* new OrchestratorSendTargetUnavailableError({
+              threadId: command.threadId,
+              reason: "archived",
+            });
+        }
         if (isProviderNativeSubagentThread(thread)) {
           return yield* new OrchestratorSubagentThreadReadOnlyError({
             commandId: command.commandId,
@@ -15320,9 +15338,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
       Effect.catch((cause) =>
         Effect.gen(function* () {
-          // Refusals depend on modes or a snooze the user can change; a recorded rejection would
-          // block the retry.
+          // A refusal based on current thread state or modes must allow a retry when they change.
           if (
+            cause._tag === "OrchestratorSendTargetUnavailableError" ||
             cause._tag === "OrchestratorThreadAboveModeLimitError" ||
             cause._tag === "OrchestratorRuntimeModeAboveCeilingError" ||
             cause._tag === "OrchestratorContinuationSnoozedError"

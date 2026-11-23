@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import {
   CommandId,
   GuestMessageId,
@@ -21,6 +22,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
@@ -611,9 +613,8 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     ProviderAdapterRegistry.layerSingle(adapter),
     { runEffectWorker: false },
   );
-  const startFirstTurnFrom = Effect.fn("startFirstTurnFrom")(function* (source: "web" | "mcp") {
+  const createThread = Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
-    const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
     const threadId = ThreadId.make(`thread:${name}`);
     yield* orchestrator.dispatch({
       type: "thread.create",
@@ -629,6 +630,12 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
       createdBy: "user",
       creationSource: "web",
     });
+    return threadId;
+  });
+  const startFirstTurnFrom = Effect.fn("startFirstTurnFrom")(function* (source: "web" | "mcp") {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+    const threadId = yield* createThread;
     const running = yield* orchestrator.streamDomainEvents.pipe(
       Stream.filter(
         (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
@@ -660,6 +667,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     steered,
     interrupted,
     layer,
+    createThread,
     startFirstTurn: startFirstTurnFrom("web"),
     startFirstTurnFrom,
     steerEntered,
@@ -1377,6 +1385,102 @@ it.effect("starts a steer that missed the turn on the saved next-turn selection"
       }).pipe(Effect.provide(layer));
     }),
   ),
+);
+
+it.effect.each([false, true])(
+  "a fresh managed send that loses to archive only replays an already accepted send (%s)",
+  (alreadyAccepted) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { layer, createThread } = yield* nextTurnSelectionHarness(
+          "managed-send-archive",
+          true,
+        );
+        const management = ThreadManagement.layer.pipe(
+          Layer.provideMerge(layer),
+          Layer.provide(ServerSettings.layerTest()),
+          Layer.provide(
+            CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const threadId = yield* createThread;
+          const input = {
+            threadId,
+            projectId: ProjectId.make("project:managed-send-archive"),
+            commandId: CommandId.make("fresh-after-archive"),
+            messageId: MessageId.make("fresh-after-archive"),
+            mode: "queue" as const,
+            text: "Run next",
+            attachments: [],
+            createdBy: "agent" as const,
+            creationSource: "mcp" as const,
+          };
+          const reached = yield* Deferred.make<void>();
+          const proceed = yield* Deferred.make<void>();
+          const dispatch = orchestrator.dispatch;
+          let pauseFirst = true;
+          using _pause = vi.spyOn(orchestrator, "dispatch").mockImplementation((command) => {
+            if (command.commandId !== input.commandId || !pauseFirst) return dispatch(command);
+            pauseFirst = false;
+            return Deferred.succeed(reached, undefined).pipe(
+              Effect.andThen(Deferred.await(proceed)),
+              Effect.andThen(dispatch(command)),
+            );
+          });
+          const sending = yield* threads.sendToThread(input).pipe(Effect.result, Effect.forkChild);
+          yield* Deferred.await(reached);
+          const winner = alreadyAccepted ? yield* threads.sendToThread(input) : undefined;
+          if (winner !== undefined) {
+            const completedAt = yield* DateTime.now;
+            const sink = yield* EventSink.EventSinkV2;
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make("winning-send-completed"),
+                  type: "run.updated",
+                  threadId,
+                  runId: winner.run.id,
+                  occurredAt: completedAt,
+                  payload: { ...winner.run, status: "completed", completedAt },
+                },
+              ],
+            });
+          }
+          yield* threads.dispatch({
+            type: "thread.archive",
+            threadId,
+            commandId: CommandId.make("archive-winning-race"),
+          });
+          yield* Deferred.succeed(proceed, undefined);
+          const result = yield* Fiber.join(sending);
+          if (winner !== undefined) {
+            assert.ok(Result.isSuccess(result));
+            assert.isTrue(result.success.dispatch.replayed);
+            assert.equal(result.success.run.id, winner.run.id);
+            return;
+          }
+          assert.ok(Result.isFailure(result));
+          assert.equal(result.failure._tag, "ThreadManagementThreadArchivedError");
+          assert.isUndefined(yield* threads.acceptedCommandSequence(input.commandId));
+          assert.isFalse(
+            (yield* threads.getThreadProjection(threadId)).messages.some(
+              (message) => message.id === input.messageId,
+            ),
+          );
+          yield* threads.dispatch({
+            type: "thread.unarchive",
+            threadId,
+            commandId: CommandId.make("unarchive-and-retry"),
+          });
+          const accepted = yield* threads.sendToThread(input);
+          assert.equal(accepted.message.id, input.messageId);
+          assert.isTrue((yield* threads.sendToThread(input)).dispatch.replayed);
+        }).pipe(Effect.provide(management));
+      }),
+    ),
 );
 
 it.effect.each(["steer", "restart"] as const)(
