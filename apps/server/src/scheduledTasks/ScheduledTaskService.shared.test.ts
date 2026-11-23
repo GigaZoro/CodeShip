@@ -8,7 +8,7 @@ import {
   ProviderInstanceId,
   SCHEDULED_TASK_CLAIM_PROTOCOL,
   ScheduledTaskApplySharedInput,
-  type ScheduledTaskId,
+  ScheduledTaskId,
   type ScheduledTaskRunCheck,
   ScheduledTaskUpsertInput,
   ThreadId,
@@ -146,6 +146,7 @@ const withService = <A, E>(
   projects: ReadonlyArray<TestSharedProject> = [repoProject, plainProject],
   extras: {
     readonly environmentId?: EnvironmentId;
+    readonly startAt?: number;
     readonly peerCheck?: Layer.Layer<SharedTaskPeerCheck.SharedTaskPeerCheck>;
     readonly launch?: ThreadLaunchService.ThreadLaunchService["Service"]["launch"];
     readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
@@ -160,7 +161,7 @@ const withService = <A, E>(
   } = {},
 ) =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(NOW);
+    yield* TestClock.setTime(extras.startAt ?? NOW);
     const sql = yield* SqlClient.SqlClient;
     const layer = ScheduledTaskService.layer.pipe(
       // Registering also runs due work once, whenever this fiber next yields; parked, due work
@@ -1002,6 +1003,7 @@ const runScenario = <A, E>(
   checkAnswer: ScheduledTaskRunCheck = { outcome: "run", failure: null, exitCode: 0, detail: null },
   environment: {
     readonly environmentId?: EnvironmentId;
+    readonly startAt?: number;
     readonly threadManagement?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   } = {},
 ) =>
@@ -1995,28 +1997,68 @@ it.effect.each([
     ),
 );
 
-it.effect(
-  "a one-machine fixed-time takeover keeps the demand of the same local slot across zones",
-  () =>
+it.effect.each([
+  {
+    name: "ordinary day",
+    date: "2026-09-10",
+    time: "09:00",
+    zone: "Europe/Kyiv",
+    firstDue: "06:00",
+  },
+  {
+    name: "spring gap",
+    date: "2026-03-29",
+    time: "02:30",
+    zone: "Europe/Berlin",
+    firstDue: "01:30",
+  },
+  {
+    name: "fall fold",
+    date: "2026-10-25",
+    time: "02:30",
+    zone: "Europe/Berlin",
+    firstDue: "00:30",
+  },
+])(
+  "a one-machine fixed-time takeover keeps the demand of the same local slot across zones on a $name",
+  ({ date, time, zone, firstDue }) =>
     Effect.gen(function* () {
-      const schedule = { type: "fixed_time", timeOfDay: "09:00" };
-      vi.stubEnv("TZ", "Europe/Kyiv");
+      const schedule = { type: "fixed_time", timeOfDay: time };
+      const startAt = Date.parse(`${date}T00:00:00Z`) - 12 * HOUR_MS;
+      const slot = `${date}T${time}`;
+      vi.stubEnv("TZ", zone);
       const initial = yield* runScenario(
         [OTHER, HERE_ENVIRONMENT_ID],
         NO_RUN_THERE,
         (scenario) =>
           Effect.gen(function* () {
             const due = (yield* nextRunAtOf(scenario.sql))!;
-            expect(due).toBe("2026-09-10T06:00:00.000Z");
+            expect(due).toBe(`${date}T${firstDue}:00.000Z`);
             yield* scenario.tick(Date.parse(due) + 1_000);
             const launch = yield* Queue.take(scenario.launches);
-            expect(yield* Ref.get(scenario.peerClaims)).toEqual(["2026-09-10T09:00"]);
+            const claims = scenario.sql<{ occurrence_at: string; holder_environment_id: string }>`
+              SELECT occurrence_at, holder_environment_id FROM scheduled_task_occurrence_claims
+            `;
+            expect(yield* claims).toEqual([{ occurrence_at: due, holder_environment_id: OTHER }]);
+            const transfer = {
+              taskId: ScheduledTaskId.make("scheduled-task:shared"),
+              occurrence: slot,
+              holder: HERE_ENVIRONMENT_ID,
+              replaces: EnvironmentId.make(OTHER),
+              by: HERE_ENVIRONMENT_ID,
+              lastRunFailed: true,
+            };
+            expect(yield* scenario.service.claimOccurrence(transfer)).toBe(HERE_ENVIRONMENT_ID);
+            expect(yield* scenario.service.claimOccurrence(transfer)).toBe(HERE_ENVIRONMENT_ID);
+            expect(yield* claims).toEqual([
+              { occurrence_at: due, holder_environment_id: HERE_ENVIRONMENT_ID },
+            ]);
             return launch.initialMessage?.demandId;
           }),
         schedule,
         undefined,
         undefined,
-        { environmentId: EnvironmentId.make(OTHER) },
+        { environmentId: EnvironmentId.make(OTHER), startAt },
       );
       expect(initial).toBeTypeOf("string");
 
@@ -2026,21 +2068,42 @@ it.effect(
         [WORKING_THERE, NO_RUN_THERE],
         (scenario) =>
           Effect.gen(function* () {
-            expect(yield* nextRunAtOf(scenario.sql)).toBe("2026-09-10T09:00:00.000Z");
+            expect(yield* nextRunAtOf(scenario.sql)).toBe(`${slot}:00.000Z`);
             yield* Ref.set(scenario.peerCopies, new Map([[OTHER, OTHER]]));
             yield* Ref.set(scenario.failed, new Set([OTHER]));
             yield* fireWhenDue(scenario);
             yield* fireWhenDue(scenario);
             yield* scenario.tick(Date.parse((yield* nextRunAtOf(scenario.sql))!) + 1_000);
             const launch = yield* Queue.take(scenario.launches);
-            expect(yield* Ref.get(scenario.peerClaims)).toEqual([
-              "2026-09-10T09:00",
-              "2026-09-10T09:00",
-            ]);
+            expect(yield* Ref.get(scenario.peerClaims)).toEqual([slot, slot]);
             expect(launch.initialMessage?.demandId).toBe(initial);
           }),
         schedule,
+        undefined,
+        undefined,
+        { startAt },
       );
+      if (zone === "Europe/Berlin" && date === "2026-03-29") {
+        const later = yield* runScenario(
+          [HERE_ENVIRONMENT_ID, OTHER],
+          NO_RUN_THERE,
+          (scenario) =>
+            Effect.gen(function* () {
+              const due = (yield* nextRunAtOf(scenario.sql))!;
+              expect(due).toBe("2026-03-29T03:30:00.000Z");
+              yield* scenario.tick(Date.parse(due) + 1_000);
+              const launch = yield* Queue.take(scenario.launches);
+              expect(yield* Ref.get(scenario.peerClaims)).toEqual(["2026-03-29T03:30"]);
+              return launch.initialMessage?.demandId;
+            }),
+          { type: "fixed_time", timeOfDay: "03:30" },
+          undefined,
+          undefined,
+          { startAt },
+        );
+        expect(later).toBeTypeOf("string");
+        expect(later).not.toBe(initial);
+      }
     }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs()))),
 );
 

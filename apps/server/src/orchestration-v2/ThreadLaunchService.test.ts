@@ -440,9 +440,25 @@ it.effect.each(
       assert.equal(turnItem?.text, task.prompt);
       assert.equal(turnItem?.scheduledTaskId, task.id);
       if (target === "new" && createdBy === "user") {
-        yield* TestClock.adjust("1 second");
         const next = yield* tasks.runNow({ id: task.id });
         assert.isNotNull(next.threadId);
+        const { runs } = yield* tasks.listRuns({ id: task.id });
+        assert.lengthOf(runs, 2);
+        assert.equal(runs[0]?.startedAt, runs[1]?.startedAt);
+        assert.notEqual(runs[0]?.id, runs[1]?.id);
+        assert.notEqual(next.threadId, result.threadId);
+        assert.sameMembers(
+          runs.map((row) => row.threadId),
+          [result.threadId, next.threadId],
+        );
+        for (const row of runs) {
+          const chat = yield* threads.getThreadProjection(row.threadId!);
+          assert.equal(chat.messages[0]?.id, `scheduled-task-message:${row.id}`);
+          const first = yield* threads
+            .streamStoredEventsFrom({ threadId: row.threadId! })
+            .pipe(Stream.runHead);
+          assert.equal(Option.getOrThrow(first).commandId, `scheduled-task:${row.id}`);
+        }
         const [nextRun] = (yield* threads.getThreadProjection(next.threadId!)).runs;
         assert.match(nextRun?.demandId ?? "", /^demand:[0-9a-f]{64}$/);
         assert.notEqual(nextRun?.demandId, run.demandId);

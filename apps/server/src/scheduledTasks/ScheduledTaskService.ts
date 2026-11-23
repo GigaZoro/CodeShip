@@ -487,8 +487,8 @@ interface RunRecordRow {
 
 /** What a scheduled run is for: the time it serves, and whether it catches up a missed one. */
 interface ScheduledFire {
-  /** For a shared one-machine task, every claimant uses this same wall-clock or interval slot. */
-  readonly claimSlot?: string;
+  /** The scheduled slot for which a one-machine claimant is starting a run. */
+  readonly sharedOccurrence?: string;
   readonly scheduledFor: string | null;
   readonly catchUp: boolean;
   /** What the task's run condition answered for this occurrence. */
@@ -2411,7 +2411,9 @@ export const layer = Layer.effect(
       const startedAtIso = iso(startedAt);
       const recordTrigger: ScheduledTaskRunTrigger =
         trigger === "scheduled" && fire?.catchUp === true ? "catch_up" : trigger;
-      const runRecordId = `${task.id}:${DateTime.toEpochMillis(startedAt)}:${recordTrigger}`;
+      const runKey =
+        trigger === "manual" ? yield* crypto.randomUUIDv4() : DateTime.toEpochMillis(startedAt);
+      const runRecordId = `${task.id}:${runKey}:${recordTrigger}`;
       const run = Effect.gen(function* () {
         // Re-read stale poll snapshots so deleted, paused or postponed tasks cannot fire.
         const active = yield* findTask(task.id);
@@ -2507,7 +2509,7 @@ export const layer = Layer.effect(
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = promptMessageId(fireKey);
         const occurrence =
-          fire?.claimSlot === undefined
+          fire?.sharedOccurrence === undefined
             ? [
                 "scheduled-task",
                 hereEnvironmentId,
@@ -2515,7 +2517,7 @@ export const layer = Layer.effect(
                 trigger,
                 webhook?.deliveryId ?? scheduledFor ?? fireKey,
               ]
-            : ["scheduled-task-claim", active.id, fire.claimSlot];
+            : ["scheduled-task-claim", active.id, fire.sharedOccurrence];
         const demandId = `demand:${hashTelemetryId(encodeStringArrayJson(occurrence))}`;
         // A webhook prompt was rendered from the row when the request arrived. A prompt file is
         // read for each run, and a failed read fails the run: it never runs an earlier read's text.
@@ -3950,7 +3952,12 @@ export const layer = Layer.effect(
           replaces: EnvironmentId | null,
           liveRunsElsewhere: SharedTaskPeerCheck.PeerCheckResult["liveRunsElsewhere"],
         ) {
-          const fire = { scheduledFor: occurrence, catchUp: catchingUp, claimSlot: slot };
+          // Peers exchange the observed wall clock, which can jump over the scheduled time in a DST gap.
+          const sharedOccurrence =
+            task.schedule.type === "fixed_time"
+              ? `${slot.slice(0, slot.indexOf("T") + 1)}${task.schedule.timeOfDay.padStart(5, "0")}`
+              : slot;
+          const fire = { scheduledFor: occurrence, catchUp: catchingUp, sharedOccurrence };
           // The limit counts the task's runs that still work on every machine.
           // With its sharing, so the skip lands on the slot every copy runs.
           if (yield* skippedAtLiveRunLimit(shared, fire, liveRunsElsewhere)) return;
