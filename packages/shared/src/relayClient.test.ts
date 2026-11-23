@@ -873,6 +873,45 @@ describe("RelayClient", () => {
       );
     });
 
+    it.effect.each(["current", "legacy"] as const)(
+      "finds the exact pin in an older %s folder before a newer compatible folder",
+      (layout) => {
+        const versions: Record<string, string> = {};
+        return run(
+          (baseDir) =>
+            Effect.gen(function* () {
+              const paths = yield* Path.Path;
+              const pinned = RelayClient.CLOUDFLARED_VERSION;
+              const exact = managedPathFor(paths, baseDir, "2025.9.0", hostPlatform, layout);
+              const otherLayout = layout === "current" ? "legacy" : "current";
+              const sibling = managedPathFor(paths, baseDir, "2025.9.0", hostPlatform, otherLayout);
+              const fallback = managedPathFor(
+                paths,
+                baseDir,
+                "2026.1.0",
+                hostPlatform,
+                otherLayout,
+              );
+              yield* writeExecutable(exact);
+              yield* writeExecutable(sibling);
+              yield* writeExecutable(fallback);
+              versions[exact] = pinned;
+              versions[sibling] = "2025.9.0";
+              versions[fallback] = "2026.1.0";
+              const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
+              const selected = { source: "managed", version: pinned, executablePath: exact };
+
+              expect(yield* manager.resolve).toMatchObject(selected);
+              expect(yield* manager.install).toMatchObject(selected);
+              const fs = yield* FileSystem.FileSystem;
+              yield* fs.remove(fallback);
+              expect(yield* manager.resolve).toMatchObject(selected);
+            }),
+          { versions },
+        );
+      },
+    );
+
     it.effect("reports an outdated override as missing", () => {
       const versions: Record<string, string> = {};
       return run(

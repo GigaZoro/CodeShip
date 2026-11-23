@@ -304,31 +304,19 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
   const compatibleCandidate = Effect.fn("cloudflared.compatibleCandidate")(function* (
     executablePath: string,
     source: RelayClientExecutableSource,
-    expectedVersion?: string,
   ) {
     const version = yield* probeVersion(executablePath);
     if (version === null || compareCloudflaredVersions(version, CLOUDFLARED_MIN_VERSION) < 0) {
       return null;
     }
-    if (expectedVersion !== undefined && version !== expectedVersion) {
-      yield* Effect.logWarning("Ignoring a managed relay client that reports another version", {
-        executablePath,
-        expectedVersion,
-        version,
-      });
-      return null;
-    }
     return { status: "available", executablePath, source, version } satisfies AvailableRelayClient;
   });
 
-  const managedCandidate = Effect.fn("cloudflared.managedCandidate")(function* (
-    version: string,
-    expectedVersion?: string,
-  ) {
-    const current = yield* compatibleCandidate(managedPathFor(version), "managed", expectedVersion);
-    if (current?.version === version) return current;
-    const legacy = yield* compatibleCandidate(legacyPathFor(version), "managed", expectedVersion);
-    return legacy?.version === version ? legacy : (current ?? legacy);
+  const managedCandidate = Effect.fn("cloudflared.managedCandidate")(function* (version: string) {
+    const current = yield* compatibleCandidate(managedPathFor(version), "managed");
+    if (current?.version === CLOUDFLARED_VERSION) return current;
+    const legacy = yield* compatibleCandidate(legacyPathFor(version), "managed");
+    return legacy?.version === CLOUDFLARED_VERSION ? legacy : (current ?? legacy);
   });
 
   // Newer managed folders may belong to another server; never use or prune them.
@@ -343,6 +331,17 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
           compareCloudflaredVersions(entry, CLOUDFLARED_VERSION) < 0,
       )
       .sort((left, right) => compareCloudflaredVersions(right, left));
+  });
+
+  const bestManagedClient = Effect.gen(function* () {
+    let fallback = yield* managedCandidate(CLOUDFLARED_VERSION);
+    if (fallback?.version === CLOUDFLARED_VERSION) return fallback;
+    for (const version of yield* olderManagedVersions) {
+      const candidate = yield* managedCandidate(version);
+      if (candidate?.version === CLOUDFLARED_VERSION) return candidate;
+      fallback ??= candidate;
+    }
+    return fallback;
   });
 
   const resolvePathExecutable = Effect.gen(function* () {
@@ -383,12 +382,8 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
       );
       return missingStatus;
     }
-    const pinned = yield* managedCandidate(CLOUDFLARED_VERSION);
-    if (pinned) return pinned;
-    for (const version of yield* olderManagedVersions) {
-      const older = yield* managedCandidate(version);
-      if (older) return older;
-    }
+    const managed = yield* bestManagedClient;
+    if (managed) return managed;
     const pathExecutable = yield* resolvePathExecutable;
     if (pathExecutable) return pathExecutable;
     return releaseAsset ? missingStatus : unsupportedStatus;
@@ -571,8 +566,8 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
         message: `${CLOUDFLARED_PATH_ENV_NAME} must point to cloudflared ${CLOUDFLARED_MIN_VERSION} or newer.`,
       });
     }
-    const existing = yield* managedCandidate(CLOUDFLARED_VERSION, CLOUDFLARED_VERSION);
-    if (existing) return existing;
+    const existing = yield* bestManagedClient;
+    if (existing && isPinnedManagedRelayClient(existing)) return existing;
     if (!releaseAsset) {
       return yield* new RelayClientInstallError({
         reason: "unsupported_platform",
@@ -600,8 +595,8 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
       }),
     );
     return yield* Effect.gen(function* () {
-      const afterLock = yield* managedCandidate(CLOUDFLARED_VERSION, CLOUDFLARED_VERSION);
-      if (afterLock) return afterLock;
+      const afterLock = yield* bestManagedClient;
+      if (afterLock && isPinnedManagedRelayClient(afterLock)) return afterLock;
 
       const tempDirectory = yield* fileSystem.makeTempDirectoryScoped({
         directory: managedDirectory,
