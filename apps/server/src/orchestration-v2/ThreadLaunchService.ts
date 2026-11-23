@@ -1144,6 +1144,7 @@ const make = Effect.gen(function* () {
         const initialBranch = workspaceStrategy.branch ?? null;
         const initialWorktreePath =
           workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : null;
+        const launchKind = input.initialMessage === undefined ? "idle" : "first_message";
         const claimDispatch =
           input.reuseExistingThread === true
             ? threads.dispatch({
@@ -1163,9 +1164,8 @@ const make = Effect.gen(function* () {
                 interactionMode: input.interactionMode,
                 branch: initialBranch,
                 worktreePath: initialWorktreePath,
-                ...(input.initialMessage === undefined
-                  ? { initialWorkspacePreparation: workspaceStrategy }
-                  : {}),
+                initialLaunchKind: launchKind,
+                initialWorkspacePreparation: workspaceStrategy,
                 ...(input.launchIntentHash === undefined
                   ? {}
                   : { launchIntentHash: input.launchIntentHash }),
@@ -1201,11 +1201,23 @@ const make = Effect.gen(function* () {
         )?.event;
         const acceptedThread = creation?.type === "thread.created" ? creation.payload : undefined;
         const acceptedHash = acceptedThread?.launchIntentHash;
+        // Before launch kind was recorded, only idle launches persisted their strategy.
+        const acceptedKind =
+          acceptedThread?.initialLaunchKind ??
+          (acceptedThread?.initialWorkspacePreparation === undefined ? undefined : "idle");
+        const recordedWorkspace =
+          acceptedThread?.initialWorkspacePreparation ??
+          (acceptedThread?.worktreePath != null
+            ? {
+                type: "existing_worktree" as const,
+                worktreePath: acceptedThread.worktreePath,
+                ...(acceptedThread.branch === null ? {} : { branch: acceptedThread.branch }),
+              }
+            : undefined);
         if (
           acceptedHash !== undefined &&
           (acceptedHash !== input.launchIntentHash ||
-            (acceptedThread?.initialWorkspacePreparation !== undefined &&
-              input.initialMessage !== undefined))
+            (acceptedKind !== undefined && acceptedKind !== launchKind))
         ) {
           return yield* mapError(input, "read-receipt", threadId)(LAUNCH_INTENT_MISMATCH);
         }
@@ -1219,7 +1231,7 @@ const make = Effect.gen(function* () {
           if (
             claimed.replayed === true &&
             input.launchIntentHash !== undefined &&
-            acceptedHash === undefined &&
+            (acceptedHash === undefined || recordedWorkspace === undefined) &&
             !(
               Option.isSome(messageReceipt) &&
               messageReceipt.value.status === "accepted" &&
@@ -1260,7 +1272,10 @@ const make = Effect.gen(function* () {
               ...(input.initialMessage.context ? { context: input.initialMessage.context } : {}),
               ...(input.generateTitle === true ? { titleSeed: input.title } : {}),
               modelSelection: input.modelSelection,
-              dispatchMode: { type: "defer_start", workspaceStrategy },
+              dispatchMode: {
+                type: "defer_start",
+                workspaceStrategy: recordedWorkspace ?? workspaceStrategy,
+              },
               createdBy: input.createdBy,
               creationSource: input.creationSource,
             })
@@ -1313,12 +1328,7 @@ const make = Effect.gen(function* () {
                 branch: workspaceStrategy.branch,
               }
             : workspaceStrategy;
-        // Older Scratch launches recorded the folder at creation, even when requested at the root.
-        const idleStrategy =
-          acceptedThread?.initialWorkspacePreparation ??
-          (acceptedThread?.worktreePath != null
-            ? { type: "existing_worktree" as const, worktreePath: acceptedThread.worktreePath }
-            : workspaceStrategy);
+        const idleStrategy = recordedWorkspace ?? workspaceStrategy;
         if (runId === null && idleStrategy.type !== "root" && input.reuseExistingThread !== true) {
           yield* idleRecovery.withLock(
             input.commandId,

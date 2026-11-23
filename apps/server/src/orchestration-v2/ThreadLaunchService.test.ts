@@ -2261,6 +2261,149 @@ it.effect.each(["idle", "partial", "legacy partial", "legacy complete"] as const
   },
 );
 
+it.effect.each(["Scratch root", "changed default base"] as const)(
+  "a first-message retry prepares the workspace accepted before interruption (%s)",
+  (scenario) => {
+    const scratch = scenario === "Scratch root" ? scratchHarness() : undefined;
+    const harness =
+      scratch ??
+      makeHarness({
+        fetchWorktreeBaseCommit: ({ refName }) =>
+          Effect.succeed({ commitSha: `sha-${refName}`, remoteRefName: `origin/${refName}` }),
+      });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const graph = {
+        type: "worktree",
+        branch: "accepted-worktree",
+        baseRef: "main",
+        startFromOrigin: true,
+      } as const;
+      const request = {
+        ...launchInput({
+          command: "keyed-first-message",
+          thread: "keyed-first-message-thread",
+          message: "Build the project",
+          workspace: scratch ? { type: "root" } : graph,
+        }),
+        createdBy: "agent" as const,
+        creationSource: "mcp" as const,
+        launchIntentHash: "a".repeat(64),
+      };
+      const dispatch = threads.dispatch;
+      const cut = vi
+        .spyOn(threads, "dispatch")
+        .mockImplementation((command) =>
+          command.type === "message.dispatch" ? Effect.interrupt : dispatch(command),
+        );
+      const first = yield* launches.launch(request).pipe(Effect.exit);
+      cut.mockRestore();
+      assert.isTrue(Exit.isFailure(first));
+      const created = yield* threads.getThreadProjection(request.threadId);
+      assert.isEmpty(created.runs);
+      if (scratch) assert.equal(created.thread.worktreePath, "/scratch/folder-1");
+
+      // The caller repeats the same intent. Only the Git project's resolved default changed.
+      const retry = scratch
+        ? request
+        : { ...request, workspaceStrategy: { ...graph, baseRef: "next" } };
+      const recovered = yield* launches.launch(retry);
+      assert.isFalse(recovered.resumed);
+      const actual = yield* preparationSettled(request.threadId);
+      assert.lengthOf(actual.runs, 1);
+      assert.equal(actual.runs[0]?.status, "starting");
+      assert.deepEqual(
+        actual.runs[0]?.workspacePreparation,
+        scratch ? { type: "existing_worktree", worktreePath: "/scratch/folder-1" } : graph,
+      );
+      const path = scratch ? "/scratch/folder-1" : "/repo-worktrees/feature";
+      assert.equal(actual.thread.worktreePath, path);
+      assert.deepEqual(
+        harness.runSetup.mock.calls.map(([setup]) => setup.worktreePath),
+        [path],
+      );
+      if (scratch) {
+        assert.deepEqual(scratch.claimed, [request.threadId]);
+        assert.isEmpty(harness.createWorktree.mock.calls);
+      } else {
+        assert.deepEqual(
+          harness.createWorktree.mock.calls.map(([checkout]) => checkout.refName),
+          ["sha-main"],
+        );
+      }
+      assert.isTrue((yield* launches.launch(retry)).resumed);
+      assert.lengthOf(harness.runSetup.mock.calls, 1);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect.each(["stored folder", "unknown base"] as const)(
+  "a first-message retry needs a provable workspace on a legacy create (%s)",
+  (evidence) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const storedFolder = evidence === "stored folder" ? "/scratch/original" : null;
+      const retry = {
+        ...launchInput({
+          command: "legacy-keyed-launch",
+          thread: "legacy-keyed-thread",
+          message: "Build the project",
+          workspace:
+            storedFolder === null
+              ? { type: "worktree", branch: "accepted-worktree", baseRef: "next" }
+              : { type: "root" },
+        }),
+        createdBy: "agent" as const,
+        creationSource: "mcp" as const,
+        launchIntentHash: "a".repeat(64),
+      };
+      // Older keyed creates recorded the caller's intent and branch, but omitted the resolved base.
+      yield* threads.dispatch({
+        type: "thread.create",
+        commandId: retry.commandId,
+        threadId: retry.threadId,
+        projectId,
+        title: retry.title,
+        modelSelection,
+        runtimeMode: retry.runtimeMode,
+        interactionMode: retry.interactionMode,
+        createdBy: retry.createdBy,
+        creationSource: retry.creationSource,
+        branch: storedFolder === null ? "accepted-worktree" : null,
+        worktreePath: storedFolder,
+        launchIntentHash: retry.launchIntentHash,
+      });
+      if (storedFolder !== null) {
+        yield* launches.launch(retry);
+        const prepared = yield* preparationSettled(retry.threadId);
+        assert.equal(prepared.runs[0]?.status, "starting");
+        assert.deepEqual(prepared.runs[0]?.workspacePreparation, {
+          type: "existing_worktree",
+          worktreePath: storedFolder,
+        });
+        assert.equal(prepared.thread.worktreePath, storedFolder);
+        assert.deepEqual(
+          harness.runSetup.mock.calls.map(([setup]) => setup.worktreePath),
+          [storedFolder],
+        );
+        assert.isEmpty(harness.createWorktree.mock.calls);
+        return;
+      }
+      const failure = yield* launches.launch(retry).pipe(Effect.flip);
+      assert.equal(failure._tag, "ThreadLaunchError");
+      const actual = yield* threads.getThreadProjection(retry.threadId);
+      assert.isEmpty(actual.runs);
+      assert.isEmpty(actual.messages);
+      assert.isNull(actual.thread.worktreePath);
+      assert.isEmpty(harness.createWorktree.mock.calls);
+      assert.isEmpty(harness.runSetup.mock.calls);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
 it.effect.each([
   "create",
   "workspace",

@@ -475,6 +475,7 @@ export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
   typeof OrchestrationV2ThreadLaunchWorkspaceStrategy.Type;
 
 export const OrchestrationV2AppThread = Schema.Struct({
+  initialLaunchKind: Schema.optional(Schema.Literals(["idle", "first_message"])),
   initialWorkspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   launchIntentHash: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))),
   ...OrchestrationV2CreationFields,
@@ -4008,6 +4009,7 @@ export type OrchestrationV2ServerCommand =
   | Exclude<OrchestrationV2Command, LaunchCommand | CreateThreadCommand>
   | (CreateThreadCommand & {
       readonly launchIntentHash?: string;
+      readonly initialLaunchKind?: OrchestrationV2AppThread["initialLaunchKind"];
       readonly initialWorkspacePreparation?: OrchestrationV2ThreadLaunchWorkspaceStrategy;
     })
   | (LaunchCommand & {
