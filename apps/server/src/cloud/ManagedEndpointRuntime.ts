@@ -19,6 +19,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
@@ -213,7 +214,7 @@ export const make = Effect.gen(function* () {
   const runtimeScope = yield* Effect.scope;
   const installInFlightRef = yield* Ref.make(false);
   const lastInstallFailureAtRef = yield* Ref.make<number | null>(null);
-  const prunedRef = yield* Ref.make(false);
+  const prunedRef = yield* SynchronizedRef.make(false);
   const retryLoopRunningRef = yield* Ref.make(false);
   const notReadyChecksBeforeRestartRef = yield* Ref.make(CONNECTOR_NOT_READY_CHECKS_BEFORE_RESTART);
   // An explicit cloudflared transport in the environment is the user's choice.
@@ -604,10 +605,8 @@ export const make = Effect.gen(function* () {
               Effect.andThen(Queue.offer(readinessChanges, undefined)),
               Effect.andThen(
                 RelayClient.isPinnedManagedRelayClient(connector.executable)
-                  ? Ref.getAndSet(prunedRef, true).pipe(
-                      Effect.flatMap((pruned) =>
-                        pruned ? Effect.void : relayClient.pruneManagedVersions,
-                      ),
+                  ? SynchronizedRef.updateEffect(prunedRef, (pruned) =>
+                      pruned ? Effect.succeed(true) : relayClient.pruneManagedVersions,
                     )
                   : Effect.void,
               ),

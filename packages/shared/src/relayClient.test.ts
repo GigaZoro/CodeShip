@@ -853,6 +853,40 @@ describe("RelayClient", () => {
       ),
     );
 
+    it.effect.each([RelayClient.CLOUDFLARED_VERSION, "2026.1.0"])(
+      "reuses the previous install layout from release folder %s while offline",
+      (folder) =>
+        run((baseDir) =>
+          Effect.gen(function* () {
+            const paths = yield* Path.Path;
+            const fs = yield* FileSystem.FileSystem;
+            const legacy = managedPathFor(paths, baseDir, folder, hostPlatform, "legacy");
+            const previous = paths.join(paths.dirname(legacy), "install", executableName);
+            yield* writeExecutable(previous);
+            const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir }).pipe(
+              Effect.provideService(
+                HttpClient.HttpClient,
+                HttpClient.make(() => Effect.die("A pinned binary is already installed")),
+              ),
+            );
+            const selected = {
+              executablePath: previous,
+              source: "managed",
+              version: RelayClient.CLOUDFLARED_VERSION,
+            };
+            expect(yield* manager.resolve).toMatchObject(selected);
+            expect(yield* manager.install).toMatchObject(selected);
+            expect(yield* manager.pruneManagedVersions).toBe(true);
+            expect(yield* fs.readFileString(previous)).toBe("cloudflared");
+            expect(
+              yield* fs.exists(
+                managedPathFor(paths, baseDir, RelayClient.CLOUDFLARED_VERSION, hostPlatform),
+              ),
+            ).toBe(false);
+          }),
+        ),
+    );
+
     it.effect("prefers the legacy pin over an older executable in the current layout", () => {
       const versions: Record<string, string> = {};
       return run(
@@ -1135,17 +1169,18 @@ describe("RelayClient", () => {
             const legacyPin = managedPathFor(paths, baseDir, pinned, hostPlatform, "legacy");
             yield* writeExecutable(legacyPin);
             const clock = yield* Clock.Clock;
-            yield* pruner.pruneManagedVersions.pipe(
+            const completed = yield* pruner.pruneManagedVersions.pipe(
               Effect.provideService(Clock.Clock, {
                 ...clock,
                 sleep: () => Effect.die("Pruning must not wait for an active install"),
               }),
             );
 
+            expect(completed).toBe(false);
             expect(yield* fs.readFileString(activeArtifact)).toBe("active install");
             expect(yield* fs.exists(old)).toBe(true);
             yield* Fiber.interrupt(installing);
-            yield* pruner.pruneManagedVersions;
+            expect(yield* pruner.pruneManagedVersions).toBe(true);
             expect(yield* fs.exists(old)).toBe(false);
             expect(yield* fs.exists(rollback)).toBe(true);
           }),

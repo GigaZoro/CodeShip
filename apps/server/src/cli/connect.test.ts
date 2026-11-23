@@ -30,7 +30,7 @@ it.effect("does not install the relay client when the user declines the managed 
             installCalls += 1;
             return managedExecutable;
           }),
-        pruneManagedVersions: Effect.void,
+        pruneManagedVersions: Effect.succeed(true),
       },
       () => Effect.succeed(false),
       () => Effect.void,

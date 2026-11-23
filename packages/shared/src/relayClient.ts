@@ -154,8 +154,8 @@ export interface RelayClientShape {
   readonly installWithProgress: (
     report: (event: RelayClientInstallProgressEvent) => Effect.Effect<void>,
   ) => Effect.Effect<AvailableRelayClient, RelayClientInstallError>;
-  /** Reclaims this installer's obsolete binaries, keeping a rollback. Call once the pin has connected. */
-  readonly pruneManagedVersions: Effect.Effect<void>;
+  /** Returns true after a cleanup pass. A busy or unavailable cache can be retried on the next registration. */
+  readonly pruneManagedVersions: Effect.Effect<boolean>;
 }
 
 export function isPinnedManagedRelayClient(client: AvailableRelayClient): boolean {
@@ -254,6 +254,8 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
   const installRoot = path.join(managedRoot, "install");
   const legacyPathFor = (version: string) =>
     path.join(managedRoot, version, `${platform}-${arch}`, executableFileName(platform));
+  const previousInstallPathFor = (version: string) =>
+    path.join(managedRoot, version, `${platform}-${arch}`, "install", executableFileName(platform));
   // Older servers can recursively prune version directories. Keep all current writes outside them.
   const managedPathFor = (version: string) =>
     path.join(installRoot, version, `${platform}-${arch}`, executableFileName(platform));
@@ -315,12 +317,16 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
   });
 
   const managedCandidate = Effect.fn("cloudflared.managedCandidate")(function* (version: string) {
-    const current = yield* compatibleCandidate(managedPathFor(version), "managed");
-    if (current?.version === CLOUDFLARED_VERSION) return current;
-    const legacy = yield* compatibleCandidate(legacyPathFor(version), "managed");
-    if (legacy?.version === CLOUDFLARED_VERSION) return legacy;
-    if (current?.version === version) return current;
-    return legacy?.version === version ? legacy : (current ?? legacy);
+    let folderMatch: AvailableRelayClient | null = null;
+    let fallback: AvailableRelayClient | null = null;
+    for (const candidatePath of [managedPathFor, previousInstallPathFor, legacyPathFor]) {
+      const candidate = yield* compatibleCandidate(candidatePath(version), "managed");
+      if (!candidate) continue;
+      if (candidate.version === CLOUDFLARED_VERSION) return candidate;
+      if (candidate.version === version) folderMatch ??= candidate;
+      fallback ??= candidate;
+    }
+    return folderMatch ?? fallback;
   });
 
   // A newer release directory belongs to another server version.
@@ -561,9 +567,9 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
     );
 
   const pruneManagedVersions: RelayClientShape["pruneManagedVersions"] = Effect.gen(function* () {
-    if (!(yield* fileSystem.exists(installRoot))) return;
+    if (!(yield* fileSystem.exists(installRoot))) return true;
     const db = yield* openInstallDatabase;
-    if (!(yield* tryBeginInstallTransaction(db))) return;
+    if (!(yield* tryBeginInstallTransaction(db))) return false;
     const realRoot = yield* fileSystem.realPath(managedRoot);
     const obsolete: Array<{ executable: string; reportedVersion: string }> = [];
     for (const folder of yield* olderVersionsIn(installRoot)) {
@@ -606,9 +612,12 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
         ),
       );
     }
+    return true;
   }).pipe(
     Effect.scoped,
-    Effect.catch((cause) => Effect.logDebug("Could not prune managed relay clients", { cause })),
+    Effect.catch((cause) =>
+      Effect.logDebug("Could not prune managed relay clients", { cause }).pipe(Effect.as(false)),
+    ),
     Effect.withSpan("cloudflared.pruneManagedVersions"),
   );
 
