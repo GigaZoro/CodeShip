@@ -4974,7 +4974,9 @@ describe("OrchestratorMcpService provider resolution", () => {
                   {},
                   {
                     claimOccurrence: (input) =>
-                      Ref.update(claims, (all) => [...all, input]).pipe(Effect.as(input.holder)),
+                      Ref.update(claims, (all) => [...all, input]).pipe(
+                        Effect.as({ holder: input.holder }),
+                      ),
                   },
                 ),
               ),

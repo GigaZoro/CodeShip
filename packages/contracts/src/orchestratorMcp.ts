@@ -1129,6 +1129,9 @@ export type OrchestratorMcpClaimScheduledTaskOccurrenceInput =
 /** The machine that holds the occurrence after the call. */
 export const OrchestratorMcpClaimScheduledTaskOccurrenceResult = Schema.Struct({
   holder: EnvironmentId,
+  /** Opaque evidence of the admitting machine’s scheduled occurrence, when available. */
+  accountingSourceKey: Schema.optional(Schema.String),
+  accountingFresh: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestratorMcpClaimScheduledTaskOccurrenceResult =
   typeof OrchestratorMcpClaimScheduledTaskOccurrenceResult.Type;

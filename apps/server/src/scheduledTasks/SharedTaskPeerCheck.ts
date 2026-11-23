@@ -22,6 +22,11 @@ import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 
 // Only what the check reads, and only for this task, so a change to any other field or task in a
 // peer's answer never hides its run.
+const claimReply = Schema.Struct({
+  holder: OrchestratorMcpClaimScheduledTaskOccurrenceResult.fields.holder,
+  accountingSourceKey: Schema.optional(Schema.Unknown),
+  accountingFresh: Schema.optional(Schema.Unknown),
+});
 const decodePeerTaskList = Schema.decodeUnknownOption(
   Schema.Struct({
     tasks: Schema.Array(Schema.Unknown),
@@ -82,6 +87,8 @@ export interface PeerClaimResult {
   readonly answered: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
     readonly holder: EnvironmentId;
+    readonly accountingSourceKey?: string;
+    readonly accountingFresh?: true;
   }>;
   /** Machines that could not be asked, and why. */
   readonly unchecked: ReadonlyArray<{
@@ -338,17 +345,28 @@ const make = Effect.gen(function* () {
               replaces: input.replaces,
             },
             limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
-            success: OrchestratorMcpClaimScheduledTaskOccurrenceResult,
+            success: claimReply,
           })
           .pipe(
             Effect.timeoutOption(PeerMcpClient.PEER_READ_TIMEOUT),
-            Effect.map((answer) =>
-              Option.isNone(answer)
-                ? { environmentId, reason: "It did not answer in time." }
-                : Option.isNone(answer.value)
-                  ? { environmentId, reason: "It runs an older version of T3.CodeShip." }
-                  : { environmentId, holder: answer.value.value.holder },
-            ),
+            Effect.map((answer) => {
+              if (Option.isNone(answer))
+                return { environmentId, reason: "It did not answer in time." };
+              if (Option.isNone(answer.value))
+                return { environmentId, reason: "It runs an older version of T3.CodeShip." };
+              const { holder, accountingFresh, accountingSourceKey } = answer.value.value;
+              // An inserted claim cannot already have a run's accepted provenance.
+              return {
+                environmentId,
+                holder,
+                ...(accountingFresh === true && accountingSourceKey === undefined
+                  ? { accountingFresh: true as const }
+                  : {}),
+                ...(accountingFresh === undefined && typeof accountingSourceKey === "string"
+                  ? { accountingSourceKey }
+                  : {}),
+              };
+            }),
             Effect.catch((error) => Effect.succeed({ environmentId, reason: error.message })),
           );
       });

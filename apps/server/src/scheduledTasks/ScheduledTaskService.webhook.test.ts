@@ -1468,6 +1468,7 @@ it.effect(
           yield* TestClock.adjust("10 seconds");
           yield* drainPendingDispatch(workers);
           const launch = yield* Queue.take(launches);
+          assert.match(launch.initialMessage?.demandId ?? "", /^demand:[a-f0-9]{64}$/);
           assert.equal(
             launch.commandId,
             `scheduled-task:${task.id}:webhook:${accepted._tag === "accepted" && accepted.deliveryId}`,

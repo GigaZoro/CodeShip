@@ -1,3 +1,7 @@
+## 2026-11-23 — Scheduled run accounting
+
+- Scheduled runs carry the accounting ID of their occurrence through launch and account failover. When a shared schedule changes machines, it carries the original ID only if the claim identifies the same occurrence. Unique local times keep their ID on clock-change days. Two manual starts in one millisecond have distinct receipts.
+
 ## 2026-11-23 — Accounting for messages, failover and review
 
 - New owner requests and accepted guest messages receive a demand ID. Steering, failover, and final review retain the original demand. Delegated questions and completions use their recorded sources. On-return compaction shares the demand ID of the following message.
