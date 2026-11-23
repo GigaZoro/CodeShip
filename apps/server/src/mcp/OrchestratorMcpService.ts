@@ -2842,6 +2842,9 @@ const make = Effect.gen(function* () {
             "Only a linked machine can claim a shared task run, for itself or from itself.",
           );
         }
+        if (input.claimProtocol !== SCHEDULED_TASK_CLAIM_PROTOCOL) {
+          return yield* failure("version_mismatch", "The shared task claim protocols differ.");
+        }
         // A takeover needs the holder's own copy to agree: once the holder gave it up or its run failed.
         const task =
           input.replaces === null || input.replaces === caller
@@ -2871,7 +2874,7 @@ const make = Effect.gen(function* () {
               ),
             ),
           );
-        return { holder };
+        return { holder, claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL };
       },
     ),
     updateScheduledTask: Effect.fn("OrchestratorMcpService.updateScheduledTask")(

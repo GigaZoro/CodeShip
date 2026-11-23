@@ -1118,6 +1118,7 @@ export type OrchestratorMcpSharedScheduledTasksResult =
  * on what it holds.
  */
 export const OrchestratorMcpClaimScheduledTaskOccurrenceInput = Schema.Struct({
+  claimProtocol: Schema.optional(Schema.Int),
   scheduledTaskId: ScheduledTaskId,
   occurrence: OrchestratorMcpScheduledOccurrence,
   holder: EnvironmentId,
@@ -1128,6 +1129,7 @@ export type OrchestratorMcpClaimScheduledTaskOccurrenceInput =
 
 /** The machine that holds the occurrence after the call. */
 export const OrchestratorMcpClaimScheduledTaskOccurrenceResult = Schema.Struct({
+  claimProtocol: Schema.optional(Schema.Int),
   holder: EnvironmentId,
 });
 export type OrchestratorMcpClaimScheduledTaskOccurrenceResult =

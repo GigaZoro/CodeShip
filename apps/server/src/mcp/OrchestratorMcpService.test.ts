@@ -3,6 +3,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  SCHEDULED_TASK_CLAIM_PROTOCOL,
   CommandId,
   EnvironmentId,
   type PeerLinkSummary,
@@ -4987,9 +4988,11 @@ describe("OrchestratorMcpService provider resolution", () => {
               scope: McpInvocationScope,
               holder: EnvironmentId,
               replaces: EnvironmentId | null,
+              protocol: number | null = SCHEDULED_TASK_CLAIM_PROTOCOL,
             ) =>
               mcp.claimScheduledTaskOccurrence(scope, {
                 scheduledTaskId: existing.id,
+                ...(protocol === null ? {} : { claimProtocol: protocol }),
                 occurrence: "2026-11-12T07:35:00.000Z",
                 holder,
                 replaces,
@@ -5003,10 +5006,23 @@ describe("OrchestratorMcpService provider resolution", () => {
               refused.map((error) => error.code),
               ["capability_denied", "capability_denied", "capability_denied"],
             );
-            assert.deepEqual(yield* claim(peer(cpc), cpc, null), { holder: cpc });
-            assert.deepEqual(yield* claim(peer(cpc), work, cpc), { holder: work });
+            for (const previous of [null, 1]) {
+              const refused = yield* claim(peer(cpc), cpc, null, previous).pipe(Effect.flip);
+              assert.equal(refused.code, "version_mismatch");
+            }
+            assert.deepEqual(yield* claim(peer(cpc), cpc, null), {
+              holder: cpc,
+              claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL,
+            });
+            assert.deepEqual(yield* claim(peer(cpc), work, cpc), {
+              holder: work,
+              claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL,
+            });
             // Taking over from another machine tells the service whether this one's last run failed.
-            assert.deepEqual(yield* claim(peer(cpc), cpc, work), { holder: cpc });
+            assert.deepEqual(yield* claim(peer(cpc), cpc, work), {
+              holder: cpc,
+              claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL,
+            });
             const asked = (holder: EnvironmentId, replaces: EnvironmentId | null) => ({
               taskId: existing.id,
               occurrence: "2026-11-12T07:35:00.000Z",

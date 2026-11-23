@@ -96,15 +96,22 @@ export function isSameSchedule(a: ScheduledTaskSchedule, b: ScheduledTaskSchedul
 }
 
 // A fixed time comes due at each machine's own local hour, so its occurrence is named by the
-// wall-clock time with no offset, which every copy reads in its own zone (`Date.parse`).
+// configured wall-clock time, including when daylight saving moves the local firing time ahead.
 export function occurrenceSlot(schedule: ScheduledTaskSchedule, due: DateTime.DateTime): string {
   if (schedule.type !== "fixed_time") return DateTime.formatIso(DateTime.toUtc(due));
   const { year, month, day, hour, minute } = DateTime.toParts(
     DateTime.setZone(due, DateTime.zoneMakeLocal()),
   );
   const two = (value: number) => String(value).padStart(2, "0");
-  return `${year}-${two(month)}-${two(day)}T${two(hour)}:${two(minute)}`;
+  const date = `${year}-${two(month)}-${two(day)}T`;
+  const configured = date + schedule.timeOfDay.padStart(5, "0");
+  // A historical run may have fired under a different schedule.
+  return Date.parse(configured) === DateTime.toEpochMillis(due)
+    ? configured
+    : `${date}${two(hour)}:${two(minute)}`;
 }
+
+export const isFixedTimeSlot = (slot: string) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(slot);
 
 const MISSED_FIXED_TIME_GRACE_MS = 10 * MINUTE_MS;
 

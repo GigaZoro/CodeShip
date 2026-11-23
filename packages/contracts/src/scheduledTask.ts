@@ -306,7 +306,7 @@ export type ScheduledTaskRunSkipReason = typeof ScheduledTaskRunSkipReason.Type;
  * How this build checks, claims and settles one-machine occurrences. Machines that follow different
  * ones can each decide the occurrence is theirs, so raise it with any change to that protocol.
  */
-export const SCHEDULED_TASK_CLAIM_PROTOCOL = 1;
+export const SCHEDULED_TASK_CLAIM_PROTOCOL = 2;
 
 export const DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS = 60;
 export const MAX_RUN_CONDITION_TIMEOUT_SECONDS = 600;

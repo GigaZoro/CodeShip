@@ -12,6 +12,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vite-plus/test";
 
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
@@ -361,6 +362,17 @@ it.effect.each([
   }).pipe(Effect.map((result) => expect(result.ranOn).toBe(ranOn))),
 );
 
+it.effect("a skipped spring hour does not count as the following scheduled hour", () =>
+  Effect.gen(function* () {
+    vi.stubEnv("TZ", "Europe/Berlin");
+    const result = yield* check({
+      occurrence: "2026-03-29T03:30",
+      answer: peerTask({ at: SINCE, outcome: "completed", occurrence: "2026-03-29T02:30" }),
+    });
+    expect(result.ranOn).toBeNull();
+  }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs()))),
+);
+
 it.effect.each([
   { name: "ran it", fields: {}, noWork: null },
   {
@@ -520,11 +532,17 @@ it.effect("a claim records the holder the peer answers with", () =>
     const result = yield* claim({
       answer: (call) => {
         asked.push(call.arguments);
-        return Effect.succeedSome({ holder: PEER });
+        return Effect.succeedSome({ holder: PEER, claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL });
       },
     });
     expect(asked).toEqual([
-      { scheduledTaskId: TASK, occurrence: SINCE, holder: HERE, replaces: null },
+      {
+        scheduledTaskId: TASK,
+        occurrence: SINCE,
+        holder: HERE,
+        replaces: null,
+        claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL,
+      },
     ]);
     expect(result).toEqual({ answered: [{ environmentId: PEER, holder: PEER }], unchecked: [] });
   }),
@@ -535,6 +553,11 @@ it.effect.each([
     name: "the link expired",
     input: { linked: "expired" as const, answer: () => Effect.succeedNone },
     reason: "The link has expired.",
+  },
+  {
+    name: "its claim reply came from an older protocol after its version was checked",
+    input: { answer: () => Effect.succeedSome({ holder: PEER }) },
+    reason: "The shared task claim protocols differ.",
   },
   {
     name: "it predates claims",

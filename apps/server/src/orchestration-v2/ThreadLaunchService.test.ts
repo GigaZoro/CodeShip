@@ -30,6 +30,7 @@ import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -330,11 +331,23 @@ it.effect.each(
   "attributes $createdBy-configured automations in $target threads without changing their prompt",
   ({ target, createdBy }) => {
     const harness = makeHarness();
+    // Earlier UUIDs sort higher, so a clock tie has to use the dispatch order.
+    const descendingUuids = Layer.effect(
+      Crypto.Crypto,
+      Effect.gen(function* () {
+        const crypto = yield* Crypto.Crypto;
+        let next = 255;
+        return Crypto.make({
+          randomBytes: (size) => new Uint8Array(size).fill(next--),
+          digest: crypto.digest,
+        });
+      }),
+    ).pipe(Layer.provide(NodeCrypto.layer));
     const layerScheduledTasks = ScheduledTasks.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
           harness.layer,
-          NodeCrypto.layer,
+          descendingUuids,
           Scheduler.layer,
           layerSharedTaskIdentities(),
           Layer.mock(SecretRequests.SecretRequests)({}),
@@ -447,9 +460,9 @@ it.effect.each(
         assert.equal(runs[0]?.startedAt, runs[1]?.startedAt);
         assert.notEqual(runs[0]?.id, runs[1]?.id);
         assert.notEqual(next.threadId, result.threadId);
-        assert.sameMembers(
+        assert.deepEqual(
           runs.map((row) => row.threadId),
-          [result.threadId, next.threadId],
+          [next.threadId, result.threadId],
         );
         for (const row of runs) {
           const chat = yield* threads.getThreadProjection(row.threadId!);

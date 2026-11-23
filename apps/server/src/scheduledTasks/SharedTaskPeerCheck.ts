@@ -19,6 +19,7 @@ import * as Struct from "effect/Struct";
 
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
+import { isFixedTimeSlot } from "./Schedule.ts";
 
 // Only what the check reads, and only for this task, so a change to any other field or task in a
 // peer's answer never hides its run.
@@ -193,7 +194,10 @@ const make = Effect.gen(function* () {
       const counts = (occurrence: string | null | undefined, startedAt: string) =>
         occurrence === undefined
           ? Date.parse(startedAt) >= Date.parse(input.since)
-          : occurrence !== null && Date.parse(occurrence) >= Date.parse(input.occurrence);
+          : occurrence !== null &&
+            (isFixedTimeSlot(occurrence) && isFixedTimeSlot(input.occurrence)
+              ? occurrence >= input.occurrence
+              : Date.parse(occurrence) >= Date.parse(input.occurrence));
       const askOne = Effect.fnUntraced(function* (environmentId: EnvironmentId) {
         const unchecked = (reason: string, otherVersion = false): PeerAnswer => ({
           environmentId,
@@ -334,6 +338,7 @@ const make = Effect.gen(function* () {
             arguments: {
               scheduledTaskId: input.taskId,
               occurrence: input.occurrence,
+              claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL,
               holder: input.holder,
               replaces: input.replaces,
             },
@@ -347,7 +352,9 @@ const make = Effect.gen(function* () {
                 ? { environmentId, reason: "It did not answer in time." }
                 : Option.isNone(answer.value)
                   ? { environmentId, reason: "It runs an older version of T3.CodeShip." }
-                  : { environmentId, holder: answer.value.value.holder },
+                  : answer.value.value.claimProtocol !== SCHEDULED_TASK_CLAIM_PROTOCOL
+                    ? { environmentId, reason: "The shared task claim protocols differ." }
+                    : { environmentId, holder: answer.value.value.holder },
             ),
             Effect.catch((error) => Effect.succeed({ environmentId, reason: error.message })),
           );

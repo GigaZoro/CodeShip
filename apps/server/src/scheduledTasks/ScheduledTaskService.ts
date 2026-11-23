@@ -1,4 +1,5 @@
 import {
+  SCHEDULED_TASK_CLAIM_PROTOCOL,
   CommandId,
   EnvironmentId,
   MessageId,
@@ -130,6 +131,7 @@ import {
   latestMissedFixedTimeRun,
   nextAlignedIntervalRunAt,
   nextScheduledRunAt,
+  isFixedTimeSlot,
   occurrenceSlot,
 } from "./Schedule.ts";
 import {
@@ -1160,9 +1162,16 @@ export const layer = Layer.effect(
         occurrence_at TEXT NOT NULL,
         holder_environment_id TEXT NOT NULL,
         claimed_at TEXT NOT NULL,
+        claim_protocol INTEGER NOT NULL DEFAULT 1,
         PRIMARY KEY (task_id, occurrence_at)
       )
     `;
+    const claimColumns = yield* sql<{
+      name: string;
+    }>`PRAGMA table_info(scheduled_task_occurrence_claims)`;
+    if (!claimColumns.some((column) => column.name === "claim_protocol")) {
+      yield* sql`ALTER TABLE scheduled_task_occurrence_claims ADD COLUMN claim_protocol INTEGER NOT NULL DEFAULT 1`;
+    }
     // The latest time a fixed-time run came due while an update drained; it holds the occurrence at
     // or before then. The install restarts the server, so the hold outlives the drain and the run
     // starts after it however late. It lasts while the task's next_run_at is next_run_at: a check a
@@ -1410,9 +1419,9 @@ export const layer = Layer.effect(
 
     // This machine's newest checks: a one-machine skip records another machine's answer, with `ran_on`.
     const latestLocalChecks = (taskId: ScheduledTaskId | Statement.Fragment) => sql`
-      SELECT run_id, started_at, check_json FROM scheduled_task_runs
+      SELECT rowid AS insertion_order, run_id, started_at, check_json FROM scheduled_task_runs
       WHERE task_id = ${taskId} AND check_json IS NOT NULL AND ran_on IS NULL
-      ORDER BY started_at DESC, run_id DESC
+      ORDER BY started_at DESC, rowid DESC
       LIMIT ${RUN_CONDITION_FAILING_STREAK}
     `;
     const failingCheckColumn = sql`(
@@ -1420,7 +1429,7 @@ export const layer = Layer.effect(
           AND SUM(json_extract(latest.check_json, '$.outcome') = 'failed') = COUNT(*)
         THEN json_extract(json_group_array(
           json_object('at', latest.started_at, 'check', json(latest.check_json))
-          ORDER BY latest.started_at DESC, latest.run_id DESC
+          ORDER BY latest.started_at DESC, latest.insertion_order DESC
         ), '$[0]') END
       FROM (${latestLocalChecks(sql`scheduled_tasks.task_id`)}) latest
       WHERE EXISTS (SELECT 1 FROM scheduled_task_run_conditions rc
@@ -1495,7 +1504,7 @@ export const layer = Layer.effect(
             'reason', json_extract(r.check_json, '$.detail'))
           FROM scheduled_task_runs r
           WHERE r.task_id = scheduled_tasks.task_id AND r.skip_reason = 'no_work'
-          ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1) AS no_work_skip_json,
+          ORDER BY r.started_at DESC, r.rowid DESC LIMIT 1) AS no_work_skip_json,
         ${failingCheckColumn} AS failing_check_json,
         (SELECT path FROM scheduled_task_prompt_files pf
           WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_path,
@@ -1606,7 +1615,7 @@ export const layer = Layer.effect(
             'reason', json_extract(r.check_json, '$.detail'))
           FROM scheduled_task_runs r
           WHERE r.task_id = scheduled_tasks.task_id AND r.skip_reason = 'no_work'
-          ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1) AS no_work_skip_json,
+          ORDER BY r.started_at DESC, r.rowid DESC LIMIT 1) AS no_work_skip_json,
         ${failingCheckColumn} AS failing_check_json,
         (SELECT path FROM scheduled_task_prompt_files pf
           WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_path,
@@ -2165,7 +2174,7 @@ export const layer = Layer.effect(
                 ROW_NUMBER() OVER (
                   PARTITION BY CASE WHEN skip_reason IN ${sql.in(QUIET_SKIP_REASONS)}
                     THEN skip_reason ELSE '' END
-                  ORDER BY started_at DESC, run_id DESC
+                  ORDER BY started_at DESC, rowid DESC
                 ) AS position
               FROM scheduled_task_runs WHERE task_id = ${record.taskId}
             )
@@ -3032,7 +3041,7 @@ export const layer = Layer.effect(
         SELECT thread_id FROM scheduled_task_runs
         WHERE task_id = ${taskId} AND thread_id IS NOT NULL
         GROUP BY thread_id
-        ORDER BY MAX(started_at) DESC
+        ORDER BY MAX(started_at) DESC, MAX(rowid) DESC
         LIMIT ${LIVE_RUN_CHECK_LIMIT}
       `.pipe(NodeSqliteClient.readOnly);
       const now = yield* localNow;
@@ -3601,9 +3610,9 @@ export const layer = Layer.effect(
     // holder's copy agrees only once this machine gave the occurrence up, or its run of it failed
     // after reaching a chat. Age never counts: a run still being claimed or started looks idle to
     // the machines watching it, and a run cut off while starting may have started its chat.
-    const claimOccurrence: ScheduledTaskService["Service"]["claimOccurrence"] = Effect.fn(
-      "ScheduledTaskService.claimOccurrence",
-    )(function* (input) {
+    const takeClaim = Effect.fn("ScheduledTaskService.takeClaim")(function* (
+      input: Parameters<ScheduledTaskService["Service"]["claimOccurrence"]>[0],
+    ) {
       const occurrenceMs = Date.parse(input.occurrence);
       if (!Number.isFinite(occurrenceMs)) {
         return yield* taskError("The occurrence is not a valid time.", { taskId: input.taskId });
@@ -3614,7 +3623,9 @@ export const layer = Layer.effect(
           taskId: input.taskId,
         });
       }
-      const occurrence = iso(DateTime.makeUnsafe(occurrenceMs));
+      const scheduledFor = iso(DateTime.makeUnsafe(occurrenceMs));
+      const fixedTime = isFixedTimeSlot(input.occurrence);
+      const occurrence = fixedTime ? input.occurrence : scheduledFor;
       const now = yield* DateTime.now;
       const nowMs = DateTime.toEpochMillis(now);
       const takenFromHere = input.replaces === hereEnvironmentId && input.by !== hereEnvironmentId;
@@ -3624,15 +3635,15 @@ export const layer = Layer.effect(
             SELECT
               EXISTS (
                 SELECT 1 FROM scheduled_task_runs
-                WHERE task_id = ${input.taskId} AND scheduled_for = ${occurrence}
+                WHERE task_id = ${input.taskId} AND scheduled_for = ${scheduledFor}
                   AND outcome = 'skipped'
                   AND skip_reason IN ('unconfirmed', 'ran_elsewhere', 'other_version')
               ) AS gave_up,
               COALESCE((
-                SELECT scheduled_for = ${occurrence} AND thread_id IS NOT NULL
+                SELECT scheduled_for = ${scheduledFor} AND thread_id IS NOT NULL
                 FROM scheduled_task_runs
                 WHERE task_id = ${input.taskId} AND outcome <> 'skipped'
-                ORDER BY started_at DESC, run_id DESC LIMIT 1
+                ORDER BY started_at DESC, rowid DESC LIMIT 1
               ), 0) AS failed_in_chat
           `.pipe(
             Effect.map(
@@ -3641,21 +3652,48 @@ export const layer = Layer.effect(
                 (row.gave_up === 1 || (input.lastRunFailed === true && row.failed_in_chat === 1)),
             ),
           );
-      const [row] = yield* sql
+      // Older claims stored the receiver’s UTC instant for the sender’s observed wall clock.
+      // A different hour on the same day can be the same vote from before a DST gap upgrade.
+      const recoverPreviousClaim = Effect.gen(function* () {
+        if (!fixedTime) return true;
+        const day = DateTime.startOf(
+          DateTime.setZone(DateTime.makeUnsafe(occurrenceMs), DateTime.zoneMakeLocal()),
+          "day",
+        );
+        const prior = yield* sql<{ occurrence_at: string }>`
+          SELECT occurrence_at FROM scheduled_task_occurrence_claims
+          WHERE task_id = ${input.taskId} AND claim_protocol = 1
+            AND occurrence_at >= ${iso(day)} AND occurrence_at < ${iso(DateTime.add(day, { days: 1 }))}
+          LIMIT 2
+        `;
+        if (prior.length === 0) return true;
+        if (prior.length !== 1 || prior[0]?.occurrence_at !== scheduledFor) {
+          return false;
+        }
+        yield* sql`
+          UPDATE scheduled_task_occurrence_claims
+          SET occurrence_at = ${occurrence}, claim_protocol = ${SCHEDULED_TASK_CLAIM_PROTOCOL}
+          WHERE task_id = ${input.taskId} AND occurrence_at = ${scheduledFor}
+        `;
+        return true;
+      });
+      const rows = yield* sql
         .withTransaction(
-          agrees.pipe(
-            Effect.flatMap((agreed) =>
-              handingOn
-                ? sql`
+          Effect.gen(function* () {
+            if (!(yield* recoverPreviousClaim)) return null;
+            return yield* agrees.pipe(
+              Effect.flatMap((agreed) =>
+                handingOn
+                  ? sql`
                 UPDATE scheduled_task_occurrence_claims
                 SET holder_environment_id = ${input.holder}, claimed_at = ${iso(now)}
                 WHERE task_id = ${input.taskId} AND occurrence_at = ${occurrence}
                   AND holder_environment_id = ${input.by}
               `
-                : sql`
+                  : sql`
                 INSERT INTO scheduled_task_occurrence_claims
-                  (task_id, occurrence_at, holder_environment_id, claimed_at)
-                VALUES (${input.taskId}, ${occurrence}, ${input.holder}, ${iso(now)})
+                  (task_id, occurrence_at, holder_environment_id, claimed_at, claim_protocol)
+                VALUES (${input.taskId}, ${occurrence}, ${input.holder}, ${iso(now)}, ${SCHEDULED_TASK_CLAIM_PROTOCOL})
                 ON CONFLICT (task_id, occurrence_at) DO UPDATE SET
                   holder_environment_id = excluded.holder_environment_id,
                   claimed_at = excluded.claimed_at
@@ -3663,16 +3701,17 @@ export const layer = Layer.effect(
                   AND holder_environment_id = ${input.replaces}
                   AND ${agreed ? 1 : 0} = 1
               `,
-            ),
-            Effect.andThen(sql`
+              ),
+              Effect.andThen(sql`
               DELETE FROM scheduled_task_occurrence_claims
               WHERE claimed_at < ${iso(DateTime.makeUnsafe(nowMs - ONE_MACHINE_CLAIM_RETENTION_MS))}
             `),
-            Effect.andThen(sql<{ readonly holder_environment_id: EnvironmentId }>`
+              Effect.andThen(sql<{ readonly holder_environment_id: EnvironmentId }>`
               SELECT holder_environment_id FROM scheduled_task_occurrence_claims
               WHERE task_id = ${input.taskId} AND occurrence_at = ${occurrence}
             `),
-          ),
+            );
+          }),
         )
         .pipe(
           Effect.mapError((cause) =>
@@ -3682,6 +3721,8 @@ export const layer = Layer.effect(
             }),
           ),
         );
+      if (rows === null) return null;
+      const [row] = rows;
       if (row === undefined) {
         return yield* taskError(
           handingOn
@@ -3693,11 +3734,21 @@ export const layer = Layer.effect(
       return row.holder_environment_id;
     });
 
+    const ambiguousClaim =
+      "An earlier scheduler holds a claim with an ambiguous time on this date.";
+    const claimOccurrence: ScheduledTaskService["Service"]["claimOccurrence"] = Effect.fn(
+      "ScheduledTaskService.claimOccurrence",
+    )(function* (input) {
+      return (
+        (yield* takeClaim(input)) ?? (yield* taskError(ambiguousClaim, { taskId: input.taskId }))
+      );
+    });
+
     // Gives up this machine's own claim, so a machine that reaches a quorum may take it.
     const releaseOccurrence = (taskId: ScheduledTaskId, occurrence: string) =>
       sql`
         DELETE FROM scheduled_task_occurrence_claims
-        WHERE task_id = ${taskId} AND occurrence_at = ${iso(DateTime.makeUnsafe(Date.parse(occurrence)))}
+        WHERE task_id = ${taskId} AND occurrence_at = ${isFixedTimeSlot(occurrence) ? occurrence : iso(DateTime.makeUnsafe(Date.parse(occurrence)))}
           AND holder_environment_id = ${hereEnvironmentId}
       `.pipe(
         Effect.mapError((cause) =>
@@ -3733,13 +3784,17 @@ export const layer = Layer.effect(
           if (agreed !== here) return { holder: agreed ?? replaces, unchecked };
           held.add(replaces);
         }
-        const local = yield* claimOccurrence({
+        const local = yield* takeClaim({
           taskId,
           occurrence,
           holder: here,
           replaces,
           by: here,
         });
+        if (local === null) {
+          unchecked.push({ environmentId: here, reason: ambiguousClaim });
+          return { holder: null, unchecked };
+        }
         if (local === here) held.add(here);
         else others.push(local);
         const answer = yield* peerCheck.claim({
@@ -3952,12 +4007,7 @@ export const layer = Layer.effect(
           replaces: EnvironmentId | null,
           liveRunsElsewhere: SharedTaskPeerCheck.PeerCheckResult["liveRunsElsewhere"],
         ) {
-          // Peers exchange the observed wall clock, which can jump over the scheduled time in a DST gap.
-          const sharedOccurrence =
-            task.schedule.type === "fixed_time"
-              ? `${slot.slice(0, slot.indexOf("T") + 1)}${task.schedule.timeOfDay.padStart(5, "0")}`
-              : slot;
-          const fire = { scheduledFor: occurrence, catchUp: catchingUp, sharedOccurrence };
+          const fire = { scheduledFor: occurrence, catchUp: catchingUp, sharedOccurrence: slot };
           // The limit counts the task's runs that still work on every machine.
           // With its sharing, so the skip lands on the slot every copy runs.
           if (yield* skippedAtLiveRunLimit(shared, fire, liveRunsElsewhere)) return;
@@ -5807,7 +5857,7 @@ export const layer = Layer.effect(
           error, skip_reason, ran_on, failover_from, failover_to, failover_reason,
           failover_mcp_servers_json, check_json, usage_limit_json, memory_json
         FROM scheduled_task_runs WHERE task_id = ${input.id}
-        ORDER BY started_at DESC, run_id DESC
+        ORDER BY started_at DESC, rowid DESC
         LIMIT ${RUN_HISTORY_RETENTION + QUIET_SKIP_REASONS.length * QUIET_SKIP_RETENTION}
       `.pipe(
         NodeSqliteClient.readOnly,

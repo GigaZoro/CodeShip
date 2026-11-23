@@ -1630,7 +1630,10 @@ it.effect("a late takeover of the occurrence before does not count as this occur
             callIfAvailable: ({ environmentId, arguments: args }) =>
               environmentId === OTHER
                 ? off
-                : (Effect.succeedSome({ holder: (args as { holder: string }).holder }) as never),
+                : (Effect.succeedSome({
+                    holder: (args as { holder: string }).holder,
+                    claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL,
+                  }) as never),
           }),
         ),
       ),
@@ -2027,7 +2030,7 @@ it.effect.each([
       const startAt = Date.parse(`${date}T00:00:00Z`) - 12 * HOUR_MS;
       const slot = `${date}T${time}`;
       vi.stubEnv("TZ", zone);
-      const initial = yield* runScenario(
+      const holder = yield* runScenario(
         [OTHER, HERE_ENVIRONMENT_ID],
         NO_RUN_THERE,
         (scenario) =>
@@ -2039,7 +2042,7 @@ it.effect.each([
             const claims = scenario.sql<{ occurrence_at: string; holder_environment_id: string }>`
               SELECT occurrence_at, holder_environment_id FROM scheduled_task_occurrence_claims
             `;
-            expect(yield* claims).toEqual([{ occurrence_at: due, holder_environment_id: OTHER }]);
+            expect(yield* claims).toEqual([{ occurrence_at: slot, holder_environment_id: OTHER }]);
             const transfer = {
               taskId: ScheduledTaskId.make("scheduled-task:shared"),
               occurrence: slot,
@@ -2051,16 +2054,35 @@ it.effect.each([
             expect(yield* scenario.service.claimOccurrence(transfer)).toBe(HERE_ENVIRONMENT_ID);
             expect(yield* scenario.service.claimOccurrence(transfer)).toBe(HERE_ENVIRONMENT_ID);
             expect(yield* claims).toEqual([
-              { occurrence_at: due, holder_environment_id: HERE_ENVIRONMENT_ID },
+              { occurrence_at: slot, holder_environment_id: HERE_ENVIRONMENT_ID },
             ]);
-            return launch.initialMessage?.demandId;
+            if (date === "2026-03-29") {
+              // Both clock labels parse to one instant in Berlin, but name separate scheduled slots.
+              expect(
+                yield* scenario.service.claimOccurrence({
+                  ...transfer,
+                  occurrence: `${date}T03:30`,
+                  holder: EnvironmentId.make(OTHER),
+                  by: EnvironmentId.make(OTHER),
+                  replaces: null,
+                }),
+              ).toBe(OTHER);
+              expect(yield* claims).toHaveLength(2);
+            }
+            const [claim] = yield* Ref.get(scenario.peerClaims);
+            const [check] = yield* Ref.get(scenario.peerCalls);
+            return {
+              demand: launch.initialMessage?.demandId,
+              claim: claim!,
+              check: check!.occurrence,
+            };
           }),
         schedule,
         undefined,
         undefined,
         { environmentId: EnvironmentId.make(OTHER), startAt },
       );
-      expect(initial).toBeTypeOf("string");
+      expect(holder.demand).toBeTypeOf("string");
 
       vi.stubEnv("TZ", "UTC");
       yield* runScenario(
@@ -2069,6 +2091,21 @@ it.effect.each([
         (scenario) =>
           Effect.gen(function* () {
             expect(yield* nextRunAtOf(scenario.sql)).toBe(`${slot}:00.000Z`);
+            // Deliver the first holder's actual request to the UTC peer's real claim store.
+            const claim = (occurrence: string, holderId: EnvironmentId) =>
+              scenario.service.claimOccurrence({
+                taskId: ScheduledTaskId.make("scheduled-task:shared"),
+                occurrence,
+                holder: holderId,
+                by: holderId,
+                replaces: null,
+              });
+            expect(yield* claim(holder.claim, EnvironmentId.make(OTHER))).toBe(OTHER);
+            expect(yield* claim(slot, HERE_ENVIRONMENT_ID)).toBe(OTHER);
+            expect(yield* claimsOf(scenario.sql)).toEqual([
+              { occurrence_at: slot, holder_environment_id: OTHER },
+            ]);
+            expect(holder.check).toBe(slot);
             yield* Ref.set(scenario.peerCopies, new Map([[OTHER, OTHER]]));
             yield* Ref.set(scenario.failed, new Set([OTHER]));
             yield* fireWhenDue(scenario);
@@ -2076,7 +2113,7 @@ it.effect.each([
             yield* scenario.tick(Date.parse((yield* nextRunAtOf(scenario.sql))!) + 1_000);
             const launch = yield* Queue.take(scenario.launches);
             expect(yield* Ref.get(scenario.peerClaims)).toEqual([slot, slot]);
-            expect(launch.initialMessage?.demandId).toBe(initial);
+            expect(launch.initialMessage?.demandId).toBe(holder.demand);
           }),
         schedule,
         undefined,
@@ -2102,8 +2139,60 @@ it.effect.each([
           { startAt },
         );
         expect(later).toBeTypeOf("string");
-        expect(later).not.toBe(initial);
+        expect(later).not.toBe(holder.demand);
       }
+    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs()))),
+);
+
+it.effect.each([
+  { name: "matching", observed: "02:30", agreed: true },
+  { name: "shifted", observed: "03:30", agreed: false },
+])(
+  "a $name UTC claim from the previous protocol keeps its original holder's vote",
+  ({ observed, agreed }) =>
+    Effect.gen(function* () {
+      vi.stubEnv("TZ", "UTC");
+      const date = "2026-03-29";
+      const slot = `${date}T02:30`;
+      const oldKey = `${date}T${observed}:00.000Z`;
+      const holder = EnvironmentId.make(OTHER);
+      yield* runScenario(
+        [HERE_ENVIRONMENT_ID, OTHER],
+        NO_RUN_THERE,
+        (scenario) =>
+          Effect.gen(function* () {
+            const taskId = ScheduledTaskId.make("scheduled-task:shared");
+            yield* scenario.sql`
+          INSERT INTO scheduled_task_occurrence_claims (task_id, occurrence_at, holder_environment_id, claimed_at)
+          VALUES (${taskId}, ${oldKey}, ${holder}, ${oldKey})`;
+            const claim = scenario.service.claimOccurrence({
+              taskId,
+              occurrence: slot,
+              holder: HERE_ENVIRONMENT_ID,
+              replaces: null,
+              by: HERE_ENVIRONMENT_ID,
+            });
+            if (agreed) {
+              expect(yield* claim).toBe(holder);
+              expect(yield* claim).toBe(holder);
+            } else {
+              expect((yield* claim.pipe(Effect.flip)).message).toContain("ambiguous time");
+              yield* fireWhenDue(scenario);
+              expect(yield* Queue.size(scenario.launches)).toBe(0);
+              expect((yield* scenario.service.listRuns({ id: taskId })).runs[0]?.skipReason).toBe(
+                "unconfirmed",
+              );
+              expect(yield* nextRunAtOf(scenario.sql)).toBe("2026-03-30T02:30:00.000Z");
+            }
+            expect(yield* claimsOf(scenario.sql)).toEqual([
+              { occurrence_at: agreed ? slot : oldKey, holder_environment_id: holder },
+            ]);
+          }),
+        { type: "fixed_time", timeOfDay: "02:30" },
+        undefined,
+        undefined,
+        { startAt: Date.parse("2026-03-28T18:00:00Z") },
+      );
     }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs()))),
 );
 
