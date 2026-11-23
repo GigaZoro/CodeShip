@@ -1,3 +1,7 @@
+## 2026-11-23 — Replay tests release their temporary files
+
+- Provider replay tests remove their temporary directories when they finish, fail, or are interrupted, preventing repeated runs from filling the disk.
+
 ## 2026-11-23 — Accounting for provider background work
 
 - Background completions in ACP, Claude, Codex and Muse carry their originating run when it can be identified. Duplicate ACP completion notices are counted once. Retrying a failed wake retains the original task even when a later task reuses its ID. Replacing an ACP runtime or a Muse host clears its pending reports.
