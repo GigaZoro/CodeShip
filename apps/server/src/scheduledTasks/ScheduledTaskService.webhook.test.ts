@@ -1574,6 +1574,113 @@ it.effect("start failures release both replay keys and relay claims for redelive
   ),
 );
 
+it.effect.each([
+  { route: "launch", evidence: "delivered", succeeds: true },
+  { route: "bound", evidence: "delivered", succeeds: true },
+  { route: "launch", evidence: "unaccepted message command", succeeds: false },
+  { route: "bound", evidence: "missing exact prompt", succeeds: false },
+  { route: "launch", evidence: "conflicting thread receipts", succeeds: false },
+  { route: "bound", evidence: "receipt from before admission", succeeds: false },
+] as const)(
+  "restart resolves an immediate $route webhook cut after dispatch with $evidence",
+  ({ route, evidence, succeeds }) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const gate = yield* Deferred.make<void>();
+      const received = yield* Deferred.make<{ command: string; message: string }>();
+      const thread = route === "launch" ? "thread-created" : "thread-bound";
+      const relayId = "cut-before-completion";
+      const accepted = "scheduled-task:scheduled-task:hook:webhook:delivery:relay:" + relayId;
+      const prompt = "scheduled-task-message:scheduled-task:hook:webhook:delivery:relay:" + relayId;
+      const recordReceipt = (id: string, type: string, target: string) => sql`
+        INSERT INTO orchestration_command_receipts(command_id,aggregate_kind,aggregate_id,command_type,accepted_at,result_sequence,status,error)
+        VALUES (${id},'thread',${target},${type},'2026-01-01T00:00:00.000Z',1,'accepted',NULL)`;
+      if (evidence === "receipt from before admission")
+        yield* recordReceipt(accepted, "message.dispatch", thread);
+      const taskId = yield* withService(
+        ({ service, launches }) =>
+          Effect.gen(function* () {
+            const { task } = yield* service.upsert(
+              yield* webhookTaskInput(route === "bound" ? { threadId: thread } : {}),
+              ScheduledTaskService.CHANGED_IN_APP,
+            );
+            yield* service.triggerWebhook(requestFor(task, { relayDeliveryId: relayId }));
+            if (route === "launch") {
+              const call = yield* Queue.take(launches);
+              assert.equal(call.commandId, accepted);
+              assert.equal(call.initialMessage?.messageId, prompt);
+              yield* recordReceipt(accepted, "thread.create", thread);
+              if (evidence !== "unaccepted message command")
+                yield* recordReceipt(
+                  accepted + ":initial-message",
+                  "message.dispatch",
+                  evidence === "conflicting thread receipts" ? "different-thread" : thread,
+                );
+            } else {
+              assert.deepEqual(yield* Deferred.await(received), {
+                command: accepted,
+                message: prompt,
+              });
+              if (evidence !== "receipt from before admission")
+                yield* recordReceipt(accepted, "message.dispatch", thread);
+            }
+            assert.deepEqual(
+              yield* sql`SELECT outcome,thread_id FROM scheduled_task_runs WHERE task_id=${task.id}`,
+              [{ outcome: "running", thread_id: null }],
+            );
+            return task.id;
+          }),
+        {
+          sql,
+          gate,
+          threadManagement: {
+            sendToThread: (input) =>
+              Deferred.succeed(received, {
+                command: input.commandId,
+                message: input.messageId,
+              }).pipe(Effect.andThen(Effect.never)),
+          },
+        },
+      );
+      const deleted: string[] = [];
+      yield* withService(
+        ({ service, launches }) =>
+          Effect.gen(function* () {
+            const [run] = (yield* service.listRuns({ id: taskId })).runs;
+            assert.equal(run?.outcome, succeeds ? "succeeded" : "failed");
+            assert.equal(run?.threadId, succeeds ? thread : null);
+            assert.equal(
+              (yield* service.list()).tasks[0]?.lastRunStatus,
+              succeeds ? "succeeded" : "failed",
+            );
+            assert.equal(yield* Queue.size(launches), 0);
+            assert.deepEqual(deleted, []);
+          }),
+        {
+          sql,
+          threadManagement: {
+            getThreadShell: () => Effect.succeed({ deletedAt: null, folder: null } as never),
+            getThreadRecords: (id, _fields, filter) =>
+              Effect.succeed({
+                messages:
+                  id === thread &&
+                  filter?.messageIds?.[0] === prompt &&
+                  evidence !== "missing exact prompt"
+                    ? [{ id: prompt }]
+                    : [],
+              } as never),
+            getMessageCount: () => Effect.succeed(0),
+            dispatch: (cmd) =>
+              Effect.sync(() => {
+                deleted.push(cmd.type);
+                return { sequence: 1, storedEvents: [] } as never;
+              }),
+          },
+        },
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect.each(["saved attempts", "legacy latest"] as const)(
   "two same-tick webhook deliveries retain both attempts and recover each delivered prompt (%s)",
   (historyKind) =>
