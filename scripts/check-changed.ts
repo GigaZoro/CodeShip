@@ -56,7 +56,10 @@ import { REAL_HISTORY_ENV } from "../.github/scripts/git-history.cjs";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { checkNodeRuntime } from "../.github/scripts/check-node-runtime.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
-import { isRepositoryCommandSource } from "./lib/repository-command-source.ts";
+import {
+  isRepositoryCommandManifest,
+  isRepositoryCommandSource,
+} from "./lib/repository-command-source.ts";
 
 const GiB = 1024 ** 3;
 // The test step's limit grows by this much per selected file: server tests run one at a time.
@@ -470,7 +473,12 @@ export const testsReaching = (input: {
 
   const tests = new Set<string>();
   const argumentGuard = "scripts/command-arguments.test.ts";
-  if (input.files.has(argumentGuard) && input.changed.some(isRepositoryCommandSource)) {
+  if (
+    input.files.has(argumentGuard) &&
+    input.changed.some(
+      (file) => isRepositoryCommandSource(file) || isRepositoryCommandManifest(file),
+    )
+  ) {
     tests.add(argumentGuard);
   }
   const importers = new Map<string, Array<string>>();

@@ -3,6 +3,9 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
+import { vitePlusCommand } from "../../../scripts/check-changed-command.ts";
+
+// @test-input ../package.json
 
 import {
   customThemeNames,
@@ -39,13 +42,14 @@ function withThemeSandbox(
     expect(NodePath.relative(NodeFS.realpathSync(sandbox), NodeFS.realpathSync(target))).toBe(
       NodePath.normalize(script),
     );
-    test(mobile, (...args) =>
-      NodeChildProcess.spawnSync(
-        process.execPath,
-        ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", target, ...args],
-        { cwd: mobile, encoding: "utf8", timeout: 30_000 },
-      ),
-    );
+    test(mobile, (...args) => {
+      const [command, commandArgs] = vitePlusCommand(["run", "generate", ...args]);
+      return NodeChildProcess.spawnSync(command, commandArgs, {
+        cwd: mobile,
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+    });
   } finally {
     NodeFS.rmSync(sandbox, { recursive: true, force: true });
   }
@@ -76,7 +80,7 @@ describe("generate mobile Uniwind themes", () => {
       }
       const current = run("--check");
       expect(current.error).toBeUndefined();
-      expect({ status: current.status, stderr: current.stderr }).toEqual({ status: 0, stderr: "" });
+      expect(current.status, current.stdout + current.stderr).toBe(0);
 
       const stalePath = NodePath.join(mobile, NodePath.basename(outputs[0]![0]));
       const sentinel = Buffer.from("stale output for the check-mode test\n");

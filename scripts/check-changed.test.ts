@@ -442,6 +442,11 @@ describe("check:changed", () => {
     ".github/scripts/added.cjs",
     "tools/added.ts",
     "removed.ts",
+    "package.json",
+    "apps/server/package.json",
+    "apps/mobile/package.json",
+    "infra/task-cache/package.json",
+    "packages/source-control-github/package.json",
   ])("selects the repository command guard when %s changes", (changed) => {
     const test = "scripts/command-arguments.test.ts";
     const sources = new Map([
@@ -459,6 +464,22 @@ describe("check:changed", () => {
     );
   });
 
+  it.each(["apps/mobile/src/fixtures/package.json", ".repos/vendor/package.json"])(
+    "does not select the repository command guard for %s",
+    (changed) => {
+      const guard = "scripts/command-arguments.test.ts";
+      assert.deepStrictEqual(
+        testsReaching({
+          changed: [changed],
+          files: new Set([changed, guard]),
+          packages: [],
+          read: () => "",
+        }),
+        [],
+      );
+    },
+  );
+
   it.each([
     "packages/shared/src/testing/longTempDir.ts",
     "packages/shared/src/testing/providerEnv.ts",
@@ -475,8 +496,12 @@ const fixtureConfig = {
   "user.name": "Fixture",
   "user.email": "fixture@example.invalid",
 };
-const env = {
-  ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_"))),
+const env: Record<string, string> = {
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined && !entry[0].startsWith("GIT_"),
+    ),
+  ),
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_COUNT: String(Object.keys(fixtureConfig).length),
@@ -566,6 +591,7 @@ function launcherFixture() {
   for (const file of [
     "scripts/check-changed.ts",
     "scripts/check-changed-command.ts",
+    "scripts/lib/repository-command-source.ts",
     ".github/scripts/ci-changes.cjs",
     ".github/scripts/check-node-runtime.cjs",
     ".github/scripts/check-changed-receipt.cjs",
@@ -573,6 +599,11 @@ function launcherFixture() {
   ]) {
     write(file, NodeFS.readFileSync(NodePath.join(import.meta.dirname, "..", file), "utf8"));
   }
+  // Resolve the test runner's Node even when the runtime check removes Vite+'s injected path.
+  const nodeBin = NodePath.join(root, "node_modules", "fixture-node-bin");
+  NodeFS.mkdirSync(NodePath.dirname(nodeBin), { recursive: true });
+  NodeFS.symlinkSync(NodePath.dirname(process.execPath), nodeBin, "junction");
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
   write(".gitignore", "node_modules/\nrecords/\n.generated/\n");
   write("pnpm-workspace.yaml", "packages:\n  - packages/*\n");
   write(
@@ -646,12 +677,17 @@ function launcherFixture() {
     root,
     source,
     write,
+    commit(message: string) {
+      git("add", ".");
+      git("commit", "-m", message);
+    },
     run(failStep = "", editStep = "", editFile = source) {
       return NodeChildProcess.spawnSync(process.execPath, ["scripts/check-changed.ts", "HEAD"], {
         cwd: root,
         encoding: "utf8",
         env: {
           ...env,
+          [pathKey]: [nodeBin, env[pathKey]].filter(Boolean).join(NodePath.delimiter),
           TEMP: NodeOS.tmpdir(),
           RECORDS: records,
           FAIL_STEP: failStep,
@@ -688,6 +724,25 @@ it("checks changed source paths through the Windows launcher", () => {
   ]);
   expect(result.stdout).toContain("fixture stdout: lint");
   expect(result.stdout).toContain("fixture stderr: lint");
+});
+
+it("routes a manifest-only change to the repository command guard through the launcher", () => {
+  using project = launcherFixture();
+  const guard = "scripts/command-arguments.test.ts";
+  project.write(guard, "export {};\n");
+  project.write("scripts/unrelated.test.ts", "export {};\n");
+  project.commit("add the guard and an unrelated test");
+  project.write(
+    "packages/example/package.json",
+    JSON.stringify({ name: "example", scripts: { verify: "node ./verify.ts" } }),
+  );
+
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  const tests = project.calls().filter(({ args }) => args[0] === "test");
+  expect(tests).toHaveLength(1);
+  expect(tests[0]?.args.at(-1)).toBe(guard);
+  expect(tests[0]?.args).not.toContain("scripts/unrelated.test.ts");
 });
 
 it("fails a run whose files changed while its checks ran", () => {
