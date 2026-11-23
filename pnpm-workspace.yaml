@@ -12,6 +12,8 @@ packages:
 allowBuilds:
   browser-tabs-lock: false
   bufferutil: false
+  # Links the server recorder's packaged Bun executable for this platform.
+  bun@1.4.5: true
   core-js: false
   # No install script since Electron 44; ensure:electron runs install.js.
   # Keep the key: pnpm fails installs that still record a removed `true`.

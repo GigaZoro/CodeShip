@@ -156,8 +156,8 @@ and `vp run record:claude-replay -- --scenario <name>` for Claude Agent SDK tran
 `pnpm --filter t3 record:cursor-replay --scenario <name>` for Cursor Agent SDK transcripts.
 
 For Codex and Claude, add `--dry-run` to print the selected transcript destination before
-recording. The package commands load the server package’s Bun environment files and forward the
-result to Node. An explicit output path takes precedence over the configured destination.
+recording. The server’s development dependencies include Bun to load the package’s environment
+files. Node runs the recorder. An explicit output path takes precedence over the configured destination.
 
 ## Contract Test Levels
 

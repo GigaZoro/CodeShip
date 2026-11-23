@@ -68,6 +68,11 @@ describe("replay recorder arguments", () => {
             NodePath.join(sandbox, "scripts"),
             "junction",
           );
+          NodeFS.symlinkSync(
+            NodeURL.fileURLToPath(new URL("../node_modules/", import.meta.url)),
+            NodePath.join(sandbox, "node_modules"),
+            "junction",
+          );
           NodeFS.writeFileSync(
             NodePath.join(sandbox, ".env"),
             "OUTPUT_DIR=from-base\nT3_CODEX_REPLAY_OUT=$OUTPUT_DIR/base.ndjson\n",
@@ -107,6 +112,46 @@ describe("replay recorder arguments", () => {
           expect(claude.stdout.trim().replaceAll("\\", "/")).toMatch(
             /\/multi_turn\/claude_transcript\.ndjson$/u,
           );
+          // Node can share its installation directory with a global Bun. Expose just Node
+          // from that directory, and let the package runner supply the project's binaries.
+          const nodeBin = NodePath.join(sandbox, "node-bin");
+          NodeFS.mkdirSync(nodeBin);
+          NodeFS.copyFileSync(
+            process.execPath,
+            NodePath.join(nodeBin, platform === "win32" ? "node.exe" : "node"),
+            NodeFS.constants.COPYFILE_FICLONE,
+          );
+          const inheritedPath = Object.entries(syntheticEnvironment).find(
+            ([key]) => key.toUpperCase() === "PATH",
+          )?.[1];
+          const bunNames =
+            platform === "win32" ? ["bun.exe", "bun.cmd", "bun.bat", "bun.com"] : ["bun"];
+          const systemPath = (inheritedPath ?? "")
+            .split(NodePath.delimiter)
+            .filter(
+              (dir) => dir && !bunNames.some((name) => NodeFS.existsSync(NodePath.join(dir, name))),
+            );
+          const nodeEnvironment = Object.fromEntries(
+            Object.entries(syntheticEnvironment).filter(([key]) => key.toUpperCase() !== "PATH"),
+          );
+          nodeEnvironment.PATH = [nodeBin, ...systemPath].join(NodePath.delimiter);
+          expect(
+            NodeChildProcess.spawnSync("bun", ["--version"], { cwd: sandbox, env: nodeEnvironment })
+              .error,
+          ).toMatchObject({ code: "ENOENT" });
+          for (const [entry, expected] of [
+            ["record:codex-replay", "from-local/fixture.ndjson"],
+            ["record:claude-replay", "multi_turn/claude_transcript.ndjson"],
+          ] as const) {
+            const result = NodeChildProcess.spawnSync(
+              process.execPath,
+              ["--run", entry, "--", "--dry-run"],
+              { cwd: sandbox, env: nodeEnvironment, encoding: "utf8", timeout: 30_000 },
+            );
+            expect(result.error).toBeUndefined();
+            expect(result.status, result.stderr).toBe(0);
+            expect(result.stdout.trim().replaceAll("\\", "/")).toContain(expected);
+          }
           for (const recorder of ["record:codex-replay", "record:claude-replay"]) {
             const invalid = runPackageRecorder(platform, sandbox, recorder, [
               "--dry-run",

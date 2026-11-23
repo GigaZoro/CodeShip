@@ -91,6 +91,7 @@
     "@types/node": "catalog:",
     "@types/proper-lockfile": "^4.1.4",
     "@types/yauzl": "^3.4.0",
+    "bun": "1.4.5",
     "effect-acp": "workspace:*",
     "effect-codex-app-server": "workspace:*",
     "graphql": "16.14.1",
