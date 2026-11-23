@@ -15,6 +15,7 @@ import {
   type OrchestrationV2ProviderThreadNativeMetadata,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2RuntimeRequest,
+  type RunId,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
   type OrchestrationV2UserInputQuestion,
@@ -114,6 +115,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import {
   type BackgroundWork,
+  commonSource,
   type BackgroundWorkReport,
   backgroundWorkNotification,
 } from "@t3tools/provider-core/server/notification";
@@ -1358,6 +1360,125 @@ function acpIsProviderContinuationMessage(message: {
   return message.createdBy === "agent" && message.creationSource === "provider";
 }
 
+const sessionScopedId = (sessionId: string, nativeId: string): string =>
+  JSON.stringify([sessionId, nativeId]);
+
+type WakeEvidence = { sourceRunId: RunId | null; report?: BackgroundWorkReport };
+type WakeTask = WakeEvidence & {
+  phase: "running" | "pending";
+  hasSource: boolean;
+  reused: boolean;
+};
+
+// Retain exact identities until the provider session resets. Consumed entries retain no labels,
+// results or app-run payloads. An offered wave stays frozen while later terminals accumulate.
+export class AcpWakeEvidence {
+  private readonly tasks = new Map<string, WakeTask>();
+  private readonly offered = new Map<string, WakeTask>();
+  private readonly consumed = new Set<string>();
+  private readonly registrations = new Set<string>();
+  private dispatched = 0;
+
+  private begin(key: string, reused = false): WakeTask {
+    const task: WakeTask = { phase: "running", sourceRunId: null, hasSource: false, reused };
+    this.tasks.set(key, task);
+    return task;
+  }
+
+  running(key: string) {
+    if (!this.tasks.has(key) && !this.offered.has(key) && !this.consumed.has(key)) this.begin(key);
+  }
+
+  start(key: string, source: RunId, registration: string) {
+    const identity = sessionScopedId(key, registration);
+    if (this.registrations.has(identity)) return;
+    this.registrations.add(identity);
+    const task =
+      this.tasks.get(key) ?? this.begin(key, this.consumed.has(key) || this.offered.has(key));
+    // Multiple distinct producers can use the same native task ID. Its bare terminal cannot identify one of them.
+    if (
+      (task.hasSource && task.sourceRunId !== source) ||
+      (!task.hasSource && task.phase !== "running")
+    )
+      task.reused = true;
+    task.hasSource = true;
+    task.sourceRunId = task.reused ? null : source;
+    if (task.reused) delete task.report;
+  }
+
+  terminal(key: string, report?: BackgroundWorkReport) {
+    const existing = this.tasks.get(key);
+    if (existing === undefined && (this.consumed.has(key) || this.offered.has(key))) return;
+    const task = existing ?? this.begin(key);
+    if (!task.reused && report?.sourceRunId !== undefined) {
+      task.sourceRunId = task.hasSource
+        ? (commonSource([task.sourceRunId, report.sourceRunId]) ?? null)
+        : report.sourceRunId;
+      task.hasSource = true;
+    }
+    if (
+      !task.reused &&
+      report &&
+      (task.report?.outcome !== "failed" || report.outcome === "failed")
+    )
+      task.report = report;
+    task.phase = "pending";
+  }
+
+  handled(key: string, runId?: RunId) {
+    const task = this.tasks.get(key);
+    if (runId !== undefined && task?.sourceRunId !== runId) return;
+    this.tasks.delete(key);
+    this.consumed.add(key);
+  }
+
+  retryOffered() {
+    for (const [key, offered] of this.offered) {
+      const successor = this.tasks.get(key);
+      if (!successor) this.tasks.set(key, offered);
+      else {
+        // The previous dispatch failed while a new producer reused the same native ID.
+        successor.phase = "pending";
+        successor.reused = true;
+        successor.sourceRunId = null;
+        delete successor.report;
+      }
+    }
+    this.offered.clear();
+  }
+
+  offer(): WakeEvidence[] {
+    this.retryOffered();
+    const reports: WakeEvidence[] = [];
+    for (const [key, task] of this.tasks) {
+      if (task.phase !== "pending") continue;
+      this.offered.set(key, task);
+      this.tasks.delete(key);
+      reports.push({ sourceRunId: task.sourceRunId, ...(task.report && { report: task.report }) });
+    }
+    return reports;
+  }
+
+  accepted() {
+    this.consume();
+    this.dispatched++;
+  }
+
+  attached() {
+    if (this.dispatched > 0) this.dispatched--;
+    else this.consume();
+  }
+
+  consume(includePending = false) {
+    for (const key of this.offered.keys()) this.consumed.add(key);
+    this.offered.clear();
+    if (!includePending) return;
+    for (const [key, task] of this.tasks) {
+      if (task.phase === "pending") this.handled(key);
+    }
+  }
+}
+
 function acpCarryoverTerminalShouldClearContinuation(input: {
   readonly continuationOffered: boolean;
   readonly wakeBufferLength: number;
@@ -1641,8 +1762,6 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         if (clientTerminals !== undefined) {
           yield* Scope.addFinalizer(sessionScope, clientTerminals.disposeAll);
         }
-        const sessionScopedId = (sessionId: string, nativeId: string): string =>
-          JSON.stringify([sessionId, nativeId]);
         const embeddedTerminalsByToolCallId = new Map<
           string,
           {
@@ -2003,25 +2122,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           readonly providerThreadId: ProviderThreadId;
         } | null>(null);
         const wakeBuffer = yield* Ref.make<Array<EffectAcpSchema.SessionNotification>>([]);
-        const noWakeReports = {
-          reports: new Map<string, BackgroundWorkReport>(),
-          offered: new Set<string>(),
-        };
-        const wakeReports = yield* Ref.make<{
-          readonly reports: ReadonlyMap<string, BackgroundWorkReport>;
-          readonly offered: ReadonlySet<string>;
-        }>(noWakeReports);
-        const recordWakeReport = Effect.fnUntraced(function* (
-          key: string,
-          report: BackgroundWorkReport,
-        ) {
-          const context = yield* Ref.get(activeTurn);
-          if (context !== null && !context.promptSettled && !context.finalized) return;
-          yield* Ref.update(wakeReports, ({ reports, offered }) => ({
-            reports: new Map(reports).set(key, report),
-            offered,
-          }));
-        });
+        let wakeEvidence = new AcpWakeEvidence();
         const continuationRequested = yield* Ref.make(false);
         // Continuations this agent process dispatched that have not started; a user turn can take their wake first.
         const dispatchedContinuations = yield* Ref.make(0);
@@ -2039,6 +2140,31 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         // Grok re-prompts on stale monitor notices; suppress output until a genuine terminal or app turn.
         const suppressPostSettleMonitorPrompt = yield* Ref.make(false);
         const runningBackgroundTaskIds = yield* Ref.make<ReadonlySet<string>>(new Set());
+        const toolWakeKey = (sessionId: string, taskId: string) =>
+          `tool:${sessionScopedId(sessionId, taskId)}`;
+        const subagentTerminal = (
+          child: ActiveAcpSubagent,
+          status: OrchestrationV2Subagent["status"],
+          sourceRunId: RunId | null,
+          handledInRun?: RunId,
+        ) => {
+          if (
+            status !== "completed" &&
+            status !== "failed" &&
+            status !== "cancelled" &&
+            status !== "interrupted"
+          )
+            return;
+          const key = `subagent:${child.task.id}`;
+          wakeEvidence.terminal(key, {
+            kind: "subagent",
+            childThreadId: child.childThreadId,
+            label: child.task.title ?? child.task.prompt,
+            outcome: status === "interrupted" ? "cancelled" : status,
+            sourceRunId,
+          });
+          if (handledInRun !== undefined) wakeEvidence.handled(key, handledInRun);
+        };
         // Tombstones prevent mid-stream exit_code 0 and stale monitor events from resurrecting ended tasks.
         const endedBackgroundTaskIds = yield* Ref.make<ReadonlySet<string>>(new Set());
         const endedBackgroundTaskIdLimit = 128;
@@ -3139,6 +3265,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             },
           });
           if (acpSubagentStatusIsTerminal(taskStatus)) {
+            subagentTerminal(
+              subagent,
+              taskStatus,
+              existing?.task.runId ?? null,
+              context.promptSettled ? undefined : context.input.runId,
+            );
             subagent.terminalStatusProjected = true;
           }
         });
@@ -3551,10 +3683,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             }).pipe(Effect.forkIn(sessionScope), Effect.asVoid);
           });
 
-        const clearMidTurnUnreportedTaskIds = (taskIds: ReadonlyArray<string>) =>
+        const clearMidTurnUnreportedTaskIds = (sessionId: string, taskIds: ReadonlyArray<string>) =>
           Ref.update(midTurnUnreportedCompletedTaskIds, (current) => {
             let next: Set<string> | null = null;
             for (const taskId of taskIds) {
+              wakeEvidence.handled(toolWakeKey(sessionId, taskId));
               if (!current.has(taskId)) continue;
               if (next === null) next = new Set(current);
               next.delete(taskId);
@@ -3616,6 +3749,18 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           }
           if (backgroundTaskId !== undefined) {
             context.toolCallIdsByBackgroundTaskId.set(backgroundTaskId, toolCall.toolCallId);
+            const key = toolWakeKey(context.nativeThreadId, backgroundTaskId);
+            if (
+              !context.promptSettled &&
+              (toolStatus(toolCall.status) === "running" ||
+                toolStatus(toolCall.status) === "pending")
+            ) {
+              wakeEvidence.start(
+                key,
+                context.input.runId,
+                sessionScopedId(context.input.runId, toolCall.toolCallId),
+              );
+            }
             if (flavor.isPersistentBackgroundTool?.(toolCall) === true) {
               context.persistentBackgroundTaskIds.add(backgroundTaskId);
             }
@@ -3624,6 +3769,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               backgroundTaskId,
               backgroundStatus === "pending" || backgroundStatus === "running",
             );
+            if (backgroundStatus === "completed" || backgroundStatus === "failed") {
+              wakeEvidence.terminal(key);
+              if (!context.promptSettled) wakeEvidence.handled(key, context.input.runId);
+            }
             if (
               !context.promptSettled &&
               backgroundStatus !== "pending" &&
@@ -3649,6 +3798,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           for (const backgroundCompletion of backgroundCompletions) {
             yield* applyBackgroundTaskMutationRunning(backgroundCompletion);
             if (backgroundCompletion.status !== "running") {
+              const key = toolWakeKey(context.nativeThreadId, backgroundCompletion.taskId);
+              wakeEvidence.terminal(key);
+              if (!context.promptSettled) wakeEvidence.handled(key, context.input.runId);
               yield* Ref.update(handledBackgroundTaskIdsInActiveTurn, (current) =>
                 new Set(current).add(backgroundCompletion.taskId),
               );
@@ -4283,13 +4435,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             });
           });
 
-        const offerContinuationRun = Effect.fnUntraced(function* (_sessionId: string) {
+        const offerContinuationRun = Effect.fnUntraced(function* (sessionId: string) {
           if (continuationRequests === undefined) {
             return false;
           }
           const pending = yield* continuationPermit.withPermit(
             Effect.gen(function* () {
               if (yield* Ref.get(continuationClosed)) return Option.none();
+              if ((yield* Ref.get(activeSessionId)) !== sessionId) return Option.none();
               if (yield* Ref.get(stoppedRunQuarantine)) return Option.none();
               if (yield* Ref.get(continuationRequested)) return Option.none();
               const route = yield* Ref.get(lastTurnRoute);
@@ -4299,16 +4452,20 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 continuationGeneration,
                 (value) => value + 1,
               );
-              const reports = yield* Ref.modify(wakeReports, ({ reports }) => [
-                reports,
-                { reports, offered: new Set(reports.keys()) },
-              ]);
+              const reports = wakeEvidence.offer();
               return Option.some({ route, generation, reports });
             }),
           );
           if (Option.isNone(pending)) return false;
           const { route, generation, reports } = pending.value;
-          const notification = backgroundWorkNotification([...reports.values()]);
+          const notification = reports.some((item) => item.report !== undefined)
+            ? backgroundWorkNotification(
+                reports.map<BackgroundWorkReport>(
+                  (item) => item.report ?? { kind: "background_task", outcome: "unknown" },
+                ),
+              )
+            : null;
+          const source = commonSource(reports.map((item) => item.sourceRunId));
           yield* Effect.logInfo("orchestration-v2.acp-wake-turn-detected", {
             driver,
             providerSessionId: input.providerSessionId,
@@ -4320,11 +4477,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             providerThreadId: route.providerThreadId,
             driver,
             detail: null,
+            ...(source === undefined ? {} : { demandSourceRunId: source }),
             ...(notification === null ? {} : { notification }),
             clearIfCurrent: () =>
               continuationPermit.withPermit(
                 Effect.gen(function* () {
                   if ((yield* Ref.get(continuationGeneration)) === generation) {
+                    wakeEvidence.retryOffered();
                     yield* Ref.set(continuationRequested, false);
                   }
                 }),
@@ -4334,6 +4493,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 Effect.gen(function* () {
                   const clearIfOwner = Effect.gen(function* () {
                     if ((yield* Ref.get(continuationGeneration)) === generation) {
+                      wakeEvidence.retryOffered();
                       yield* Ref.set(continuationRequested, false);
                     }
                   });
@@ -4351,6 +4511,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     yield* clearIfOwner;
                     return yield* Effect.failCause(exit.cause);
                   }
+                  wakeEvidence.accepted();
                   yield* Ref.update(dispatchedContinuations, (count) => count + 1);
                   return Option.some(exit.value);
                 }),
@@ -4359,42 +4520,55 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           return true;
         });
 
-        const applyLateBackgroundMutation = Effect.fnUntraced(function* (
+        const applyLateBackgroundMutations = Effect.fnUntraced(function* (
           sessionId: string,
-          mutation: {
+          mutations: ReadonlyArray<{
             readonly taskId: string;
             readonly status: "running" | "completed" | "failed";
-          },
+            readonly report?: BackgroundWork;
+          }>,
         ) {
-          const taskAlreadyEnded = (yield* Ref.get(endedBackgroundTaskIds)).has(mutation.taskId);
-          yield* applyBackgroundTaskMutationRunning(mutation);
-          if (mutation.status === "running") {
-            if (taskAlreadyEnded && acpPostSettleMonitorPromptShouldSuppress(mutation)) {
-              yield* Ref.set(suppressPostSettleMonitorPrompt, true);
-            }
+          if (
+            !mutations.length ||
+            (yield* Ref.get(stoppedRunQuarantine)) ||
+            (yield* Ref.get(activeSessionId)) !== sessionId
+          )
             return;
-          }
-          // Only a new terminal may un-suppress output; re-delivery must not revive monitor ACK chatter.
-          if (!taskAlreadyEnded) {
-            yield* Ref.set(suppressPostSettleMonitorPrompt, false);
-          }
-          const activeContext = yield* Ref.get(activeTurn);
-          if (activeContext !== null && !activeContext.finalized) {
-            const handled = yield* Ref.get(handledBackgroundTaskIdsInActiveTurn);
+          const context = yield* Ref.get(activeTurn);
+          let hasTerminal = false;
+          for (const mutation of mutations) {
+            const taskAlreadyEnded = (yield* Ref.get(endedBackgroundTaskIds)).has(mutation.taskId);
+            yield* applyBackgroundTaskMutationRunning(mutation);
+            if (mutation.status === "running") {
+              if (!taskAlreadyEnded) wakeEvidence.running(toolWakeKey(sessionId, mutation.taskId));
+              if (taskAlreadyEnded && acpPostSettleMonitorPromptShouldSuppress(mutation)) {
+                yield* Ref.set(suppressPostSettleMonitorPrompt, true);
+              }
+              continue;
+            }
+            hasTerminal = true;
+            // Re-delivery must not revive monitor ACK chatter or count a consumed terminal again.
+            if (!taskAlreadyEnded) yield* Ref.set(suppressPostSettleMonitorPrompt, false);
+            wakeEvidence.terminal(
+              toolWakeKey(sessionId, mutation.taskId),
+              mutation.report && { ...mutation.report, outcome: mutation.status },
+            );
             if (
-              !activeContext.promptSettled &&
-              !handled.has(mutation.taskId) &&
-              activeContext.toolCallIdsByBackgroundTaskId.has(mutation.taskId)
+              context !== null &&
+              !context.finalized &&
+              !context.promptSettled &&
+              !(yield* Ref.get(handledBackgroundTaskIdsInActiveTurn)).has(mutation.taskId) &&
+              context.toolCallIdsByBackgroundTaskId.has(mutation.taskId)
             ) {
               yield* Ref.update(midTurnUnreportedCompletedTaskIds, (current) =>
                 new Set(current).add(mutation.taskId),
               );
             }
-            return;
           }
           if (
+            hasTerminal &&
+            (context === null || context.finalized) &&
             postSettleContinuationEnabled &&
-            (yield* Ref.get(activeSessionId)) === sessionId &&
             (yield* Ref.get(runningBackgroundTaskIds)).size === 0 &&
             ((yield* Ref.get(wakeBuffer)).length > 0 ||
               (yield* Ref.get(midTurnUnreportedCompletedTaskIds)).size > 0)
@@ -4484,8 +4658,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               ) {
                 alreadyHandledToolUpdate = true;
               }
+              if (toolTaskId !== undefined) {
+                const status = toolStatus(toolCall.status);
+                if (status === "completed" || status === "failed") {
+                  wakeEvidence.terminal(toolWakeKey(notification.sessionId, toolTaskId));
+                }
+              }
               if (flavor.extractBackgroundTaskCompletion !== undefined) {
                 for (const completion of flavor.extractBackgroundTaskCompletion(toolCall)) {
+                  if (completion.status !== "running") {
+                    wakeEvidence.terminal(toolWakeKey(notification.sessionId, completion.taskId));
+                  }
                   alreadyHandledToolUpdate =
                     alreadyHandledToolUpdate ||
                     (yield* Ref.get(handledBackgroundTaskIdsInActiveTurn)).has(completion.taskId);
@@ -4832,9 +5015,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             update.content.type === "text"
           ) {
             const mutations = flavor.extractBackgroundToolMutation?.(update.content.text) ?? [];
-            for (const mutation of mutations) {
-              yield* applyLateBackgroundMutation(notification.sessionId, mutation);
-            }
+            yield* applyLateBackgroundMutations(notification.sessionId, mutations);
             return;
           }
           if (context === null) {
@@ -4934,9 +5115,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 update.content.type === "text"
                   ? (flavor.extractBackgroundToolMutation?.(text) ?? [])
                   : [];
-              for (const lateBackgroundMutation of lateBackgroundMutations) {
-                yield* applyLateBackgroundMutation(notification.sessionId, lateBackgroundMutation);
-              }
+              yield* applyLateBackgroundMutations(notification.sessionId, lateBackgroundMutations);
               const lateMonitorChatter =
                 /<monitor-event\b/i.test(text) ||
                 /Monitor\s+["']?[0-9a-f-]{8,}["']?\s+ended/i.test(text);
@@ -5112,7 +5291,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 if (context.pendingInjectedReport.size > 0) {
                   const reportedTaskIds = [...context.pendingInjectedReport];
                   context.pendingInjectedReport.clear();
-                  yield* clearMidTurnUnreportedTaskIds(reportedTaskIds);
+                  yield* clearMidTurnUnreportedTaskIds(context.nativeThreadId, reportedTaskIds);
                 } else if (
                   startsNewAssistantSegment &&
                   context.promptSettled &&
@@ -5197,7 +5376,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   context.earlyInjectedReportObserved && terminalTaskIds.length > 0;
                 if (reportArrivedBeforeNotice) {
                   context.earlyInjectedReportObserved = false;
-                  yield* clearMidTurnUnreportedTaskIds(terminalTaskIds);
+                  yield* clearMidTurnUnreportedTaskIds(context.nativeThreadId, terminalTaskIds);
                 }
                 for (const mutation of mutations) {
                   const toolCallId = context.toolCallIdsByBackgroundTaskId.get(mutation.taskId);
@@ -5222,6 +5401,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       ),
                     );
                   }
+                  if (mutation.status !== "running")
+                    wakeEvidence.terminal(toolWakeKey(notification.sessionId, mutation.taskId));
                   yield* applyBackgroundTaskMutationRunning(mutation);
                   if (mutation.status !== "running" && !reportArrivedBeforeNotice) {
                     yield* markPendingInjectedReport(context, mutation.taskId);
@@ -5797,6 +5978,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           if (match.task.status !== "running" && match.task.status !== "pending") {
             return false;
           }
+          if (
+            status === "completed" ||
+            status === "failed" ||
+            status === "cancelled" ||
+            status === "interrupted"
+          ) {
+            subagentTerminal(match, status, match.task.runId);
+          }
           if (!shouldProject) {
             yield* mutateCarryoverSubagentStatus(match, status, result);
           } else {
@@ -5821,12 +6010,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 candidate.task.nativeTaskRef?.nativeId === notice.childSessionId,
             );
           if (known !== undefined && acpSubagentStatusBlocksTurnSettlement(known.task.status)) {
-            yield* recordWakeReport(notice.childSessionId, {
-              kind: "subagent",
-              label: known.task.title ?? known.task.prompt,
-              outcome: notice.status,
-              childThreadId: known.childThreadId,
-            });
+            subagentTerminal(known, notice.status, known.task.runId);
           }
           if (context !== null && subagent !== undefined && !context.finalized) {
             if (!acpSubagentStatusBlocksTurnSettlement(subagent.task.status)) return;
@@ -6512,17 +6696,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       context.backgroundCommands.set(incoming.taskId, completion);
                       mutation = { ...incoming, ...completion };
                     }
-                    if (
-                      mutation.status !== "running" &&
-                      mutation.report !== undefined &&
-                      !(yield* Ref.get(handledBackgroundTaskIdsInActiveTurn)).has(mutation.taskId)
-                    ) {
-                      yield* recordWakeReport(mutation.taskId, {
-                        ...mutation.report,
-                        outcome: mutation.status,
-                      });
-                    }
-                    yield* applyLateBackgroundMutation(mutation.sessionId, mutation);
+                    yield* applyLateBackgroundMutations(mutation.sessionId, [mutation]);
                     if (mutation.status !== "running") {
                       yield* finishRegisteredBackgroundTool({
                         taskId: mutation.taskId,
@@ -6781,7 +6955,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 yield* Ref.update(continuationGeneration, (value) => value + 1);
                 yield* Ref.set(stoppedRunQuarantine, false);
                 yield* Ref.set(wakeBuffer, []);
-                yield* Ref.set(wakeReports, noWakeReports);
+                wakeEvidence = new AcpWakeEvidence();
                 yield* Ref.set(continuationRequested, false);
                 yield* Ref.set(dispatchedContinuations, 0);
                 yield* Ref.set(runningBackgroundTaskIds, new Set());
@@ -7218,7 +7392,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               yield* Ref.update(continuationGeneration, (value) => value + 1);
               yield* Ref.set(stoppedRunQuarantine, true);
               yield* Ref.set(wakeBuffer, []);
-              yield* Ref.set(wakeReports, noWakeReports);
+              wakeEvidence = new AcpWakeEvidence();
               yield* Ref.set(continuationRequested, false);
               yield* Ref.set(runningBackgroundTaskIds, new Set());
               yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
@@ -7699,7 +7873,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 });
                 if (!isContinuationTurn && !isAppOwnedWakeTurn && !preserveBufferedContinuation) {
                   yield* Ref.set(wakeBuffer, []);
-                  yield* Ref.set(wakeReports, noWakeReports);
+                  if (!wasRequested && (yield* Ref.get(runningBackgroundTaskIds)).size === 0)
+                    wakeEvidence.consume(true);
                 }
                 if (preserveBufferedContinuation) return wasRequested;
                 yield* Ref.update(continuationGeneration, (value) => value + 1);
@@ -7849,10 +8024,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             // Retain projected terminals during wake drain so monotonic guards reject replayed spawns.
             if (isContinuationTurn) {
               yield* Ref.set(continuationRequested, false);
-              yield* Ref.update(wakeReports, ({ reports, offered }) => ({
-                reports: new Map([...reports].filter(([key]) => !offered.has(key))),
-                offered: noWakeReports.offered,
-              }));
+              wakeEvidence.attached();
               const takeWakeBuffer = Ref.modify(wakeBuffer, (current) => {
                 const next: Array<EffectAcpSchema.SessionNotification> = [];
                 return [

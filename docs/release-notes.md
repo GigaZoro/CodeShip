@@ -1,3 +1,7 @@
+## 2026-11-23 — Accounting for provider background work
+
+- Background completions in ACP, Claude, Codex and Muse carry their originating run when it can be identified. Duplicate ACP completion notices are counted once, and replacing a Muse host clears its pending reports.
+
 ## 2026-11-23 — Accounting for messages, failover and review
 
 - New owner requests and accepted guest messages receive a demand ID. Steering, failover, and final review retain the original demand. Delegated questions and completions use their recorded sources. On-return compaction shares the demand ID of the following message.
