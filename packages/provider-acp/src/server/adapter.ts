@@ -2,6 +2,7 @@
 
 import {
   type ChatAttachment,
+  MessageId,
   type ModelSelection,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2ExecutionNode,
@@ -1482,14 +1483,6 @@ function acpCarryoverTerminalShouldClearContinuation(input: {
   return !input.continuationOffered && input.wakeBufferLength === 0;
 }
 
-function acpTurnStartShouldPreserveContinuation(input: {
-  readonly continuationRequested: boolean;
-  readonly isContinuationTurn: boolean;
-  readonly wakeBufferLength: number;
-}): boolean {
-  return !input.isContinuationTurn && input.continuationRequested && input.wakeBufferLength > 0;
-}
-
 function acpPostSettleMonitorPromptShouldSuppress(
   mutation:
     | {
@@ -2120,8 +2113,28 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const wakeBuffer = yield* Ref.make<Array<EffectAcpSchema.SessionNotification>>([]);
         let wakeEvidence = new AcpWakeEvidence();
         const continuationRequested = yield* Ref.make(false);
-        // Continuations this agent process dispatched that have not started; a user turn can take their wake first.
-        const dispatchedContinuations = yield* Ref.make(0);
+        // The dispatcher persists this message ID. Each accepted wake owns the frames available
+        // at dispatch; only the current offer may also consume frames that arrived afterward.
+        const acceptedWakes = new Map<
+          MessageId,
+          {
+            readonly sessionId: string;
+            readonly providerThreadId: ProviderThreadId;
+            readonly threadId: ThreadId;
+            readonly runtimeGeneration: number;
+            readonly offerGeneration: number;
+            readonly frames: ReadonlyArray<EffectAcpSchema.SessionNotification>;
+          }
+        >();
+        const takeWakeFrames = (sessionId: string) =>
+          Ref.modify(
+            wakeBuffer,
+            (frames) =>
+              [
+                frames.filter((frame) => frame.sessionId === sessionId),
+                frames.filter((frame) => frame.sessionId !== sessionId),
+              ] as const,
+          );
         const continuationGeneration = yield* Ref.make(0);
         const continuationPermit = yield* Semaphore.make(1);
         const continuationClosed = yield* Ref.make(false);
@@ -2171,7 +2184,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             yield* Ref.update(continuationGeneration, (value) => value + 1);
             wakeEvidence = new AcpWakeEvidence();
             yield* Ref.set(continuationRequested, false);
-            yield* Ref.set(dispatchedContinuations, 0);
+            acceptedWakes.clear();
             yield* Ref.set(wakeBuffer, []);
             yield* Ref.set(runningBackgroundTaskIds, new Set());
             yield* Ref.set(endedBackgroundTaskIds, new Set());
@@ -2273,13 +2286,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               }
               yield* cancelPendingRuntimeRequests();
               const context = yield* Ref.get(activeTurn);
-              if (context !== null)
+              if (context !== null) {
+                const failure = flavor.promptFailure?.(error);
                 yield* finalizeTurn(
                   context,
                   "failed",
-                  flavor.promptFailure?.(error) ??
-                    makeProviderFailure({ class: "transport_error", cause: error }),
+                  failure === undefined || failure.class === "provider_error"
+                    ? makeProviderFailure({ class: "transport_error", cause: error })
+                    : failure,
                 );
+              }
             }),
           ).pipe(Effect.asVoid);
         const makeRuntimeInput = (
@@ -4472,11 +4488,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 (value) => value + 1,
               );
               const reports = wakeEvidence.offer();
-              return Option.some({ route, generation, reports });
+              const runtimeGeneration = yield* Ref.get(runtimeCallbackGeneration);
+              const messageId = MessageId.make(yield* crypto.randomUUIDv4().pipe(Effect.orDie));
+              return Option.some({ route, generation, reports, runtimeGeneration, messageId });
             }),
           );
           if (Option.isNone(pending)) return false;
-          const { route, generation, reports } = pending.value;
+          const { route, generation, reports, runtimeGeneration, messageId } = pending.value;
           const notification = reports.some((item) => item.report !== undefined)
             ? backgroundWorkNotification(
                 reports.map<BackgroundWorkReport>(
@@ -4492,6 +4510,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             providerThreadId: route.providerThreadId,
           });
           yield* continuationRequests.offer({
+            messageId,
             threadId: route.threadId,
             providerThreadId: route.providerThreadId,
             driver,
@@ -4523,7 +4542,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   if ((yield* Ref.get(continuationGeneration)) !== generation) {
                     return Option.none();
                   }
-                  if (!(yield* Ref.get(continuationRequested))) return Option.none();
+                  if (!(yield* Ref.get(continuationRequested)) || acceptedWakes.has(messageId))
+                    return Option.none();
                   // Retain the dispatch flag until continuation starts so late frames cannot enqueue duplicates.
                   const exit = yield* Effect.exit(effect);
                   if (Exit.isFailure(exit)) {
@@ -4531,7 +4551,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     return yield* Effect.failCause(exit.cause);
                   }
                   wakeEvidence.accepted();
-                  yield* Ref.update(dispatchedContinuations, (count) => count + 1);
+                  acceptedWakes.set(messageId, {
+                    ...route,
+                    sessionId,
+                    runtimeGeneration,
+                    offerGeneration: generation,
+                    frames: yield* takeWakeFrames(sessionId),
+                  });
                   return Option.some(exit.value);
                 }),
               ),
@@ -7408,6 +7434,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             Effect.gen(function* () {
               yield* Ref.update(continuationGeneration, (value) => value + 1);
               yield* Ref.set(stoppedRunQuarantine, true);
+              acceptedWakes.clear();
               yield* Ref.set(wakeBuffer, []);
               wakeEvidence = new AcpWakeEvidence();
               yield* Ref.set(continuationRequested, false);
@@ -7779,40 +7806,6 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           return true;
         });
 
-        // A continuation only drains here when this agent process dispatched it or still buffers its
-        // output. One from an ended process or session (an exit, a restart) is sent as its text.
-        const deliverableTurnInput = Effect.fnUntraced(function* (
-          turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
-        ) {
-          if (
-            continuationRequests === undefined ||
-            (flavor.enablePostSettleContinuation !== true &&
-              flavor.followAgentWorkState !== true) ||
-            !acpIsProviderContinuationMessage(turnInput.message)
-          )
-            return turnInput;
-          const sessionId = yield* nativeThreadId(driver, turnInput.providerThread);
-          const held = yield* continuationPermit.withPermit(
-            Effect.gen(function* () {
-              const dispatched = yield* Ref.modify(dispatchedContinuations, (count) =>
-                count > 0 ? ([true, count - 1] as const) : ([false, count] as const),
-              );
-              return (
-                dispatched ||
-                (yield* Ref.get(wakeBuffer)).some(
-                  (notification) => notification.sessionId === sessionId,
-                )
-              );
-            }),
-          );
-          return held
-            ? turnInput
-            : {
-                ...turnInput,
-                message: { ...turnInput.message, creationSource: "server" as const },
-              };
-        });
-
         const startTurnUnlocked = Effect.fn("AcpAdapterV2.startTurn")(
           function* (requestedTurnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
             yield* awaitRuntimeTeardown();
@@ -7834,23 +7827,32 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const restartAfterInterrupt = yield* restartRuntimeAfterTeardownIfRequired(
               requestedTurnInput.threadId,
             );
-            const turnInput = yield* deliverableTurnInput(requestedTurnInput);
             const needsSessionActivation =
               (yield* Ref.get(activeSessionId)) !== requestedSessionId || restartAfterInterrupt;
             if (needsSessionActivation) {
-              const activated = yield* activateSession(requestedSessionId, turnInput.threadId);
+              const activated = yield* activateSession(
+                requestedSessionId,
+                requestedTurnInput.threadId,
+              );
               yield* Ref.set(activeSessionId, activated.sessionId);
               yield* setActiveSessionSetup(activated);
-              yield* configureSession(activated, turnInput.modelSelection, turnInput.runtimePolicy);
-              yield* Ref.set(activeSelection, turnInput.modelSelection);
-              yield* Ref.set(activeInteractionMode, turnInput.runtimePolicy.interactionMode);
+              yield* configureSession(
+                activated,
+                requestedTurnInput.modelSelection,
+                requestedTurnInput.runtimePolicy,
+              );
+              yield* Ref.set(activeSelection, requestedTurnInput.modelSelection);
+              yield* Ref.set(
+                activeInteractionMode,
+                requestedTurnInput.runtimePolicy.interactionMode,
+              );
             } else {
               const configuredSelection = yield* Ref.get(activeSelection);
               const configuredInteractionMode = yield* Ref.get(activeInteractionMode);
               if (
                 configuredSelection === null ||
-                !modelSelectionsEqual(configuredSelection, turnInput.modelSelection) ||
-                configuredInteractionMode !== turnInput.runtimePolicy.interactionMode
+                !modelSelectionsEqual(configuredSelection, requestedTurnInput.modelSelection) ||
+                configuredInteractionMode !== requestedTurnInput.runtimePolicy.interactionMode
               ) {
                 const currentSessionSetup = yield* Ref.get(activeSessionSetup);
                 if (currentSessionSetup === null) {
@@ -7861,50 +7863,73 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 }
                 yield* configureSession(
                   currentSessionSetup,
-                  turnInput.modelSelection,
-                  turnInput.runtimePolicy,
+                  requestedTurnInput.modelSelection,
+                  requestedTurnInput.runtimePolicy,
                 );
-                yield* Ref.set(activeSelection, turnInput.modelSelection);
-                yield* Ref.set(activeInteractionMode, turnInput.runtimePolicy.interactionMode);
+                yield* Ref.set(activeSelection, requestedTurnInput.modelSelection);
+                yield* Ref.set(
+                  activeInteractionMode,
+                  requestedTurnInput.runtimePolicy.interactionMode,
+                );
               }
             }
-            yield* validateModelSelection(turnInput.modelSelection);
+            yield* validateModelSelection(requestedTurnInput.modelSelection);
             yield* Ref.set(lastTurnRoute, {
-              threadId: turnInput.threadId,
-              providerThreadId: turnInput.providerThread.id,
+              threadId: requestedTurnInput.threadId,
+              providerThreadId: requestedTurnInput.providerThread.id,
             });
             yield* Ref.set(suppressPostSettleMonitorPrompt, false);
             yield* Ref.set(handledBackgroundTaskIdsInActiveTurn, new Set());
-            // Continuations consume existing wake traffic without re-prompting ACP.
-            const isContinuationTurn =
-              (postSettleContinuationEnabled || followsAgentWorkState) &&
-              acpIsProviderContinuationMessage(turnInput.message);
-            const isAppOwnedWakeTurn = acpIsAppOwnedWakeTurn(turnInput.message);
-            if (!isAppOwnedWakeTurn) {
+            const { turnInput, frames, continuationWasRequested } =
+              yield* continuationPermit.withPermit(
+                Effect.gen(function* () {
+                  const message = requestedTurnInput.message;
+                  const wasRequested = yield* Ref.get(continuationRequested);
+                  const generation = yield* Ref.get(continuationGeneration);
+                  const providerWake = acpIsProviderContinuationMessage(message);
+                  const wake = providerWake ? acceptedWakes.get(message.messageId) : undefined;
+                  if (
+                    wake !== undefined &&
+                    wake.runtimeGeneration === (yield* Ref.get(runtimeCallbackGeneration)) &&
+                    wake.sessionId === requestedSessionId &&
+                    wake.threadId === requestedTurnInput.threadId &&
+                    wake.providerThreadId === requestedTurnInput.providerThread.id
+                  ) {
+                    acceptedWakes.delete(message.messageId);
+                    wakeEvidence.attached();
+                    let frames = wake.frames;
+                    const ownsOffer = wake.offerGeneration === generation;
+                    if (ownsOffer) {
+                      frames = frames.concat(yield* takeWakeFrames(requestedSessionId));
+                      yield* Ref.update(continuationGeneration, (value) => value + 1);
+                      yield* Ref.set(continuationRequested, false);
+                    }
+                    return {
+                      turnInput: requestedTurnInput,
+                      frames,
+                      continuationWasRequested: ownsOffer && wasRequested,
+                    };
+                  }
+                  const turnInput = providerWake
+                    ? {
+                        ...requestedTurnInput,
+                        message: { ...message, creationSource: "server" as const },
+                      }
+                    : requestedTurnInput;
+                  // An older wake or intervening user turn can prompt while another wake awaits dispatch.
+                  if (!wasRequested && !acpIsAppOwnedWakeTurn(turnInput.message)) {
+                    yield* Ref.set(wakeBuffer, []);
+                    if ((yield* Ref.get(runningBackgroundTaskIds)).size === 0)
+                      wakeEvidence.consume(true);
+                  }
+                  return { turnInput, frames: null, continuationWasRequested: false };
+                }),
+              );
+            if (!acpIsAppOwnedWakeTurn(turnInput.message)) {
               yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
             }
-            const continuationWasRequested = yield* continuationPermit.withPermit(
-              Effect.gen(function* () {
-                const wasRequested = yield* Ref.get(continuationRequested);
-                const preserveBufferedContinuation = acpTurnStartShouldPreserveContinuation({
-                  continuationRequested: wasRequested,
-                  isContinuationTurn,
-                  wakeBufferLength: (yield* Ref.get(wakeBuffer)).length,
-                });
-                if (!isContinuationTurn && !isAppOwnedWakeTurn && !preserveBufferedContinuation) {
-                  yield* Ref.set(wakeBuffer, []);
-                  if (!wasRequested && (yield* Ref.get(runningBackgroundTaskIds)).size === 0)
-                    wakeEvidence.consume(true);
-                }
-                if (preserveBufferedContinuation) return wasRequested;
-                yield* Ref.update(continuationGeneration, (value) => value + 1);
-                yield* Ref.set(continuationRequested, false);
-                return wasRequested;
-              }),
-            );
-            const promptParts = isContinuationTurn
-              ? null
-              : yield* resolvePromptParts(turnInput, requestedSessionId);
+            const promptParts =
+              frames !== null ? null : yield* resolvePromptParts(turnInput, requestedSessionId);
             const startedAt = yield* DateTime.now;
             const nativeTurnId = `${requestedSessionId}:turn:${turnInput.providerTurnOrdinal}`;
             const providerTurnId = deriveProviderTurnId(nativeTurnId);
@@ -8042,21 +8067,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             // start before that continuation and must leave its buffer intact.
             yield* projectDeferredCarryoverTerminals(rehydratedCarryoverSubagents);
             // Retain projected terminals during wake drain so monotonic guards reject replayed spawns.
-            if (isContinuationTurn) {
-              yield* Ref.set(continuationRequested, false);
-              wakeEvidence.attached();
-              const takeWakeBuffer = Ref.modify(wakeBuffer, (current) => {
-                const next: Array<EffectAcpSchema.SessionNotification> = [];
-                return [
-                  current.filter((notification) => notification.sessionId === requestedSessionId),
-                  next,
-                ] as const;
-              });
+            if (frames !== null) {
               if (followsAgentWorkState) {
                 yield* runtimeCallbackPermit.withPermit(
                   Effect.gen(function* () {
                     const liveWork = agentWork;
-                    yield* Effect.forEach(yield* takeWakeBuffer, handleSessionUpdate, {
+                    yield* Effect.forEach(frames, handleSessionUpdate, {
                       discard: true,
                     });
                     agentWork = liveWork;
@@ -8066,20 +8082,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 );
                 return;
               }
-              const drainedWakeCount = yield* takeWakeBuffer.pipe(
-                Effect.tap((drained) =>
-                  Effect.forEach(drained, handleSessionUpdate, {
-                    concurrency: 1,
-                    discard: true,
-                  }),
-                ),
-                Effect.map((drained) => drained.length),
-              );
+              yield* Effect.forEach(frames, handleSessionUpdate, { discard: true });
               context.promptSettled = true;
               context.promptSettledStatus = "completed";
               if (
                 !flavor.deferFinalizeForBackgroundWork ||
-                (drainedWakeCount === 0 && !continuationWasRequested)
+                (frames.length === 0 && !continuationWasRequested)
               ) {
                 yield* finalizeTurn(context, "completed");
               } else {
@@ -8341,7 +8349,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       agentRequests.size > 0)
                   )
                     return true;
-                  if ((yield* Ref.get(wakeBuffer)).length > 0) return true;
+                  if (acceptedWakes.size > 0 || (yield* Ref.get(wakeBuffer)).length > 0)
+                    return true;
                   if (yield* Ref.get(continuationRequested)) return true;
                   if ((yield* Ref.get(runningBackgroundTaskIds)).size > 0) return true;
                   const active = yield* Ref.get(activeTurn);

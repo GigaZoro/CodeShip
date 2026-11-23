@@ -262,6 +262,7 @@ export function makeTurnInput(input: {
   readonly now: DateTime.Utc;
   readonly ordinal?: number;
   readonly modelSelection?: ModelSelection;
+  readonly messageId?: MessageId;
   readonly messageCreatedBy?: "user" | "agent";
   readonly messageCreationSource?: "web" | "mobile" | "mcp" | "provider" | "server";
   readonly messageText?: string;
@@ -308,7 +309,7 @@ export function makeTurnInput(input: {
     message: {
       createdBy: input.messageCreatedBy ?? "user",
       creationSource: input.messageCreationSource ?? "web",
-      messageId: MessageId.make(`message:${suffix}`),
+      messageId: input.messageId ?? MessageId.make(`message:${suffix}`),
       text: input.messageText ?? "test prompt",
       attachments: [],
     },
