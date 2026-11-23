@@ -55,10 +55,12 @@ describe("replay recorder arguments", () => {
     () =>
       Effect.gen(function* () {
         const platform = yield* HostProcess.Platform;
-        const sandbox = NodeFS.mkdtempSync(
+        const fixture = NodeFS.mkdtempSync(
           NodePath.join(NodeOS.tmpdir(), "replay-recorder-package-"),
         );
+        const sandbox = NodePath.join(fixture, "server");
         try {
+          NodeFS.mkdirSync(sandbox);
           NodeFS.copyFileSync(
             new URL("../package.json", import.meta.url),
             NodePath.join(sandbox, "package.json"),
@@ -77,7 +79,19 @@ describe("replay recorder arguments", () => {
             "LOCAL_OUTPUT=from-local\nT3_CODEX_REPLAY_OUT=$LOCAL_OUTPUT/fixture.ndjson\nT3_CLAUDE_REPLAY_SCENARIO=multi_turn\n",
           );
 
-          // Run the package shell with only the fixture's Node on PATH in both phases.
+          // node --run prepends ancestor .bin directories to PATH. Own the nearest one so
+          // an unrelated package above the OS temp directory cannot supply the recorder runtime.
+          const ancestorBin = NodePath.join(fixture, "node_modules", ".bin");
+          NodeFS.mkdirSync(ancestorBin, { recursive: true });
+          const ancestorMarker = "recorder fixture selected the ancestor Bun";
+          const windows = platform === "win32";
+          NodeFS.writeFileSync(
+            NodePath.join(ancestorBin, windows ? "bun.cmd" : "bun"),
+            windows
+              ? `@echo off\r\necho ${ancestorMarker} 1>&2\r\nexit /b 1\r\n`
+              : `#!/bin/sh\nprintf '%s\\n' '${ancestorMarker}' >&2\nexit 1\n`,
+            { mode: 0o755 },
+          );
           const nodeBin = NodePath.join(sandbox, "node-bin");
           NodeFS.mkdirSync(nodeBin);
           NodeFS.copyFileSync(
@@ -87,9 +101,12 @@ describe("replay recorder arguments", () => {
           );
           const nodeEnvironment = {
             ...Object.fromEntries(
-              Object.entries(syntheticEnvironment).filter(([key]) => key.toUpperCase() !== "PATH"),
+              Object.entries(syntheticEnvironment).filter(
+                ([key]) => !/^(?:PATH|PATHEXT)$/iu.test(key),
+              ),
             ),
             PATH: nodeBin,
+            ...(windows ? { PATHEXT: ".COM;.EXE;.BAT;.CMD" } : {}),
           };
           const dryRun = (entry: string) =>
             NodeChildProcess.spawnSync(process.execPath, ["--run", entry, "--", "--dry-run"], {
@@ -114,8 +131,10 @@ describe("replay recorder arguments", () => {
             const result = dryRun(entry);
             expect(result.error).toBeUndefined();
             expect(result.signal).toBeNull();
-            expect(result.status).toBeGreaterThan(0);
-            expect(result.stderr).toMatch(/\bbun\b/iu);
+            expect(result.status).toBe(1);
+            expect(result.stderr.split(/\r?\n/u).map((line) => line.trim())).toContain(
+              ancestorMarker,
+            );
             expect(result.stdout.trim()).toBe("");
           }
 
@@ -128,6 +147,7 @@ describe("replay recorder arguments", () => {
             const result = dryRun(entry);
             expect(result.error).toBeUndefined();
             expect(result.status, result.stderr).toBe(0);
+            expect(result.stderr).not.toContain(ancestorMarker);
             expect(NodePath.normalize(result.stdout.trim())).toBe(NodePath.normalize(expected));
           }
 
@@ -184,7 +204,7 @@ describe("replay recorder arguments", () => {
             "T3_CLAUDE_REPLAY_PROMPTS contains a blank prompt at position 2.",
           );
         } finally {
-          NodeFS.rmSync(sandbox, { recursive: true, force: true });
+          NodeFS.rmSync(fixture, { recursive: true, force: true });
         }
       }),
   );
