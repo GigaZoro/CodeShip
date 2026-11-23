@@ -1944,6 +1944,8 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
         ) {
           const pending = pendingRequestsByNativeId.get(nativeRequestId);
           if (pending === undefined) return;
+          pendingRequests.delete(String(pending.requestId));
+          pendingRequestsByNativeId.delete(nativeRequestId);
           const now = yield* DateTime.now;
           const current = pending.state.runtimeRequests.get(String(pending.requestId));
           if (current !== undefined) {
@@ -1991,8 +1993,6 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               now,
             ),
           });
-          pendingRequests.delete(String(pending.requestId));
-          pendingRequestsByNativeId.delete(nativeRequestId);
           const hasOtherPending = Array.from(pendingRequests.values()).some(
             (candidate) => candidate.turn.isRoot,
           );
@@ -2100,18 +2100,27 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               yield* sdkCall(
                 "permission.reply",
                 { requestID: nativeRequestId, reply: "reject" },
-                (signal) =>
-                  client.permission.reply(
+                async (signal) => {
+                  if (settled()) return;
+                  const response = await client.permission.reply(
                     { requestID: nativeRequestId, reply: "reject" },
                     { signal },
-                  ),
+                  );
+                  rememberSettledRequest(nativeRequestId);
+                  return response;
+                },
               );
             } else {
-              yield* sdkCall("question.reject", { requestID: nativeRequestId }, (signal) =>
-                client.question.reject({ requestID: nativeRequestId }, { signal }),
-              );
+              yield* sdkCall("question.reject", { requestID: nativeRequestId }, async (signal) => {
+                if (settled()) return;
+                const response = await client.question.reject(
+                  { requestID: nativeRequestId },
+                  { signal },
+                );
+                rememberSettledRequest(nativeRequestId);
+                return response;
+              });
             }
-            rememberSettledRequest(nativeRequestId);
           }).pipe(
             Effect.catch((cause) =>
               Effect.logWarning("Could not decline an unowned OpenCode request", { cause }),

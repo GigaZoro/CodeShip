@@ -156,6 +156,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   turnSettings: {
     readonly options?: ReadonlyArray<ProviderOptionSelection>;
     readonly interactionMode?: ProviderAdapter.ProviderAdapterV2RuntimePolicy["interactionMode"];
+    readonly nativeEventLogger?: ProviderEventLoggers.EventNdjsonLogger;
   } = {},
 ) {
   const instanceId = ProviderInstanceId.make(`opencode-${suffix}`);
@@ -173,6 +174,9 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
     instanceId,
     settings: OPEN_CODE_TEST_SETTINGS,
     environment: {},
+    ...(turnSettings.nativeEventLogger
+      ? { nativeEventLogger: turnSettings.nativeEventLogger }
+      : {}),
   }).pipe(
     Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, {
       connectToOpenCodeServer: () => Effect.succeed({ url: "http://test.invalid", external: true }),
@@ -677,54 +681,118 @@ describe("OpenCodeAdapterV2", () => {
         const events = asyncEventStream();
         const prompts: string[] = [];
         const denied: string[] = [];
+        const replies: string[] = [];
+        const baseClock = yield* Clock.Clock;
+        const settling = yield* Deferred.make<void>();
+        const finishSettlement = yield* Deferred.make<void>();
+        const outgoing = yield* Deferred.make<void>();
+        const finishLogging = yield* Deferred.make<void>();
+        const rejectionFinished = yield* Deferred.make<void>();
+        let finalRejection = false;
+        let pauseSettlement = false;
+        let pauseRejection = false;
+        const clock: Clock.Clock = {
+          ...baseClock,
+          currentTimeMillis: Effect.suspend(() => {
+            if (!pauseSettlement) return baseClock.currentTimeMillis;
+            pauseSettlement = false;
+            return Deferred.succeed(settling, undefined).pipe(
+              Effect.andThen(Deferred.await(finishSettlement)),
+              Effect.andThen(baseClock.currentTimeMillis),
+            );
+          }),
+        };
+        let observeSettlement = false;
+        const logger: ProviderEventLoggers.EventNdjsonLogger = {
+          filePath: "/tmp/opencode-callback-events.ndjson",
+          close: () => Effect.void,
+          write: (entry) =>
+            Effect.gen(function* () {
+              const { method, direction } = (
+                entry as { event: { payload: { method: string; direction: string } } }
+              ).event.payload;
+              if (observeSettlement && direction === "incoming" && method === kind + ".replied") {
+                observeSettlement = false;
+                pauseSettlement = true;
+              }
+              if (
+                pauseRejection &&
+                direction === "outgoing" &&
+                method === (kind === "question" ? "question.reject" : "permission.reply")
+              ) {
+                pauseRejection = false;
+                finalRejection = true;
+                yield* Deferred.succeed(outgoing, undefined);
+                yield* Deferred.await(finishLogging);
+              }
+              if (
+                finalRejection &&
+                direction === "incoming" &&
+                method === (kind === "question" ? "question.reject" : "permission.reply")
+              ) {
+                yield* Deferred.succeed(rejectionFinished, undefined);
+              }
+            }),
+        };
         let foundChild = false;
-        const harness = yield* makeOpenCodeRuntimeHarness("callback-owner", "root", {
-          event: { subscribe: async () => ({ stream: events.stream }) },
-          session: {
-            create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
-            get: async ({ sessionID }: { sessionID: string }) => ({
-              data: {
-                id: sessionID,
-                time: { created: 1, updated: 1 },
-                ...(sessionID === "child" && foundChild ? { parentID: "root" } : {}),
-              },
-            }),
-            update: async () => ({ data: true }),
-            messages: async () => ({ data: [] }),
-            message: async ({
-              sessionID,
-              messageID,
-            }: {
-              sessionID: string;
-              messageID: string;
-            }) => ({
-              data: {
-                info: {
-                  role: "assistant",
-                  id: messageID,
-                  sessionID,
-                  parentID: messageID === "lookup-B" ? prompts[1] : prompts[0],
+        const harness = yield* makeOpenCodeRuntimeHarness(
+          "callback-owner",
+          "root",
+          {
+            event: { subscribe: async () => ({ stream: events.stream }) },
+            session: {
+              create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+              get: async ({ sessionID }: { sessionID: string }) => ({
+                data: {
+                  id: sessionID,
+                  time: { created: 1, updated: 1 },
+                  ...(sessionID === "child" && foundChild ? { parentID: "root" } : {}),
                 },
+              }),
+              update: async () => ({ data: true }),
+              messages: async () => ({ data: [] }),
+              message: async ({
+                sessionID,
+                messageID,
+              }: {
+                sessionID: string;
+                messageID: string;
+              }) => ({
+                data: {
+                  info: {
+                    role: "assistant",
+                    id: messageID,
+                    sessionID,
+                    parentID: messageID === "lookup-B" ? prompts[1] : prompts[0],
+                  },
+                },
+              }),
+              promptAsync: async ({ messageID }: { messageID: string }) => {
+                prompts.push(messageID);
+                return { data: true };
               },
-            }),
-            promptAsync: async ({ messageID }: { messageID: string }) => {
-              prompts.push(messageID);
-              return { data: true };
+            },
+            permission: {
+              reply: async ({ requestID, reply }: { requestID: string; reply: string }) => {
+                if (reply === "reject") denied.push(requestID);
+                else replies.push(requestID);
+                return { data: true };
+              },
+            },
+            question: {
+              reply: async ({ requestID }: { requestID: string }) => {
+                replies.push(requestID);
+                return { data: true };
+              },
+              reject: async ({ requestID }: { requestID: string }) => {
+                denied.push(requestID);
+                return { data: true };
+              },
             },
           },
-          permission: {
-            reply: async ({ requestID, reply }: { requestID: string; reply: string }) => {
-              if (reply === "reject") denied.push(requestID);
-              return { data: true };
-            },
-          },
-          question: {
-            reject: async ({ requestID }: { requestID: string }) => {
-              denied.push(requestID);
-              return { data: true };
-            },
-          },
-        });
+          {},
+          { nativeEventLogger: logger },
+        ).pipe(Effect.provideService(Clock.Clock, clock));
         const push = (event: unknown) => Effect.promise(() => events.push(event));
         const ask = (id: string, sessionID: string, assistant?: string) =>
           push({
@@ -806,6 +874,42 @@ describe("OpenCodeAdapterV2", () => {
           asked.every((row) => row.providerTurnId === afterSecond.providerTurns.at(-1)?.id),
         );
         assert.sameMembers(denied, ["late", "ambiguous", "delayed-child"]);
+
+        const settle = (requestID: string) =>
+          push({
+            type: kind + ".replied",
+            properties: { sessionID: "root", requestID, reply: "once", answers: [] },
+          });
+        const valid = asked.find((row) => row.nativeRequestRef?.nativeId === "valid-B")!;
+        observeSettlement = true;
+        const resolving = yield* settle("valid-B").pipe(Effect.forkChild);
+        yield* Deferred.await(settling);
+        const raced = yield* harness.runtime
+          .respondToRuntimeRequest({
+            requestId: valid.id,
+            ...(kind === "question"
+              ? { answers: { "question-0-choice": ["Yes"] } }
+              : { decision: "accept" as const }),
+          })
+          .pipe(Effect.exit);
+        yield* Deferred.succeed(finishSettlement, undefined);
+        yield* Fiber.join(resolving);
+        pauseRejection = true;
+        yield* ask("settled-elsewhere", "root");
+        const retryDeadline = yield* TestClock.adjust("8 seconds").pipe(Effect.forkChild);
+        yield* Deferred.await(outgoing);
+        yield* settle("settled-elsewhere");
+        yield* Deferred.succeed(finishLogging, undefined);
+        yield* Fiber.join(retryDeadline);
+        yield* Deferred.await(rejectionFinished);
+        assert.deepEqual(
+          {
+            refused: Exit.isFailure(raced),
+            replies,
+            repeatedRejection: denied.includes("settled-elsewhere"),
+          },
+          { refused: true, replies: [], repeatedRejection: false },
+        );
 
         // A resumed native session can contain requests from before this runtime registered it.
         const resumed = yield* harness.runtime.resumeThread({
