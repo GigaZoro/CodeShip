@@ -1,3 +1,7 @@
+## 2026-11-23 — Accounting for provider background work
+
+- Background completions in ACP, Claude, Codex and Muse carry their originating run when it can be identified. Duplicate ACP completion notices are counted once, and replacing a Muse host clears its pending reports.
+
 ## 2026-11-23 — A scheduled chat starts with what its run condition found
 
 - When a task's **Check before running** command finds work, the chat it starts now gets the check's reason, and the `unit` its JSON answer names (a work item, a pull request or a settlement id), at the end of its first message, so the agent starts on that work instead of looking for it again. **Run history** shows the same reason and unit.

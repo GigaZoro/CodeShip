@@ -5240,6 +5240,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     yield* continuationRequests.offer({
                       threadId: context.projectionThreadId,
                       providerThreadId: context.providerThread.id,
+                      ...(context.projectionRunId === null
+                        ? {}
+                        : { demandSourceRunId: context.projectionRunId }),
                       driver: CODEX_PROVIDER,
                       // Codex starts a new turn from this text, so nothing is buffered.
                       delivery: "message_text",
@@ -6488,6 +6491,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   yield* continuationRequests.offer({
                     threadId: parent.projectionThreadId,
                     providerThreadId: parent.providerThread.id,
+                    ...(parent.projectionRunId === null
+                      ? {}
+                      : { demandSourceRunId: parent.projectionRunId }),
                     driver: CODEX_PROVIDER,
                     detail: codexNativeSubagentDetail(task),
                     // The detail is the whole wake; Codex buffers no output for it.

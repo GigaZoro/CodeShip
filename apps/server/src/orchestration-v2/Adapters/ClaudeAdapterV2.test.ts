@@ -12131,50 +12131,82 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect("buffers wake output and requests a single continuation run", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const harness = yield* makeWakeHarness;
-        const now = yield* DateTime.now;
+  it.effect.each([false, true])(
+    "buffers wake output and requests a single continuation run (initially foreground: %s)",
+    (foreground) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const now = yield* DateTime.now;
 
-        yield* harness.runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now,
-            attemptId: RunAttemptId.make("attempt-claude-wake-1"),
-            text: "Run the build in the background.",
-            attachments: [],
-          }),
-        );
-        yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
-        yield* Queue.offer(harness.sdkMessages, turnOneResult);
-        yield* harness.awaitTerminal(1);
-        assert.equal(harness.terminalEvents()[0]?.status, "completed");
-        assert.isTrue(yield* harness.hasPendingBackgroundWork);
-        assert.lengthOf(harness.continuationRequests, 0);
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-wake-1"),
+              text: "Run the build in the background.",
+              attachments: [],
+            }),
+          );
+          yield* Queue.offer(
+            harness.sdkMessages,
+            foreground
+              ? claudeSdkFrame({ ...wakeTaskStarted, is_backgrounded: false })
+              : wakeTaskStarted,
+          );
+          if (foreground) {
+            yield* Queue.offer(
+              harness.sdkMessages,
+              claudeSdkFrame({
+                type: "system",
+                subtype: "background_tasks_changed",
+                tasks: [
+                  {
+                    task_id: WAKE_TASK_ID,
+                    task_type: "local_bash",
+                    description: WAKE_TASK_DESCRIPTION,
+                  },
+                ],
+                uuid: "00000000-0000-4000-8000-000000000210",
+                session_id: WAKE_NATIVE_SESSION,
+              }),
+            );
+          }
+          yield* Queue.offer(harness.sdkMessages, turnOneResult);
+          yield* harness.awaitTerminal(1);
+          assert.equal(harness.terminalEvents()[0]?.status, "completed");
+          assert.isTrue(yield* harness.hasPendingBackgroundWork);
+          assert.lengthOf(harness.continuationRequests, 0);
 
-        yield* harness.offerAndWait(wakeNotification);
-        assert.lengthOf(harness.continuationRequests, 0);
-        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+          yield* harness.offerAndWait(wakeNotification);
+          assert.lengthOf(harness.continuationRequests, 0);
+          assert.isFalse(yield* harness.hasPendingBackgroundWork);
 
-        yield* Queue.offer(harness.sdkMessages, wakeAssistant);
-        yield* harness.awaitContinuation(1);
-        assert.equal(harness.continuationRequests[0]?.threadId, harness.threadId);
-        assert.equal(harness.continuationRequests[0]?.providerThreadId, harness.providerThread.id);
-        assert.equal(harness.continuationRequests[0]?.driver, ClaudeAdapterV2.CLAUDE_PROVIDER);
-        assert.equal(harness.continuationRequests[0]?.detail, WAKE_SUMMARY);
+          yield* Queue.offer(harness.sdkMessages, wakeAssistant);
+          yield* harness.awaitContinuation(1);
+          assert.equal(harness.continuationRequests[0]?.threadId, harness.threadId);
+          assert.equal(
+            harness.continuationRequests[0]?.providerThreadId,
+            harness.providerThread.id,
+          );
+          assert.equal(harness.continuationRequests[0]?.driver, ClaudeAdapterV2.CLAUDE_PROVIDER);
+          assert.equal(
+            harness.continuationRequests[0]?.demandSourceRunId,
+            RunId.make("run-attempt-claude-wake-1"),
+          );
+          assert.equal(harness.continuationRequests[0]?.detail, WAKE_SUMMARY);
 
-        yield* harness.offerAndWait(wakeResult);
-        assert.lengthOf(harness.continuationRequests, 1);
-        assert.lengthOf(harness.terminalEvents(), 1);
-        assert.isTrue(yield* harness.hasPendingBackgroundWork);
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          yield* harness.offerAndWait(wakeResult);
+          assert.lengthOf(harness.continuationRequests, 1);
+          assert.lengthOf(harness.terminalEvents(), 1);
+          assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
         ),
       ),
-    ),
   );
 
   it.effect.each([
@@ -13147,16 +13179,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               event.type === "turn_item.updated" &&
               event.turnItem.nativeItemRef?.nativeId === nativeId,
           );
-        yield* harness.runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now,
-            attemptId: RunAttemptId.make("attempt-claude-live-idle-1"),
-            text: "Audit in the background.",
-            attachments: [],
-          }),
-        );
+        const originalTurn = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now,
+          attemptId: RunAttemptId.make("attempt-claude-live-idle-1"),
+          text: "Audit in the background.",
+          attachments: [],
+        });
+        yield* harness.runtime.startTurn(originalTurn);
         for (const frame of [
           makeSubagentTaskStartedFrame({
             taskId: TASK_ID,
@@ -13239,6 +13270,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           yield* Queue.offer(harness.sdkMessages, frame);
         }
         yield* harness.awaitContinuation(1);
+        assert.equal(harness.continuationRequests[0]?.demandSourceRunId, originalTurn.runId);
         yield* Queue.offer(
           harness.sdkMessages,
           makeResultFrame({
