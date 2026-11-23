@@ -13,6 +13,7 @@ import {
   snoozeHoldsStop,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
+import { originalDemandId } from "./demandId.ts";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import {
@@ -968,7 +969,10 @@ const withoutMemoryAdmission = (run: OrchestrationV2Run): OrchestrationV2Run => 
 
 /** A message a person typed in a client, not one an agent, the server or a scheduled task sent. */
 const typedByPersonInClient = (
-  command: Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>,
+  command: Pick<
+    OrchestrationV2ConversationMessage,
+    "createdBy" | "creationSource" | "scheduledTaskId"
+  >,
 ) =>
   command.createdBy === "user" &&
   (command.creationSource === "web" || command.creationSource === "mobile") &&
@@ -6038,12 +6042,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.automaticContinuationOfRunId ??
       command.usageLimitContinuationOfRunId ??
       command.restartContinuationOfRunId;
-    const sourceRunId = automaticSourceRunId ?? command.manualContinuationOfRunId;
-    const demandId =
-      command.demandId ??
-      (sourceRunId === undefined
-        ? undefined
-        : projection.runs.find((run) => run.id === sourceRunId)?.demandId);
     if (automaticSourceRunId !== undefined) {
       const skipped = yield* skipStaleScheduledRecovery(
         command,
@@ -6314,6 +6312,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
     }
+    const demandSourceRunId =
+      command.manualContinuationOfRunId ??
+      automaticSourceRunId ??
+      command.delegatedCompletion?.parentRunId ??
+      command.demandSourceRunId;
+    // Undefined lets a person's steering message join the target demand; a new turn starts its own.
+    let incomingDemand: string | null | undefined;
+    if (command.guestMessageId !== undefined) {
+      incomingDemand = originalDemandId("guest-message", command.threadId, command.guestMessageId);
+    } else if (demandSourceRunId !== undefined) {
+      incomingDemand =
+        projection.runs.find((run) => run.id === demandSourceRunId)?.demandId ?? null;
+    } else if (command.demandId !== undefined) {
+      incomingDemand = command.demandId;
+    } else if (!typedByPersonInClient(command)) {
+      incomingDemand = null;
+    }
     let dispatchMode = resolveMessageDispatchIntent(
       projection,
       command.dispatchMode,
@@ -6322,6 +6337,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (dispatchMode.type === "steer_active" || dispatchMode.type === "restart_active") {
       const targetRunId = dispatchMode.targetRunId;
       const target = projection.runs.find((run) => run.id === targetRunId);
+      if (target !== undefined) {
+        const targetDemand = target.demandId ?? null;
+        if (incomingDemand === undefined) incomingDemand = targetDemand;
+        else if (incomingDemand !== targetDemand) dispatchMode = { type: "queue_after_active" };
+      }
       const turn = latestProviderTurnForAttempt(
         projection.providerTurns.filter((candidate) => candidate.nodeId === target?.rootNodeId),
         target?.activeAttemptId,
@@ -6438,6 +6458,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "Delegated completion delivery is no longer dispatchable.",
         });
       }
+      if (
+        delivery.taskIds.some(
+          (id) => projection.subagents.find((task) => task.id === id)?.demandId === null,
+        )
+      ) {
+        incomingDemand = null;
+      }
       delegatedCompletion = {
         parentRunId: requestedCompletion.parentRunId,
         generation: delivery.generation,
@@ -6464,6 +6491,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       if (
         active !== undefined &&
+        (active.demandId ?? null) === incomingDemand &&
         activeTurn !== undefined &&
         providerThread?.providerSessionId != null &&
         (activeMessage === undefined || !isNativeMaintenanceCommand(activeMessage))
@@ -6621,6 +6649,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       steerRunId !== null && (yield* stopReachedRun(command, command.threadId, steerRunId))
         ? projection.runs.find((run) => run.id === steerRunId)
         : undefined;
+    const demandId =
+      incomingDemand === undefined
+        ? originalDemandId("message", command.threadId, command.messageId)
+        : incomingDemand;
     const queueBehindRun = activeRun ?? worktreeMissingRun ?? stoppedSteerRun;
     const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
     const startsOrQueuesRun =
@@ -6768,7 +6800,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(crossProviderFailoverFrom === undefined ? {} : { crossProviderFailoverFrom }),
         providerThreadId: queuedProviderThread.id,
         userMessageId: command.messageId,
-        ...(demandId == null ? {} : { demandId }),
+        demandId,
         rootNodeId,
         activeAttemptId: attemptId,
         status: "queued",
@@ -7129,7 +7161,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(crossProviderFailoverFrom === undefined ? {} : { crossProviderFailoverFrom }),
         providerThreadId,
         userMessageId: command.messageId,
-        ...(demandId == null ? {} : { demandId }),
+        demandId,
         rootNodeId,
         activeAttemptId: attemptId,
         status: dispatchMode.type === "defer_start" ? "preparing" : "starting",
@@ -7880,7 +7912,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       modelSelection,
       providerThreadId: providerThread.id,
       userMessageId: command.messageId,
-      ...(demandId == null ? {} : { demandId }),
+      demandId,
       rootNodeId,
       activeAttemptId: attemptId,
       status: "starting",
@@ -8467,7 +8499,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.projectId === undefined ? {} : { projectId: command.projectId }),
         ...(command.workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),
       };
+      // A local MCP credential can outlive a run. Without a run-bound invocation, different owners are ambiguous.
+      const parentDemand = parentRun.demandId ?? null;
+      const childDemand =
+        command.creationSource === "mcp" &&
+        parentProjection.runs.some(
+          (run) => run.status !== "queued" && (run.demandId ?? null) !== parentDemand,
+        )
+          ? null
+          : parentDemand;
       const task: OrchestrationV2Subagent = {
+        demandId: childDemand,
         id: taskNodeId,
         threadId: command.parentThreadId,
         runId: parentRun.id,
@@ -8579,6 +8621,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandId: command.commandId,
         threadId: childThreadId,
         senderThreadId: command.parentThreadId,
+        demandId: childDemand,
         messageId: childMessageId,
         text: command.task,
         attachments: [],
@@ -10461,8 +10504,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             dispatchMode = { type: "steer_active", targetRunId: activeRun.id };
           }
         }
+        const sourceRunId = approvalTurnItem?.runId ?? requestNode?.runId;
         const answer = {
           type: "message.dispatch" as const,
+          ...(sourceRunId == null ? { demandId: null } : { demandSourceRunId: sourceRunId }),
           commandId: command.commandId,
           threadId: command.threadId,
           messageId: MessageId.make(`async-answer:${command.requestId}`),
@@ -10824,14 +10869,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         now,
       });
     }
-    if (
-      (queuedRun.demandId != null || queuedMessage.scheduledTaskId !== undefined) &&
-      (queuedRun.demandId ?? null) !== (target?.demandId ?? null)
-    ) {
+    const sameDemand = (target?.demandId ?? null) === (queuedRun.demandId ?? null);
+    // An accepted guest message also arrives from the owner's client. It can only join a known matching demand.
+    const canJoinTarget =
+      queuedMessage.context?.guest !== undefined
+        ? sameDemand && queuedRun.demandId != null
+        : sameDemand ||
+          (typedByPersonInClient(queuedMessage) &&
+            (queuedRun.demandId === undefined ||
+              queuedRun.demandId ===
+                originalDemandId("message", command.threadId, queuedMessage.id)));
+    if (target !== undefined && !canJoinTarget) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
-        cause: "Keep this scheduled occurrence in its own queued run.",
+        cause: "This message has a different accounting owner and must run as a separate turn.",
       });
     }
     yield* emitEvent({

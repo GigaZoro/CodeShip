@@ -85,7 +85,7 @@ import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import { hashTelemetryId } from "@t3tools/shared/telemetryId";
+import { originalDemandId } from "../orchestration-v2/demandId.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -2516,7 +2516,7 @@ export const layer = Layer.effect(
                 webhook?.deliveryId ?? scheduledFor ?? fireKey,
               ]
             : ["scheduled-task-claim", active.id, fire.claimSlot];
-        const demandId = `demand:${hashTelemetryId(encodeStringArrayJson(occurrence))}`;
+        const demandId = originalDemandId(...occurrence);
         // A webhook prompt was rendered from the row when the request arrived. A prompt file is
         // read for each run, and a failed read fails the run: it never runs an earlier read's text.
         const read: Result.Result<

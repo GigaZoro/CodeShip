@@ -1,3 +1,7 @@
+## 2026-11-23 — Message and review accounting
+
+- Each new turn started by an owner or an accepted guest message gets its own accounting ID. Steering, account failover and final review retain the original run’s ID. Guest messages with a different owner stay in the queue.
+
 ## 2026-11-23 — Scheduled runs keep their occurrence ID
 
 - Scheduled runs carry an accounting ID through account failover. Machines taking over the same shared occurrence report one ID. Tasks that fire independently on different machines have distinct IDs.

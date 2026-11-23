@@ -790,7 +790,7 @@ export const ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE = "prompt_not_sent";
 export const AUTHENTICATION_FAILED_FAILURE_CODE = "authentication_failed";
 
 export const OrchestrationV2Run = Schema.Struct({
-  /** The original scheduler occurrence, when known. Historical runs can omit it. */
+  /** The original demand for this work. Historical runs can omit it. */
   demandId: Schema.optional(
     Schema.NullOr(Schema.String.check(Schema.isPattern(/^demand:[0-9a-f]{64}$/))),
   ),
@@ -1082,6 +1082,8 @@ export function isAppOwnedTaskWork(task: {
 }
 
 export const OrchestrationV2Subagent = Schema.Struct({
+  /** Accounting owner captured when a local delegation was accepted. */
+  demandId: OrchestrationV2Run.fields.demandId,
   id: NodeId,
   threadId: ThreadId,
   runId: Schema.NullOr(RunId),
@@ -3994,7 +3996,8 @@ export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalComma
 
 type LaunchCommand =
   | (Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> & {
-      readonly demandId?: string;
+      readonly demandId?: string | null;
+      readonly demandSourceRunId?: RunId;
     })
   | Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>;
 export type OrchestrationV2ServerCommand =

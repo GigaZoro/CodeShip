@@ -399,7 +399,8 @@ it.effect.each(
       if (target === "busy") {
         const earlier = projection.runs.find((entry) => entry.id !== run.id);
         assert.isDefined(earlier);
-        assert.isUndefined(earlier.demandId);
+        assert.isString(earlier.demandId);
+        assert.notEqual(earlier.demandId, run.demandId);
         assert.equal(run.status, "queued");
         const refusal = yield* threads
           .dispatch({
@@ -414,7 +415,7 @@ it.effect.each(
         assert.propertyVal(
           refusal,
           "cause",
-          "Keep this scheduled occurrence in its own queued run.",
+          "This message has a different accounting owner and must run as a separate turn.",
         );
         assert.equal((yield* threads.getThreadProjection(thread.id)).runs.at(-1)?.status, "queued");
         yield* threads.dispatch({
@@ -1864,8 +1865,11 @@ it.effect.each([false, true])("replays a server-allocated launch (scheduled: %s)
       assert.isTrue(settled.resumed);
       assert.equal(settled.projection.messages[0]?.id, first.projection.messages[0]?.id);
       assert.equal(settled.projection.runs[0]?.id, first.projection.runs[0]?.id);
-      assert.equal(retry.projection.runs[0]?.demandId, demandId);
-      assert.equal(settled.projection.runs[0]?.demandId, demandId);
+      const acceptedDemand = first.projection.runs[0]?.demandId;
+      assert.isString(acceptedDemand);
+      if (scheduled) assert.equal(acceptedDemand, demandId);
+      assert.equal(retry.projection.runs[0]?.demandId, acceptedDemand);
+      assert.equal(settled.projection.runs[0]?.demandId, acceptedDemand);
       assert.equal(harness.runSetup.mock.calls.length, 1);
     }).pipe(Effect.provide(harness.layer));
   }),

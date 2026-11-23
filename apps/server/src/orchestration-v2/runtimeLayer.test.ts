@@ -10043,6 +10043,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
 
   it.effect.each([
     "ordinary",
+    "legacy-fresh",
     "fresh",
     "superseded",
     "bound-superseded",
@@ -10128,9 +10129,11 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         createdBy: "user",
         creationSource: "web",
       });
-      const [source] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+      const [accepted] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
         OrchestrationV2Run,
       ];
+      const { demandId: _owner, ...historical } = accepted;
+      const source: OrchestrationV2Run = scenario === "legacy-fresh" ? historical : accepted;
       // A newer run started while this one worked on, and the occurrence's window passed.
       if (scenario === "overlapped") {
         yield* sql`UPDATE scheduled_tasks SET last_run_at = ${DateTime.formatIso(DateTime.add(now, { minutes: 2 }))} WHERE task_id = ${taskId}`;
@@ -10342,6 +10345,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       }
       const skipped = ![
         "ordinary",
+        "legacy-fresh",
         "fresh",
         "fixed-fresh",
         "manual-expired",
@@ -10370,11 +10374,16 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         );
         return;
       }
+      if (scenario === "legacy-fresh") assert.isUndefined(source.demandId);
+      else {
+        assert.isString(source.demandId);
+        if (scheduled) assert.equal(source.demandId, demandId);
+      }
       assert.deepEqual(
         after.runs.map((run) => [run.providerInstanceId, run.status, run.demandId]),
         [
-          [modelSelection.instanceId, "failed", demandId],
-          [alternateInstanceId, "starting", demandId],
+          [modelSelection.instanceId, "failed", source.demandId],
+          [alternateInstanceId, "starting", source.demandId ?? null],
         ],
       );
       assert.isUndefined(
