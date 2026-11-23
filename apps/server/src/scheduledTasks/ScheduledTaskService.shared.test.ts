@@ -8,7 +8,7 @@ import {
   ProviderInstanceId,
   SCHEDULED_TASK_CLAIM_PROTOCOL,
   ScheduledTaskApplySharedInput,
-  type ScheduledTaskId,
+  ScheduledTaskId,
   type ScheduledTaskRunCheck,
   ScheduledTaskUpsertInput,
   ThreadId,
@@ -18,12 +18,15 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
+
+import { vi } from "vite-plus/test";
 
 import { UpdateDrain } from "../cloud/updateDrain.ts";
 
@@ -146,6 +149,7 @@ const withService = <A, E>(
   projects: ReadonlyArray<TestSharedProject> = [repoProject, plainProject],
   extras: {
     readonly environmentId?: EnvironmentId;
+    readonly startAt?: number;
     readonly peerCheck?: Layer.Layer<SharedTaskPeerCheck.SharedTaskPeerCheck>;
     readonly launch?: ThreadLaunchService.ThreadLaunchService["Service"]["launch"];
     readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
@@ -160,7 +164,7 @@ const withService = <A, E>(
   } = {},
 ) =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(NOW);
+    yield* TestClock.setTime(extras.startAt ?? NOW);
     const sql = yield* SqlClient.SqlClient;
     const layer = ScheduledTaskService.layer.pipe(
       // Registering also runs due work once, whenever this fiber next yields; parked, due work
@@ -214,8 +218,8 @@ const withService = <A, E>(
       );
     return yield* Effect.gen(function* () {
       return yield* body(yield* ScheduledTaskService.ScheduledTaskService, sql, restart);
-    }).pipe(Effect.provide(layer));
-  }).pipe(Effect.provide(SqlitePersistence.layerMemory));
+    }).pipe(Effect.provide(Layer.fresh(layer)));
+  }).pipe(Effect.provide(Layer.fresh(SqlitePersistence.layerMemory)));
 
 const layerSleepingScheduler = (asleep: Ref.Ref<boolean>) =>
   Layer.effect(
@@ -1001,6 +1005,12 @@ const runScenario = <A, E>(
   checks?: Ref.Ref<number>,
   checkAnswer: ScheduledTaskRunCheck = { outcome: "run", failure: null, exitCode: 0, detail: null },
   threadManagement?: Partial<ThreadManagementService.ThreadManagementService["Service"]>,
+  environment: {
+    readonly environmentId?: EnvironmentId;
+    readonly claim?: SharedTaskPeerCheck.SharedTaskPeerCheck["Service"]["claim"];
+    readonly startAt?: number;
+    readonly currentVotes?: boolean;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const launches = yield* Queue.unbounded<ThreadLaunchService.ThreadLaunchInput>();
@@ -1050,12 +1060,29 @@ const runScenario = <A, E>(
                   (held !== environmentId || failedThere.has(environmentId));
                 const holder = held === undefined || takesOver ? input.holder : held;
                 next.set(environmentId, holder);
-                answer.answered.push({ environmentId, holder: holder as never });
+                answer.answered.push({
+                  environmentId,
+                  holder: holder as never,
+                  ...(environment.currentVotes &&
+                  held === undefined &&
+                  input.replaces === null &&
+                  input.accountingProposalKey !== undefined
+                    ? {
+                        accountingEvidence: {
+                          kind: "fresh" as const,
+                          candidate: input.holder,
+                          predecessor: null,
+                          proposal: input.accountingProposalKey,
+                        },
+                      }
+                    : {}),
+                });
               }
               return [answer, next];
             }),
           ),
         ),
+      ...(environment.claim === undefined ? {} : { claim: environment.claim }),
     });
     return yield* withService(
       (service, sql) =>
@@ -1113,6 +1140,7 @@ const runScenario = <A, E>(
                 run: () => Ref.update(checks, (n) => n + 1).pipe(Effect.as(checkAnswer)),
               }),
             }),
+        ...environment,
         ...(threadManagement === undefined ? {} : { threadManagement }),
       },
     );
@@ -1244,14 +1272,16 @@ it.effect(
         expect(last?.trigger).toBe("manual");
         expect(last?.startedAt).toBe(scheduled?.startedAt);
         expect(
-          yield* scenario.service.claimOccurrence({
-            taskId: id,
-            occurrence: iso(DUE),
-            holder: EnvironmentId.make(OTHER),
-            replaces: HERE_ENVIRONMENT_ID,
-            by: EnvironmentId.make(OTHER),
-            lastRunFailed: true,
-          }),
+          yield* scenario.service
+            .claimOccurrence({
+              taskId: id,
+              occurrence: iso(DUE),
+              holder: EnvironmentId.make(OTHER),
+              replaces: HERE_ENVIRONMENT_ID,
+              by: EnvironmentId.make(OTHER),
+              lastRunFailed: true,
+            })
+            .pipe(Effect.map(({ holder }) => holder)),
         ).toBe(OTHER);
       }),
     ),
@@ -1282,13 +1312,15 @@ it.effect(
             slot,
           ]);
           expect(
-            yield* scenario.service.claimOccurrence({
-              taskId: "scheduled-task:shared" as ScheduledTaskId,
-              occurrence: slot,
-              holder: OTHER as never,
-              replaces: null,
-              by: OTHER as never,
-            }),
+            yield* scenario.service
+              .claimOccurrence({
+                taskId: "scheduled-task:shared" as ScheduledTaskId,
+                occurrence: slot,
+                holder: OTHER as never,
+                replaces: null,
+                by: OTHER as never,
+              })
+              .pipe(Effect.map(({ holder }) => holder)),
           ).toBe(HERE_ENVIRONMENT_ID);
         }),
       { type: "fixed_time", timeOfDay: `${two(dueLocal.hour)}:${two(dueLocal.minute)}` },
@@ -1890,6 +1922,455 @@ it.effect.each([
     ),
 );
 
+it.effect.each(["02:30", "03:30"])(
+  "a spring-gap civil slot %s with an ambiguous observed time stays unattributed",
+  (timeOfDay) =>
+    Effect.gen(function* () {
+      vi.stubEnv("TZ", "Europe/Berlin");
+      yield* runScenario(
+        [HERE_ENVIRONMENT_ID, OTHER],
+        NO_RUN_THERE,
+        (scenario) =>
+          Effect.gen(function* () {
+            const due = (yield* nextRunAtOf(scenario.sql))!;
+            expect(due).toBe("2026-03-29T01:30:00.000Z");
+            yield* scenario.tick(Date.parse(due) + 1000);
+            expect((yield* Queue.take(scenario.launches)).initialMessage?.demandId).toBeNull();
+          }),
+        { type: "fixed_time", timeOfDay },
+        undefined,
+        undefined,
+        undefined,
+        { currentVotes: true, startAt: Date.parse("2026-03-28T18:00:00Z") },
+      );
+    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs()))),
+);
+it.effect.each([
+  {
+    zone: "Europe/Berlin",
+    day: "2026-03-28T18:00Z",
+    time: "09:00",
+    due: "2026-03-29T07:00:00.000Z",
+    known: true,
+  },
+  {
+    zone: "Europe/Berlin",
+    day: "2026-10-24T16:00Z",
+    time: "02:30",
+    due: "2026-10-25T00:30:00.000Z",
+    known: false,
+  },
+  {
+    zone: "Europe/Berlin",
+    day: "2026-10-24T16:00Z",
+    time: "09:00",
+    due: "2026-10-25T08:00:00.000Z",
+    known: true,
+  },
+  {
+    zone: "Australia/Lord_Howe",
+    day: "2026-10-03T06:00Z",
+    time: "02:40",
+    due: "2026-10-03T15:40:00.000Z",
+    known: false,
+  },
+  {
+    zone: "Australia/Lord_Howe",
+    day: "2026-10-03T06:00Z",
+    time: "03:10",
+    due: "2026-10-03T16:10:00.000Z",
+    known: true,
+  },
+])(
+  "a transition-day occurrence in $zone at $time has a verified owner only for a unique slot ($day)",
+  ({ zone, day, time, due, known }) =>
+    Effect.gen(function* () {
+      vi.stubEnv("TZ", zone);
+      yield* runScenario(
+        [HERE_ENVIRONMENT_ID, OTHER],
+        NO_RUN_THERE,
+        (scenario) =>
+          Effect.gen(function* () {
+            expect(yield* nextRunAtOf(scenario.sql)).toBe(due);
+            yield* scenario.tick(Date.parse(due) + 1000);
+            const demand = (yield* Queue.take(scenario.launches)).initialMessage?.demandId;
+            if (known) expect(demand).toMatch(/^demand:/);
+            else expect(demand).toBeNull();
+          }),
+        { type: "fixed_time", timeOfDay: time },
+        undefined,
+        undefined,
+        undefined,
+        { currentVotes: true, startAt: Date.parse(day) },
+      );
+    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs()))),
+);
+
+it.effect.each(["once", "interval"] as const)(
+  "an ISO %s admission preserves unknown ownership from an existing civil claim at its instant",
+  (type) =>
+    runScenario(
+      [HERE_ENVIRONMENT_ID, OTHER],
+      NO_RUN_THERE,
+      (scenario) =>
+        Effect.gen(function* () {
+          const due = (yield* nextRunAtOf(scenario.sql))!;
+          const slot = localSlot(
+            DateTime.toParts(
+              DateTime.makeZonedUnsafe(Date.parse(due), { timeZone: DateTime.zoneMakeLocal() }),
+            ),
+          );
+          const prior = yield* scenario.service.claimOccurrence({
+            taskId: ScheduledTaskId.make("scheduled-task:shared"),
+            occurrence: slot,
+            holder: HERE_ENVIRONMENT_ID,
+            replaces: null,
+            by: HERE_ENVIRONMENT_ID,
+          });
+          expect(prior.holder).toBe(HERE_ENVIRONMENT_ID);
+          yield* scenario.tick(Date.parse(due) + 1000);
+          const launch = yield* Queue.take(scenario.launches);
+          expect(launch.initialMessage?.demandId).toBeNull();
+        }),
+      type === "once" ? { type, runAt: iso(DUE) } : { type, everyMs: HOUR_MS },
+      undefined,
+      undefined,
+      undefined,
+      { currentVotes: true },
+    ),
+);
+
+it.effect("a new shared revision from a same-tick recreation owns a separate claim", () =>
+  runScenario([HERE_ENVIRONMENT_ID], NO_RUN_THERE, (machine) =>
+    Effect.gen(function* () {
+      const first = (yield* taskOf(machine.service))!;
+      const due = first.nextRunAt!;
+      yield* machine.tick(Date.parse(due) + 1000);
+      const previous = Option.getOrUndefined(yield* Queue.poll(machine.launches))?.initialMessage
+        ?.demandId;
+      expect(previous).toMatch(/^demand:/);
+      yield* TestClock.setTime(NOW);
+      yield* machine.service.delete({ id: first.id });
+      const { task: recreated } = yield* machine.service.upsert(
+        upsertInput({ shared: oneMachineShared([HERE_ENVIRONMENT_ID]), schedule: first.schedule }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
+      expect(recreated.nextRunAt).toBe(due);
+      expect(recreated.createdAt).toBe(first.createdAt);
+      expect(recreated.shared?.revision).not.toEqual(first.shared?.revision);
+      yield* machine.tick(Date.parse(due) + 15000);
+      const current = Option.getOrUndefined(yield* Queue.poll(machine.launches))?.initialMessage
+        ?.demandId;
+      expect(current).toMatch(/^demand:/);
+      expect(current).not.toBe(previous);
+    }),
+  ),
+);
+
+it.effect.each(["matching", "changed shared revision"] as const)(
+  "a civil transfer across zones checks the %s proposal against each accepted ballot",
+  (revision) =>
+    Effect.gen(function* () {
+      const original = EnvironmentId.make(OTHER);
+      const successor = HERE_ENVIRONMENT_ID;
+      const members = [original, successor];
+      const schedule = { type: "fixed_time", timeOfDay: "09:00" };
+      const taskId = ScheduledTaskId.make("scheduled-task:shared");
+      const occurrence = "2026-09-10T09:00";
+      let proposal: string | undefined;
+      vi.stubEnv("TZ", "Europe/Kyiv");
+      const first = yield* runScenario(
+        members,
+        NO_RUN_THERE,
+        (machine) =>
+          Effect.gen(function* () {
+            expect(yield* nextRunAtOf(machine.sql)).toBe("2026-09-10T06:00:00.000Z");
+            yield* machine.tick(Date.parse("2026-09-10T06:00:01.000Z"));
+            const demand = Option.getOrUndefined(yield* Queue.poll(machine.launches))
+              ?.initialMessage?.demandId;
+            expect(demand).toMatch(/^demand:/);
+            const receipt = yield* machine.service.claimOccurrence({
+              taskId,
+              occurrence,
+              holder: successor,
+              replaces: original,
+              by: successor,
+              lastRunFailed: true,
+              accountingProposalKey: proposal!,
+            });
+            expect(receipt.accountingEvidence?.kind).toBe("holder");
+            return { demand, evidence: receipt.accountingEvidence! };
+          }),
+        schedule,
+        undefined,
+        undefined,
+        undefined,
+        {
+          environmentId: original,
+          claim: (input) => {
+            proposal = input.accountingProposalKey;
+            return Effect.succeed({
+              answered: [
+                {
+                  environmentId: successor,
+                  holder: original,
+                  accountingEvidence: {
+                    kind: "fresh",
+                    predecessor: null,
+                    candidate: original,
+                    proposal: proposal!,
+                  },
+                },
+              ],
+              unchecked: [],
+            });
+          },
+        },
+      );
+      vi.stubEnv("TZ", "UTC");
+      yield* runScenario(
+        members,
+        [WORKING_THERE, NO_RUN_THERE],
+        (machine) =>
+          Effect.gen(function* () {
+            if (revision === "matching")
+              yield* machine.sql`UPDATE scheduled_task_shared SET revision_environment_id=${original}`;
+            expect(yield* nextRunAtOf(machine.sql)).toBe("2026-09-10T09:00:00.000Z");
+            const accepted = yield* machine.service.claimOccurrence({
+              taskId,
+              occurrence,
+              holder: original,
+              replaces: null,
+              by: original,
+              accountingProposalKey: proposal!,
+            });
+            expect(accepted.accountingEvidence?.kind).toBe("fresh");
+            for (let check = 0; check < 3; check++) {
+              yield* machine.tick(Date.parse((yield* nextRunAtOf(machine.sql))!) + 1000);
+            }
+            const launch = Option.getOrUndefined(yield* Queue.poll(machine.launches));
+            expect(launch).toBeDefined();
+            expect(launch?.initialMessage?.demandId).toBe(
+              revision === "matching" ? first.demand : null,
+            );
+          }),
+        schedule,
+        undefined,
+        undefined,
+        undefined,
+        {
+          environmentId: successor,
+          claim: (input) =>
+            Effect.succeed({
+              answered: input.peers.map((environmentId) => ({
+                environmentId,
+                holder: successor,
+                accountingEvidence: first.evidence,
+              })),
+              unchecked: [],
+            }),
+        },
+      );
+    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs()))),
+);
+
+it.effect.each([
+  "all ballots match",
+  "former holder voted from another predecessor",
+  "former holder voted for another proposal",
+  "successor voted for another proposal",
+  "fresh evidence from former holder",
+  "previous holder has no evidence",
+] as const)("successive machine transfers admit the same occurrence when %s", (scenarioName) =>
+  Effect.gen(function* () {
+    const firstId = EnvironmentId.make(OTHER);
+    const middleId = EnvironmentId.make(MIDDLE);
+    const lastId = HERE_ENVIRONMENT_ID;
+    const members = [firstId, middleId, lastId];
+    const copies = new Map<EnvironmentId, ScheduledTaskService.ScheduledTaskService["Service"]>();
+    const finalVotes = new Map<EnvironmentId, string | null>();
+    let initialProposal: string | undefined;
+    const ask =
+      (by: EnvironmentId): SharedTaskPeerCheck.SharedTaskPeerCheck["Service"]["claim"] =>
+      (input) =>
+        Effect.forEach(input.peers, (environmentId) =>
+          Effect.gen(function* () {
+            if (by === firstId && input.replaces === null)
+              initialProposal = input.accountingProposalKey;
+            const vote = yield* copies.get(environmentId)!.claimOccurrence({
+              ...input,
+              by,
+              lastRunFailed: environmentId === input.replaces,
+            });
+            if (by === lastId && input.replaces === middleId) {
+              finalVotes.set(environmentId, vote.accountingEvidence?.kind ?? null);
+              if (
+                environmentId === middleId &&
+                scenarioName === "previous holder has no evidence"
+              ) {
+                return { environmentId, holder: vote.holder };
+              }
+              if (
+                environmentId === firstId &&
+                scenarioName === "fresh evidence from former holder"
+              ) {
+                return {
+                  environmentId,
+                  holder: vote.holder,
+                  accountingEvidence: {
+                    kind: "fresh" as const,
+                    candidate: lastId,
+                    predecessor: null,
+                    proposal: input.accountingProposalKey!,
+                  },
+                };
+              }
+            }
+            return {
+              environmentId,
+              holder: vote.holder,
+              ...(vote.accountingEvidence === undefined
+                ? {}
+                : { accountingEvidence: vote.accountingEvidence }),
+            };
+          }),
+        ).pipe(
+          Effect.map((answered) => ({ answered, unchecked: [] })),
+          Effect.orDie,
+        );
+
+    const nextAdmission = (
+      machine: {
+        sql: SqlClient.SqlClient;
+        tick: (atMs: number) => Effect.Effect<void>;
+        launches: Queue.Queue<ThreadLaunchService.ThreadLaunchInput>;
+      },
+      occurrence: string,
+    ) =>
+      Effect.gen(function* () {
+        for (let poll = 0; poll < 4; poll++) {
+          const due = yield* nextRunAtOf(machine.sql);
+          expect(due).toBeTypeOf("string");
+          yield* machine.tick(Date.parse(due!) + 1000);
+          const launched = Option.getOrUndefined(yield* Queue.poll(machine.launches));
+          if (launched !== undefined) {
+            const runs = yield* machine.sql<{
+              scheduled_for: string;
+            }>`SELECT scheduled_for FROM scheduled_task_runs
+              WHERE trigger='scheduled' AND thread_id IS NOT NULL`;
+            expect(runs).toEqual([{ scheduled_for: occurrence }]);
+            return launched.initialMessage?.demandId;
+          }
+        }
+        throw new Error(
+          "Expected the election to admit the occurrence within four scheduler checks",
+        );
+      });
+
+    yield* runScenario(
+      members,
+      [{ ...WORKING_THERE, ranOn: middleId }, NO_RUN_THERE],
+      (last) =>
+        Effect.gen(function* () {
+          copies.set(lastId, last.service);
+          yield* last.sql`UPDATE scheduled_task_shared SET revision_environment_id=${firstId}`;
+          yield* runScenario(
+            members,
+            [WORKING_THERE, NO_RUN_THERE],
+            (middle) =>
+              Effect.gen(function* () {
+                copies.set(middleId, middle.service);
+                yield* middle.sql`UPDATE scheduled_task_shared SET revision_environment_id=${firstId}`;
+                yield* runScenario(
+                  members,
+                  NO_RUN_THERE,
+                  (first) =>
+                    Effect.gen(function* () {
+                      copies.set(firstId, first.service);
+                      const occurrence = (yield* nextRunAtOf(first.sql))!;
+                      const original = yield* nextAdmission(first, occurrence);
+                      expect(original).toMatch(/^demand:/);
+                      expect(initialProposal).toMatch(/^demand:/);
+                      yield* first.sql`UPDATE scheduled_task_runs SET outcome='failed' WHERE scheduled_for=${occurrence}`;
+                      expect(yield* nextAdmission(middle, occurrence)).toBe(original);
+                      yield* middle.sql`UPDATE scheduled_task_runs SET outcome='failed' WHERE scheduled_for=${occurrence}`;
+                      const transfer = {
+                        taskId: ScheduledTaskId.make("scheduled-task:shared"),
+                        occurrence,
+                        holder: lastId,
+                        replaces: middleId,
+                        by: lastId,
+                        accountingProposalKey: initialProposal!,
+                      };
+                      if (scenarioName === "former holder voted from another predecessor") {
+                        expect(
+                          (yield* first.service.claimOccurrence({
+                            ...transfer,
+                            holder: firstId,
+                            replaces: middleId,
+                            by: middleId,
+                          })).holder,
+                        ).toBe(firstId);
+                        expect(
+                          (yield* first.service.claimOccurrence({
+                            ...transfer,
+                            replaces: firstId,
+                            lastRunFailed: true,
+                          })).holder,
+                        ).toBe(lastId);
+                      } else if (
+                        scenarioName === "former holder voted for another proposal" ||
+                        scenarioName === "successor voted for another proposal"
+                      ) {
+                        const copy =
+                          scenarioName === "former holder voted for another proposal"
+                            ? first
+                            : last;
+                        expect(
+                          (yield* copy.service.claimOccurrence({
+                            ...transfer,
+                            accountingProposalKey: `demand:${"0".repeat(64)}`,
+                          })).holder,
+                        ).toBe(lastId);
+                      }
+                      const result = yield* nextAdmission(last, occurrence);
+                      expect(result).toBe(scenarioName === "all ballots match" ? original : null);
+                      expect(finalVotes.get(middleId)).toBe("holder");
+                      const formerHolderMatches =
+                        scenarioName !== "former holder voted from another predecessor" &&
+                        scenarioName !== "former holder voted for another proposal";
+                      expect(finalVotes.get(firstId)).toBe(formerHolderMatches ? "witness" : null);
+                      const replay = yield* last.service.claimOccurrence(transfer);
+                      expect(replay.holder).toBe(lastId);
+                      expect(replay.accountingEvidence?.kind).toBe(
+                        scenarioName === "successor voted for another proposal"
+                          ? undefined
+                          : "witness",
+                      );
+                    }),
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  { environmentId: firstId, claim: ask(firstId) },
+                );
+              }),
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { environmentId: middleId, claim: ask(middleId) },
+          );
+        }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { environmentId: lastId, claim: ask(lastId) },
+    );
+  }),
+);
+
 // Age never frees a claim: a run still being claimed or started looks idle to the machines
 // watching it, and only the holder's own copy knows that it gave the occurrence up or its run failed.
 it.effect(
@@ -1909,14 +2390,16 @@ it.effect(
           const claimAt =
             (occurrence: number) =>
             (holder: string, replaces: string | null, by: string, lastRunFailed?: boolean) =>
-              service.claimOccurrence({
-                taskId,
-                occurrence: iso(occurrence),
-                holder: holder as never,
-                replaces: replaces as never,
-                by: by as never,
-                ...(lastRunFailed === undefined ? {} : { lastRunFailed }),
-              });
+              service
+                .claimOccurrence({
+                  taskId,
+                  occurrence: iso(occurrence),
+                  holder: holder as never,
+                  replaces: replaces as never,
+                  by: by as never,
+                  ...(lastRunFailed === undefined ? {} : { lastRunFailed }),
+                })
+                .pipe(Effect.map(({ holder }) => holder));
           const claim = claimAt(DUE);
           const claimNext = claimAt(DUE + HOUR_MS);
           const recordRun = (

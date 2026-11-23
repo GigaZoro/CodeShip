@@ -2,6 +2,7 @@ import {
   type EnvironmentId,
   type PeerLinkError,
   OrchestratorMcpClaimScheduledTaskOccurrenceResult,
+  ScheduledClaimEvidence,
   OrchestratorMcpScheduledOccurrence,
   OrchestratorMcpScheduledTask,
   SCHEDULED_TASK_CLAIM_PROTOCOL,
@@ -22,6 +23,11 @@ import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 
 // Only what the check reads, and only for this task, so a change to any other field or task in a
 // peer's answer never hides its run.
+const claimReply = Schema.Struct({
+  holder: OrchestratorMcpClaimScheduledTaskOccurrenceResult.fields.holder,
+  accountingEvidence: Schema.optional(Schema.Unknown),
+});
+const decodeClaimEvidence = Schema.decodeUnknownOption(ScheduledClaimEvidence);
 const decodePeerTaskList = Schema.decodeUnknownOption(
   Schema.Struct({
     tasks: Schema.Array(Schema.Unknown),
@@ -82,6 +88,7 @@ export interface PeerClaimResult {
   readonly answered: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
     readonly holder: EnvironmentId;
+    readonly accountingEvidence?: ScheduledClaimEvidence;
   }>;
   /** Machines that could not be asked, and why. */
   readonly unchecked: ReadonlyArray<{
@@ -133,6 +140,7 @@ export class SharedTaskPeerCheck extends Context.Service<
       readonly occurrence: string;
       readonly holder: EnvironmentId;
       readonly replaces: EnvironmentId | null;
+      readonly accountingProposalKey?: string;
       readonly peers: ReadonlyArray<EnvironmentId>;
     }) => Effect.Effect<PeerClaimResult>;
   }
@@ -336,19 +344,28 @@ const make = Effect.gen(function* () {
               occurrence: input.occurrence,
               holder: input.holder,
               replaces: input.replaces,
+              ...(input.accountingProposalKey === undefined
+                ? {}
+                : { accountingProposalKey: input.accountingProposalKey }),
             },
+            // Older peers cast the same vote without taking part in accounting.
+            ignorableArguments: ["accountingProposalKey"],
             limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
-            success: OrchestratorMcpClaimScheduledTaskOccurrenceResult,
+            success: claimReply,
           })
           .pipe(
             Effect.timeoutOption(PeerMcpClient.PEER_READ_TIMEOUT),
-            Effect.map((answer) =>
-              Option.isNone(answer)
-                ? { environmentId, reason: "It did not answer in time." }
-                : Option.isNone(answer.value)
-                  ? { environmentId, reason: "It runs an older version of T3.CodeShip." }
-                  : { environmentId, holder: answer.value.value.holder },
-            ),
+            Effect.map((answer) => {
+              if (Option.isNone(answer))
+                return { environmentId, reason: "It did not answer in time." };
+              if (Option.isNone(answer.value))
+                return { environmentId, reason: "It runs an older version of T3.CodeShip." };
+              const { holder, accountingEvidence } = answer.value.value;
+              const evidence = decodeClaimEvidence(accountingEvidence);
+              return Option.isSome(evidence)
+                ? { environmentId, holder, accountingEvidence: evidence.value }
+                : { environmentId, holder };
+            }),
             Effect.catch((error) => Effect.succeed({ environmentId, reason: error.message })),
           );
       });

@@ -1122,13 +1122,39 @@ export const OrchestratorMcpClaimScheduledTaskOccurrenceInput = Schema.Struct({
   occurrence: OrchestratorMcpScheduledOccurrence,
   holder: EnvironmentId,
   replaces: Schema.NullOr(EnvironmentId),
+  accountingProposalKey: Schema.optional(Schema.Unknown),
 });
 export type OrchestratorMcpClaimScheduledTaskOccurrenceInput =
   typeof OrchestratorMcpClaimScheduledTaskOccurrenceInput.Type;
 
+/** Optional proof from this voter for exactly one accepted claim transition. */
+export const ScheduledClaimProposal = Schema.String.check(
+  Schema.isPattern(/^demand:[a-f0-9]{64}$/),
+);
+const claimEvidenceFields = { candidate: EnvironmentId, proposal: ScheduledClaimProposal };
+export const ScheduledClaimEvidence = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("fresh"),
+    ...claimEvidenceFields,
+    predecessor: Schema.Null,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("holder"),
+    ...claimEvidenceFields,
+    predecessor: EnvironmentId,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("witness"),
+    ...claimEvidenceFields,
+    predecessor: EnvironmentId,
+  }),
+]);
+export type ScheduledClaimEvidence = typeof ScheduledClaimEvidence.Type;
+
 /** The machine that holds the occurrence after the call. */
 export const OrchestratorMcpClaimScheduledTaskOccurrenceResult = Schema.Struct({
   holder: EnvironmentId,
+  accountingEvidence: Schema.optional(ScheduledClaimEvidence),
 });
 export type OrchestratorMcpClaimScheduledTaskOccurrenceResult =
   typeof OrchestratorMcpClaimScheduledTaskOccurrenceResult.Type;
