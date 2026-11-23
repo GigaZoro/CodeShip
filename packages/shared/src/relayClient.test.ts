@@ -92,6 +92,30 @@ const writeExecutable = (filePath: string, contents = "cloudflared") =>
     yield* fileSystem.chmod(filePath, 0o755);
   });
 
+// Use an actual child so its stdout and its exit status follow the platform spawner's contract.
+const versionProcess = (outcome: (executable: string) => { output: string; exitCode: number }) =>
+  Effect.gen(function* () {
+    const native = yield* ChildProcessSpawner.ChildProcessSpawner;
+    return ChildProcessSpawner.make((command) => {
+      if (!ChildProcess.isStandardCommand(command) || command.args[0] !== "version") {
+        return Effect.die("Unexpected command in relay version fixture");
+      }
+      const { output, exitCode } = outcome(command.command);
+      return native.spawn(
+        ChildProcess.make(
+          process.execPath,
+          [
+            "-e",
+            "process.stdout.write(process.argv[1]); process.exitCode = Number(process.argv[2])",
+            output,
+            String(exitCode),
+          ],
+          { stdin: "ignore", stderr: "ignore" },
+        ),
+      );
+    });
+  }).pipe(Effect.provide(NodeServices.layer));
+
 type RelayClientTestServices =
   | Layer.Success<ReturnType<typeof layerHostRuntime> | typeof NodeServices.layer>
   | HttpClient.HttpClient
@@ -787,6 +811,76 @@ describe("RelayClient", () => {
         ),
       );
 
+    it.effect(
+      "rechecks an unchanged executable after its version command prints the pin and exits nonzero",
+      () =>
+        run((baseDir) =>
+          Effect.gen(function* () {
+            const paths = yield* Path.Path;
+            const executable = paths.join(baseDir, executableName);
+            yield* writeExecutable(executable);
+            let code = 1;
+            let starts = 0;
+            const spawner = yield* versionProcess(() => {
+              starts++;
+              return {
+                output: "cloudflared version " + RelayClient.CLOUDFLARED_VERSION,
+                exitCode: code,
+              };
+            });
+            const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir }).pipe(
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            );
+            const resolve = manager.resolve.pipe(
+              Effect.provideService(HostProcess.Environment, { PATH: baseDir }),
+            );
+            expect((yield* resolve).status).toBe("missing");
+            code = 0;
+            expect(yield* resolve).toMatchObject({
+              status: "available",
+              source: "path",
+              executablePath: executable,
+            });
+            expect((yield* resolve).status).toBe("available");
+            expect(starts).toBe(2);
+          }),
+        ),
+    );
+
+    it.effect(
+      "rejects a downloaded binary whose version command prints the pin and exits nonzero",
+      () =>
+        run((baseDir) =>
+          Effect.gen(function* () {
+            const spawner = yield* versionProcess(() => ({
+              output: "cloudflared version " + RelayClient.CLOUDFLARED_VERSION,
+              exitCode: 1,
+            }));
+            const manager = yield* RelayClient.makeCloudflaredRelayClient({
+              baseDir,
+              releaseAsset: testReleaseAsset,
+            }).pipe(
+              Effect.provide(layerHttpClient(testBinary)),
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            );
+            const outcome = yield* manager.install.pipe(
+              Effect.match({ onFailure: (error) => error.reason, onSuccess: () => "installed" }),
+            );
+            expect(outcome).toBe("validation_failed");
+            const fileSystem = yield* FileSystem.FileSystem;
+            const paths = yield* Path.Path;
+            const destination = managedPathFor(
+              paths,
+              baseDir,
+              RelayClient.CLOUDFLARED_VERSION,
+              hostPlatform,
+            );
+            expect(yield* fileSystem.exists(destination)).toBe(false);
+            expect((yield* manager.resolve).status).toBe("missing");
+          }),
+        ),
+    );
+
     it.effect("skips a PATH binary older than the minimum version", () => {
       const versions: Record<string, string> = {};
       return run(
@@ -1125,6 +1219,48 @@ describe("RelayClient", () => {
       );
     });
 
+    it.effect.each(["empty", "plausible"] as const)(
+      "retries pruning after a nonzero version command with %s stdout",
+      (outputKind) =>
+        run((baseDir) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const paths = yield* Path.Path;
+            const old = managedPathFor(paths, baseDir, "2025.9.0", hostPlatform);
+            const rollback = managedPathFor(paths, baseDir, "2026.1.0", hostPlatform);
+            yield* writeExecutable(old);
+            yield* writeExecutable(rollback);
+
+            let failing = true;
+            let oldProbes = 0;
+            const spawner = yield* versionProcess((executable) => {
+              if (executable === rollback) {
+                return { output: "cloudflared version 2026.1.0", exitCode: 0 };
+              }
+              expect(executable).toBe(old);
+              oldProbes++;
+              return {
+                output: failing && outputKind === "empty" ? "" : "cloudflared version 2025.9.0",
+                exitCode: failing ? 1 : 0,
+              };
+            });
+            const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir }).pipe(
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            );
+
+            expect(yield* manager.pruneManagedVersions).toBe(false);
+            expect(yield* fs.readFileString(old)).toBe("cloudflared");
+            expect(yield* fs.readFileString(rollback)).toBe("cloudflared");
+
+            failing = false;
+            expect(yield* manager.pruneManagedVersions).toBe(true);
+            expect(oldProbes).toBe(2);
+            expect(yield* fs.exists(old)).toBe(false);
+            expect(yield* fs.readFileString(rollback)).toBe("cloudflared");
+          }),
+        ),
+    );
+
     it.effect.each(["readDirectory", "stat", "version", "remove"] as const)(
       "retries incomplete cache cleanup after %s recovers",
       (operation) => {
@@ -1169,16 +1305,17 @@ describe("RelayClient", () => {
                         : fs.remove(file, options),
                   }),
                 ),
-                Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, {
-                  ...spawner,
-                  string: (cmd, options) =>
+                Effect.provideService(
+                  ChildProcessSpawner.ChildProcessSpawner,
+                  ChildProcessSpawner.make((cmd) =>
                     failing &&
                     operation === "version" &&
                     ChildProcess.isStandardCommand(cmd) &&
                     cmd.command === old
                       ? failure
-                      : spawner.string(cmd, options),
-                }),
+                      : spawner.spawn(cmd),
+                  ),
+                ),
               );
               expect(yield* manager.pruneManagedVersions).toBe(false);
               expect(yield* fs.exists(old)).toBe(true);

@@ -22,6 +22,7 @@ import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { isWindowsRenameLock } from "./atomicWrite.ts";
@@ -272,14 +273,27 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
     return platform === "win32" || (info.value.mode & 0o111) !== 0;
   });
 
+  const readVersion = Effect.fnUntraced(
+    function* (executable: string) {
+      const child = yield* spawner.spawn(
+        ChildProcess.make(executable, ["version"], { stdin: "ignore", stderr: "ignore" }),
+      );
+      const [output, exitCode] = yield* Effect.all(
+        [child.stdout.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+        { concurrency: 2 },
+      );
+      if (exitCode !== 0) {
+        return yield* new CloudflaredCommandError({ command: executable, exitCode });
+      }
+      return parseCloudflaredVersionOutput(output);
+    },
+    Effect.scoped,
+    Effect.timeout(VERSION_PROBE_TIMEOUT),
+  );
+
   // Cache successful version probes per file revision; do not let transient failures hide valid binaries.
   const versionCache = yield* Cache.makeWith(
-    (key: VersionProbeKey) =>
-      spawner
-        .string(
-          ChildProcess.make(key.executablePath, ["version"], { stdin: "ignore", stderr: "ignore" }),
-        )
-        .pipe(Effect.map(parseCloudflaredVersionOutput), Effect.timeout(VERSION_PROBE_TIMEOUT)),
+    (key: VersionProbeKey) => readVersion(key.executablePath),
     {
       capacity: 16,
       timeToLive: (exit) =>

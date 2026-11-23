@@ -1,3 +1,7 @@
+## 2026-11-23 — Relay executable validation
+
+- CodeShip requires the relay’s version command to exit successfully before selecting an executable or activating a download. It retries a failed version check the next time it looks for the relay.
+
 ## 2026-11-23 — Windows landing checks
 
 - The landing tests exercise lost Git push replies, expired leases, and large lists of changed files on Windows using temporary repositories.
