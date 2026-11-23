@@ -1437,6 +1437,26 @@ it.effect.each(["steer", "restart"] as const)(
           assert.equal(retry.delivery, first.delivery);
           assert.equal(retry.run.id, first.run.id);
           assert.isTrue(retry.dispatch.replayed);
+          const receiptOnly = yield* threads.sendToThread({
+            ...input,
+            demandId: null,
+            receiptOnly: true,
+          });
+          assert.equal(receiptOnly.run.id, first.run.id);
+          assert.equal(receiptOnly.delivery, first.delivery);
+          assert.isTrue(receiptOnly.dispatch.replayed);
+          const missing = yield* threads
+            .sendToThread({
+              ...input,
+              commandId: CommandId.make("unaccepted-send"),
+              mode: "queue",
+              receiptOnly: true,
+            })
+            .pipe(Effect.flip);
+          assert.equal(
+            missing._tag === "OrchestratorDispatchError" && missing.cause,
+            "No accepted send for this thread.",
+          );
           yield* threads.dispatch({
             type: "thread.archive",
             commandId: CommandId.make("archive-after-completion"),
@@ -1465,6 +1485,105 @@ it.effect.each(["steer", "restart"] as const)(
     ),
 );
 
+it.effect("a guarded repair restart refuses two unknown owners without queuing a run", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { interrupted, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        "guarded-unknown",
+        true,
+      );
+      yield* Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const threadId = yield* startFirstTurn;
+        const [run] = (yield* engine.getThreadProjection(threadId)).runs;
+        assert.isDefined(run);
+        const sink = yield* EventSink.EventSinkV2;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("unknown-owner"),
+              type: "run.updated",
+              runId: run.id,
+              threadId,
+              occurredAt: yield* DateTime.now,
+              payload: { ...run, demandId: null },
+            },
+          ],
+        });
+        const command = {
+          type: "message.dispatch",
+          threadId,
+          commandId: CommandId.make("guarded-unknown"),
+          messageId: MessageId.make("guarded-unknown"),
+          text: "Repair",
+          attachments: [],
+          demandId: null,
+          expectedActiveRunId: run.id,
+          dispatchMode: { type: "restart_active", targetRunId: run.id },
+          createdBy: "agent",
+          creationSource: "mcp",
+        } as const;
+        const refusal = yield* engine.dispatch(command).pipe(Effect.flip);
+        assert.equal(
+          refusal._tag === "OrchestratorDispatchError" && String(refusal.cause),
+          "A guarded restart must restart its expected run.",
+        );
+        const after = yield* engine.getThreadProjection(threadId);
+        assert.lengthOf(after.runs, 1);
+        assert.isFalse(after.messages.some((message) => message.id === command.messageId));
+        yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+        assert.deepEqual(interrupted, []);
+        assert.deepEqual(steered, []);
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
+it.effect("replays an accepted guarded restart after the running turn changes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { layer, startFirstTurn } = yield* nextTurnSelectionHarness("guarded-restart", true);
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threadId = yield* startFirstTurn;
+        const [run] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+        assert.isDefined(run);
+        const command = {
+          type: "message.dispatch",
+          threadId,
+          commandId: CommandId.make("guarded-restart"),
+          messageId: MessageId.make("message:guarded-restart"),
+          text: "Continue the same work.",
+          attachments: [],
+          demandId: run!.demandId ?? null,
+          expectedActiveRunId: run!.id,
+          dispatchMode: { type: "restart_active", targetRunId: run!.id },
+          createdBy: "agent",
+          creationSource: "mcp",
+        } as const;
+        const accepted = yield* orchestrator.dispatch(command);
+        assert.isUndefined(accepted.replayed);
+        const stale = yield* orchestrator
+          .dispatch({
+            ...command,
+            commandId: CommandId.make("another-guarded-restart"),
+            messageId: MessageId.make("message:another-guarded-restart"),
+          })
+          .pipe(Effect.flip);
+        assert.equal(stale.message, "expected_active_run_changed");
+        const replay = yield* orchestrator.dispatch(command);
+        assert.isTrue(replay.replayed);
+        assert.equal(replay.sequence, accepted.sequence);
+        const messages = (yield* orchestrator.getThreadProjection(threadId)).messages;
+        assert.lengthOf(
+          messages.filter((message) => message.id === command.messageId),
+          1,
+        );
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
 it.effect("starts a stop-and-send that arrives after the provider turn completed", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1491,6 +1610,30 @@ it.effect("starts a stop-and-send that arrives after the provider turn completed
           providerTurn: { ...turn, status: "completed", completedAt: yield* DateTime.now },
         });
         yield* Fiber.join(turnCompleted);
+
+        const guarded = {
+          type: "message.dispatch",
+          threadId,
+          commandId: CommandId.make("doctor-restart"),
+          messageId: MessageId.make("message:doctor-restart"),
+          text: "Recover stopped work.",
+          attachments: [],
+          expectedActiveRunId: first.runId,
+          dispatchMode: { type: "restart_active", targetRunId: first.runId },
+          createdBy: "agent",
+          creationSource: "mcp",
+        } as const;
+        const refused = yield* orchestrator.dispatch(guarded).pipe(Effect.flip);
+        assert.equal(refused.message, "expected_active_run_changed");
+        const again = yield* orchestrator.dispatch(guarded).pipe(Effect.flip);
+        assert.equal(again._tag, "OrchestratorCommandPreviouslyRejectedError");
+        if (again._tag === "OrchestratorCommandPreviouslyRejectedError")
+          assert.equal(again.detail, refused.message);
+        assert.isFalse(
+          (yield* orchestrator.getThreadProjection(threadId)).messages.some(
+            (message) => message.id === guarded.messageId,
+          ),
+        );
 
         // The composer still showed the turn running when the user chose Stop and send.
         yield* orchestrator.dispatch({
@@ -2246,6 +2389,46 @@ it.effect("a web on-return compaction and its owner message share one demand", (
         assert.notEqual(
           runs.find((run) => run.userMessageId === "manual-compact")?.demandId,
           owner,
+        );
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
+it.effect("refuses a guarded goal restart before accepting a separate message", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { layer, startFirstTurn } = yield* goalHarness("guarded-goal");
+      yield* Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const threadId = yield* startFirstTurn;
+        const before = yield* engine.getThreadProjection(threadId);
+        const [active] = before.runs;
+        assert.isDefined(active);
+        const refused = yield* engine
+          .dispatch({
+            type: "message.dispatch",
+            threadId,
+            commandId: CommandId.make("guarded-goal-request"),
+            messageId: MessageId.make("message:guarded-goal-request"),
+            text: "/goal run all tests",
+            attachments: [],
+            demandId: active!.demandId ?? null,
+            expectedActiveRunId: active!.id,
+            dispatchMode: { type: "restart_active", targetRunId: active!.id },
+            createdBy: "agent",
+            creationSource: "mcp",
+          })
+          .pipe(Effect.flip);
+        assert.include(String(refused.cause), "guarded restart");
+        const after = yield* engine.getThreadProjection(threadId);
+        assert.deepEqual(
+          after.runs.map((r) => r.id),
+          before.runs.map((r) => r.id),
+        );
+        assert.deepEqual(
+          after.messages.map((m) => m.id),
+          before.messages.map((m) => m.id),
         );
       }).pipe(Effect.provide(layer));
     }),

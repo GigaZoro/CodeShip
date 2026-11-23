@@ -474,10 +474,19 @@ export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
 export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
   typeof OrchestrationV2ThreadLaunchWorkspaceStrategy.Type;
 
+export const OrchestrationV2DemandId = Schema.String.check(
+  Schema.isPattern(/^demand:[0-9a-f]{64}$/),
+);
+
+export const EXPECTED_ACTIVE_RUN_CHANGED = "expected_active_run_changed";
 export const OrchestrationV2AppThread = Schema.Struct({
   initialLaunchKind: Schema.optional(Schema.Literals(["idle", "first_message"])),
   initialWorkspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   launchIntentHash: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))),
+  initialDemandId: Schema.optional(Schema.NullOr(OrchestrationV2DemandId)),
+  initialDemandOriginKind: Schema.optional(Schema.Literal("repair")),
+  /** Parent run that accepted this entry of an MCP thread creation batch. */
+  initialParentRunId: Schema.optional(RunId),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,
@@ -792,11 +801,22 @@ export const ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE = "prompt_not_sent";
 /** The provider refused the turn because the account's login no longer works; signing in again clears it. */
 export const AUTHENTICATION_FAILED_FAILURE_CODE = "authentication_failed";
 
+export const OrchestrationV2DemandOrigin = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("work_item"),
+    key: TrimmedNonEmptyString.check(Schema.isMaxLength(512)),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("repair"),
+    threadId: ThreadId,
+    runId: Schema.NullOr(RunId),
+  }),
+]);
+export type OrchestrationV2DemandOrigin = typeof OrchestrationV2DemandOrigin.Type;
+
 export const OrchestrationV2Run = Schema.Struct({
-  /** The original demand for this work. Historical runs can omit it. */
-  demandId: Schema.optional(
-    Schema.NullOr(Schema.String.check(Schema.isPattern(/^demand:[0-9a-f]{64}$/))),
-  ),
+  /** Missing on older events; null when no original demand is known. */
+  demandId: Schema.optional(Schema.NullOr(OrchestrationV2DemandId)),
   id: RunId,
   threadId: ThreadId,
   ordinal: PositiveInt,
@@ -1060,6 +1080,8 @@ export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChi
  * command and its `title` the label. Such a task has no `childThreadId`.
  */
 export const OrchestrationV2TaskCommand = Schema.Struct({
+  /** Explicit null records the platform default for recovery of an accepted command. */
+  shell: Schema.optional(Schema.NullOr(Schema.Literal("bash"))),
   command: TrimmedNonEmptyString,
   cwd: TrimmedNonEmptyString,
   logPath: TrimmedNonEmptyString,
@@ -3768,6 +3790,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
    */
   Schema.Struct({
     type: Schema.Literal("delegated_task.remote.request"),
+    demandId: OrchestrationV2Run.fields.demandId,
     commandId: CommandId,
     parentThreadId: ThreadId,
     parentRunId: RunId,
@@ -3998,12 +4021,10 @@ const OrchestrationV2InternalCommand = Schema.Union([
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
 
-type LaunchCommand =
-  | (Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> & {
-      readonly demandId?: string | null;
-      readonly demandSourceRunId?: RunId;
-    })
-  | Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>;
+type LaunchCommand = Extract<
+  OrchestrationV2Command,
+  { readonly type: "message.dispatch" | "delegated_task.request" }
+>;
 type CreateThreadCommand = Extract<OrchestrationV2Command, { readonly type: "thread.create" }>;
 export type OrchestrationV2ServerCommand =
   | Exclude<OrchestrationV2Command, LaunchCommand | CreateThreadCommand>
@@ -4011,8 +4032,14 @@ export type OrchestrationV2ServerCommand =
       readonly launchIntentHash?: string;
       readonly initialLaunchKind?: OrchestrationV2AppThread["initialLaunchKind"];
       readonly initialWorkspacePreparation?: OrchestrationV2ThreadLaunchWorkspaceStrategy;
+      readonly initialDemandId?: string | null;
+      readonly initialDemandOriginKind?: "repair";
+      readonly initialParentRunId?: RunId;
     })
   | (LaunchCommand & {
+      readonly expectedActiveRunId?: RunId;
+      readonly demandId?: string | null;
+      readonly demandSourceRunId?: RunId;
       readonly crossProviderFailoverFrom?: ProviderInstanceId;
       readonly requestedModelSelection?: ModelSelection;
       readonly launchAlreadyRouted?: true;

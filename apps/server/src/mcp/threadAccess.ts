@@ -2,6 +2,7 @@ import type { ProjectionRecordField } from "../orchestration-v2/ProjectionStore.
 import {
   CommandId,
   OrchestratorMcpFailure,
+  type OrchestrationV2DemandOrigin,
   type ProjectId,
   type ProviderInstanceId,
   type ProviderInteractionMode,
@@ -11,7 +12,10 @@ import {
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
+import { assertSameLink } from "./linkOrigin.ts";
+import { originalDemandId } from "../orchestration-v2/demandId.ts";
 import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
@@ -203,6 +207,55 @@ export const readThread = Effect.fn("mcp.readThread")(function* <
       ),
     );
   return { ...context, projection };
+});
+
+/** Missing source evidence may permit receipt recovery. An access denial always fails the request. */
+export const readRepairDemand = Effect.fn("mcp.readRepairDemand")(function* (
+  context: Parameters<typeof assertSameLink>[0] & Pick<Caller, "threads">,
+  origin: Extract<OrchestrationV2DemandOrigin, { kind: "repair" }>,
+) {
+  if (origin.runId === null) return { available: true as const, demand: null };
+  const records = yield* context.threads
+    .getThreadRecords(origin.threadId, ["runs"], { runIds: [origin.runId] })
+    .pipe(Effect.option);
+  if (Option.isNone(records)) return { available: false as const, failure: unavailable() };
+  const { thread, runs } = records.value;
+  yield* assertSameLink(context, thread);
+  if (thread.deletedAt != null)
+    return {
+      available: false as const,
+      failure: new OrchestratorMcpFailure({
+        code: "thread_not_found",
+        message: "The thread named as the repair origin has been deleted.",
+      }),
+    };
+  const run = runs.find((candidate) => candidate.id === origin.runId);
+  if (run === undefined)
+    return {
+      available: false as const,
+      failure: new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "The failed run named as the repair origin was not found on this machine.",
+      }),
+    };
+  return { available: true as const, demand: run.demandId ?? null };
+});
+
+export const explicitDemand = Effect.fn("mcp.explicitDemand")(function* (
+  context: Parameters<typeof assertSameLink>[0] & Pick<Caller, "threads">,
+  origin: OrchestrationV2DemandOrigin,
+) {
+  if (origin.kind === "work_item") return originalDemandId("work-item", origin.key);
+  const source = yield* readRepairDemand(context, origin);
+  return source.available ? source.demand : yield* source.failure;
+});
+
+export const callerDemand = Effect.fn("mcp.callerDemand")(function* (
+  context: Pick<Caller, "scope" | "threads" | "caller">,
+  origin?: OrchestrationV2DemandOrigin,
+) {
+  if (origin !== undefined) return yield* explicitDemand(context, origin);
+  return McpInvocationContext.invocationDemand(context.scope);
 });
 
 export const newCommandId = Effect.fn("mcp.newCommandId")(function* () {

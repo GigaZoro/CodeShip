@@ -260,6 +260,7 @@ const make = Effect.gen(function* () {
       if (
         run === undefined ||
         run.rootNodeId === null ||
+        run.id !== threadScope.thread.runId ||
         run.providerInstanceId !== threadScope.thread.providerInstanceId
       ) {
         return yield* new OrchestratorMcpFailure({

@@ -44,7 +44,11 @@ capabilities, never the driver kind.
 - **Status checks.** Background status and model refreshes must not open a session that can start
   MCP servers, run hooks, or launch a login. Keep heavier probes behind an explicit refresh.
 - **T3 MCP tools.** Inject the thread's MCP server so agents can use T3's tools, and make a turn
-  survive when that server is unreachable.
+  survive when that server is unreachable. A runtime with its own native process and MCP clients
+  sets `isolatesMcpProcess` and reads credentials through `openSession.readProcessMcpSession`.
+  A shared native server uses the thread credential. Once a credential has served multiple runs,
+  it can recover accepted delegations, but fresh delegations and batch creations need a credential
+  bound to one active parent run. A common accounting demand does not identify that parent.
 - **Updates.** Run an update only through the installer that provably owns the binary; otherwise
   leave it manual. See [`providerMaintenanceRunner.ts`](../../apps/server/src/provider/providerMaintenanceRunner.ts).
 

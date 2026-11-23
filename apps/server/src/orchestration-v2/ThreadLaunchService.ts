@@ -76,7 +76,8 @@ export type ThreadLaunchWorkspaceStrategy =
     };
 
 export interface ThreadLaunchInitialMessage {
-  readonly demandId?: string;
+  readonly demandId?: string | null;
+  readonly demandOriginKind?: "repair";
   readonly messageId?: MessageId;
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly crossProviderFailoverFrom?: ProviderInstanceId;
@@ -91,8 +92,10 @@ export interface ThreadLaunchInput {
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
-  /** Digest of the original keyed MCP request before applying server defaults or resolving uploads. */
+  /** Digest of the original keyed MCP request, before mutable server defaults or upload resolution. */
   readonly launchIntentHash?: string;
+  /** A linked repair whose source disappeared may finish only a previously accepted launch. */
+  readonly receiptOnly?: boolean;
   readonly projectId: ProjectId;
   readonly title: string;
   readonly generateTitle?: boolean;
@@ -1084,6 +1087,20 @@ const make = Effect.gen(function* () {
       }
 
       const launchReceipt = yield* readReceipt(input, input.commandId);
+      if (
+        input.receiptOnly === true &&
+        (input.launchIntentHash === undefined ||
+          Option.isNone(launchReceipt) ||
+          launchReceipt.value.status !== "accepted" ||
+          launchReceipt.value.commandType !== "thread.create" ||
+          launchReceipt.value.threadId !== input.threadId)
+      ) {
+        return yield* mapError(
+          input,
+          "read-receipt",
+          input.threadId,
+        )("No accepted launch of this thread.");
+      }
       yield* threads.assertProviderInstanceEnabled({
         projectId: input.projectId,
         commandId: input.commandId,
@@ -1169,6 +1186,13 @@ const make = Effect.gen(function* () {
                 ...(input.launchIntentHash === undefined
                   ? {}
                   : { launchIntentHash: input.launchIntentHash }),
+                ...(input.initialMessage?.demandId === undefined
+                  ? {}
+                  : { initialDemandId: input.initialMessage.demandId }),
+                ...(input.initialMessage?.demandOriginKind === "repair" &&
+                input.initialMessage.demandId != null
+                  ? { initialDemandOriginKind: "repair" as const }
+                  : {}),
                 ...(input.importedNativeThread === undefined
                   ? {}
                   : { importedNativeThread: input.importedNativeThread }),
@@ -1195,7 +1219,6 @@ const make = Effect.gen(function* () {
         if (project.id !== input.projectId) {
           return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
         }
-        // A concurrent caller can lose the claim after reading no receipt. Its dispatch replays the winning event.
         const creation = claimed.storedEvents.find(
           ({ event }) => event.type === "thread.created",
         )?.event;
@@ -1215,9 +1238,10 @@ const make = Effect.gen(function* () {
               }
             : undefined);
         if (
-          acceptedHash !== undefined &&
-          (acceptedHash !== input.launchIntentHash ||
-            (acceptedKind !== undefined && acceptedKind !== launchKind))
+          (acceptedHash !== undefined &&
+            (acceptedHash !== input.launchIntentHash ||
+              (acceptedKind !== undefined && acceptedKind !== launchKind))) ||
+          (input.receiptOnly === true && acceptedHash === undefined)
         ) {
           return yield* mapError(input, "read-receipt", threadId)(LAUNCH_INTENT_MISMATCH);
         }
@@ -1225,6 +1249,11 @@ const make = Effect.gen(function* () {
         let messageSequence: number | undefined;
         let messageWasAlreadyAccepted = false;
         if (input.initialMessage !== undefined) {
+          // On replay, only the original create can say which demand owned this launch.
+          const demandId =
+            acceptedThread === undefined
+              ? input.initialMessage.demandId
+              : acceptedThread.initialDemandId;
           const messageCommandId = CommandId.make(`${input.commandId}:initial-message`);
           const messageReceipt = yield* readReceipt(input, messageCommandId);
           messageWasAlreadyAccepted = Option.isSome(messageReceipt);
@@ -1253,9 +1282,7 @@ const make = Effect.gen(function* () {
               threadId,
               messageId,
               text: input.initialMessage.text,
-              ...(input.initialMessage.demandId === undefined
-                ? {}
-                : { demandId: input.initialMessage.demandId }),
+              ...(demandId === undefined ? {} : { demandId }),
               ...(input.initialMessage.scheduledTaskId === undefined
                 ? {}
                 : {

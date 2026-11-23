@@ -438,12 +438,15 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
     planSelectionTransition: Effect.fn("PiAdapter.planSelectionTransition")(function () {
       return Effect.succeed(turnScopedSelectionTransition());
     }),
+    isolatesMcpProcess: true,
     openSession: Effect.fn("PiAdapterV2.openSession")(function* (
       input: ProviderAdapter.ProviderAdapterV2OpenSessionInput,
     ) {
+      const readProcessMcp = input.readProcessMcpSession ?? mcpSessions.read;
+
       const scope = yield* Effect.scope;
       const cwd = input.runtimePolicy.cwd ?? host.paths.cwd;
-      const mcpSession = yield* mcpSessions.read(input.threadId);
+      const mcpSession = yield* readProcessMcp(input.threadId);
       const provideCacheFs = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>) =>
         effect.pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),

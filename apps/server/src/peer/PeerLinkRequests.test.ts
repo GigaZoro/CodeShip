@@ -129,6 +129,7 @@ const scope: McpInvocationContext.McpInvocationScope = {
   requestNamespace: "provider-session:laptop",
   thread: {
     threadId,
+    runId,
     providerSessionId: "provider-session:laptop",
     providerInstanceId: instanceId,
   },

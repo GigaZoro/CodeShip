@@ -51,6 +51,10 @@ interface PeerCallInput<S extends Schema.Decoder<unknown>> {
   readonly tool: string;
   readonly arguments: Record<string, unknown>;
   readonly limits: PeerCallLimits;
+  readonly demandId?: string;
+  readonly demandOriginKind?: "repair";
+  /** Requires the authenticated session to support forwarded accounting before running this call. */
+  readonly demandProtocol?: "explicit" | "receipt-only";
   readonly success: S;
   /** The most the tool's result may take as JSON; a larger answer is refused, never read whole. */
   readonly maxResultBytes?: number;
@@ -199,6 +203,7 @@ const make = Effect.gen(function* () {
         readonly sessionId: string;
         readonly serverVersion: string;
         readonly schemas: ReadonlyMap<string, unknown>;
+        readonly supportsDemand: boolean;
       }
     >
   >(new Map());
@@ -291,10 +296,12 @@ const make = Effect.gen(function* () {
     peer: Peer,
     body: unknown,
     session: Effect.Effect<string, OrchestratorMcpFailure | HttpClientError.HttpClientError>,
+    callHeaders?: Record<string, string>,
   ) {
     const attempt = Effect.flatMap(session, (sessionId) =>
       post(peer.url, peer.token, body, {
         ...peer.limitHeader,
+        ...callHeaders,
         "mcp-session-id": sessionId,
         "mcp-protocol-version": PROTOCOL_VERSION,
       }).pipe(Effect.map((response) => ({ sessionId, response }))),
@@ -339,13 +346,21 @@ const make = Effect.gen(function* () {
     }
     if (listed.result === undefined) return yield* unreadable(peer);
     const schemas = new Map(listed.result.tools.map((tool) => [tool.name, tool.inputSchema]));
+    const supportsDemand =
+      response.headers[McpInvocationContext.DEMAND_PROTOCOL_HEADER] ===
+      McpInvocationContext.DEMAND_PROTOCOL_VERSION;
     const stillCurrent = (yield* Ref.get(sessions)).get(peer.key) === sessionId;
     if (stillCurrent) {
       yield* Ref.update(inputSchemas, (current) =>
-        new Map(current).set(peer.key, { sessionId, serverVersion: peer.serverVersion, schemas }),
+        new Map(current).set(peer.key, {
+          sessionId,
+          serverVersion: peer.serverVersion,
+          schemas,
+          supportsDemand,
+        }),
       );
     }
-    return { sessionId, schemas, stillCurrent };
+    return { sessionId, schemas, stillCurrent, supportsDemand };
   });
 
   /**
@@ -361,7 +376,10 @@ const make = Effect.gen(function* () {
     const checked = Object.fromEntries(
       Object.entries(input.arguments).filter(([key]) => !ignorable.has(key)),
     );
-    if (Object.values(checked).every((value) => value === undefined)) {
+    if (
+      input.demandProtocol === undefined &&
+      Object.values(checked).every((value) => value === undefined)
+    ) {
       return yield* currentSession(peer);
     }
     const unknownIn = (schemas: ReadonlyMap<string, unknown>) =>
@@ -374,15 +392,22 @@ const make = Effect.gen(function* () {
         cached !== undefined &&
         cached.sessionId === sessionId &&
         cached.serverVersion === peer.serverVersion &&
+        (input.demandProtocol === undefined || cached.supportsDemand) &&
         unknownIn(cached.schemas).length === 0
       ) {
         return cached.sessionId;
       }
       // Listed again before a refusal, since the peer may have restarted since.
       const listed = yield* listInputSchemas(peer);
+      if (!listed.stillCurrent) continue;
+      if (input.demandProtocol !== undefined && !listed.supportsDemand) {
+        return yield* new OrchestratorMcpFailure({
+          code: "version_mismatch",
+          message: `${peer.label} does not advertise forwarded demand accounting. Update T3.CodeShip there to use an explicit demand origin.`,
+        });
+      }
       const unknown = unknownIn(listed.schemas);
       if (unknown.length === 0) return listed.sessionId;
-      if (!listed.stillCurrent) continue;
       const them = unknown.length === 1 ? "it" : "them";
       return yield* new OrchestratorMcpFailure({
         code: "invalid_request",
@@ -417,6 +442,22 @@ const make = Effect.gen(function* () {
         params: { name: input.tool, arguments: input.arguments },
       },
       sessionCheckedFor(peer, input),
+      {
+        ...(input.demandId === undefined
+          ? {}
+          : {
+              [McpInvocationContext.DEMAND_ID_HEADER]: input.demandId,
+              ...(input.demandOriginKind === undefined
+                ? {}
+                : { [McpInvocationContext.DEMAND_ORIGIN_KIND_HEADER]: input.demandOriginKind }),
+            }),
+        ...(input.demandProtocol === "receipt-only"
+          ? {
+              [McpInvocationContext.DEMAND_PROTOCOL_HEADER]:
+                McpInvocationContext.DEMAND_RECEIPT_ONLY,
+            }
+          : {}),
+      },
     );
     const body = yield* decodeToolCallResponse(
       responseJson(

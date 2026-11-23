@@ -1236,6 +1236,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     requestNamespace: "provider-session:mcp-providers",
     thread: {
       threadId: parentThreadId,
+      runId: parentRunId,
       providerSessionId: "provider-session:mcp-providers",
       providerInstanceId: codexInstanceId,
     },
@@ -2551,12 +2552,70 @@ describe("OrchestratorMcpService provider resolution", () => {
 
         yield* Effect.gen(function* () {
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-          const first = yield* service.delegateTask(scope, {
-            task: "Summarize the diff.",
-            target,
-            mode: "async",
-            clientRequestId: "delegate-driver-retry-after-disable-1",
-          });
+          const stale = yield* service
+            .delegateTask(
+              {
+                ...scope,
+                thread: {
+                  ...scope.thread!,
+                  runId: RunId.make("run:previous"),
+                  demandId: `demand:${"a".repeat(64)}`,
+                },
+              },
+              {
+                task: "Old request",
+                target,
+                mode: "async",
+                clientRequestId: "before-parent-changed",
+              },
+            )
+            .pipe(Effect.flip);
+          assert.equal(stale.code, "parent_not_active");
+          assert.lengthOf(yield* Ref.get(dispatched), 0);
+          const sourceDemand = `demand:${"b".repeat(64)}`;
+          for (const demandId of [sourceDemand, null]) {
+            const refused = yield* service
+              .delegateTask(
+                { ...scope, thread: { ...scope.thread!, runId: null, demandId } },
+                {
+                  task: "Summarize the diff.",
+                  target,
+                  mode: "async",
+                  clientRequestId: "shared-parent",
+                },
+              )
+              .pipe(Effect.flip);
+            assert.equal(refused.code, "parent_not_active");
+          }
+          const shared = {
+            ...scope,
+            thread: { ...scope.thread!, runId: null, demandId: sourceDemand },
+          };
+          const question = yield* service
+            .askUser(shared, {
+              questions: [{ question: "Which path?" }],
+              clientRequestId: "new-question",
+            })
+            .pipe(Effect.flip);
+          const secret = yield* service
+            .requestSecret(shared, {
+              label: "Credential",
+              reason: "Connect",
+              clientRequestId: "new-card",
+            })
+            .pipe(Effect.flip);
+          assert.equal(question.code, "parent_not_active");
+          assert.equal(secret.code, "parent_not_active");
+          assert.lengthOf(yield* Ref.get(dispatched), 0);
+          const first = yield* service.delegateTask(
+            { ...scope, thread: { ...scope.thread!, runId: parentRunId, demandId: sourceDemand } },
+            {
+              task: "Summarize the diff.",
+              target,
+              mode: "async",
+              clientRequestId: "delegate-driver-retry-after-disable-1",
+            },
+          );
           assert.equal(first.status, "running");
           assert.equal(first.providerInstanceId, selection.instanceId);
           assert.equal(first.model, selection.model);
@@ -2565,6 +2624,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             modelSelection: ModelSelection;
           };
           assert.deepEqual(firstCommand.modelSelection, selection);
+          assert.propertyVal(firstCommand, "demandId", sourceDemand);
 
           assert.deepEqual(
             yield* service.delegateTask(scope, {
@@ -2734,11 +2794,31 @@ describe("OrchestratorMcpService provider resolution", () => {
               attachments: [],
               dispatchMode: { type: "start_immediately" },
             });
+            const caller = {
+              ...scope,
+              thread: {
+                ...scope.thread!,
+                runId: (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!.id,
+              },
+            };
+            const shared = { ...caller, thread: { ...caller.thread, runId: null } };
             const request = {
               threads: [{ target: { driverKind: driver, model } }],
               clientRequestId: "create-retry",
             };
-            const first = yield* service.createThreads(scope, request);
+            const creationDemand = `demand:${"c".repeat(64)}`;
+            const first = yield* service.createThreads(
+              {
+                ...caller,
+                thread: { ...caller.thread!, demandId: creationDemand },
+              },
+              request,
+            );
+            assert.deepEqual(yield* service.createThreads(shared, request), first);
+            const newBatch = yield* service
+              .createThreads(shared, { ...request, clientRequestId: "unbound-batch" })
+              .pipe(Effect.flip);
+            assert.equal(newBatch.code, "parent_not_active");
             const child = first.threads[0]!;
             const selection = parentEnabled
               ? { instanceId: codexInstanceId, model: "gpt-5.4" }
@@ -2746,16 +2826,16 @@ describe("OrchestratorMcpService provider resolution", () => {
             assert.equal(first.threads.length, 1);
             assert.equal(child.providerInstanceId, selection.instanceId);
             assert.equal(child.model, selection.model);
-            assert.deepEqual(yield* service.createThreads(scope, request), first);
+            assert.deepEqual(yield* service.createThreads(caller, request), first);
 
             // A usage limit refuses new threads but not the replay of an accepted one.
             yield* Ref.set(limit, {
               instanceId: selection.instanceId,
               limitedUntil: "2026-11-04T06:33:00.000Z",
             });
-            assert.deepEqual(yield* service.createThreads(scope, request), first);
+            assert.deepEqual(yield* service.createThreads(caller, request), first);
             const limited = yield* service
-              .createThreads(scope, { ...request, clientRequestId: "limited" })
+              .createThreads(caller, { ...request, clientRequestId: "limited" })
               .pipe(Effect.flip);
             assert.equal(limited.code, "provider_unavailable");
             assert.match(limited.message, /^Thread 1: .*2026-11-04T06:33:00.000Z/);
@@ -2766,15 +2846,16 @@ describe("OrchestratorMcpService provider resolution", () => {
               ...request,
               threads: [{ ...request.threads[0]!, prompt: "Start work." }],
             };
-            const started = yield* service.createThreads(scope, withPrompt);
+            const started = yield* service.createThreads(caller, withPrompt);
             assert.equal(started.threads[0]?.threadId, child.threadId);
             const before = yield* orchestrator.getThreadProjection(child.threadId);
+            assert.equal(before.runs[0]?.demandId, creationDemand);
             assert.deepEqual(before.runs[0]?.modelSelection, selection);
             assert.equal(before.messages.length, 1);
 
             // Routing moves a fresh run off a limited account; the call reports the one it runs on.
             yield* Ref.set(failover, true);
-            const moved = yield* service.createThreads(scope, {
+            const moved = yield* service.createThreads(caller, {
               ...withPrompt,
               clientRequestId: "failover",
             });
@@ -2795,16 +2876,16 @@ describe("OrchestratorMcpService provider resolution", () => {
               dispatchMode: { type: "queue_after_active" },
             });
             assert.deepEqual(
-              yield* service.createThreads(scope, { ...withPrompt, clientRequestId: "failover" }),
+              yield* service.createThreads(caller, { ...withPrompt, clientRequestId: "failover" }),
               moved,
             );
-            const empty = yield* service.createThreads(scope, {
+            const empty = yield* service.createThreads(caller, {
               ...request,
               clientRequestId: "empty",
             });
 
             // The user raised this thread above the caller after its creation.
-            const raised = yield* service.createThreads(scope, {
+            const raised = yield* service.createThreads(caller, {
               ...request,
               clientRequestId: "raised",
             });
@@ -2816,7 +2897,7 @@ describe("OrchestratorMcpService provider resolution", () => {
               runtimeMode: "full-access",
             });
             const raisedError = yield* service
-              .createThreads(scope, { ...withPrompt, clientRequestId: "raised" })
+              .createThreads(caller, { ...withPrompt, clientRequestId: "raised" })
               .pipe(Effect.flip);
             assert.equal(raisedError.code, "runtime_mode_escalation_denied");
             const unprompted = yield* orchestrator.getThreadProjection(raisedThreadId);
@@ -2833,7 +2914,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                 },
               },
             });
-            assert.deepEqual(yield* service.createThreads(scope, withPrompt), started);
+            assert.deepEqual(yield* service.createThreads(caller, withPrompt), started);
             const after = yield* orchestrator.getThreadProjection(child.threadId);
             assert.deepEqual(after.thread.modelSelection, selection);
             assert.deepEqual(after.runs, before.runs);
@@ -2841,17 +2922,17 @@ describe("OrchestratorMcpService provider resolution", () => {
 
             // A retry of an accepted entry does not depend on the provider still being registered.
             yield* Ref.set(registered, []);
-            assert.deepEqual(yield* service.createThreads(scope, withPrompt), started);
+            assert.deepEqual(yield* service.createThreads(caller, withPrompt), started);
 
             const freshError = yield* service
-              .createThreads(scope, {
+              .createThreads(caller, {
                 ...request,
                 clientRequestId: "fresh",
               })
               .pipe(Effect.flip);
             assert.equal(freshError.code, "provider_unavailable");
             const promptError = yield* service
-              .createThreads(scope, {
+              .createThreads(caller, {
                 ...withPrompt,
                 clientRequestId: "empty",
               })

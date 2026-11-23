@@ -337,6 +337,7 @@ describe("orchestrator MCP toolkit", () => {
             requestNamespace: "mcp-provider-session-replay-parent",
             thread: {
               threadId: parentThreadId,
+              runId: (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!.id,
               providerSessionId: "mcp-provider-session-replay-parent",
               providerInstanceId: codexInstanceId,
             },

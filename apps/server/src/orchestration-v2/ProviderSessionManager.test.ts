@@ -334,6 +334,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly mcpConfigs?: Ref.Ref<
       ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
     >;
+    readonly isolatesMcpProcess?: true;
     readonly beforeOpen?: (input: {
       readonly providerSessionId: ProviderSessionId;
       readonly initialProviderItemIdentityVersion?: 2;
@@ -376,6 +377,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: ProviderInstanceId.make("codex"),
     driver: CODEX_DRIVER,
+    ...(options.isolatesMcpProcess ? { isolatesMcpProcess: true } : {}),
     getCapabilities: () => Effect.succeed(options.capabilities ?? CodexCapabilities),
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
     openSession: (input) =>
@@ -385,14 +387,18 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
           if (options.hangSessionScopeClose === true) yield* hangClose;
         }
         if (options.mcpConfigs !== undefined && options.spawnBeforeOpen === true) {
-          const mcpConfig = yield* mcpSessions.read(input.threadId);
+          const mcpConfig = yield* (input.readProcessMcpSession ?? mcpSessions.read)(
+            input.threadId,
+          );
           yield* Ref.update(options.mcpConfigs, (configs) => [...configs, mcpConfig]);
         }
         if (options.beforeOpen !== undefined) {
           yield* options.beforeOpen(input);
         }
         if (options.mcpConfigs !== undefined && options.spawnBeforeOpen !== true) {
-          const mcpConfig = yield* mcpSessions.read(input.threadId);
+          const mcpConfig = yield* (input.readProcessMcpSession ?? mcpSessions.read)(
+            input.threadId,
+          );
           yield* Ref.update(options.mcpConfigs, (configs) => [...configs, mcpConfig]);
         }
         const now = yield* DateTime.now;
@@ -448,6 +454,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
               resumeCount: current.resumeCount + 1,
             })).pipe(Effect.as(threadInput.providerThread)),
           startTurn: () => options.startTurn ?? Effect.void,
+          compactThread: () => Effect.void,
           steerTurn: () => Effect.void,
           interruptTurn: () =>
             Ref.update(state, (current) => ({
@@ -484,6 +491,7 @@ function layerTest(input: {
   readonly mcpConfigs?: Ref.Ref<
     ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
   >;
+  readonly isolatesMcpProcess?: true;
   readonly beforeOpen?: (input: {
     readonly providerSessionId: ProviderSessionId;
     readonly initialProviderItemIdentityVersion?: 2;
@@ -524,6 +532,7 @@ function layerTest(input: {
   const layerRegistry = Layer.unwrap(
     makeProviderAdapter(input.state, {
       failEventStream: input.failEventStream ?? false,
+      ...(input.isolatesMcpProcess ? { isolatesMcpProcess: true } : {}),
       ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
       ...(input.mcpConfigs === undefined ? {} : { mcpConfigs: input.mcpConfigs }),
       ...(input.beforeOpen === undefined ? {} : { beforeOpen: input.beforeOpen }),
@@ -1489,10 +1498,12 @@ it.effect(
             nativeThreadId: `native-${threadId}`,
           });
         const runId = idAllocator.derive.run({ threadId: sibling, ordinal: 1 });
-        yield* runtime.startTurn({
+        const demandId = `demand:${"b".repeat(64)}`;
+        const turnInput = {
           appThread: (yield* projectionStore.getThreadProjection(sibling)).thread,
           threadId: sibling,
           runId,
+          demandId,
           runOrdinal: 1,
           providerTurnOrdinal: 1,
           attemptId: idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 }),
@@ -1507,7 +1518,20 @@ it.effect(
           },
           modelSelection,
           runtimePolicy,
-        });
+        } satisfies ProviderAdapter.ProviderAdapterV2TurnInput;
+        yield* runtime.startTurn(turnInput);
+        const registry = yield* McpSessionRegistry.McpSessionRegistry;
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        const requestFrom = (id: ThreadId) =>
+          mcpSessions
+            .read(id)
+            .pipe(
+              Effect.flatMap((config) =>
+                registry.resolve(config!.authorizationHeader.replace(/^Bearer\s+/, "")),
+              ),
+            );
+        assert.equal((yield* requestFrom(sibling))?.thread.demandId, demandId);
+        assert.isUndefined((yield* requestFrom(stopping))?.thread.demandId);
         const release = (own: ThreadId) =>
           manager.releaseUnlessBusy({
             providerSessionId,
@@ -1555,6 +1579,9 @@ it.effect(
           runtimePolicy,
         });
         assert.equal((yield* startOnReleasedRuntime)._tag, "ProviderAdapterTurnStartError");
+        const staleCompact = yield* runtime.compactThread!(turnInput).pipe(Effect.flip);
+        assert.equal(staleCompact._tag, "ProviderAdapterTurnStartError");
+        assert.isUndefined((yield* requestFrom(sibling))?.thread.demandId);
         assert.isTrue(yield* release(sibling));
       }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60 * 60_000 })));
     }),
@@ -2442,6 +2469,91 @@ it.effect(
                     Effect.tap(() => Ref.set(duringOpen, Effect.void)),
                   ),
           }),
+        ),
+      );
+    }),
+);
+
+it.effect(
+  "a replacement native process can identify its own turn while the first process still holds its credential",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const mcpConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      yield* Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const registry = yield* McpSessionRegistry.McpSessionRegistry;
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread:two-native-processes");
+        yield* sink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+        });
+        const start = Effect.fnUntraced(function* (ordinal: number) {
+          const providerSessionId = yield* ids.allocate.providerSession({
+            providerInstanceId: modelSelection.instanceId,
+            threadId,
+          });
+          const runtime = yield* manager.open({
+            threadId,
+            providerSessionId,
+            modelSelection,
+            runtimePolicy,
+          });
+          const runId = ids.derive.run({ threadId, ordinal });
+          yield* runtime.startTurn({
+            appThread: yield* store.getThread(threadId),
+            threadId,
+            runId,
+            demandId: `demand:${"a".repeat(64)}`,
+            runOrdinal: ordinal,
+            providerTurnOrdinal: ordinal,
+            attemptId: ids.derive.runAttempt({ runId, attemptOrdinal: 1 }),
+            rootNodeId: ids.derive.rootNode({ runId }),
+            providerThread: makeProviderThread({
+              idAllocator: ids,
+              threadId,
+              providerSessionId,
+              now,
+              nativeThreadId: `native-${ordinal}`,
+            }),
+            message: {
+              createdBy: "user",
+              creationSource: "web",
+              messageId: yield* ids.allocate.message({ threadId, ordinal }),
+              text: "Start",
+              attachments: [],
+            },
+            modelSelection,
+            runtimePolicy,
+          });
+          const config = (yield* Ref.get(mcpConfigs)).at(-1)!;
+          return {
+            runId,
+            providerSessionId,
+            resolve: registry.resolve(config!.authorizationHeader.replace(/^Bearer\s+/, "")),
+          };
+        });
+        const first = yield* start(1);
+        yield* manager.detach({ providerSessionId: first.providerSessionId, threadId });
+        const second = yield* start(2);
+        const original = yield* first.resolve;
+        const later = yield* second.resolve;
+        assert.equal(original?.thread.runId, first.runId);
+        assert.equal(later?.thread.runId, second.runId);
+        assert.equal(original?.requestNamespace, later?.requestNamespace);
+        yield* manager.close(first.providerSessionId);
+        assert.isUndefined(yield* first.resolve);
+        assert.equal((yield* second.resolve)?.thread.runId, second.runId);
+        yield* manager.close(second.providerSessionId);
+        assert.isUndefined(yield* second.resolve);
+      }).pipe(
+        Effect.provide(
+          layerTest({ state, idleTimeoutMs: 60_000, mcpConfigs, isolatesMcpProcess: true }),
         ),
       );
     }),

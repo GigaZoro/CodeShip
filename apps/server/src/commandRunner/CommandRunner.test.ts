@@ -15,6 +15,7 @@ import {
   NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   type MemoryShortage,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -388,6 +389,7 @@ const callerOf = (threadId: ThreadId): McpThreadInvocationScope => ({
   requestNamespace: "provider-session:command-runner",
   thread: {
     threadId,
+    runId: RunId.make(threadId.replace(/^thread:/, "run:")),
     providerSessionId: "provider-session:command-runner",
     providerInstanceId: instanceId,
   },
@@ -1529,6 +1531,10 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
       Effect.gen(function* () {
         const chat = yield* liveChat("command-unstarted");
         const request = { command: "echo started", clientRequestId: "command-unstarted" };
+        const caller = callerOf(chat.threadId);
+        const shared = { ...caller, thread: { ...caller.thread, runId: null } };
+        const denied = yield* withServer((runner) => runner.run(shared, request).pipe(Effect.flip));
+        assert.equal(denied.code, "parent_not_active");
         const unstartable = yield* AgentScope;
         const first = yield* withServer((runner) =>
           runner.run(callerOf(chat.threadId), request).pipe(Effect.flip),
@@ -1540,7 +1546,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         );
         assert.match(first.message, /^Could not start the command: /);
         const retried = yield* withServer((runner) =>
-          runner.run(callerOf(chat.threadId), request).pipe(Effect.flip),
+          runner.run(shared, request).pipe(Effect.flip),
         );
         assert.equal(retried.message, first.message);
         const projection = yield* Orchestrator.OrchestratorV2.pipe(

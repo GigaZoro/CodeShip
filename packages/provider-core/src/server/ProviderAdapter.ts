@@ -433,6 +433,10 @@ export const ProviderAdapterV2Error = Schema.Union([
 export type ProviderAdapterV2Error = typeof ProviderAdapterV2Error.Type;
 
 export interface ProviderAdapterV2OpenSessionInput {
+  /** Reads credentials confined to this native process. A shared MCP server uses its thread config instead. */
+  readonly readProcessMcpSession?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<import("./mcpSession.ts").McpProviderSessionConfig | undefined>;
   readonly threadId: ThreadId;
   readonly providerSessionId: ProviderSessionId;
   readonly modelSelection: ModelSelection;
@@ -456,6 +460,8 @@ export interface ProviderAdapterV2TurnInput {
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;
+  /** Server accounting for the credential handed to this turn. */
+  readonly demandId?: string | null;
   readonly runOrdinal: number;
   readonly nativeThreadHasTurns?: boolean;
   readonly providerTurnOrdinal: number;
@@ -679,6 +685,7 @@ export class ProviderAdapterV2 extends Context.Service<
     readonly planSelectionTransition: (
       input: ProviderSelectionTransitionInput,
     ) => Effect.Effect<ProviderSelectionTransitionPlan, ProviderAdapterV2Error>;
+    readonly isolatesMcpProcess?: true;
     readonly openSession: (
       input: ProviderAdapterV2OpenSessionInput,
     ) => Effect.Effect<ProviderAdapterV2SessionRuntime, ProviderAdapterV2Error, Scope.Scope>;

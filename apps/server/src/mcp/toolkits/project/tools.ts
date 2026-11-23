@@ -6,6 +6,7 @@ import {
   ThreadId,
   RunId,
   OrchestrationV2DelegatedFrom,
+  OrchestrationV2DemandOrigin,
   OrchestrationV2RunStatus,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
   RuntimeMode,
@@ -176,6 +177,10 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
       }),
     ),
     clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
+    demandOrigin: Schema.optional(OrchestrationV2DemandOrigin).annotate({
+      description:
+        "Accounting origin for a claimed work item (globally stable tracker key) or a repair (failed thread and run on the calling machine). Ordinary launches inherit the caller's demand.",
+    }),
     /** Set by a linked environment launching its agent's delegated task here; ignored otherwise. */
     delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
     /** Set by a linked environment that recorded its delegated task before launching it here; ignored otherwise. */

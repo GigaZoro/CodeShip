@@ -1516,12 +1516,6 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
   const host = yield* ProviderHost.ProviderHost;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const { flavor, selfInvocation: self } = options;
-  const readMcpContext = (threadId: ThreadId | null) =>
-    threadId === null
-      ? Effect.succeed(acpMcpContext(undefined, self, flavor.mcpOverHttp))
-      : mcpSessions
-          .read(threadId)
-          .pipe(Effect.map((session) => acpMcpContext(session, self, flavor.mcpOverHttp)));
   const driver = flavor.driver;
   const continuationRequests = options.continuationRequests;
   const postSettleContinuationEnabled =
@@ -1536,8 +1530,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
     planSelectionTransition: Effect.fn("AcpAdapter.planSelectionTransition")(function (input) {
       return Effect.succeed(acpSelectionTransition(input));
     }),
+    isolatesMcpProcess: true,
     openSession: Effect.fn("AcpAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
+        const readProcessMcp = input.readProcessMcpSession ?? mcpSessions.read;
+        const readMcpContext = (threadId: ThreadId | null) =>
+          threadId === null
+            ? Effect.succeed(acpMcpContext(undefined, self, flavor.mcpOverHttp))
+            : readProcessMcp(threadId).pipe(
+                Effect.map((session) => acpMcpContext(session, self, flavor.mcpOverHttp)),
+              );
+
         const sessionScope = yield* Effect.scope;
         let itemIdentityVersion: 2 | undefined =
           input.initialProviderItemIdentityVersion ??
@@ -7438,7 +7441,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           sessionId: string,
         ) {
           const prompt: Array<EffectAcpSchema.ContentBlock> = [];
-          const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+          const mcpSession = yield* readProcessMcp(turnInput.threadId);
           const instructionState = {
             interactionMode: turnInput.runtimePolicy.interactionMode,
             hasT3Mcp: mcpSession !== undefined,

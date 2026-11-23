@@ -4903,8 +4903,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
     planSelectionTransition: Effect.fn("ClaudeAdapterV2.planSelectionTransition")(function () {
       return Effect.succeed(turnScopedSelectionTransition());
     }),
+    isolatesMcpProcess: true,
     openSession: Effect.fn("ClaudeAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
+        const readProcessMcp = input.readProcessMcpSession ?? mcpSessions.read;
+
         const sessionScope = yield* Effect.scope;
         const now = yield* DateTime.now;
         const session = providerSession({
@@ -10673,7 +10676,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               : null;
           // Continuations drain existing output without prompting; retain the live process regardless of selection.
           if (reusable !== null && isClaudeProviderContinuationTurn(turnInput)) return reusable;
-          const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+          const mcpSession = yield* readProcessMcp(turnInput.threadId);
           // Full access, tool search and the subagent cache TTL share the first read that succeeds.
           let readCascade:
             | { readonly flagKey: string; readonly cascade: ClaudeSettingsCascade }

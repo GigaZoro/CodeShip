@@ -17,6 +17,7 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import { derive } from "@t3tools/provider-core/server/IdAllocator";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -1599,37 +1600,68 @@ const make = Effect.gen(function* () {
   const run: CommandRunner["Service"]["run"] = Effect.fn("CommandRunner.run")(
     function* (scope, input) {
       yield* Deferred.await(adopted);
+      const key = input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
+      const commandId = CommandId.make(
+        `command:mcp:${encodeURIComponent(scope.requestNamespace)}:command-run:${encodeURIComponent(key)}`,
+      );
+      // Named by the request, so a retry with the same clientRequestId finds the same folder.
+      const directory = path.join(
+        commandsDir,
+        NodeCrypto.createHash("sha256").update(commandId).digest("hex").slice(0, 32),
+      );
+      const logPath = path.join(directory, LOG_FILE);
+      const requestedTask = derive.delegatedTaskNode({ commandId });
       const parent = yield* threads
-        .getThreadRecords(scope.thread.threadId, ["runs", "subagents"])
+        .getThreadRecords(scope.thread.threadId, ["runs", "subagents"], {
+          subagentIds: [requestedTask],
+        })
         .pipe(
           Effect.mapError(() => failure("thread_not_found", "The calling thread was not found.")),
         );
-      const parentRun = parent.runs
+      const active = parent.runs
         .filter(ThreadManagement.isActiveRun)
         .toSorted((left, right) => right.ordinal - left.ordinal)[0];
-      if (
-        parentRun === undefined ||
-        parentRun.rootNodeId === null ||
-        parentRun.providerInstanceId !== scope.thread.providerInstanceId
-      ) {
+      if (active === undefined || active.providerInstanceId !== scope.thread.providerInstanceId) {
         return yield* failure(
           "parent_not_active",
           "Commands require an active run owned by this MCP provider session.",
         );
       }
+      const prior = parent.subagents.find(
+        (task) => task.id === requestedTask && task.command?.logPath === logPath,
+      );
+      const parentId = prior === undefined ? scope.thread.runId : prior.runId;
+      const parentRun = parent.runs.find((run) => run.id === parentId);
+      if (
+        (prior === undefined && parentId !== active.id) ||
+        parentRun?.rootNodeId == null ||
+        parentRun.providerInstanceId !== scope.thread.providerInstanceId
+      )
+        return yield* failure(
+          "parent_not_active",
+          "The MCP credential does not identify the command’s parent run.",
+        );
       const parentNodeId = parentRun.rootNodeId;
+      const accepted = prior?.command;
+      const shell = accepted?.shell === undefined ? input.shell : (accepted.shell ?? undefined);
+
       const project = yield* projects.getById(parent.thread.projectId).pipe(
         Effect.map(Option.getOrUndefined),
         Effect.orElseSucceed(() => undefined),
       );
       const base = parent.thread.worktreePath ?? project?.workspaceRoot;
-      if (base === undefined && (input.cwd === undefined || !path.isAbsolute(input.cwd))) {
+      if (
+        accepted === undefined &&
+        base === undefined &&
+        (input.cwd === undefined || !path.isAbsolute(input.cwd))
+      ) {
         return yield* failure(
           "invalid_request",
           "This thread has no folder; pass an absolute cwd.",
         );
       }
-      const cwd = base === undefined ? input.cwd! : path.resolve(base, input.cwd ?? ".");
+      const cwd =
+        accepted?.cwd ?? (base === undefined ? input.cwd! : path.resolve(base, input.cwd ?? "."));
       const isFolder = yield* fs.stat(cwd).pipe(
         Effect.map((info) => info.type === "Directory"),
         Effect.orElseSucceed(() => false),
@@ -1647,24 +1679,16 @@ const make = Effect.gen(function* () {
             )
           : undefined;
       const timeoutMinutes =
-        input.timeoutMinutes ?? ORCHESTRATOR_MCP_COMMAND_DEFAULT_TIMEOUT_MINUTES;
-      const key = input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
-      const commandId = CommandId.make(
-        `command:mcp:${encodeURIComponent(scope.requestNamespace)}:command-run:${encodeURIComponent(key)}`,
-      );
-      // Named by the request, so a retry with the same clientRequestId finds the same folder.
-      const directory = path.join(
-        commandsDir,
-        NodeCrypto.createHash("sha256").update(commandId).digest("hex").slice(0, 32),
-      );
-      const logPath = path.join(directory, LOG_FILE);
+        accepted?.timeoutMinutes ??
+        input.timeoutMinutes ??
+        ORCHESTRATOR_MCP_COMMAND_DEFAULT_TIMEOUT_MINUTES;
       const result = (taskId: NodeId): OrchestratorMcpRunCommandResult => ({
         taskId,
         // A queued command reads its agent's environment as it starts; the host's names it till then.
         shell: resolveCommandShell(
           platform,
           windows ? {} : posixLaunchEnvironment(hostCommandEnv, commandEnv ?? {}).env,
-          input.shell,
+          shell,
         ).name,
         logPath,
         timeoutMinutes,
@@ -1689,7 +1713,13 @@ const make = Effect.gen(function* () {
                 ...(input.label === undefined ? {} : { title: input.label }),
                 driver: COMMAND_DRIVER,
                 providerInstanceId: scope.thread.providerInstanceId,
-                command: { command: input.command, cwd, logPath, timeoutMinutes },
+                command: {
+                  command: input.command,
+                  cwd,
+                  logPath,
+                  timeoutMinutes,
+                  shell: shell ?? null,
+                },
                 ...(waiting === undefined ? {} : { waiting }),
               })
               .pipe(
@@ -1707,12 +1737,14 @@ const make = Effect.gen(function* () {
               (stored) => stored.event.type === "subagent.updated",
             );
             // A retried request recorded the task the first time.
-            const prior = parent.subagents.find((task) => task.command?.logPath === logPath);
-            const taskId =
-              taskEvent?.event.type === "subagent.updated" ? taskEvent.event.payload.id : prior?.id;
-            if (taskId === undefined) {
+            const task =
+              taskEvent?.event.type === "subagent.updated" ? taskEvent.event.payload : prior;
+            if (task?.command === undefined || task.runId == null) {
               return yield* failure("orchestration_error", "The command was not recorded.");
             }
+            const taskId = task.id;
+            const original = task.command;
+            const owner = task.runId;
             /** Ends a task whose command never started, with nothing left to wake its thread for. */
             const unstarted = ({ status, result: message }: Omit<UnstartedEnd, "row">) =>
               threads
@@ -1759,15 +1791,28 @@ const make = Effect.gen(function* () {
               if (closed !== undefined) {
                 return yield* unstarted(chatClosed(closed));
               }
+              // A receipt may have won after admission. Recover only the accepted operation.
+              if (
+                owner !== parentRun.id ||
+                original.cwd !== cwd ||
+                original.timeoutMinutes !== timeoutMinutes ||
+                (original.shell !== undefined && original.shell !== (shell ?? null)) ||
+                original.shell === undefined
+              ) {
+                return yield* failure(
+                  "parent_not_active",
+                  "The accepted command cannot be restarted with this parent and shell.",
+                );
+              }
               const clocks = yield* recordedClocks;
               const now = DateTime.makeUnsafe(clocks.wall);
               const row: CommandRunRow = {
                 task_id: taskId,
                 thread_id: scope.thread.threadId,
-                run_id: parentRun.id,
-                label: input.label ?? null,
-                command: input.command,
-                shell: input.shell ?? null,
+                run_id: owner,
+                label: task.title,
+                command: original.command,
+                shell: original.shell ?? shell ?? null,
                 cwd,
                 directory,
                 pid: null,

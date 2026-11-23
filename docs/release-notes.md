@@ -1,3 +1,8 @@
+## 2026-11-23 — Accounting for repairs and work-item requests
+
+- MCP launches and sends can carry the work item or repair run that owns them. A guarded restart applies only while its intended run is active. Linked repairs require a peer that supports origin accounting.
+- A provider credential shared by multiple runs can recover an accepted delegation. Starting a new delegation requires proof of which run requested it. Separate native processes retain their own credentials.
+
 ## 2026-11-23 — Recover interrupted thread launches
 
 - Retrying a keyed thread launch uses the original first message, saved attachments, and the workspace selected at creation. Idle worktree setup resumes from its recorded checkout or reports which operation has an unknown outcome.

@@ -241,7 +241,13 @@ export class ProviderSessionManagerV2 extends Context.Service<
   ProviderSessionManagerV2Shape
 >()("t3/orchestration-v2/ProviderSessionManager/ProviderSessionManagerV2") {}
 
+type ProcessMcpSession = {
+  readonly parentId: string;
+  readonly config: import("@t3tools/provider-core/server/mcpSession").McpProviderSessionConfig;
+};
+
 interface LiveSessionEntry {
+  readonly processMcpSessions?: Map<ThreadId, ProcessMcpSession>;
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
   readonly loadedProviderThreadKeyByThread: ReadonlyMap<ThreadId, string>;
   /** Scope revocation to recorded credential ids so superseded sessions cannot revoke replacements opened before detach. */
@@ -602,6 +608,23 @@ export const layerWithOptions = (
                 return { mcpCredentialId: credential.config.providerSessionId, issued: true };
               }),
             );
+      const prepareProcessMcp = Effect.fnUntraced(function* (
+        credentials: Map<ThreadId, ProcessMcpSession>,
+        threadId: ThreadId,
+        parentId: string | undefined,
+      ) {
+        const previous = credentials.get(threadId);
+        if (previous !== undefined && previous.parentId === parentId) return;
+        if (previous !== undefined) {
+          credentials.delete(threadId);
+          yield* mcpSessionRegistry.revokeProviderSession(previous.config.providerSessionId);
+        }
+        if (parentId === undefined) return;
+        const base = yield* mcpSessions.read(threadId);
+        if (base?.providerSessionId !== parentId) return;
+        const config = yield* mcpSessionRegistry.issueForProcess(base);
+        if (config !== undefined) credentials.set(threadId, { parentId, config });
+      });
       const clearMcpSession = (threadId: ThreadId, mcpCredentialId?: string) =>
         mcpCredentialId === undefined
           ? mcpSessionRegistry
@@ -1732,6 +1755,11 @@ export const layerWithOptions = (
             if (attached !== undefined) {
               const prepared = yield* prepareMcpSession(input.threadId, input.providerInstanceId);
               preparedForCleanup = prepared;
+              const processes = (yield* Ref.get(sessions)).get(
+                sessionKey(input.providerSessionId),
+              )?.processMcpSessions;
+              if (processes !== undefined)
+                yield* prepareProcessMcp(processes, input.threadId, prepared.mcpCredentialId);
               if (prepared.mcpCredentialId !== undefined) {
                 const mcpCredentialId = prepared.mcpCredentialId;
                 yield* Ref.update(sessions, (current) => {
@@ -2080,6 +2108,34 @@ export const layerWithOptions = (
       ): ProviderAdapter.ProviderAdapterV2SessionRuntime => {
         const providerSessionId = runtime.providerSessionId;
         const subscribeEvents = makeEventSubscription(eventSubscribers);
+        const startWithDemand = Effect.fn("ProviderSessionManager.startWithDemand")(function* (
+          { demandId, ...input }: ProviderAdapter.ProviderAdapterV2TurnInput,
+          start: typeof runtime.startTurn,
+        ) {
+          const entry = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
+          if (entry?.runtime !== runtime) {
+            return yield* new ProviderAdapter.ProviderAdapterTurnStartError({
+              driver: runtime.driver,
+              threadId: input.threadId,
+              providerThreadId: input.providerThread.id,
+              runId: input.runId,
+              cause: "The provider session was released while the turn started.",
+            });
+          }
+          const credentialId = entry.mcpCredentialIdByThread.get(input.threadId);
+          if (credentialId !== undefined) {
+            yield* mcpSessionRegistry.bindTurn(credentialId, demandId ?? null, input.runId);
+            const session = entry.processMcpSessions?.get(input.threadId);
+            if (session?.parentId === credentialId)
+              yield* mcpSessionRegistry.bindTurn(
+                session.config.providerSessionId,
+                demandId ?? null,
+                input.runId,
+              );
+          }
+          return yield* start(input);
+        });
+        const compactThread = runtime.compactThread;
         const turnMetrics = (operation: string, model?: string) =>
           withMetrics({
             counter: providerTurnsTotal,
@@ -2092,6 +2148,9 @@ export const layerWithOptions = (
           });
         return {
           ...runtime,
+          ...(compactThread === undefined
+            ? {}
+            : { compactThread: (input) => startWithDemand(input, compactThread) }),
           subscribeEvents,
           events: Stream.unwrap(
             subscribeEvents.pipe(Effect.map((subscription) => subscription.events)),
@@ -2243,7 +2302,9 @@ export const layerWithOptions = (
                     ),
                   ),
                   () =>
-                    runtime.startTurn(input).pipe(turnMetrics("send", input.modelSelection.model)),
+                    startWithDemand(input, runtime.startTurn).pipe(
+                      turnMetrics("send", input.modelSelection.model),
+                    ),
                   (_, exit) =>
                     Exit.isFailure(exit)
                       ? observeActivity(
@@ -2573,9 +2634,32 @@ export const layerWithOptions = (
                     });
                     const sessionScope = yield* Scope.fork(sessionScopes);
                     yield* agentScope.clear(input.threadId);
+                    const processMcpSessions = adapter.isolatesMcpProcess
+                      ? new Map<ThreadId, ProcessMcpSession>()
+                      : undefined;
+                    if (processMcpSessions !== undefined) {
+                      yield* Scope.addFinalizer(
+                        sessionScope,
+                        Effect.suspend(() =>
+                          Effect.forEach(
+                            processMcpSessions.values(),
+                            ({ config }) =>
+                              mcpSessionRegistry.revokeProviderSession(config.providerSessionId),
+                            { discard: true },
+                          ),
+                        ),
+                      );
+                      yield* prepareProcessMcp(processMcpSessions, input.threadId, mcpCredentialId);
+                    }
                     const runtime = yield* restore(
                       adapter
                         .openSession({
+                          ...(processMcpSessions === undefined
+                            ? {}
+                            : {
+                                readProcessMcpSession: (threadId: ThreadId) =>
+                                  Effect.sync(() => processMcpSessions.get(threadId)?.config),
+                              }),
                           threadId: input.threadId,
                           providerSessionId: input.providerSessionId,
                           modelSelection: input.modelSelection,
@@ -2629,6 +2713,7 @@ export const layerWithOptions = (
                     >(new Map());
                     const exposedRuntime = decorateRuntime(runtime, eventSubscribers);
                     const entry: LiveSessionEntry = {
+                      ...(processMcpSessions === undefined ? {} : { processMcpSessions }),
                       attachedThreadIds: new Set([input.threadId]),
                       loadedProviderThreadKeyByThread: new Map(),
                       mcpCredentialIdByThread:

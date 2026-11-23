@@ -297,9 +297,12 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
     planSelectionTransition: Effect.fn("MuseAdapter.planSelectionTransition")(function () {
       return Effect.succeed(turnScopedSelectionTransition());
     }),
+    isolatesMcpProcess: true,
     openSession: Effect.fn("MuseAdapterV2.openSession")(function* (
       input: ProviderAdapter.ProviderAdapterV2OpenSessionInput,
     ) {
+      const readProcessMcp = input.readProcessMcpSession ?? mcpSessions.read;
+
       if (!options.settings.enabled) return yield* protocolError("Muse Code is disabled");
       if (input.runtimePolicy.interactionMode === "plan")
         return yield* protocolError("Muse Code does not support dedicated Plan mode");
@@ -1726,7 +1729,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       );
       const launchHost = Effect.fnUntraced(function* () {
         const epoch = ++hostEpoch;
-        const mcpSession = yield* mcpSessions.read(input.threadId);
+        const mcpSession = yield* readProcessMcp(input.threadId);
         const environment = McpProviderSession.withAgentDeviceEnvironment(
           options.environment,
           mcpSession,
@@ -1882,7 +1885,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         let missingNativeSession = false;
         return yield* Effect.gen(function* () {
           nativeSessionId = requestedId ?? host.connection.mintCommandId();
-          const mcpSession = yield* mcpSessions.read(args.threadId);
+          const mcpSession = yield* readProcessMcp(args.threadId);
           if (mcpSession && !host.initializeResult.grantedCapabilities.includes("sessionMcp"))
             return yield* protocolError(
               "Update Muse Code to a version that supports session MCP servers",
