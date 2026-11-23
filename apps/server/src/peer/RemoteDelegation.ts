@@ -17,11 +17,13 @@ import {
   type RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import { derive } from "@t3tools/provider-core/server/IdAllocator";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
@@ -295,15 +297,29 @@ const make = Effect.gen(function* () {
 
   const delegate: RemoteDelegation["Service"]["delegate"] = Effect.fn("RemoteDelegation.delegate")(
     function* (scope, input) {
-      const parent = yield* threads.getThreadRecords(scope.thread.threadId, ["runs"]).pipe(
-        Effect.mapError(
-          () =>
-            new OrchestratorMcpFailure({
-              code: "thread_not_found",
-              message: "The calling thread was not found.",
-            }),
-        ),
+      const key = input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
+      const commandId = CommandId.make(
+        `command:mcp:${encodeURIComponent(scope.requestNamespace)}:remote-delegate:${encodeURIComponent(key)}`,
       );
+      const taskId = derive.delegatedTaskNode({ commandId });
+      const parent = yield* threads
+        .getThreadRecords(scope.thread.threadId, ["runs", "subagents"], {
+          subagentIds: [taskId],
+        })
+        .pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "thread_not_found",
+                message: "The calling thread was not found.",
+              }),
+          ),
+        );
+      // A retry observes the accepted task here, even if the parent finished, the link
+      // moved or the retry names different work. Only its original request can launch it.
+      if (parent.subagents.some((task) => task.id === taskId && task.remoteChild !== undefined)) {
+        return { taskId };
+      }
       const parentRun = parent.runs
         .filter(ThreadManagement.isActiveRun)
         .toSorted((left, right) => right.ordinal - left.ordinal)[0];
@@ -378,7 +394,6 @@ const make = Effect.gen(function* () {
       // One key for the launch there and the record here, so a retry finds both.
       // Both are scoped to the provider session, as every key a caller passes is:
       // the forwarder scopes the launch's, and the record's names it.
-      const key = input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
       const task = taskPrompt(input);
       // The thread there is named here, from the same scope and key, so the task is recorded
       // before the launch: a crash or lost reply after the launch leaves a task whose follower
@@ -390,9 +405,6 @@ const make = Effect.gen(function* () {
       const link = yield* links.get(target.environmentId).pipe(
         Effect.map(Option.getOrUndefined),
         Effect.orElseSucceed(() => undefined),
-      );
-      const commandId = CommandId.make(
-        `command:mcp:${encodeURIComponent(scope.requestNamespace)}:remote-delegate:${encodeURIComponent(key)}`,
       );
       const remoteChild: OrchestrationV2RemoteTaskChild = {
         environmentId: target.environmentId,
@@ -431,29 +443,24 @@ const make = Effect.gen(function* () {
               }),
           ),
         );
-      const taskEvent = recorded.storedEvents.find(
-        (stored) => stored.event.type === "subagent.updated",
-      );
-      const existing = yield* threads.getThreadRecords(scope.thread.threadId, ["subagents"]).pipe(
-        Effect.map(({ subagents }) =>
-          subagents.find((candidate) => candidate.remoteChild?.threadId === remoteThreadId),
+      // Concurrent callers can both miss the first read. The command receipt elects
+      // exactly one sender, with its original project, modes, prompt and parent demand.
+      if (recorded.replayed) return { taskId };
+      const { task: current } = yield* readTask(scope.thread.threadId, taskId).pipe(
+        Effect.mapError(
+          () =>
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "Unable to read the recorded delegation.",
+            }),
         ),
-        Effect.orElseSucceed(() => undefined),
       );
-      const recordedTask =
-        taskEvent?.event.type === "subagent.updated" ? taskEvent.event.payload : existing;
-      if (recordedTask === undefined) {
+      if (current?.remoteChild === undefined)
         return yield* new OrchestratorMcpFailure({
           code: "orchestration_error",
           message: "The delegated task was not recorded.",
         });
-      }
-      const taskId = recordedTask.id;
-      // A replayed request whose task already has its result (its thread was found gone, or it
-      // ended) has nothing to launch.
-      if (taskEvent === undefined && existing?.result != null) return { taskId };
-      const recordedDemandId =
-        parent.runs.find((run) => run.id === recordedTask.runId)?.demandId ?? null;
+      if (current.result !== null) return { taskId };
       const launched = yield* forwarding
         .call(
           scope,
@@ -476,7 +483,7 @@ const make = Effect.gen(function* () {
               title: parent.thread.title,
             },
           },
-          recordedDemandId,
+          parentRun.demandId ?? null,
         )
         .pipe(
           Effect.filterOrElse(
@@ -540,6 +547,9 @@ const make = Effect.gen(function* () {
       yield* followOne(scope.thread.threadId, taskId).pipe(Effect.forkIn(followers));
       return { taskId };
     },
+    // Disconnecting the initiating request cannot abandon a committed task between
+    // recording it and starting its follower. A server restart reconciles it from storage.
+    (effect) => effect.pipe(Effect.forkIn(followers), Effect.flatMap(Fiber.join)),
   );
 
   /**

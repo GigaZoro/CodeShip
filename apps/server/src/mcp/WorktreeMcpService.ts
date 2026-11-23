@@ -22,8 +22,11 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
-import { callerDemand } from "./threadAccess.ts";
-import type { McpInvocationScope, McpThreadInvocationScope } from "./McpInvocationContext.ts";
+import {
+  invocationDemand,
+  type McpInvocationScope,
+  type McpThreadInvocationScope,
+} from "./McpInvocationContext.ts";
 
 export class WorktreeMcpService extends Context.Service<
   WorktreeMcpService,
@@ -160,12 +163,6 @@ const make = Effect.gen(function* () {
       );
     }
 
-    const demandId =
-      input.continuationPrompt === undefined
-        ? null
-        : yield* callerDemand({ scope, threads: threadManagement, caller: thread }).pipe(
-            asOperationFailed("Unable to resolve the handoff's source run"),
-          );
     const project = yield* loadProject(scope, thread.projectId);
     const projectCwd = project.workspaceRoot;
 
@@ -320,7 +317,7 @@ const make = Effect.gen(function* () {
                   .sendToThread({
                     projectId: thread.projectId,
                     commandId: ids.continuationCommandId,
-                    demandId,
+                    demandId: invocationDemand(scope),
                     threadId: scope.thread.threadId,
                     messageId: ids.continuationMessageId,
                     text: input.continuationPrompt,

@@ -34,6 +34,8 @@ export interface McpThreadCaller {
   readonly threadId: ThreadId;
   readonly providerSessionId: string;
   readonly providerInstanceId: ProviderInstanceId;
+  /** The demand shared by every turn that could have sent this authenticated request. */
+  readonly demandId?: string | null;
   /** A delegated child task; its parent owns the work it hands back. */
   readonly subagent?: boolean;
 }
@@ -146,6 +148,9 @@ export interface McpInvocationScope {
   /** False while the Linked environments beta is off here; `/mcp` reads it per request. */
   readonly linkedEnvironments?: boolean;
 }
+
+export const invocationDemand = (scope: McpInvocationScope): string | null =>
+  (scope.thread === undefined ? scope.client?.demandId : scope.thread.demandId) ?? null;
 
 /**
  * T3.CodeShip renders `t3-thread://` links as thread chips. Other MCP clients cannot open them, so

@@ -9,7 +9,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as Upload from "../../../assets/AttachmentUpload.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import { callerDemand, newCommandId, readThread, unavailable } from "../../threadAccess.ts";
+import { newCommandId, readThread, unavailable } from "../../threadAccess.ts";
 import { withResolvedAttachments } from "./references.ts";
 import { AttachmentToolkit } from "./tools.ts";
 
@@ -68,7 +68,6 @@ export const layer = McpToolAccess.toLayer(
                 code: "invalid_request",
                 message: "Unarchive the target thread before sending attachments.",
               });
-            const demandId = yield* callerDemand(context);
             const commandId = yield* newCommandId();
             const messageId = MessageId.make(commandId);
             const result = yield* withResolvedAttachments(
@@ -83,7 +82,7 @@ export const layer = McpToolAccess.toLayer(
                   threadId: projection.thread.id,
                   commandId,
                   messageId,
-                  demandId,
+                  demandId: McpInvocationContext.invocationDemand(context.scope),
                   ...(caller === undefined ? {} : { senderThreadId: caller.id }),
                   text: input.message ?? "",
                   attachments,

@@ -318,17 +318,6 @@ const makeLaptop = Effect.gen(function* () {
                     : { runtimeMode: "full-access" },
                 ),
           ),
-        getThreadRecords: (threadId) =>
-          Effect.succeed({
-            thread: { id: threadId },
-            runs: [
-              {
-                id: RunId.make("run:mcp-test"),
-                providerInstanceId: ProviderInstanceId.make("codex"),
-                demandId: `demand:${"d".repeat(64)}`,
-              },
-            ],
-          } as never),
         getProjectThreadRecords: ({ threadId }) =>
           Effect.succeed({
             thread: liveThreadShell(threadId, { runtimeMode: "full-access" }),
@@ -366,6 +355,7 @@ const makeLaptop = Effect.gen(function* () {
       threadId: ThreadId.make(caller),
       providerSessionId: `provider-session:${caller}`,
       providerInstanceId: ProviderInstanceId.make("codex"),
+      demandId: `demand:${"d".repeat(64)}`,
     },
     client: undefined,
     capabilities,

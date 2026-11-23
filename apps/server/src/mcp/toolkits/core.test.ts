@@ -684,8 +684,10 @@ it.effect("sending attachments copies one from the caller's thread into the targ
     name: "screenshot.png",
     sizeBytes: 3,
   });
-  const sendingRun = RunId.make("run:attachment-owner");
   const sourceDemand = `demand:${"d".repeat(64)}`;
+  const laterRunId = RunId.make("run:next");
+  const sentDemands: Array<string | null | undefined> = [];
+  let callerShellReads = 0;
   const sent: Array<ReadonlyArray<ChatAttachment>> = [];
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -703,11 +705,15 @@ it.effect("sending attachments copies one from the caller's thread into the targ
         arguments: { threadId: target, attachments: [{ id: callers.id }, { id: owned.id }] },
       })
       .pipe(
-        Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+        Effect.provideService(McpInvocationContext.McpInvocationContext, {
+          ...scope,
+          thread: { ...scope.thread!, demandId: sourceDemand },
+        }),
         Effect.provideService(McpSchema.McpServerClient, client),
       );
 
     expect(result.isError).toBe(false);
+    expect(sentDemands).toEqual([sourceDemand]);
     const [copy, reused] = sent[0] ?? [];
     expect(copy?.id).toMatch(/^thread-target-/);
     expect(copy?.name).toBe("screenshot.png");
@@ -727,18 +733,22 @@ it.effect("sending attachments copies one from the caller's thread into the targ
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
             getThreadShell: (id) =>
-              Effect.succeed({
-                ...McpToolAccessTestkit.liveThreadShell(id),
-                activeRunId: id === threadId ? sendingRun : null,
+              Effect.sync(() => {
+                if (id !== threadId)
+                  return McpToolAccessTestkit.liveThreadShell(id, { activeRunId: null });
+                callerShellReads++;
+                return McpToolAccessTestkit.liveThreadShell(id, {
+                  activeRunId: callerShellReads === 1 ? RunId.make("run:admitted") : laterRunId,
+                });
               }),
             getThreadRecords: (id) =>
               Effect.succeed({
                 messages: [{ attachments: id === threadId ? [callers] : [] }],
                 runs: [
                   {
-                    id: sendingRun,
+                    id: laterRunId,
                     providerInstanceId: scope.thread!.providerInstanceId,
-                    demandId: sourceDemand,
+                    demandId: `demand:${"e".repeat(64)}`,
                   },
                 ],
               } as never),
@@ -749,7 +759,8 @@ it.effect("sending attachments copies one from the caller's thread into the targ
               } as never),
             sendToThread: (input) =>
               Effect.sync(() => {
-                expect(input.demandId).toBe(sourceDemand);
+                expect(callerShellReads).toBeGreaterThan(1);
+                sentDemands.push(input.demandId);
                 sent.push(input.attachments);
                 return {
                   message: { attachments: input.attachments },

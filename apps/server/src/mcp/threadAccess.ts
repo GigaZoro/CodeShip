@@ -234,19 +234,7 @@ export const callerDemand = Effect.fn("mcp.callerDemand")(function* (
   origin?: OrchestrationV2DemandOrigin,
 ) {
   if (origin !== undefined) return yield* explicitDemand(context, origin);
-  if (context.caller === undefined) return context.scope.client?.demandId ?? null;
-  const runId = context.caller.activeRunId;
-  if (runId == null) return null;
-  const records = yield* context.threads
-    .getThreadRecords(context.caller.id, ["runs"], {
-      runIds: [runId],
-    })
-    .pipe(Effect.mapError(unavailable));
-  return (
-    records.runs.find(
-      (r) => r.id === runId && r.providerInstanceId === context.scope.thread?.providerInstanceId,
-    )?.demandId ?? null
-  );
+  return McpInvocationContext.invocationDemand(context.scope);
 });
 
 export const newCommandId = Effect.fn("mcp.newCommandId")(function* () {

@@ -1,6 +1,8 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  GuestMessageId,
+  GuestShareId,
   MessageId,
   EventId,
   NodeId,
@@ -788,6 +790,109 @@ it.effect("a busy run takes steering only from its own demand", () =>
       }).pipe(Effect.provide(layer));
     }),
   ),
+);
+
+it.effect.each([
+  { source: "web" as const, historical: false },
+  { source: "mobile" as const, historical: true },
+])(
+  "keeps an accepted guest message in its own queued run ($source, historical: $historical)",
+  ({ source, historical }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { steered, layer, startFirstTurn } =
+          yield* nextTurnSelectionHarness("guest-promotion");
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const threadId = yield* startFirstTurn;
+          const now = yield* DateTime.now;
+          const shareId = GuestShareId.make("share:guest-promotion");
+          const guestMessageId = GuestMessageId.make("guest:question");
+          const messageId = MessageId.make("accept-guest");
+          yield* orchestrator.dispatch({
+            type: "thread.guest-share.open",
+            commandId: CommandId.make("open"),
+            threadId,
+            shareId,
+            host: "env.t3.test",
+            expiresAt: DateTime.formatIso(DateTime.add(now, { hours: 24 })),
+          });
+          yield* orchestrator.dispatch({
+            type: "thread.guest-share.redeem",
+            commandId: CommandId.make("redeem"),
+            threadId,
+            shareId,
+            guestName: "Guest",
+          });
+          yield* orchestrator.dispatch({
+            type: "thread.guest-message.submit",
+            commandId: CommandId.make("submit"),
+            threadId,
+            shareId,
+            guestMessageId,
+            text: "Review this separately",
+          });
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(messageId),
+            threadId,
+            messageId,
+            guestMessageId,
+            text: "",
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "user",
+            creationSource: source,
+          });
+          const before = yield* orchestrator.getThreadProjection(threadId);
+          const active = before.runs.find((run) => run.status === "running");
+          const queued = before.runs.find((run) => run.userMessageId === messageId);
+          assert.isDefined(active);
+          assert.isDefined(queued);
+          assert.isString(queued.demandId);
+          assert.notEqual(queued.demandId, active.demandId);
+          assert.equal(
+            before.messages.find((message) => message.id === messageId)?.context?.guest
+              ?.guestMessageId,
+            guestMessageId,
+          );
+          if (historical) {
+            const sink = yield* EventSink.EventSinkV2;
+            yield* sink.write({
+              events: before.runs.map(({ demandId: _owner, ...run }) => ({
+                id: EventId.make(`legacy:${run.id}`),
+                type: "run.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: run,
+              })),
+            });
+          }
+          const rejection = yield* orchestrator
+            .dispatch({
+              type: "queued-message.promote-to-steer",
+              commandId: CommandId.make("promote-guest"),
+              threadId,
+              queuedRunId: queued.id,
+              targetRunId: active.id,
+            })
+            .pipe(Effect.flip);
+          assert.equal(rejection._tag, "OrchestratorDispatchError");
+          assert.include(String(rejection.cause), "must run as a separate turn");
+          const after = yield* orchestrator.getThreadProjection(threadId);
+          const pending = after.runs.find((run) => run.id === queued.id);
+          assert.equal(pending?.status, "queued");
+          assert.equal(pending?.demandId, historical ? undefined : queued.demandId);
+          assert.equal(
+            after.messages.find((message) => message.id === messageId)?.runId,
+            queued.id,
+          );
+          yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+          assert.deepEqual(steered, []);
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
 );
 
 it.effect("force sends multiple queued messages and can force send a requeued message again", () =>

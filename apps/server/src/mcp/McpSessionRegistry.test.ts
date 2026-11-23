@@ -60,6 +60,44 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
   }),
 );
 
+it.effect(
+  "a reused bearer retains only the demand common to all its turns and freezes each request",
+  () =>
+    Effect.gen(function* () {
+      const registry = yield* makeRegistry(() => 1_000);
+      const issue = registry.issue({
+        threadId: ThreadId.make("thread:several-turns"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+      });
+      const tokenOf = (credential: McpSessionRegistry.McpIssuedCredential) =>
+        credential.config.authorizationHeader.replace(/^Bearer\s+/, "");
+      const first = yield* issue;
+      const token = tokenOf(first);
+      const credentialId = first.config.providerSessionId;
+      const demand = `demand:${"a".repeat(64)}`;
+      const other = `demand:${"b".repeat(64)}`;
+      const before = yield* registry.resolve(token);
+      expect(before?.thread.demandId).toBeUndefined();
+      yield* registry.bindTurn(credentialId, demand);
+      const admitted = yield* registry.resolve(token);
+      yield* registry.bindTurn(credentialId, demand);
+      expect((yield* registry.resolve(token))?.thread.demandId).toBe(demand);
+      yield* registry.bindTurn(credentialId, other);
+      yield* registry.bindTurn(credentialId, other);
+      expect((yield* registry.resolve(token))?.thread.demandId).toBeNull();
+      expect(admitted?.thread.demandId).toBe(demand);
+      expect(before?.thread.demandId).toBeUndefined();
+
+      const replacement = yield* issue;
+      yield* registry.revokeProviderSession(credentialId);
+      yield* registry.bindTurn(credentialId, other);
+      expect((yield* registry.resolve(tokenOf(replacement)))?.thread.demandId).toBeUndefined();
+      yield* registry.bindTurn(replacement.config.providerSessionId, null);
+      yield* registry.bindTurn(replacement.config.providerSessionId, demand);
+      expect((yield* registry.resolve(tokenOf(replacement)))?.thread.demandId).toBeNull();
+    }),
+);
+
 it.effect("always grants pull-requests and gates browser and device access independently", () =>
   Effect.gen(function* () {
     const registry = yield* makeRegistry(() => 1_000);

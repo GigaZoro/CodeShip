@@ -1,6 +1,8 @@
 ## 2026-11-23 — Trace work to the request that started it
 
 - Run records carry an accounting ID across delegation, linked machines, and retries. Work-item launches and repairs can identify the original demand for usage reporting. Sending a separate work item to a busy thread queues it under its own accounting ID.
+- An accepted guest message stays queued when steering it would charge another request. Tool calls from a reused provider session report an unknown owner when multiple requests could have made the call.
+- Retrying a delegation to a linked machine returns its original task and result, including after that task has finished.
 
 ## 2026-11-22 — Long keys work for tasks on linked environments
 

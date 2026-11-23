@@ -456,6 +456,8 @@ export interface ProviderAdapterV2TurnInput {
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;
+  /** Server accounting for the credential handed to this turn. */
+  readonly demandId?: string | null;
   readonly runOrdinal: number;
   readonly nativeThreadHasTurns?: boolean;
   readonly providerTurnOrdinal: number;

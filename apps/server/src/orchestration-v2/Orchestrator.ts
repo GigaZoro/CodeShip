@@ -10857,17 +10857,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         now,
       });
     }
-    // A person can choose to use their queued message as input to the running turn.
-    // Machine work already belongs to its own demand, including an explicitly unknown owner.
-    if (
-      target !== undefined &&
-      (target.demandId ?? null) !== (queuedRun.demandId ?? null) &&
-      !(
-        typedByPersonInClient(queuedMessage) &&
-        (queuedRun.demandId === undefined ||
-          queuedRun.demandId === originalDemandId("message", command.threadId, queuedMessage.id))
-      )
-    ) {
+    const sameDemand = (target?.demandId ?? null) === (queuedRun.demandId ?? null);
+    // An accepted guest message also arrives from the owner's client. It can only join a known matching demand.
+    const canJoinTarget =
+      queuedMessage.context?.guest !== undefined
+        ? sameDemand && queuedRun.demandId != null
+        : sameDemand ||
+          (typedByPersonInClient(queuedMessage) &&
+            (queuedRun.demandId === undefined ||
+              queuedRun.demandId ===
+                originalDemandId("message", command.threadId, queuedMessage.id)));
+    if (target !== undefined && !canJoinTarget) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,

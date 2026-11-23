@@ -26,6 +26,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -980,7 +981,7 @@ const taskResult = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>, ta
     );
 
 it.effect(
-  "a remote launch and its receipt replay keep the demand recorded before its parent changed",
+  "a remote launch keeps the recorded demand and a receipt replay cannot redirect its work",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1020,6 +1021,13 @@ it.effect(
           userMessageId: MessageId.make("message:next-parent"),
         };
         // The next turn owns the same provider session before the remote launch is sent.
+        const recorded = yield* Deferred.make<void>();
+        const send = yield* Deferred.make<void>();
+        const launched = yield* Deferred.make<void>();
+        yield* Ref.set(
+          thread.afterLaunch,
+          Deferred.succeed(launched, undefined).pipe(Effect.asVoid),
+        );
         const dispatch = a.threads.dispatch;
         vi.spyOn(a.threads, "dispatch").mockImplementation((command) =>
           dispatch(command).pipe(
@@ -1046,16 +1054,45 @@ it.effect(
                         },
                       ],
                     })
-                    .pipe(Effect.orDie)
+                    .pipe(
+                      Effect.orDie,
+                      Effect.andThen(Deferred.succeed(recorded, undefined)),
+                      Effect.andThen(Deferred.await(send)),
+                    )
                 : Effect.void,
             ),
           ),
         );
-        const first = yield* delegateToBox(a);
+        const initiatingCall = yield* delegateToBox(a).pipe(Effect.forkChild);
+        yield* Deferred.await(recorded);
         expect((yield* a.threads.getThreadShell(parentThreadId))?.activeRunId).toBe(nextRunId);
+        const retried = yield* delegateToBox(a);
+        const other = descriptorOf("environment-second-box", "Second box");
+        const otherThread = yield* makeBoxThread;
+        const otherPeer = yield* servePeer(other, boxToolkitLayer(otherThread, boxProjects));
+        yield* linkTo(a.links, otherPeer, "full-access");
+        const redirected = yield* a.call("delegate_task", {
+          clientRequestId: "suite-on-box",
+          task: "Different work.",
+          target: { environmentId: other.environmentId, projectId: boxProject },
+        });
+        expect(redirected.structuredContent).toMatchObject({
+          taskId: retried.taskId,
+          remoteChild: { environmentId: box.environmentId },
+        });
+        expect(yield* Ref.get(otherThread.launched)).toBeNull();
+        expect(launchDemands).toEqual([]);
+        // Losing the original HTTP caller must not strand the accepted task. Only the
+        // initiating operation sends, using its original arguments and run.
+        yield* Fiber.interrupt(initiatingCall);
+        yield* Deferred.succeed(send, undefined);
+        yield* Deferred.await(launched);
         expect(yield* Ref.get(thread.demandId)).toBe(parentDemandId);
-        expect((yield* delegateToBox(a)).taskId).toBe(first.taskId);
-        expect(launchDemands).toEqual([parentDemandId, parentDemandId]);
+        expect(yield* Ref.get(thread.message)).toContain("Run the full suite on the box.");
+        expect(launchDemands).toEqual([parentDemandId]);
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        expect((yield* taskResult(a, retried.taskId))?.status).toBe("completed");
       }),
     ),
 );
@@ -1643,6 +1680,51 @@ it.effect("refuses worktree isolation for a commit that is not pushed, naming it
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect(
+  "a restart before the peer launch finalizes the missing child once and a retry returns that result",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const links = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+        const taskId = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const before = yield* makeLaptop(database, offers, links);
+            yield* linkTo(before.links, b, "full-access");
+            yield* seedParent(before);
+            const committed = yield* Deferred.make<void>();
+            const dispatch = before.threads.dispatch;
+            vi.spyOn(before.threads, "dispatch").mockImplementation((command) =>
+              dispatch(command).pipe(
+                Effect.tap(() =>
+                  command.type === "delegated_task.remote.request"
+                    ? Deferred.succeed(committed, undefined).pipe(Effect.andThen(Effect.never))
+                    : Effect.void,
+                ),
+              ),
+            );
+            yield* delegateToBox(before).pipe(Effect.forkScoped);
+            yield* Deferred.await(committed);
+            const [task] = yield* before.projections.getOpenRemoteDelegatedTasks;
+            return task!.taskId;
+          }),
+        );
+        expect(yield* Ref.get(thread.launched)).toBeNull();
+        const after = yield* makeLaptop(database, offers, links);
+        yield* after.remote.start();
+        const result = yield* taskResult(after, taskId);
+        expect(result?.status).toBe("failed");
+        expect(yield* delegateToBox(after)).toMatchObject({ taskId, status: "failed" });
+        expect(yield* Ref.get(thread.launched)).toBeNull();
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("follows an open task again after the laptop restarts", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -2226,6 +2308,12 @@ it.effect("fails the task when its thread there is gone, or the link here is", (
       const failed = yield* taskResult(a, gone.taskId);
       expect(failed?.status).toBe("failed");
       expect(failed?.result).toContain("was not found");
+      // Recovery has already finalized the local record. Replaying its creation receipt
+      // must not create the missing thread after the follower has stopped.
+      yield* Ref.set(thread.launched, null);
+      const retried = yield* delegateToBox(a);
+      expect(retried).toMatchObject({ taskId: gone.taskId, status: "failed" });
+      expect(yield* Ref.get(thread.launched)).toBeNull();
 
       // The link is forgotten here while the task runs there.
       yield* Ref.set(thread.gone, false);

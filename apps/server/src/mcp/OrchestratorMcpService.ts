@@ -142,6 +142,7 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as ServerSettings from "../serverSettings.ts";
 import {
   clientModeCeiling,
+  invocationDemand,
   type McpInvocationScope,
   type McpThreadInvocationScope,
   requireThreadScope,
@@ -3964,7 +3965,7 @@ const make = Effect.gen(function* () {
                 title: request.title,
                 index,
               });
-              yield* threadManagement
+              const claimed = yield* threadManagement
                 .dispatch({
                   type: "thread.create",
                   createdBy: "agent",
@@ -3972,6 +3973,7 @@ const make = Effect.gen(function* () {
                   commandId,
                   threadId,
                   projectId: parent.thread.projectId,
+                  initialDemandId: invocationDemand(scope),
                   title,
                   modelSelection: target.modelSelection,
                   runtimeMode,
@@ -3996,6 +3998,9 @@ const make = Effect.gen(function* () {
                 .pipe(Effect.mapError(threadManagementFailure))).thread.modelSelection;
               const messageId = stableMessageId({ scope, requestKey: key, index });
               if (request.prompt !== undefined) {
+                const creation = claimed.storedEvents.find(
+                  (row) => row.event.type === "thread.created",
+                )?.event;
                 yield* threadManagement
                   .dispatch({
                     type: "message.dispatch",
@@ -4009,7 +4014,10 @@ const make = Effect.gen(function* () {
                     }),
                     threadId,
                     senderThreadId: scope.thread.threadId,
-                    demandId: parentRun.demandId ?? null,
+                    demandId:
+                      creation?.type === "thread.created"
+                        ? (creation.payload.initialDemandId ?? null)
+                        : null,
                     messageId,
                     text: request.prompt,
                     attachments: [],
@@ -4271,19 +4279,13 @@ const make = Effect.gen(function* () {
         requestKey: key,
         operation: "thread-send",
       });
-      const callerRun =
-        parent === undefined ? undefined : ThreadManagementService.latestActiveRun(parent);
       const demandId =
         input.demandOrigin !== undefined
           ? yield* explicitDemand(
               { scope, caller: parent?.thread, threads: threadManagement },
               input.demandOrigin,
             )
-          : parent === undefined
-            ? scope.client?.demandId
-            : callerRun?.providerInstanceId === scope.thread?.providerInstanceId
-              ? callerRun?.demandId
-              : null;
+          : invocationDemand(scope);
       const result = yield* threadManagement
         .sendToThread({
           projectId: target.thread.projectId,
@@ -4294,7 +4296,7 @@ const make = Effect.gen(function* () {
           }),
           threadId: input.threadId,
           ...(parent === undefined ? {} : { senderThreadId: parent.thread.id }),
-          demandId: demandId ?? null,
+          demandId,
           messageId,
           text: input.message,
           attachments: [],

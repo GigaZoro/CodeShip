@@ -40,9 +40,12 @@ const environmentId = EnvironmentId.make("environment-worktree-test");
 const threadId = ThreadId.make("thread-worktree-test");
 const projectId = ProjectId.make("project-worktree-test");
 const workspaceRoot = "/repo/project";
+const sourceDemand = `demand:${"b".repeat(64)}`;
+const laterRunId = RunId.make("run:active-after-authentication");
 
 const makeScope = (
   capabilities: ReadonlySet<McpInvocationContext.McpCapability>,
+  demandId?: string | null,
 ): McpInvocationContext.McpInvocationScope => ({
   environmentId,
   requestNamespace: "provider-session-worktree-test",
@@ -50,6 +53,7 @@ const makeScope = (
     threadId,
     providerSessionId: "provider-session-worktree-test",
     providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+    ...(demandId === undefined ? {} : { demandId }),
   },
   client: undefined,
   capabilities,
@@ -63,11 +67,9 @@ interface ThreadFixture {
   readonly deletedAt?: string | null;
 }
 
-const sourceRunId = RunId.make("run:worktree-handoff");
-const sourceDemand = `demand:${"b".repeat(64)}`;
 const makeThread = (overrides: ThreadFixture = {}): OrchestrationV2ThreadShell =>
   ({
-    activeRunId: sourceRunId,
+    activeRunId: laterRunId,
     id: threadId,
     projectId,
     title: "Worktree test thread",
@@ -90,6 +92,7 @@ const project: Project = {
 } as Project;
 
 interface HarnessOptions {
+  readonly demandId?: string | null;
   readonly git?: Partial<GitWorkflowService.GitWorkflowService["Service"]>;
   readonly thread?: ThreadFixture | null;
   readonly threadReadError?: "projection" | "dispatch";
@@ -119,7 +122,10 @@ interface HarnessOptions {
 
 const makeHarness = (options: HarnessOptions = {}) => {
   const thread = options.thread === undefined ? {} : options.thread;
-  const scope = makeScope(options.capabilities ?? new Set(["preview", "worktree"]));
+  const scope = makeScope(
+    options.capabilities ?? new Set(["preview", "worktree"]),
+    options.demandId,
+  );
   const dispatch = vi.fn((_: unknown) =>
     (options.dispatchGate ?? Effect.void).pipe(
       Effect.andThen(
@@ -298,9 +304,9 @@ const makeHarness = (options: HarnessOptions = {}) => {
             Effect.succeed({
               runs: [
                 {
-                  id: sourceRunId,
+                  id: laterRunId,
                   providerInstanceId: scope.thread!.providerInstanceId,
-                  demandId: sourceDemand,
+                  demandId: `demand:${"c".repeat(64)}`,
                 },
               ],
             } as never),
@@ -388,6 +394,9 @@ describe("t3_worktree_handoff", () => {
         continuationPrompt: "Keep going.",
       });
       expect(result.continuation).toMatchObject({ status: "failed" });
+      expect(harness.sendToThread).toHaveBeenCalledWith(
+        expect.objectContaining({ demandId: null }),
+      );
       expect(result.worktreePath).toBe("/worktrees/project/feature/continue-fails");
       expect(harness.dispatch).toHaveBeenCalled();
     });
@@ -594,7 +603,7 @@ describe("t3_worktree_handoff", () => {
   it.effect("queues the continuation even when interrupted during the binding dispatch", () =>
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>();
-      const harness = makeHarness({ dispatchGate: Deferred.await(gate) });
+      const harness = makeHarness({ dispatchGate: Deferred.await(gate), demandId: sourceDemand });
 
       const fiber = yield* Effect.forkChild(
         runHandoff(harness, {
