@@ -3283,6 +3283,89 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
 
+  const inNativeInputTestHome = <A, E, R>(run: (home: string) => Effect.gen.Return<A, E, R>) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-native-input-" });
+      return yield* Effect.gen(() => run(home)).pipe(
+        Effect.provideService(HostProcess.HomeDirectory, home),
+        Effect.provideService(HostProcess.Environment, {}),
+      );
+    });
+
+  const makeNativeInputHarness = Effect.fnUntraced(function* (
+    home: string,
+    options?: Parameters<typeof makeWakeHarnessWithOptions>[0],
+  ) {
+    const fs = yield* FileSystem.FileSystem;
+    const project = NodePath.join(home, ".claude", "projects", "workspace");
+    yield* fs.makeDirectory(project, { recursive: true });
+    const transcript = NodePath.join(project, `${WAKE_NATIVE_SESSION}.jsonl`);
+    const h = yield* makeWakeHarnessWithOptions({
+      freshQueueOnReopen: true,
+      ...options,
+    });
+    const nativePrompt = (submitted: SDKUserMessage) => ({
+      session_id: WAKE_NATIVE_SESSION,
+      transcript_path: transcript,
+      cwd: "/workspace",
+      prompt_id: `cli-prompt-${submitted.uuid}`,
+    });
+    const recordPrompt = (submitted: SDKUserMessage) =>
+      fs.writeFileString(
+        transcript,
+        JSON.stringify({
+          type: "user",
+          promptSource: "sdk",
+          sessionId: WAKE_NATIVE_SESSION,
+          uuid: submitted.uuid,
+          promptId: nativePrompt(submitted).prompt_id,
+          isSidechain: false,
+          message: submitted.message,
+        }) + "\n",
+        { flag: "a" },
+      );
+    const preToolUse = (
+      options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
+      submitted: SDKUserMessage,
+      toolUseID: string,
+      toolName: string,
+      toolInput: Record<string, unknown>,
+    ) =>
+      Effect.promise(async () => {
+        for (const matcher of options.hooks?.PreToolUse ?? []) {
+          for (const hook of matcher.hooks)
+            await hook(
+              {
+                ...nativePrompt(submitted),
+                hook_event_name: "PreToolUse",
+                tool_name: toolName,
+                tool_input: toolInput,
+                tool_use_id: toolUseID,
+              },
+              toolUseID,
+              { signal: new AbortController().signal },
+            );
+        }
+      });
+    // The SDK can request permission before the host drains its assistant or status frames.
+    // Its PreToolUse hook still identifies the actual prompt and tool call.
+    let recordedPrompt: SDKUserMessage | undefined;
+    const beforeCurrentTool = Effect.fnUntraced(function* (
+      toolUseID: string,
+      toolName: string,
+      toolInput: Record<string, unknown>,
+    ) {
+      const submitted = h.offeredMessages.at(-1)!;
+      if (recordedPrompt !== submitted) {
+        yield* recordPrompt(submitted);
+        recordedPrompt = submitted;
+      }
+      yield* preToolUse(h.getOpenedOptions()!, submitted, toolUseID, toolName, toolInput);
+    });
+    return { ...h, nativePrompt, preToolUse, recordPrompt, beforeCurrentTool };
+  });
+
   it.effect("sends the tagged Auto brief on every turn, including after a rollback", () =>
     Effect.gen(function* () {
       const brief = "Auto: coordinate as Opus.";
@@ -3997,7 +4080,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     );
 
     it.effect("asks before restricted Full access tools and follows policy across turns", () =>
-      Effect.gen(function* () {
+      inNativeInputTestHome(function* (home) {
         const resolver = vi
           .mocked(ClaudeSdk.resolveSettings)
           .mockImplementation(async (options) => {
@@ -4021,9 +4104,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         // Opening a query reads its folder's settings once, which Full access shares.
         const folderReads = (cwd: string) =>
           resolver.mock.calls.filter(([options]) => options?.cwd === cwd).length;
-        const harness = yield* makeWakeHarnessWithOptions({
+        const harness = yield* makeNativeInputHarness(home, {
           close: Queue.shutdown,
-          freshQueueOnReopen: true,
           setPermissionMode: (mode) =>
             mode === "bypassPermissions"
               ? Effect.fail(
@@ -4075,6 +4157,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
         yield* start("/restricted");
         const openedOptions = harness.getOpenedOptions()!;
+        yield* harness.beforeCurrentTool("policy-command", "Bash", { command: "git status" });
         const decision = yield* Effect.promise(() =>
           openedOptions.canUseTool!(
             "Bash",
@@ -4161,6 +4244,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             }),
           },
         ]) {
+          yield* harness.beforeCurrentTool(`forwarded-before-${phase}`, "Bash", {
+            command: "git status",
+          });
           const forwardedDecision = yield* Effect.promise(() =>
             harness.getOpenedOptions()!.canUseTool!(
               "Bash",
@@ -4194,6 +4280,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.equal((yield* Fiber.join(forwardedDecision))?.behavior, "deny");
           yield* harness.offerAndWait(frame);
         }
+        yield* harness.beforeCurrentTool("safety-check-after-downgrade", "Bash", {
+          command: "echo checked",
+        });
         const fallbackDecision = yield* Effect.promise(() =>
           harness.getOpenedOptions()!.canUseTool!(
             "Bash",
@@ -4252,6 +4341,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.strictEqual(harness.getOpenedOptions(), unrestrictedOptions);
           assert.deepEqual(harness.permissionModeChanges, ["auto", "bypassPermissions", "default"]);
           assert.equal(harness.offeredMessages.length, ordinal);
+          yield* harness.beforeCurrentTool(`forwarded-after-plan-${phase}`, "Bash", {
+            command: "git status",
+          });
           const restoredDecision = yield* Effect.promise(() =>
             harness.getOpenedOptions()!.canUseTool!(
               "Bash",
@@ -8733,8 +8825,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   it.effect("preserves typed Claude plans and todos through generic tool completion", () =>
     Effect.scoped(
-      Effect.gen(function* () {
-        const harness = yield* makeWakeHarness;
+      inNativeInputTestHome(function* (home) {
+        const harness = yield* makeNativeInputHarness(home, { freshQueueOnReopen: false });
         const now = yield* DateTime.now;
         const assistantTools = (
           uuid: string,
@@ -8856,7 +8948,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const canUseTool = harness.getOpenedOptions()?.canUseTool;
         assert.isFunction(canUseTool);
         const planMarkdown = "# Ready to implement\n\n1. Ship it.";
-        yield* Effect.promise(() =>
+        yield* harness.beforeCurrentTool("tool-exit-plan-1", "ExitPlanMode", {
+          plan: planMarkdown,
+        });
+        const captured = yield* Effect.promise(() =>
           canUseTool!(
             "ExitPlanMode",
             { plan: planMarkdown },
@@ -8866,6 +8961,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               requestId: "request-exit-plan-1",
             },
           ),
+        );
+        assert.include(
+          captured?.behavior === "deny" ? captured.message : "",
+          "captured your proposed plan",
         );
         yield* Queue.offer(
           harness.sdkMessages,
@@ -11587,8 +11686,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   it.effect("answers an approval a held wake turn raises without waiting for the echo", () =>
     Effect.scoped(
-      Effect.gen(function* () {
-        const harness = yield* makeWakeHarness;
+      inNativeInputTestHome(function* (home) {
+        const harness = yield* makeNativeInputHarness(home);
         const now = yield* DateTime.now;
         const approvalPolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: "approval-required",
@@ -11665,6 +11764,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
+        yield* harness.recordPrompt(harness.offeredMessages[1]!);
+        yield* harness.preToolUse(
+          harness.getOpenedOptions()!,
+          harness.offeredMessages[1]!,
+          bashToolUseId,
+          "Bash",
+          { command: "git status" },
+        );
         const permission = yield* Effect.promise(() =>
           harness.getOpenedOptions()!.canUseTool!(
             "Bash",
@@ -11698,6 +11805,187 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         });
         const result = yield* Fiber.join(permission);
         assert.equal(result?.behavior, "allow");
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect.each([
+    { name: "approval", toolName: "Bash", tool: { command: "echo ready" }, replace: false },
+    {
+      name: "question",
+      toolName: "AskUserQuestion",
+      tool: {
+        questions: [
+          {
+            header: "Report",
+            question: "Which view?",
+            options: [
+              { label: "Brief", description: "Totals only" },
+              { label: "Full", description: "All rows" },
+            ],
+            multiSelect: false,
+          },
+        ],
+      },
+      replace: false,
+    },
+    { name: "replacement", toolName: "Bash", tool: { command: "echo ready" }, replace: true },
+  ])("binds each native $name to the turn that requested it", ({ toolName, tool, replace }) =>
+    Effect.scoped(
+      inNativeInputTestHome(function* (home) {
+        const h = yield* makeNativeInputHarness(home);
+        const now = yield* DateTime.now;
+        const start = (ordinal: number) =>
+          makeClaudeTestTurnInput({
+            threadId: h.threadId,
+            providerThread: h.providerThread,
+            now,
+            attemptId: RunAttemptId.make(`native-owner-${ordinal}`),
+            providerTurnOrdinal: ordinal,
+            text: "Please check the weekly report.",
+            attachments: [],
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              runtimeMode: "approval-required",
+              interactionMode: ordinal === 2 && replace ? "plan" : "default",
+              cwd: "/workspace",
+            }),
+          });
+        const runForNode = (nodeId: NodeId) =>
+          h.events
+            .flatMap((event) =>
+              event.type === "node.updated" && event.node.id === nodeId ? [event.node.runId] : [],
+            )
+            .at(-1);
+        const observe = Effect.fnUntraced(function* (
+          opts: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
+          toolUseID: string,
+          requestId: string,
+        ) {
+          const at = h.events.length;
+          // @effect-diagnostics-next-line abortControllerInEffect:off - the fake SDK withdraws its request.
+          const abort = new AbortController();
+          const answer = yield* Effect.promise(() =>
+            opts.canUseTool!(toolName, tool, {
+              toolUseID,
+              requestId,
+              signal: abort.signal,
+            }),
+          ).pipe(Effect.forkScoped);
+          const pending = () =>
+            h.events
+              .slice(at)
+              .flatMap((event) =>
+                event.type === "runtime_request.updated" &&
+                event.runtimeRequest.status === "pending"
+                  ? [runForNode(event.runtimeRequest.nodeId)]
+                  : [],
+              );
+          yield* Effect.raceFirst(
+            h.until(() => pending().length > 0),
+            Fiber.join(answer),
+          );
+          const owners = pending();
+          abort.abort();
+          const result = yield* Fiber.join(answer);
+          if (!owners.length) assert.equal(result?.behavior, "deny");
+          return owners;
+        });
+        const a = start(1);
+        yield* h.runtime.startTurn(a);
+        const first = h.getOpenedOptions()!;
+        yield* h.recordPrompt(h.offeredMessages[0]!);
+        assert.deepEqual(yield* observe(first, "tool-a", "req-a"), [a.runId]);
+        yield* h.offerAndWait(
+          claudeSdkFrame({
+            ...makeResultFrame({ uuid: "00000000-0000-4000-8000-000000000831", result: "Done." }),
+            user_message_uuid: h.promptUuid(0),
+          }),
+        );
+        yield* h.awaitTerminal(1);
+        const b = start(2);
+        yield* h.runtime.startTurn(b);
+        const second = h.getOpenedOptions()!;
+        assert.equal(first === second, !replace);
+        assert.deepEqual(yield* observe(first, "tool-a", "req-a-replayed"), []);
+        assert.deepEqual(yield* observe(second, "tool-without-proof", "req-without-proof"), []);
+        assert.deepEqual(
+          h.offeredMessages[0]!.message.content,
+          h.offeredMessages[1]!.message.content,
+        );
+        assert.notEqual(h.promptUuid(0), h.promptUuid(1));
+        yield* h.recordPrompt(h.offeredMessages[1]!);
+        // This first hook for A arrives after B has submitted byte-identical content.
+        yield* h.preToolUse(second, h.offeredMessages[0]!, "delayed-tool-a", toolName, tool);
+        assert.deepEqual(yield* observe(second, "delayed-tool-a", "delayed-req-a"), []);
+        yield* h.preToolUse(second, h.offeredMessages[1]!, "tool-b", toolName, tool);
+        if (replace) assert.deepEqual(yield* observe(first, "tool-b", "req-old-process"), []);
+        assert.deepEqual(yield* observe(second, "tool-b", "req-b"), [b.runId]);
+        if (!replace) {
+          yield* h.offerAndWait(
+            claudeSdkFrame({
+              type: "assistant",
+              uuid: "00000000-0000-4000-8000-000000000832",
+              session_id: WAKE_NATIVE_SESSION,
+              parent_tool_use_id: null,
+              user_message_uuid: h.promptUuid(1),
+              message: {
+                id: "msg_control_frame",
+                type: "message",
+                role: "assistant",
+                model: "claude-sonnet-4-6",
+                content: [{ type: "tool_use", id: "tool-frame-only", name: toolName, input: tool }],
+              },
+            }),
+          );
+          assert.deepEqual(yield* observe(second, "tool-frame-only", "req-frame-only"), [b.runId]);
+        }
+        if (replace) {
+          const hook = second.hooks?.Elicitation?.[0]?.hooks[0];
+          assert.isDefined(hook);
+          const since = h.events.length;
+          const form = yield* Effect.promise(() =>
+            hook!(
+              {
+                hook_event_name: "Elicitation",
+                session_id: WAKE_NATIVE_SESSION,
+                transcript_path: h.nativePrompt(h.offeredMessages[1]!).transcript_path,
+                cwd: "/workspace",
+                prompt_id: `cli-prompt-${h.promptUuid(1)}`,
+                mcp_server_name: "report",
+                message: "Open the weekly report?",
+                mode: "form",
+                requested_schema: { type: "object", properties: {} },
+              },
+              undefined,
+              { signal: new AbortController().signal },
+            ),
+          ).pipe(Effect.forkScoped);
+          const pendingForm = () =>
+            h.events
+              .slice(since)
+              .flatMap((event) =>
+                event.type === "runtime_request.updated" &&
+                event.runtimeRequest.kind === "mcp-elicitation" &&
+                event.runtimeRequest.status === "pending"
+                  ? [event.runtimeRequest]
+                  : [],
+              )[0];
+          yield* Effect.raceFirst(
+            h.until(() => pendingForm() !== undefined),
+            Fiber.join(form),
+          );
+          const request = pendingForm();
+          assert.isDefined(request);
+          assert.equal(runForNode(request!.nodeId), b.runId);
+          yield* h.runtime.respondToRuntimeRequest({ requestId: request!.id, decision: "decline" });
+          assert.deepInclude(yield* Fiber.join(form), {
+            hookSpecificOutput: { hookEventName: "Elicitation", action: "decline" },
+          });
+        }
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

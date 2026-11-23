@@ -1,3 +1,7 @@
+## 2026-11-23 — Claude questions and approvals
+
+- Claude uses the originating prompt or tool identity to route input requests when a native session serves several runs.
+
 ## 2026-11-23 — Accounting for repairs and work-item requests
 
 - MCP launches and sends can carry the work item or repair run that owns them. A guarded restart applies only while its intended run is active. Linked repairs require a peer that supports origin accounting.

@@ -7,6 +7,7 @@ import {
   formatSearchToolLabel,
 } from "@t3tools/shared/toolActivity";
 import { field, text } from "../unknownField.ts";
+import { readContainedWorkflowFile } from "../workflowFileRead.ts";
 import { mergeWorkflowAgentMetadata, type WorkflowAgentMetadata } from "../workflowAgentAnswers.ts";
 import {
   initialWorkflowAgentTranscriptCursor,
@@ -1600,6 +1601,7 @@ export function makeClaudeQueryOptions(input: {
   readonly disallowedTools?: ReadonlyArray<string>;
   readonly permissionMode?: PermissionMode;
   readonly canUseTool?: CanUseTool;
+  readonly inputOwnershipHooks?: ClaudeQueryOptions["hooks"];
   /** SessionStart hook for a compaction, which can return context the summary must keep. */
   readonly afterCompaction?: HookCallback;
   readonly onUserDialog?: ClaudeQueryOptions["onUserDialog"];
@@ -1654,6 +1656,7 @@ export function makeClaudeQueryOptions(input: {
         } as ClaudeSdkSettings);
   const deviceInstructions = input.mcpServers !== undefined && input.deviceToolsAvailable === true;
   const hooks: NonNullable<ClaudeQueryOptions["hooks"]> = {
+    ...input.inputOwnershipHooks,
     ...(deviceInstructions ? { SubagentStart: [{ hooks: [subagentDeviceInstructions] }] } : {}),
     ...(input.afterCompaction === undefined
       ? {}
@@ -1991,6 +1994,20 @@ function makeProviderThread(input: {
     updatedAt: input.now,
   };
 }
+
+const decodeClaudePromptIdentity = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      type: Schema.Literal("user"),
+      promptSource: Schema.Literal("sdk"),
+      sessionId: Schema.String,
+      uuid: Schema.String,
+      promptId: Schema.String,
+      isSidechain: Schema.optional(Schema.Boolean),
+      isMeta: Schema.optional(Schema.Boolean),
+    }),
+  ),
+);
 
 const decodeClaudeTranscriptLine = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ type: Schema.String })),
@@ -4317,6 +4334,8 @@ interface ActiveClaudeTurnContext {
   readonly subagentsByTaskId: Map<string, ActiveClaudeSubagent>;
   readonly subagentsByToolUseId: Map<string, ActiveClaudeSubagent>;
   readonly promptUuid: string | null;
+  readonly submittedPromptUuids: Set<string>;
+  readonly sdkPromptIds: Set<string>;
   promptEcho: "pending" | "confirmed";
   promptStarted: boolean;
   nativeWakeStarted: boolean;
@@ -4359,6 +4378,7 @@ interface ClaudeLiveQueryContext {
   selection: CompiledClaudeModelSelection;
   readonly closed: Deferred.Deferred<void, never>;
   lastTurn: ActiveClaudeTurnContext | null;
+  rotateCallbackEvidence: boolean;
   // "early" echoes on the first frame; "acknowledged" confirms uuid acceptance, but resume turns can still precede the prompt.
   promptEchoMode: "unknown" | "acknowledged" | "early" | "result_only";
   // The CLI may fall back from the requested mode on its first init frame.
@@ -10110,20 +10130,26 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         });
 
         const canUseToolEffect = Effect.fn("ClaudeAdapterV2.canUseTool")(function* (
+          context: ActiveClaudeTurnContext | null,
           toolName: Parameters<CanUseTool>[0],
           toolInput: Parameters<CanUseTool>[1],
           callbackOptions: Parameters<CanUseTool>[2],
           options?: { readonly startToolCall?: boolean },
         ) {
-          const context = yield* Ref.get(activeTurn);
-          if (context === null) {
+          if (
+            context === null ||
+            Ref.getUnsafe(activeTurn) !== context ||
+            callbackOptions.signal.aborted
+          ) {
             return {
               behavior: "deny",
-              message: "Claude V2 adapter has no active turn for this tool request.",
+              message: "The originating Claude turn is no longer available for this tool request.",
               toolUseID: callbackOptions.toolUseID,
             } satisfies PermissionResult;
           }
 
+          const activePermissionMode =
+            Ref.getUnsafe(queryContext)?.permissionMode ?? context.queryPolicy.permissionMode;
           const nativeRequestId = callbackOptions.toolUseID;
           const nativeToolInput = claudeNativeToolInputFromRecord(toolInput);
           const heldForEcho = context.heldRootFrames.length > 0;
@@ -10275,8 +10301,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             } satisfies PermissionResult;
           }
 
-          const activePermissionMode =
-            (yield* Ref.get(queryContext))?.permissionMode ?? context.queryPolicy.permissionMode;
           const safetyReason = NodeUtil.stripVTControlCharacters(
             callbackOptions.decisionReason ?? "",
           ).trim();
@@ -10402,9 +10426,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           });
         });
 
-        const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
-          runPromise(canUseToolEffect(toolName, toolInput, callbackOptions));
-
         // Only the turn's prompt carries the Auto brief, so a compaction summary can drop it.
         const restoreAutoBriefAfterCompaction: HookCallback = async (hookInput) => {
           if (
@@ -10425,14 +10446,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         };
 
         const onElicitationEffect = Effect.fn("ClaudeAdapterV2.onElicitation")(function* (
+          context: ActiveClaudeTurnContext | null,
           request: ElicitationRequest,
           callbackOptions: Parameters<NonNullable<ClaudeQueryOptions["onElicitation"]>>[1],
         ) {
           if (callbackOptions.signal.aborted)
             return { action: "cancel" } satisfies ElicitationResult;
           const acceptance = claudeMcpElicitationAcceptance(request);
-          const context = yield* Ref.get(activeTurn);
-          if (acceptance === undefined || context === null) {
+          if (
+            acceptance === undefined ||
+            context === null ||
+            Ref.getUnsafe(activeTurn) !== context
+          ) {
             yield* Effect.logWarning(
               "Declined an MCP elicitation the approval card cannot answer.",
               {
@@ -10538,14 +10563,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               } satisfies ElicitationResult);
         });
 
-        const onElicitation: NonNullable<ClaudeQueryOptions["onElicitation"]> = (
-          request,
-          callbackOptions,
-        ) => runPromise(onElicitationEffect(request, callbackOptions));
-
-        const onUserDialog: NonNullable<ClaudeQueryOptions["onUserDialog"]> = (
-          request,
-          callbackOptions,
+        const onUserDialog = (
+          context: ActiveClaudeTurnContext | null,
+          request: Parameters<NonNullable<ClaudeQueryOptions["onUserDialog"]>>[0],
+          callbackOptions: Parameters<NonNullable<ClaudeQueryOptions["onUserDialog"]>>[1],
         ) =>
           runPromise(
             Effect.gen(function* () {
@@ -10578,6 +10599,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 estimatedTokens,
               });
               const result = yield* canUseToolEffect(
+                context,
                 "AskUserQuestion",
                 {
                   questions: [
@@ -10743,7 +10765,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             reusable !== null &&
             existing === reusable &&
             !reusable.stopping &&
-            reusable.queryPolicyKey === livePolicy.queryPolicyKey
+            reusable.queryPolicyKey === livePolicy.queryPolicyKey &&
+            (!reusable.rotateCallbackEvidence || (yield* liveProcessRunsBackgroundWork(reusable)))
           ) {
             const live = reusable;
             const reused = yield* Effect.gen(function* () {
@@ -10850,6 +10873,173 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.nativeThreadHasTurns ?? turnInput.providerTurnOrdinal > 1;
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
+          // A query can serve many runs. Its SDK callbacks carry native control IDs, never the
+          // app run. Keep evidence inside this process and bind it before starting an Effect.
+          let callbackQuery: ClaudeLiveQueryContext | undefined;
+          const openingAttemptId = turnInput.attemptId;
+          const configDir = adapterOptions.environment.CLAUDE_CONFIG_DIR?.trim() || undefined;
+          const transcriptConfigDir =
+            configDir === undefined
+              ? undefined
+              : path.resolve(turnInput.runtimePolicy.cwd ?? ".", configDir);
+          const controlOwners = new Map<string, ActiveClaudeTurnContext["providerTurnId"] | null>();
+          const currentCallbackTurn = () => {
+            const active = Ref.getUnsafe(activeTurn);
+            return callbackQuery !== undefined &&
+              isLiveQuery(callbackQuery) &&
+              !callbackQuery.closeRequested &&
+              callbackQuery.lastTurn === active
+              ? active
+              : null;
+          };
+          // Never evict and rebind a control. A very long-lived query rotates on the
+          // next ordinary turn that can safely release the process and its background work.
+          const saveControl = (
+            key: string,
+            owner: ActiveClaudeTurnContext["providerTurnId"] | null,
+          ) => {
+            if (!controlOwners.has(key) && controlOwners.size >= 16_384) {
+              if (callbackQuery !== undefined) callbackQuery.rotateCallbackEvidence = true;
+              return false;
+            }
+            controlOwners.set(key, owner);
+            return true;
+          };
+          const rememberControl = (key: string, turn: ActiveClaudeTurnContext) => {
+            const prior = controlOwners.get(key);
+            return saveControl(
+              key,
+              prior === undefined || prior === turn.providerTurnId ? turn.providerTurnId : null,
+            );
+          };
+          let formSequence = 0;
+          const onOwnershipHook: HookCallback = async (hook, _toolUseId, { signal }) => {
+            const turn = currentCallbackTurn();
+            const promptId = hook.prompt_id;
+            if (
+              turn === null ||
+              promptId === undefined ||
+              hook.session_id !== nativeThreadId ||
+              (hook.hook_event_name !== "PreToolUse" && hook.hook_event_name !== "Elicitation")
+            )
+              return {};
+            if (!turn.sdkPromptIds.has(promptId)) {
+              // The CLI's telemetry prompt ID differs from the SDK message UUID. The root
+              // transcript records them together. Never infer their association from text or arrival order.
+              if (
+                signal.aborted ||
+                turn.submittedPromptUuids.size === 0 ||
+                path.basename(hook.transcript_path) !== nativeThreadId + ".jsonl"
+              )
+                return {};
+              const found = await runPromise(
+                readContainedWorkflowFile({
+                  path: hook.transcript_path,
+                  extension: ".jsonl",
+                  byteCap: 512 * 1024,
+                  tail: true,
+                  ...(transcriptConfigDir === undefined ? {} : { configDir: transcriptConfigDir }),
+                }).pipe(
+                  Effect.map((file) => {
+                    if (path.basename(file.path) !== nativeThreadId + ".jsonl")
+                      return "unknown" as const;
+                    const lines = file.contents.split("\n");
+                    if (file.startOffset > 0) lines.shift();
+                    lines.pop(); // Only complete, newline-terminated native records supply evidence.
+                    let matched = false;
+                    for (const line of lines) {
+                      if (!line.includes(promptId)) continue;
+                      const row = Option.getOrUndefined(decodeClaudePromptIdentity(line));
+                      if (
+                        row?.promptId !== promptId ||
+                        row.sessionId !== nativeThreadId ||
+                        row.isMeta ||
+                        row.isSidechain
+                      )
+                        continue;
+                      if (!turn.submittedPromptUuids.has(row.uuid)) return "foreign" as const;
+                      matched = true;
+                    }
+                    return matched ? ("current" as const) : ("unknown" as const);
+                  }),
+                  Effect.orElseSucceed(() => "unknown" as const),
+                ),
+              );
+              if (signal.aborted || currentCallbackTurn() !== turn) return {};
+              if (found === "foreign") {
+                if (hook.hook_event_name === "PreToolUse")
+                  saveControl("tool:" + hook.tool_use_id, null);
+                else if (hook.elicitation_id !== undefined)
+                  saveControl("elicitation:" + hook.elicitation_id, null);
+              }
+              if (found !== "current") return {};
+              turn.sdkPromptIds.add(promptId);
+            }
+            if (
+              hook.agent_id === undefined ||
+              Ref.getUnsafe(sessionSubagentsByTaskId).get(hook.agent_id)?.task.runId ===
+                turn.input.runId
+            ) {
+              if (hook.hook_event_name === "PreToolUse")
+                rememberControl("tool:" + hook.tool_use_id, turn);
+              if (hook.hook_event_name === "Elicitation") {
+                if (hook.elicitation_id !== undefined) {
+                  rememberControl("elicitation:" + hook.elicitation_id, turn);
+                } else if (turn.input.attemptId !== openingAttemptId || shouldResume) {
+                  // Anonymous form elicitations expose no key on the later host callback.
+                  // Answer in the hook that still has the actual submitting prompt's ID.
+                  const result = await runPromise(
+                    onElicitationEffect(
+                      turn,
+                      {
+                        serverName: hook.mcp_server_name,
+                        message: hook.message,
+                        ...(hook.mode === undefined ? {} : { mode: hook.mode }),
+                        ...(hook.requested_schema === undefined
+                          ? {}
+                          : { requestedSchema: hook.requested_schema }),
+                      },
+                      { signal, requestId: `form-hook:${turn.providerTurnId}:${++formSequence}` },
+                    ),
+                  );
+                  return {
+                    hookSpecificOutput: {
+                      hookEventName: "Elicitation",
+                      action: result.action,
+                      ...(result.content === undefined ? {} : { content: result.content }),
+                    },
+                  };
+                }
+              }
+            }
+            return {};
+          };
+          const callbackOwner = (
+            key: string | undefined,
+            requestId: string,
+            openerDialog = false,
+          ) => {
+            const turn = currentCallbackTurn();
+            if (turn === null) return null;
+            const requestKey = "request:" + requestId;
+            const requestOwner = controlOwners.get(requestKey);
+            if (requestOwner !== undefined && requestOwner !== turn.providerTurnId) return null;
+            const toolOwner = key === undefined ? undefined : controlOwners.get(key);
+            if (toolOwner !== undefined && toolOwner !== turn.providerTurnId) return null;
+            if (
+              toolOwner !== turn.providerTurnId &&
+              !(turn.input.attemptId === openingAttemptId && (!shouldResume || openerDialog))
+            ) {
+              saveControl(requestKey, null);
+              return null;
+            }
+            if (key !== undefined && !rememberControl(key, turn)) return null;
+            return rememberControl(requestKey, turn) ? turn : null;
+          };
+          const inputOwnershipHooks = {
+            PreToolUse: [{ hooks: [onOwnershipHook] }],
+            Elicitation: [{ hooks: [onOwnershipHook] }],
+          };
           const queryOptions = makeClaudeQueryOptions({
             modelSelection: turnInput.modelSelection,
             nativeThreadId,
@@ -10883,10 +11073,55 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               : {
                   allowDangerouslySkipPermissions: queryPolicy.allowDangerouslySkipPermissions,
                 }),
-            canUseTool,
+            inputOwnershipHooks,
+            canUseTool: (name, toolInput, options) => {
+              const owner = callbackOwner("tool:" + options.toolUseID, options.requestId);
+              const active = currentCallbackTurn();
+              // A held ExitPlanMode payload belongs to its tool ID until the SDK identifies
+              // the wake or user turn. Storing it emits no card for the active turn.
+              if (
+                owner === null &&
+                active !== null &&
+                name === "ExitPlanMode" &&
+                !options.signal.aborted &&
+                !controlOwners.has("tool:" + options.toolUseID) &&
+                heldToolUseIds(active).has(options.toolUseID)
+              ) {
+                const plan = claudeProposedPlan(claudeNativeToolInputFromRecord(toolInput));
+                if (plan !== null) heldProposedPlansByToolUseId.set(options.toolUseID, plan);
+                return Promise.resolve({
+                  behavior: "deny",
+                  message:
+                    "The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.",
+                  toolUseID: options.toolUseID,
+                });
+              }
+              return runPromise(canUseToolEffect(owner, name, toolInput, options));
+            },
             afterCompaction: restoreAutoBriefAfterCompaction,
-            onUserDialog,
-            onElicitation,
+            onUserDialog: (request, options) =>
+              onUserDialog(
+                callbackOwner(
+                  request.toolUseID === undefined ? undefined : "tool:" + request.toolUseID,
+                  options.requestId,
+                  request.dialogKind === "resume_return" && request.toolUseID === undefined,
+                ),
+                request,
+                options,
+              ),
+            onElicitation: (request, options) =>
+              runPromise(
+                onElicitationEffect(
+                  callbackOwner(
+                    request.elicitationId === undefined
+                      ? undefined
+                      : "elicitation:" + request.elicitationId,
+                    options.requestId,
+                  ),
+                  request,
+                  options,
+                ),
+              ),
             supportedDialogKinds: ["resume_return"],
             ...(appendSystemPromptFileText === undefined ? {} : { appendSystemPromptFileText }),
             ...(toolSearchOverride === undefined ? {} : { toolSearchOverride }),
@@ -10953,6 +11188,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             selection: compiledSelection,
             closed,
             lastTurn: null,
+            rotateCallbackEvidence: false,
             promptEchoMode: "unknown",
             openedPermissionMode: queryOptions.permissionMode,
             receivedInit: false,
@@ -10975,6 +11211,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               hostPlatform,
             ),
           };
+          callbackQuery = context;
           yield* Ref.set(queryContext, context);
           yield* querySession.messages.pipe(
             Stream.runForEach((message) =>
@@ -11013,6 +11250,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                         ? undefined
                         : ledger;
                   }
+                  const owner = currentCallbackTurn();
+                  if (
+                    owner?.promptUuid != null &&
+                    claudeEchoedPromptUuids(message).includes(owner.promptUuid)
+                  ) {
+                    for (const tool of claudeToolUseBlocksFromAssistantMessage(message)) {
+                      rememberControl("tool:" + tool.id, owner);
+                    }
+                  }
                   return handleSdkMessage({ query: querySession, message });
                 }),
               ),
@@ -11049,6 +11295,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           return context;
         });
 
+        const newPromptUuid = crypto.randomUUIDv4().pipe(
+          Effect.filterOrFail(isClaudePromptUuid),
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CLAUDE_PROVIDER,
+                detail: "Failed to allocate a Claude prompt uuid.",
+                payload: cause,
+              }),
+          ),
+        );
+
         const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
           function* (requestedTurnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
             const startedAt = yield* DateTime.now;
@@ -11067,17 +11325,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             // Use fresh uuids: native sessions can outlive this database, and Claude skips previously recorded prompts.
             const promptUuid = isClaudeProviderContinuationTurn(turnInput)
               ? null
-              : yield* crypto.randomUUIDv4().pipe(
-                  Effect.filterOrFail(isClaudePromptUuid),
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderAdapter.ProviderAdapterProtocolError({
-                        driver: CLAUDE_PROVIDER,
-                        detail: "Failed to allocate a Claude prompt uuid.",
-                        payload: cause,
-                      }),
-                  ),
-                );
+              : yield* newPromptUuid;
             const providerTurnId = idAllocator.derive.providerTurn({
               driver: CLAUDE_PROVIDER,
               nativeTurnId,
@@ -11177,6 +11425,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               subagentsByTaskId: new Map(),
               subagentsByToolUseId: new Map(),
               promptUuid,
+              submittedPromptUuids: new Set(promptUuid === null ? [] : [promptUuid]),
+              sdkPromptIds: new Set(),
               promptEcho: isClaudeProviderContinuationTurn(turnInput) ? "confirmed" : "pending",
               promptStarted: false,
               nativeWakeStarted: false,
@@ -11604,7 +11854,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }),
               persistAttachmentBudget(existing.nativeThreadId),
             );
+            const steerUuid = yield* newPromptUuid;
             const userMessage = yield* makeClaudeUserMessageWithAttachments({
+              uuid: steerUuid,
               text: applyClaudePromptEffortPrefix(
                 turnInput.message.text,
                 compileClaudeModelSelection(currentTurn.input.modelSelection).promptEffort,
@@ -11642,8 +11894,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             });
             yield* Effect.uninterruptibleMask((restore) =>
               restore(
-                existing.query.offer(userMessage, () => {
-                  pdfReservation.commit();
+                Effect.suspend(() => {
+                  currentTurn.submittedPromptUuids.add(steerUuid);
+                  return existing.query.offer(userMessage, () => {
+                    pdfReservation.commit();
+                  });
                 }),
               ).pipe(
                 Effect.tap(() =>
