@@ -1,7 +1,15 @@
 import { assert, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as FileSystem from "effect/FileSystem";
+import * as DocumentText from "../provider/DocumentText.ts";
+import * as ServerConfig from "../config.ts";
+import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
+import * as ThreadMessageIntake from "./ThreadMessageIntake.ts";
 import { vi } from "vite-plus/test";
 import {
   CommandId,
+  type ChatAttachment,
+  ChatAttachmentId,
   GuestMessageId,
   GuestShareId,
   MessageId,
@@ -1403,10 +1411,39 @@ it.effect.each([false, true])(
             CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
           ),
         );
+        const files = ServerConfig.layerTest(process.cwd(), {
+          prefix: "t3-archive-attachment-",
+        }).pipe(
+          Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+        );
         yield* Effect.gen(function* () {
           const threads = yield* ThreadManagement.ThreadManagementService;
           const orchestrator = yield* Orchestrator.OrchestratorV2;
           const threadId = yield* createThread;
+          const fs = yield* FileSystem.FileSystem;
+          const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+          const contents = "Pending document";
+          const extracted = "Extracted text";
+          const upload: ChatAttachment = {
+            type: "file",
+            id: ChatAttachmentId.make(createPendingAttachmentId("docx")),
+            name: "notes.docx",
+            mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            sizeBytes: contents.length,
+          };
+          const pathOf = (attachment: ChatAttachment) => {
+            const path = resolveAttachmentPath({ attachmentsDir, attachment });
+            assert.isNotNull(path);
+            return path;
+          };
+          const pendingPath = pathOf(upload);
+          yield* fs.writeFileString(pendingPath, contents);
+          yield* fs.writeFileString(pendingPath + ".txt", extracted);
+          const expectContents = (path: string) =>
+            Effect.gen(function* () {
+              assert.equal(yield* fs.readFileString(path), contents);
+              assert.equal(yield* fs.readFileString(path + ".txt"), extracted);
+            });
           const input = {
             threadId,
             projectId: ProjectId.make("project:managed-send-archive"),
@@ -1414,25 +1451,37 @@ it.effect.each([false, true])(
             messageId: MessageId.make("fresh-after-archive"),
             mode: "queue" as const,
             text: "Run next",
-            attachments: [],
+            attachments: [upload],
             createdBy: "agent" as const,
             creationSource: "mcp" as const,
           };
-          const reached = yield* Deferred.make<void>();
+          const reached = yield* Deferred.make<ChatAttachment>();
           const proceed = yield* Deferred.make<void>();
           const dispatch = orchestrator.dispatch;
           let pauseFirst = true;
           using _pause = vi.spyOn(orchestrator, "dispatch").mockImplementation((command) => {
-            if (command.commandId !== input.commandId || !pauseFirst) return dispatch(command);
+            if (
+              command.type !== "message.dispatch" ||
+              command.commandId !== input.commandId ||
+              !pauseFirst
+            )
+              return dispatch(command);
             pauseFirst = false;
-            return Deferred.succeed(reached, undefined).pipe(
+            return Deferred.succeed(reached, command.attachments[0]!).pipe(
               Effect.andThen(Deferred.await(proceed)),
               Effect.andThen(dispatch(command)),
             );
           });
-          const sending = yield* threads.sendToThread(input).pipe(Effect.result, Effect.forkChild);
-          yield* Deferred.await(reached);
-          const winner = alreadyAccepted ? yield* threads.sendToThread(input) : undefined;
+          const sending = yield* ThreadMessageIntake.sendToThread(input).pipe(
+            Effect.result,
+            Effect.forkChild,
+          );
+          const firstCopy = pathOf(yield* Deferred.await(reached));
+          assert.notEqual(firstCopy, pendingPath);
+          yield* expectContents(firstCopy);
+          const winner = alreadyAccepted
+            ? yield* ThreadMessageIntake.sendToThread(input)
+            : undefined;
           if (winner !== undefined) {
             const completedAt = yield* DateTime.now;
             const sink = yield* EventSink.EventSinkV2;
@@ -1456,10 +1505,15 @@ it.effect.each([false, true])(
           });
           yield* Deferred.succeed(proceed, undefined);
           const result = yield* Fiber.join(sending);
+          assert.isFalse(yield* fs.exists(firstCopy));
+          assert.isFalse(yield* fs.exists(firstCopy + ".txt"));
+          yield* expectContents(pendingPath);
           if (winner !== undefined) {
             assert.ok(Result.isSuccess(result));
             assert.isTrue(result.success.dispatch.replayed);
             assert.equal(result.success.run.id, winner.run.id);
+            assert.deepEqual(result.success.message.attachments, winner.message.attachments);
+            yield* expectContents(pathOf(winner.message.attachments[0]!));
             return;
           }
           assert.ok(Result.isFailure(result));
@@ -1475,10 +1529,16 @@ it.effect.each([false, true])(
             threadId,
             commandId: CommandId.make("unarchive-and-retry"),
           });
-          const accepted = yield* threads.sendToThread(input);
+          const accepted = yield* ThreadMessageIntake.sendToThread(input);
           assert.equal(accepted.message.id, input.messageId);
-          assert.isTrue((yield* threads.sendToThread(input)).dispatch.replayed);
-        }).pipe(Effect.provide(management));
+          const storedPath = pathOf(accepted.message.attachments[0]!);
+          assert.notEqual(storedPath, pendingPath);
+          yield* expectContents(storedPath);
+          const keptFiles = (yield* fs.readDirectory(attachmentsDir)).toSorted();
+          assert.isTrue((yield* ThreadMessageIntake.sendToThread(input)).dispatch.replayed);
+          assert.deepEqual((yield* fs.readDirectory(attachmentsDir)).toSorted(), keptFiles);
+          yield* expectContents(pendingPath);
+        }).pipe(Effect.provide(Layer.mergeAll(management, files)));
       }),
     ),
 );

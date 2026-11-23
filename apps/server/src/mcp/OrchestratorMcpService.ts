@@ -2092,7 +2092,6 @@ const make = Effect.gen(function* () {
     scope: McpThreadInvocationScope,
     taskId: NodeId,
     requestedTimeoutMs: number | undefined,
-    wakePolicyKey: string,
   ): Effect.fn.Return<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure> {
     const timeoutMs = Math.min(
       MAX_WAIT_TIMEOUT_MS,
@@ -2109,8 +2108,8 @@ const make = Effect.gen(function* () {
         type: "delegated_task.wake-policy",
         commandId: stableCommandId({
           scope,
-          requestKey: wakePolicyKey,
-          operation: "delegate-task-wake-policy",
+          requestKey: taskId,
+          operation: "delegated-task-completion-wake",
         }),
         parentThreadId: scope.thread.threadId,
         taskId,
@@ -3411,12 +3410,7 @@ const make = Effect.gen(function* () {
         yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
         yield* resolveInteractionMode(parent.thread.interactionMode, input.interactionMode);
         return yield* input.mode === "wait"
-          ? awaitTask(
-              scope,
-              original.id,
-              input.timeoutMs,
-              original.remoteChild === undefined ? key : original.id,
-            )
+          ? awaitTask(scope, original.id, input.timeoutMs)
           : readTask(scope, original.id, false, true);
       }
       const environmentId =
@@ -3431,7 +3425,7 @@ const make = Effect.gen(function* () {
           { key, commandId },
         );
         return yield* input.mode === "wait"
-          ? awaitTask(scope, taskId, input.timeoutMs, taskId)
+          ? awaitTask(scope, taskId, input.timeoutMs)
           : readTask(scope, taskId, false, true);
       }
       const foreignProjectId =
@@ -3642,7 +3636,7 @@ const make = Effect.gen(function* () {
       if (input.mode !== "wait") {
         return yield* readTask(scope, taskId, false, true);
       }
-      return yield* awaitTask(scope, taskId, input.timeoutMs, key);
+      return yield* awaitTask(scope, taskId, input.timeoutMs);
     }),
     taskStatus: Effect.fn("OrchestratorMcpService.taskStatus")(function* (callerScope, taskId) {
       const scope = yield* requireThreadScope(callerScope, "task_status");
