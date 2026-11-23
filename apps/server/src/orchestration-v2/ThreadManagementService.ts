@@ -698,9 +698,26 @@ const make = Effect.gen(function* () {
         ),
       );
 
-  const hasReceipt: ThreadManagementServiceShape["hasReceipt"] = (commandId, acceptedTarget) =>
+  const readReceipt = (commandId: CommandId) =>
     receipts.getByCommandId(commandId).pipe(
-      Effect.orElseSucceed(() => Option.none()),
+      Effect.mapError(
+        (cause) =>
+          new Orchestrator.OrchestratorDispatchError({
+            commandId,
+            commandType: "receipt.read",
+            cause,
+          }),
+      ),
+    );
+
+  const receiptMatches = (
+    commandId: CommandId,
+    acceptedTarget?: {
+      readonly threadId: ThreadId;
+      readonly commandType: "thread.create" | "message.dispatch";
+    },
+  ) =>
+    readReceipt(commandId).pipe(
       Effect.map(
         (receipt) =>
           Option.isSome(receipt) &&
@@ -711,12 +728,15 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  const hasReceipt: ThreadManagementServiceShape["hasReceipt"] = (commandId, acceptedTarget) =>
+    receiptMatches(commandId, acceptedTarget).pipe(Effect.orElseSucceed(() => false));
+
   const getAcceptedLaunchAttachments = Effect.fn(
     "ThreadManagementService.getAcceptedLaunchAttachments",
   )(function* (commandId: CommandId, threadId: ThreadId, messageId: MessageId) {
-    if (!(yield* hasReceipt(commandId, { threadId, commandType: "thread.create" }))) return;
+    if (!(yield* receiptMatches(commandId, { threadId, commandType: "thread.create" }))) return;
     const initialCommandId = CommandId.make(`${commandId}:initial-message`);
-    if (!(yield* hasReceipt(initialCommandId, { threadId, commandType: "message.dispatch" })))
+    if (!(yield* receiptMatches(initialCommandId, { threadId, commandType: "message.dispatch" })))
       return;
     const events = yield* orchestrator.readCommandEvents({
       commandId: initialCommandId,
@@ -740,19 +760,11 @@ const make = Effect.gen(function* () {
   const acceptedCommandSequence: ThreadManagementServiceShape["acceptedCommandSequence"] = (
     commandId,
   ) =>
-    receipts.getByCommandId(commandId).pipe(
+    readReceipt(commandId).pipe(
       Effect.map((receipt) =>
         Option.isSome(receipt) && receipt.value.status === "accepted"
           ? receipt.value.resultSequence
           : undefined,
-      ),
-      Effect.mapError(
-        (cause) =>
-          new Orchestrator.OrchestratorDispatchError({
-            commandId,
-            commandType: "receipt.read",
-            cause,
-          }),
       ),
     );
 

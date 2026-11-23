@@ -28,6 +28,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -2267,6 +2268,8 @@ it.effect.each([
   "setup-start",
   "complete",
   "legacy",
+  "legacy-scratch",
+  "concurrent-setup-read",
 ] as const)("recovers an idle worktree from its durable preparation boundary (%s)", (stage) =>
   Effect.gen(function* () {
     const setupEntered = yield* Deferred.make<void>();
@@ -2315,11 +2318,11 @@ it.effect.each([
           interactionMode: input.interactionMode,
           modelSelection,
           branch: workspace.branch,
-          worktreePath: null,
+          worktreePath: stage === "legacy-scratch" ? "/scratch/accepted-folder" : null,
           createdBy: input.createdBy,
           creationSource: input.creationSource,
           launchIntentHash: input.launchIntentHash,
-          ...(stage === "legacy" ? {} : { initialWorkspacePreparation: workspace }),
+          ...(stage.startsWith("legacy") ? {} : { initialWorkspacePreparation: workspace }),
         });
       }
       const created = Option.getOrThrow(yield* receipts.getByCommandId(input.commandId));
@@ -2335,7 +2338,7 @@ it.effect.each([
             error: null,
           });
         });
-      if (stage !== "create" && stage !== "legacy") yield* checkpoint("checkout");
+      if (stage !== "create" && !stage.startsWith("legacy")) yield* checkpoint("checkout");
       if (stage === "workspace" || stage === "setup-start" || stage === "complete") {
         yield* threads.dispatch({
           type: "thread.metadata.update",
@@ -2345,14 +2348,47 @@ it.effect.each([
           worktreePath: "/repo-worktrees/feature",
         });
       }
-      if (stage === "setup-start" || stage === "complete") yield* checkpoint("setup");
+      if (stage === "setup-start" || stage === "complete" || stage === "concurrent-setup-read")
+        yield* checkpoint("setup");
       if (stage === "complete") yield* checkpoint("complete");
 
       const retry = {
         ...input,
-        workspaceStrategy: { ...workspace, baseRef: "changed-server-default" },
+        workspaceStrategy:
+          stage === "legacy-scratch"
+            ? { type: "root" as const }
+            : { ...workspace, baseRef: "changed-server-default" },
       };
-      if (stage === "checkout-start" || stage === "setup-start" || stage === "legacy") {
+      if (stage === "concurrent-setup-read") {
+        const reading = yield* Deferred.make<void>();
+        const resumeRead = yield* Deferred.make<void>();
+        const getReceipt = receipts.getByCommandId;
+        const pause = vi
+          .spyOn(receipts, "getByCommandId")
+          .mockImplementation((id) =>
+            id === "idle-worktree:idle-complete"
+              ? Deferred.succeed(reading, undefined).pipe(
+                  Effect.andThen(Deferred.await(resumeRead)),
+                  Effect.andThen(getReceipt(id)),
+                )
+              : getReceipt(id),
+          );
+        const first = yield* launches.launch(retry).pipe(Effect.result, Effect.forkChild);
+        yield* Deferred.await(reading);
+        const second = yield* launches.launch(retry).pipe(Effect.result, Effect.forkChild);
+        yield* TestClock.adjust("0 millis");
+        yield* Deferred.succeed(resumeRead, undefined);
+        const results = yield* Effect.all([Fiber.join(first), Fiber.join(second)]);
+        pause.mockRestore();
+        for (const result of results) {
+          assert.ok(Result.isFailure(result));
+          assert.propertyVal(result.failure, "operation", "recover-workspace");
+        }
+      } else if (
+        stage === "checkout-start" ||
+        stage === "setup-start" ||
+        stage.startsWith("legacy")
+      ) {
         const failure = yield* launches.launch(retry).pipe(Effect.flip);
         assert.equal(failure._tag, "ThreadLaunchError");
         if (failure._tag === "ThreadLaunchError")
@@ -2391,6 +2427,40 @@ it.effect.each([
     }).pipe(Effect.provide(harness.layer));
   }),
 );
+
+it.effect("interrupting the tracker after idle completion keeps the bound checkout", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const worker = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
+    const finish = tracker.finish;
+    const cut = vi.spyOn(tracker, "finish").mockImplementation((...args) =>
+      args[1] === "done"
+        ? Effect.gen(function* () {
+            yield* Deferred.succeed(worker, yield* Effect.fiber);
+            return yield* Effect.interrupt;
+          })
+        : finish(...args),
+    );
+    const input = launchInput({
+      command: "idle-tracker",
+      thread: "idle-tracker-thread",
+      workspace: { type: "worktree", baseRef: "main", branch: "accepted-worktree" },
+    });
+    yield* launches.launch(input);
+    yield* Fiber.await(yield* Deferred.await(worker));
+    cut.mockRestore();
+    assert.lengthOf(harness.removeWorktree.mock.calls, 0);
+    const result = yield* launches.launch(input);
+    assert.equal(result.projection.thread.worktreePath, "/repo-worktrees/feature");
+    assert.equal(
+      (yield* threads.getThreadProjection(input.threadId)).thread.worktreePath,
+      result.projection.thread.worktreePath,
+    );
+  }).pipe(Effect.provide(harness.layer));
+});
 
 it.effect("schedules an accepted preparing message exactly once across concurrent retries", () =>
   Effect.gen(function* () {
@@ -2592,6 +2662,18 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
         stored.id,
       ),
     );
+    const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+    const offline = vi
+      .spyOn(receipts, "getByCommandId")
+      .mockImplementationOnce((commandId) =>
+        Effect.fail(new CommandReceiptStore.CommandReceiptStoreReadError({ commandId })),
+      );
+    const unavailable = yield* threads
+      .getAcceptedLaunchAttachments(input.commandId, input.threadId, stored.id)
+      .pipe(Effect.result);
+    offline.mockRestore();
+    assert.ok(Result.isFailure(unavailable));
+    assert.equal(unavailable.failure.commandType, "receipt.read");
     const record = stored.context?.records[0];
     assert.isDefined(record);
     assert.equal((record as { attachmentId: string }).attachmentId, stored.attachments[0]?.id);

@@ -1,3 +1,4 @@
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
@@ -244,6 +245,7 @@ const make = Effect.gen(function* () {
   const preparationScope = yield* Scope.make("sequential");
   // Preparation belongs to the run, so a replayed launch and a retry share one reservation.
   // The value is the command that owns it.
+  const idleRecovery = yield* KeyedLock.make<CommandId>();
   const scheduledLaunches = yield* Ref.make<ReadonlyMap<string, CommandId>>(new Map());
   yield* Effect.addFinalizer(() => Scope.close(preparationScope, Exit.void));
 
@@ -387,7 +389,7 @@ const make = Effect.gen(function* () {
     let createdWorktreePath: string | null = null;
     let setupTerminalId: string | null = null;
     let workspaceRecorded = false;
-    let runReleased = false;
+    let workspaceCommitted = false;
     // Stop background renames before forgetting worktrees; completed renames record them again.
     let branchRename: Fiber.Fiber<unknown> | null = null;
     if (input.workspaceStrategy.type === "worktree") {
@@ -766,7 +768,7 @@ const make = Effect.gen(function* () {
             Effect.mapError(mapError(input, "release-run", threadId)),
             Effect.tap(() =>
               Effect.sync(() => {
-                runReleased = true;
+                workspaceCommitted = true;
               }),
             ),
             Effect.uninterruptible,
@@ -775,11 +777,19 @@ const make = Effect.gen(function* () {
       yield* setupTracker.stageStatus(threadId, "agent", "done");
       yield* awaitAsyncSetup;
       if (input.idleCreationSequence !== undefined)
-        yield* recordIdleStage(input, threadId, "complete");
+        yield* recordIdleStage(input, threadId, "complete").pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              workspaceCommitted = true;
+            }),
+          ),
+          Effect.uninterruptible,
+        );
       yield* setupTracker.finish(threadId, "done");
     }).pipe(
       Effect.onError((cause) =>
         Effect.gen(function* () {
+          if (workspaceCommitted && input.idleCreationSequence !== undefined) return;
           const cancelled = Cause.hasInterruptsOnly(cause);
           yield* setupTracker.finish(
             threadId,
@@ -793,7 +803,7 @@ const make = Effect.gen(function* () {
           if (
             tracked &&
             createdWorktreePath &&
-            ((cancelled && !runReleased) || !workspaceRecorded)
+            ((cancelled && !workspaceCommitted) || !workspaceRecorded)
           ) {
             if (branchRename !== null) yield* Fiber.interrupt(branchRename);
             const removedPath = createdWorktreePath;
@@ -1286,14 +1296,22 @@ const make = Effect.gen(function* () {
                 branch: workspaceStrategy.branch,
               }
             : workspaceStrategy;
-        const idleStrategy = acceptedThread?.initialWorkspacePreparation ?? workspaceStrategy;
+        // Older Scratch launches recorded the folder at creation, even when requested at the root.
+        const idleStrategy =
+          acceptedThread?.initialWorkspacePreparation ??
+          (acceptedThread?.worktreePath != null
+            ? { type: "existing_worktree" as const, worktreePath: acceptedThread.worktreePath }
+            : workspaceStrategy);
         if (runId === null && idleStrategy.type !== "root" && input.reuseExistingThread !== true) {
-          yield* resumeIdleWorktree(
-            input,
-            idleStrategy,
-            projection.thread,
-            claimed.sequence,
-            acceptedThread?.initialWorkspacePreparation !== undefined,
+          yield* idleRecovery.withLock(
+            input.commandId,
+            resumeIdleWorktree(
+              input,
+              idleStrategy,
+              projection.thread,
+              claimed.sequence,
+              acceptedThread?.initialWorkspacePreparation !== undefined,
+            ),
           );
         } else if (shouldSchedule && preparingRun?.workspacePreparation !== undefined) {
           // The run's own preparation, so a replay reuses a checkout an earlier attempt bound.
