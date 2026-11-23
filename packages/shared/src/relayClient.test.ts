@@ -914,6 +914,38 @@ describe("RelayClient", () => {
       },
     );
 
+    it.effect.each([
+      ["2025.6.1", "2026.1.0", "legacy"],
+      ["2026.1.0", "2025.6.1", "current"],
+      ["2026.1.0", "2026.1.0", "current"],
+      ["2025.6.1", "2025.9.0", "current"],
+    ] as const)(
+      "selects the compatible fallback for current %s and legacy %s from the %s layout",
+      ([currentVersion, legacyVersion, preferred]) => {
+        const versions: Record<string, string> = {};
+        return run(
+          (baseDir) =>
+            Effect.gen(function* () {
+              const paths = yield* Path.Path;
+              const current = managedPathFor(paths, baseDir, "2026.1.0", hostPlatform);
+              const legacy = managedPathFor(paths, baseDir, "2026.1.0", hostPlatform, "legacy");
+              yield* writeExecutable(current);
+              yield* writeExecutable(legacy);
+              versions[current] = currentVersion;
+              versions[legacy] = legacyVersion;
+              const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
+              const executablePath = preferred === "current" ? current : legacy;
+              expect(yield* manager.resolve).toMatchObject({
+                executablePath,
+                source: "managed",
+                version: versions[executablePath],
+              });
+            }),
+          { versions },
+        );
+      },
+    );
+
     it.effect("reports an outdated override as missing", () => {
       const versions: Record<string, string> = {};
       return run(
@@ -1121,37 +1153,58 @@ describe("RelayClient", () => {
       );
     });
 
-    it.effect(
-      "keeps a self-updated managed binary as a fallback but still installs the pin",
-      () => {
-        const versions: Record<string, string> = {};
-        return run(
-          (baseDir) =>
-            Effect.gen(function* () {
-              const paths = yield* Path.Path;
-              const pinned = managedPathFor(
-                paths,
-                baseDir,
-                RelayClient.CLOUDFLARED_VERSION,
-                hostPlatform,
-              );
-              versions[pinned] = "2026.9.3";
-              yield* writeExecutable(pinned);
-              const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
-              const resolved = yield* manager.resolve;
-              expect(resolved).toEqual({
-                status: "available",
-                executablePath: pinned,
-                source: "managed",
-                version: "2026.9.3",
-              });
-              expect(
-                resolved.status === "available" && RelayClient.isPinnedManagedRelayClient(resolved),
-              ).toBe(false);
-            }),
-          { versions },
-        );
-      },
+    it.effect("keeps a self-updated managed binary as a fallback but still installs the pin", () =>
+      run((baseDir) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const paths = yield* Path.Path;
+          const pinned = managedPathFor(
+            paths,
+            baseDir,
+            RelayClient.CLOUDFLARED_VERSION,
+            hostPlatform,
+          );
+          yield* writeExecutable(pinned, "cloudflared version 2026.9.3");
+          const bytes = new TextEncoder().encode(
+            `cloudflared version ${RelayClient.CLOUDFLARED_VERSION}`,
+          );
+          // The version probe reads the fixture's contents, including after activation at the same path.
+          const spawner = ChildProcessSpawner.make((command) => {
+            if (!ChildProcess.isStandardCommand(command) || command.args[0] !== "version") {
+              return Effect.die("Unexpected fixture command");
+            }
+            return fs.readFileString(command.command).pipe(
+              Effect.orDie,
+              Effect.map((output) => makeHandle(0, output)),
+            );
+          });
+          const manager = yield* RelayClient.makeCloudflaredRelayClient({
+            baseDir,
+            releaseAsset: { ...testReleaseAsset, sha256: Hex.encode(sha256(bytes)) },
+          }).pipe(
+            Effect.provide(layerHttpClient(bytes)),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          );
+          const resolved = yield* manager.resolve;
+          expect(resolved).toEqual({
+            status: "available",
+            executablePath: pinned,
+            source: "managed",
+            version: "2026.9.3",
+          });
+          expect(
+            resolved.status === "available" && RelayClient.isPinnedManagedRelayClient(resolved),
+          ).toBe(false);
+          const expected = {
+            status: "available",
+            executablePath: pinned,
+            source: "managed",
+            version: RelayClient.CLOUDFLARED_VERSION,
+          };
+          expect(yield* manager.install).toEqual(expected);
+          expect(yield* manager.resolve).toEqual(expected);
+        }),
+      ),
     );
   });
 

@@ -318,7 +318,9 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
     const current = yield* compatibleCandidate(managedPathFor(version), "managed");
     if (current?.version === CLOUDFLARED_VERSION) return current;
     const legacy = yield* compatibleCandidate(legacyPathFor(version), "managed");
-    return legacy?.version === CLOUDFLARED_VERSION ? legacy : (current ?? legacy);
+    if (legacy?.version === CLOUDFLARED_VERSION) return legacy;
+    if (current?.version === version) return current;
+    return legacy?.version === version ? legacy : (current ?? legacy);
   });
 
   // A newer release directory belongs to another server version.
