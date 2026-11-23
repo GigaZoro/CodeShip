@@ -3997,6 +3997,8 @@ export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalComma
 
 type LaunchCommand =
   | (Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> & {
+      /** A managed send must still target an open thread in the caller's project when accepted. */
+      readonly sendToProjectId?: ProjectId;
       readonly demandId?: string | null;
       readonly demandSourceRunId?: RunId;
     })
