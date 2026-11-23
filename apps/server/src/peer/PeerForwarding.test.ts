@@ -318,6 +318,17 @@ const makeLaptop = Effect.gen(function* () {
                     : { runtimeMode: "full-access" },
                 ),
           ),
+        getThreadRecords: (threadId) =>
+          Effect.succeed({
+            thread: { id: threadId },
+            runs: [
+              {
+                id: RunId.make("run:mcp-test"),
+                providerInstanceId: ProviderInstanceId.make("codex"),
+                demandId: `demand:${"d".repeat(64)}`,
+              },
+            ],
+          } as never),
         getProjectThreadRecords: ({ threadId }) =>
           Effect.succeed({
             thread: liveThreadShell(threadId, { runtimeMode: "full-access" }),
@@ -630,6 +641,7 @@ it.effect("an agent's launch in a linked environment is top-level, whatever it c
       expect(failureOf(launched)).toBeUndefined();
       const [received] = (yield* Ref.get(seen)).launches;
       expect(received?.delegatedFrom).toBeUndefined();
+      expect(received?.initialMessage?.demandId).toBe(`demand:${"d".repeat(64)}`);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

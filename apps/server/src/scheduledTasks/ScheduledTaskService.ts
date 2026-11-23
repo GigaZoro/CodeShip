@@ -101,6 +101,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
+import { originalDemandId } from "../orchestration-v2/demandId.ts";
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as NetworkRecoveryWorker from "../orchestration-v2/NetworkRecoveryWorker.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -2503,6 +2504,12 @@ export const layer = Layer.effect(
             : `${active.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = promptMessageId(fireKey);
+        const demandId = originalDemandId(
+          "occurrence",
+          active.id,
+          trigger,
+          webhook?.deliveryId ?? scheduledFor ?? fireKey,
+        );
         // A webhook prompt was rendered from the row when the request arrived. A prompt file is
         // read for each run, and a failed read fails the run: it never runs an earlier read's text.
         const read: Result.Result<
@@ -2550,6 +2557,7 @@ export const layer = Layer.effect(
               threadId,
               messageId,
               scheduledTaskId: active.id,
+              demandId,
               text,
               attachments: [],
               mode: "queue",
@@ -2603,6 +2611,7 @@ export const layer = Layer.effect(
                     initialMessage: {
                       messageId,
                       scheduledTaskId: active.id,
+                      demandId,
                       ...(target.crossProviderFailoverFrom === undefined
                         ? {}
                         : { crossProviderFailoverFrom: target.crossProviderFailoverFrom }),

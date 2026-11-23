@@ -51,6 +51,7 @@ interface PeerCallInput<S extends Schema.Decoder<unknown>> {
   readonly tool: string;
   readonly arguments: Record<string, unknown>;
   readonly limits: PeerCallLimits;
+  readonly demandId?: string;
   readonly success: S;
   /** The most the tool's result may take as JSON; a larger answer is refused, never read whole. */
   readonly maxResultBytes?: number;
@@ -405,6 +406,9 @@ const make = Effect.gen(function* () {
       token: resolved.token,
       serverVersion: resolved.serverVersion,
       limitHeader: {
+        ...(input.demandId === undefined
+          ? {}
+          : { [McpInvocationContext.DEMAND_ID_HEADER]: input.demandId }),
         [McpInvocationContext.MODE_LIMIT_HEADER]: `${input.limits.runtimeMode}/${input.limits.interactionMode}`,
       },
     };

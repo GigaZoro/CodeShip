@@ -52,6 +52,7 @@ export interface McpClientCaller {
    * it narrows what the link may ask for (`t3_link_back`); it never widens access.
    */
   readonly linkedFrom?: EnvironmentId | undefined;
+  readonly demandId?: string;
   /**
    * Narrower modes the client asked for on this request (`T3-Mode-Limit`):
    * another environment passing on the limits of the agent it calls for.
@@ -68,6 +69,7 @@ export interface McpClientCaller {
  * `clientModeCeiling`), so a client gains nothing by sending a broad one.
  */
 export const MODE_LIMIT_HEADER = "t3-mode-limit";
+export const DEMAND_ID_HEADER = "t3-demand-id";
 
 export interface ClientModes {
   readonly runtimeMode: RuntimeMode;

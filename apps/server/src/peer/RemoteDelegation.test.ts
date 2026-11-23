@@ -118,6 +118,7 @@ interface BoxThread {
   readonly launchedProject: Ref.Ref<ProjectId | null>;
   /** The first message the thread there was launched with. */
   readonly message: Ref.Ref<string | null>;
+  readonly demandId: Ref.Ref<string | null>;
   readonly status: Ref.Ref<OrchestrationV2Run["status"]>;
   readonly reply: Ref.Ref<string | null>;
   readonly error: Ref.Ref<string | null>;
@@ -182,6 +183,7 @@ const makeBoxThread = Effect.gen(function* () {
     ),
     launchedProject: yield* Ref.make<ProjectId | null>(null),
     message: yield* Ref.make<string | null>(null),
+    demandId: yield* Ref.make<string | null>(null),
     status: yield* Ref.make<OrchestrationV2Run["status"]>("running"),
     reply: yield* Ref.make<string | null>("Working…"),
     error: yield* Ref.make<string | null>(null),
@@ -557,6 +559,7 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
             Effect.andThen(Ref.set(thread.launchedProject, input.projectId)),
             Effect.andThen(Ref.set(thread.workspaceStrategy, input.workspaceStrategy)),
             Effect.andThen(Ref.set(thread.message, input.initialMessage?.text ?? null)),
+            Effect.andThen(Ref.set(thread.demandId, input.initialMessage?.demandId ?? null)),
             Effect.andThen(
               Ref.set(thread.launchedWith, {
                 modelSelection: input.modelSelection,
@@ -803,6 +806,7 @@ const makeLaptop = (
 const laptopScratchProject = ProjectId.make("project:laptop-scratch");
 const parentThreadId = ThreadId.make("thread:laptop-parent");
 const parentRunId = RunId.make("run:laptop-parent");
+const parentDemandId = `demand:${"a".repeat(64)}`;
 const parentRootNode = NodeId.make("node:laptop-parent:root");
 const parentScope: McpInvocationContext.McpInvocationScope = {
   environmentId: laptop.environmentId,
@@ -905,6 +909,7 @@ const seedParent = (
           occurredAt: now,
           payload: {
             id: parentRunId,
+            demandId: parentDemandId,
             threadId: parentThreadId,
             ordinal: 1,
             providerInstanceId: instanceId,
@@ -998,6 +1003,7 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
       expect(delegated.link).toBe(
         `<t3-thread://v2/${box.environmentId}/${delegated.remoteChild.threadId}>`,
       );
+      expect(yield* Ref.get(thread.demandId)).toBe(parentDemandId);
       // ...naming the parent here, so the thread there links back to it.
       expect(yield* Ref.get(thread.delegatedFrom)).toEqual({
         environmentId: laptop.environmentId,

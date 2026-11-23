@@ -34,7 +34,13 @@ import { withResolvedAttachments } from "../attachment/references.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
-import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
+import {
+  callerDemand,
+  newCommandId,
+  readCaller,
+  resolveProjectId,
+  unavailable,
+} from "../../threadAccess.ts";
 import { type LaunchWorkspaceStrategy, ProjectToolkit } from "./tools.ts";
 
 const isAboveCeilingError = Schema.is(OrchestratorRuntimeModeAboveCeilingError);
@@ -300,6 +306,10 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         }
         // A new thread owns no attachments yet, even on a replay: a replay claims again and
         // keeps the copies its first launch accepted.
+        const demandId =
+          replaying || (input.message === undefined && !input.attachments?.length)
+            ? null
+            : yield* callerDemand(context, input.demandOrigin);
         const requested = input.attachments ?? [];
         const result = yield* withResolvedAttachments(
           { requested, owned: [], context },
@@ -318,6 +328,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 : {
                     initialMessage: {
                       messageId,
+                      demandId,
                       ...(caller === undefined ? {} : { senderThreadId: caller.id }),
                       text: input.message ?? "",
                       attachments,

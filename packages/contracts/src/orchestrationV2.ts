@@ -789,7 +789,26 @@ export const ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE = "prompt_not_sent";
 /** The provider refused the turn because the account's login no longer works; signing in again clears it. */
 export const AUTHENTICATION_FAILED_FAILURE_CODE = "authentication_failed";
 
+export const OrchestrationV2DemandOrigin = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("work_item"),
+    key: TrimmedNonEmptyString.check(Schema.isMaxLength(512)),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("repair"),
+    threadId: ThreadId,
+    runId: Schema.NullOr(RunId),
+  }),
+]);
+export type OrchestrationV2DemandOrigin = typeof OrchestrationV2DemandOrigin.Type;
+
+export const OrchestrationV2DemandId = Schema.String.check(
+  Schema.isPattern(/^demand:[0-9a-f]{64}$/),
+);
+
 export const OrchestrationV2Run = Schema.Struct({
+  /** Missing on older events; null when no original demand is known. */
+  demandId: Schema.optional(Schema.NullOr(OrchestrationV2DemandId)),
   id: RunId,
   threadId: ThreadId,
   ordinal: PositiveInt,
@@ -3995,6 +4014,8 @@ type LaunchCommand = Extract<
 export type OrchestrationV2ServerCommand =
   | Exclude<OrchestrationV2Command, LaunchCommand>
   | (LaunchCommand & {
+      readonly demandId?: string | null;
+      readonly demandSourceRunId?: RunId;
       readonly crossProviderFailoverFrom?: ProviderInstanceId;
       readonly requestedModelSelection?: ModelSelection;
       readonly launchAlreadyRouted?: true;

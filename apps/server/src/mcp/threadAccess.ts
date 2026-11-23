@@ -2,6 +2,7 @@ import type { ProjectionRecordField } from "../orchestration-v2/ProjectionStore.
 import {
   CommandId,
   OrchestratorMcpFailure,
+  type OrchestrationV2DemandOrigin,
   type ProjectId,
   type ProviderInstanceId,
   type ProviderInteractionMode,
@@ -12,6 +13,8 @@ import {
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 
+import { assertSameLink } from "./linkOrigin.ts";
+import { originalDemandId } from "../orchestration-v2/demandId.ts";
 import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
@@ -203,6 +206,47 @@ export const readThread = Effect.fn("mcp.readThread")(function* <
       ),
     );
   return { ...context, projection };
+});
+
+export const explicitDemand = Effect.fn("mcp.explicitDemand")(function* (
+  context: Parameters<typeof assertSameLink>[0] & Pick<Caller, "threads">,
+  origin: OrchestrationV2DemandOrigin,
+) {
+  if (origin.kind === "work_item") return originalDemandId("work-item", origin.key);
+  if (origin.runId === null) return null;
+  const records = yield* context.threads
+    .getThreadRecords(origin.threadId, ["runs"], {
+      runIds: [origin.runId],
+    })
+    .pipe(Effect.mapError(unavailable));
+  yield* assertSameLink(context, records.thread);
+  const run = records.runs.find((r) => r.id === origin.runId);
+  if (run === undefined)
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message: "The failed run named as the repair origin was not found on this machine.",
+    });
+  return run.demandId ?? null;
+});
+
+export const callerDemand = Effect.fn("mcp.callerDemand")(function* (
+  context: Caller,
+  origin?: OrchestrationV2DemandOrigin,
+) {
+  if (origin !== undefined) return yield* explicitDemand(context, origin);
+  if (context.caller === undefined) return context.scope.client?.demandId ?? null;
+  const runId = context.caller.activeRunId;
+  if (runId == null) return null;
+  const records = yield* context.threads
+    .getThreadRecords(context.caller.id, ["runs"], {
+      runIds: [runId],
+    })
+    .pipe(Effect.mapError(unavailable));
+  return (
+    records.runs.find(
+      (r) => r.id === runId && r.providerInstanceId === context.scope.thread?.providerInstanceId,
+    )?.demandId ?? null
+  );
 });
 
 export const newCommandId = Effect.fn("mcp.newCommandId")(function* () {

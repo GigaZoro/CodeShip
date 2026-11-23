@@ -1,3 +1,7 @@
+## 2026-11-23 — Trace work to the request that started it
+
+- Run records carry an accounting ID across delegation, linked machines, and retries. Work-item launches and repairs can identify the original demand for usage reporting.
+
 ## 2026-11-22 — Long keys work for tasks on linked environments
 
 - Starting or cancelling a task on a linked environment no longer fails when the chat's request key is at the 256-character limit.

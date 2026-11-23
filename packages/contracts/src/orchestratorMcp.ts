@@ -56,6 +56,7 @@ import { ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
+  OrchestrationV2DemandOrigin,
   OrchestrationV2RunStatus,
   OrchestrationV2TaskCommand,
   OrchestrationV2TurnItemStatus,
@@ -570,6 +571,7 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
+  demandOrigin: Schema.optional(OrchestrationV2DemandOrigin),
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   message: OrchestratorMcpPrompt,

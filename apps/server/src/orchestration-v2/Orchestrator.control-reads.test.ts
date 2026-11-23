@@ -1093,6 +1093,8 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
     });
     const task = (yield* projections.getThreadProjection(parentThreadId)).subagents[0]!;
     const childRun = (yield* projections.getThreadRecords(task.childThreadId!, ["runs"])).runs[0]!;
+    assert.isString(parentRun.demandId);
+    assert.equal(childRun.demandId, parentRun.demandId);
     const now = yield* DateTime.now;
     const requestEvent = (
       eventId: string,
@@ -1181,6 +1183,7 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
       (run) => run.userMessageId === wakes[0]!.id,
     )!;
     assert.equal(wakeRun.status, "queued");
+    assert.equal(wakeRun.demandId, parentRun.demandId);
     const resolved = {
       ...asyncQuestion,
       id: EventId.make("event:question-resolved"),

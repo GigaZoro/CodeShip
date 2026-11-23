@@ -159,7 +159,7 @@ import {
   runtimeModeRank,
   taskPrompt,
 } from "./delegatedTaskModes.ts";
-import { isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
+import { explicitDemand, isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
 import { providerUsageFields, publishesUsage, usageReadingStale } from "./orchestratorUsage.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
@@ -4009,6 +4009,7 @@ const make = Effect.gen(function* () {
                     }),
                     threadId,
                     senderThreadId: scope.thread.threadId,
+                    demandId: parentRun.demandId ?? null,
                     messageId,
                     text: request.prompt,
                     attachments: [],
@@ -4270,6 +4271,19 @@ const make = Effect.gen(function* () {
         requestKey: key,
         operation: "thread-send",
       });
+      const callerRun =
+        parent === undefined ? undefined : ThreadManagementService.latestActiveRun(parent);
+      const demandId =
+        input.demandOrigin !== undefined
+          ? yield* explicitDemand(
+              { scope, caller: parent?.thread, threads: threadManagement },
+              input.demandOrigin,
+            )
+          : parent === undefined
+            ? scope.client?.demandId
+            : callerRun?.providerInstanceId === scope.thread?.providerInstanceId
+              ? callerRun?.demandId
+              : null;
       const result = yield* threadManagement
         .sendToThread({
           projectId: target.thread.projectId,
@@ -4280,6 +4294,7 @@ const make = Effect.gen(function* () {
           }),
           threadId: input.threadId,
           ...(parent === undefined ? {} : { senderThreadId: parent.thread.id }),
+          demandId: demandId ?? null,
           messageId,
           text: input.message,
           attachments: [],

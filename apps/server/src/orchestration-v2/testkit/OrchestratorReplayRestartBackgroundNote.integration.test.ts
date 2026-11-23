@@ -3,6 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   EventId,
+  orchestrationV2RunAwaitsMemory,
   isOrchestrationV2WorkActive,
   type OrchestrationV2RestartCancelledBackgroundWork,
   ProviderDriverKind,
@@ -642,23 +643,48 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
   const snapshotDatabase = SqlitePersistence.layerFromPath(snapshotPath).pipe(
     Layer.provide(NodeServices.layer),
   );
-  const restartScenario = scenario("restarted", [{ type: "await_thread_idle", threadId }]);
-  const restarted = yield* Effect.scoped(
+  const restartScenario = scenario("restarted", []);
+  const recovered = yield* Effect.scoped(
     Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
       const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
       yield* worker.drain();
-      return yield* runOrchestratorV2Scenario(restartScenario);
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      const resumed = projection.runs.find((run) => run.restartContinuationOfRunId === lostRun.id);
+      if (resumed === undefined) return projection;
+      const eventSink = yield* EventSink.EventSinkV2;
+      if (orchestrationV2RunAwaitsMemory(resumed)) {
+        yield* orchestrator.dispatch({
+          type: "run.memory-admit",
+          commandId: CommandId.make(`command:replay:admit:${resumed.id}`),
+          threadId,
+          runId: resumed.id,
+        });
+      }
+      yield* worker.drain();
+      // Completing the attempt queues the checkpoint that marks its run completed.
+      yield* eventSink.stream({ threadId, eventType: "run-attempt.updated" }).pipe(
+        Stream.filter(
+          ({ event }) =>
+            event.type === "run-attempt.updated" &&
+            event.payload.runId === resumed.id &&
+            event.payload.completedAt !== null,
+        ),
+        Stream.runHead,
+      );
+      yield* worker.drain();
+      return yield* orchestrator.getThreadProjection(threadId);
     }).pipe(
       Effect.provide(
         ProviderReplayHarness.layerProviderReplay(restartScenario, harness, {
           databaseLayer: snapshotDatabase,
           recoverOnStartup: true,
+          runEffectWorker: false,
           continueThreadsAfterServerUpdate: input.continueThreadsAfterServerUpdate,
         }),
       ),
     ),
   );
-  const recovered = projectionFor(restarted, scenarioName);
 
   const after = yield* Effect.scoped(
     runOrchestratorV2ProviderReplayScenario(scenario("after-restart", phase3Steps), harness, {
@@ -751,6 +777,8 @@ describe("background work its agent process lost", () => {
             ],
           );
           const continuation = recovered.runs[1];
+          assert.isString(recovered.runs[0]?.demandId);
+          assert.equal(continuation?.demandId, recovered.runs[0]?.demandId);
           assert.equal(
             recovered.messages.find((message) => message.id === continuation?.userMessageId)?.text,
             LOST_SUBAGENT.note,

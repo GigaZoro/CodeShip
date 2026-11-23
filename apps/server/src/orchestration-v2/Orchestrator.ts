@@ -13,6 +13,7 @@ import {
   snoozeHoldsStop,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
+import { originalDemandId } from "./demandId.ts";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import {
@@ -6615,6 +6616,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       steerRunId !== null && (yield* stopReachedRun(command, command.threadId, steerRunId))
         ? projection.runs.find((run) => run.id === steerRunId)
         : undefined;
+    const demandSourceRunId =
+      command.manualContinuationOfRunId ??
+      automaticSourceRunId ??
+      command.delegatedCompletion?.parentRunId ??
+      command.demandSourceRunId;
+    const originDemand = () => {
+      if (demandSourceRunId !== undefined)
+        return projection.runs.find((run) => run.id === demandSourceRunId)?.demandId ?? null;
+      if (command.demandId !== undefined) return command.demandId;
+      if (command.scheduledTaskId !== undefined)
+        return originalDemandId("occurrence", command.scheduledTaskId, command.messageId);
+      if (typedByPersonInClient(command) || command.guestMessageId !== undefined)
+        return originalDemandId("message", command.threadId, command.messageId);
+      return null;
+    };
     const queueBehindRun = activeRun ?? worktreeMissingRun ?? stoppedSteerRun;
     const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
     const startsOrQueuesRun =
@@ -6762,6 +6778,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(crossProviderFailoverFrom === undefined ? {} : { crossProviderFailoverFrom }),
         providerThreadId: queuedProviderThread.id,
         userMessageId: command.messageId,
+        demandId: originDemand(),
         rootNodeId,
         activeAttemptId: attemptId,
         status: "queued",
@@ -7122,6 +7139,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(crossProviderFailoverFrom === undefined ? {} : { crossProviderFailoverFrom }),
         providerThreadId,
         userMessageId: command.messageId,
+        demandId: originDemand(),
         rootNodeId,
         activeAttemptId: attemptId,
         status: dispatchMode.type === "defer_start" ? "preparing" : "starting",
@@ -7872,6 +7890,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       modelSelection,
       providerThreadId: providerThread.id,
       userMessageId: command.messageId,
+      demandId: originDemand(),
       rootNodeId,
       activeAttemptId: attemptId,
       status: "starting",
@@ -8570,6 +8589,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandId: command.commandId,
         threadId: childThreadId,
         senderThreadId: command.parentThreadId,
+        demandId: parentRun.demandId ?? null,
         messageId: childMessageId,
         text: command.task,
         attachments: [],

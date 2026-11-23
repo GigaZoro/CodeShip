@@ -10369,14 +10369,12 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         );
         return;
       }
+      assert.isString(source.demandId);
       assert.deepEqual(
-        (yield* orchestrator.getThreadProjection(threadId)).runs.map((run) => [
-          run.providerInstanceId,
-          run.status,
-        ]),
+        after.runs.map((run) => [run.providerInstanceId, run.status, run.demandId]),
         [
-          [modelSelection.instanceId, "failed"],
-          [alternateInstanceId, "starting"],
+          [modelSelection.instanceId, "failed", source.demandId],
+          [alternateInstanceId, "starting", source.demandId],
         ],
       );
       assert.isUndefined(

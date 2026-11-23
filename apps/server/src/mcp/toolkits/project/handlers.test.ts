@@ -11,6 +11,8 @@ import {
   type ModelSelection,
   type RuntimeMode,
   type OrchestrationV2ThreadShell,
+  type OrchestrationV2DemandOrigin,
+  RunId,
   type ChatAttachment,
   ChatAttachmentId,
   ThreadId,
@@ -174,6 +176,17 @@ const clientLaunchHarness = (input: {
       },
       getThreadRecords: (threadId) =>
         Effect.succeed({
+          thread: { id: threadId },
+          runs:
+            threadId === "thread:failed"
+              ? [
+                  {
+                    id: "run:failed",
+                    status: "failed",
+                    demandId: `demand:${"d".repeat(64)}`,
+                  },
+                ]
+              : [],
           messages: [
             {
               attachments:
@@ -281,6 +294,7 @@ it.effect(
           readonly message?: string;
           readonly runtimeMode?: RuntimeMode;
           readonly targeted?: false;
+          readonly demandOrigin?: OrchestrationV2DemandOrigin;
           readonly overrideModel?: ModelSelection;
           readonly webOrigin?: string;
           readonly refusedByCeiling?: true;
@@ -321,6 +335,37 @@ it.effect(
       expect(belowCeiling.launched[0]?.runtimeMode).toBe("approval-required");
       expect(belowCeiling.launched[0]?.initialMessage?.senderThreadId).toBeUndefined();
 
+      const repair = yield* launchWith("full-access", "full-access", {
+        title: "Repair",
+        message: "Fix the failed job",
+        demandOrigin: {
+          kind: "repair",
+          threadId: ThreadId.make("thread:failed"),
+          runId: RunId.make("run:failed"),
+        },
+      });
+      expect(repair.launched[0]?.initialMessage?.demandId).toBe(`demand:${"d".repeat(64)}`);
+      const legacyRepair = yield* launchWith("full-access", "full-access", {
+        title: "Repair",
+        message: "Repair a legacy run",
+        demandOrigin: { kind: "repair", threadId: ThreadId.make("thread:legacy"), runId: null },
+      });
+      expect(legacyRepair.launched[0]?.initialMessage?.demandId).toBeNull();
+      const workItem = { kind: "work_item", key: "https://tracker.example/work/21" } as const;
+      const claim = yield* launchWith("full-access", "full-access", {
+        title: "Claim",
+        message: "Implement it",
+        demandOrigin: workItem,
+      });
+      const reclaimed = yield* launchWith("full-access", "full-access", {
+        title: "Retry",
+        message: "Resume it",
+        demandOrigin: workItem,
+      });
+      expect(claim.launched[0]?.initialMessage?.demandId).toMatch(/^demand:[0-9a-f]{64}$/);
+      expect(reclaimed.launched[0]?.initialMessage?.demandId).toBe(
+        claim.launched[0]?.initialMessage?.demandId,
+      );
       const aboveCeiling = yield* launchWith("auto-accept-edits", "full-access", {
         title: "Fix",
         webOrigin: "https://box.example.ts.net",

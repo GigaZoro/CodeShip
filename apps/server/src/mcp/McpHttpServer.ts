@@ -14,6 +14,7 @@ import type * as Types from "effect/Types";
 import { AiError, McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
+  OrchestrationV2DemandId,
   DeviceToolError,
   OrchestratorMcpFailure,
   PreviewAutomationError,
@@ -162,6 +163,7 @@ const normalizeMcpHttpResponse = (
 // Session tokens are `<payload>.<signature>`; registry tokens are a bare base64url secret.
 const looksLikeProviderToken = (token: string) => token.length > 0 && !token.includes(".");
 
+const isDemandId = Schema.is(OrchestrationV2DemandId);
 const decodeModeLimit = Schema.decodeUnknownOption(
   Schema.Struct({ runtimeMode: RuntimeMode, interactionMode: ProviderInteractionMode }),
 );
@@ -238,7 +240,13 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     }
     const asked = withModeLimit(invocation, request);
     if (asked === undefined) return invalidModeLimit;
-    const limited = McpInvocationContext.withRuntimeModeCeiling(asked, runtimeModeCeiling);
+    const demandId = request.headers[McpInvocationContext.DEMAND_ID_HEADER];
+    const limited = McpInvocationContext.withRuntimeModeCeiling(
+      asked.client?.linked === true && demandId !== undefined && isDemandId(demandId)
+        ? { ...asked, client: { ...asked.client, demandId } }
+        : asked,
+      runtimeModeCeiling,
+    );
     const linkedEnvironments = yield* linksEnabled;
     if (limited.client?.linked === true && !linkedEnvironments) return linkedEnvironmentsOff;
     return yield* httpEffect.pipe(
