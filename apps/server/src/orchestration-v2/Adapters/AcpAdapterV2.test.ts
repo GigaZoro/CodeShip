@@ -7890,9 +7890,9 @@ describe("AcpAdapterV2", () => {
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
-  it.effect(
-    "staggered pre-settle completion keeps midTurn marks until last background task ends post-finalize",
-    () =>
+  it.effect.each(["known", "unknown middle", "unknown last", "mixed", "reused"] as const)(
+    "staggered pre-settle completion keeps the sources of all terminal monitors (%s)",
+    (ownership) =>
       Effect.gen(function* () {
         const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
         const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -7906,7 +7906,8 @@ describe("AcpAdapterV2", () => {
           [];
         type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
         let sessionUpdateHandler: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
-        const promptGate = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
+        const promptCalls =
+          yield* Queue.unbounded<Deferred.Deferred<EffectAcpSchema.PromptResponse>>();
         const capturedMutation: {
           current:
             | ((mutation: {
@@ -7925,7 +7926,9 @@ describe("AcpAdapterV2", () => {
             enablePostSettleContinuation: true,
             extractBackgroundTaskId: (toolCall) => {
               if (toolCall.toolCallId === "tool-call-monitor-a") return "task-monitor-a";
-              if (toolCall.toolCallId === "tool-call-monitor-b") return "task-monitor-b";
+              if (toolCall.toolCallId === "tool-call-monitor-b" && ownership !== "unknown last") {
+                return "task-monitor-b";
+              }
               return undefined;
             },
             extractBackgroundToolMutation: (text) => {
@@ -7952,7 +7955,12 @@ describe("AcpAdapterV2", () => {
                   Effect.sync(() => {
                     sessionUpdateHandler = handler;
                   }).pipe(Effect.andThen(runtime.handleSessionUpdate(handler))),
-                prompt: () => Deferred.await(promptGate),
+                prompt: () =>
+                  Effect.gen(function* () {
+                    const gate = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
+                    yield* Queue.offer(promptCalls, gate);
+                    return yield* Deferred.await(gate);
+                  }),
               }),
             }),
           },
@@ -7990,23 +7998,19 @@ describe("AcpAdapterV2", () => {
           runtimePolicy,
         });
         const now = yield* DateTime.now;
-        yield* runtime
-          .startTurn(
-            makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now, ordinal: 1 }),
-          )
-          .pipe(Effect.forkScoped);
-        yield* Effect.yieldNow;
-        yield* Effect.yieldNow;
-        assert.isDefined(sessionUpdateHandler);
-        const applyMutation = capturedMutation.current;
-        if (applyMutation === null) {
-          return yield* Effect.die("registerExtensions must capture applyBackgroundTaskMutation");
-        }
+        const turn = (ordinal: number) =>
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy,
+            now,
+            ordinal,
+          });
 
-        for (const [toolCallId, title] of [
-          ["tool-call-monitor-a", "Monitor: staggered A"],
-          ["tool-call-monitor-b", "Monitor: staggered B"],
-        ] as const) {
+        const startMonitor = Effect.fnUntraced(function* (id: "a" | "b") {
+          const toolCallId = `tool-call-monitor-${id}`;
+          const title = `Monitor: staggered ${id}`;
           yield* sessionUpdateHandler!({
             sessionId: "mock-session-1",
             update: {
@@ -8026,7 +8030,39 @@ describe("AcpAdapterV2", () => {
               status: "in_progress",
             },
           });
+        });
+        const waitForCompletion = Effect.fnUntraced(function* (ordinal: number) {
+          const providerTurnId = idAllocator.derive.providerTurn({
+            driver: ACP_TEST_DRIVER,
+            nativeTurnId: acpScopedNativeId(instanceId, `mock-session-1:turn:${ordinal}`),
+          });
+          while (true) {
+            const event = yield* Queue.take(events);
+            if (event.type === "turn.terminal" && event.providerTurnId === providerTurnId) {
+              assert.equal(event.status, "completed");
+              return;
+            }
+          }
+        });
+        const earlierTurn = ownership === "mixed" || ownership === "reused";
+        if (earlierTurn) {
+          yield* runtime.startTurn(turn(1)).pipe(Effect.forkScoped);
+          const firstGate = yield* Queue.take(promptCalls);
+          yield* startMonitor("b");
+          yield* Deferred.succeed(firstGate, { stopReason: "end_turn" });
+          yield* waitForCompletion(1);
         }
+        const ordinal = earlierTurn ? 2 : 1;
+        const sourceTurn = turn(ordinal);
+        yield* runtime.startTurn(sourceTurn).pipe(Effect.forkScoped);
+        const promptGate = yield* Queue.take(promptCalls);
+        const applyMutation = capturedMutation.current;
+        if (applyMutation === null) {
+          return yield* Effect.die("registerExtensions must capture applyBackgroundTaskMutation");
+        }
+
+        yield* startMonitor("a");
+        if (ownership !== "mixed") yield* startMonitor("b");
         yield* applyMutation({
           sessionId: "mock-session-1",
           taskId: "task-monitor-a",
@@ -8049,24 +8085,25 @@ describe("AcpAdapterV2", () => {
         );
 
         yield* Deferred.succeed(promptGate, { stopReason: "end_turn" });
-        const providerTurnId = idAllocator.derive.providerTurn({
-          driver: ACP_TEST_DRIVER,
-          nativeTurnId: acpScopedNativeId(instanceId, "mock-session-1:turn:1"),
-        });
-        let terminalStatus: string | null = null;
-        while (terminalStatus === null) {
-          const event = yield* Queue.take(events);
-          if (event.type === "turn.terminal" && event.providerTurnId === providerTurnId) {
-            terminalStatus = event.status;
-          }
-        }
-        assert.equal(terminalStatus, "completed");
+        yield* waitForCompletion(ordinal);
         assert.lengthOf(
           continuationRequests,
           0,
           "finalize must not offer while B is still running",
         );
 
+        if (ownership === "unknown middle") {
+          yield* applyMutation({
+            sessionId: "mock-session-1",
+            taskId: "unattributed",
+            status: "running",
+          });
+          yield* applyMutation({
+            sessionId: "mock-session-1",
+            taskId: "unattributed",
+            status: "completed",
+          });
+        }
         const bEndNotice = {
           sessionId: "mock-session-1",
           update: {
@@ -8093,6 +8130,10 @@ describe("AcpAdapterV2", () => {
           continuationRequests,
           1,
           "exactly one continuation when the last running task ends post-finalize with kept midTurn marks",
+        );
+        assert.equal(
+          continuationRequests[0]?.demandSourceRunId,
+          ownership === "known" ? sourceTurn.runId : undefined,
         );
       }).pipe(Effect.provide(layerTest), Effect.scoped),
   );

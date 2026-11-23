@@ -8533,26 +8533,25 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 return updated;
               });
             }
+            const task = claudePendingBackgroundTask({
+              taskId: message.task_id,
+              taskType: claudeTaskTypeFromSdkMessage(message),
+              startedByMonitor: yield* isClaudeMonitorTask({
+                nativeThreadId: input.nativeThreadId,
+                taskId: message.task_id,
+                toolUseId: message.tool_use_id,
+              }),
+              description:
+                typeof message.description === "string" ? message.description : undefined,
+              parentTaskId: Reflect.get(message, "parent_task_id"),
+              toolUseId,
+            });
+            const sourceRunId = input.activeContext?.input.runId;
             if (message.is_backgrounded === false) {
+              yield* rememberOpaqueTasks(input.nativeThreadId, [task], sourceRunId);
               return false;
             }
-            yield* upsertPendingBackgroundTask(
-              input.nativeThreadId,
-              claudePendingBackgroundTask({
-                taskId: message.task_id,
-                taskType: claudeTaskTypeFromSdkMessage(message),
-                startedByMonitor: yield* isClaudeMonitorTask({
-                  nativeThreadId: input.nativeThreadId,
-                  taskId: message.task_id,
-                  toolUseId: message.tool_use_id,
-                }),
-                description:
-                  typeof message.description === "string" ? message.description : undefined,
-                parentTaskId: Reflect.get(message, "parent_task_id"),
-                toolUseId,
-              }),
-              input.activeContext?.input.runId,
-            );
+            yield* upsertPendingBackgroundTask(input.nativeThreadId, task, sourceRunId);
             rosterChanged = true;
           } else if (message.type === "system" && message.subtype === "task_notification") {
             yield* endClaudeMonitorTasks((taskId) => taskId === message.task_id);

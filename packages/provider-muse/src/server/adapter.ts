@@ -215,6 +215,7 @@ export interface MuseAdapterV2Options {
 }
 
 interface ActiveTurn {
+  readonly hostEpoch: number;
   readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   providerTurn: OrchestrationV2ProviderTurn;
   readonly nativeId: string;
@@ -722,7 +723,11 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         if (item.kind === "subagent" || item.kind === "workflow") {
           const wasRunning = observedChildren.has(item.itemId);
           if (status === "running") observedChildren.set(item.itemId, turn);
-          else if (observedChildren.delete(item.itemId) && active !== turn)
+          else if (
+            observedChildren.delete(item.itemId) &&
+            active !== turn &&
+            turn.hostEpoch === hostEpoch
+          )
             finishedBackground.push({
               sourceRunId: turn.input.runId,
               kind: item.kind === "subagent" ? "subagent" : "background_task",
@@ -1731,6 +1736,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       );
       const launchHost = Effect.fnUntraced(function* () {
         const epoch = ++hostEpoch;
+        finishedBackground.length = 0;
         const mcpSession = yield* mcpSessions.read(input.threadId);
         const environment = McpProviderSession.withAgentDeviceEnvironment(
           options.environment,
@@ -2077,6 +2083,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           completedAt: null,
         };
         const turn: ActiveTurn = {
+          hostEpoch,
           input: turnInput,
           providerTurn,
           nativeId,

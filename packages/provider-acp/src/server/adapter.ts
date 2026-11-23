@@ -2005,24 +2005,31 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           readonly providerThreadId: ProviderThreadId;
         } | null>(null);
         const wakeBuffer = yield* Ref.make<Array<EffectAcpSchema.SessionNotification>>([]);
+        type WakeEvidence = BackgroundWorkReport | { readonly sourceRunId: RunId | null };
         const noWakeReports = {
-          reports: new Map<string, BackgroundWorkReport>(),
+          reports: new Map<string, WakeEvidence>(),
           offered: new Set<string>(),
         };
         const wakeReports = yield* Ref.make<{
-          readonly reports: ReadonlyMap<string, BackgroundWorkReport>;
+          readonly reports: ReadonlyMap<string, WakeEvidence>;
           readonly offered: ReadonlySet<string>;
         }>(noWakeReports);
-        const recordWakeReport = Effect.fnUntraced(function* (
-          key: string,
-          report: BackgroundWorkReport,
-        ) {
+        const recordWakeReport = Effect.fnUntraced(function* (key: string, report: WakeEvidence) {
           const context = yield* Ref.get(activeTurn);
           if (context !== null && !context.promptSettled && !context.finalized) return;
-          yield* Ref.update(wakeReports, ({ reports, offered }) => ({
-            reports: new Map(reports).set(key, report),
-            offered,
-          }));
+          yield* Ref.update(wakeReports, (current) => {
+            const previous = current.reports.get(key);
+            if (previous === undefined) {
+              return { ...current, reports: new Map(current.reports).set(key, report) };
+            }
+            const sourceRunId = commonSource([previous.sourceRunId, report.sourceRunId]) ?? null;
+            const description = "kind" in report ? report : previous;
+            if (description === previous && previous.sourceRunId === sourceRunId) return current;
+            return {
+              ...current,
+              reports: new Map(current.reports).set(key, { ...description, sourceRunId }),
+            };
+          });
         });
         const continuationRequested = yield* Ref.make(false);
         // Continuations this agent process dispatched that have not started; a user turn can take their wake first.
@@ -2041,7 +2048,19 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         // Grok re-prompts on stale monitor notices; suppress output until a genuine terminal or app turn.
         const suppressPostSettleMonitorPrompt = yield* Ref.make(false);
         const runningBackgroundTaskIds = yield* Ref.make<ReadonlySet<string>>(new Set());
-        const backgroundToolSources = new Map<string, RunId>();
+        const backgroundToolSources = new Map<string, RunId | null>();
+        const recordToolWake = Effect.fnUntraced(function* (
+          sessionId: string,
+          taskId: string,
+          report?: BackgroundWorkReport,
+        ) {
+          if ((yield* Ref.get(handledBackgroundTaskIdsInActiveTurn)).has(taskId)) return;
+          const key = sessionScopedId(sessionId, taskId);
+          yield* recordWakeReport(`tool:${key}`, {
+            ...report,
+            sourceRunId: backgroundToolSources.get(key) ?? null,
+          });
+        });
         // Tombstones prevent mid-stream exit_code 0 and stale monitor events from resurrecting ended tasks.
         const endedBackgroundTaskIds = yield* Ref.make<ReadonlySet<string>>(new Set());
         const endedBackgroundTaskIdLimit = 128;
@@ -3622,11 +3641,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const key = sessionScopedId(context.nativeThreadId, backgroundTaskId);
             if (
               !context.promptSettled &&
-              !backgroundToolSources.has(key) &&
               (toolStatus(toolCall.status) === "running" ||
                 toolStatus(toolCall.status) === "pending")
             ) {
-              backgroundToolSources.set(key, context.input.runId);
+              const previousSource = backgroundToolSources.get(key);
+              if (previousSource === undefined) backgroundToolSources.set(key, context.input.runId);
+              else if (previousSource !== context.input.runId) backgroundToolSources.set(key, null);
               if (backgroundToolSources.size > endedBackgroundTaskIdLimit) {
                 const oldest = backgroundToolSources.keys().next();
                 if (!oldest.done) backgroundToolSources.delete(oldest.value);
@@ -4299,7 +4319,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             });
           });
 
-        const offerContinuationRun = Effect.fnUntraced(function* (_sessionId: string) {
+        const offerContinuationRun = Effect.fnUntraced(function* (sessionId: string) {
           if (continuationRequests === undefined) {
             return false;
           }
@@ -4315,6 +4335,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 continuationGeneration,
                 (value) => value + 1,
               );
+              for (const taskId of yield* Ref.get(midTurnUnreportedCompletedTaskIds)) {
+                yield* recordToolWake(sessionId, taskId);
+              }
               const reports = yield* Ref.modify(wakeReports, ({ reports }) => [
                 reports,
                 { reports, offered: new Set(reports.keys()) },
@@ -4325,7 +4348,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           if (Option.isNone(pending)) return false;
           const { route, generation, reports } = pending.value;
           const completed = [...reports.values()];
-          const notification = backgroundWorkNotification(completed);
+          const notification = backgroundWorkNotification(
+            completed.filter((item) => "kind" in item),
+          );
           const source = commonSource(completed.map((report) => report.sourceRunId));
           yield* Effect.logInfo("orchestration-v2.acp-wake-turn-detected", {
             driver,
@@ -4378,42 +4403,52 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           return true;
         });
 
-        const applyLateBackgroundMutation = Effect.fnUntraced(function* (
+        const applyLateBackgroundMutations = Effect.fnUntraced(function* (
           sessionId: string,
-          mutation: {
+          mutations: ReadonlyArray<{
             readonly taskId: string;
             readonly status: "running" | "completed" | "failed";
-          },
+          }>,
         ) {
-          const taskAlreadyEnded = (yield* Ref.get(endedBackgroundTaskIds)).has(mutation.taskId);
-          yield* applyBackgroundTaskMutationRunning(mutation);
-          if (mutation.status === "running") {
-            if (taskAlreadyEnded && acpPostSettleMonitorPromptShouldSuppress(mutation)) {
-              yield* Ref.set(suppressPostSettleMonitorPrompt, true);
-            }
+          if (
+            !mutations.length ||
+            (yield* Ref.get(stoppedRunQuarantine)) ||
+            (yield* Ref.get(activeSessionId)) !== sessionId
+          )
             return;
-          }
-          // Only a new terminal may un-suppress output; re-delivery must not revive monitor ACK chatter.
-          if (!taskAlreadyEnded) {
-            yield* Ref.set(suppressPostSettleMonitorPrompt, false);
-          }
-          const activeContext = yield* Ref.get(activeTurn);
-          if (activeContext !== null && !activeContext.finalized) {
-            const handled = yield* Ref.get(handledBackgroundTaskIdsInActiveTurn);
+          const context = yield* Ref.get(activeTurn);
+          let hasTerminal = false;
+          for (const mutation of mutations) {
+            const taskAlreadyEnded = (yield* Ref.get(endedBackgroundTaskIds)).has(mutation.taskId);
+            yield* applyBackgroundTaskMutationRunning(mutation);
+            if (mutation.status === "running") {
+              if (taskAlreadyEnded && acpPostSettleMonitorPromptShouldSuppress(mutation)) {
+                yield* Ref.set(suppressPostSettleMonitorPrompt, true);
+              }
+              continue;
+            }
+            hasTerminal = true;
+            // Re-delivery must not revive monitor ACK chatter or count a consumed terminal again.
+            if (!taskAlreadyEnded) {
+              yield* Ref.set(suppressPostSettleMonitorPrompt, false);
+              yield* recordToolWake(sessionId, mutation.taskId);
+            }
             if (
-              !activeContext.promptSettled &&
-              !handled.has(mutation.taskId) &&
-              activeContext.toolCallIdsByBackgroundTaskId.has(mutation.taskId)
+              context !== null &&
+              !context.finalized &&
+              !context.promptSettled &&
+              !(yield* Ref.get(handledBackgroundTaskIdsInActiveTurn)).has(mutation.taskId) &&
+              context.toolCallIdsByBackgroundTaskId.has(mutation.taskId)
             ) {
               yield* Ref.update(midTurnUnreportedCompletedTaskIds, (current) =>
                 new Set(current).add(mutation.taskId),
               );
             }
-            return;
           }
           if (
+            hasTerminal &&
+            (context === null || context.finalized) &&
             postSettleContinuationEnabled &&
-            (yield* Ref.get(activeSessionId)) === sessionId &&
             (yield* Ref.get(runningBackgroundTaskIds)).size === 0 &&
             ((yield* Ref.get(wakeBuffer)).length > 0 ||
               (yield* Ref.get(midTurnUnreportedCompletedTaskIds)).size > 0)
@@ -4503,8 +4538,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               ) {
                 alreadyHandledToolUpdate = true;
               }
+              if (toolTaskId !== undefined) {
+                const status = toolStatus(toolCall.status);
+                if (status === "completed" || status === "failed") {
+                  yield* recordToolWake(notification.sessionId, toolTaskId);
+                }
+              }
               if (flavor.extractBackgroundTaskCompletion !== undefined) {
                 for (const completion of flavor.extractBackgroundTaskCompletion(toolCall)) {
+                  if (completion.status !== "running") {
+                    yield* recordToolWake(notification.sessionId, completion.taskId);
+                  }
                   alreadyHandledToolUpdate =
                     alreadyHandledToolUpdate ||
                     (yield* Ref.get(handledBackgroundTaskIdsInActiveTurn)).has(completion.taskId);
@@ -4851,9 +4895,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             update.content.type === "text"
           ) {
             const mutations = flavor.extractBackgroundToolMutation?.(update.content.text) ?? [];
-            for (const mutation of mutations) {
-              yield* applyLateBackgroundMutation(notification.sessionId, mutation);
-            }
+            yield* applyLateBackgroundMutations(notification.sessionId, mutations);
             return;
           }
           if (context === null) {
@@ -4953,9 +4995,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 update.content.type === "text"
                   ? (flavor.extractBackgroundToolMutation?.(text) ?? [])
                   : [];
-              for (const lateBackgroundMutation of lateBackgroundMutations) {
-                yield* applyLateBackgroundMutation(notification.sessionId, lateBackgroundMutation);
-              }
+              yield* applyLateBackgroundMutations(notification.sessionId, lateBackgroundMutations);
               const lateMonitorChatter =
                 /<monitor-event\b/i.test(text) ||
                 /Monitor\s+["']?[0-9a-f-]{8,}["']?\s+ended/i.test(text);
@@ -5822,7 +5862,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             status === "cancelled" ||
             status === "interrupted"
           ) {
-            yield* recordWakeReport(match.childSessionId ?? String(match.task.id), {
+            yield* recordWakeReport(`subagent:${match.childSessionId ?? String(match.task.id)}`, {
               kind: "subagent",
               childThreadId: match.childThreadId,
               label: match.task.title ?? match.task.prompt,
@@ -5854,7 +5894,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 candidate.task.nativeTaskRef?.nativeId === notice.childSessionId,
             );
           if (known !== undefined && acpSubagentStatusBlocksTurnSettlement(known.task.status)) {
-            yield* recordWakeReport(notice.childSessionId, {
+            yield* recordWakeReport(`subagent:${notice.childSessionId}`, {
               kind: "subagent",
               label: known.task.title ?? known.task.prompt,
               outcome: notice.status,
@@ -6546,21 +6586,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       context.backgroundCommands.set(incoming.taskId, completion);
                       mutation = { ...incoming, ...completion };
                     }
-                    if (
-                      mutation.status !== "running" &&
-                      mutation.report !== undefined &&
-                      !(yield* Ref.get(handledBackgroundTaskIdsInActiveTurn)).has(mutation.taskId)
-                    ) {
-                      yield* recordWakeReport(mutation.taskId, {
+                    if (mutation.status !== "running" && mutation.report !== undefined) {
+                      yield* recordToolWake(mutation.sessionId, mutation.taskId, {
                         ...mutation.report,
                         outcome: mutation.status,
-                        sourceRunId:
-                          backgroundToolSources.get(
-                            sessionScopedId(mutation.sessionId, mutation.taskId),
-                          ) ?? null,
                       });
                     }
-                    yield* applyLateBackgroundMutation(mutation.sessionId, mutation);
+                    yield* applyLateBackgroundMutations(mutation.sessionId, [mutation]);
                     if (mutation.status !== "running") {
                       yield* finishRegisteredBackgroundTool({
                         taskId: mutation.taskId,

@@ -2,6 +2,8 @@
 
 - Each new turn started by an owner or an accepted guest message gets its own accounting ID. Steering, account failover and final review retain the original run’s ID. Guest messages with a different owner stay in the queue. Background reports and delegated follow-ups carry their source when it is known. Automatic compaction shares the ID of the message that triggered it.
 
+- ACP monitors and Claude commands that move into the background keep the run that started them. A replacement Muse host starts with its own completion reports.
+
 ## 2026-11-22 — Long keys work for tasks on linked environments
 
 - Starting or cancelling a task on a linked environment no longer fails when the chat's request key is at the 256-character limit.
