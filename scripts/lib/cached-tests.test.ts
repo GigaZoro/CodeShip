@@ -32,7 +32,7 @@ describe("cachedTestTasks", () => {
     expect(fileTasks[0]![1]).toMatchObject({
       cache: false,
       cwd: "apps/server",
-      command: "node '../../scripts/lib/run-cached-test-group.ts' './src/worker.test.ts'",
+      command: "node '../../scripts/lib/run-cached-test-group.ts' './src/worker.test.ts' --",
     });
   });
 
@@ -63,7 +63,7 @@ describe("cachedTestTasks", () => {
     );
     const task = Object.entries(tasks).find(([key]) => key !== "test-cache")![1];
     expect(task.command).toBe(
-      "node 'scripts/lib/run-cached-test-group.ts' './src/a'\"'\"'$(touch injected).test.ts'",
+      "node 'scripts/lib/run-cached-test-group.ts' './src/a'\"'\"'$(touch injected).test.ts' --",
     );
   });
 
@@ -82,7 +82,7 @@ describe("cachedTestTasks", () => {
     expect(
       Object.values(tasks).some(
         (task) =>
-          task.command === "node 'scripts/lib/run-cached-test-group.ts' './src/example.spec.ts'",
+          task.command === "node 'scripts/lib/run-cached-test-group.ts' './src/example.spec.ts' --",
       ),
     ).toBe(true);
   });
@@ -98,6 +98,10 @@ describe("cachedTestTasks", () => {
       write: (file: string, content: string) => Promise<void>;
       run: (files?: Array<string>, uncached?: Array<string>) => Promise<number | null>;
       cli: (...args: Array<string>) => Promise<NodeChildProcess.SpawnSyncReturns<string>>;
+      packageTest: (
+        cwd: string,
+        ...args: Array<string>
+      ) => NodeChildProcess.SpawnSyncReturns<string>;
       hits: () => Promise<number>;
       git: (...args: Array<string>) => string;
     }) => Promise<void>,
@@ -117,28 +121,35 @@ describe("cachedTestTasks", () => {
         encoding: "utf8",
         env,
       });
+    const subprocess = (cwd: string, args: Array<string>) =>
+      NodeChildProcess.spawnSync(process.execPath, args, {
+        cwd,
+        encoding: "utf8",
+        env: {
+          ...env,
+          // Each command must initialize Vitest's environment before loading the package config.
+          TEST: undefined,
+          NODE_OPTIONS: "",
+          VP_REMOTE_CACHE: "off",
+          VITE_CACHE_PATH: NodePath.join(directory, "cache"),
+          PATH: `${NodePath.join(root, "node_modules/.bin")}${NodePath.delimiter}${process.env.PATH}`,
+        },
+        timeout: 30_000,
+      });
+    const packageTest = (cwd: string, ...args: Array<string>) =>
+      subprocess(NodePath.join(directory, cwd), [
+        NodeURL.fileURLToPath(import.meta.resolve("vite-plus/bin")),
+        "test",
+        "run",
+        ...args,
+      ]);
     const cli = async (...args: Array<string>) => {
       const scripts = NodePath.join(directory, "scripts");
       for (const name of ["test-cached.ts", "check-changed-command.ts"]) {
         await NodeFSP.copyFile(NodePath.join(root, "scripts", name), NodePath.join(scripts, name));
       }
       await write(".gitignore", "node_modules/\ncache/\nscripts/\n");
-      return NodeChildProcess.spawnSync(
-        process.execPath,
-        [NodePath.join(scripts, "test-cached.ts"), ...args],
-        {
-          cwd: directory,
-          encoding: "utf8",
-          env: {
-            ...env,
-            NODE_OPTIONS: "",
-            VP_REMOTE_CACHE: "off",
-            VITE_CACHE_PATH: NodePath.join(directory, "cache"),
-            PATH: `${NodePath.join(root, "node_modules/.bin")}${NodePath.delimiter}${process.env.PATH}`,
-          },
-          timeout: 30_000,
-        },
-      );
+      return subprocess(directory, [NodePath.join(scripts, "test-cached.ts"), ...args]);
     };
     const run = (files = ["a.test.ts", "b.test.ts"], uncached: Array<string> = []) =>
       new Promise<number | null>((resolve, reject) => {
@@ -173,6 +184,7 @@ describe("cachedTestTasks", () => {
       await NodeFSP.mkdir(lib, { recursive: true });
       for (const file of [
         "run-cached-test-group.ts",
+        "cached-vitest-options.ts",
         "cached-tests.ts",
         "sharded-tests.ts",
         "command-line.ts",
@@ -199,7 +211,7 @@ describe("cachedTestTasks", () => {
       );
       await write("fixture.txt", "hello");
       git("init", "--quiet");
-      await body({ directory, write, run, cli, hits, git });
+      await body({ directory, write, run, cli, packageTest, hits, git });
     } finally {
       await NodeFSP.rm(directory, { recursive: true, force: true });
     }
@@ -251,6 +263,21 @@ describe("cachedTestTasks", () => {
       expect(fileTasks[0]!.result).toMatchObject({ Spawned: { cache_status: "Disabled" } });
     }));
 
+  it("selects an unrelated test after a tracked directory is replaced with a file", () =>
+    withFixture(async ({ directory, write, cli, git }) => {
+      const replaced = NodePath.join(directory, "replaced");
+      await NodeFSP.mkdir(replaced);
+      await write("replaced/stale.test.ts", "");
+      git("add", "--", "replaced/stale.test.ts");
+      await NodeFSP.rm(replaced, { recursive: true });
+      await write("replaced", "regular file");
+
+      const report = NodePath.join(directory, "selected.json");
+      const result = await cli("--report", report, "b.test.ts");
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(JSON.parse(await NodeFSP.readFile(report, "utf8")).files).toEqual(["b.test.ts"]);
+    }));
+
   it("selects tracked and new tests across a case-only directory rename", () =>
     withFixture(async ({ directory, write, cli, git }) => {
       const tracked = "Tracked.test.ts";
@@ -291,27 +318,45 @@ describe("cachedTestTasks", () => {
     }));
 
   it("runs an exact group through the package's configured Vitest project", () =>
-    withFixture(async ({ directory, write, cli }) => {
+    withFixture(async ({ directory, write, cli, packageTest }) => {
       await NodeFSP.mkdir(NodePath.join(directory, "pkg"));
       await write(
         "pkg/package.json",
         JSON.stringify({
           type: "module",
-          scripts: { test: "vp test run --config ./group.vite.ts --project selected" },
+          scripts: {
+            test: "vp test run --config ./group.vite.ts --project selected --reporter=verbose",
+          },
         }),
       );
       await write(
         "pkg/group.vite.ts",
         `export default {test:{projects:[
-        {test:{name:"selected",include:["*.test.ts"],env:{GROUP_PROJECT:"selected"}}},
+        "./vitest.selected.config.ts",
         {test:{name:"other",include:["*.test.ts"],env:{GROUP_PROJECT:"other"}}}
       ]}};`,
+      );
+      await write(
+        "pkg/vitest.selected.config.ts",
+        'export default {test:{name:"selected",include:["*.test.ts"],env:{GROUP_PROJECT:"selected"}}};',
       );
       const test =
         'import {test,expect} from "vite-plus/test"; import {writeFileSync} from "node:fs"; test("project",()=>{expect(process.env.GROUP_PROJECT).toBe("selected"); writeFileSync(import.meta.filename+".ran","selected");});';
       await write("pkg/First.test.ts", test);
       await write("pkg/Second.test.ts", test);
       await write("pkg/OtherFirst.test.ts", 'throw new Error("Unselected sibling was run");');
+      const ordinary = packageTest(
+        "pkg",
+        "--config",
+        "./group.vite.ts",
+        "--project",
+        "selected",
+        "./Second.test.ts",
+      );
+      expect(ordinary.status, ordinary.stdout + ordinary.stderr).toBe(0);
+      const marker = NodePath.join(directory, "pkg", "Second.test.ts.ran");
+      expect(await NodeFSP.readFile(marker, "utf8")).toBe("selected");
+      await NodeFSP.unlink(marker);
       const result = await cli("--group-size", "2", "pkg/First.test.ts", "pkg/Second.test.ts");
       expect(result.status, result.stdout + result.stderr).toBe(0);
       for (const name of ["First", "Second"]) {
@@ -319,6 +364,176 @@ describe("cachedTestTasks", () => {
           await NodeFSP.readFile(NodePath.join(directory, "pkg", name + ".test.ts.ran"), "utf8"),
         ).toBe("selected");
       }
+    }));
+
+  it("loads the package config with TEST set and never caches the selected test's failure", () =>
+    withTestPackage("vp test run --passWithNoTests", async ({ write, cli, packageTest, hits }) => {
+      await write(
+        "pkg/vite.config.ts",
+        'export default { test: { include: process.env.TEST === "true" ? ["*.test.ts"] : [] } };',
+      );
+      await write(
+        "pkg/Selected.test.ts",
+        'import { test } from "vite-plus/test"; test("selected", () => { throw new Error("selected test ran and failed"); });',
+      );
+
+      const ordinary = packageTest("pkg", "--passWithNoTests", "./Selected.test.ts");
+      expect(ordinary.status, ordinary.stdout + ordinary.stderr).toBe(1);
+      expect(ordinary.stdout + ordinary.stderr).toContain("selected test ran and failed");
+
+      const first = await cli("pkg/Selected.test.ts");
+      const repeated = await cli("pkg/Selected.test.ts");
+      expect(await hits()).toBe(0);
+      for (const result of [first, repeated]) {
+        expect(result.status, result.stdout + result.stderr).toBe(ordinary.status);
+        expect(result.stdout + result.stderr).toContain("selected test ran and failed");
+      }
+    }));
+
+  it("rejects an explicit cache group when the package config excludes one member", () =>
+    withTestPackage("vp test run --passWithNoTests", async (fixture) => {
+      const { directory, write, cli, packageTest } = fixture;
+      await write(
+        "pkg/vite.config.ts",
+        'export default { test: { include: ["Included.test.ts"] } };',
+      );
+      await write(
+        "pkg/Included.test.ts",
+        'import { test } from "vite-plus/test"; test("included", () => {});',
+      );
+      await write("pkg/Excluded.test.ts", 'throw new Error("unexpected excluded test execution");');
+
+      const ordinary = packageTest(
+        "pkg",
+        "--passWithNoTests",
+        "--reporter=json",
+        "--outputFile=ordinary.json",
+        "./Included.test.ts",
+        "./Excluded.test.ts",
+      );
+      expect(ordinary.status, ordinary.stdout + ordinary.stderr).toBe(0);
+      const report = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(directory, "pkg/ordinary.json"), "utf8"),
+      );
+      expect(
+        report.testResults.map((suite: { name: string }) => NodePath.basename(suite.name)),
+      ).toEqual(["Included.test.ts"]);
+
+      const result = await cli("--group-size", "2", "pkg/Included.test.ts", "pkg/Excluded.test.ts");
+      expect(result.status, result.stdout + result.stderr).toBe(1);
+      expect(result.stdout + result.stderr).toContain("Excluded.test.ts");
+      expect(result.stdout + result.stderr).not.toContain("unexpected excluded test execution");
+    }));
+
+  const withTestPackage = (test: string, body: Parameters<typeof withFixture>[0]) =>
+    withFixture(async (fixture) => {
+      await NodeFSP.mkdir(NodePath.join(fixture.directory, "pkg"));
+      await fixture.write(
+        "pkg/package.json",
+        JSON.stringify({ type: "module", scripts: { test } }),
+      );
+      await fixture.write("pkg/vite.config.ts", "export default {};");
+      await body(fixture);
+    });
+
+  const recordExecution = `import {test} from "vite-plus/test";
+    import {writeFileSync} from "node:fs";
+    test("record execution", () => writeFileSync(import.meta.filename + ".ran", "ran"));`;
+  const executionReceipt = (directory: string, file: string) =>
+    NodeFSP.readFile(NodePath.join(directory, "pkg", file + ".ran"), "utf8");
+
+  it("refuses to cache a file when a configured project did not run it", () =>
+    withTestPackage("vp test run", async ({ write, cli, hits }) => {
+      await write(
+        "pkg/vite.config.ts",
+        `import {BaseSequencer} from "vite-plus/test/node";
+        class FirstOnly extends BaseSequencer {
+          sort(specs) { return specs.filter(spec => spec.project.name === "first"); }
+        }
+        export default {test:{sequence:{sequencer:FirstOnly},projects:[
+          {test:{name:"first",include:["*.test.ts"]}},
+          {test:{name:"second",include:["*.test.ts"]}}
+        ]}};`,
+      );
+      await write("pkg/Shared.test.ts", recordExecution);
+      for (const result of [await cli("pkg/Shared.test.ts"), await cli("pkg/Shared.test.ts")]) {
+        expect(result.status, result.stdout + result.stderr).toBe(1);
+        expect(result.stdout + result.stderr).toContain(
+          "did not complete the requested test group",
+        );
+      }
+      expect(await hits()).toBe(0);
+    }));
+
+  it("applies both configured and command-line excludes before caching a requested file", () =>
+    withTestPackage(
+      "vp test run --passWithNoTests --exclude '**/CliExcluded.test.ts'",
+      async ({ directory, write, cli }) => {
+        await write(
+          "pkg/vite.config.ts",
+          'export default {test:{exclude:["**/ConfigExcluded.test.ts"]}};',
+        );
+        for (const file of ["ConfigExcluded.test.ts", "CliExcluded.test.ts"]) {
+          await write("pkg/" + file, recordExecution);
+          const result = await cli("pkg/" + file);
+          expect(result.error).toBeUndefined();
+          expect(result.status, result.stdout + result.stderr).toBe(1);
+          await expect(executionReceipt(directory, file)).rejects.toMatchObject({ code: "ENOENT" });
+        }
+      },
+    ));
+
+  it("intersects package positional filters with the requested cached files", () =>
+    withTestPackage("vp test run choice", async ({ directory, write, cli }) => {
+      await write("pkg/choiceSelected.test.ts", recordExecution);
+      await write("pkg/choiceSibling.test.ts", 'throw new Error("Unrequested package match ran");');
+      await write("pkg/other.test.ts", recordExecution);
+
+      const selected = await cli("pkg/choiceSelected.test.ts");
+      expect(selected.status, selected.stdout + selected.stderr).toBe(0);
+      expect(await executionReceipt(directory, "choiceSelected.test.ts")).toBe("ran");
+      const outside = await cli("pkg/other.test.ts");
+      expect(outside.error).toBeUndefined();
+      expect(outside.status, outside.stdout + outside.stderr).toBe(1);
+      await expect(executionReceipt(directory, "other.test.ts")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    }));
+
+  it("rejects an unknown nested Vitest option before running a cached test", () =>
+    withTestPackage("vp test run --sequence.shufle=true", async ({ directory, write, cli }) => {
+      await write("pkg/a.test.ts", recordExecution);
+      const result = await cli("pkg/a.test.ts");
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stdout + result.stderr).toBe(1);
+      expect(result.stdout + result.stderr).toContain("shufle");
+      await expect(executionReceipt(directory, "a.test.ts")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    }));
+
+  it("uses Vitest's configured teardown timeout when a reporter keeps an interval open", () =>
+    withTestPackage("vp test run", async ({ directory, write, cli }) => {
+      await write(
+        "pkg/vite.config.ts",
+        'export default {test:{teardownTimeout:250,reporters:["./reporter.mjs"]}};',
+      );
+      await write(
+        "pkg/reporter.mjs",
+        `import {writeFileSync} from "node:fs";
+        export default class {
+          onTestRunEnd() {
+            const interval = setInterval(() => {}, 1000);
+            setTimeout(() => { clearInterval(interval); process.exitCode = 29; }, 5000).unref();
+          }
+          onProcessTimeout() { writeFileSync("teardown.ran", "ran"); }
+        }`,
+      );
+      await write("pkg/keepalive.test.ts", recordExecution);
+
+      const result = await cli("pkg/keepalive.test.ts");
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(await executionReceipt(directory, "teardown")).toBe("ran");
     }));
 
   it("uses filesystem identity for a Greek sigma selection and its cache exception", () =>

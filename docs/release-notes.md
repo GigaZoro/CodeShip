@@ -12,6 +12,11 @@
 - Worktree cleanup can finish a progressing inspection that takes longer than thirty seconds. A stalled or incomplete inspection keeps the checkout.
 - Commands, terminals and providers can start in other checkouts throughout a release. A damaged release request keeps its checkout and allows other releases to finish.
 
+## 2026-11-23 — Cached test results
+
+- The cached test runner applies the package’s Vitest configuration and checks that every selected file produced a result in each scheduled project before caching success.
+- A stale Git entry beneath a directory replaced by a file no longer interrupts selection of other tests.
+
 ## 2026-11-23 — Relay executable validation
 
 - CodeShip requires the relay’s version command to exit successfully before selecting an executable or activating a download. It retries a failed version check the next time it looks for the relay.

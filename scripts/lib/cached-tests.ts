@@ -34,7 +34,14 @@ export function testPathResolver(root: string) {
     const directory = NodePath.join(root, parent);
     let names = entries.get(directory);
     if (!names) {
-      names = new Set(NodeFS.readdirSync(directory));
+      try {
+        names = new Set(NodeFS.readdirSync(directory));
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+        resolved.set(file, undefined);
+        return undefined;
+      }
       entries.set(directory, names);
     }
     let entry: string | undefined = name;
@@ -166,7 +173,7 @@ export function cachedTestTasks(
         return quoteArgument("./" + relative);
       });
       tasks[`test-cache:${key}`] = {
-        command: `node ${quoteArgument(runner)}${options} ${filters.join(" ")}`,
+        command: `node ${quoteArgument(runner)} ${filters.join(" ")} --${options}`,
         ...(directory === root ? {} : { cwd: relativeTestPath(root, directory) }),
         cache: uncached.includes(group[0]!)
           ? false
