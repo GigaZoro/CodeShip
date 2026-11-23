@@ -1,4 +1,12 @@
+// @effect-diagnostics nodeBuiltinImport:off - Runs the real package entries in an isolated Node process.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { it as effectIt } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { Command } from "effect/cli";
 import { describe, expect, it } from "vite-plus/test";
@@ -7,9 +15,184 @@ import { parseReplayArguments as parseCodex } from "./record-codex-app-server-re
 import { cursorReplayFlags } from "./record-cursor-agent-sdk-replay-fixture.ts";
 import { parseReplayArguments as parseFx } from "./record-fx-acp-replay-fixture.ts";
 import { parseReplayArguments as parseGrok } from "./record-grok-acp-replay-fixture.ts";
-import { parseClaudeReplayArguments, parseRecorderArguments } from "./replayRecorderArguments.ts";
+import {
+  parseClaudeReplayArguments,
+  parseRecorderArguments,
+  selectClaudeReplayPrompts,
+} from "./replayRecorderArguments.ts";
+
+const recorderNodeOptions = "--permission --allow-fs-read=* --allow-addons";
+const syntheticEnvironment = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) =>
+    /^(?:PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|TEMP|TMP|TMPDIR)$/iu.test(key),
+  ),
+);
+
+function runPackageRecorder(
+  platform: NodeJS.Platform,
+  cwd: string,
+  entry: string,
+  args: ReadonlyArray<string>,
+  overrides: NodeJS.ProcessEnv = {},
+) {
+  const npmArgs = ["--offline", "--ignore-scripts", "run", "--silent", entry, "--", ...args];
+  const windows = platform === "win32";
+  return NodeChildProcess.spawnSync(
+    windows ? "cmd.exe" : "npm",
+    windows ? ["/d", "/c", "npm.cmd", ...npmArgs] : npmArgs,
+    {
+      cwd,
+      env: { ...syntheticEnvironment, npm_config_node_options: recorderNodeOptions, ...overrides },
+      encoding: "utf8",
+      timeout: 30_000,
+    },
+  );
+}
 
 describe("replay recorder arguments", () => {
+  effectIt.effect(
+    "preserves Bun dotenv expansion and process and CLI precedence through the Node package entry",
+    () =>
+      Effect.gen(function* () {
+        const platform = yield* HostProcess.Platform;
+        const sandbox = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "replay-recorder-package-"),
+        );
+        try {
+          NodeFS.copyFileSync(
+            new URL("../package.json", import.meta.url),
+            NodePath.join(sandbox, "package.json"),
+          );
+          NodeFS.symlinkSync(
+            NodeURL.fileURLToPath(new URL("./", import.meta.url)),
+            NodePath.join(sandbox, "scripts"),
+            "junction",
+          );
+          NodeFS.writeFileSync(
+            NodePath.join(sandbox, ".env"),
+            "OUTPUT_DIR=from-base\nT3_CODEX_REPLAY_OUT=$OUTPUT_DIR/base.ndjson\n",
+          );
+          NodeFS.writeFileSync(
+            NodePath.join(sandbox, ".env.local"),
+            "LOCAL_OUTPUT=from-local\nT3_CODEX_REPLAY_OUT=$LOCAL_OUTPUT/fixture.ndjson\nT3_CLAUDE_REPLAY_SCENARIO=multi_turn\n",
+          );
+
+          const codex = (args: ReadonlyArray<string>, overrides?: NodeJS.ProcessEnv) =>
+            runPackageRecorder(
+              platform,
+              sandbox,
+              "record:codex-replay",
+              ["--dry-run", ...args],
+              overrides,
+            );
+          for (const [name, args, overrides] of [
+            ["from-local/fixture.ndjson", [], {}],
+            ["from-process.ndjson", [], { T3_CODEX_REPLAY_OUT: "from-process.ndjson" }],
+            [
+              "from-cli.ndjson",
+              ["--out", "from-cli.ndjson"],
+              { T3_CODEX_REPLAY_OUT: "from-process.ndjson" },
+            ],
+          ] as const) {
+            const result = codex(args, overrides);
+            expect(result.error).toBeUndefined();
+            expect(result.status, result.stderr).toBe(0);
+            expect(result.stdout.trim()).toBe(name);
+          }
+          const claude = runPackageRecorder(platform, sandbox, "record:claude-replay", [
+            "--dry-run",
+          ]);
+          expect(claude.error).toBeUndefined();
+          expect(claude.status, claude.stderr).toBe(0);
+          expect(claude.stdout.trim().replaceAll("\\", "/")).toMatch(
+            /\/multi_turn\/claude_transcript\.ndjson$/u,
+          );
+          for (const recorder of ["record:codex-replay", "record:claude-replay"]) {
+            const invalid = runPackageRecorder(platform, sandbox, recorder, [
+              "--dry-run",
+              "--no-such-argument",
+            ]);
+            expect(invalid.error).toBeUndefined();
+            expect(invalid.status).toBe(1);
+            expect(invalid.stderr).toContain("Unknown option '--no-such-argument'");
+            expect(invalid.stdout).toBe("");
+          }
+          const blankPrompt = runPackageRecorder(
+            platform,
+            sandbox,
+            "record:claude-replay",
+            ["--dry-run"],
+            { T3_CLAUDE_REPLAY_PROMPTS: "first\n---\n\n---\nsecond" },
+          );
+          expect(blankPrompt.error).toBeUndefined();
+          expect(blankPrompt.status).toBe(1);
+          expect(blankPrompt.stderr).toContain(
+            "T3_CLAUDE_REPLAY_PROMPTS contains a blank prompt at position 2.",
+          );
+        } finally {
+          NodeFS.rmSync(sandbox, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it("imports both Claude commands with no arguments without dispatching", () => {
+    const result = NodeChildProcess.spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        'await import("./record-claude-agent-sdk-replay-fixture.ts"); await import("./probe-claude-fork-local-rollback-replay.ts");',
+      ],
+      {
+        cwd: import.meta.dirname,
+        env: { ...syntheticEnvironment, NODE_OPTIONS: recorderNodeOptions },
+        encoding: "utf8",
+        timeout: 30_000,
+      },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("");
+  });
+
+  it("rejects every blank segment in configured Claude prompts", () => {
+    for (const prompts of ["\n---\nsecond", "first\n---\n ", "first\n---\n \n---\nthird"]) {
+      expect(() =>
+        selectClaudeReplayPrompts(["default"], { T3_CLAUDE_REPLAY_PROMPTS: prompts }),
+      ).toThrow("T3_CLAUDE_REPLAY_PROMPTS contains a blank prompt");
+    }
+    expect(
+      selectClaudeReplayPrompts(["default"], {
+        T3_CLAUDE_REPLAY_PROMPTS: " first \r\n---\r\nsecond ",
+      }),
+    ).toEqual([" first ", "second "]);
+  });
+
+  it.each([
+    [parseFx, "T3_FX_BIN", "fx"],
+    [parseGrok, "T3_GROK_BIN", "grok"],
+  ] as const)("validates %s binary overrides in the argument phase", (parse, name, defaultPath) => {
+    expect(() => parse(["--scenario", "simple"], { [name]: " " })).toThrow(
+      name + " is set but empty",
+    );
+    expect(parse(["--scenario", "simple"], { [name]: "custom-bin" }).binaryPath).toBe("custom-bin");
+    expect(parse(["--scenario", "simple"]).binaryPath).toBe(defaultPath);
+  });
+
+  it.each([
+    ["record-fx-acp-replay-fixture.ts", "T3_FX_BIN"],
+    ["record-grok-acp-replay-fixture.ts", "T3_GROK_BIN"],
+  ])("rejects invalid binary overrides before workspace creation in %s", (script, name) => {
+    const result = NodeChildProcess.spawnSync(process.execPath, [script, "--scenario", "simple"], {
+      cwd: import.meta.dirname,
+      env: { ...syntheticEnvironment, NODE_OPTIONS: recorderNodeOptions, [name]: " " },
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(name + " is set but empty");
+  });
   it("refuses a blank Cursor output before dispatch", async () => {
     let dispatched = false;
     const command = Command.make("cursor-fixture", cursorReplayFlags, () =>

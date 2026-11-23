@@ -195,6 +195,7 @@ export function parseReplayArguments(args: ReadonlyArray<string>, env: NodeJS.Pr
         scenario: { type: "string", multiple: true, default: [] },
         "out-dir": { type: "string" },
         out: { type: "string" },
+        "dry-run": { type: "boolean" },
       },
     },
     args,
@@ -243,6 +244,7 @@ export function parseReplayArguments(args: ReadonlyArray<string>, env: NodeJS.Pr
     out,
     outDir,
     model: values.model ?? recorderEnvironmentValue("T3_CODEX_REPLAY_MODEL", env),
+    dryRun: values["dry-run"] ?? false,
   };
 }
 
@@ -1508,7 +1510,7 @@ const runScenario = Effect.fn("record-codex-app-server-replay-fixture.runScenari
 });
 
 if (import.meta.main) {
-  const { requestedScenarios, out, outDir, model } = parseReplayArguments(
+  const { requestedScenarios, out, outDir, model, dryRun } = parseReplayArguments(
     process.argv.slice(2),
     process.env,
   );
@@ -1520,11 +1522,13 @@ if (import.meta.main) {
       (scenario) =>
         Effect.gen(function* () {
           const defaultOutPath = yield* path.fromFileUrl(defaultTranscriptUrl(scenario));
+          const outPath =
+            out ?? (outDir === undefined ? defaultOutPath : path.join(outDir, scenario.fileName));
+          if (dryRun) return yield* Console.log(outPath);
           yield* runScenario({
             scenario,
             model: model ?? scenario.model ?? CODEX_REPLAY_DEFAULT_MODEL,
-            outPath:
-              out ?? (outDir === undefined ? defaultOutPath : path.join(outDir, scenario.fileName)),
+            outPath,
           });
         }),
       { concurrency: 1 },

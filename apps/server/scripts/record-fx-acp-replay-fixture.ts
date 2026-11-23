@@ -60,7 +60,7 @@ interface WireMessage {
   readonly message: JsonRpcMessage;
 }
 
-export function parseReplayArguments(args: ReadonlyArray<string>) {
+export function parseReplayArguments(args: ReadonlyArray<string>, env: NodeJS.ProcessEnv = {}) {
   const { values } = parseRecorderArguments(
     {
       options: {
@@ -81,7 +81,11 @@ export function parseReplayArguments(args: ReadonlyArray<string>) {
     return { fixtureName, fixture, variant };
   });
   validateReplayOutput(values.out, selected.length);
-  return { selected, out: values.out };
+  return {
+    selected,
+    out: values.out,
+    binaryPath: recorderEnvironmentValue("T3_FX_BIN", env) ?? "fx",
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -349,6 +353,7 @@ const DEFAULT_FX_SETTINGS = Schema.decodeSync(FxSettings)({});
 const recordScenario = Effect.fn("recordFxScenario")(function* (
   { fixtureName, fixture, variant }: ReturnType<typeof parseReplayArguments>["selected"][number],
   out: string | undefined,
+  binaryPath: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -383,7 +388,7 @@ const recordScenario = Effect.fn("recordFxScenario")(function* (
   const tee = makeWireTee();
   const settings = {
     ...DEFAULT_FX_SETTINGS,
-    binaryPath: recorderEnvironmentValue("T3_FX_BIN") ?? "fx",
+    binaryPath,
   };
   const layerRegistry = ProviderAdapterRegistry.layerFromAdaptersEffect(
     Effect.gen(function* () {
@@ -540,10 +545,14 @@ const recordScenario = Effect.fn("recordFxScenario")(function* (
 });
 
 if (import.meta.main) {
-  const { selected, out } = parseReplayArguments(process.argv.slice(2));
+  const { selected, out, binaryPath } = parseReplayArguments(process.argv.slice(2), process.env);
   await Effect.runPromise(
-    Effect.forEach(selected, (scenario) => Effect.scoped(recordScenario(scenario, out)), {
-      discard: true,
-    }).pipe(Effect.provide(NodeServices.layer)),
+    Effect.forEach(
+      selected,
+      (scenario) => Effect.scoped(recordScenario(scenario, out, binaryPath)),
+      {
+        discard: true,
+      },
+    ).pipe(Effect.provide(NodeServices.layer)),
   );
 }

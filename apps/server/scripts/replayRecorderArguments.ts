@@ -48,6 +48,7 @@ export function parseClaudeReplayArguments(args: ReadonlyArray<string>, env: Nod
         "query-mode": { type: "string" },
         scenario: { type: "string" },
         out: { type: "string" },
+        "dry-run": { type: "boolean" },
       },
     },
     args,
@@ -63,7 +64,25 @@ export function parseClaudeReplayArguments(args: ReadonlyArray<string>, env: Nod
     scenario:
       values.scenario ?? recorderEnvironmentValue("T3_CLAUDE_REPLAY_SCENARIO", env) ?? "simple",
     out: values.out ?? positionals[0],
+    dryRun: values["dry-run"] ?? false,
   };
+}
+
+export function selectClaudeReplayPrompts(
+  defaults: ReadonlyArray<string>,
+  env: NodeJS.ProcessEnv,
+): ReadonlyArray<string> {
+  const configured = recorderEnvironmentValue("T3_CLAUDE_REPLAY_PROMPTS", env);
+  if (configured !== undefined) {
+    const prompts = configured.split(/\r?\n---\r?\n/u);
+    const blank = prompts.findIndex(isBlank);
+    if (blank !== -1) {
+      throw new Error(`T3_CLAUDE_REPLAY_PROMPTS contains a blank prompt at position ${blank + 1}.`);
+    }
+    return prompts;
+  }
+  const prompt = recorderEnvironmentValue("T3_CLAUDE_REPLAY_PROMPT", env);
+  return prompt === undefined ? defaults : [prompt];
 }
 
 /** Splits comma-separated scenario selections; a name given twice is recorded once. */

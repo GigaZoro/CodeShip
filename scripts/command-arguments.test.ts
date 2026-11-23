@@ -64,6 +64,9 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
       "warning: Source map upload skipped: Usage: upload-sourcemaps.mts ota <dist-dir> | build",
     ],
   ],
+  "../apps/server/scripts/run-replay-recorder.ts": [
+    [["invalid-recorder"], 1, "Usage: run-replay-recorder.ts codex|claude [recorder arguments]"],
+  ],
   "../evals/mcp-tool-use/trim-capture.ts": [
     [["claude", "capture.json", "out.json.gz", UNREAD], 1, "Usage: trim-capture.ts <claude|codex>"],
   ],
