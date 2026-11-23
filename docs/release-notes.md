@@ -1,3 +1,7 @@
+## 2026-11-23 — Scheduled runs keep their occurrence ID
+
+- Scheduled runs carry an accounting ID through account failover. Machines taking over the same shared occurrence report one ID. Tasks that fire independently on different machines have distinct IDs.
+
 ## 2026-11-22 — Long keys work for tasks on linked environments
 
 - Starting or cancelling a task on a linked environment no longer fails when the chat's request key is at the 256-character limit.

@@ -10076,6 +10076,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       const sql = yield* SqlClient.SqlClient;
       const taskId = ScheduledTaskId.make(`recovery-task:${scenario}`);
       const scheduled = scenario !== "ordinary";
+      const demandId = scheduled ? `demand:${"c".repeat(64)}` : undefined;
       const intervalMs = 60_000;
       const schedule = scenario.startsWith("fixed-")
         ? { type: "fixed_time", timeOfDay: "00:01" }
@@ -10120,7 +10121,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         commandId: CommandId.make(`limit-failover:start:${scenario}`),
         threadId,
         messageId: MessageId.make(`limit-failover:start:${scenario}`),
-        ...(scheduled ? { scheduledTaskId: taskId } : {}),
+        ...(demandId === undefined ? {} : { scheduledTaskId: taskId, demandId }),
         text: "Start work.",
         attachments: [],
         dispatchMode: { type: "defer_start" },
@@ -10370,13 +10371,10 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         return;
       }
       assert.deepEqual(
-        (yield* orchestrator.getThreadProjection(threadId)).runs.map((run) => [
-          run.providerInstanceId,
-          run.status,
-        ]),
+        after.runs.map((run) => [run.providerInstanceId, run.status, run.demandId]),
         [
-          [modelSelection.instanceId, "failed"],
-          [alternateInstanceId, "starting"],
+          [modelSelection.instanceId, "failed", demandId],
+          [alternateInstanceId, "starting", demandId],
         ],
       );
       assert.isUndefined(

@@ -85,6 +85,7 @@ import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { hashTelemetryId } from "@t3tools/shared/telemetryId";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -375,9 +376,9 @@ const encodeChangedByJson = Schema.encodeSync(ChangedByJson);
 const decodeRunCheckJson = Schema.decodeUnknownOption(Schema.fromJsonString(ScheduledTaskRunCheck));
 const RunUsageLimitJson = Schema.fromJsonString(ScheduledTaskRunUsageLimit);
 const decodeRunUsageLimitJson = Schema.decodeUnknownOption(RunUsageLimitJson);
-const McpServersJson = Schema.fromJsonString(Schema.Array(Schema.String));
-const decodeMcpServersJson = Schema.decodeUnknownOption(McpServersJson);
-const encodeMcpServersJson = Schema.encodeSync(McpServersJson);
+const StringArrayJson = Schema.fromJsonString(Schema.Array(Schema.String));
+const decodeMcpServersJson = Schema.decodeUnknownOption(StringArrayJson);
+const encodeStringArrayJson = Schema.encodeSync(StringArrayJson);
 const encodeRunUsageLimitJson = Schema.encodeSync(RunUsageLimitJson);
 const RunMemoryJson = Schema.fromJsonString(MemoryShortage);
 const decodeRunMemoryJson = Schema.decodeUnknownOption(RunMemoryJson);
@@ -486,6 +487,8 @@ interface RunRecordRow {
 
 /** What a scheduled run is for: the time it serves, and whether it catches up a missed one. */
 interface ScheduledFire {
+  /** For a shared one-machine task, every claimant uses this same wall-clock or interval slot. */
+  readonly claimSlot?: string;
   readonly scheduledFor: string | null;
   readonly catchUp: boolean;
   /** What the task's run condition answered for this occurrence. */
@@ -2147,7 +2150,7 @@ export const layer = Layer.effect(
           ${record.skipReason ?? null}, ${record.ranOn ?? null},
           ${record.failover?.from ?? null}, ${record.failover?.to ?? null},
           ${record.failover?.reason ?? null},
-          ${record.failover?.mcpServers === undefined ? null : encodeMcpServersJson(record.failover.mcpServers)},
+          ${record.failover?.mcpServers === undefined ? null : encodeStringArrayJson(record.failover.mcpServers)},
           ${record.check === undefined ? null : JSON.stringify(record.check)},
           ${record.usageLimit === undefined ? null : encodeRunUsageLimitJson(record.usageLimit)},
           ${record.memory === undefined ? null : encodeRunMemoryJson(record.memory)}
@@ -2205,7 +2208,7 @@ export const layer = Layer.effect(
               failover_from = ${result.failover?.from ?? null},
               failover_to = ${result.failover?.to ?? null},
               failover_reason = ${result.failover?.reason ?? null},
-              failover_mcp_servers_json = ${result.failover?.mcpServers === undefined ? null : encodeMcpServersJson(result.failover.mcpServers)}
+              failover_mcp_servers_json = ${result.failover?.mcpServers === undefined ? null : encodeStringArrayJson(result.failover.mcpServers)}
           WHERE run_id = ${id} AND outcome = 'running'
         `,
         taskId,
@@ -2503,6 +2506,17 @@ export const layer = Layer.effect(
             : `${active.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = promptMessageId(fireKey);
+        const occurrence =
+          fire?.claimSlot === undefined
+            ? [
+                "scheduled-task",
+                hereEnvironmentId,
+                active.id,
+                trigger,
+                webhook?.deliveryId ?? scheduledFor ?? fireKey,
+              ]
+            : ["scheduled-task-claim", active.id, fire.claimSlot];
+        const demandId = `demand:${hashTelemetryId(encodeStringArrayJson(occurrence))}`;
         // A webhook prompt was rendered from the row when the request arrived. A prompt file is
         // read for each run, and a failed read fails the run: it never runs an earlier read's text.
         const read: Result.Result<
@@ -2550,6 +2564,7 @@ export const layer = Layer.effect(
               threadId,
               messageId,
               scheduledTaskId: active.id,
+              demandId,
               text,
               attachments: [],
               mode: "queue",
@@ -2603,6 +2618,7 @@ export const layer = Layer.effect(
                     initialMessage: {
                       messageId,
                       scheduledTaskId: active.id,
+                      demandId,
                       ...(target.crossProviderFailoverFrom === undefined
                         ? {}
                         : { crossProviderFailoverFrom: target.crossProviderFailoverFrom }),
@@ -3934,7 +3950,7 @@ export const layer = Layer.effect(
           replaces: EnvironmentId | null,
           liveRunsElsewhere: SharedTaskPeerCheck.PeerCheckResult["liveRunsElsewhere"],
         ) {
-          const fire = { scheduledFor: occurrence, catchUp: catchingUp };
+          const fire = { scheduledFor: occurrence, catchUp: catchingUp, claimSlot: slot };
           // The limit counts the task's runs that still work on every machine.
           // With its sharing, so the skip lands on the slot every copy runs.
           if (yield* skippedAtLiveRunLimit(shared, fire, liveRunsElsewhere)) return;

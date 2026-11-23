@@ -790,6 +790,10 @@ export const ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE = "prompt_not_sent";
 export const AUTHENTICATION_FAILED_FAILURE_CODE = "authentication_failed";
 
 export const OrchestrationV2Run = Schema.Struct({
+  /** The original scheduler occurrence, when known. Historical runs can omit it. */
+  demandId: Schema.optional(
+    Schema.NullOr(Schema.String.check(Schema.isPattern(/^demand:[0-9a-f]{64}$/))),
+  ),
   id: RunId,
   threadId: ThreadId,
   ordinal: PositiveInt,
@@ -3988,10 +3992,11 @@ const OrchestrationV2InternalCommand = Schema.Union([
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
 
-type LaunchCommand = Extract<
-  OrchestrationV2Command,
-  { readonly type: "message.dispatch" | "delegated_task.request" }
->;
+type LaunchCommand =
+  | (Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> & {
+      readonly demandId?: string;
+    })
+  | Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>;
 export type OrchestrationV2ServerCommand =
   | Exclude<OrchestrationV2Command, LaunchCommand>
   | (LaunchCommand & {

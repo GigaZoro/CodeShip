@@ -6038,6 +6038,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.automaticContinuationOfRunId ??
       command.usageLimitContinuationOfRunId ??
       command.restartContinuationOfRunId;
+    const sourceRunId = automaticSourceRunId ?? command.manualContinuationOfRunId;
+    const demandId =
+      command.demandId ??
+      (sourceRunId === undefined
+        ? undefined
+        : projection.runs.find((run) => run.id === sourceRunId)?.demandId);
     if (automaticSourceRunId !== undefined) {
       const skipped = yield* skipStaleScheduledRecovery(
         command,
@@ -6762,6 +6768,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(crossProviderFailoverFrom === undefined ? {} : { crossProviderFailoverFrom }),
         providerThreadId: queuedProviderThread.id,
         userMessageId: command.messageId,
+        ...(demandId == null ? {} : { demandId }),
         rootNodeId,
         activeAttemptId: attemptId,
         status: "queued",
@@ -7122,6 +7129,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(crossProviderFailoverFrom === undefined ? {} : { crossProviderFailoverFrom }),
         providerThreadId,
         userMessageId: command.messageId,
+        ...(demandId == null ? {} : { demandId }),
         rootNodeId,
         activeAttemptId: attemptId,
         status: dispatchMode.type === "defer_start" ? "preparing" : "starting",
@@ -7872,6 +7880,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       modelSelection,
       providerThreadId: providerThread.id,
       userMessageId: command.messageId,
+      ...(demandId == null ? {} : { demandId }),
       rootNodeId,
       activeAttemptId: attemptId,
       status: "starting",
@@ -10813,6 +10822,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         targetRunId: stops ? target.id : undefined,
         reason: "Stopped to apply /goal",
         now,
+      });
+    }
+    if (
+      (queuedRun.demandId != null || queuedMessage.scheduledTaskId !== undefined) &&
+      (queuedRun.demandId ?? null) !== (target?.demandId ?? null)
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Keep this scheduled occurrence in its own queued run.",
       });
     }
     yield* emitEvent({

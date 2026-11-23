@@ -323,7 +323,7 @@ function launchInput(input: {
 }
 
 it.effect.each(
-  (["new", "existing"] as const).flatMap((target) =>
+  (["new", "existing", "busy"] as const).flatMap((target) =>
     (["user", "agent"] as const).map((createdBy) => ({ target, createdBy })),
   ),
 )(
@@ -348,9 +348,13 @@ it.effect.each(
       const launches = yield* ThreadLaunch.ThreadLaunchService;
       const threads = yield* ThreadManagement.ThreadManagementService;
       const existing =
-        target === "existing"
+        target !== "new"
           ? yield* launches.launch(
-              launchInput({ command: "command:existing", thread: "thread:existing" }),
+              launchInput({
+                command: "command:existing",
+                thread: "thread:existing",
+                ...(target === "busy" ? { message: "Ongoing work" } : {}),
+              }),
             )
           : null;
       const { task } = yield* tasks.upsert(
@@ -383,16 +387,66 @@ it.effect.each(
       assert.isDefined(thread);
       assert.equal(result.threadId, thread!.id);
       const projection = yield* threads.getThreadProjection(thread!.id);
-      const wire = yield* encodeThreadProjection(projection);
-      assert.equal(wire.messages[0]?.text, task.prompt);
-      assert.equal(wire.messages[0]?.scheduledTaskId, task.id);
-      assert.equal(wire.messages[0]?.createdBy, createdBy);
+      let wire = yield* encodeThreadProjection(projection);
+      const message = wire.messages.find((entry) => entry.scheduledTaskId === task.id);
+      assert.isDefined(message);
+      assert.equal(message.text, task.prompt);
+      assert.equal(message.createdBy, createdBy);
+      const run = projection.runs.find((entry) => entry.id === message.runId);
+      assert.isDefined(run);
+      assert.match(run.demandId ?? "", /^demand:[0-9a-f]{64}$/);
+      assert.equal(wire.runs.find((entry) => entry.id === run.id)?.demandId, run.demandId);
+      if (target === "busy") {
+        const earlier = projection.runs.find((entry) => entry.id !== run.id);
+        assert.isDefined(earlier);
+        assert.isUndefined(earlier.demandId);
+        assert.equal(run.status, "queued");
+        const refusal = yield* threads
+          .dispatch({
+            type: "queued-message.promote-to-steer",
+            commandId: CommandId.make("command:promote-scheduled"),
+            threadId: thread.id,
+            queuedRunId: run.id,
+            targetRunId: earlier.id,
+          })
+          .pipe(Effect.flip);
+        assert.equal(refusal._tag, "OrchestratorDispatchError");
+        assert.propertyVal(
+          refusal,
+          "cause",
+          "Keep this scheduled occurrence in its own queued run.",
+        );
+        assert.equal((yield* threads.getThreadProjection(thread.id)).runs.at(-1)?.status, "queued");
+        yield* threads.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("command:stop-earlier"),
+          threadId: thread.id,
+          runId: earlier.id,
+        });
+        yield* threads.dispatch({
+          type: "queue.resume",
+          commandId: CommandId.make("command:resume-scheduled"),
+          threadId: thread.id,
+        });
+        wire = yield* encodeThreadProjection(yield* threads.getThreadProjection(thread.id));
+        const delivered = wire.runs.find((entry) => entry.id === run.id);
+        assert.equal(delivered?.status, "starting");
+        assert.equal(delivered?.demandId, run.demandId);
+      }
       const turnItem = wire.turnItems.find(
         (item): item is Extract<typeof item, { type: "user_message" }> =>
-          item.type === "user_message",
+          item.type === "user_message" && item.messageId === message.id,
       );
       assert.equal(turnItem?.text, task.prompt);
       assert.equal(turnItem?.scheduledTaskId, task.id);
+      if (target === "new" && createdBy === "user") {
+        yield* TestClock.adjust("1 second");
+        const next = yield* tasks.runNow({ id: task.id });
+        assert.isNotNull(next.threadId);
+        const [nextRun] = (yield* threads.getThreadProjection(next.threadId!)).runs;
+        assert.match(nextRun?.demandId ?? "", /^demand:[0-9a-f]{64}$/);
+        assert.notEqual(nextRun?.demandId, run.demandId);
+      }
     }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerScheduledTasks)));
   },
 );
@@ -1750,7 +1804,7 @@ it.effect.each(["failed", "interrupted"] as const)(
   },
 );
 
-it.effect("replays a server-allocated launch", () =>
+it.effect.each([false, true])("replays a server-allocated launch (scheduled: %s)", (scheduled) =>
   Effect.gen(function* () {
     const setupEntered = yield* Deferred.make<void>();
     const allowSetup = yield* Deferred.make<void>();
@@ -1770,9 +1824,21 @@ it.effect("replays a server-allocated launch", () =>
         message: "Only once",
         workspace: { type: "worktree", baseRef: "main" },
       });
-      const first = yield* launches.launch(rest);
+      const demandId = scheduled ? `demand:${"a".repeat(64)}` : undefined;
+      const input =
+        demandId !== undefined
+          ? {
+              ...rest,
+              initialMessage: {
+                ...rest.initialMessage!,
+                scheduledTaskId: ScheduledTaskId.make("scheduled-task:replayed"),
+                demandId,
+              },
+            }
+          : rest;
+      const first = yield* launches.launch(input);
       yield* Deferred.await(setupEntered);
-      const retry = yield* launches.launch(rest);
+      const retry = yield* launches.launch(input);
       assert.equal(first.threadId, retry.threadId);
       assert.isFalse(first.resumed);
       assert.isTrue(retry.resumed);
@@ -1793,11 +1859,13 @@ it.effect("replays a server-allocated launch", () =>
         ),
         Stream.runHead,
       );
-      const settled = yield* launches.launch(rest);
+      const settled = yield* launches.launch(input);
       assert.equal(settled.threadId, first.threadId);
       assert.isTrue(settled.resumed);
       assert.equal(settled.projection.messages[0]?.id, first.projection.messages[0]?.id);
       assert.equal(settled.projection.runs[0]?.id, first.projection.runs[0]?.id);
+      assert.equal(retry.projection.runs[0]?.demandId, demandId);
+      assert.equal(settled.projection.runs[0]?.demandId, demandId);
       assert.equal(harness.runSetup.mock.calls.length, 1);
     }).pipe(Effect.provide(harness.layer));
   }),
