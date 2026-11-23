@@ -74,6 +74,7 @@ export type ThreadLaunchWorkspaceStrategy =
     };
 
 export interface ThreadLaunchInitialMessage {
+  readonly demandId?: string;
   readonly messageId?: MessageId;
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly crossProviderFailoverFrom?: ProviderInstanceId;
@@ -1035,6 +1036,9 @@ const make = Effect.gen(function* () {
               threadId,
               messageId,
               text: input.initialMessage.text,
+              ...(input.initialMessage.demandId === undefined
+                ? {}
+                : { demandId: input.initialMessage.demandId }),
               ...(input.initialMessage.scheduledTaskId === undefined
                 ? {}
                 : {

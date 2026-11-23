@@ -1,3 +1,7 @@
+## 2026-11-23 — Accounting for messages, failover and review
+
+- New owner requests and accepted guest messages receive a demand ID. Steering, failover, and final review retain the original demand. Delegated questions and completions use their recorded sources. Automatic compaction shares the ID of the message that triggered it.
+
 ## 2026-11-22 — Long keys work for tasks on linked environments
 
 - Starting or cancelling a task on a linked environment no longer fails when the chat's request key is at the 256-character limit.

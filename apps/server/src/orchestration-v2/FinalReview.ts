@@ -3,7 +3,7 @@ import {
   isListedThreadLineage,
   MessageId,
   type ModelSelection,
-  type OrchestrationV2Command,
+  type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadProjection,
   type RunId,
   type ServerProvider,
@@ -57,7 +57,7 @@ export function finalReviewCommand(input: {
   readonly runId: RunId;
   readonly settings: FinalReviewSettings;
   readonly providers: ReadonlyArray<ServerProvider>;
-}): Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> | null {
+}): Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }> | null {
   const { thread } = input.projection;
   if (
     input.settings.finalReviewModelSelections.length === 0 ||
@@ -127,6 +127,7 @@ export function finalReviewCommand(input: {
     commandId: CommandId.make(`final-review:${identity}`),
     messageId: MessageId.make(`final-review:${identity}`),
     threadId: thread.id,
+    demandSourceRunId: run.id,
     text,
     attachments: [],
     dispatchMode: { type: "queue_after_active" },

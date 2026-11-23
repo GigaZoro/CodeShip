@@ -317,6 +317,7 @@ export const layerExecutor: Layer.Layer<
                         type: "message.dispatch",
                         commandId: CommandId.make(`command:steer-follow-up:${effect.id}`),
                         threadId: effect.threadId,
+                        demandSourceRunId: run.id,
                         messageId: message.id,
                         text: message.text,
                         ...(message.context ? { context: message.context } : {}),

@@ -746,6 +746,72 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
     }),
   );
 
+  it.effect.each(["same", "mixed", "unknown"] as const)(
+    "charges a %s completion batch to its evidenced owner",
+    (kind) =>
+      Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread:owners:${kind}`);
+        const runId = RunId.make(`run:owners:${kind}`);
+        const first = NodeId.make(`node:owners:${kind}:first`);
+        const second = NodeId.make(`node:owners:${kind}:second`);
+        const messageId = MessageId.make(`message:delegated-delivery:${threadId}`);
+        const owner = `demand:${"a".repeat(64)}`;
+        yield* seedParentWithTerminalTask({
+          threadId,
+          projectId: ProjectId.make(`project:owners:${kind}`),
+          runId,
+          rootNodeId: NodeId.make(`node:owners:${kind}:root`),
+          taskId: first,
+          deliveryState: "claimed",
+          completionWake: "always",
+          deliveryTaskIds: [first, second],
+          now,
+        });
+        const task = (yield* engine.getThreadProjection(threadId)).subagents[0]!;
+        yield* sink.write({
+          events: [first, second].map((id) => ({
+            id: EventId.make(`owners:${id}`),
+            type: "subagent.updated" as const,
+            threadId,
+            runId,
+            nodeId: id,
+            occurredAt: now,
+            payload: {
+              ...task,
+              id,
+              demandId:
+                id === first || kind === "same"
+                  ? owner
+                  : kind === "mixed"
+                    ? `demand:${"b".repeat(64)}`
+                    : null,
+            },
+          })),
+        });
+        yield* engine.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`command:owners:${kind}`),
+          threadId,
+          messageId,
+          text: "Delegated tasks completed.",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "agent",
+          creationSource: "server",
+          delegatedCompletion: { parentRunId: runId, generation: 1, taskIds: [first] },
+        });
+        assert.equal(
+          (yield* engine.getThreadProjection(threadId)).runs.find(
+            (run) => run.userMessageId === messageId,
+          )?.demandId,
+          kind === "same" ? owner : null,
+        );
+      }),
+  );
+
   it.effect.each([
     {
       name: "oversized UTF-8 result",
@@ -1233,6 +1299,7 @@ const seedRestartCancelledChild = (input: {
   readonly completionWake: "always" | "settled_only";
   readonly continuationPending: boolean;
   readonly runStatus?: "cancelled" | "completed";
+  readonly demandId?: string;
   readonly lostWork?: OrchestrationV2Run["restartCancelledBackgroundWork"];
   readonly now: DateTime.Utc;
 }) =>
@@ -1318,6 +1385,7 @@ const seedRestartCancelledChild = (input: {
       status: input.runStatus ?? "cancelled",
       now: input.now,
     });
+    if (input.demandId !== undefined) Object.assign(childRun.payload, { demandId: input.demandId });
     yield* eventSink.writeWithEffects({
       commandId: reconcileCommandId(input.name),
       events: [
@@ -2064,6 +2132,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
           parentRunId,
           rootNodeId,
           name: "question-answer-child",
+          demandId: `demand:${"a".repeat(64)}`,
           completionWake: "always",
           continuationPending: false,
           now,
@@ -2190,10 +2259,12 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
           (run) => run.userMessageId === MessageId.make(`async-answer:${requestId}`),
         );
         assert.isDefined(answerRun?.delegatedTaskId);
+        assert.equal(answerRun?.demandId, `demand:${"a".repeat(64)}`);
         const followup = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
           (task) => task.id === answerRun?.delegatedTaskId,
         );
         assert.equal(followup?.childThreadId, child.childThreadId);
+        assert.equal(followup?.demandId, answerRun?.demandId);
         assert.isNull(followup?.result);
         assert.isTrue(
           (yield* orchestrator.getThreadShell(parentThreadId))?.pendingBackgroundTasks?.some(
