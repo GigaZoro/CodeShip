@@ -1,3 +1,7 @@
+## 2026-11-23 — Recovering tasks on linked environments
+
+- Retrying a cancellation leaves later work in the linked thread alone. If the originating machine restarts during launch, it follows the accepted run or confirms that the first message can no longer start it.
+
 ## 2026-11-23 — Reliable retries for tasks on linked environments
 
 - Retrying an accepted task returns its original destination and status, even if the retry names a different environment. A dropped connection or a temporary server read error cannot leave the task waiting for a server restart. Cancelling a task while its remote thread starts also stops its first run.

@@ -1031,8 +1031,11 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
   environmentId: EnvironmentId,
   threadId: ThreadId,
   label: Schema.String,
-  /** The run there that carries the task; absent on tasks recorded before it was kept. */
+  /** The peer confirmed which run carries this task, or confirmed that it launched none. */
   runId: Schema.optional(RunId),
+  initialDispatchEmpty: Schema.optional(Schema.Literal(true)),
+  /** The peer request that owns the current cancel, across retries and server restarts. */
+  stopRequestId: Schema.optional(Schema.String),
   /**
    * Nothing is left to stop there: a stop reached it, was refused for good, or the thread
    * or link is gone. A run ending there by itself sets it too, unless the task here was
@@ -3791,6 +3794,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
      * the stop owed for whatever follows it.
      */
     stoppedThere: Schema.optional(Schema.Literals(["ran-out", "stopped"])),
+    stopRequestId: Schema.optional(Schema.String),
     /** The stop generation this report acknowledges; absent for the original unnumbered stop. */
     stopCount: Schema.optional(NonNegativeInt),
   }),
@@ -3815,7 +3819,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
     commandId: CommandId,
     parentThreadId: ThreadId,
     taskId: NodeId,
-    runId: RunId,
+    runId: Schema.NullOr(RunId),
   }),
   /**
    * Records a `t3_command_run` command on the thread that runs it: the task, its node and its
@@ -3995,7 +3999,10 @@ type LaunchCommand = Extract<
   { readonly type: "message.dispatch" | "delegated_task.request" }
 >;
 export type OrchestrationV2ServerCommand =
-  | Exclude<OrchestrationV2Command, LaunchCommand>
+  | Exclude<OrchestrationV2Command, LaunchCommand | { readonly type: "thread.stop" }>
+  | (Extract<OrchestrationV2Command, { readonly type: "thread.stop" }> & {
+      readonly initialDelegationOnly?: true;
+    })
   | (LaunchCommand & {
       readonly crossProviderFailoverFrom?: ProviderInstanceId;
       readonly requestedModelSelection?: ModelSelection;

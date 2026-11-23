@@ -140,6 +140,7 @@ interface BoxThread {
   readonly stops: Ref.Ref<ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks">>;
   /** The launch starts no run, as one recorded before its run was kept. */
   readonly runless: Ref.Ref<boolean>;
+  readonly afterEmptyWait: Ref.Ref<Effect.Effect<void>>;
   /** Completed on the first interrupt there. */
   readonly interruptedOnce: Deferred.Deferred<void>;
   readonly finished: Deferred.Deferred<void>;
@@ -197,6 +198,7 @@ const makeBoxThread = Effect.gen(function* () {
     interrupted: yield* Ref.make(0),
     stops: yield* Ref.make<ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks">>([]),
     runless: yield* Ref.make(false),
+    afterEmptyWait: yield* Ref.make<Effect.Effect<void>>(Effect.void),
     interruptedOnce: yield* Deferred.make<void>(),
     finished: yield* Deferred.make<void>(),
     holdRead: yield* Ref.make(false),
@@ -295,10 +297,12 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
     Effect.gen(function* () {
       if ((yield* Ref.get(thread.launched)) !== threadId) return null;
       const linkOrigin = yield* Ref.get(thread.linkOrigin);
+      const delegatedFrom = yield* Ref.get(thread.delegatedFrom);
       return {
         ...liveThreadShell(threadId, { runtimeMode: "full-access" }),
         projectId: boxProject,
         ...(linkOrigin === null ? {} : { linkOrigin }),
+        ...(delegatedFrom == null ? {} : { delegatedFrom }),
       };
     });
   const runOf = (status: OrchestrationV2Run["status"]) =>
@@ -364,6 +368,7 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
         yield* Ref.update(thread.waitedFor, (seen) => [...seen, input.runId]);
         // A thread with no run has nothing to wait for.
         if (yield* Ref.get(thread.runless)) {
+          yield* Ref.getAndSet(thread.afterEmptyWait, Effect.void).pipe(Effect.flatten);
           return { threadId: input.threadId, run: null, timedOut: false };
         }
         if (yield* Ref.get(thread.gone)) {
@@ -512,16 +517,34 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
       ),
     dispatch: (command) =>
       command.type === "thread.stop"
-        ? recordStop(command.commandId, "thread.stop").pipe(
-            Effect.tap(() =>
-              Effect.gen(function* () {
-                if (!(yield* Ref.getAndSet(thread.holdFirstStop, false))) return;
-                yield* Deferred.succeed(thread.stopStarted, undefined);
-                yield* Deferred.await(thread.releaseStop);
-              }),
-            ),
-            Effect.as({ sequence: 0, storedEvents: [] } as never),
-          )
+        ? command.initialDelegationOnly
+          ? Ref.get(thread.runless).pipe(
+              Effect.map(
+                (runless) =>
+                  ({
+                    sequence: 0,
+                    storedEvents: [
+                      {
+                        event: {
+                          type: "thread.metadata-updated",
+                          payload: { initialDelegationStopped: true },
+                          runId: runless ? undefined : boxRunId,
+                        },
+                      },
+                    ],
+                  }) as never,
+              ),
+            )
+          : recordStop(command.commandId, "thread.stop").pipe(
+              Effect.tap(() =>
+                Effect.gen(function* () {
+                  if (!(yield* Ref.getAndSet(thread.holdFirstStop, false))) return;
+                  yield* Deferred.succeed(thread.stopStarted, undefined);
+                  yield* Deferred.await(thread.releaseStop);
+                }),
+              ),
+              Effect.as({ sequence: 0, storedEvents: [] } as never),
+            )
         : Effect.die(`The box does not expect ${command.type}`),
     stopDelegatedTasks: (input) => recordStop(input.commandId, "delegated-tasks"),
     organizeThread: (input) =>
@@ -1842,6 +1865,120 @@ it.effect("follows an open task again after the laptop restarts", () =>
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect(
+  "an origin restarted before the first dispatch follows the run accepted after an empty wait",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const peer = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const created = yield* Deferred.make<void>();
+        yield* Ref.set(thread.runless, true);
+        yield* Ref.set(
+          thread.afterLaunch,
+          Deferred.succeed(created, undefined).pipe(Effect.andThen(Effect.never)),
+        );
+        const taskId = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const before = yield* makeLaptop(database, offers, linking);
+            yield* linkTo(before.links, peer, "full-access");
+            yield* seedParent(before);
+            yield* delegateToBox(before).pipe(Effect.forkChild);
+            yield* Deferred.await(created);
+            const [open] = yield* before.projections.getOpenRemoteDelegatedTasks;
+            return open!.taskId;
+          }),
+        );
+
+        const after = yield* makeLaptop(database, offers, linking);
+        yield* Ref.set(
+          thread.afterEmptyWait,
+          Ref.set(thread.runless, false).pipe(
+            Effect.andThen(Ref.set(thread.reply, "Completed the delayed dispatch.")),
+            Effect.andThen(Ref.set(thread.status, "completed")),
+            Effect.andThen(Deferred.succeed(thread.finished, undefined)),
+            Effect.asVoid,
+          ),
+        );
+        yield* after.remote.start();
+        const result = yield* taskResult(after, taskId);
+        expect(result).toMatchObject({
+          status: "completed",
+          result: "Completed the delayed dispatch.",
+        });
+        expect(yield* Ref.get(thread.waitedFor)).toEqual([undefined, boxRunId]);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "a second origin restart after confirming an empty launch leaves unrelated work alone",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const peer = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+        const created = yield* Deferred.make<void>();
+        yield* Ref.set(thread.runless, true);
+        yield* Ref.set(thread.reply, null);
+        yield* Ref.set(
+          thread.afterLaunch,
+          Deferred.succeed(created, undefined).pipe(Effect.andThen(Effect.never)),
+        );
+        const taskId = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const origin = yield* makeLaptop(database, offers, linking);
+            yield* linkTo(origin.links, peer, "full-access");
+            yield* seedParent(origin);
+            yield* delegateToBox(origin).pipe(Effect.forkChild);
+            yield* Deferred.await(created);
+            const [open] = yield* origin.projections.getOpenRemoteDelegatedTasks;
+            return open!.taskId;
+          }),
+        );
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const once = yield* makeLaptop(database, offers, linking);
+            const reporting = yield* Deferred.make<void>();
+            const dispatch = once.threads.dispatch;
+            using _dispatch = vi
+              .spyOn(once.threads, "dispatch")
+              .mockImplementation((command) =>
+                command.type === "delegated_task.remote.complete" && command.taskId === taskId
+                  ? Deferred.succeed(reporting, undefined).pipe(Effect.andThen(Effect.never))
+                  : dispatch(command),
+              );
+            yield* once.remote.start();
+            yield* Deferred.await(reporting);
+          }),
+        );
+        yield* Ref.set(thread.runless, false);
+        yield* Ref.set(thread.reply, "Result from unrelated work");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+
+        const twice = yield* makeLaptop(database, offers, linking);
+        yield* twice.remote.start();
+        expect(yield* taskResult(twice, taskId)).toMatchObject({
+          status: "failed",
+          result: "The thread in the linked environment has no run to follow.",
+        });
+        expect(yield* Ref.get(thread.interrupted)).toBe(0);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("fails the task when the box revokes the link, and cancel interrupts it there", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -2643,8 +2780,9 @@ it.effect("cancelling between peer thread creation and its first run keeps the s
       const offers = yield* SubscriptionRef.make<
         ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
       >([]);
+      const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
       const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const a = yield* makeLaptop(database, offers);
+      const a = yield* makeLaptop(database, offers, linking);
       yield* linkTo(a.links, peer, "full-access");
       yield* seedParent(a);
 
@@ -2683,6 +2821,20 @@ it.effect("cancelling between peer thread creation and its first run keeps the s
       yield* Deferred.succeed(startRun, undefined);
       yield* Fiber.join(launch);
       expect(yield* stoppedThere(a, taskId, null)).toMatchObject({ status: "cancelled" });
+      expect(yield* Ref.get(thread.status)).toBe("interrupted");
+      const restarted = yield* makeLaptop(database, offers, linking);
+      yield* Ref.set(thread.status, "running");
+      const again = yield* restarted.call("task_cancel", {
+        taskId,
+        clientRequestId: "stop-during-launch",
+      });
+      expect(again.isError).toBe(false);
+      expect(yield* Ref.get(thread.status)).toBe("running");
+      const next = yield* restarted.call("task_cancel", {
+        taskId,
+        clientRequestId: "stop-later-work",
+      });
+      expect(next.isError).toBe(false);
       expect(yield* Ref.get(thread.status)).toBe("interrupted");
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
@@ -3028,8 +3180,8 @@ it.effect("a task whose thread there has no run ends with its last reply", () =>
         status: "completed",
         result: "Done before it was followed.",
       });
-      // One look, not a loop.
-      expect(yield* Ref.get(thread.waitedFor)).toEqual([undefined]);
+      // An acknowledged empty launch has no run to wait on.
+      expect(yield* Ref.get(thread.waitedFor)).toEqual([]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

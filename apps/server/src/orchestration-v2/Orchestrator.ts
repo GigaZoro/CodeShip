@@ -8991,9 +8991,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     )
       return;
     const remoteChild =
-      command.stoppedThere === undefined
-        ? task.remoteChild
-        : { ...task.remoteChild!, stoppedThere: true };
+      command.stoppedThere !== undefined
+        ? { ...task.remoteChild!, stoppedThere: true }
+        : command.stopRequestId === undefined
+          ? task.remoteChild
+          : { ...task.remoteChild!, stopRequestId: command.stopRequestId, stoppedThere: false };
     // The first result stands; a repeated follower report records nothing, which
     // the dispatcher refuses. A stop there after the result is still recorded, but
     // a run that ended by itself does not settle a stop the task here still owes.
@@ -9463,35 +9465,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     // The first run named stands, and a finished task has no use for one.
-    if (task.result !== null || task.remoteChild.runId !== undefined) return;
-    const now = yield* DateTime.now;
-    yield* emit(
-      events,
-      command,
-    )({
-      type: "subagent.updated",
-      threadId: command.parentThreadId,
-      ...(task.runId === null ? {} : { runId: task.runId }),
-      nodeId: task.id,
-      driver: task.driver,
-      occurredAt: now,
-      payload: {
-        ...task,
-        remoteChild: { ...task.remoteChild, runId: command.runId },
-        updatedAt: now,
-      },
-    });
-  });
-
-  const emitRemoteStopOwed = Effect.fn("orchestrationV2.dispatch.remoteStopOwed")(function* (
-    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
-    command: Extract<
-      OrchestrationV2InternalCommand,
-      { readonly type: "delegated_task.remote.complete" | "delegated_task.remote.stop" }
-    >,
-    task: OrchestrationV2Subagent,
-    remoteChild: OrchestrationV2RemoteTaskChild,
-  ) {
+    if (
+      task.result !== null ||
+      task.remoteChild.runId !== undefined ||
+      task.remoteChild.initialDispatchEmpty
+    )
+      return;
     const now = yield* DateTime.now;
     yield* emit(
       events,
@@ -9506,7 +9485,45 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       payload: {
         ...task,
         remoteChild: {
-          ...remoteChild,
+          ...task.remoteChild,
+          ...(command.runId === null
+            ? { initialDispatchEmpty: true as const }
+            : { runId: command.runId }),
+        },
+        updatedAt: now,
+      },
+    });
+  });
+
+  const emitRemoteStopOwed = Effect.fn("orchestrationV2.dispatch.remoteStopOwed")(function* (
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "delegated_task.remote.complete" | "delegated_task.remote.stop" }
+    >,
+    task: OrchestrationV2Subagent,
+    remoteChild: OrchestrationV2RemoteTaskChild,
+  ) {
+    const { stopRequestId: _previousRequest, ...previous } = remoteChild;
+    const now = yield* DateTime.now;
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "subagent.updated",
+      threadId: command.parentThreadId,
+      ...(task.runId === null ? {} : { runId: task.runId }),
+      nodeId: task.id,
+      driver: task.driver,
+      occurredAt: now,
+      payload: {
+        ...task,
+        remoteChild: {
+          ...previous,
+          ...(command.type === "delegated_task.remote.complete" &&
+          command.stopRequestId !== undefined
+            ? { stopRequestId: command.stopRequestId }
+            : {}),
           stoppedThere: false,
           stopCount: (remoteChild.stopCount ?? 0) + 1,
         },
@@ -13501,6 +13518,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
     if (projection.thread.deletedAt !== null) return undefined;
+    // Keep the fence in the same receipt as Stop, after any changes the interrupt made.
+    const fenceInitialDelegation = Effect.gen(function* () {
+      if (
+        projection.thread.delegatedFrom === undefined ||
+        (projection.thread.initialDelegationStopped && !command.initialDelegationOnly)
+      )
+        return;
+      const runId = command.initialDelegationOnly
+        ? yield* eventSink.initialDelegationRun(command.threadId).pipe(mapDispatchError(command))
+        : null;
+      const current = (yield* Ref.get(events)).some(
+        (event) => event.threadId === command.threadId && event.type.startsWith("thread."),
+      )
+        ? (yield* getProjectionWithPendingEvents(command.threadId, events)).thread
+        : projection.thread;
+      const now = yield* DateTime.now;
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId: command.threadId,
+        ...(runId === null ? {} : { runId }),
+        occurredAt: now,
+        payload: { ...current, initialDelegationStopped: true, updatedAt: now },
+      });
+    });
+    if (command.initialDelegationOnly) {
+      yield* fenceInitialDelegation;
+      return undefined;
+    }
     // Queued after the interrupt, since a thread's effects run in order.
     const stopDelegatedTasks =
       command.stopDelegatedTasks === false || !projection.subagents.some(isAppOwnedTaskWork)
@@ -13546,6 +13594,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* Ref.update(effects, (existing) => [...existing, ...enqueued]);
         yield* cancelIdleOrphans({ command, events, projection });
         yield* stopDelegatedTasks;
+        yield* fenceInitialDelegation;
         return interrupted.value;
       }
       yield* Effect.logWarning("thread.stop could not interrupt the running turn", {
@@ -13555,23 +13604,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     const now = yield* DateTime.now;
-    // A linked launch commits creation before its first message. Stop needs a
-    // durable fence even when there is no run to interrupt yet.
-    if (
-      projection.thread.delegatedFrom !== undefined &&
-      projection.runs.length === 0 &&
-      projection.thread.initialDelegationStopped !== true
-    ) {
-      yield* emit(
-        events,
-        command,
-      )({
-        type: "thread.metadata-updated",
-        threadId: projection.thread.id,
-        occurredAt: now,
-        payload: { ...projection.thread, initialDelegationStopped: true, updatedAt: now },
-      });
-    }
     // Record that Stop reached the turn it could not interrupt and the thread's last executed
     // run, so a late tool call from their agent starts nothing.
     const executed = latestExecutedRun(projection.runs);
@@ -13584,6 +13616,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     yield* holdStoppedThread({ command, events, projection, cohortRunIds: [], now });
     yield* cancelIdleOrphans({ command, events, projection });
     yield* stopDelegatedTasks;
+    yield* fenceInitialDelegation;
     return undefined;
   });
 

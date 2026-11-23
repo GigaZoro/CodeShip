@@ -581,59 +581,140 @@ it.effect("retains automation and sender attribution while a message waits in th
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("a peer stop between thread creation and its initial message prevents the run", () =>
-  Effect.gen(function* () {
-    const harness = makeHarness();
-    yield* Effect.gen(function* () {
-      const launches = yield* ThreadLaunch.ThreadLaunchService;
-      const threads = yield* ThreadManagement.ThreadManagementService;
-      const input = {
-        ...launchInput({
-          command: "command:launch:stop-delegation",
-          thread: "thread:launch:stop-delegation",
-          message: "Run this remotely.",
-        }),
-        createdBy: "agent",
-        creationSource: "mcp",
-        linkOrigin: { sessionId: "session:delegation", label: "Parent environment" },
-        delegatedFrom: {
-          environmentId: EnvironmentId.make("environment:delegation-parent"),
-          threadId: ThreadId.make("thread:parent"),
-          title: "Parent",
-        },
-      } as const;
-      const created = yield* Deferred.make<void>();
-      const send = yield* Deferred.make<void>();
-      const dispatch = threads.dispatch;
-      using _dispatch = vi
-        .spyOn(threads, "dispatch")
-        .mockImplementation((command) =>
-          dispatch(command).pipe(
-            Effect.tap(() =>
-              command.type === "thread.create" && command.commandId === input.commandId
-                ? Deferred.succeed(created, undefined).pipe(Effect.andThen(Deferred.await(send)))
-                : Effect.void,
+it.effect.each([false, true])(
+  "a peer stop before its initial message fences the launch (intervening run: %s)",
+  (intervening) =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const input = {
+          ...launchInput({
+            command: "command:launch:stop-delegation",
+            thread: "thread:launch:stop-delegation",
+            message: "Run this remotely.",
+          }),
+          createdBy: "agent",
+          creationSource: "mcp",
+          linkOrigin: { sessionId: "session:delegation", label: "Parent environment" },
+          delegatedFrom: {
+            environmentId: EnvironmentId.make("environment:delegation-parent"),
+            threadId: ThreadId.make("thread:parent"),
+            title: "Parent",
+          },
+        } as const;
+        const created = yield* Deferred.make<void>();
+        const send = yield* Deferred.make<void>();
+        const dispatch = threads.dispatch;
+        using _dispatch = vi
+          .spyOn(threads, "dispatch")
+          .mockImplementation((command) =>
+            dispatch(command).pipe(
+              Effect.tap(() =>
+                command.type === "thread.create" && command.commandId === input.commandId
+                  ? Deferred.succeed(created, undefined).pipe(Effect.andThen(Deferred.await(send)))
+                  : Effect.void,
+              ),
             ),
-          ),
+          );
+
+        const launching = yield* launches.launch(input).pipe(Effect.exit, Effect.forkChild);
+        yield* Deferred.await(created);
+        if (intervening) {
+          yield* threads.sendToThread({
+            projectId: input.projectId,
+            threadId: input.threadId,
+            commandId: CommandId.make("command:intervening"),
+            messageId: MessageId.make("message:intervening"),
+            text: "Independent work",
+            attachments: [],
+            mode: "queue",
+            createdBy: "user",
+            creationSource: "web",
+          });
+        }
+        yield* threads.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make("command:stop:delegation"),
+          threadId: input.threadId,
+        });
+        yield* Deferred.succeed(send, undefined);
+
+        assert.isTrue(Exit.isFailure(yield* Fiber.join(launching)));
+        assert.isTrue(Exit.isFailure(yield* launches.launch(input).pipe(Effect.exit)));
+        const projection = yield* threads.getThreadProjection(input.threadId);
+        assert.lengthOf(projection.runs, intervening ? 1 : 0);
+        assert.deepEqual(
+          projection.messages.map((message) => message.text),
+          intervening ? ["Independent work"] : [],
         );
-
-      const launching = yield* launches.launch(input).pipe(Effect.exit, Effect.forkChild);
-      yield* Deferred.await(created);
-      yield* threads.dispatch({
-        type: "thread.stop",
-        commandId: CommandId.make("command:stop:delegation"),
-        threadId: input.threadId,
-      });
-      yield* Deferred.succeed(send, undefined);
-
-      assert.isTrue(Exit.isFailure(yield* Fiber.join(launching)));
-      assert.isTrue(Exit.isFailure(yield* launches.launch(input).pipe(Effect.exit)));
-      const projection = yield* threads.getThreadProjection(input.threadId);
-      assert.isEmpty(projection.runs);
-      assert.isEmpty(projection.messages);
-    }).pipe(Effect.provide(harness.layer));
-  }),
+        if (intervening) assert.equal(projection.runs[0]?.status, "interrupted");
+        assert.isTrue(projection.thread.initialDelegationStopped);
+      }).pipe(Effect.provide(harness.layer));
+    }),
 );
+
+it.effect("a recovery fence returns the launch's run and leaves later work alone", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const input = {
+      ...launchInput({
+        command: "command:original-linked-launch",
+        thread: "thread:remote-recovery",
+        message: "Initial job",
+      }),
+      createdBy: "agent",
+      creationSource: "mcp",
+      linkOrigin: { sessionId: "peer", label: "Parent" },
+      delegatedFrom: {
+        environmentId: EnvironmentId.make("origin"),
+        threadId: ThreadId.make("thread:parent"),
+        title: "Parent",
+      },
+    } as const;
+    const launched = yield* launches.launch(input);
+    const first = launched.projection.runs[0]!;
+    const next = yield* threads.sendToThread({
+      projectId: input.projectId,
+      threadId: input.threadId,
+      commandId: CommandId.make("command:after-launch"),
+      messageId: MessageId.make("message:after-launch"),
+      text: "Later work",
+      attachments: [],
+      mode: "queue",
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const fence = {
+      type: "thread.stop",
+      threadId: input.threadId,
+      commandId: CommandId.make("command:recover-first"),
+      initialDelegationOnly: true,
+    } as const;
+    for (const receipt of [yield* threads.dispatch(fence), yield* threads.dispatch(fence)]) {
+      assert.deepEqual(
+        receipt.storedEvents.map(({ event }) => event.type),
+        ["thread.metadata-updated"],
+      );
+      assert.equal(
+        receipt.storedEvents.find(({ event }) => event.type === "thread.metadata-updated")?.event
+          .runId,
+        first.id,
+      );
+    }
+    const projection = yield* threads.getThreadProjection(input.threadId);
+    assert.isTrue(projection.thread.initialDelegationStopped);
+    assert.equal(projection.runs.find((run) => run.id === next.run.id)?.status, next.run.status);
+    assert.equal(
+      projection.runs.find((run) => run.id === first.id)?.activeAttemptId,
+      first.activeAttemptId,
+    );
+    assert.isTrue((yield* launches.launch(input)).resumed);
+  }).pipe(Effect.provide(harness.layer));
+});
 
 it.effect("provisions independent launches concurrently instead of behind a global semaphore", () =>
   Effect.gen(function* () {

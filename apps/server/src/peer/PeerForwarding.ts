@@ -4,6 +4,8 @@ import {
   OrchestratorMcpCapabilitiesResult,
   OrchestratorMcpFailure,
   type OrchestratorMcpEnvironmentLinksResult,
+  OrchestratorMcpResolveDelegationInput,
+  OrchestratorMcpResolveDelegationResult,
   OrchestratorMcpThreadInterruptInput,
   OrchestratorMcpThreadInterruptResult,
   OrchestratorMcpThreadReadInput,
@@ -71,6 +73,11 @@ export class PeerForwarding extends Context.Service<
       environmentId: EnvironmentId,
       input: OrchestratorMcpThreadReadInput,
     ) => Effect.Effect<OrchestratorMcpThreadReadResult, OrchestratorMcpFailure>;
+    readonly resolveInitialDelegation: (
+      scope: Scope,
+      environmentId: EnvironmentId,
+      threadId: ThreadId,
+    ) => Effect.Effect<OrchestratorMcpResolveDelegationResult, OrchestratorMcpFailure>;
     /** `t3_thread_interrupt` there. */
     readonly interruptThread: (
       scope: Scope,
@@ -314,6 +321,17 @@ const make = Effect.gen(function* () {
     call,
     readCapabilities,
     readThread,
+    resolveInitialDelegation: Effect.fn("PeerForwarding.resolveInitialDelegation")(
+      (scope, environmentId, threadId) =>
+        forward<OrchestratorMcpResolveDelegationResult>(
+          scope,
+          "t3_resolve_initial_delegation",
+          OrchestratorMcpResolveDelegationInput,
+          OrchestratorMcpResolveDelegationResult,
+          environmentId,
+          { threadId },
+        ),
+    ),
     interruptThread,
     waitForThread,
     settleThread,

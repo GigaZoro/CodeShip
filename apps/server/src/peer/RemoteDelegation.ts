@@ -492,24 +492,21 @@ const make = Effect.gen(function* () {
               ),
             ),
           );
-        // The follower waits on this run once it knows it; a failure here leaves it on the
-        // thread's latest run, which is the run it launched.
-        if (launched.runId !== null) {
-          yield* threads
-            .dispatch({
-              type: "delegated_task.remote.attach-run",
-              commandId: CommandId.make(`${commandId}:attach-run`),
-              parentThreadId,
-              taskId,
-              runId: launched.runId,
-            })
-            .pipe(
-              Effect.tapError((cause) =>
-                Effect.logWarning("remote-delegation.attach-run-failed", { taskId, cause }),
-              ),
-              Effect.ignore,
-            );
-        }
+        // A null reply is authoritative too. A missing receipt must still be reconciled.
+        yield* threads
+          .dispatch({
+            type: "delegated_task.remote.attach-run",
+            commandId: CommandId.make(`${commandId}:attach-run`),
+            parentThreadId,
+            taskId,
+            runId: launched.runId,
+          })
+          .pipe(
+            Effect.tapError((cause) =>
+              Effect.logWarning("remote-delegation.attach-run-failed", { taskId, cause }),
+            ),
+            Effect.ignore,
+          );
         return { taskId };
       });
       return yield* record.pipe(
@@ -601,12 +598,13 @@ const make = Effect.gen(function* () {
     remote: OrchestrationV2RemoteTaskChild,
     key: string,
     reason?: string,
+    peerRequestId?: string,
   ) {
     yield* forwarding.interruptThread(scope, remote.environmentId, {
       threadId: remote.threadId,
       stop: true,
       ...(reason === undefined ? {} : { reason }),
-      clientRequestId: yield* composedKey("stop", key, remote.threadId),
+      clientRequestId: peerRequestId ?? (yield* composedKey("stop", key, remote.threadId)),
     });
   });
 
@@ -632,11 +630,13 @@ const make = Effect.gen(function* () {
         threadId: remote.threadId,
         view: failed ? "activity" : "messages",
         limit: 100,
+        ...(runId === null ? { runLimit: 1 } : {}),
         // Keep the first and expected final activity pages whole. A result on a
         // middle page then needs an extra text read after the scan.
         ...(failed && remainingItems > 100 ? { maxCharsPerItem: 1 } : {}),
         ...(afterPosition === undefined ? {} : { afterPosition }),
       });
+      if (runId === null && (read.recentRuns?.length ?? 0) > 0) return undefined;
       reply =
         read.items.findLast(
           (item) => item.type === "assistant_message" && (runId === null || item.runId === runId),
@@ -657,7 +657,9 @@ const make = Effect.gen(function* () {
             view: "messages",
             limit: 100,
             afterPosition: tailPosition,
+            ...(runId === null ? { runLimit: 1 } : {}),
           });
+          if (runId === null && (tail.recentRuns?.length ?? 0) > 0) return undefined;
           const tailReply = tail.items.findLast(
             (item) => item.type === "assistant_message" && (runId === null || item.runId === runId),
           );
@@ -834,7 +836,7 @@ const make = Effect.gen(function* () {
           remote.stoppedThere !== true)
       ) {
         const key = remote.stopCount === undefined ? "stop" : `stop-${remote.stopCount}`;
-        yield* stopThere(scope, remote, key).pipe(
+        yield* stopThere(scope, remote, key, undefined, remote.stopRequestId).pipe(
           // Its thread there now runs above what this side may touch, say
           // because the parent here was lowered since; no retry changes that.
           Effect.catchIf(isModeRefusal, (error) =>
@@ -856,6 +858,18 @@ const make = Effect.gen(function* () {
       }
       return true;
     }
+    const finishEmptyLaunch = Effect.gen(function* () {
+      const reply = yield* lastReply(scope, remote, null);
+      yield* complete(
+        parentThreadId,
+        taskId,
+        reply === undefined ? "failed" : "completed",
+        reply ?? "The thread in the linked environment has no run to follow.",
+        "ran-out",
+      );
+      return yield* settled(parentThreadId, taskId);
+    });
+    if (remote.initialDispatchEmpty) return yield* finishEmptyLaunch;
     const endedHere = threads
       .streamStoredEventsFrom({
         threadId: parentThreadId,
@@ -887,20 +901,25 @@ const make = Effect.gen(function* () {
       .pipe(Effect.raceFirst(endedHere));
     // The next look reads the result and stops it there.
     if ("endedHere" in waited) return false;
-    if (waited.timedOut) return false;
-    // A task recorded without its run waits on the thread's latest; a
-    // thread there with none has nothing left to wait for.
-    if (waited.runId === null) {
-      const reply = yield* lastReply(scope, remote, null);
-      yield* complete(
+    if (remote.runId === undefined) {
+      // Recovery lost the launch reply. Under the peer's dispatch lock, seal ONLY the
+      // initial message and retrieve its committed run. Other work there keeps running.
+      const proof = yield* forwarding.resolveInitialDelegation(
+        scope,
+        remote.environmentId,
+        remote.threadId,
+      );
+      yield* threads.dispatch({
+        type: "delegated_task.remote.attach-run",
+        commandId: CommandId.make(`remote-task:${taskId}:reconciled-launch`),
         parentThreadId,
         taskId,
-        reply === undefined ? "failed" : "completed",
-        reply ?? "The thread in the linked environment has no run to follow.",
-        "ran-out",
-      );
-      return yield* settled(parentThreadId, taskId);
+        runId: proof.runId,
+      });
+      return proof.runId === null ? yield* finishEmptyLaunch : false;
     }
+    if (waited.timedOut) return false;
+    if (waited.runId === null) return yield* finishEmptyLaunch;
     if (!isTerminal(waited.status)) return false;
     const resultRun = waited.resultRun ?? {
       runId: remote.runId ?? waited.runId,
@@ -984,71 +1003,80 @@ const make = Effect.gen(function* () {
         });
       }
       const { reason } = input;
-      const there = followScope(scope.thread, remote);
-      const launchInFlight = launching.has(task.id);
-      // A later cancel stops what started there since; a retry of this one, nothing new.
-      const key = `cancel:${encodeURIComponent(scope.requestNamespace)}:${
-        input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie))
-      }`;
-      if (task.result !== null) {
-        yield* giveUpSettle(task.id);
-        // Best effort: the result stands whether or not the stop gets there.
-        yield* (launchInFlight ? Effect.void : stopThere(there, remote, key, reason)).pipe(
-          Effect.andThen(
-            complete(
-              task.threadId,
-              task.id,
-              terminalStatus(task.status),
-              task.result,
-              launchInFlight ? undefined : "stopped",
-              remote.stopCount,
-            ),
-          ),
-          Effect.ignoreCause({ log: true }),
-        );
-        return {
-          taskId: task.id,
-          status:
-            task.status === "completed" || task.status === "failed" || task.status === "interrupted"
-              ? task.status
-              : "cancelled",
-        } satisfies OrchestratorMcpTaskCancelResult;
-      }
-      // A link that is gone or a machine that is down still cancels the task
-      // here; its follower keeps trying to stop it there, across restarts.
-      // The peer can have the thread before it has the initial run. The launch
-      // follower sends the stop after the launch finishes in that case.
-      const unstopped = launchInFlight
-        ? undefined
-        : yield* stopThere(there, remote, key, reason).pipe(
-            Effect.as(undefined),
-            Effect.catch((error) => Effect.succeed(error.message)),
-          );
+      const callerKey = input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
+      // Use the same peer receipt as a cancel sent by an earlier release.
+      const key = `cancel:${encodeURIComponent(scope.requestNamespace)}:${callerKey}`;
+      const stopRequestId = yield* composedKey("stop", key, remote.threadId);
       const cancelled = reason === undefined ? "Cancelled." : `Cancelled: ${reason}`;
-      yield* complete(
-        task.threadId,
-        task.id,
-        "cancelled",
-        unstopped === undefined
-          ? cancelled
-          : `${cancelled} It could not be stopped in ${remote.label} and may still run there: ${unstopped}`,
-        unstopped === undefined && !launchInFlight ? "stopped" : undefined,
-        remote.stopCount,
-      ).pipe(
-        Effect.tapError((cause) =>
-          Effect.logWarning("remote-delegation.cancel-record-failed", { taskId: task.id, cause }),
-        ),
-        Effect.mapError(
-          () =>
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: "Unable to record the cancellation.",
-            }),
-        ),
-      );
+      const link = yield* links.get(remote.environmentId).pipe(Effect.option);
+      const unavailable = Option.isSome(link) && Option.isNone(link.value);
+      const recorded = yield* threads
+        .dispatch({
+          type: "delegated_task.remote.complete",
+          commandId: CommandId.make(`command:remote-task-cancel:${task.id}:${stopRequestId}`),
+          parentThreadId: task.threadId,
+          taskId: task.id,
+          status: "cancelled",
+          result: unavailable
+            ? `${cancelled} It could not be stopped in ${remote.label} because the link is unavailable and may still run there.`
+            : cancelled,
+          stopRequestId,
+        })
+        .pipe(
+          Effect.tapError((cause) =>
+            Effect.logWarning("remote-delegation.cancel-record-failed", { taskId: task.id, cause }),
+          ),
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "Unable to record the cancellation.",
+              }),
+          ),
+        );
+      yield* giveUpSettle(task.id);
+      // The intent, its generation and its peer receipt commit together before the RPC.
+      // A replay observes that same intent, even when a newer stop is now owed.
+      if (!launching.has(task.id)) {
+        const intent = recorded.storedEvents.find(
+          ({ event }) => event.type === "subagent.updated",
+        )?.event;
+        const pending = yield* readTask(task.threadId, task.id).pipe(
+          Effect.map(({ task: current }) => current),
+          Effect.orElseSucceed(() => undefined),
+        );
+        const child = pending?.remoteChild;
+        if (
+          intent?.type === "subagent.updated" &&
+          child?.stopRequestId === stopRequestId &&
+          child.stoppedThere !== true &&
+          pending?.result != null
+        ) {
+          yield* stopThere(
+            followScope(scope.thread, child),
+            child,
+            key,
+            reason,
+            stopRequestId,
+          ).pipe(
+            Effect.andThen(
+              complete(
+                task.threadId,
+                task.id,
+                terminalStatus(pending.status),
+                pending.result,
+                "stopped",
+                child.stopCount,
+              ),
+            ),
+            Effect.ignoreCause({ log: true }),
+          );
+        }
+        yield* followOne(task.threadId, task.id).pipe(Effect.forkIn(followers));
+      }
       return {
         taskId: task.id,
-        status: "cancel_requested",
+        status: task.result === null ? "cancel_requested" : terminalStatus(task.status),
       } satisfies OrchestratorMcpTaskCancelResult;
     },
   );

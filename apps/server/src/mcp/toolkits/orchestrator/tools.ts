@@ -10,6 +10,8 @@ import {
   OrchestratorMcpEnvironmentLinkResult,
   OrchestratorMcpEnvironmentLinksResult,
   OrchestratorMcpEnvironmentUnlinkInput,
+  OrchestratorMcpResolveDelegationInput,
+  OrchestratorMcpResolveDelegationResult,
   OrchestratorMcpLinkBackInput,
   OrchestratorMcpLinkBackResult,
   OrchestratorMcpEnvironmentUnlinkResult,
@@ -401,6 +403,17 @@ const EnvironmentLinkTool = Tool.make("t3_environment_link", {
   .annotate(Tool.OpenWorld, true)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWhileLinksOff);
 
+const ResolveDelegationTool = Tool.make("t3_resolve_initial_delegation", {
+  description: "For the launching peer: seal the first dispatch and return its accepted run.",
+  parameters: OrchestratorMcpResolveDelegationInput,
+  success: OrchestratorMcpResolveDelegationResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Idempotent, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.visibleToPeerLinks);
+
 const LinkBackTool = Tool.make("t3_link_back", {
   description:
     "For a linked machine: link this environment back to it, with a pairing code it made. The machine linked this one with auto or full access and names only itself.",
@@ -454,5 +467,6 @@ export const OrchestratorToolkit = Toolkit.make(
   EnvironmentLinksTool,
   EnvironmentLinkTool,
   LinkBackTool,
+  ResolveDelegationTool,
   EnvironmentUnlinkTool,
 );

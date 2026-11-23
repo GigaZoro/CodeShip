@@ -54,6 +54,7 @@ import {
   type ProviderInstanceId,
   type OrchestratorMcpThreadDetail,
   type OrchestratorMcpThreadPullRequest,
+  type OrchestratorMcpResolveDelegationResult,
   type OrchestratorMcpThreadInterruptInput,
   type OrchestratorMcpThreadInterruptResult,
   type OrchestratorMcpThreadListInput,
@@ -270,6 +271,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpThreadWaitInput,
   ) => Effect.Effect<OrchestratorMcpThreadWaitResult, OrchestratorMcpFailure>;
+  readonly resolveInitialDelegation: (
+    scope: McpInvocationScope,
+    threadId: ThreadId,
+  ) => Effect.Effect<OrchestratorMcpResolveDelegationResult, OrchestratorMcpFailure>;
   readonly interruptThread: (
     scope: McpInvocationScope,
     input: OrchestratorMcpThreadInterruptInput,
@@ -4378,6 +4383,48 @@ const make = Effect.gen(function* () {
             }),
       } satisfies OrchestratorMcpThreadWaitResult;
     }),
+    resolveInitialDelegation: Effect.fn("OrchestratorMcpService.resolveInitialDelegation")(
+      function* (scope, threadId) {
+        const { limits, target } = yield* loadScopedThread(scope, threadId, false);
+        if (
+          scope.client?.linked !== true ||
+          target.thread.delegatedFrom === undefined ||
+          target.thread.linkOrigin?.sessionId !== scope.client.sessionId
+        ) {
+          return yield* failure(
+            "invalid_request",
+            "Only the launching link may reconcile its initial delegation.",
+          );
+        }
+        yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
+        yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);
+        const fenced = yield* threadManagement
+          .dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make(`command:resolve-initial-delegation:${threadId}`),
+            threadId,
+            initialDelegationOnly: true,
+          })
+          .pipe(
+            Effect.mapError(() =>
+              failure(
+                "orchestration_error",
+                "Unable to confirm the delegation's initial dispatch.",
+              ),
+            ),
+          );
+        const ack = fenced.storedEvents.find(
+          ({ event }) =>
+            event.type === "thread.metadata-updated" && event.payload.initialDelegationStopped,
+        )?.event;
+        if (ack === undefined)
+          return yield* failure(
+            "orchestration_error",
+            "The peer did not record the delegation fence.",
+          );
+        return { runId: ack.runId ?? null };
+      },
+    ),
     interruptThread: Effect.fn("OrchestratorMcpService.interruptThread")(function* (scope, input) {
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId);
       yield* assertLiveCallerForOtherThread(scope, parent, target);

@@ -130,6 +130,7 @@ const PEER_LINK_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "t3_claim_scheduled_task_occurrence",
   "t3_shared_settings",
   "t3_link_back",
+  "t3_resolve_initial_delegation",
 ]);
 
 // The tool list depends on the host, so each platform's is measured wherever the test runs.

@@ -248,6 +248,15 @@ const handlers = {
       return { environmentId, removed };
     }),
   ),
+  t3_resolve_initial_delegation: McpToolAccess.writesThreads(
+    (input) => [input.threadId],
+    ({ threadId }) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        return yield* service.resolveInitialDelegation(scope, threadId);
+      }),
+  ),
   t3_thread_interrupt: McpToolAccess.writesThreads(
     (input) => [input.threadId],
     (input) =>

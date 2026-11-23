@@ -620,6 +620,14 @@ export const OrchestratorMcpThreadWaitResult = Schema.Struct({
 });
 export type OrchestratorMcpThreadWaitResult = typeof OrchestratorMcpThreadWaitResult.Type;
 
+/** Peer recovery seals a delegated thread's first dispatch and returns its accepted run, if any. */
+export const OrchestratorMcpResolveDelegationInput = Schema.Struct({ threadId: ThreadId });
+export const OrchestratorMcpResolveDelegationResult = Schema.Struct({
+  runId: Schema.NullOr(RunId),
+});
+export type OrchestratorMcpResolveDelegationResult =
+  typeof OrchestratorMcpResolveDelegationResult.Type;
+
 export const OrchestratorMcpThreadInterruptInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,

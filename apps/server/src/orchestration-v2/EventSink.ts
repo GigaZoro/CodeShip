@@ -207,6 +207,10 @@ export interface EventSinkV2Shape {
   }) => Effect.Effect<number, EventSinkV2Error>;
   /** When events last committed; read at startup, about when the previous server stopped. */
   readonly lastCommittedAt: Effect.Effect<DateTime.Utc | null, EventSinkV2Error>;
+  /** The run created by the original linked launch's initial-message receipt, including after restart. */
+  readonly initialDelegationRun: (
+    threadId: ThreadId,
+  ) => Effect.Effect<RunId | null, EventSinkV2Error>;
   readonly readByCommandId: (input: {
     readonly commandId: CommandId;
   }) => Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
@@ -1068,6 +1072,30 @@ const layerBase: Layer.Layer<
         ),
         Effect.mapError((cause) => new EventSinkStreamError({ cause })),
         Effect.withSpan("EventSink.lastCommittedAt"),
+      ),
+      initialDelegationRun: Effect.fn("EventSink.initialDelegationRun")(
+        function* (threadId) {
+          const creation = yield* eventStore
+            .read({ threadId, eventType: "thread.created", limit: 1 })
+            .pipe(Stream.runHead);
+          const createCommandId = Option.getOrUndefined(creation)?.commandId;
+          if (createCommandId == null)
+            return yield* new EventSinkStreamError({
+              threadId,
+              cause: "Missing delegation creation receipt",
+            });
+          const started = yield* eventStore
+            .readByCommandId({ commandId: CommandId.make(`${createCommandId}:initial-message`) })
+            .pipe(
+              Stream.filter(
+                ({ event }) => event.threadId === threadId && event.type === "run.created",
+              ),
+              Stream.runHead,
+            );
+          return Option.getOrUndefined(started)?.event.runId ?? null;
+        },
+        (read, threadId) =>
+          read.pipe(Effect.mapError((cause) => new EventSinkStreamError({ threadId, cause }))),
       ),
       readByCommandId: (input) =>
         eventStore.readByCommandId(input).pipe(
