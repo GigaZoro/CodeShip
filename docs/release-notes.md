@@ -36,8 +36,8 @@
 
 ## 2026-11-22 — Relay client installs keep each other's locks
 
-- CodeShip reuses an existing relay client when it reports the pinned version. New downloads go into a separate directory, so two CodeShip versions can install at the same time without moving each other’s binary or lock.
-- A recent legacy lock gives the older installer time to finish. After 30 minutes, a new installer can proceed in its own directory while preserving the legacy lock. Relay archive extraction has a two-minute timeout.
+- CodeShip checks both relay client directories for the pinned version before using a compatible fallback. New installs use their own directory and hold a SQLite transaction until they finish. The lock survives a host suspend, and the OS releases it if the installer exits.
+- A recent legacy lock gives the older installer time to finish. CodeShip can proceed in its own directory as soon as all identified legacy owners have exited, or after 30 minutes if ownership remains uncertain. It preserves the legacy lock and binary. Relay archive extraction has a two-minute timeout.
 
 ## 2026-11-22 — Long keys work for tasks on linked environments
 

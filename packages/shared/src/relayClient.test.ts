@@ -114,12 +114,11 @@ const managedPathFor = (
     platform === "win32" ? "cloudflared.exe" : "cloudflared",
   );
 
-const lockPathFor = (
+const legacyLockPathFor = (
   paths: Path.Path,
   baseDir: string,
   platform: NodeJS.Platform = "linux",
-  layout: "current" | "legacy" = "current",
-) => `${managedPathFor(paths, baseDir, RelayClient.CLOUDFLARED_VERSION, platform, layout)}.lock`;
+) => `${managedPathFor(paths, baseDir, RelayClient.CLOUDFLARED_VERSION, platform, "legacy")}.lock`;
 
 // The simulated platform's exec bits live here because NTFS cannot hold them.
 const withModeModel = (fileSystem: FileSystem.FileSystem) => {
@@ -233,90 +232,56 @@ const layerInstallRuntime = (platform: NodeJS.Platform) =>
   );
 
 describe("RelayClient", () => {
-  it.effect("cancels a contended install without removing the other installer's lock", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const paths = yield* Path.Path;
-      const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
-      const lockPath = lockPathFor(paths, baseDir);
-      const other = `${process.pid}-other-installer`;
-      yield* fileSystem.makeDirectory(lockPath, { recursive: true });
-      yield* fileSystem.writeFileString(paths.join(lockPath, other), "");
-      const contended = yield* Deferred.make<void>();
-      const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir }).pipe(
-        Effect.provideService(FileSystem.FileSystem, {
-          ...fileSystem,
-          rename: (from, to) =>
-            fileSystem
-              .rename(from, to)
-              .pipe(
-                Effect.tapError(() =>
-                  to === lockPath ? Deferred.succeed(contended, undefined) : Effect.void,
-                ),
-              ),
-        }),
-      );
-      const installing = yield* manager.install.pipe(Effect.forkChild);
-      yield* Deferred.await(contended);
-      yield* Fiber.interrupt(installing);
-      expect(yield* fileSystem.readDirectory(lockPath)).toEqual([other]);
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.mergeAll(
-          layerNodeServices,
-          layerHttpClient(new Uint8Array()),
-          layerSpawner([]),
-          layerHostRuntime({ PATH: "" }),
-        ),
-      ),
-    ),
-  );
-
-  it.effect.each(["live owner", "recent legacy"] as const)("keeps a lock with a %s", (kind) =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const paths = yield* Path.Path;
-      const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
-      const lockPath = lockPathFor(
-        paths,
-        baseDir,
-        "win32",
-        kind === "live owner" ? "current" : "legacy",
-      );
-      const owner = `${process.pid}-still-running`;
-      yield* fileSystem.makeDirectory(paths.dirname(lockPath), {
-        recursive: true,
-      });
-      if (kind === "live owner") {
-        yield* fileSystem.makeDirectory(lockPath);
-        yield* fileSystem.writeFileString(paths.join(lockPath, owner), "");
-      } else {
-        yield* fileSystem.writeFileString(lockPath, "legacy-installer");
-      }
-      const written = yield* fileSystem.stat(lockPath);
-      yield* TestClock.setTime(Option.getOrThrow(written.mtime).getTime() + 6_000);
-      const waiting = yield* Deferred.make<void>();
-      const clock = yield* Clock.Clock;
-      const manager = yield* RelayClient.makeCloudflaredRelayClient({
-        baseDir,
-        releaseAsset: testReleaseAsset,
-      });
-      const installing = yield* manager.install.pipe(
-        Effect.provideService(Clock.Clock, {
-          ...clock,
-          sleep: () => Deferred.succeed(waiting, undefined).pipe(Effect.andThen(Effect.never)),
-        }),
-        Effect.forkChild,
-      );
-      yield* Deferred.await(waiting);
-      yield* Fiber.interrupt(installing);
-      if (kind === "live owner") {
-        expect(yield* fileSystem.readDirectory(lockPath)).toEqual([owner]);
-      } else {
-        expect(yield* fileSystem.readFileString(lockPath)).toBe("legacy-installer");
-      }
-    }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("win32"))),
+  it.effect.each(["live owner", "unknown owner", "recent file"] as const)(
+    "preserves a recent legacy lock while waiting (%s)",
+    (kind) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const paths = yield* Path.Path;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
+        const lockPath = legacyLockPathFor(paths, baseDir, "win32");
+        const owner = kind === "live owner" ? `${process.pid}-still-running` : "unknown-owner";
+        yield* fs.makeDirectory(paths.dirname(lockPath), { recursive: true });
+        if (kind === "recent file") {
+          yield* fs.writeFileString(lockPath, "legacy-installer");
+        } else {
+          yield* fs.makeDirectory(lockPath);
+          yield* fs.writeFileString(paths.join(lockPath, owner), "");
+        }
+        const written = yield* fs.stat(lockPath);
+        yield* TestClock.setTime(Option.getOrThrow(written.mtime).getTime() + 6_000);
+        const waiting = yield* Deferred.make<void>();
+        const clock = yield* Clock.Clock;
+        const manager = yield* RelayClient.makeCloudflaredRelayClient({
+          baseDir,
+          releaseAsset: testReleaseAsset,
+        });
+        const installing = yield* manager
+          .installWithProgress((event) =>
+            event.type === "progress" && event.stage === "downloading"
+              ? Effect.die("Download started while a recent legacy lock was held")
+              : Effect.void,
+          )
+          .pipe(
+            Effect.provideService(Clock.Clock, {
+              ...clock,
+              sleep: () => Deferred.succeed(waiting, undefined).pipe(Effect.andThen(Effect.never)),
+            }),
+            Effect.forkChild,
+          );
+        yield* Effect.raceFirst(
+          Deferred.await(waiting),
+          Fiber.join(installing).pipe(
+            Effect.andThen(Effect.die("Install finished without waiting for the legacy lock")),
+          ),
+        );
+        yield* Fiber.interrupt(installing);
+        if (kind === "recent file") {
+          expect(yield* fs.readFileString(lockPath)).toBe("legacy-installer");
+        } else {
+          expect(yield* fs.readDirectory(lockPath)).toEqual([owner]);
+        }
+      }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("win32"))),
   );
 
   it.effect("installs separately when a legacy installer claims its path after inspection", () =>
@@ -324,7 +289,7 @@ describe("RelayClient", () => {
       const fs = yield* FileSystem.FileSystem;
       const paths = yield* Path.Path;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
-      const legacyLock = lockPathFor(paths, baseDir, "win32", "legacy");
+      const legacyLock = legacyLockPathFor(paths, baseDir, "win32");
       let claimed = false;
       const manager = yield* RelayClient.makeCloudflaredRelayClient({
         baseDir,
@@ -366,7 +331,7 @@ describe("RelayClient", () => {
         const baseDir = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "t3-cloudflared-test-",
         });
-        const lockPath = lockPathFor(paths, baseDir, "win32", "legacy");
+        const lockPath = legacyLockPathFor(paths, baseDir, "win32");
         const owner = `${process.pid}-fresh-installer`;
         yield* fileSystem.makeDirectory(paths.dirname(lockPath), { recursive: true });
         yield* fileSystem.writeFileString(lockPath, "");
@@ -419,47 +384,42 @@ describe("RelayClient", () => {
       }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("win32"))),
   );
 
-  it.effect("replaces a lock whose owner's pid another process now uses", () =>
+  it.effect("ignores a fresh legacy lock owned by an exited process without removing it", () =>
     Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
+      const fs = yield* FileSystem.FileSystem;
       const paths = yield* Path.Path;
-      const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
-      const lockPath = lockPathFor(paths, baseDir);
-      const reused = paths.join(lockPath, `${process.pid}-crashed-installer`);
-      yield* fileSystem.makeDirectory(lockPath, { recursive: true });
-      yield* fileSystem.writeFileString(reused, "");
-      yield* fileSystem.utimes(reused, staleLockTime, staleLockTime);
-      yield* TestClock.setTime(staleLockTime.getTime() + 3_600_000);
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
+      const lockPath = legacyLockPathFor(paths, baseDir);
+      const marker = "2147483647-exited-installer";
+      yield* fs.makeDirectory(lockPath, { recursive: true });
+      yield* fs.writeFileString(paths.join(lockPath, marker), "");
+      yield* fs.utimes(lockPath, staleLockTime, staleLockTime);
+      yield* TestClock.setTime(staleLockTime.getTime());
       const manager = yield* RelayClient.makeCloudflaredRelayClient({
         baseDir,
         releaseAsset: testReleaseAsset,
       });
-
-      expect(yield* manager.install).toMatchObject({ status: "available" });
-      expect(yield* fileSystem.exists(lockPath)).toBe(false);
-    }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
-  );
-
-  it.effect("replaces an install lock left by an exited installer", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const paths = yield* Path.Path;
-      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-cloudflared-test-",
+      const clock = yield* Clock.Clock;
+      let waitingForLock = false;
+      const installed = yield* manager
+        .installWithProgress((event) =>
+          Effect.sync(() => {
+            if (event.type === "progress") waitingForLock = event.stage === "waiting_for_lock";
+          }),
+        )
+        .pipe(
+          Effect.provideService(Clock.Clock, {
+            ...clock,
+            sleep: (duration) =>
+              waitingForLock
+                ? Effect.die("A fresh lock with only an exited owner must not delay installation")
+                : clock.sleep(duration),
+          }),
+        );
+      expect(installed).toMatchObject({
+        executablePath: managedPathFor(paths, baseDir, RelayClient.CLOUDFLARED_VERSION),
       });
-      const lockPath = lockPathFor(paths, baseDir);
-      yield* fileSystem.makeDirectory(paths.dirname(lockPath), {
-        recursive: true,
-      });
-      yield* fileSystem.makeDirectory(lockPath);
-      yield* fileSystem.writeFileString(paths.join(lockPath, "2147483647-exited-installer"), "");
-      const manager = yield* RelayClient.makeCloudflaredRelayClient({
-        baseDir,
-        releaseAsset: testReleaseAsset,
-      });
-
-      expect(yield* manager.install).toMatchObject({ status: "available" });
-      expect(yield* fileSystem.exists(lockPath)).toBe(false);
+      expect(yield* fs.readDirectory(lockPath)).toEqual([marker]);
     }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
   );
 
@@ -470,7 +430,7 @@ describe("RelayClient", () => {
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
-      const lockPath = lockPathFor(paths, baseDir, "linux", "legacy");
+      const lockPath = legacyLockPathFor(paths, baseDir);
       yield* fileSystem.makeDirectory(paths.dirname(lockPath), {
         recursive: true,
       });
@@ -489,136 +449,120 @@ describe("RelayClient", () => {
     }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
   );
 
-  it.effect("keeps a replacement lock when a stale contender resumes cleanup", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const paths = yield* Path.Path;
-      const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
-      const lockPath = lockPathFor(paths, baseDir);
-      const abandoned = "2147483647-exited-installer";
-      const replacement = `${process.pid}-replacement`;
-      yield* fileSystem.makeDirectory(lockPath, { recursive: true });
-      yield* fileSystem.writeFileString(paths.join(lockPath, abandoned), "");
-      const checked = yield* Deferred.make<void>();
-      let replaced = false;
-      const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir }).pipe(
-        Effect.provideService(FileSystem.FileSystem, {
-          ...fileSystem,
-          readDirectory: (path) =>
-            fileSystem.readDirectory(path).pipe(
-              Effect.tap((entries) =>
-                Effect.gen(function* () {
-                  if (path !== lockPath) return;
-                  if (replaced) {
-                    expect(entries).toEqual([replacement]);
-                    yield* Deferred.succeed(checked, undefined);
-                    return;
-                  }
-                  replaced = true;
-                  yield* fileSystem.rename(lockPath, `${lockPath}.old`);
-                  yield* fileSystem.makeDirectory(lockPath);
-                  yield* fileSystem.writeFileString(paths.join(lockPath, replacement), "");
+  it.effect(
+    "keeps the lock across independent managers after 31 minutes and releases on cancel",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const paths = yield* Path.Path;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
+        const baseInfo = yield* fs.stat(baseDir);
+        yield* TestClock.setTime(Option.getOrThrow(baseInfo.mtime).getTime());
+        const owner = yield* RelayClient.makeCloudflaredRelayClient({
+          baseDir,
+          releaseAsset: testReleaseAsset,
+        });
+        const contender = yield* RelayClient.makeCloudflaredRelayClient({
+          baseDir,
+          releaseAsset: testReleaseAsset,
+        });
+        const downloading = yield* Deferred.make<void>();
+        const installing = yield* owner
+          .installWithProgress((event) =>
+            event.type === "progress" && event.stage === "downloading"
+              ? Deferred.succeed(downloading, undefined).pipe(Effect.andThen(Effect.never))
+              : Effect.void,
+          )
+          .pipe(Effect.forkChild);
+        yield* Effect.raceFirst(
+          Deferred.await(downloading),
+          Fiber.join(installing).pipe(
+            Effect.andThen(Effect.die("The owner installed without reaching the download gate")),
+          ),
+        );
+        yield* TestClock.adjust("31 minutes");
+
+        const waiting = yield* Deferred.make<void>();
+        const clock = yield* Clock.Clock;
+        const contended = yield* contender
+          .installWithProgress((event) =>
+            event.type === "progress" && event.stage === "downloading"
+              ? Effect.die("A second manager started downloading while the owner was active")
+              : Effect.void,
+          )
+          .pipe(
+            Effect.provideService(Clock.Clock, {
+              ...clock,
+              sleep: () => Deferred.succeed(waiting, undefined).pipe(Effect.andThen(Effect.never)),
+            }),
+            Effect.forkChild,
+          );
+        yield* Effect.raceFirst(
+          Deferred.await(waiting),
+          Fiber.join(contended).pipe(
+            Effect.andThen(Effect.die("The contender installed while the owner was active")),
+          ),
+        );
+        yield* Fiber.interrupt(contended);
+
+        // Let a legacy installer hold its path for part of the contender's wait, then release it.
+        // The current owner's transaction remains held for the whole wait.
+        const legacyLock = legacyLockPathFor(paths, baseDir);
+        const legacyTime = DateTime.toDate(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+        yield* fs.writeFileString(legacyLock, "legacy-installer");
+        yield* fs.utimes(legacyLock, legacyTime, legacyTime);
+        let retries = 0;
+        const exhausted = yield* contender
+          .installWithProgress((event) =>
+            event.type === "progress" && event.stage === "downloading"
+              ? Effect.die("Cancelling a contender released the active owner's lock")
+              : Effect.void,
+          )
+          .pipe(
+            Effect.provideService(Clock.Clock, {
+              ...clock,
+              sleep: () =>
+                Effect.suspend(() => {
+                  retries += 1;
+                  expect(retries).toBeLessThan(100);
+                  return retries === 37 ? fs.remove(legacyLock).pipe(Effect.orDie) : Effect.void;
                 }),
-              ),
-            ),
-        }),
+            }),
+            Effect.flip,
+          );
+        expect(exhausted.reason).toBe("install_locked");
+        expect(retries).toBe(99);
+
+        yield* Fiber.interrupt(installing);
+        expect(yield* contender.install).toMatchObject({ status: "available" });
+      }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
+  );
+
+  it.effect("reports an unusable lock database without spending the contention budget", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
+      yield* fs.makeDirectory(
+        paths.join(baseDir, "tools", "cloudflared", "install-linux-x64.sqlite"),
+        {
+          recursive: true,
+        },
       );
-      const installing = yield* manager.install.pipe(Effect.forkChild);
-      yield* Deferred.await(checked);
-      yield* Fiber.interrupt(installing);
-      expect(yield* fileSystem.readDirectory(lockPath)).toEqual([replacement]);
-    }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
-  );
-
-  it.effect("releases the install lock when a download is cancelled", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const paths = yield* Path.Path;
-      const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
-      const lockPath = lockPathFor(paths, baseDir);
-      const downloading = yield* Deferred.make<void>();
-      const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
-      const installing = yield* manager
-        .installWithProgress((event) =>
-          event.type === "progress" && event.stage === "downloading"
-            ? Deferred.succeed(downloading, undefined).pipe(Effect.andThen(Effect.never))
-            : Effect.void,
-        )
-        .pipe(Effect.forkChild);
-      yield* Deferred.await(downloading);
-      expect(yield* fileSystem.exists(lockPath)).toBe(true);
-      yield* Fiber.interrupt(installing);
-      expect(yield* fileSystem.exists(lockPath)).toBe(false);
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.mergeAll(
-          layerNodeServices,
-          layerHttpClient(new Uint8Array()),
-          layerSpawner([]),
-          layerHostRuntime({ PATH: "" }),
-        ),
-      ),
-    ),
-  );
-
-  it.effect("releases a lock acquired while installation is cancelled", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const paths = yield* Path.Path;
-      const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
-      const lockPath = lockPathFor(paths, baseDir);
-      const acquired = yield* Deferred.make<void>();
-      const completeWrite = yield* Deferred.make<void>();
-      let pauseWrite = true;
       const manager = yield* RelayClient.makeCloudflaredRelayClient({
         baseDir,
-        releaseAsset: {
-          url: "https://example.test/cloudflared",
-          sha256: Hex.encode(sha256(new TextEncoder().encode("test-binary"))),
-          archive: "binary",
-        },
-      }).pipe(
-        Effect.provideService(FileSystem.FileSystem, {
-          ...fileSystem,
-          rename: (from, to) =>
-            fileSystem
-              .rename(from, to)
-              .pipe(
-                Effect.tap(() =>
-                  to === lockPath && pauseWrite
-                    ? Deferred.succeed(acquired, undefined).pipe(
-                        Effect.andThen(Deferred.await(completeWrite)),
-                      )
-                    : Effect.void,
-                ),
-              ),
+        releaseAsset: testReleaseAsset,
+      });
+      const clock = yield* Clock.Clock;
+      const error = yield* manager.install.pipe(
+        Effect.provideService(Clock.Clock, {
+          ...clock,
+          sleep: () => Effect.die("An unusable lock database must fail without retrying"),
         }),
+        Effect.flip,
       );
-
-      const installing = yield* manager.install.pipe(Effect.forkChild);
-      yield* Deferred.await(acquired);
-      const cancelling = yield* Fiber.interrupt(installing).pipe(
-        Effect.forkChild({ startImmediately: true }),
-      );
-      yield* Deferred.succeed(completeWrite, undefined);
-      yield* Fiber.join(cancelling);
-      expect(yield* fileSystem.exists(lockPath)).toBe(false);
-
-      pauseWrite = false;
-      expect(yield* manager.install).toMatchObject({ status: "available" });
-      expect(yield* fileSystem.exists(lockPath)).toBe(false);
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.mergeAll(
-          layerNodeServices,
-          layerHttpClient(new TextEncoder().encode("test-binary")),
-          layerSpawner([]),
-          layerHostRuntime({ PATH: "" }),
-        ),
-      ),
-    ),
+      expect(error.reason).toBe("write_failed");
+    }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
   );
 
   it.effect("downloads, verifies, validates, and atomically installs the managed executable", () =>
@@ -679,10 +623,9 @@ describe("RelayClient", () => {
     ),
   );
 
-  it.effect("rejects downloads whose checksum does not match the pinned manifest", () =>
+  it.effect("releases the install lock after an invalid checksum", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const paths = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
@@ -690,7 +633,7 @@ describe("RelayClient", () => {
         baseDir,
         releaseAsset: {
           url: "https://example.test/cloudflared",
-          sha256: Hex.encode(sha256(new TextEncoder().encode("expected"))),
+          sha256: Hex.encode(sha256(new TextEncoder().encode("tampered"))),
           archive: "binary",
         },
       });
@@ -698,13 +641,17 @@ describe("RelayClient", () => {
       const error = yield* manager.install.pipe(Effect.flip);
       expect(error).toBeInstanceOf(RelayClient.RelayClientInstallError);
       expect(error.reason).toBe("invalid_checksum");
-      expect(yield* fileSystem.exists(lockPathFor(paths, baseDir))).toBe(false);
+      const next = yield* RelayClient.makeCloudflaredRelayClient({
+        baseDir,
+        releaseAsset: testReleaseAsset,
+      });
+      expect(yield* next.install).toMatchObject({ status: "available" });
     }).pipe(
       Effect.scoped,
       Effect.provide(
         Layer.mergeAll(
           layerNodeServices,
-          layerHttpClient(new TextEncoder().encode("tampered")),
+          layerHttpClient(testBinary),
           layerSpawner([]),
           layerHostRuntime(),
         ),
@@ -903,6 +850,28 @@ describe("RelayClient", () => {
         }),
       ),
     );
+
+    it.effect("prefers the legacy pin over an older executable in the current layout", () => {
+      const versions: Record<string, string> = {};
+      return run(
+        (baseDir) =>
+          Effect.gen(function* () {
+            const paths = yield* Path.Path;
+            const pinned = RelayClient.CLOUDFLARED_VERSION;
+            const current = managedPathFor(paths, baseDir, pinned, hostPlatform);
+            const legacy = managedPathFor(paths, baseDir, pinned, hostPlatform, "legacy");
+            yield* writeExecutable(current);
+            yield* writeExecutable(legacy);
+            versions[current] = RelayClient.CLOUDFLARED_MIN_VERSION;
+            const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
+            const resolved = { source: "managed", version: pinned, executablePath: legacy };
+
+            expect(yield* manager.resolve).toMatchObject(resolved);
+            expect(yield* manager.install).toMatchObject(resolved);
+          }),
+        { versions },
+      );
+    });
 
     it.effect("reports an outdated override as missing", () => {
       const versions: Record<string, string> = {};
