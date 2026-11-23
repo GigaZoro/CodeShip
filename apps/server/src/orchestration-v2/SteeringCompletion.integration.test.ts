@@ -46,6 +46,8 @@ it.effect.each(
       [true, "without native steering"],
       [true, "with interrupting native steering"],
       [true, "settled only"],
+      [true, "with unknown task owners"],
+      [true, "with mixed task owners"],
       [false, "during continuation"],
     ] as const
   ).map(([mailbox, timing]) => ({
@@ -61,7 +63,10 @@ it.effect.each(
       const started: ProviderAdapter.ProviderAdapterV2TurnInput[] = [];
       const steerEntered = yield* Deferred.make<void>();
       const rejectSteer = yield* Deferred.make<void>();
+      const separateMailbox =
+        timing === "with unknown task owners" || timing === "with mixed task owners";
       let steerCalls = 0;
+      let interrupts = 0;
       const capabilities = {
         ...CodexProviderCapabilitiesV2,
         turns: {
@@ -140,7 +145,12 @@ it.effect.each(
               steerTurn: (turn) =>
                 Effect.gen(function* () {
                   steerCalls += 1;
-                  if (timing === "after delivery" || timing === "during continuation") return;
+                  if (
+                    timing === "after delivery" ||
+                    timing === "during continuation" ||
+                    separateMailbox
+                  )
+                    return;
                   yield* Deferred.succeed(steerEntered, undefined);
                   yield* Deferred.await(rejectSteer);
                   return yield* new ProviderAdapter.ProviderAdapterSteerRunError({
@@ -150,7 +160,10 @@ it.effect.each(
                     cause: "turn already completed",
                   });
                 }),
-              interruptTurn: () => Effect.void,
+              interruptTurn: () =>
+                Effect.sync(() => {
+                  interrupts += 1;
+                }),
               respondToRuntimeRequest: () => Effect.void,
               readThreadSnapshot: () => Effect.die("unused"),
               rollbackThread: () => Effect.die("unused"),
@@ -191,8 +204,8 @@ it.effect.each(
           text: "first",
           attachments: [],
           dispatchMode: { type: "start_immediately" },
-          createdBy: "user",
-          creationSource: "web",
+          createdBy: separateMailbox ? "agent" : "user",
+          creationSource: separateMailbox ? "mcp" : "web",
         });
         const running = yield* watch(
           (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
@@ -202,6 +215,7 @@ it.effect.each(
         const first = started[0]!;
         const messageId = MessageId.make("message:steering");
         const taskId = NodeId.make("task:mailbox");
+        const taskIds = separateMailbox ? [taskId, NodeId.make("task:another")] : [taskId];
         if (mailbox) {
           const sink = yield* EventSink.EventSinkV2;
           const source = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
@@ -218,21 +232,24 @@ it.effect.each(
                 delegatedCompletion: {
                   disposition: "open",
                   nextGeneration: 2,
-                  delivery: { generation: 1, messageId, taskIds: [taskId] },
+                  delivery: { generation: 1, messageId, taskIds },
                 },
               }),
-              {
-                id: EventId.make("mailbox:task"),
+              ...taskIds.map((id, index): OrchestrationV2DomainEvent => ({
+                id: EventId.make(`mailbox:${id}`),
                 type: "subagent.updated",
                 threadId,
                 runId: first.runId,
-                nodeId: taskId,
+                nodeId: id,
                 occurredAt: now,
                 payload: {
-                  id: taskId,
+                  id,
                   threadId,
                   runId: first.runId,
-                  demandId: source.demandId ?? null,
+                  demandId:
+                    timing === "with mixed task owners"
+                      ? `demand:${String(index + 1).repeat(64)}`
+                      : (source.demandId ?? null),
                   parentNodeId: first.rootNodeId,
                   origin: "app_owned",
                   createdBy: "agent",
@@ -252,7 +269,7 @@ it.effect.each(
                   completedAt: now,
                   updatedAt: now,
                 },
-              },
+              })),
             ],
           });
         }
@@ -281,12 +298,23 @@ it.effect.each(
                 delegatedCompletion: {
                   parentRunId: first.runId,
                   generation: 1,
-                  taskIds: [taskId],
+                  taskIds,
                 },
               }
             : {}),
         });
         if (timing !== "before dispatch") yield* dispatchSteer;
+        if (separateMailbox) {
+          yield* worker.drain();
+          assert.equal(steerCalls, 0);
+          assert.equal(interrupts, 0);
+          const { runs } = yield* orchestrator.getThreadProjection(threadId);
+          assert.isNull(runs.find((run) => run.id === first.runId)?.demandId);
+          const followup = runs.find((run) => run.userMessageId === messageId);
+          assert.equal(followup?.status, "queued");
+          assert.isNull(followup?.demandId);
+          return;
+        }
         if (timing === "during continuation") {
           const projection = yield* orchestrator.getThreadProjection(threadId);
           const turn = projection.providerTurns[0]!;
@@ -578,7 +606,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     ProviderAdapterRegistry.layerSingle(adapter),
     { runEffectWorker: false },
   );
-  const startFirstTurn = Effect.gen(function* () {
+  const startFirstTurnFrom = Effect.fn("startFirstTurnFrom")(function* (source: "web" | "mcp") {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
     const threadId = ThreadId.make(`thread:${name}`);
@@ -613,8 +641,8 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
       attachments: [],
       modelSelection: runSelection,
       dispatchMode: { type: "start_immediately" },
-      createdBy: "user",
-      creationSource: "web",
+      createdBy: source === "web" ? "user" : "agent",
+      creationSource: source,
     });
     yield* worker.drain();
     yield* Fiber.join(running);
@@ -627,7 +655,8 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     steered,
     interrupted,
     layer,
-    startFirstTurn,
+    startFirstTurn: startFirstTurnFrom("web"),
+    startFirstTurnFrom,
     steerEntered,
     releaseSteer,
   };
@@ -791,6 +820,146 @@ it.effect("a busy run takes steering only from its own demand", () =>
           )?.status,
           "queued",
         );
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
+it.effect.each([
+  { mode: "steer_active", historical: false },
+  { mode: "restart_active", historical: true },
+  { mode: "queue_after_active", historical: true },
+  { mode: "queue_after_active", historical: false },
+] as const)(
+  "keeps unowned MCP work separate for $mode (historical: $historical)",
+  ({ mode, historical }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { started, steered, interrupted, layer, startFirstTurnFrom } =
+          yield* nextTurnSelectionHarness("unowned-steering", true);
+        yield* Effect.gen(function* () {
+          const engine = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurnFrom("mcp");
+          const [active] = (yield* engine.getThreadProjection(threadId)).runs;
+          assert.isDefined(active);
+          assert.isNull(active.demandId);
+          const omitDemand = Effect.fn("omitDemand")(function* () {
+            const sink = yield* EventSink.EventSinkV2;
+            const now = yield* DateTime.now;
+            const { runs } = yield* engine.getThreadProjection(threadId);
+            yield* sink.write({
+              events: runs.map(({ demandId: _owner, ...run }) => ({
+                id: EventId.make(`legacy:${runs.length}:${run.id}`),
+                type: "run.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: run,
+              })),
+            });
+          });
+          if (historical) yield* omitDemand();
+          const messageId = MessageId.make("unowned");
+          yield* engine.dispatch({
+            type: "message.dispatch",
+            threadId,
+            commandId: CommandId.make("send-unowned"),
+            messageId,
+            text: "continue independently",
+            attachments: [],
+            dispatchMode:
+              mode === "queue_after_active"
+                ? { type: mode }
+                : { type: mode, targetRunId: active.id },
+            ...(historical ? {} : { demandId: null }),
+            createdBy: "agent",
+            creationSource: "mcp",
+          });
+          const queued = (yield* engine.getThreadProjection(threadId)).runs.find(
+            (run) => run.userMessageId === messageId,
+          );
+          assert.equal(queued?.status, "queued");
+          assert.isNull(queued?.demandId);
+          if (mode === "queue_after_active") {
+            if (historical) yield* omitDemand();
+            const rejection = yield* engine
+              .dispatch({
+                type: "queued-message.promote-to-steer",
+                threadId,
+                commandId: CommandId.make("promote"),
+                queuedRunId: queued!.id,
+                targetRunId: active.id,
+              })
+              .pipe(Effect.flip);
+            assert.include(String(rejection.cause), "separate turn");
+          }
+          yield* worker.drain();
+          assert.lengthOf(started, 1);
+          assert.deepEqual(steered, []);
+          assert.deepEqual(interrupted, []);
+          assert.equal(
+            (yield* engine.getThreadProjection(threadId)).runs.find((run) => run.id === queued!.id)
+              ?.status,
+            "queued",
+          );
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
+);
+
+it.effect("an owner can steer a historical run directly and by promoting a queued message", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        "historical-user-steering",
+      );
+      yield* Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const threadId = yield* startFirstTurn;
+        const [first] = (yield* engine.getThreadProjection(threadId)).runs;
+        const { demandId: _owner, ...legacy } = first!;
+        const sink = yield* EventSink.EventSinkV2;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("historical-owner"),
+              type: "run.updated",
+              threadId,
+              runId: legacy.id,
+              occurredAt: yield* DateTime.now,
+              payload: legacy,
+            },
+          ],
+        });
+        for (const delivery of ["steer_active", "queue_after_active"] as const) {
+          yield* engine.dispatch({
+            type: "message.dispatch",
+            threadId,
+            commandId: CommandId.make(delivery),
+            messageId: MessageId.make(delivery),
+            text: delivery,
+            attachments: [],
+            dispatchMode:
+              delivery === "steer_active"
+                ? { type: delivery, targetRunId: legacy.id }
+                : { type: delivery },
+            createdBy: "user",
+            creationSource: "mobile",
+          });
+        }
+        const queued = (yield* engine.getThreadProjection(threadId)).runs.find(
+          (run) => run.status === "queued",
+        )!;
+        yield* engine.dispatch({
+          type: "queued-message.promote-to-steer",
+          threadId,
+          commandId: CommandId.make("promote"),
+          queuedRunId: queued.id,
+          targetRunId: legacy.id,
+        });
+        yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+        assert.deepEqual(steered, ["steer_active", "queue_after_active"]);
       }).pipe(Effect.provide(layer));
     }),
   ),

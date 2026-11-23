@@ -978,6 +978,9 @@ const typedByPersonInClient = (
   (command.creationSource === "web" || command.creationSource === "mobile") &&
   command.scheduledTaskId === undefined;
 
+const sameKnownDemand = (left: string | null | undefined, right: string | null | undefined) =>
+  left != null && left === right;
+
 /** Commands that can start work after a run a restart cut before its agent got the message. */
 type RunUpdatedEvent = Extract<OrchestrationV2DomainEvent, { readonly type: "run.updated" }>;
 
@@ -6358,7 +6361,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const targetDemand = target.demandId ?? null;
         if (incomingDemand === undefined) {
           if (goalCommand === null) incomingDemand = targetDemand;
-        } else if (incomingDemand !== targetDemand) dispatchMode = { type: "queue_after_active" };
+        } else if (!sameKnownDemand(incomingDemand, targetDemand)) {
+          dispatchMode = { type: "queue_after_active" };
+        }
       }
       const turn = latestProviderTurnForAttempt(
         projection.providerTurns.filter((candidate) => candidate.nodeId === target?.rootNodeId),
@@ -6411,6 +6416,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
         if (
           isLiveRun(target) &&
+          (incomingDemand === undefined || sameKnownDemand(incomingDemand, target.demandId)) &&
           goalCommandStopsActiveRun(goalCommand, goal?.status ?? null) &&
           (targetMessage === undefined || !isNativeMaintenanceCommand(targetMessage)) &&
           !(yield* stopReachedRun(command, command.threadId, target.id))
@@ -6497,7 +6503,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       if (
         active !== undefined &&
-        (active.demandId ?? null) === incomingDemand &&
+        sameKnownDemand(active.demandId, incomingDemand) &&
         activeTurn !== undefined &&
         providerThread?.providerSessionId != null &&
         (activeMessage === undefined || !isNativeMaintenanceCommand(activeMessage))
@@ -10811,6 +10817,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? null
         : parsedGoalCommand;
     const target = projection.runs.find((run) => run.id === command.targetRunId);
+    // Promoting an owner's own input can redirect it. Guests and automated work retain their source.
+    const ownerMessage =
+      typedByPersonInClient(queuedMessage) &&
+      queuedMessage.context?.guest === undefined &&
+      (queuedRun.demandId === undefined ||
+        queuedRun.demandId === originalDemandId("message", command.threadId, queuedMessage.id));
+    if (
+      target !== undefined &&
+      !ownerMessage &&
+      !sameKnownDemand(queuedRun.demandId, target.demandId)
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "This message has a different accounting owner and must run as a separate turn.",
+      });
+    }
     const targetMessage = projection.messages.find(
       (message) => message.id === target?.userMessageId,
     );
@@ -10874,23 +10897,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         targetRunId: stops ? target.id : undefined,
         reason: "Stopped to apply /goal",
         now,
-      });
-    }
-    const sameDemand = (target?.demandId ?? null) === (queuedRun.demandId ?? null);
-    // An accepted guest message also arrives from the owner's client. It can only join a known matching demand.
-    const canJoinTarget =
-      queuedMessage.context?.guest !== undefined
-        ? sameDemand && queuedRun.demandId != null
-        : sameDemand ||
-          (typedByPersonInClient(queuedMessage) &&
-            (queuedRun.demandId === undefined ||
-              queuedRun.demandId ===
-                originalDemandId("message", command.threadId, queuedMessage.id)));
-    if (target !== undefined && !canJoinTarget) {
-      return yield* new OrchestratorDispatchError({
-        commandId: command.commandId,
-        commandType: command.type,
-        cause: "This message has a different accounting owner and must run as a separate turn.",
       });
     }
     yield* emitEvent({
