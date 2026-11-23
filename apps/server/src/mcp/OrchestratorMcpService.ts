@@ -2861,6 +2861,9 @@ const make = Effect.gen(function* () {
             holder: input.holder,
             replaces: input.replaces,
             by: caller,
+            ...(input.accountingProposalKey === undefined
+              ? {}
+              : { accountingProposalKey: input.accountingProposalKey }),
             lastRunFailed: lastRun?.outcome === "failed" && lastRun.stopped !== true,
           })
           .pipe(

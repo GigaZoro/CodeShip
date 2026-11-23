@@ -18,6 +18,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -213,10 +214,11 @@ const withService = <A, E>(
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.orDie,
       );
+    // Nested scenarios model separate machines. Each needs its own scheduler and in-memory database.
     return yield* Effect.gen(function* () {
       return yield* body(yield* ScheduledTaskService.ScheduledTaskService, sql, restart);
-    }).pipe(Effect.provide(layer));
-  }).pipe(Effect.provide(SqlitePersistence.layerMemory));
+    }).pipe(Effect.provide(Layer.fresh(layer)));
+  }).pipe(Effect.provide(Layer.fresh(SqlitePersistence.layerMemory)));
 
 const layerSleepingScheduler = (asleep: Ref.Ref<boolean>) =>
   Layer.effect(
@@ -1004,6 +1006,7 @@ const runScenario = <A, E>(
   checkAnswer: ScheduledTaskRunCheck = { outcome: "run", failure: null, exitCode: 0, detail: null },
   environment: {
     readonly environmentId?: EnvironmentId;
+    readonly claim?: SharedTaskPeerCheck.SharedTaskPeerCheck["Service"]["claim"];
     readonly startAt?: number;
     readonly threadManagement?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   } = {},
@@ -1071,6 +1074,7 @@ const runScenario = <A, E>(
             }),
           ),
         ),
+      ...(environment.claim === undefined ? {} : { claim: environment.claim }),
     });
     return yield* withService(
       (service, sql) =>
@@ -2291,6 +2295,154 @@ it.effect.each(["once", "interval"] as const)(
         );
       }
     }),
+);
+
+it.effect.each([
+  "original vote",
+  "legacy reply",
+  "different proposal",
+  "legacy vote",
+  "fresh reply on transfer",
+  "previous holder only voted",
+] as const)("a third machine votes for the same failed run's transfer (%s)", (evidence) =>
+  withService(
+    (voter) =>
+      Effect.gen(function* () {
+        const original = EnvironmentId.make(OTHER);
+        const successor = HERE_ENVIRONMENT_ID;
+        const witness = EnvironmentId.make(MIDDLE);
+        const members = [original, successor, witness];
+        const copies = new Map<EnvironmentId, typeof voter>([[witness, voter]]);
+        const ballots: Array<{ holder: EnvironmentId; replaces: EnvironmentId | null }> = [];
+        const ask =
+          (by: EnvironmentId): SharedTaskPeerCheck.SharedTaskPeerCheck["Service"]["claim"] =>
+          (input) =>
+            Effect.forEach(input.peers, (environmentId) =>
+              Effect.gen(function* () {
+                const atWitness = environmentId === witness;
+                const request = { ...input, by, lastRunFailed: environmentId === original };
+                const vote = yield* copies.get(environmentId)!.claimOccurrence({
+                  ...request,
+                  ...(atWitness && input.replaces === null && evidence === "different proposal"
+                    ? { accountingProposalKey: `demand:${"0".repeat(64)}` }
+                    : atWitness && input.replaces === null && evidence === "legacy vote"
+                      ? { accountingProposalKey: undefined }
+                      : {}),
+                });
+                expect(vote.holder).toBe(input.holder);
+                if (atWitness) {
+                  ballots.push({ holder: vote.holder, replaces: input.replaces });
+                  if (input.replaces !== null) {
+                    if (evidence === "legacy reply") return { environmentId, holder: vote.holder };
+                    if (evidence === "fresh reply on transfer")
+                      return { environmentId, holder: vote.holder, accountingFresh: true as const };
+                    if (evidence === "original vote") {
+                      expect(yield* voter.claimOccurrence(request)).toEqual(vote);
+                      const wrongPredecessor = {
+                        ...request,
+                        replaces: EnvironmentId.make("different-holder"),
+                      };
+                      expect(yield* voter.claimOccurrence(wrongPredecessor)).toEqual({
+                        holder: successor,
+                      });
+                    }
+                  }
+                }
+                if (
+                  environmentId === original &&
+                  input.replaces === original &&
+                  evidence === "previous holder only voted"
+                ) {
+                  return {
+                    environmentId,
+                    holder: vote.holder,
+                    accountingWitnessKey: vote.accountingSourceKey!,
+                  };
+                }
+                return {
+                  environmentId,
+                  holder: vote.holder,
+                  ...(vote.accountingFresh === true ? { accountingFresh: true as const } : {}),
+                  ...(vote.accountingSourceKey === undefined
+                    ? {}
+                    : { accountingSourceKey: vote.accountingSourceKey }),
+                  ...(vote.accountingWitnessKey === undefined
+                    ? {}
+                    : { accountingWitnessKey: vote.accountingWitnessKey }),
+                };
+              }),
+            ).pipe(
+              Effect.map((answered) => ({ answered, unchecked: [] })),
+              Effect.orDie,
+            );
+        const schedule = { type: "interval", everyMs: HOUR_MS };
+        yield* runScenario(
+          members,
+          [WORKING_THERE, NO_RUN_THERE],
+          (backup) =>
+            Effect.gen(function* () {
+              copies.set(successor, backup.service);
+              yield* backup.sql`UPDATE scheduled_task_shared SET revision_environment_id=${original}`;
+              yield* runScenario(
+                members,
+                NO_RUN_THERE,
+                (first) =>
+                  Effect.gen(function* () {
+                    copies.set(original, first.service);
+                    const occurrence = (yield* nextRunAtOf(first.sql))!;
+                    yield* first.tick(Date.parse(occurrence) + 1000);
+                    const launched = Option.getOrUndefined(yield* Queue.poll(first.launches));
+                    expect(
+                      launched,
+                      JSON.stringify({
+                        ballots,
+                        calls: yield* Ref.get(first.peerCalls),
+                        next: yield* nextRunAtOf(first.sql),
+                      }),
+                    ).toBeDefined();
+                    const before = launched?.initialMessage?.demandId;
+                    expect(before).toMatch(/^demand:/);
+                    yield* first.sql`UPDATE scheduled_task_runs SET outcome='failed' WHERE scheduled_for=${occurrence}`;
+                    for (let poll = 0; poll < 3; poll++) {
+                      const due = yield* nextRunAtOf(backup.sql);
+                      expect(due).toBeTypeOf("string");
+                      yield* backup.tick(Date.parse(due!) + 1000);
+                    }
+                    const transferred = Option.getOrUndefined(yield* Queue.poll(backup.launches));
+                    expect(
+                      transferred,
+                      JSON.stringify({
+                        ballots,
+                        calls: yield* Ref.get(backup.peerCalls),
+                        next: yield* nextRunAtOf(backup.sql),
+                      }),
+                    ).toBeDefined();
+                    const after = transferred?.initialMessage?.demandId;
+                    expect(ballots).toEqual([
+                      { holder: original, replaces: null },
+                      { holder: successor, replaces: original },
+                    ]);
+                    const runs = yield* backup.sql<{
+                      scheduled_for: string;
+                    }>`SELECT scheduled_for FROM scheduled_task_runs WHERE trigger='scheduled' AND thread_id IS NOT NULL`;
+                    expect(runs).toEqual([{ scheduled_for: occurrence }]);
+                    expect(after).toBe(evidence === "original vote" ? before : null);
+                  }),
+                schedule,
+                undefined,
+                undefined,
+                { environmentId: original, claim: ask(original) },
+              );
+            }),
+          schedule,
+          undefined,
+          undefined,
+          { environmentId: successor, claim: ask(successor) },
+        );
+      }),
+    [],
+    { environmentId: EnvironmentId.make(MIDDLE), idleScheduler: true },
+  ),
 );
 
 it.effect.each(["00000000-0000-4000-8000-000000000000", "ffffffff-ffff-4fff-bfff-ffffffffffff"])(

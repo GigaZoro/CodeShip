@@ -26,6 +26,7 @@ const claimReply = Schema.Struct({
   holder: OrchestratorMcpClaimScheduledTaskOccurrenceResult.fields.holder,
   accountingSourceKey: Schema.optional(Schema.Unknown),
   accountingFresh: Schema.optional(Schema.Unknown),
+  accountingWitnessKey: Schema.optional(Schema.Unknown),
 });
 const decodePeerTaskList = Schema.decodeUnknownOption(
   Schema.Struct({
@@ -49,6 +50,10 @@ const decodePeerTask = Schema.decodeUnknownOption(
     ),
   }),
 );
+
+export function isAccountingSourceKey(value: unknown): value is string {
+  return typeof value === "string" && /^demand:[a-f0-9]{64}$/.test(value);
+}
 
 interface LinkStatus {
   readonly enabled: boolean;
@@ -89,6 +94,7 @@ export interface PeerClaimResult {
     readonly holder: EnvironmentId;
     readonly accountingSourceKey?: string;
     readonly accountingFresh?: true;
+    readonly accountingWitnessKey?: string;
   }>;
   /** Machines that could not be asked, and why. */
   readonly unchecked: ReadonlyArray<{
@@ -140,6 +146,7 @@ export class SharedTaskPeerCheck extends Context.Service<
       readonly occurrence: string;
       readonly holder: EnvironmentId;
       readonly replaces: EnvironmentId | null;
+      readonly accountingProposalKey?: string;
       readonly peers: ReadonlyArray<EnvironmentId>;
     }) => Effect.Effect<PeerClaimResult>;
   }
@@ -343,7 +350,12 @@ const make = Effect.gen(function* () {
               occurrence: input.occurrence,
               holder: input.holder,
               replaces: input.replaces,
+              ...(input.accountingProposalKey === undefined
+                ? {}
+                : { accountingProposalKey: input.accountingProposalKey }),
             },
+            // Older peers cast the same vote without taking part in accounting.
+            ignorableArguments: ["accountingProposalKey"],
             limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
             success: claimReply,
           })
@@ -354,18 +366,24 @@ const make = Effect.gen(function* () {
                 return { environmentId, reason: "It did not answer in time." };
               if (Option.isNone(answer.value))
                 return { environmentId, reason: "It runs an older version of T3.CodeShip." };
-              const { holder, accountingFresh, accountingSourceKey } = answer.value.value;
-              // An inserted claim cannot already have a run's accepted provenance.
-              return {
-                environmentId,
-                holder,
-                ...(accountingFresh === true && accountingSourceKey === undefined
-                  ? { accountingFresh: true as const }
-                  : {}),
-                ...(accountingFresh === undefined && typeof accountingSourceKey === "string"
-                  ? { accountingSourceKey }
-                  : {}),
-              };
+              const { holder, accountingFresh, accountingSourceKey, accountingWitnessKey } =
+                answer.value.value;
+              const vote = { environmentId, holder };
+              // A voter can attest one fact: a new row, a locally admitted run, or its witnessed transfer.
+              if (accountingFresh !== undefined)
+                return accountingFresh === true &&
+                  accountingSourceKey === undefined &&
+                  accountingWitnessKey === undefined
+                  ? { ...vote, accountingFresh: true as const }
+                  : vote;
+              if (accountingSourceKey !== undefined)
+                return isAccountingSourceKey(accountingSourceKey) &&
+                  accountingWitnessKey === undefined
+                  ? { ...vote, accountingSourceKey }
+                  : vote;
+              return isAccountingSourceKey(accountingWitnessKey)
+                ? { ...vote, accountingWitnessKey }
+                : vote;
             }),
             Effect.catch((error) => Effect.succeed({ environmentId, reason: error.message })),
           );

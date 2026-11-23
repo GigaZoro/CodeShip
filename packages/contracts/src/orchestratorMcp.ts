@@ -1122,6 +1122,7 @@ export const OrchestratorMcpClaimScheduledTaskOccurrenceInput = Schema.Struct({
   occurrence: OrchestratorMcpScheduledOccurrence,
   holder: EnvironmentId,
   replaces: Schema.NullOr(EnvironmentId),
+  accountingProposalKey: Schema.optional(Schema.Unknown),
 });
 export type OrchestratorMcpClaimScheduledTaskOccurrenceInput =
   typeof OrchestratorMcpClaimScheduledTaskOccurrenceInput.Type;
@@ -1132,6 +1133,8 @@ export const OrchestratorMcpClaimScheduledTaskOccurrenceResult = Schema.Struct({
   /** Opaque evidence of the admitting machine’s scheduled occurrence, when available. */
   accountingSourceKey: Schema.optional(Schema.String),
   accountingFresh: Schema.optional(Schema.Literal(true)),
+  /** The same proposal this voter first saw and then transferred to the new holder. */
+  accountingWitnessKey: Schema.optional(Schema.String),
 });
 export type OrchestratorMcpClaimScheduledTaskOccurrenceResult =
   typeof OrchestratorMcpClaimScheduledTaskOccurrenceResult.Type;

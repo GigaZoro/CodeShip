@@ -98,6 +98,7 @@ const check = (input: PeerSetup & { readonly answer: PeerAnswer; readonly occurr
 
 const claim = (
   input: PeerSetup & {
+    readonly proposal?: string;
     readonly answer: (call: {
       readonly arguments: unknown;
     }) => Effect.Effect<Option.Option<unknown>, OrchestratorMcpFailure>;
@@ -110,6 +111,7 @@ const claim = (
       occurrence: SINCE,
       holder: HERE,
       replaces: null,
+      ...(input.proposal === undefined ? {} : { accountingProposalKey: input.proposal }),
       peers: input.peers ?? [PEER],
     });
   }).pipe(Effect.provide(peerCheckLayer(input, { callIfAvailable: input.answer as never })));
@@ -550,12 +552,52 @@ it.effect.each([undefined, false, "true", true] as const)(
 );
 it.effect.each([
   { accountingFresh: true, accountingSourceKey: 42 },
+  { accountingFresh: true, accountingWitnessKey: `demand:${"3".repeat(64)}` },
+  { accountingSourceKey: `demand:${"3".repeat(64)}`, accountingWitnessKey: false },
   { accountingFresh: true, accountingSourceKey: `demand:${"3".repeat(64)}` },
   { accountingFresh: "true", accountingSourceKey: `demand:${"3".repeat(64)}` },
 ])("contradictory accounting evidence preserves only the vote (%j)", (fields) =>
   Effect.gen(function* () {
     const result = yield* claim({
       answer: () => Effect.succeedSome({ holder: PEER, ...fields }),
+    });
+    expect(result).toEqual({ answered: [{ environmentId: PEER, holder: PEER }], unchecked: [] });
+  }),
+);
+it.effect.each([undefined, null, false, "unrecognized", `demand:${"3".repeat(64)}`])(
+  "a witness vote retains only a valid proposal key (%s)",
+  (value) =>
+    Effect.gen(function* () {
+      const result = yield* claim({
+        answer: () => Effect.succeedSome({ holder: PEER, accountingWitnessKey: value }),
+      });
+      expect(result).toEqual({
+        answered: [
+          {
+            environmentId: PEER,
+            holder: PEER,
+            ...(typeof value === "string" && value.startsWith("demand:")
+              ? { accountingWitnessKey: value }
+              : {}),
+          },
+        ],
+        unchecked: [],
+      });
+    }),
+);
+
+it.effect("an older peer can ignore the proposed accounting key and still cast its vote", () =>
+  Effect.gen(function* () {
+    const proposal = `demand:${"4".repeat(64)}`;
+    const result = yield* claim({
+      proposal,
+      answer: (call) => {
+        expect(call).toMatchObject({
+          arguments: { accountingProposalKey: proposal },
+          ignorableArguments: ["accountingProposalKey"],
+        });
+        return Effect.succeedSome({ holder: PEER });
+      },
     });
     expect(result).toEqual({ answered: [{ environmentId: PEER, holder: PEER }], unchecked: [] });
   }),

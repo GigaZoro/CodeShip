@@ -614,6 +614,7 @@ export class ScheduledTaskService extends Context.Service<
       readonly occurrence: string;
       readonly holder: EnvironmentId;
       readonly replaces: EnvironmentId | null;
+      readonly accountingProposalKey?: unknown;
       /** The machine asking. */
       readonly by: EnvironmentId;
       /** This machine's last run failed and nobody stopped it. */
@@ -1177,6 +1178,13 @@ export const layer = Layer.effect(
     }>`PRAGMA table_info(scheduled_task_occurrence_claims)`;
     if (!claimColumns.some((column) => column.name === "accounting_source_key")) {
       yield* sql`ALTER TABLE scheduled_task_occurrence_claims ADD COLUMN accounting_source_key TEXT`;
+    }
+    // A vote proves only the proposal this machine saw. Only an admitted run writes accounting_source_key.
+    if (!claimColumns.some((column) => column.name === "accounting_vote_key")) {
+      yield* sql`ALTER TABLE scheduled_task_occurrence_claims ADD COLUMN accounting_vote_key TEXT`;
+    }
+    if (!claimColumns.some((column) => column.name === "accounting_vote_from")) {
+      yield* sql`ALTER TABLE scheduled_task_occurrence_claims ADD COLUMN accounting_vote_from TEXT`;
     }
     // The latest time a fixed-time run came due while an update drained; it holds the occurrence at
     // or before then. The install restarts the server, so the hold outlives the drain and the run
@@ -3705,6 +3713,9 @@ export const layer = Layer.effect(
                 (row.gave_up === 1 || (input.lastRunFailed === true && row.failed_in_chat === 1)),
             ),
           );
+      const proposal = SharedTaskPeerCheck.isAccountingSourceKey(input.accountingProposalKey)
+        ? input.accountingProposalKey
+        : null;
       const { row, fresh } = yield* sql
         .withTransaction(
           Effect.gen(function* () {
@@ -3712,17 +3723,18 @@ export const layer = Layer.effect(
             const changes = yield* handingOn
               ? sql`
                 UPDATE scheduled_task_occurrence_claims
-                SET holder_environment_id = ${input.holder}, claimed_at = ${iso(now)}
+                SET holder_environment_id = ${input.holder}, claimed_at = ${iso(now)}, accounting_vote_from = NULL
                 WHERE task_id = ${input.taskId} AND occurrence_at = ${occurrence}
                   AND holder_environment_id = ${input.by}
               `
               : sql`
                 INSERT INTO scheduled_task_occurrence_claims
-                  (task_id, occurrence_at, holder_environment_id, claimed_at)
-                VALUES (${input.taskId}, ${occurrence}, ${input.holder}, ${iso(now)})
+                  (task_id, occurrence_at, holder_environment_id, claimed_at, accounting_vote_key)
+                VALUES (${input.taskId}, ${occurrence}, ${input.holder}, ${iso(now)}, ${input.replaces === null ? proposal : null})
                 ON CONFLICT (task_id, occurrence_at) DO UPDATE SET
                   holder_environment_id = excluded.holder_environment_id,
-                  claimed_at = excluded.claimed_at
+                  claimed_at = excluded.claimed_at,
+                  accounting_vote_from = CASE WHEN accounting_vote_key = ${proposal} THEN holder_environment_id END
                 WHERE holder_environment_id <> excluded.holder_environment_id
                   AND holder_environment_id = ${input.replaces}
                   AND ${agreed ? 1 : 0} = 1
@@ -3735,8 +3747,11 @@ export const layer = Layer.effect(
             const [row] = yield* sql<{
               readonly holder_environment_id: EnvironmentId;
               readonly accounting_source_key: string | null;
+              readonly accounting_vote_key: string | null;
+              readonly accounting_vote_from: EnvironmentId | null;
             }>`
-              SELECT holder_environment_id, accounting_source_key FROM scheduled_task_occurrence_claims
+              SELECT holder_environment_id, accounting_source_key, accounting_vote_key, accounting_vote_from
+              FROM scheduled_task_occurrence_claims
               WHERE task_id = ${input.taskId} AND occurrence_at = ${occurrence}
             `;
             return { row, fresh: !handingOn && input.replaces === null && changes.length > 0 };
@@ -3765,13 +3780,25 @@ export const layer = Layer.effect(
       recordClaim(input).pipe(
         Effect.map((row) => {
           const holder = row.holder_environment_id;
-          return {
-            holder,
-            ...(row.fresh ? { accountingFresh: true as const } : {}),
-            ...(row.accounting_source_key === null
-              ? {}
-              : { accountingSourceKey: row.accounting_source_key }),
-          };
+          if (row.fresh) return { holder, accountingFresh: true as const };
+          if (row.accounting_source_key !== null) {
+            return row.accounting_vote_key === null ||
+              row.accounting_vote_key === row.accounting_source_key
+              ? { holder, accountingSourceKey: row.accounting_source_key }
+              : { holder };
+          }
+          if (
+            input.replaces !== null &&
+            input.replaces !== hereEnvironmentId &&
+            input.holder === input.by &&
+            holder === input.holder &&
+            row.accounting_vote_from === input.replaces &&
+            row.accounting_vote_key !== null &&
+            row.accounting_vote_key === input.accountingProposalKey
+          ) {
+            return { holder, accountingWitnessKey: row.accounting_vote_key };
+          }
+          return { holder };
         }),
       );
 
@@ -3803,6 +3830,8 @@ export const layer = Layer.effect(
         const unchecked: Array<ScheduledTaskOneMachineDecision["unchecked"][number]> = [];
         const held = new Set<EnvironmentId>();
         const others: Array<EnvironmentId> = [];
+        const proposal =
+          accountingSourceKey === null ? {} : { accountingProposalKey: accountingSourceKey };
         let previousSource: string | undefined;
         if (replaces !== null) {
           const consent = yield* peerCheck.claim({
@@ -3811,6 +3840,7 @@ export const layer = Layer.effect(
             holder: here,
             replaces,
             peers: [replaces],
+            ...proposal,
           });
           unchecked.push(...consent.unchecked);
           const agreed = consent.answered[0]?.holder;
@@ -3824,6 +3854,7 @@ export const layer = Layer.effect(
           holder: here,
           replaces,
           by: here,
+          ...proposal,
         });
         const local = localClaim.holder_environment_id;
         if (local === here) held.add(here);
@@ -3834,6 +3865,7 @@ export const layer = Layer.effect(
           holder: here,
           replaces,
           peers: plan.members.filter((id) => id !== here && id !== replaces),
+          ...proposal,
         });
         unchecked.push(...answer.unchecked);
         for (const peer of answer.answered) {
@@ -3846,14 +3878,16 @@ export const layer = Layer.effect(
             answer.answered.every(
               (peer) =>
                 peer.holder === here &&
-                (peer.accountingSourceKey === undefined
-                  ? peer.accountingFresh === true
-                  : peer.accountingSourceKey === accountingSourceKey),
+                (peer.accountingSourceKey === accountingSourceKey ||
+                  (replaces === null && peer.accountingFresh === true) ||
+                  (replaces !== null && peer.accountingWitnessKey === accountingSourceKey)),
             );
           const locallyKnown = localClaim.accounting_source_key === accountingSourceKey;
           const inherited =
             replaces !== null &&
             previousSource === accountingSourceKey &&
+            (localClaim.accounting_vote_key === null ||
+              localClaim.accounting_vote_key === accountingSourceKey) &&
             (locallyKnown || localClaim.accounting_source_key === null);
           const verified =
             peersAgree && (replaces === null ? localClaim.fresh || locallyKnown : inherited)
