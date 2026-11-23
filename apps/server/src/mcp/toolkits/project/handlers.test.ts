@@ -11,6 +11,8 @@ import {
   type ModelSelection,
   type RuntimeMode,
   type OrchestrationV2ThreadShell,
+  type OrchestrationV2DemandOrigin,
+  RunId,
   type ChatAttachment,
   ChatAttachmentId,
   ThreadId,
@@ -75,12 +77,16 @@ const advertisedProvider = (
 const clientLaunchHarness = (input: {
   readonly runtimeModeCeiling: RuntimeMode;
   readonly defaultRuntimeMode?: RuntimeMode;
+  readonly recordedRepairShell?: { runtimeMode: RuntimeMode; interactionMode: "default" | "plan" };
   readonly fallbackModel?: ModelSelection;
   readonly providers?: readonly ServerProvider[];
   /** Where Settings saves a project's model; the legacy project field stays null. */
   readonly overrideModel?: ModelSelection;
   readonly launched: Array<ThreadLaunch.ThreadLaunchInput>;
-  readonly client?: Pick<McpInvocationContext.McpClientCaller, "linked" | "narrowedTo">;
+  readonly client?: Pick<
+    McpInvocationContext.McpClientCaller,
+    "linked" | "narrowedTo" | "demandId" | "demandOriginKind" | "replayDemandReceipt"
+  >;
   readonly launchShell?: (
     shell: OrchestrationV2ThreadShell,
     read: "lookup" | "result",
@@ -175,15 +181,36 @@ const clientLaunchHarness = (input: {
       capabilities: new Set(["orchestration" as const]),
     }),
     Layer.mock(ThreadManagement.ThreadManagementService)({
+      hasReceipt: () => Effect.succeed(input.recordedRepairShell !== undefined),
       // A thread exists once a launch started it.
       getThreadShell: (threadId) => {
         const caller = input.callerThreads?.find(({ shell }) => shell.id === threadId);
         if (caller !== undefined) return Effect.succeed(caller.shell);
+        if (input.recordedRepairShell !== undefined)
+          return Effect.succeed({
+            id: threadId,
+            projectId,
+            modelSelection,
+            deletedAt: null,
+            ...input.recordedRepairShell,
+            linkOrigin: { sessionId: "session-1", label: "test" },
+          } as OrchestrationV2ThreadShell);
         const launch = input.launched.find((candidate) => candidate.threadId === threadId);
         return Effect.succeed(launch === undefined ? null : launchShell(launch, "lookup"));
       },
       getThreadRecords: (threadId) =>
         Effect.succeed({
+          thread: { id: threadId },
+          runs:
+            threadId === "thread:failed"
+              ? [
+                  {
+                    id: "run:failed",
+                    status: "failed",
+                    demandId: `demand:${"d".repeat(64)}`,
+                  },
+                ]
+              : [],
           messages: [
             {
               attachments:
@@ -286,6 +313,7 @@ it.effect(
           readonly message?: string;
           readonly runtimeMode?: RuntimeMode;
           readonly targeted?: false;
+          readonly demandOrigin?: OrchestrationV2DemandOrigin;
           readonly overrideModel?: ModelSelection;
           readonly webOrigin?: string;
           readonly refusedByCeiling?: true;
@@ -326,6 +354,39 @@ it.effect(
       expect(belowCeiling.launched[0]?.runtimeMode).toBe("approval-required");
       expect(belowCeiling.launched[0]?.initialMessage?.senderThreadId).toBeUndefined();
 
+      const repair = yield* launchWith("full-access", "full-access", {
+        title: "Repair",
+        message: "Fix the failed job",
+        demandOrigin: {
+          kind: "repair",
+          threadId: ThreadId.make("thread:failed"),
+          runId: RunId.make("run:failed"),
+        },
+      });
+      expect(repair.launched[0]?.initialMessage?.demandId).toBe(`demand:${"d".repeat(64)}`);
+      expect(repair.launched[0]?.initialMessage?.demandOriginKind).toBe("repair");
+      const legacyRepair = yield* launchWith("full-access", "full-access", {
+        title: "Repair",
+        message: "Repair a legacy run",
+        demandOrigin: { kind: "repair", threadId: ThreadId.make("thread:legacy"), runId: null },
+      });
+      expect(legacyRepair.launched[0]?.initialMessage?.demandId).toBeNull();
+      expect(legacyRepair.launched[0]?.initialMessage?.demandOriginKind).toBeUndefined();
+      const workItem = { kind: "work_item", key: "https://tracker.example/work/21" } as const;
+      const claim = yield* launchWith("full-access", "full-access", {
+        title: "Claim",
+        message: "Implement it",
+        demandOrigin: workItem,
+      });
+      const reclaimed = yield* launchWith("full-access", "full-access", {
+        title: "Retry",
+        message: "Resume it",
+        demandOrigin: workItem,
+      });
+      expect(claim.launched[0]?.initialMessage?.demandId).toMatch(/^demand:[0-9a-f]{64}$/);
+      expect(reclaimed.launched[0]?.initialMessage?.demandId).toBe(
+        claim.launched[0]?.initialMessage?.demandId,
+      );
       const aboveCeiling = yield* launchWith("auto-accept-edits", "full-access", {
         title: "Fix",
         webOrigin: "https://box.example.ts.net",
@@ -565,6 +626,60 @@ it.effect("a launch steps an inherited mode down to the provider's, and refuses 
     const offered = yield* launchPi("approval-required");
     expect(offered.launched[0]?.runtimeMode).toBe("approval-required");
   }),
+);
+
+it.effect.each(
+  (["source-present", "receipt-only"] as const).flatMap((protocol) =>
+    (
+      [
+        {
+          runtimeMode: "full-access",
+          interactionMode: "plan",
+          code: "runtime_mode_escalation_denied",
+        },
+        {
+          runtimeMode: "auto",
+          interactionMode: "default",
+          code: "interaction_mode_escalation_denied",
+        },
+      ] as const
+    ).map((row) => ({ ...row, protocol })),
+  ),
+)(
+  "a $protocol repair launch checks the accepted thread against the forwarded $code",
+  ({ runtimeMode, interactionMode, code, protocol }) =>
+    Effect.gen(function* () {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "full-access",
+        launched,
+        recordedRepairShell: { runtimeMode, interactionMode },
+        client: {
+          linked: true,
+          narrowedTo: { runtimeMode: "auto", interactionMode: "plan" },
+          ...(protocol === "source-present"
+            ? { demandId: `demand:${"d".repeat(64)}`, demandOriginKind: "repair" as const }
+            : { replayDemandReceipt: true as const }),
+        },
+      });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const replies = yield* toolkit
+        .handle("t3_thread_launch", {
+          clientRequestId: "repair-1",
+          projectId,
+          title: "Repair",
+          message: "Original repair",
+        })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      expect(replies.at(-1)?.result).toMatchObject({ code });
+      expect(launched).toHaveLength(0);
+    }),
 );
 
 it.effect("a launch retried with the same clientRequestId replays the first one", () =>

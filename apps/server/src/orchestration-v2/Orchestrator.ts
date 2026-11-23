@@ -23,6 +23,7 @@ import {
   legacyThreadPullRequestKey,
 } from "../sourceControl/threadPullRequests.ts";
 import {
+  EXPECTED_ACTIVE_RUN_CHANGED,
   ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type ChatAttachment,
@@ -119,6 +120,7 @@ import {
   isActiveRun,
   isNativeMaintenanceCommand,
   resolveMessageDispatchIntent,
+  latestSteerableRun,
 } from "./CommandPolicy.ts";
 import { CommandReceiptStoreV2 } from "./CommandReceiptStore.ts";
 import {
@@ -241,6 +243,7 @@ export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDi
   },
 ) {
   override get message(): string {
+    if (this.cause === EXPECTED_ACTIVE_RUN_CHANGED) return EXPECTED_ACTIVE_RUN_CHANGED;
     return `Failed to dispatch orchestration command ${this.commandType} (${this.commandId}).`;
   }
 }
@@ -3187,6 +3190,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(command.launchIntentHash === undefined
         ? {}
         : { launchIntentHash: command.launchIntentHash }),
+      ...(command.initialDemandId === undefined
+        ? {}
+        : { initialDemandId: command.initialDemandId }),
+      ...(command.initialDemandOriginKind === "repair" && command.initialDemandId != null
+        ? { initialDemandOriginKind: "repair" as const }
+        : {}),
       createdBy: command.createdBy,
       creationSource: command.creationSource,
       id: command.threadId,
@@ -6052,6 +6061,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.automaticContinuationOfRunId ??
       command.usageLimitContinuationOfRunId ??
       command.restartContinuationOfRunId;
+    if (command.expectedActiveRunId !== undefined) {
+      const expected = latestSteerableRun(projection);
+      if (
+        expected?.id !== command.expectedActiveRunId ||
+        command.dispatchMode.type !== "restart_active" ||
+        command.dispatchMode.targetRunId !== expected.id ||
+        (yield* stopReachedRun(command, command.threadId, expected.id))
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          stale: true,
+          cause: EXPECTED_ACTIVE_RUN_CHANGED,
+        });
+      }
+    }
     if (automaticSourceRunId !== undefined) {
       const skipped = yield* skipStaleScheduledRecovery(
         command,
@@ -6526,6 +6551,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           dispatchMode = { type: "steer_active", targetRunId: active.id };
         }
       }
+    }
+    if (command.expectedActiveRunId !== undefined && dispatchMode.type !== "restart_active") {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "A guarded restart must restart its expected run.",
+      });
     }
     const dispatchText =
       delegatedCompletion === undefined
@@ -8521,12 +8553,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // A local MCP credential can outlive a run. Without a run-bound invocation, different owners are ambiguous.
       const parentDemand = parentRun.demandId ?? null;
       const childDemand =
-        command.creationSource === "mcp" &&
-        parentProjection.runs.some(
-          (run) => run.status !== "queued" && (run.demandId ?? null) !== parentDemand,
-        )
-          ? null
-          : parentDemand;
+        command.demandId !== undefined
+          ? command.demandId
+          : command.creationSource === "mcp" &&
+              parentProjection.runs.some(
+                (run) => run.status !== "queued" && (run.demandId ?? null) !== parentDemand,
+              )
+            ? null
+            : parentDemand;
       const task: OrchestrationV2Subagent = {
         demandId: childDemand,
         id: taskNodeId,
@@ -8947,6 +8981,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...common,
       type: "subagent.updated",
       payload: {
+        demandId: command.demandId ?? null,
         id: taskNodeId,
         threadId: command.parentThreadId,
         runId: parentRun.id,

@@ -39,6 +39,7 @@ import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
 import { assertSameLink } from "../../linkOrigin.ts";
 import {
   assertTargetWithinLimits,
+  callerDemand,
   type Caller,
   type CallerLimits,
   newCommandId,
@@ -176,6 +177,19 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             : ThreadId.make(commandId);
         const messageId = MessageId.make(commandId);
         if (
+          scope.client?.replayDemandReceipt === true &&
+          (input.clientRequestId === undefined ||
+            !(yield* context.threads.hasReceipt(commandId, {
+              commandType: "thread.create",
+              threadId,
+            })))
+        ) {
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "This repair launch has no accepted creation receipt for that thread.",
+          });
+        }
+        if (
           input.scratch === true &&
           (input.projectId !== undefined || input.workspaceStrategy !== undefined)
         )
@@ -213,6 +227,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         if (launched !== null) yield* checkKeyedLaunchTarget(context, limits, projectId, launched);
         const launchedModel = launched?.modelSelection;
         const replaying = launchedModel !== undefined;
+        if (scope.client?.replayDemandReceipt === true && launched === null)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "The accepted repair launch has no live thread in this project.",
+          });
         if (!replaying && input.workspaceStrategy?.type === "existing_worktree") {
           const project = yield* readProject;
           if (project === undefined)
@@ -338,8 +357,13 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             )?.supportedRuntimeModes,
           });
         }
-        // A new thread owns no attachments yet, even on a replay: a replay claims again and
-        // keeps the copies its first launch accepted.
+        // On replay ThreadLaunchService reads the owner from its create receipt, even if
+        // it still has to send the initial message.
+        const demandId =
+          replaying || (input.message === undefined && !input.attachments?.length)
+            ? null
+            : yield* callerDemand(context, input.demandOrigin);
+        // Reclaim on replay and keep the attachment copies the first launch accepted.
         const requested = input.attachments ?? [];
         const result = yield* withResolvedAttachments(
           { requested, owned: [], context },
@@ -347,6 +371,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             ThreadMessageIntake.launchThread({
               commandId,
               ...(launchIntentHash === undefined ? {} : { launchIntentHash }),
+              ...(scope.client?.replayDemandReceipt === true ? { receiptOnly: true } : {}),
               threadId,
               projectId,
               title: input.title,
@@ -359,6 +384,14 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 : {
                     initialMessage: {
                       messageId,
+                      demandId,
+                      ...(demandId !== null &&
+                      (input.demandOrigin?.kind === "repair" ||
+                        (input.demandOrigin === undefined &&
+                          context.scope.client?.linked === true &&
+                          context.scope.client.demandOriginKind === "repair"))
+                        ? { demandOriginKind: "repair" as const }
+                        : {}),
                       ...(caller === undefined ? {} : { senderThreadId: caller.id }),
                       text: input.message ?? "",
                       attachments,

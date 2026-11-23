@@ -2080,6 +2080,26 @@ export const layerWithOptions = (
       ): ProviderAdapter.ProviderAdapterV2SessionRuntime => {
         const providerSessionId = runtime.providerSessionId;
         const subscribeEvents = makeEventSubscription(eventSubscribers);
+        const startWithDemand = Effect.fn("ProviderSessionManager.startWithDemand")(function* (
+          { demandId, ...input }: ProviderAdapter.ProviderAdapterV2TurnInput,
+          start: typeof runtime.startTurn,
+        ) {
+          const entry = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
+          if (entry?.runtime !== runtime) {
+            return yield* new ProviderAdapter.ProviderAdapterTurnStartError({
+              driver: runtime.driver,
+              threadId: input.threadId,
+              providerThreadId: input.providerThread.id,
+              runId: input.runId,
+              cause: "The provider session was released while the turn started.",
+            });
+          }
+          const credentialId = entry.mcpCredentialIdByThread.get(input.threadId);
+          if (credentialId !== undefined)
+            yield* mcpSessionRegistry.bindTurn(credentialId, demandId ?? null, input.runId);
+          return yield* start(input);
+        });
+        const compactThread = runtime.compactThread;
         const turnMetrics = (operation: string, model?: string) =>
           withMetrics({
             counter: providerTurnsTotal,
@@ -2092,6 +2112,9 @@ export const layerWithOptions = (
           });
         return {
           ...runtime,
+          ...(compactThread === undefined
+            ? {}
+            : { compactThread: (input) => startWithDemand(input, compactThread) }),
           subscribeEvents,
           events: Stream.unwrap(
             subscribeEvents.pipe(Effect.map((subscription) => subscription.events)),
@@ -2243,7 +2266,9 @@ export const layerWithOptions = (
                     ),
                   ),
                   () =>
-                    runtime.startTurn(input).pipe(turnMetrics("send", input.modelSelection.model)),
+                    startWithDemand(input, runtime.startTurn).pipe(
+                      turnMetrics("send", input.modelSelection.model),
+                    ),
                   (_, exit) =>
                     Exit.isFailure(exit)
                       ? observeActivity(

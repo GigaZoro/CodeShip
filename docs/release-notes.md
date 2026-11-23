@@ -1,3 +1,7 @@
+## 2026-11-23 — Accounting for repairs and work-item requests
+
+- MCP launches and sends can carry the work item or repair run that owns them. A guarded restart applies only while its intended run is active. Linked repairs require a peer that supports origin accounting.
+
 ## 2026-11-23 — Reliable retries for MCP commands
 
 - Retrying a keyed send recovers the accepted delivery after the run settles. A keyed thread launch can resume its original first message, and repeated delegations resolve to the task and destination first accepted.

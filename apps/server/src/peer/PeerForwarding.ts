@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   OrchestratorMcpCapabilitiesInput,
+  OrchestrationV2DemandOrigin,
   OrchestratorMcpCapabilitiesResult,
   OrchestratorMcpFailure,
   type OrchestratorMcpEnvironmentLinksResult,
@@ -24,7 +25,7 @@ import type * as Tool from "effect/ai/Tool";
 
 import { assertNotLinked } from "../mcp/linkOrigin.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { readCaller, unavailable } from "../mcp/threadAccess.ts";
+import { callerDemand, readCaller, readRepairDemand, unavailable } from "../mcp/threadAccess.ts";
 import { ThreadToolkit } from "../mcp/toolkits/thread/tools.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerLinks from "./PeerLinks.ts";
@@ -38,6 +39,7 @@ import * as PeerMcpClient from "./PeerMcpClient.ts";
 export const FORWARDED_WAIT_CHUNK_MS = 50_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
+const decodeDemandOrigin = Schema.decodeUnknownEffect(OrchestrationV2DemandOrigin);
 
 type Scope = McpInvocationContext.McpInvocationScope;
 
@@ -59,6 +61,8 @@ export class PeerForwarding extends Context.Service<
       tool: T,
       environmentId: EnvironmentId,
       params: Tool.Parameters<T>,
+      /** A delegation uses the owner of its durable parent-run receipt, even when unknown. */
+      recordedDemandId?: string | null,
     ) => Effect.Effect<Tool.Success<T>, OrchestratorMcpFailure>;
     /** `orchestrator_capabilities` there. */
     readonly readCapabilities: (
@@ -119,10 +123,9 @@ const make = Effect.gen(function* () {
    * link started never uses this environment's links, since the peer would see this
    * environment's session instead of that link, and its fence could not hold.
    */
-  const callerLimits = (scope: Scope) =>
+  const forwardingCaller = (scope: Scope) =>
     readCaller().pipe(
       Effect.tap((caller) => assertNotLinked(caller, "use this environment's links")),
-      Effect.map((caller) => caller.limits),
       Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
       Effect.provideService(ThreadManagement.ThreadManagementService, threads),
     );
@@ -146,12 +149,17 @@ const make = Effect.gen(function* () {
     success: Schema.Top,
     environmentId: EnvironmentId,
     params: unknown,
+    recordedDemandId?: string | null,
   ) {
-    const limits = yield* callerLimits(scope);
+    const caller = yield* forwardingCaller(scope);
     const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
       params,
     ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
-    const { environmentId: _target, ...args } = encoded;
+    const { environmentId: _target, demandOrigin, ...args } = encoded;
+    const origin =
+      demandOrigin === undefined
+        ? undefined
+        : yield* decodeDemandOrigin(demandOrigin).pipe(Effect.mapError(unavailable));
     // A pending upload lives here, so it cannot go with the call.
     if (Array.isArray(args.attachments) && args.attachments.length > 0) {
       return yield* new OrchestratorMcpFailure({
@@ -162,11 +170,32 @@ const make = Effect.gen(function* () {
     if (typeof args.clientRequestId === "string") {
       args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, args.clientRequestId);
     }
+    let demand: string | null;
+    let demandProtocol: "explicit" | "receipt-only" | undefined =
+      origin === undefined ? undefined : "explicit";
+    if (recordedDemandId !== undefined) {
+      demand = recordedDemandId;
+    } else if (
+      origin?.kind === "repair" &&
+      typeof args.clientRequestId === "string" &&
+      (toolName === "t3_thread_launch" || toolName === "t3_thread_send")
+    ) {
+      const source = yield* readRepairDemand(caller, origin);
+      demand = source.available ? source.demand : null;
+      if (!source.available) demandProtocol = "receipt-only";
+    } else {
+      demand = yield* callerDemand(caller, origin);
+    }
     return yield* peers.call({
       environmentId,
+      ...(demandProtocol === undefined ? {} : { demandProtocol }),
       tool: toolName,
       arguments: args,
-      limits,
+      limits: caller.limits,
+      ...(demand === null ? {} : { demandId: demand }),
+      ...(toolName === "t3_thread_launch" && demand !== null && origin?.kind === "repair"
+        ? { demandOriginKind: "repair" as const }
+        : {}),
       success: success as Schema.Decoder<A>,
     });
   });
@@ -249,7 +278,13 @@ const make = Effect.gen(function* () {
     Effect.flatMap((enabled) => (enabled ? Effect.void : Effect.fail(linkedEnvironmentsOff))),
   );
 
-  const call: PeerForwarding["Service"]["call"] = (scope, tool, environmentId, params) => {
+  const call: PeerForwarding["Service"]["call"] = (
+    scope,
+    tool,
+    environmentId,
+    params,
+    recordedDemandId,
+  ) => {
     const forwarded: Effect.Effect<
       Tool.Success<typeof tool>,
       OrchestratorMcpFailure
@@ -259,7 +294,15 @@ const make = Effect.gen(function* () {
           environmentId,
           params as OrchestratorMcpThreadWaitInput,
         ) as Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure>)
-      : forward(scope, tool.name, tool.parametersSchema, tool.successSchema, environmentId, params);
+      : forward(
+          scope,
+          tool.name,
+          tool.parametersSchema,
+          tool.successSchema,
+          environmentId,
+          params,
+          recordedDemandId,
+        );
     return Effect.andThen(requireEnabled, forwarded);
   };
 
@@ -285,7 +328,7 @@ const make = Effect.gen(function* () {
 
   const listLinks: PeerForwarding["Service"]["links"] = Effect.fn("PeerForwarding.listLinks")(
     function* (scope) {
-      yield* callerLimits(scope);
+      yield* forwardingCaller(scope);
       yield* requireEnabled;
       const listed = yield* links.list.pipe(
         Effect.mapError(

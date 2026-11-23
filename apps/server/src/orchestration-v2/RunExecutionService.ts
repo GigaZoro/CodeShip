@@ -1729,6 +1729,7 @@ export const layer: Layer.Layer<
           appThread: input.appThread,
           threadId: input.run.threadId,
           runId: input.run.id,
+          demandId: input.run.demandId ?? null,
           runOrdinal: input.run.ordinal,
           providerTurnOrdinal: input.providerTurnOrdinal,
           ...(input.nativeThreadHasTurns === undefined

@@ -120,6 +120,7 @@ interface BoxThread {
   readonly launchedProject: Ref.Ref<ProjectId | null>;
   /** The first message the thread there was launched with. */
   readonly message: Ref.Ref<string | null>;
+  readonly demand: Ref.Ref<string | null>;
   readonly status: Ref.Ref<OrchestrationV2Run["status"]>;
   readonly reply: Ref.Ref<string | null>;
   readonly error: Ref.Ref<string | null>;
@@ -184,6 +185,7 @@ const makeBoxThread = Effect.gen(function* () {
     ),
     launchedProject: yield* Ref.make<ProjectId | null>(null),
     message: yield* Ref.make<string | null>(null),
+    demand: yield* Ref.make<string | null>(null),
     status: yield* Ref.make<OrchestrationV2Run["status"]>("running"),
     reply: yield* Ref.make<string | null>("Working…"),
     error: yield* Ref.make<string | null>(null),
@@ -560,6 +562,7 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
             Effect.andThen(Ref.set(thread.launchedProject, input.projectId)),
             Effect.andThen(Ref.set(thread.workspaceStrategy, input.workspaceStrategy)),
             Effect.andThen(Ref.set(thread.message, input.initialMessage?.text ?? null)),
+            Effect.andThen(Ref.set(thread.demand, input.initialMessage?.demandId ?? null)),
             Effect.andThen(
               Ref.set(thread.launchedWith, {
                 modelSelection: input.modelSelection,
@@ -991,6 +994,30 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
       yield* linkTo(a.links, b, "full-access");
       yield* seedParent(a);
 
+      const delayed = yield* a.call(
+        "delegate_task",
+        {
+          task: "Earlier run's work.",
+          target: {
+            environmentId: box.environmentId,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+          mode: "async",
+          clientRequestId: "call-before-the-new-parent",
+        },
+        {
+          ...parentScope,
+          thread: {
+            ...parentScope.thread!,
+            runId: RunId.make("run:previous-parent"),
+            demandId: `demand:${"a".repeat(64)}`,
+          },
+        },
+      );
+      expect(delayed.isError).toBe(true);
+      expect(JSON.stringify(delayed.content)).toContain("parent_not_active");
+      expect(yield* Ref.get(thread.launched)).toBeNull();
       const delegated = yield* delegateToBox(a);
       expect(delegated).toMatchObject({
         status: "running",
@@ -1921,65 +1948,77 @@ it.effect.each(["remote only", "remote first", "local first", "missing receipt"]
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("overlapping delegations with one key launch only the recorded destination", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const second = descriptorOf("environment-second-box", "Second box");
-      const firstThread = yield* makeBoxThread;
-      const secondThread = yield* makeBoxThread;
-      const firstBox = yield* serveBox(firstThread);
-      const secondBox = yield* servePeer(second, boxToolkitLayer(secondThread, boxProjects));
-      const offers = yield* SubscriptionRef.make<
-        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-      >([]);
-      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const a = yield* makeLaptop(database, offers);
-      yield* linkTo(a.links, firstBox, "full-access");
-      yield* linkTo(a.links, secondBox, "full-access");
-      yield* seedParent(a);
+it.effect(
+  "overlapping delegations with one key launch only the recorded destination and owner",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const second = descriptorOf("environment-second-box", "Second box");
+        const firstThread = yield* makeBoxThread;
+        const secondThread = yield* makeBoxThread;
+        const firstBox = yield* serveBox(firstThread);
+        const secondBox = yield* servePeer(second, boxToolkitLayer(secondThread, boxProjects));
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, firstBox, "full-access");
+        yield* linkTo(a.links, secondBox, "full-access");
+        yield* seedParent(a);
 
-      // Both requests have finished preflight when the first recording commits.
-      const atRecord = yield* Ref.make(0);
-      const both = yield* Deferred.make<void>();
-      const dispatch = a.threads.dispatch;
-      const record = vi.spyOn(a.threads, "dispatch").mockImplementation((command) =>
-        command.type !== "delegated_task.remote.request"
-          ? dispatch(command)
-          : Effect.gen(function* () {
-              if ((yield* Ref.updateAndGet(atRecord, (count) => count + 1)) === 2)
-                yield* Deferred.succeed(both, undefined);
-              yield* Deferred.await(both);
-              return yield* dispatch(command);
-            }),
-      );
-      const submit = (environmentId: typeof box.environmentId) =>
-        a.call("delegate_task", {
-          target: { environmentId, projectId: boxProject },
-          task: "Run the suite.",
-          clientRequestId: "concurrent-suite",
-          mode: "async",
-        });
-      const results = yield* Effect.all([submit(box.environmentId), submit(second.environmentId)], {
-        concurrency: 2,
-      }).pipe(Effect.ensuring(Effect.sync(() => record.mockRestore())));
-      for (const result of results)
-        expect(result.isError, JSON.stringify(result.content)).toBe(false);
-      const [accepted] = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents;
-      expect(accepted?.remoteChild).toBeDefined();
-      const onFirst = accepted!.remoteChild!.environmentId === box.environmentId;
-      for (const result of results)
-        expect(result.structuredContent).toMatchObject({
-          taskId: accepted!.id,
-          remoteChild: { environmentId: accepted!.remoteChild!.environmentId },
-        });
-      expect(yield* Ref.get(firstThread.launched)).toBe(
-        onFirst ? accepted!.remoteChild!.threadId : null,
-      );
-      expect(yield* Ref.get(secondThread.launched)).toBe(
-        onFirst ? null : accepted!.remoteChild!.threadId,
-      );
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+        // Both requests have finished preflight when the first recording commits.
+        const atRecord = yield* Ref.make(0);
+        const both = yield* Deferred.make<void>();
+        const dispatch = a.threads.dispatch;
+        const record = vi.spyOn(a.threads, "dispatch").mockImplementation((command) =>
+          command.type !== "delegated_task.remote.request"
+            ? dispatch(command)
+            : Effect.gen(function* () {
+                if ((yield* Ref.updateAndGet(atRecord, (count) => count + 1)) === 2)
+                  yield* Deferred.succeed(both, undefined);
+                yield* Deferred.await(both);
+                return yield* dispatch(command);
+              }),
+        );
+        const submit = (environmentId: typeof box.environmentId, demandId: string) =>
+          a.call(
+            "delegate_task",
+            {
+              target: { environmentId, projectId: boxProject },
+              task: "Run the suite.",
+              clientRequestId: "concurrent-suite",
+              mode: "async",
+            },
+            { ...parentScope, thread: { ...parentScope.thread!, runId: parentRunId, demandId } },
+          );
+        const firstOwner = `demand:${"a".repeat(64)}`,
+          secondOwner = `demand:${"b".repeat(64)}`;
+        const results = yield* Effect.all(
+          [submit(box.environmentId, firstOwner), submit(second.environmentId, secondOwner)],
+          { concurrency: 2 },
+        ).pipe(Effect.ensuring(Effect.sync(() => record.mockRestore())));
+        for (const result of results)
+          expect(result.isError, JSON.stringify(result.content)).toBe(false);
+        const [accepted] = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents;
+        expect(accepted?.remoteChild).toBeDefined();
+        const onFirst = accepted!.remoteChild!.environmentId === box.environmentId;
+        expect(accepted!.demandId).toBe(onFirst ? firstOwner : secondOwner);
+        expect(yield* Ref.get(firstThread.demand)).toBe(onFirst ? firstOwner : null);
+        expect(yield* Ref.get(secondThread.demand)).toBe(onFirst ? null : secondOwner);
+        for (const result of results)
+          expect(result.structuredContent).toMatchObject({
+            taskId: accepted!.id,
+            remoteChild: { environmentId: accepted!.remoteChild!.environmentId },
+          });
+        expect(yield* Ref.get(firstThread.launched)).toBe(
+          onFirst ? accepted!.remoteChild!.threadId : null,
+        );
+        expect(yield* Ref.get(secondThread.launched)).toBe(
+          onFirst ? null : accepted!.remoteChild!.threadId,
+        );
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("the same key from another provider session is another task", () =>

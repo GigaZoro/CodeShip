@@ -326,6 +326,7 @@ it.effect("refuses an answer larger than the call takes", () =>
  */
 const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record<string, unknown>) {
   let schema: unknown = { type: "object", properties };
+  let supportsDemand = false;
   let live = new Set<string>();
   let started = 0;
   let listError: string | undefined;
@@ -368,7 +369,11 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
           yield* Deferred.succeed(held.received, undefined);
           yield* Deferred.await(held.release);
         }
-        return answer(200, { result: { tools } });
+        return answer(
+          200,
+          { result: { tools } },
+          supportsDemand ? { "t3-demand-protocol": "1" } : {},
+        );
       }
       ran.push(body.params?.arguments);
       return answer(200, { result: { content: [{ type: "text", text: '{"modes":"ran"}' }] } });
@@ -408,15 +413,19 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
   return {
     requests,
     ran,
-    call: (args: Record<string, unknown>) =>
+    call: (args: Record<string, unknown>, explicitOrigin = false) =>
       client.call({
+        ...(explicitOrigin
+          ? { demandProtocol: "explicit" as const, demandId: `demand:${"a".repeat(64)}` }
+          : {}),
         environmentId: box.environmentId,
         tool: "probe",
         arguments: args,
         limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
         success: Result,
       }),
-    restart: (next: Record<string, unknown>) => {
+    restart: (next: Record<string, unknown>, advertiseDemand = false) => {
+      supportsDemand = advertiseDemand;
       schema = { type: "object", properties: next };
       live = new Set();
     },
@@ -497,4 +506,24 @@ it.effect("refuses only on a list from the session still in use", () =>
       "tools/call session-2",
     ]);
   }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "refuses forwarded demand headers before calling a peer that does not advertise them",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const peer = yield* fakePeerClient({ message: { type: "string" } });
+        const error = yield* peer.call({ message: "repair" }, true).pipe(Effect.flip);
+        expect(error.code).toBe("version_mismatch");
+        expect(peer.ran).toEqual([]);
+        peer.restart({ message: { type: "string" } }, true);
+        yield* peer.call({ message: "accepted" }, true);
+        peer.restart({ message: { type: "string" } });
+        expect(
+          (yield* peer.call({ message: "after downgrade" }, true).pipe(Effect.flip)).code,
+        ).toBe("version_mismatch");
+        expect(peer.ran).toEqual([{ message: "accepted" }]);
+      }),
+    ),
 );

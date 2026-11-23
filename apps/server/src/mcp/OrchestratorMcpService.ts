@@ -3,6 +3,7 @@ import * as NodeCrypto from "node:crypto";
 import { derive } from "@t3tools/provider-core/server/IdAllocator";
 import { providerConstraints } from "../provider/providerConstraints.ts";
 import {
+  EXPECTED_ACTIVE_RUN_CHANGED,
   CommandId,
   type RunId,
   DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS,
@@ -142,6 +143,7 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as ServerSettings from "../serverSettings.ts";
 import {
   clientModeCeiling,
+  invocationDemand,
   type McpInvocationScope,
   type McpThreadInvocationScope,
   requireThreadScope,
@@ -159,7 +161,7 @@ import {
   runtimeModeRank,
   taskPrompt,
 } from "./delegatedTaskModes.ts";
-import { isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
+import { explicitDemand, isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
 import { providerUsageFields, publishesUsage, usageReadingStale } from "./orchestratorUsage.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
@@ -3352,6 +3354,7 @@ const make = Effect.gen(function* () {
       if (
         parentRun === undefined ||
         parentRun.rootNodeId === null ||
+        (scope.thread.runId != null && parentRun.id !== scope.thread.runId) ||
         parentRun.providerInstanceId !== scope.thread.providerInstanceId
       ) {
         return yield* failure(
@@ -3556,6 +3559,7 @@ const make = Effect.gen(function* () {
       const result = yield* threadManagement
         .dispatch({
           type: "delegated_task.request",
+          demandId: invocationDemand(scope),
           createdBy: "agent",
           creationSource: "mcp",
           commandId,
@@ -3907,6 +3911,7 @@ const make = Effect.gen(function* () {
         if (
           parentRun === undefined ||
           parentRun.rootNodeId === null ||
+          (scope.thread.runId != null && parentRun.id !== scope.thread.runId) ||
           parentRun.providerInstanceId !== scope.thread.providerInstanceId
         ) {
           return yield* failure(
@@ -4008,7 +4013,7 @@ const make = Effect.gen(function* () {
                 title: request.title,
                 index,
               });
-              yield* threadManagement
+              const claimed = yield* threadManagement
                 .dispatch({
                   type: "thread.create",
                   createdBy: "agent",
@@ -4016,6 +4021,7 @@ const make = Effect.gen(function* () {
                   commandId,
                   threadId,
                   projectId: parent.thread.projectId,
+                  initialDemandId: invocationDemand(scope),
                   title,
                   modelSelection: target.modelSelection,
                   runtimeMode,
@@ -4040,6 +4046,9 @@ const make = Effect.gen(function* () {
                 .pipe(Effect.mapError(threadManagementFailure))).thread.modelSelection;
               const messageId = stableMessageId({ scope, requestKey: key, index });
               if (request.prompt !== undefined) {
+                const creation = claimed.storedEvents.find(
+                  (row) => row.event.type === "thread.created",
+                )?.event;
                 yield* threadManagement
                   .dispatch({
                     type: "message.dispatch",
@@ -4053,6 +4062,10 @@ const make = Effect.gen(function* () {
                     }),
                     threadId,
                     senderThreadId: scope.thread.threadId,
+                    demandId:
+                      creation?.type === "thread.created"
+                        ? (creation.payload.initialDemandId ?? null)
+                        : null,
                     messageId,
                     text: request.prompt,
                     attachments: [],
@@ -4308,26 +4321,57 @@ const make = Effect.gen(function* () {
       yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);
 
       const mode = input.mode ?? "auto";
+      if (input.expectedActiveRunId !== undefined && mode !== "restart") {
+        return yield* failure("invalid_request", "expectedActiveRunId requires restart mode.");
+      }
       const key = yield* requestKey(input.clientRequestId);
       const messageId = stableOperationMessageId({
         scope,
         requestKey: key,
         operation: "thread-send",
       });
+      const commandId = stableCommandId({ scope, requestKey: key, operation: "thread-send" });
+      if (
+        scope.client?.replayDemandReceipt === true &&
+        (input.clientRequestId === undefined ||
+          !(yield* threadManagement.hasReceipt(commandId, {
+            commandType: "message.dispatch",
+            threadId: input.threadId,
+          })))
+      ) {
+        return yield* failure(
+          "invalid_request",
+          "This repair send has no accepted receipt for that thread.",
+        );
+      }
+      // A retry of a repair is already permanently accepted or rejected. Its source may be gone.
+      const replayingRepair =
+        input.demandOrigin?.kind === "repair" &&
+        input.clientRequestId !== undefined &&
+        (yield* threadManagement.hasReceipt(commandId));
+      const demandId = replayingRepair
+        ? null
+        : input.demandOrigin !== undefined
+          ? yield* explicitDemand(
+              { scope, caller: parent?.thread, threads: threadManagement },
+              input.demandOrigin,
+            )
+          : invocationDemand(scope);
       const result = yield* threadManagement
         .sendToThread({
           projectId: target.thread.projectId,
-          commandId: stableCommandId({
-            scope,
-            requestKey: key,
-            operation: "thread-send",
-          }),
+          commandId,
           threadId: input.threadId,
           ...(parent === undefined ? {} : { senderThreadId: parent.thread.id }),
+          demandId,
+          ...(scope.client?.replayDemandReceipt === true ? { receiptOnly: true } : {}),
           messageId,
           text: input.message,
           attachments: [],
           mode,
+          ...(input.expectedActiveRunId === undefined
+            ? {}
+            : { expectedActiveRunId: input.expectedActiveRunId }),
           ...(input.continuationOfRunId === undefined
             ? {}
             : { manualContinuationOfRunId: input.continuationOfRunId }),
@@ -4336,12 +4380,17 @@ const make = Effect.gen(function* () {
         })
         .pipe(
           Effect.mapError((error) =>
-            isThreadManagementError(error)
-              ? threadManagementFailure(error)
-              : failure(
-                  "orchestration_error",
-                  `Unable to send to thread ${input.threadId}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
-                ),
+            (error._tag === "OrchestratorDispatchError" &&
+              error.cause === EXPECTED_ACTIVE_RUN_CHANGED) ||
+            (error._tag === "OrchestratorCommandPreviouslyRejectedError" &&
+              error.detail === EXPECTED_ACTIVE_RUN_CHANGED)
+              ? failure(EXPECTED_ACTIVE_RUN_CHANGED, "The active run changed before the restart.")
+              : isThreadManagementError(error)
+                ? threadManagementFailure(error)
+                : failure(
+                    "orchestration_error",
+                    `Unable to send to thread ${input.threadId}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
+                  ),
           ),
         );
       return {
