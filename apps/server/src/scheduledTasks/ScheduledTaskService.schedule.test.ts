@@ -25,13 +25,14 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
+import { originalDemandId } from "../orchestration-v2/demandId.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
-import { layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
+import { HERE_ENVIRONMENT_ID, layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
@@ -542,7 +543,7 @@ it.effect(
         });
         // It launches under its scheduled fire's key, where startup recovery looks for its prompt.
         expect(yield* Ref.get(prompts)).toEqual([
-          `scheduled-task-message:${caughtUp?.id.replace(/:catch_up$/, ":scheduled")}`,
+          `scheduled-task-message:${caughtUp?.id.replace(":catch_up:", ":scheduled:")}`,
         ]);
         expect((yield* service.listRuns({ id: off.id })).runs).toMatchObject([
           { outcome: "skipped", skipReason: "missed", scheduledFor: isoAt(13, 7) },
@@ -764,6 +765,141 @@ it.effect.each([
           { outcome: "succeeded", failover: { from: "claude_primary", to: spare, ...failover } },
         ]);
       }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each([
+  { kind: "once", shortage: "memory" },
+  { kind: "once", shortage: "usage" },
+  { kind: "fixed_time", shortage: "usage" },
+  { kind: "fixed_time", shortage: "legacy usage" },
+  { kind: "interval", shortage: "memory" },
+] as const)(
+  "$kind demand after two $shortage skips and a scheduler restart",
+  ({ kind, shortage }) =>
+    Effect.gen(function* () {
+      const first = DateTime.makeZonedUnsafe(
+        { year: 2026, month: 11, day: 10, hour: 7, minute: 0, second: 0, millisecond: 0 },
+        { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+      );
+      const firstMs = DateTime.toEpochMillis(first);
+      const firstAt = DateTime.formatIso(DateTime.toUtc(first));
+      const isoMs = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+      yield* TestClock.setTime(firstMs - 60_000);
+      const resetAt = yield* Ref.make<string | null>(isoMs(firstMs + 300_000));
+      const demand = yield* Ref.make<string | null | undefined>(undefined);
+      const layer = runHistoryLayer(
+        (input) =>
+          Ref.set(demand, input.initialMessage?.demandId).pipe(
+            Effect.as({ threadId: ThreadId.make("thread-after-hold"), resumed: false } as never),
+          ),
+        Layer.mock(AccountRouting.AccountRouting)({
+          scheduledRunBlock: () =>
+            Ref.get(resetAt).pipe(
+              Effect.map((until) =>
+                shortage !== "memory" && until !== null
+                  ? {
+                      driver: ProviderDriverKind.make("claude"),
+                      until,
+                      accounts: [ProviderInstanceId.make("claude_primary")],
+                    }
+                  : null,
+              ),
+            ),
+          failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
+        }),
+        Layer.mock(MemoryAdmission.MemoryAdmission)({
+          shortage: Ref.get(resetAt).pipe(
+            Effect.map((until) =>
+              shortage === "memory" && until !== null
+                ? {
+                    kind: "compressor" as const,
+                    totalBytes: 100,
+                    compressorBytes: 60,
+                    compressorShareLimit: 0.35,
+                    pressure: "normal" as const,
+                  }
+                : null,
+            ),
+          ),
+        }),
+      );
+      const task = yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        return (yield* service.upsert(
+          yield* historyTask("Held occurrence", {
+            schedule:
+              kind === "once"
+                ? { type: kind, runAt: firstAt }
+                : kind === "fixed_time"
+                  ? { type: kind, timeOfDay: "07:00" }
+                  : { type: kind, everyMs: 60_000 },
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        )).task;
+      }).pipe(Effect.provide(layer));
+      expect(task.nextRunAt).toBe(firstAt);
+
+      // Each service starts from the persisted cursor. Keep both admissions blocked before
+      // clearing the shortage, so a second retry cannot replace the first due instant.
+      const afterSkip = (due: string) =>
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.parse(due));
+          const service = yield* ScheduledTaskService.ScheduledTaskService;
+          const moved = yield* service.subscribeList().pipe(
+            Stream.filter(({ tasks }) =>
+              tasks.some(
+                (entry) =>
+                  entry.id === task.id &&
+                  entry.nextRunAt !== null &&
+                  Date.parse(entry.nextRunAt) > Date.parse(due),
+              ),
+            ),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* TestClock.adjust("6 seconds");
+          yield* Fiber.join(moved);
+          const current = (yield* service.list()).tasks.find((entry) => entry.id === task.id)!;
+          expect(Date.parse(current.nextRunAt!)).toBeGreaterThan(Date.parse(due));
+          expect(yield* Ref.get(demand)).toBeUndefined();
+          if (shortage === "legacy usage") {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`UPDATE scheduled_task_runs
+              SET usage_limit_json = json_remove(usage_limit_json, '$.heldOccurrence')
+              WHERE task_id = ${task.id} AND skip_reason = 'usage_limited'`;
+          }
+          return current.nextRunAt!;
+        }).pipe(Effect.provide(layer));
+      const secondAt = yield* afterSkip(firstAt);
+      yield* Ref.set(resetAt, isoMs(Date.parse(secondAt) + 300_000));
+      const thirdAt = yield* afterSkip(secondAt);
+      yield* Ref.set(resetAt, null);
+      yield* TestClock.setTime(Date.parse(thirdAt));
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const finished = yield* service.subscribeList().pipe(
+          Stream.filter(({ tasks }) =>
+            tasks.some((entry) => entry.id === task.id && entry.lastRunStatus === "succeeded"),
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("6 seconds");
+        yield* Fiber.join(finished);
+        expect((yield* service.listRuns({ id: task.id })).runs[0]?.outcome).toBe("succeeded");
+      }).pipe(Effect.provide(layer));
+      const incarnation = task.incarnationId ?? task.createdAt;
+      expect(yield* Ref.get(demand)).toBe(
+        originalDemandId(
+          "scheduled-task",
+          HERE_ENVIRONMENT_ID,
+          task.id,
+          incarnation,
+          "scheduled",
+          kind === "interval" ? thirdAt : firstAt,
+        ),
+      );
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 

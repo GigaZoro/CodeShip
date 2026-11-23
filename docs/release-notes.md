@@ -1,6 +1,6 @@
 ## 2026-11-23 — Accounting for scheduled runs
 
-- Locally scheduled occurrences, webhook deliveries and manual starts carry their demand ID into new and existing chats. Two manual starts in the same millisecond keep separate history. Automatic one-machine shared runs remain unattributed when the scheduler cannot establish which occurrence a peer accepted.
+- Locally scheduled occurrences, webhook deliveries and manual starts carry their demand ID into new and existing chats. A run delayed by memory pressure or account limits retains its original occurrence when the saved schedule identifies it. Same-millisecond starts have distinct history entries. Webhook retries keep the delivery’s original message and demand, and recreating a local task gives its new occurrences their own identity. Automatic one-machine shared runs remain unattributed when the scheduler cannot establish which occurrence a peer accepted.
 
 ## 2026-11-23 — Accounting for provider background work
 
