@@ -11,7 +11,7 @@ import {
 } from "./lib/command-line.ts";
 
 import { localVitePlusCommand } from "./check-changed-command.ts";
-import { matchesTestPath, relativeTestPath, resolveTestPath } from "./lib/cached-tests.ts";
+import { matchesTestPath, relativeTestPath, testPathResolver } from "./lib/cached-tests.ts";
 import { shardedTestFiles, validateShard } from "./lib/sharded-tests.ts";
 
 const root = NodePath.resolve(import.meta.dirname, "..");
@@ -65,20 +65,23 @@ if (import.meta.main) {
         ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
       ).split("\0");
-  const filters = positionals.map((path) =>
-    resolveTestPath(root, NodePath.resolve(path), candidates),
-  );
-  const isSelectable = (file: string) =>
-    /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file) &&
-    !file.startsWith(".repos/") &&
-    NodeFS.existsSync(NodePath.join(root, file)) &&
-    matchesTestPath(file, filters);
-  if (values.shard) {
-    const rejected = candidates.filter((file) => !isSelectable(file));
-    if (rejected.length)
-      throw new Error(`Discovered tests cannot be selected: ${rejected.join(", ")}`);
+  const canonicalPath = testPathResolver(root);
+  const resolveEntered = (path: string) =>
+    canonicalPath(relativeTestPath(root, NodePath.resolve(path)));
+  const filters = positionals.map(resolveEntered);
+  const selected = new Set<string>();
+  for (const candidate of candidates) {
+    const file =
+      /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(candidate) && !candidate.startsWith(".repos/")
+        ? canonicalPath(candidate)
+        : undefined;
+    if (file !== undefined && matchesTestPath(file, filters)) {
+      selected.add(file);
+    } else if (values.shard) {
+      throw new Error(`Discovered test cannot be selected: ${candidate}`);
+    }
   }
-  const files = [...new Set(candidates)].filter(isSelectable);
+  const files = [...selected];
   if (files.length === 0) {
     console.error("No test files matched");
     process.exit(values.shard ? 0 : 1);
@@ -91,7 +94,7 @@ if (import.meta.main) {
     T3_CACHED_TESTS: JSON.stringify({
       files,
       groupSize,
-      uncached: values.uncached.map((file) => resolveTestPath(root, NodePath.resolve(file), files)),
+      uncached: values.uncached.map(resolveEntered).filter((file) => file !== undefined),
     }),
   };
   const started = performance.now();

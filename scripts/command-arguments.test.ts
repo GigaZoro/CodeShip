@@ -19,6 +19,12 @@ type Refusal = readonly [argv: ReadonlyArray<string>, status: number, diagnostic
 
 const unknownOption = (name: string) => "Unknown option '" + name + "'";
 const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
+  "./lib/run-cached-test-group.ts": [
+    [[], 1, "A cached test group requires at least one test file"],
+    [[UNREAD], 1, "Unknown option"],
+    [[NodePath.join(root, "scripts/lib/cached-tests.test.ts"), UNREAD], 1, "Unknown option"],
+    [["--help", UNREAD], 1, "--help must be used alone."],
+  ],
   "../.github/scripts/check-changed-receipt.cjs": [
     [
       ["verify", "HEAD", "HEAD", UNREAD],

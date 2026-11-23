@@ -20,44 +20,67 @@ export function relativeTestPath(base: string, target: string): string {
   return NodePath.relative(base, target).split(NodePath.sep).join("/");
 }
 
-/** Use the spelling from discovery when both paths name the same directory entry. */
-export function resolveTestPath(root: string, target: string, candidates: ReadonlyArray<string>) {
-  const requested = relativeTestPath(root, target);
-  if (!requested) return requested;
-  const parts = requested.split("/");
-  const folded = requested.toLowerCase();
-  const alternatives = new Set<string>();
-  for (const file of candidates) {
-    if (file === requested || file.startsWith(requested + "/")) return requested;
-    const normalized = file.toLowerCase();
-    if (normalized === folded || normalized.startsWith(folded + "/")) {
-      alternatives.add(file.split("/", parts.length).join("/"));
+/** Resolve Git and caller spellings to the same entry without merging distinct links. */
+export function testPathResolver(root: string) {
+  const resolved = new Map<string, string | undefined>([["", ""]]);
+  const entries = new Map<string, Set<string>>();
+  function resolve(file: string): string | undefined {
+    if (resolved.has(file)) return resolved.get(file);
+    const slash = file.lastIndexOf("/");
+    const name = file.slice(slash + 1);
+    if (name === ".." || NodePath.isAbsolute(file)) return undefined;
+    const parent = resolve(slash < 0 ? "" : file.slice(0, slash));
+    if (parent === undefined) return undefined;
+    const directory = NodePath.join(root, parent);
+    let names = entries.get(directory);
+    if (!names) {
+      names = new Set(NodeFS.readdirSync(directory));
+      entries.set(directory, names);
     }
-  }
-  if (alternatives.size === 0 || !NodeFS.existsSync(target)) return requested;
-  for (const alternative of alternatives) {
-    if (!NodeFS.existsSync(NodePath.join(root, alternative))) continue;
-    let parent = root;
-    const sameEntry = alternative.split("/").every((name, index) => {
-      const entered = parts[index]!;
-      if (entered !== name) {
-        // Check each directory: case sensitivity can differ within one checkout, and
-        // two distinct names can even be hard links to the same underlying file.
-        const names = NodeFS.readdirSync(parent);
-        if (names.includes(name) && names.includes(entered)) return false;
+    let entry: string | undefined = name;
+    if (!names.has(name)) {
+      const target = NodePath.join(directory, name);
+      const identity = NodeFS.lstatSync(target, { bigint: true, throwIfNoEntry: false });
+      if (!identity) {
+        entry = undefined;
+      } else {
+        const sameEntry = (alternate: string) => {
+          const info = NodeFS.lstatSync(NodePath.join(directory, alternate), {
+            bigint: true,
+            throwIfNoEntry: false,
+          });
+          return info?.dev === identity.dev && info.ino === identity.ino;
+        };
+        const nativeName = NodePath.basename(NodeFS.realpathSync.native(target));
+        if (names.has(nativeName) && sameEntry(nativeName)) {
+          entry = nativeName;
+        } else {
+          // Some filesystems preserve the caller's spelling in realpath.
+          const matches = [...names].filter(sameEntry);
+          if (matches.length !== 1)
+            throw new Error(`Cannot determine the directory entry for ${target}`);
+          entry = matches[0];
+        }
       }
-      parent = NodePath.join(parent, name);
-      return true;
-    });
-    if (sameEntry) return alternative;
+    }
+    const canonical = entry === undefined ? undefined : NodePath.posix.join(parent, entry);
+    resolved.set(file, canonical);
+    return canonical;
   }
-  return requested;
+  return resolve;
 }
 
-export function matchesTestPath(file: string, filters: Array<string>) {
+function quoteArgument(value: string) {
+  return "'" + value.replaceAll("'", "'\"'\"'") + "'";
+}
+
+export function matchesTestPath(file: string, filters: ReadonlyArray<string | undefined>) {
   return (
     filters.length === 0 ||
-    filters.some((filter) => filter === "" || file === filter || file.startsWith(`${filter}/`))
+    filters.some(
+      (filter) =>
+        filter !== undefined && (filter === "" || file === filter || file.startsWith(`${filter}/`)),
+    )
   );
 }
 
@@ -122,9 +145,14 @@ export function cachedTestTasks(
       typeof manifest.scripts.test === "string"
         ? manifest.scripts.test
         : "vp test run";
-    if (!command.startsWith("vp test run")) {
+    if (command !== "vp test run" && !command.startsWith("vp test run ")) {
       throw new Error(`Unsupported test command in ${directory}`);
     }
+    const runner = relativeTestPath(
+      directory,
+      NodePath.join(root, "scripts/lib/run-cached-test-group.ts"),
+    );
+    const options = command.slice("vp test run".length);
     const cacheable = entries.filter((file) => !uncached.includes(file));
     const groups: Array<Array<string>> = [];
     for (let index = 0; index < cacheable.length; index += request.groupSize) {
@@ -135,11 +163,10 @@ export function cachedTestTasks(
       const key = NodeCrypto.createHash("sha256").update(group.join("\0")).digest("hex");
       const filters = group.map((file) => {
         const relative = relativeTestPath(directory, NodePath.join(root, file));
-        const filter = relative.startsWith("-") ? "./" + relative : relative;
-        return "'" + filter.replaceAll("'", "'\"'\"'") + "'";
+        return quoteArgument("./" + relative);
       });
       tasks[`test-cache:${key}`] = {
-        command: `${command} ${filters.join(" ")}`,
+        command: `node ${quoteArgument(runner)}${options} ${filters.join(" ")}`,
         ...(directory === root ? {} : { cwd: relativeTestPath(root, directory) }),
         cache: uncached.includes(group[0]!)
           ? false

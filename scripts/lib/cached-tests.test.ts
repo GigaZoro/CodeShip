@@ -32,7 +32,7 @@ describe("cachedTestTasks", () => {
     expect(fileTasks[0]![1]).toMatchObject({
       cache: false,
       cwd: "apps/server",
-      command: "vp test run 'src/worker.test.ts'",
+      command: "node '../../scripts/lib/run-cached-test-group.ts' './src/worker.test.ts'",
     });
   });
 
@@ -62,7 +62,9 @@ describe("cachedTestTasks", () => {
       JSON.stringify({ files: ["src/a'$(touch injected).test.ts"], groupSize: 1 }),
     );
     const task = Object.entries(tasks).find(([key]) => key !== "test-cache")![1];
-    expect(task.command).toBe("vp test run 'src/a'\"'\"'$(touch injected).test.ts'");
+    expect(task.command).toBe(
+      "node 'scripts/lib/run-cached-test-group.ts' './src/a'\"'\"'$(touch injected).test.ts'",
+    );
   });
 
   it("rejects paths outside the checkout and empty groups", () => {
@@ -78,7 +80,10 @@ describe("cachedTestTasks", () => {
   it("accepts spec files discovered by Vitest", () => {
     const tasks = cachedTestTasks(JSON.stringify({ files: ["src/example.spec.ts"], groupSize: 1 }));
     expect(
-      Object.values(tasks).some((task) => task.command === "vp test run 'src/example.spec.ts'"),
+      Object.values(tasks).some(
+        (task) =>
+          task.command === "node 'scripts/lib/run-cached-test-group.ts' './src/example.spec.ts'",
+      ),
     ).toBe(true);
   });
 
@@ -94,24 +99,30 @@ describe("cachedTestTasks", () => {
       run: (files?: Array<string>, uncached?: Array<string>) => Promise<number | null>;
       cli: (...args: Array<string>) => Promise<NodeChildProcess.SpawnSyncReturns<string>>;
       hits: () => Promise<number>;
+      git: (...args: Array<string>) => string;
     }) => Promise<void>,
   ) => {
-    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cached-tests-"));
+    const directory = await NodeFSP.realpath(
+      await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cached-tests-")),
+    );
     const root = NodePath.resolve(import.meta.dirname, "../..");
     const write = (file: string, content: string) =>
       NodeFSP.writeFile(NodePath.join(directory, file), content);
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")),
+    );
+    const git = (...args: Array<string>) =>
+      NodeChildProcess.execFileSync("git", args, {
+        cwd: directory,
+        encoding: "utf8",
+        env,
+      });
     const cli = async (...args: Array<string>) => {
       const scripts = NodePath.join(directory, "scripts");
-      await NodeFSP.mkdir(scripts, { recursive: true });
       for (const name of ["test-cached.ts", "check-changed-command.ts"]) {
         await NodeFSP.copyFile(NodePath.join(root, "scripts", name), NodePath.join(scripts, name));
       }
-      await NodeFSP.symlink(import.meta.dirname, NodePath.join(scripts, "lib"), "junction");
       await write(".gitignore", "node_modules/\ncache/\nscripts/\n");
-      const env = Object.fromEntries(
-        Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")),
-      );
-      NodeChildProcess.execFileSync("git", ["init", "--quiet", directory], { env });
       return NodeChildProcess.spawnSync(
         process.execPath,
         [NodePath.join(scripts, "test-cached.ts"), ...args],
@@ -158,6 +169,16 @@ describe("cachedTestTasks", () => {
     };
     try {
       await NodeFSP.mkdir(NodePath.join(directory, "node_modules"));
+      const lib = NodePath.join(directory, "scripts", "lib");
+      await NodeFSP.mkdir(lib, { recursive: true });
+      for (const file of [
+        "run-cached-test-group.ts",
+        "cached-tests.ts",
+        "sharded-tests.ts",
+        "command-line.ts",
+      ]) {
+        await NodeFSP.copyFile(NodePath.join(import.meta.dirname, file), NodePath.join(lib, file));
+      }
       await NodeFSP.symlink(
         await NodeFSP.realpath(NodePath.join(root, "node_modules/vite-plus")),
         NodePath.join(directory, "node_modules/vite-plus"),
@@ -166,7 +187,7 @@ describe("cachedTestTasks", () => {
       await write("package.json", '{"type":"module"}');
       await write(
         "vite.config.ts",
-        `import {cachedTestTasks} from ${JSON.stringify(NodeURL.pathToFileURL(NodePath.join(root, "scripts/lib/cached-tests.ts")).href)}; export default {run:{tasks:cachedTestTasks(process.env.T3_CACHED_TESTS, import.meta.dirname)},test:{include:["*.test.ts"]}};`,
+        `import {cachedTestTasks} from ${JSON.stringify(NodeURL.pathToFileURL(NodePath.join(root, "scripts/lib/cached-tests.ts")).href)}; export default {run:{tasks:cachedTestTasks(process.env.T3_CACHED_TESTS, import.meta.dirname)},test:{include:["*.test.ts","*/*.test.ts"]}};`,
       );
       await write(
         "a.test.ts",
@@ -177,7 +198,8 @@ describe("cachedTestTasks", () => {
         'import {test,expect} from "vite-plus/test"; test("independent",()=>expect(1).toBe(1));',
       );
       await write("fixture.txt", "hello");
-      await body({ directory, write, run, cli, hits });
+      git("init", "--quiet");
+      await body({ directory, write, run, cli, hits, git });
     } finally {
       await NodeFSP.rm(directory, { recursive: true, force: true });
     }
@@ -185,7 +207,7 @@ describe("cachedTestTasks", () => {
 
   it("dispatches a dash-prefixed test path as the only Vitest filter", () =>
     withFixture(async ({ write, cli }) => {
-      await write("a.test.ts", 'throw new Error("Unselected sibling was run");');
+      await write("other--literal-path.test.ts", 'throw new Error("Unselected sibling was run");');
       await write(
         "--literal-path.test.ts",
         'import {test} from "vite-plus/test"; test("selected", () => {});',
@@ -227,6 +249,102 @@ describe("cachedTestTasks", () => {
       const fileTasks = tasks.filter((task) => task.task_name.includes("test-cache:"));
       expect(fileTasks).toHaveLength(1);
       expect(fileTasks[0]!.result).toMatchObject({ Spawned: { cache_status: "Disabled" } });
+    }));
+
+  it("selects tracked and new tests across a case-only directory rename", () =>
+    withFixture(async ({ directory, write, cli, git }) => {
+      const tracked = "Tracked.test.ts";
+      const added = "New.test.ts";
+      const passing = 'import {test} from "vite-plus/test"; test("selected", () => {});';
+      await NodeFSP.mkdir(NodePath.join(directory, "Alias"));
+      await write("Alias/" + tracked, passing);
+      git("add", "--", "Alias/" + tracked);
+      const insensitive = await NodeFSP.access(NodePath.join(directory, "alias")).then(
+        () => true,
+        () => false,
+      );
+      if (insensitive) {
+        await NodeFSP.rename(
+          NodePath.join(directory, "Alias"),
+          NodePath.join(directory, "between"),
+        );
+        await NodeFSP.rename(
+          NodePath.join(directory, "between"),
+          NodePath.join(directory, "alias"),
+        );
+      } else {
+        await NodeFSP.mkdir(NodePath.join(directory, "alias"));
+      }
+      await write("alias/" + added, passing);
+      await NodeFSP.mkdir(NodePath.join(directory, "Aliases"));
+      await write("Aliases/Extra.test.ts", 'throw new Error("Adjacent directory was run");');
+      for (const spelling of ["Alias", "alias"]) {
+        const report = NodePath.join(directory, "selected.json");
+        const result = await cli("--report", report, spelling);
+        expect(result.status, result.stdout + result.stderr).toBe(0);
+        const files: string[] = JSON.parse(await NodeFSP.readFile(report, "utf8")).files;
+        const expected = insensitive
+          ? ["alias/" + added, "alias/" + tracked]
+          : [spelling === "Alias" ? "Alias/" + tracked : "alias/" + added];
+        expect(files.sort()).toEqual(expected.sort());
+      }
+    }));
+
+  it("runs an exact group through the package's configured Vitest project", () =>
+    withFixture(async ({ directory, write, cli }) => {
+      await NodeFSP.mkdir(NodePath.join(directory, "pkg"));
+      await write(
+        "pkg/package.json",
+        JSON.stringify({
+          type: "module",
+          scripts: { test: "vp test run --config ./group.vite.ts --project selected" },
+        }),
+      );
+      await write(
+        "pkg/group.vite.ts",
+        `export default {test:{projects:[
+        {test:{name:"selected",include:["*.test.ts"],env:{GROUP_PROJECT:"selected"}}},
+        {test:{name:"other",include:["*.test.ts"],env:{GROUP_PROJECT:"other"}}}
+      ]}};`,
+      );
+      const test =
+        'import {test,expect} from "vite-plus/test"; import {writeFileSync} from "node:fs"; test("project",()=>{expect(process.env.GROUP_PROJECT).toBe("selected"); writeFileSync(import.meta.filename+".ran","selected");});';
+      await write("pkg/First.test.ts", test);
+      await write("pkg/Second.test.ts", test);
+      await write("pkg/OtherFirst.test.ts", 'throw new Error("Unselected sibling was run");');
+      const result = await cli("--group-size", "2", "pkg/First.test.ts", "pkg/Second.test.ts");
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      for (const name of ["First", "Second"]) {
+        expect(
+          await NodeFSP.readFile(NodePath.join(directory, "pkg", name + ".test.ts.ran"), "utf8"),
+        ).toBe("selected");
+      }
+    }));
+
+  it("uses filesystem identity for a Greek sigma selection and its cache exception", () =>
+    withFixture(async ({ directory, write, cli }) => {
+      const disk = "οσ-1.test.ts";
+      const alias = "ΟΣ-1.test.ts";
+      await write(disk, 'import {test} from "vite-plus/test"; test("selected", () => {});');
+      const equivalent = await NodeFSP.access(NodePath.join(directory, alias)).then(
+        () => true,
+        () => false,
+      );
+      const report = NodePath.join(directory, "selected.json");
+      const result = await cli("--report", report, "--uncached", alias, alias);
+      if (!equivalent) {
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain("No test files matched");
+        return;
+      }
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      const recorded = JSON.parse(await NodeFSP.readFile(report, "utf8"));
+      expect(recorded.files).toEqual([disk]);
+      expect(
+        recorded.summary.tasks.filter((task: { task_name: string }) =>
+          task.task_name.includes("test-cache:"),
+        ),
+      ).toMatchObject([{ result: { Spawned: { cache_status: "Disabled" } } }]);
     }));
 
   it("reuses individual results and invalidates filesystem inputs", () =>
