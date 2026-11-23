@@ -4,6 +4,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
+  EXPECTED_ACTIVE_RUN_CHANGED,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadShell,
   PEER_LINK_AGENTS_ONLY_NOTE,
@@ -21,6 +22,7 @@ import * as Ref from "effect/Ref";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
@@ -108,7 +110,11 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
   return Layer.mock(ThreadManagement.ThreadManagementService)({
     hasReceipt: (
       commandId,
-      target?: { readonly threadId: ThreadId; readonly commandType: string },
+      target?: {
+        readonly threadId: ThreadId;
+        readonly commandType: string;
+        readonly includeRejected?: true;
+      },
     ) =>
       Ref.get(seen).pipe(
         Effect.map(
@@ -117,6 +123,10 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
               sends.some(
                 (entry) =>
                   entry.commandId === commandId &&
+                  (target === undefined ||
+                    target.includeRejected ||
+                    entry.expectedActiveRunId === undefined ||
+                    entry.expectedActiveRunId === boxRun) &&
                   (target === undefined || entry.threadId === target.threadId),
               )) ||
             (target?.commandType !== "message.dispatch" &&
@@ -141,7 +151,17 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
     listProjectThreads: () => linked.pipe(Effect.map((shell) => [shell] as never)),
     sendToThread: (input) =>
       Ref.update(seen, (current) => ({ ...current, sends: [...current.sends, input] })).pipe(
-        Effect.as({ run: run("running"), delivery: "started" } as never),
+        Effect.andThen(
+          input.expectedActiveRunId !== undefined && input.expectedActiveRunId !== boxRun
+            ? Effect.fail(
+                new Orchestrator.OrchestratorCommandPreviouslyRejectedError({
+                  commandId: input.commandId,
+                  commandType: "message.dispatch",
+                  detail: EXPECTED_ACTIVE_RUN_CHANGED,
+                }),
+              )
+            : Effect.succeed({ run: run("running"), delivery: "started" } as never),
+        ),
       ),
     dispatch: (command) =>
       Ref.update(seen, (current) => ({
@@ -749,7 +769,18 @@ it.effect(
           demandId: `demand:${"e".repeat(64)}`,
           demandOriginKind: "repair",
         });
+        const stale = {
+          ...send,
+          mode: "restart",
+          expectedActiveRunId: "run:previous",
+          clientRequestId: "settled-stale-repair",
+        };
+        const refused = yield* a.call(caller, "t3_thread_send", stale);
+        expect(failureOf(refused)).toMatchObject({ code: EXPECTED_ACTIVE_RUN_CHANGED });
         yield* Ref.set(a.repairSource, "missing");
+        const replayedRefusal = yield* a.call(caller, "t3_thread_send", stale);
+        expect(failureOf(replayedRefusal)).toEqual(failureOf(refused));
+        expect((yield* Ref.get(seen)).sends.at(-1)?.receiptOnly).toBe(true);
         const repeated = yield* a.call(caller, "t3_thread_send", send);
         expect(failureOf(repeated)).toBeUndefined();
         expect(repeated.structuredContent).toEqual(sent.structuredContent);
@@ -778,7 +809,7 @@ it.effect(
           (yield* a.call(caller, "t3_thread_send", { ...send, clientRequestId: "fresh-deleted" }))
             .isError,
         ).toBe(true);
-        expect((yield* Ref.get(seen)).sends).toHaveLength(2);
+        expect((yield* Ref.get(seen)).sends).toHaveLength(4);
         expect((yield* Ref.get(seen)).launches).toHaveLength(3);
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),

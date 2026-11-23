@@ -4423,24 +4423,21 @@ const make = Effect.gen(function* () {
         operation: "thread-send",
       });
       const commandId = stableCommandId({ scope, requestKey: key, operation: "thread-send" });
-      if (
-        scope.client?.replayDemandReceipt === true &&
-        (input.clientRequestId === undefined ||
-          !(yield* threadManagement.hasReceipt(commandId, {
-            commandType: "message.dispatch",
-            threadId: input.threadId,
-          })))
-      ) {
+      const receiptOnly = scope.client?.replayDemandReceipt === true;
+      const replayingRepair =
+        (receiptOnly || input.demandOrigin?.kind === "repair") &&
+        input.clientRequestId !== undefined &&
+        (yield* threadManagement.hasReceipt(commandId, {
+          commandType: "message.dispatch",
+          threadId: input.threadId,
+          includeRejected: true,
+        }));
+      if (receiptOnly && !replayingRepair) {
         return yield* failure(
           "invalid_request",
           "This repair send has no accepted receipt for that thread.",
         );
       }
-      // A retry of a repair is already permanently accepted or rejected. Its source may be gone.
-      const replayingRepair =
-        input.demandOrigin?.kind === "repair" &&
-        input.clientRequestId !== undefined &&
-        (yield* threadManagement.hasReceipt(commandId));
       const demandId = replayingRepair
         ? null
         : input.demandOrigin !== undefined
@@ -4456,7 +4453,7 @@ const make = Effect.gen(function* () {
           threadId: input.threadId,
           ...(parent === undefined ? {} : { senderThreadId: parent.thread.id }),
           demandId,
-          ...(scope.client?.replayDemandReceipt === true ? { receiptOnly: true } : {}),
+          ...(receiptOnly ? { receiptOnly: true } : {}),
           messageId,
           text: input.message,
           attachments: [],

@@ -1589,6 +1589,11 @@ it.effect("starts a stop-and-send that arrives after the provider turn completed
     Effect.gen(function* () {
       const { events, started, interrupted, layer, startFirstTurn } =
         yield* nextTurnSelectionHarness("restart-after-turn-completed", true);
+      const management = ThreadManagement.layer.pipe(
+        Layer.provideMerge(layer),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory))),
+      );
       yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
@@ -1629,6 +1634,37 @@ it.effect("starts a stop-and-send that arrives after the provider turn completed
         assert.equal(again._tag, "OrchestratorCommandPreviouslyRejectedError");
         if (again._tag === "OrchestratorCommandPreviouslyRejectedError")
           assert.equal(again.detail, refused.message);
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const target = { threadId, commandType: "message.dispatch" as const };
+        assert.isFalse(yield* threads.hasReceipt(guarded.commandId, target));
+        assert.isTrue(
+          yield* threads.hasReceipt(guarded.commandId, { ...target, includeRejected: true }),
+        );
+        assert.isFalse(
+          yield* threads.hasReceipt(guarded.commandId, {
+            ...target,
+            includeRejected: true,
+            threadId: ThreadId.make("another-thread"),
+          }),
+        );
+        assert.isFalse(
+          yield* threads.hasReceipt(guarded.commandId, {
+            ...target,
+            includeRejected: true,
+            commandType: "thread.create",
+          }),
+        );
+        const recovered = yield* threads
+          .sendToThread({
+            ...guarded,
+            projectId: (yield* orchestrator.getThreadProjection(threadId)).thread.projectId,
+            mode: "restart",
+            receiptOnly: true,
+          })
+          .pipe(Effect.flip);
+        assert.equal(recovered._tag, "OrchestratorCommandPreviouslyRejectedError");
+        if (recovered._tag === "OrchestratorCommandPreviouslyRejectedError")
+          assert.equal(recovered.detail, refused.message);
         assert.isFalse(
           (yield* orchestrator.getThreadProjection(threadId)).messages.some(
             (message) => message.id === guarded.messageId,
@@ -1677,7 +1713,7 @@ it.effect("starts a stop-and-send that arrives after the provider turn completed
         assert.deepEqual(interrupted, []);
         assert.equal(started.length, 2);
         assert.equal(started[1]?.message.messageId, MessageId.make("message:restart"));
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(management));
     }),
   ),
 );

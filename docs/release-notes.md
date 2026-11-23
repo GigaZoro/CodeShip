@@ -1,6 +1,6 @@
 ## 2026-11-23 — Accounting for repairs and work-item requests
 
-- MCP launches and sends can carry the work item or repair run that owns them. A guarded restart applies only while its intended run is active. Linked repairs require a peer that supports origin accounting.
+- MCP launches and sends can carry the work item or repair run that owns them. A guarded restart applies only while its intended run is active. Linked repairs require a peer that supports origin accounting. If a guarded restart was refused because the run changed, retrying across the link returns that same result after its source disappears.
 - A provider credential shared by multiple runs can recover an accepted delegation. Starting a new delegation requires proof of which run requested it. Separate native processes retain their own credentials.
 
 ## 2026-11-23 — Recover interrupted thread launches

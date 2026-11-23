@@ -359,7 +359,8 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
-interface AcceptedCommandTarget {
+interface CommandReceiptTarget {
+  readonly includeRejected?: true;
   readonly commandType:
     | "thread.create"
     | "message.dispatch"
@@ -453,7 +454,7 @@ export interface ThreadManagementServiceShape {
   /** Receipt replays start no work; skip enablement checks with the same command id so settings cannot reject accepted retries. */
   readonly hasReceipt: (
     commandId: CommandId,
-    acceptedTarget?: AcceptedCommandTarget,
+    target?: CommandReceiptTarget,
   ) => Effect.Effect<boolean>;
   readonly getAcceptedLaunchAttachments: (
     commandId: CommandId,
@@ -706,20 +707,20 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const receiptMatches = (commandId: CommandId, acceptedTarget?: AcceptedCommandTarget) =>
+  const receiptMatches = (commandId: CommandId, target?: CommandReceiptTarget) =>
     readReceipt(commandId).pipe(
       Effect.map(
         (receipt) =>
           Option.isSome(receipt) &&
-          (acceptedTarget === undefined ||
-            (receipt.value.status === "accepted" &&
-              receipt.value.commandType === acceptedTarget.commandType &&
-              receipt.value.threadId === acceptedTarget.threadId)),
+          (target === undefined ||
+            ((receipt.value.status === "accepted" || target.includeRejected === true) &&
+              receipt.value.commandType === target.commandType &&
+              receipt.value.threadId === target.threadId)),
       ),
     );
 
-  const hasReceipt: ThreadManagementServiceShape["hasReceipt"] = (commandId, acceptedTarget) =>
-    receiptMatches(commandId, acceptedTarget).pipe(Effect.orElseSucceed(() => false));
+  const hasReceipt: ThreadManagementServiceShape["hasReceipt"] = (commandId, target) =>
+    receiptMatches(commandId, target).pipe(Effect.orElseSucceed(() => false));
 
   const getAcceptedLaunchAttachments = Effect.fn(
     "ThreadManagementService.getAcceptedLaunchAttachments",
@@ -1069,7 +1070,7 @@ const make = Effect.gen(function* () {
       ),
     );
     const dispatched = yield* Effect.gen(function* () {
-      if (receipt?.status === "accepted") {
+      if (receipt !== undefined) {
         if (receipt.threadId !== input.threadId) {
           return yield* new Orchestrator.OrchestratorCommandIdConflictError({
             commandId: input.commandId,
@@ -1083,6 +1084,13 @@ const make = Effect.gen(function* () {
             commandId: input.commandId,
             commandType: "message.dispatch",
             cause: "The accepted command was not a message send.",
+          });
+        }
+        if (receipt.status === "rejected") {
+          return yield* new Orchestrator.OrchestratorCommandPreviouslyRejectedError({
+            commandId: input.commandId,
+            commandType: "message.dispatch",
+            detail: receipt.error ?? "Previously rejected.",
           });
         }
         return {
