@@ -256,8 +256,11 @@ $targets = if ($null -eq $inputData.targets) { $null } else { ,([string[]]$input
 `;
 
 export class WindowsWorktreeInspectionError extends Error {
-  constructor(readonly check: string) {
+  readonly check: string;
+
+  constructor(check: string) {
     super(`Windows worktree inspection failed (${check})`);
+    this.check = check;
   }
 }
 
