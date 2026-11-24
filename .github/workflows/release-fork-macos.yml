@@ -105,7 +105,7 @@ jobs:
           cat "$RUNNER_TEMP/public-config" >> "$GITHUB_OUTPUT"
 
       # release-desktop.yml reads the bundle from its own run.
-      - name: Download the publisher's JS bundle
+      - name: Download JS bundle from publisher ${{ steps.bundle.outputs.run_id }}
         uses: actions/download-artifact@v8
         with:
           name: js-bundle

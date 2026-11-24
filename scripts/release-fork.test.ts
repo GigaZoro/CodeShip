@@ -153,7 +153,7 @@ describe("fork release", () => {
       "github.event.workflow_run.head_branch == github.event.repository.default_branch",
     );
     const listings = retry.match(/gh run list[^\n]*\\\n[^\n]*/g) ?? [];
-    expect(listings).toHaveLength(2);
+    expect(listings).toHaveLength(1);
     for (const listing of listings.filter((line) => line.includes("release-fork.yml"))) {
       expect(listing).toContain('--branch "$DEFAULT_BRANCH"');
     }
@@ -181,40 +181,32 @@ describe("fork release", () => {
     expect(workflowSource("release-fork.yml")).toContain("<!-- codeship-publisher-run: %s -->");
     expect(preflight).toContain("run-id: ${{ steps.bundle.outputs.run_id }}");
     expect(preflight).not.toContain("${{ inputs.bundle_run }}");
-    const tagLookup = retry
-      .split("\n")
-      .find((line) => line.includes("--workflow release-fork-macos.yml"));
-    expect(tagLookup).toContain('--branch "$tag"');
-    expect(tagLookup).toContain('--commit "$sha"');
-    expect(tagLookup).toContain("--event workflow_dispatch");
+    expect(retry).toContain('recover-macos "$tag" "$sha" "$published"');
+    expect(preflight).toContain(
+      "name: Download JS bundle from publisher ${{ steps.bundle.outputs.run_id }}",
+    );
     expect(workflowSource("release-fork-macos.yml")).toMatch(/^run-name:.*github\.ref_type/m);
   });
 
   describe.skipIf(isWindowsHost)("Mac release recovery", () => {
     const tag = "v2026.1124.7";
     const title = "Release (fork) macOS " + tag;
-    const emptyJobs = JSON.stringify({ jobs: [] });
     const script = readWorkflow("release-fork-retry.yml").jobs["catch-up-macos"]!.steps!.find(
       (step) => step.run?.includes("releases/latest"),
     )!.run!;
-    // GitHub's list has already selected the workflow, tag and SHA. Only the
-    // service commands and clock are stubbed. The workflow interprets the jobs.
     const stubs = `
 gh() {
   case "$1 $2" in
     "api repos/fixture/repo/releases/latest") echo "v2026.1124.7 abcd 2026-01-01T00:00:00Z false" ;;
-    "run list") printf '%s\\n' "$RUNS" ;;
-    api*) printf '%s\\n' "$JOBS" ;;
     "run rerun"|"workflow run") echo "WRITE $*" ;;
     *) return 64 ;;
   esac
 }
 node() {
-  [[ "$*" == ".github/scripts/fork-release.cjs macos-bundle v2026.1124.7 abcd" ]] || return 65
-  [[ "$PUBLISHER" != expired ]] || return 1
-  echo "$PUBLISHER"
+  [[ "$*" == ".github/scripts/fork-release.cjs recover-macos v2026.1124.7 abcd 2026-01-01T00:00:00Z" ]] || return 65
+  [[ "$PLAN" != error ]] || return 1
+  echo "$PLAN"
 }
-date() { if [[ "$1" == "-d" ]]; then echo 1000; else echo "$NOW"; fi; }
 `;
     const run = (env: Record<string, string> = {}) =>
       NodeChildProcess.spawnSync("bash", ["-c", stubs + script], {
@@ -226,10 +218,7 @@ date() { if [[ "$1" == "-d" ]]; then echo 1000; else echo "$NOW"; fi; }
           RUN_TITLE: title,
           RUN_SHA: "abcd",
           RUN_ID: "502",
-          RUNS: "",
-          JOBS: emptyJobs,
-          PUBLISHER: "480",
-          NOW: "1800",
+          PLAN: "wait",
           MAX_ATTEMPTS: "24",
           IMMEDIATE_ATTEMPTS: "3",
           ...env,
@@ -241,33 +230,28 @@ date() { if [[ "$1" == "-d" ]]; then echo 1000; else echo "$NOW"; fi; }
       return result.stdout.split("\n").filter((line) => line.startsWith("WRITE "));
     };
 
-    it("replaces a rejected bundle input with the publisher's run on either trigger", () => {
-      const failedStep = { name: "Find the release and its JS bundle", conclusion: "failure" };
-      const jobs = JSON.stringify({ jobs: [{ steps: [failedStep] }] });
+    it("acts only on the validated tag and publisher plan on either trigger", () => {
       for (const trigger of ["workflow_run", "schedule"]) {
-        expect(
-          writes({ GITHUB_EVENT_NAME: trigger, JOBS: jobs, RUNS: "502 completed 2 failure" }),
-        ).toEqual([
+        expect(writes({ GITHUB_EVENT_NAME: trigger, PLAN: "dispatch 480" })).toEqual([
           `WRITE workflow run release-fork-macos.yml --repo fixture/repo --ref ${tag} -f version=2026.1124.7 -f bundle_run=480`,
         ]);
+        expect(writes({ GITHUB_EVENT_NAME: trigger, PLAN: "rerun 502" })).toEqual([
+          "WRITE run rerun 502 --failed --repo fixture/repo",
+        ]);
+        expect(writes({ GITHUB_EVENT_NAME: trigger, PLAN: "wait" })).toEqual([]);
       }
+      const unavailable = run({ PLAN: "error" });
+      expect(unavailable.status).not.toBe(0);
+      expect(unavailable.stdout).not.toContain("WRITE ");
     });
-
-    it("leaves the new publisher's dispatch alone after an older release fails", () => {
-      expect(writes({ RUN_TITLE: "Release (fork) macOS v2026.1124.6 (branch dispatch)" })).toEqual(
-        [],
-      );
-      expect(writes({ RUN_SHA: "older" })).toEqual([]);
-      expect(writes({ RUN_TITLE: title + " (branch dispatch)", NOW: "1500" })).toEqual([]);
-      expect(writes({ RUNS: "601 in_progress 1\n502 completed 1 failure" })).toEqual([]);
-    });
-
-    it("retries a valid failed run only while its publisher's bundle is available", () => {
-      const failed = { RUNS: "502 completed 1 failure" };
-      expect(writes(failed)).toEqual(["WRITE run rerun 502 --failed --repo fixture/repo"]);
-      const expired = run({ ...failed, PUBLISHER: "expired" });
-      expect(expired.status).not.toBe(0);
-      expect(expired.stdout).not.toContain("WRITE ");
+    it("ignores failure of another release at the same SHA", () => {
+      expect(
+        writes({
+          RUN_TITLE: "Release (fork) macOS v2026.1124.6 (branch dispatch)",
+          PLAN: "dispatch 480",
+        }),
+      ).toEqual([]);
+      expect(writes({ RUN_SHA: "older", PLAN: "dispatch 480" })).toEqual([]);
     });
   });
 

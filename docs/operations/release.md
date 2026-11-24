@@ -119,16 +119,17 @@ t3 service install
 Builds use the public T3 Connect identifiers in `.env.example`. Releases also fail for reasons
 outside the build: a job waiting for a GitHub-hosted runner is cancelled after about 15 minutes
 without one, and GitHub outages make downloads such as Electron's time out for hours.
-`release-fork-retry.yml` reruns a failed release's failed jobs while its commit is still the head of
-`main`, and a failed macOS build's while its release is still the latest: right away while the only
-failures are jobs that never got a runner, otherwise twice right away and then from its half-hourly
-schedule, which GitHub often delays by hours. The schedule also starts a release when the head of
-`main` has no run at all, and a macOS build when the latest release has none. Past 24 attempts it
-fails the scheduled run. To repair one by hand, rerun the failed run, or run **Release (fork)
-macOS** from the published release tag and enter its version. The workflow verifies the
-publishing run and retrieves its JS bundle. Older tags also require the publishing run ID.
-Recovery identifies that run from its successful publication step and replaces dispatches that
-rejected their original bundle.
+`release-fork-retry.yml` retries a failed release while its commit remains the head of `main`.
+Jobs that never got a runner can retry immediately, up to 24 attempts. Other failures get two
+immediate retries followed by the half-hourly schedule. The schedule also starts a missing release.
+
+For the latest macOS release, the initial build, reruns and replacement dispatches share a budget
+of three immediate attempts and 24 attempts in total. Before reusing a run, recovery checks that
+its JS bundle came from the publishing run. If only attachment failed and the signed app artifact
+is available, it retries attachment even after the JS bundle expires. When it cannot verify an
+older run’s source, recovery starts a fresh build with the publisher’s bundle if available.
+To repair a release by hand, run **Release (fork) macOS** from the published tag and enter its
+version. Older tags also require the publishing run ID.
 
 Main also prepares the macOS Codex metadata package in a separate workflow. A release tag can reuse the verified archive from main when its native build recipe matches. A cold cache can build the tag’s own recipe. Windows and Linux publication run independently of the Mac runner.
 

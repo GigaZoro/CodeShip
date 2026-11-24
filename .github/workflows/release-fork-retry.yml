@@ -9,7 +9,8 @@ name: Release (fork) retry
 # and uses no build time. Other failures rerun twice right away, then from the
 # schedule, which GitHub delays by hours under load.
 #
-# Main publishes Windows and Linux. Each published tag owns its macOS build.
+# Main publishes Windows and Linux. For a macOS release, reruns and replacement
+# dispatches share three immediate attempts and 24 total attempts.
 #
 # Release (fork) publishes main's head for Windows and Linux. A run whose commit
 # is no longer main is left alone: main's own run releases it, and publishing
@@ -157,6 +158,7 @@ jobs:
           RUN_TITLE: ${{ github.event.workflow_run.display_title }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           IMMEDIATE_ATTEMPTS: 3
         run: |
           set -euo pipefail
@@ -178,48 +180,14 @@ jobs:
               exit 0
             fi
           fi
-          bundle_run="$(node .github/scripts/fork-release.cjs macos-bundle "$tag" "$sha")"
-          # Prefer an active build. For old tags GitHub does not expose dispatch inputs,
-          # so a rejected bundle must be replaced by a fresh dispatch using the publisher.
-          runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-fork-macos.yml --branch "$tag" --commit "$sha" --event workflow_dispatch --limit "$MAX_ATTEMPTS" \
-            --json databaseId,status,conclusion,attempt,displayTitle \
-            --jq '[.[] | select(.displayTitle == env.TITLE)] | (map(select(.status != "completed")) + map(select(.status == "completed")))[] | "\(.databaseId) \(.status) \(.attempt) \(.conclusion)"')"
-          rejected=0
-          while read -r id status attempt conclusion; do
-            [[ -n "$id" ]] || break
-            if [[ "$status" != completed || "$conclusion" == success ]]; then
-              echo "Run $id for $tag is $status $conclusion."
-              exit 0
-            fi
-            jobs="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/attempts/$attempt/jobs?per_page=100")"
-            if jq -e --arg download "Download the release's JS bundle" 'any(.jobs[].steps[]?;
-              (.name == "Find the release and its JS bundle" or .name == $download) and .conclusion == "failure")' <<<"$jobs" >/dev/null; then
-              rejected=$((rejected + 1))
-              continue
-            fi
-            limit="$MAX_ATTEMPTS"
-            if [[ "$GITHUB_EVENT_NAME" == workflow_run ]]; then
-              [[ "$id" == "$RUN_ID" ]] || exit 0
-              if ! jq -e '[.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")]
-                | length > 0 and all((.runner_id // 0) == 0 and (.steps | length) == 0)' <<<"$jobs" >/dev/null; then
-                limit="$IMMEDIATE_ATTEMPTS"
-              fi
-            fi
-            if (( attempt >= limit )); then
-              echo "Run $id reached $limit attempts for $tag."
-              if (( attempt >= MAX_ATTEMPTS )); then exit 1; fi
-              exit 0
-            fi
-            gh run rerun "$id" --failed --repo "$GITHUB_REPOSITORY"
-            exit 0
-          done <<<"$runs"
-          if (( rejected >= MAX_ATTEMPTS )); then
-            echo "::error::$tag exhausted its attempts to obtain the published bundle."
-            exit 1
-          fi
-          if (( $(date +%s) - $(date -d "$published" +%s) < 600 )); then
-            echo "Allowing the publisher time to dispatch the macOS build for $tag."
-            exit 0
-          fi
-          gh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "$tag" \
-            -f version="$version" -f bundle_run="$bundle_run"
+          plan="$(node .github/scripts/fork-release.cjs recover-macos "$tag" "$sha" "$published")"
+          read -r action id <<<"$plan"
+          case "$action" in
+            wait) echo "Waiting for the macOS release or its next scheduled attempt." ;;
+            rerun) gh run rerun "$id" --failed --repo "$GITHUB_REPOSITORY" ;;
+            dispatch)
+              gh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "$tag" \
+                -f version="$version" -f bundle_run="$id"
+              ;;
+            *) echo "::error::Unexpected macOS recovery decision."; exit 1 ;;
+          esac
