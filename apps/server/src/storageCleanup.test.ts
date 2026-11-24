@@ -970,6 +970,7 @@ describe("owned setup output", () => {
     "a failed configure followed by recovery",
     "an interrupted install followed by two reruns",
     "an unrelated source edit on repeat",
+    "a build cache added after setup",
   ] as const;
   const checkSetups = (
     title: string,
@@ -998,6 +999,7 @@ describe("owned setup output", () => {
       "an edited dependency file",
       "a dirty install input",
       "a failed configure followed by recovery",
+      "a build cache added after setup",
     ];
     describe.skipIf(isWindowsHost)("POSIX", () => {
       it.live.each(scenarios.filter((name) => !windowsOnly.includes(name)))(title, run);
@@ -1460,6 +1462,12 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
             case "a private directory stream":
               yield* Effect.promise(() => NodeFSP.writeFile(privateStream, "keep"));
               break;
+            case "a build cache added after setup": {
+              const cache = NodePath.join(worktree, "node_modules/.vite-temp");
+              yield* fs.makeDirectory(cache);
+              yield* fs.writeFileString(NodePath.join(cache, "bundle.txt"), "built after setup");
+              break;
+            }
             case "standard setup only":
             case "an unpublished success marker": {
               if (isWindowsHost && scenario === "standard setup only") {
@@ -1548,7 +1556,7 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
             latestRunCompletedAt: at(0),
           });
           fixture.setThreads([owner]);
-          const { file } = yield* queueWorktreeRelease({
+          const { file, savedFiles } = yield* queueWorktreeRelease({
             stateDir: fixture.config.stateDir,
             threadId: owner.id,
             runId,
@@ -1562,6 +1570,7 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
             configureFailure ||
             scenario === "standard setup only" ||
             scenario === "a dead setup owner" ||
+            scenario === "a build cache added after setup" ||
             scenario === "an unpublished success marker" ||
             scenario === "a prior proof without dependencies";
           const result = (yield* fixture.service.runNow).entries[0];
@@ -1598,14 +1607,23 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
           if (!isWindowsHost && scenario !== "a missing dotenv source") {
             expect(yield* fs.readFileString(mainEnv)).toBe("example-main-value");
           }
-          if (scenario === "standard setup only") {
+          if (scenario === "a build cache added after setup")
+            expect(
+              yield* fs.readFileString(
+                NodePath.join(savedFiles!, "node_modules/.vite-temp/bundle.txt"),
+              ),
+            ).toBe("built after setup");
+          if (
+            scenario === "standard setup only" ||
+            scenario === "a build cache added after setup"
+          ) {
             yield* command(repo, ["worktree", "add", worktree, "feature"]);
             const followUp = yield* runSetup();
             expect(followUp.success, followUp.output).toBe(true);
             expect(
               yield* fs.readFileString(NodePath.join(worktree, "node_modules/example/index.js")),
             ).toBe("module");
-            if (isWindowsHost)
+            if (isWindowsHost && scenario === "standard setup only")
               expect(
                 yield* fs.readFileString(NodePath.join(sibling, "node_modules/example/index.js")),
               ).toBe("module");
