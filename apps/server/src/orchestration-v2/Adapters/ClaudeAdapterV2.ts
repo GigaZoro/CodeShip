@@ -189,6 +189,7 @@ import {
   mergeClaudeProcessEnvironment,
   resolveClaudeHomePath,
 } from "../../provider/Drivers/ClaudeHome.ts";
+import type { ClaudeMcpSignInRenewalPendingError } from "../../provider/Drivers/ClaudeMcpSignInRenewal.ts";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   resolveClaudeCatalogContextWindowTokens,
@@ -4807,7 +4808,7 @@ export interface ClaudeAdapterV2Options {
   /** A turn ran on this account without a login failure, so a recorded failure no longer holds. */
   readonly onAuthenticated?: Effect.Effect<void>;
   /** Runs before each Claude process starts, such as an added account copying shared config. */
-  readonly prepareHome?: Effect.Effect<void>;
+  readonly prepareHome?: Effect.Effect<void, ClaudeMcpSignInRenewalPendingError>;
   readonly continuationRequests?: {
     readonly offer: (
       request: ProviderContinuationRequests.ProviderContinuationRequest,
@@ -10960,16 +10961,28 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const resolvedTurnCwd = yield* fileSystem
             .realPath(turnInput.runtimePolicy.cwd ?? ".")
             .pipe(Effect.orElseSucceed(() => turnInput.runtimePolicy.cwd));
-          if (adapterOptions.prepareHome !== undefined) yield* adapterOptions.prepareHome;
-          const querySession = yield* queryRunner
-            .open({
-              threadId: turnInput.threadId,
-              providerSessionId: input.providerSessionId,
-              options: queryOptions,
-            })
-            .pipe(
-              Effect.catch((cause) =>
-                Effect.gen(function* () {
+          const prepareHome = (adapterOptions.prepareHome ?? Effect.void).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapter.ProviderAdapterOpenSessionError({
+                  driver: CLAUDE_PROVIDER,
+                  providerSessionId: input.providerSessionId,
+                  cause,
+                  failure: promptNotSentFailure(cause.message),
+                }),
+            ),
+          );
+          const querySession = yield* prepareHome.pipe(
+            Effect.andThen(() =>
+              queryRunner.open({
+                threadId: turnInput.threadId,
+                providerSessionId: input.providerSessionId,
+                options: queryOptions,
+              }),
+            ),
+            Effect.catchTags({
+              ClaudeAgentSdkQueryRunnerError: Effect.fn("ClaudeAdapterV2.queryOpenFailure")(
+                function* (cause) {
                   const failure =
                     claudeStartupUsageFailure(cause, yield* DateTime.now) ??
                     (isClaudeMcpRegistrationTimeoutError(cause.cause) &&
@@ -10984,19 +10997,20 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                         cause,
                         failure,
                       });
-                }),
+                },
               ),
-              Effect.onError(() =>
-                closedExistingNativeThreadId === nativeThreadId
-                  ? Effect.gen(function* () {
-                      yield* clearWakeStateForNativeThread(nativeThreadId);
-                      yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
-                        status: "idle",
-                      });
-                    })
-                  : Effect.void,
-              ),
-            );
+            }),
+            Effect.onError(() =>
+              closedExistingNativeThreadId === nativeThreadId
+                ? Effect.gen(function* () {
+                    yield* clearWakeStateForNativeThread(nativeThreadId);
+                    yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
+                      status: "idle",
+                    });
+                  })
+                : Effect.void,
+            ),
+          );
           // Mark only successful opens; retries must not resume sessions that failed to create.
           yield* Ref.update(openedNativeThreads, (current) => {
             if (current.has(nativeThreadId)) {
@@ -11115,20 +11129,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           return context;
         });
 
-        const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
-          function* (requestedTurnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
+        const startDeliveredTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
+          function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
             const startedAt = yield* DateTime.now;
-            const nativeThreadId = yield* getNativeThreadId(requestedTurnInput.providerThread);
-            // Only the session that requested a continuation holds its wake. One this session never
-            // asked for (its own session closed, or it ran on another account) is sent as its text.
-            const turnInput =
-              isClaudeProviderContinuationTurn(requestedTurnInput) &&
-              !(yield* Ref.get(requestedContinuations)).has(nativeThreadId)
-                ? {
-                    ...requestedTurnInput,
-                    message: { ...requestedTurnInput.message, creationSource: "server" as const },
-                  }
-                : requestedTurnInput;
+            const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
             const nativeTurnId = `turn:${turnInput.attemptId}`;
             // Use fresh uuids: native sessions can outlive this database, and Claude skips previously recorded prompts.
             const promptUuid = isClaudeProviderContinuationTurn(turnInput)
@@ -11487,11 +11491,31 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     threadId: turnInput.threadId,
                     providerThreadId: turnInput.providerThread.id,
                     runId: turnInput.runId,
+                    // Queuing the prompt is a prompt turn's last step that can fail, and a closed
+                    // queue is settled by whoever closed the query, so every failure here is earlier.
+                    ...(isClaudeProviderContinuationTurn(turnInput)
+                      ? {}
+                      : { beforePrompt: true as const }),
                     cause,
                   }),
               ),
             ),
         );
+        // Only the session that requested a continuation holds its wake. One this session never
+        // asked for (its own session closed, or it ran on another account) is sent as its text.
+        const startTurn = (requestedTurnInput: ProviderAdapter.ProviderAdapterV2TurnInput) =>
+          Effect.flatMap(Ref.get(requestedContinuations), (requested) => {
+            const nativeThreadId = requestedTurnInput.providerThread.nativeThreadRef?.nativeId;
+            return startDeliveredTurn(
+              isClaudeProviderContinuationTurn(requestedTurnInput) &&
+                (nativeThreadId == null || !requested.has(nativeThreadId))
+                ? {
+                    ...requestedTurnInput,
+                    message: { ...requestedTurnInput.message, creationSource: "server" as const },
+                  }
+                : requestedTurnInput,
+            );
+          });
 
         const interruptTurn = Effect.fn("ClaudeAdapterV2.interruptTurn")(
           function* (turnInput: ProviderAdapter.ProviderAdapterV2InterruptInput) {

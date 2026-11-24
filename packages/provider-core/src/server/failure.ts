@@ -54,6 +54,7 @@ export function modelHoldScope(model: string): string {
 
 export const MAX_PROVIDER_FAILURE_MESSAGE_LENGTH = 4_096;
 const MAX_PROVIDER_FAILURE_CODE_LENGTH = 128;
+const MAX_PROVIDER_FAILURE_DETAIL_LENGTH = 1_024;
 
 const isProviderFailure = Schema.is(ProviderFailureSchema);
 
@@ -94,6 +95,7 @@ function curatedCauseMessages(cause: unknown): {
   readonly failure?: OrchestrationV2ProviderFailure;
   readonly known: string | undefined;
   readonly category: string | undefined;
+  readonly reason?: string;
 } {
   const seen = new Set<unknown>();
   let category: (typeof PROVIDER_FAILURE_CATEGORIES)[string];
@@ -177,7 +179,7 @@ function curatedCauseMessages(cause: unknown): {
       break;
     }
   }
-  return { known: undefined, category: categoryMessage() };
+  return { known: undefined, category: categoryMessage(), ...(reason ? { reason } : {}) };
 }
 
 // Only the structured status; stderr and the spawner cause can carry provider output.
@@ -196,6 +198,91 @@ function processExitStatus(exited: object): string {
  */
 export function knownProviderFailureMessage(cause: unknown): string | undefined {
   return curatedCauseMessages(cause).known;
+}
+
+/** Whether a failure names its reason: a domain error, or a typed provider protocol reason. */
+export function providerFailureExplained(cause: unknown): boolean {
+  const curated = curatedCauseMessages(cause);
+  return curated.known !== undefined || curated.reason !== undefined;
+}
+
+// Identifiers a provider error names itself by: an errno, a JSON-RPC method, an HTTP status.
+const CAUSE_FACT_KEYS = ["method", "operation", "code", "status"] as const;
+const CAUSE_FACT_TEXT = /^[A-Za-z][\w./-]{0,63}$/u;
+
+/** Each error's tag with its structured facts, and the innermost message, of a cause chain. */
+function describeCause(cause: unknown): {
+  readonly links: ReadonlyArray<string>;
+  readonly message: string | undefined;
+} {
+  const seen = new Set<unknown>();
+  const links: Array<string> = [];
+  let message: string | undefined;
+  for (let depth = 0; depth < 16 && cause != null && !seen.has(cause); depth++) {
+    seen.add(cause);
+    try {
+      if (Cause.isCause(cause)) {
+        cause = Cause.squash(cause);
+        continue;
+      }
+      if (typeof cause === "string") {
+        message = cause.trim() || message;
+        break;
+      }
+      if (typeof cause !== "object") break;
+      const record = cause as Record<string, unknown>;
+      const named =
+        typeof record._tag === "string"
+          ? record._tag
+          : cause instanceof Error
+            ? cause.name
+            : undefined;
+      // Anyone can name an error, so a name that is not an identifier could be the prompt.
+      const name = named !== undefined && CAUSE_FACT_TEXT.test(named) ? named : undefined;
+      // Its message repeats the process output, which can carry the prompt or credentials.
+      const exited = record.stderr !== undefined;
+      const facts = exited
+        ? [`exited${processExitStatus(cause)}`]
+        : CAUSE_FACT_KEYS.flatMap((key) => {
+            const value = record[key];
+            return (typeof value === "number" && Number.isSafeInteger(value)) ||
+              (typeof value === "string" && CAUSE_FACT_TEXT.test(value))
+              ? [`${key} ${value}`]
+              : [];
+          });
+      const link = [name, facts.length === 0 ? undefined : `(${facts.join(", ")})`]
+        .filter(Boolean)
+        .join(" ");
+      if (link !== "") links.push(link);
+      if (exited) {
+        message = undefined;
+        break;
+      }
+      message = stringField(cause, "message")?.trim() || message;
+      cause = record.cause;
+    } catch {
+      break;
+    }
+  }
+  return { links, message };
+}
+
+function boundedDetail(text: string): string | undefined {
+  return boundedText(text, MAX_PROVIDER_FAILURE_DETAIL_LENGTH).trim() || undefined;
+}
+
+// Message text can quote the prompt or a tool's private output, and stored failures sync to every client.
+function providerFailureDetail(cause: unknown): string | undefined {
+  return boundedDetail(describeCause(cause).links.join(" > "));
+}
+
+/**
+ * The cause chain's tags and facts with its innermost message, redacted and bounded: for the server
+ * log and for telling a lost connection apart, never for a stored failure.
+ */
+export function providerFailureDiagnostic(cause: unknown): string | undefined {
+  const { links, message } = describeCause(cause);
+  return boundedDetail([links.join(" > "), message].filter(Boolean).join(": "));
 }
 
 function stringField(value: unknown, key: "message" | "code"): string | undefined {
@@ -289,12 +376,20 @@ export function makeProviderFailure(input: {
   readonly retryable?: boolean | null;
   readonly resetAt?: string | null;
   readonly modelScope?: string | undefined;
+  readonly detail?: string | undefined;
 }): OrchestrationV2ProviderFailure {
   const curated = curatedCauseMessages(input.cause);
   if (curated.failure !== undefined)
     return makeProviderFailure({ ...curated.failure, resetAt: curated.failure.resetAt ?? null });
   const rawMessage =
     input.message ?? curated.known ?? curated.category ?? DEFAULT_PROVIDER_FAILURE_MESSAGE;
+  // A caller that words the message keeps the cause out: it can carry another tool's private output.
+  const detail =
+    input.detail === undefined
+      ? input.message === undefined && curated.known === undefined
+        ? providerFailureDetail(input.cause)
+        : undefined
+      : boundedDetail(input.detail);
   const message = boundedText(rawMessage, MAX_PROVIDER_FAILURE_MESSAGE_LENGTH);
   const rawCode = input.code ?? stringField(input.cause, "code") ?? null;
   const code =
@@ -306,6 +401,7 @@ export function makeProviderFailure(input: {
     code,
     retryable: input.retryable ?? null,
     ...(input.modelScope === undefined ? {} : { modelScope: input.modelScope }),
+    ...(detail === undefined ? {} : { detail }),
     ...(input.class === "usage_limit" &&
     input.resetAt != null &&
     Number.isFinite(Date.parse(input.resetAt))
@@ -316,7 +412,7 @@ export function makeProviderFailure(input: {
 
 /** The agent did not start before it received the message, for a reason that waiting fixes. */
 export function promptNotSentFailure(
-  message: string,
+  message: string | undefined,
   cause?: unknown,
 ): OrchestrationV2ProviderFailure {
   return makeProviderFailure({

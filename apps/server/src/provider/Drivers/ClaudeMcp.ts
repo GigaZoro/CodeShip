@@ -29,6 +29,7 @@ import { ChildProcessSpawner } from "effect/process";
 
 import { editClaudeJsonFile, readClaudeMcpServers } from "./ClaudeAccountHome.ts";
 import { resolveClaudeSdkExecutablePath, runClaudeCli } from "./ClaudeExecutable.ts";
+import type { ClaudeMcpSignInRenewalPendingError } from "./ClaudeMcpSignInRenewal.ts";
 
 const CLI_TIMEOUT = Duration.seconds(30);
 const SESSION_START_TIMEOUT = Duration.seconds(30);
@@ -360,7 +361,7 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
     readonly copyServers: Effect.Effect<void>;
   };
   /** Runs before Claude starts with the account's servers, such as renewing their expired sign-ins. */
-  readonly beforeSession?: Effect.Effect<void>;
+  readonly beforeSession?: Effect.Effect<void, ClaudeMcpSignInRenewalPendingError>;
 }) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -431,7 +432,11 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
   const openSession = Effect.fn("ClaudeMcp.openSession")(function* (
     operation: ProviderMcpOperation,
   ) {
-    if (options.beforeSession !== undefined) yield* options.beforeSession;
+    if (options.beforeSession !== undefined) {
+      yield* options.beforeSession.pipe(
+        Effect.mapError((cause) => failure(operation, cause.message, cause)),
+      );
+    }
     const abort = yield* Effect.acquireRelease(
       Effect.sync(() => new AbortController()),
       (controller) => Effect.sync(() => controller.abort()),

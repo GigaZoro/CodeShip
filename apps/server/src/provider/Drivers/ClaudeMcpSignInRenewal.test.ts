@@ -40,7 +40,7 @@ describe("planClaudeMcpRenewals", () => {
     const configured = new Map([["threadpage", url]]);
     const failedAt = (at: number) =>
       new Map<string, ClaudeMcpRenewalAttempt>([
-        ["threadpage", { expiresAt: signIn.expiresAt, at }],
+        ["threadpage", { expiresAt: signIn.expiresAt, at, expiredTries: 0 }],
       ]);
     const cases: ReadonlyArray<{
       readonly nowMs: number;
@@ -69,7 +69,7 @@ describe("planClaudeMcpRenewals", () => {
       // A server whose tokens last under four minutes is not renewed more than once a minute.
       {
         nowMs: 56.5 * MINUTE,
-        attempts: new Map([["threadpage", { expiresAt: 0, at: 56 * MINUTE }]]),
+        attempts: new Map([["threadpage", { expiresAt: 0, at: 56 * MINUTE, expiredTries: 0 }]]),
         due: false,
       },
     ];
@@ -79,6 +79,7 @@ describe("planClaudeMcpRenewals", () => {
         signIns: [stale, signIn],
         configured,
         attempts: new Map(),
+        renewing: new Map(),
         nowMs: 30 * MINUTE,
       }).due,
       [],
@@ -88,6 +89,7 @@ describe("planClaudeMcpRenewals", () => {
         signIns: [signIn],
         configured: testCase.configured ?? configured,
         attempts: testCase.attempts ?? new Map(),
+        renewing: new Map(),
         nowMs: testCase.nowMs,
       });
       assert.deepStrictEqual(plan.due, testCase.due ? [signIn] : [], `${testCase.nowMs}`);
@@ -128,29 +130,137 @@ describe("makeClaudeMcpSignInRenewal", () => {
     }),
   );
 
-  it.effect("has chats that start together wait for one renewal of an expired sign-in", () =>
-    Effect.gen(function* () {
-      let renewals = 0;
-      const started = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      const renewal = yield* makeClaudeMcpSignInRenewal({
-        storeKey: "burst",
-        readSignIns: Effect.succeed([{ ...signIn, expiresAt: -MINUTE }]),
-        readConfigured: Effect.succeed(new Map([["threadpage", url]])),
-        renew: () =>
-          Effect.sync(() => renewals++).pipe(
-            Effect.andThen(Deferred.succeed(started, undefined)),
-            Effect.andThen(Deferred.await(release)),
-          ),
-      });
+  it.effect(
+    "has chats that start together wait for one renewal, and never on an expired token",
+    () =>
+      Effect.gen(function* () {
+        for (const { storeKey, expiresAt, startsAfterWait } of [
+          { storeKey: "burst-expired", expiresAt: -MINUTE, startsAfterWait: false },
+          // The old token still works while Claude renews it.
+          { storeKey: "burst-expiring", expiresAt: 2 * MINUTE, startsAfterWait: true },
+        ]) {
+          let renewals = 0;
+          let current = expiresAt;
+          const started = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const renewal = yield* makeClaudeMcpSignInRenewal({
+            storeKey,
+            readSignIns: Effect.sync(() => [{ ...signIn, expiresAt: current }]),
+            readConfigured: Effect.succeed(new Map([["threadpage", url]])),
+            renew: () =>
+              Effect.sync(() => renewals++).pipe(
+                Effect.andThen(Deferred.succeed(started, undefined)),
+                Effect.andThen(Deferred.await(release)),
+                Effect.andThen(Effect.sync(() => (current = 60 * MINUTE))),
+                Effect.asVoid,
+              ),
+          });
 
-      const chats = yield* Effect.forEach([1, 2], () => Effect.forkScoped(renewal.ensureFresh));
-      yield* Deferred.await(started);
-      for (const chat of chats) assert.isUndefined(chat.pollUnsafe());
-      yield* Deferred.succeed(release, undefined);
-      yield* Effect.forEach(chats, Fiber.join);
-      assert.strictEqual(renewals, 1);
-    }),
+          const chats = yield* Effect.forEach([1, 2], () =>
+            Effect.forkScoped(Effect.result(renewal.ensureFresh)),
+          );
+          yield* Deferred.await(started);
+          for (const chat of chats) assert.isUndefined(chat.pollUnsafe());
+          yield* TestClock.adjust("30 seconds");
+          for (const result of yield* Effect.forEach(chats, Fiber.join)) {
+            assert.strictEqual(result._tag, startsAfterWait ? "Success" : "Failure", storeKey);
+          }
+          yield* Deferred.succeed(release, undefined);
+          // The retried start joins the same renewal.
+          yield* renewal.ensureFresh;
+          assert.strictEqual(renewals, 1, storeKey);
+        }
+      }),
+  );
+
+  it.effect(
+    "keeps chats off an expired sign-in through three failed renewals, a minute apart",
+    () =>
+      Effect.gen(function* () {
+        for (const { storeKey, onlineFromRenewal, results } of [
+          {
+            storeKey: "expired-back-online",
+            onlineFromRenewal: 2,
+            results: ["Failure", "Success"],
+          },
+          // A server that stays down stops holding chats after the third renewal.
+          {
+            storeKey: "expired-server-down",
+            onlineFromRenewal: Infinity,
+            results: ["Failure", "Failure", "Success", "Success"],
+          },
+        ]) {
+          let renewals = 0;
+          let current = -MINUTE;
+          const renewal = yield* makeClaudeMcpSignInRenewal({
+            storeKey,
+            readSignIns: Effect.sync(() => [{ ...signIn, expiresAt: current }]),
+            readConfigured: Effect.succeed(new Map([["threadpage", url]])),
+            // A renewal that fails leaves the expiry as it was.
+            renew: () =>
+              Clock.currentTimeMillis.pipe(
+                Effect.map((now) => {
+                  if (++renewals >= onlineFromRenewal) current = now + 60 * MINUTE;
+                }),
+              ),
+          });
+
+          const chat = Effect.result(renewal.ensureFresh).pipe(
+            Effect.map((result) => [result._tag, renewals] as const),
+          );
+          const seen = [yield* chat];
+          // A retry at once does not renew again.
+          assert.deepStrictEqual(yield* chat, seen[0], storeKey);
+          for (const _ of results.slice(1)) {
+            yield* TestClock.adjust("1 minute");
+            seen.push(yield* chat);
+          }
+          assert.deepStrictEqual(
+            seen,
+            results.map((result, step) => [result, Math.min(step + 1, 3)] as const),
+            storeKey,
+          );
+        }
+      }),
+  );
+
+  it.effect(
+    "does not hold chats for a sign-in whose server was removed or moved while it renews",
+    () =>
+      Effect.gen(function* () {
+        for (const [storeKey, next] of [
+          ["renewing-removed", new Map<string, string>()],
+          ["renewing-moved", new Map([["threadpage", "https://moved/mcp"]])],
+        ] as const) {
+          let configured: ReadonlyMap<string, string> = new Map([["threadpage", url]]);
+          const started = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const refreshed = yield* Deferred.make<void>();
+          const renewal = yield* makeClaudeMcpSignInRenewal({
+            storeKey,
+            readSignIns: Effect.succeed([{ ...signIn, expiresAt: -MINUTE }]),
+            readConfigured: Effect.suspend(() =>
+              configured === next
+                ? Deferred.succeed(refreshed, undefined).pipe(Effect.as(configured))
+                : Effect.succeed(configured),
+            ),
+            renew: () =>
+              Deferred.succeed(started, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.asVoid,
+              ),
+          });
+          yield* Deferred.await(started);
+          configured = next;
+          yield* TestClock.adjust("1 minute");
+          yield* Deferred.await(refreshed);
+
+          const chat = yield* Effect.forkScoped(Effect.result(renewal.ensureFresh));
+          yield* TestClock.adjust("30 seconds");
+          assert.strictEqual((yield* Fiber.join(chat))._tag, "Success", storeKey);
+          yield* Deferred.succeed(release, undefined);
+        }
+      }),
   );
 
   it.effect("lets a renewal finish across a provider rebuild, which joins it", () =>

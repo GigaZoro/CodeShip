@@ -4,6 +4,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 
 // libuv timers keep running while macOS or Windows sleeps and all fire on wake, so a plain
@@ -46,12 +47,14 @@ const startTick = Effect.all({
   activeMs: Effect.flatten(EventLoopActiveMs),
 });
 
+const lateKind = (tick: Tick, now: Tick, tickMs: number): keyof AwakeWait | undefined => {
+  const lateMs = now.startedAt - tick.startedAt - tickMs;
+  if (lateMs <= LATE_TICK_MS) return undefined;
+  return eventLoopBlocked(lateMs, now.activeMs - tick.activeMs) ? "stalled" : "slept";
+};
+
 const lateTick = (tick: Tick, tickMs: number) =>
-  Effect.map(startTick, (now): keyof AwakeWait | undefined => {
-    const lateMs = now.startedAt - tick.startedAt - tickMs;
-    if (lateMs <= LATE_TICK_MS) return undefined;
-    return eventLoopBlocked(lateMs, now.activeMs - tick.activeMs) ? "stalled" : "slept";
-  });
+  Effect.map(startTick, (now) => lateKind(tick, now, tickMs));
 
 /**
  * Waits until `duration` of awake time has passed. Time the machine spends asleep, and time the
@@ -114,3 +117,41 @@ export const watchWait: Effect.Effect<Effect.Effect<AwakeWait>, never, Scope.Sco
     );
   },
 );
+
+/**
+ * Awake time since the machine last woke, in ms; undefined while this process has not seen it
+ * sleep. Without `layerAwakeSinceWake` it never has.
+ */
+export const AwakeSinceWake = Context.Reference<Effect.Effect<number | undefined>>(
+  "@t3tools/shared/AwakeTime/AwakeSinceWake",
+  { defaultValue: () => Effect.undefined },
+);
+
+/**
+ * Watches for wakes until the scope closes and returns the check. Like `watchWait`'s, the check
+ * also sees a wake whose tick has not fired yet. A stall is not a wake.
+ */
+export const watchWakes: Effect.Effect<
+  Effect.Effect<number | undefined>,
+  never,
+  Scope.Scope
+> = Effect.gen(function* () {
+  let wokeAt: number | undefined;
+  let tick = yield* startTick;
+  yield* Effect.forkScoped(
+    Effect.forever(
+      Effect.gen(function* () {
+        yield* Effect.sleep(WATCH_TICK_MS);
+        const now = yield* startTick;
+        if (lateKind(tick, now, WATCH_TICK_MS) === "slept") wokeAt = now.startedAt;
+        tick = now;
+      }),
+    ),
+  );
+  return Effect.map(startTick, (now) => {
+    const at = lateKind(tick, now, WATCH_TICK_MS) === "slept" ? now.startedAt : wokeAt;
+    return at === undefined ? undefined : now.startedAt - at;
+  });
+});
+
+export const layerAwakeSinceWake = Layer.effect(AwakeSinceWake, watchWakes);
