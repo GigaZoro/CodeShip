@@ -1,3 +1,7 @@
+## 2026-11-25 — Replay usage-limit recovery receipts
+
+- Groundwork for usage-limit recovery accounting: a retry counts as a recovery only when it completes for the same stopped run, request and selected account, and only a failed retry counts as a failed recovery. Lost tokens stay unknown. Nothing in the app reports this yet.
+
 ## 2026-11-25 — Record usage-limit routing decisions
 
 - Usage-limit stops now retain opaque account choices, exclusion reasons and the account selected when a continuation starts.
