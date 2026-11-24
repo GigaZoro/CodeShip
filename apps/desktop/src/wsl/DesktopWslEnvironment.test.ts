@@ -171,6 +171,23 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     };
   };
 
+  const startMountedBackend = (fixture: ReturnType<typeof createFixture>) => {
+    const entry = `${fixture.work}/mounted-server.sh`;
+    const command = buildWslMountedServerCommand("bash", entry, fixture.runtimeRoot)
+      .map(sh)
+      .join(" ");
+    return [
+      `export T3CODE_WSL_CODEX_METADATA_RUNTIME_ROOT=${sh(fixture.runtimeRoot)}`,
+      // Keep an actual mounted process alive on stdin. Only its environment names the sidecar.
+      `printf '%s\\n' 'touch "$HOME/mounted-ready"' 'cat >/dev/null' > ${sh(entry)}`,
+      `exec 6> >(exec ${command})`,
+      "holder=$!",
+      awaitHolder('[ -e "$HOME/mounted-ready" ]'),
+    ].join("\n");
+  };
+
+  const stopMountedBackend = 'exec 6>&-\nwait "$holder"';
+
   const probeFixture = (fixture: ReturnType<typeof createFixture>) =>
     runShell(
       [
@@ -327,6 +344,67 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     expect(parseWslRuntimeRoot(recovered.stdout)).toBe(fixture.runtimeRoot);
     expect(runShell(`${sh(fixture.serverEntry)} --version`).status).toBe(0);
   });
+
+  it.each([
+    {
+      operation: "repair",
+      setup: 'touch "$root/original"; rm "$root/.t3code-wsl-runtime-ready"',
+      whileMounted: 'test -f "$root/original" && test ! -e "$root/.t3code-wsl-runtime-ready"',
+      afterExit: 'test ! -e "$root/original" && test -f "$root/.t3code-wsl-runtime-ready"',
+      warm: false,
+    },
+    {
+      operation: "restore a rollback",
+      setup: 'touch "$root/original"; mv -T "$root" "$rollback"; rm "$archive"',
+      whileMounted: 'test ! -e "$root" && test -f "$rollback/original"',
+      afterExit: 'test -f "$root/original" && test ! -e "$rollback"',
+      warm: false,
+    },
+    {
+      operation: "reuse a warm runtime with a pending rollback",
+      setup: 'mkdir "$rollback"; touch "$rollback/original"; rm "$archive"',
+      whileMounted: 'test -f "$rollback/original" && test -f "$root/.t3code-wsl-runtime-ready"',
+      afterExit: 'test ! -e "$rollback" && test -f "$root/.t3code-wsl-runtime-ready"',
+      warm: true,
+    },
+  ])(
+    "respects the mounted sidecar lease during $operation",
+    ({ setup, whileMounted, afterExit, warm }) => {
+      const fixture = createFixture(SERVER_ENTRY_SOURCE, true);
+      expect(fixture.install().status).toBe(0);
+      const result = runShell(
+        [
+          "set -eu",
+          `export HOME=${sh(`${fixture.work}/home`)}`,
+          `root=${sh(fixture.runtimeRoot)}`,
+          `rollback=${sh(`${fixture.runtimeParent}/.${fixture.runtimeId}.rollback`)}`,
+          `archive=${sh(fixture.archivePath)}`,
+          `cd ${sh(fixture.work)}`,
+          setup,
+          'helper="$root/codex-metadata/bin/codex"',
+          'if [ -e "$helper" ]; then before=$(stat -c %i "$helper"); fi',
+          "cat > install.sh <<'INSTALL'",
+          fixture.installScript(),
+          "INSTALL",
+          startMountedBackend(fixture),
+          "status=0",
+          "timeout 5 sh install.sh > held.out 2> held.err || status=$?",
+          'test "$status" -ne 124 || { echo "waited for the mounted backend"; exit 1; }',
+          `if [ "$status" -ne ${warm ? 0 : 1} ]; then echo "unexpected held install status $status"; cat held.err; exit 1; fi`,
+          warm ? 'grep -Fxq "runtimeRoot:$root" held.out' : 'grep -q "repair deferred" held.err',
+          'kill -0 "$holder"',
+          `${whileMounted} || { echo "changed the leased installation"; exit 1; }`,
+          'if [ -n "${before:-}" ]; then test "$before" = "$(stat -c %i "$helper")" && test "$(cat "$helper")" = champ; fi',
+          stopMountedBackend,
+          "sh install.sh > retried.out",
+          'grep -Fxq "runtimeRoot:$root" retried.out',
+          `${afterExit} || { echo "repair did not finish after release"; exit 1; }`,
+          'test -x "$helper" && test "$(cat "$helper")" = champ',
+        ].join("\n"),
+      );
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    },
+  );
 
   it("reinstalls a cache whose executable was truncated", () => {
     const fixture = createFixture();
@@ -500,30 +578,20 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
   it("keeps a mounted backend's metadata runtime until the backend exits", () => {
     const fixture = createFixture(SERVER_ENTRY_SOURCE, true);
     expect(fixture.install().status).toBe(0);
-    const entry = `${fixture.work}/mounted-server.sh`;
     const selected = `${fixture.runtimeRoot}/.t3code-wsl-runtime-selected`;
     const prune = `(\n${buildWslRuntimePruneScript("sha256-current")}\n)`;
-    const command = buildWslMountedServerCommand("bash", entry, fixture.runtimeRoot)
-      .map(sh)
-      .join(" ");
     const result = runShell(
       [
         "set -eu",
         `export HOME=${sh(`${fixture.work}/home`)}`,
-        `export T3CODE_WSL_CODEX_METADATA_RUNTIME_ROOT=${sh(fixture.runtimeRoot)}`,
         `(\n${buildWslRuntimeInvalidateScript(fixture.runtimeId)}\n)`,
         prune,
         `test -x ${sh(`${fixture.runtimeRoot}/codex-metadata/bin/codex`)} || { echo "lost before launch"; exit 1; }`,
-        // Keep an actual mounted process alive on stdin. Only its environment names the sidecar.
-        `printf '%s\\n' 'touch "$HOME/mounted-ready"' 'cat >/dev/null' > ${sh(entry)}`,
-        `exec 6> >(exec ${command})`,
-        "holder=$!",
-        awaitHolder('[ -e "$HOME/mounted-ready" ]'),
+        startMountedBackend(fixture),
         `touch -d '10 minutes ago' ${sh(selected)}`,
         prune,
         `test -x ${sh(`${fixture.runtimeRoot}/codex-metadata/bin/codex`)} || { echo "lost while running"; exit 1; }`,
-        "exec 6>&-",
-        'wait "$holder"',
+        stopMountedBackend,
         prune,
         `test ! -e ${sh(fixture.runtimeRoot)} || { echo "retained after exit"; exit 1; }`,
       ].join("\n"),
