@@ -578,7 +578,8 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
     )
       return "ignored files have changed or lack a preserved copy";
   } else if (!request.savedFiles && (status || setupProof)) {
-    if (!setupProof) return "worktree contains tracked, untracked or ignored local data";
+    if (!setupProof || setupProof.inPlace)
+      return "worktree contains tracked, untracked or ignored local data";
     const proof = setupProof;
     const clean = yield* Effect.tryPromise((signal) =>
       matchesSetupProof(proof, cwd, status, signal),

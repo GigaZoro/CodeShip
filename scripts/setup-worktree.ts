@@ -9,9 +9,11 @@ import {
   configureWorktreePrepare,
   hasSetupEntry,
   installWorktreeDependencies,
+  inspectWindowsInPlaceModules,
   setupCheckout,
   setupStatus,
-  windowsInstallTargetsAbsent,
+  windowsInstallInputsUnchanged,
+  windowsInstallTargetsSafe,
 } from "./lib/install-worktree-dependencies.ts";
 import {
   checkWindowsWorktreeFiles,
@@ -80,6 +82,26 @@ const clearClaim = (directory: string) => {
   NodeFS.rmdirSync(directory);
 };
 
+const clearEmptyWindowsClaim = async (directory: string) => {
+  const before = NodeFS.lstatSync(directory, { bigint: true, throwIfNoEntry: false });
+  if (!before?.isDirectory() || before.ino === 0n || NodeFS.readdirSync(directory).length) return;
+  try {
+    await checkWindowsWorktreeFiles(directory, { targets: [] });
+  } catch (error) {
+    if (!(error instanceof WindowsWorktreeInspectionError)) throw error;
+    process.stderr.write(`${error.message} for the abandoned setup claim. Preserving it.\n`);
+    return;
+  }
+  const current = NodeFS.lstatSync(directory, { bigint: true, throwIfNoEntry: false });
+  if (current && setupFileStamp(current) === setupFileStamp(before)) {
+    try {
+      NodeFS.rmdirSync(directory);
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOTEMPTY")) throw error;
+    }
+  }
+};
+
 let cancelSignal: NodeJS.Signals | undefined;
 let activeInstall: NodeChildProcess.ChildProcess | undefined;
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
@@ -125,8 +147,8 @@ const install = async (cwd: string) => {
   }
 };
 
-const installInPlace = async () => {
-  if (isWindows && !(await windowsInstallTargetsAbsent(worktree)))
+const installInPlace = async (verified: ReadonlySet<string>) => {
+  if (isWindows && !(await windowsInstallTargetsSafe(worktree, verified)))
     throw new Error("Existing dependency files could not be verified. Keeping them in place.");
   await NodeFSP.writeFile(inPlaceMarker, `${process.pid}\n`, { flag: "wx", mode: 0o600 });
   try {
@@ -235,7 +257,8 @@ const setup = async () => {
       const owner = /^setup-owner-([1-9]\d*)$/.exec(name);
       if (!owner) continue;
       if (alive(Number(owner[1]))) throw new Error("Another worktree setup is running");
-      if (!isWindows) clearClaim(NodePath.join(markerDir, name));
+      if (isWindows) await clearEmptyWindowsClaim(NodePath.join(markerDir, name));
+      else clearClaim(NodePath.join(markerDir, name));
     }
     const previous = readMarker(runningMarker, 32);
     if (previous !== undefined && (!/^[1-9]\d*\n$/.test(previous) || alive(Number(previous))))
@@ -276,6 +299,7 @@ const setup = async () => {
     if (previousFailure !== undefined) NodeFS.unlinkSync(failedMarker);
     NodeFS.writeFileSync(runningMarker, `${process.pid}\n`, { flag: "wx" });
     running = true;
+    const verifiedModules = new Set<string>();
     if (context && priorProof) {
       const signal = AbortSignal.timeout(600_000);
       const sameFiles = await (async () => {
@@ -287,32 +311,32 @@ const setup = async () => {
           });
         return matchesSetupFiles(priorProof, worktree, signal);
       })().catch(() => false);
-      if (
-        sameFiles &&
-        context.head === priorProof.head &&
-        (isWindows
-          ? previousDone === priorProof.marker || (previousDone === undefined && canRecordProof)
-          : hasSetupOnlyStatus(priorProof, setupStatus(worktree)) &&
-            !(await hasSetupEntry(staging)))
-      ) {
+      const canReuse = isWindows
+        ? !priorProof.inPlace &&
+          (previousDone === priorProof.marker || (previousDone === undefined && canRecordProof)) &&
+          (await windowsInstallInputsUnchanged(worktree, priorProof.head))
+        : context.head === priorProof.head &&
+          hasSetupOnlyStatus(priorProof, setupStatus(worktree)) &&
+          !(await hasSetupEntry(staging));
+      if (sameFiles && canReuse) {
         requireActive();
         if (isWindows && previousDone === priorProof.marker) return;
+        if (isWindows) await configureWorktreePrepare(worktree);
         if (!(await hasSetupDone(doneMarker, priorProof.marker))) {
           if (previousDone !== undefined) NodeFS.unlinkSync(doneMarker);
           publishDone(priorProof.marker);
         }
         return;
       }
-      if (!sameFiles) {
-        for (const name of Object.keys(priorProof.modules)) {
-          if (await hasSetupEntry(NodePath.join(worktree, name)))
-            throw new Error(
-              "Installed files changed since setup. Resolve local changes before reinstalling.",
-            );
-        }
+      for (const name of Object.keys(priorProof.modules)) {
+        if (sameFiles && isWindows) verifiedModules.add(name);
+        else if (!sameFiles && (await hasSetupEntry(NodePath.join(worktree, name))))
+          throw new Error(
+            "Installed files changed since setup. Resolve local changes before reinstalling.",
+          );
       }
     }
-    if (isWindows && !(await windowsInstallTargetsAbsent(worktree)))
+    if (isWindows && !(await windowsInstallTargetsSafe(worktree, verifiedModules)))
       throw new Error("Existing dependency files could not be verified. Keeping them in place.");
     if (
       previousDone !== undefined &&
@@ -326,23 +350,38 @@ const setup = async () => {
     const modules =
       context &&
       canRecordProof &&
+      verifiedModules.size === 0 &&
       (await installWorktreeDependencies(worktree, context.head, staging, claimName, install));
-    if (modules) await configureWorktreePrepare(worktree);
-    else await installInPlace();
+    if (modules && !isWindows) await configureWorktreePrepare(worktree);
+    if (!modules) await installInPlace(verifiedModules);
     requireActive();
     warnAboutStore();
     const links = await linkEnvFiles(projectRoot);
-    const marker = context && modules ? NodeCrypto.randomUUID() + "\n" : "";
-    if (context && modules) {
+    const recordedModules =
+      modules ||
+      (isWindows && canRecordProof && context
+        ? await inspectWindowsInPlaceModules(worktree).catch((error) => {
+            const reason =
+              error instanceof WindowsWorktreeInspectionError
+                ? error.message
+                : "In-place dependencies could not be verified";
+            process.stderr.write(`${reason}. Keeping the checkout.\n`);
+            return null;
+          })
+        : null);
+    const marker = context && recordedModules ? NodeCrypto.randomUUID() + "\n" : "";
+    if (context && recordedModules) {
       await writeSetupProof(context.admin, NodePath.join(claim, "proof"), {
         root: projectRoot,
         checkout,
         head: context.head,
         marker,
-        modules,
+        modules: recordedModules,
+        ...(!modules ? { inPlace: true } : {}),
         links,
       });
     }
+    if (modules && isWindows) await configureWorktreePrepare(worktree);
     requireActive();
     if (!(isWindows && (await hasSetupEntry(doneMarker)))) publishDone(marker);
   } catch (error) {

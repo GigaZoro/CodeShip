@@ -75,6 +75,15 @@ const scan = function (
         throw new Error("Setup output root is not a directory");
       } else if (stat.isSymbolicLink()) {
         const target = fs.readlinkSync(file, { encoding: "buffer" });
+        if (windows && !stagingPath) {
+          const relativeTarget = path.relative(root, fs.realpathSync.native(file));
+          if (
+            relativeTarget === ".." ||
+            relativeTarget.startsWith(".." + path.sep) ||
+            path.isAbsolute(relativeTarget)
+          )
+            throw new Error("Dependency links outside the worktree");
+        }
         if (stagingPath) {
           const value = target.toString("utf8");
           if (path.isAbsolute(value)) {
@@ -196,6 +205,7 @@ interface SetupProof {
   readonly head: string;
   readonly marker: string;
   readonly modules: Record<string, string>;
+  readonly inPlace?: true;
   readonly links: ReadonlyArray<{ readonly name: string; readonly stamp: string }>;
 }
 
@@ -241,6 +251,7 @@ export const readSetupProof = async (admin: string, projectRoot: string, checkou
     !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(proof.head) ||
     typeof proof.marker !== "string" ||
     !markerPattern.test(proof.marker) ||
+    (proof.inPlace !== undefined && proof.inPlace !== true) ||
     !proof.modules ||
     typeof proof.modules !== "object" ||
     !Object.hasOwn(proof.modules, "node_modules") ||
@@ -323,6 +334,7 @@ export const matchesSetupProof = async (
   status: string,
   signal: AbortSignal,
 ) => {
+  if (proof.inPlace) return false;
   if (!hasSetupOnlyStatus(proof, status)) return false;
   const markerDir = NodePath.join(cwd, ".t3");
   if (!(await NodeFSP.lstat(markerDir)).isDirectory()) return false;

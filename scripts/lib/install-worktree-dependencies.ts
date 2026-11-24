@@ -16,7 +16,7 @@ const git = (cwd: string, ...args: string[]) =>
     maxBuffer: 8 * 1024 * 1024,
   }).trimEnd();
 
-export const setupStatus = (cwd: string) =>
+export const setupStatus = (cwd: string, ...paths: string[]) =>
   git(
     cwd,
     "--no-optional-locks",
@@ -29,6 +29,7 @@ export const setupStatus = (cwd: string) =>
     "-z",
     "--ignored=matching",
     "--untracked-files=all",
+    ...(paths.length ? ["--", ...paths] : []),
   );
 
 export const hasSetupEntry = async (file: string) =>
@@ -149,20 +150,87 @@ const workspaceModuleRoots = (manifests: readonly string[]) =>
       .map((name) => name.slice(0, -"package.json".length) + "node_modules"),
   ]);
 
-export const windowsInstallTargetsAbsent = async (cwd: string) => {
+const localWorkspaceManifests = (cwd: string) => {
   const files = git(cwd, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
     .split("\0")
     .filter(Boolean);
-  const manifests = await workspaceManifests(cwd, files);
+  return workspaceManifests(cwd, files);
+};
+
+const localInstallOverrides = [".npmrc", ".pnpmfile.cjs", ".pnpmfile.mjs", ".pnpmfile.js"];
+const installManifests = ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"];
+
+export const windowsInstallInputsUnchanged = async (cwd: string, head: string) => {
+  const manifests = await localWorkspaceManifests(cwd);
+  if (!manifests) return false;
+  const trackedInputs = [
+    ...[...installManifests, ...localInstallOverrides].map((name) => `:(glob)**/${name}`),
+    ":(glob)patches/**",
+    ":(glob)**/*.tgz",
+  ];
+  if (
+    git(cwd, "ls-files", "-v", "-z", "--", ...trackedInputs)
+      .split("\0")
+      .some((entry) => entry && !entry.startsWith("H "))
+  )
+    return false;
+  if (
+    git(
+      cwd,
+      "--no-optional-locks",
+      "-c",
+      "core.fsmonitor=false",
+      "diff",
+      "--no-textconv",
+      "--no-ext-diff",
+      "--name-only",
+      "-z",
+      head,
+      "--",
+      ...trackedInputs,
+    )
+  )
+    return false;
+  const workspaceFolders = new Set([
+    ".",
+    ...manifests.map((name) => name.slice(0, -"package.json".length)),
+  ]);
+  const possibleInputs = [...workspaceFolders].flatMap((folder) =>
+    [...installManifests, ...localInstallOverrides].map((name) =>
+      NodePath.posix.join(folder, name),
+    ),
+  );
+  return setupStatus(cwd, ...possibleInputs, "patches", "apps/mobile/deps") === "";
+};
+
+export const windowsInstallTargetsSafe = async (cwd: string, verified: ReadonlySet<string>) => {
+  const manifests = await localWorkspaceManifests(cwd);
   if (!manifests) return false;
   for (const name of workspaceModuleRoots(manifests)) {
     const target = NodePath.join(cwd, name);
     const parent = NodePath.dirname(target);
     const realParent = await NodeFSP.realpath(parent).catch(missingSetupPath);
     if (realParent === undefined) continue;
-    if (realParent !== parent || (await hasSetupEntry(target))) return false;
+    if (realParent !== parent || (!verified.has(name) && (await hasSetupEntry(target))))
+      return false;
   }
   return true;
+};
+
+export const inspectWindowsInPlaceModules = async (cwd: string) => {
+  const manifests = await localWorkspaceManifests(cwd);
+  if (!manifests) return null;
+  const modules: string[] = [];
+  for (const name of workspaceModuleRoots(manifests)) {
+    const entry = await NodeFSP.lstat(NodePath.join(cwd, name)).catch(missingSetupPath);
+    if (!entry) continue;
+    if (!entry.isDirectory()) return null;
+    modules.push(name);
+  }
+  if (!modules.includes("node_modules")) return null;
+  const signal = AbortSignal.timeout(600_000);
+  await checkWindowsWorktreeFiles(cwd, { modules, targets: modules, signal });
+  return setupTreeDigests(cwd, modules, signal);
 };
 
 const canRunPreparePrivately = async (cwd: string, manifests: readonly string[]) => {
