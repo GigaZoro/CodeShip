@@ -224,7 +224,7 @@ function copiedPublishersBundle(preflight, publisher, repository, readLog) {
   const lines = readLog(repository, preflight)
     .split(/\r?\n/)
     .filter((line) => line.startsWith(prefix))
-    .map((line) => line.slice(prefix.length).replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z /, ""));
+    .map((line) => line.slice(prefix.length).replace(/^\uFEFF?\d{4}-\d{2}-\d{2}T[\d:.]+Z /, ""));
   const start = lines.findIndex((line) => /^##\[group\]Run actions\/download-artifact@/.test(line));
   const end = lines.indexOf("##[endgroup]", start + 1);
   if (start < 0 || end < 0 || lines[start + 1] !== "with:") return false;
@@ -288,6 +288,7 @@ function recoverMacosRun(tag, sha, options) {
     throw new Error(`${tag} reached its ${maximum}-attempt limit across macOS runs.`);
   if (eventRunId && attempts >= immediateLimit) return { action: "wait" };
   const publisher = macosPublisherRun(tag, sha, { repository, defaultBranch, api });
+  const packagingRuns = [];
   for (const run of tagged) {
     const jobs = listPages(api, `${repo}/actions/runs/${run.id}/jobs?filter=all`, "jobs");
     // Rerunning failed jobs can leave the successful preflight and signed build in an earlier attempt.
@@ -310,12 +311,13 @@ function recoverMacosRun(tag, sha, options) {
       );
       if (signedBuild && availableArtifact(repo, run.id, "desktop-mac-arm64", api, now))
         return { action: "rerun", id: run.id };
-    } else if (
-      !failed.some((j) => j.name === "Preflight") &&
-      availableArtifact(repo, run.id, "js-bundle", api, now)
-    ) {
-      return { action: "rerun", id: run.id };
+    } else if (!failed.some((j) => j.name === "Preflight")) {
+      packagingRuns.push(run.id);
     }
+  }
+  // Rerun packaging only after every candidate for attaching an existing signed build has been checked.
+  for (const id of packagingRuns) {
+    if (availableArtifact(repo, id, "js-bundle", api, now)) return { action: "rerun", id };
   }
   if (!Number.isFinite(publishedAt)) throw new Error(`Release ${tag} has no publication time.`);
   if (now - publishedAt < 600_000) return { action: "wait" };

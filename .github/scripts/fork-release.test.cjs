@@ -198,19 +198,28 @@ const recovery = ({
 const ready = (id, name) => ({ [artifact(id, name)]: page("artifacts", [{ ...bundle, name }]) });
 const missing = (id, name) => ({ [artifact(id, name)]: page("artifacts", []) });
 const legacyLog = (source, changes = {}) => {
-  const prefix = "Preflight\t" + (changes.step ?? oldDownload) + "\t" + time + " ";
-  return [
-    "##[group]Run actions/download-artifact@v8",
-    "with:",
-    "  name: js-bundle",
-    "  path: js-bundle",
-    `  run-id: ${source}`,
-    "  github-token: ***",
-    "  repository: " + (changes.repo ?? repository),
-    "##[endgroup]",
-  ]
-    .map((line) => prefix + line)
-    .join("\n");
+  const prefix = "Preflight\t" + (changes.step ?? oldDownload) + "\t";
+  return (
+    [
+      "##[group]Run actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+      "with:",
+      "  name: js-bundle",
+      "  path: js-bundle",
+      `  run-id: ${source}`,
+      "  github-token: ***",
+      "  repository: " + (changes.repo ?? repository),
+      "##[endgroup]",
+    ]
+      // gh keeps the byte-order mark from the first line of a per-step log after its step label.
+      .map(
+        (line, index) =>
+          prefix +
+          (index === 0 && changes.bom !== false ? "\uFEFF" : "") +
+          "2026-11-08T09:31:51.8214420Z " +
+          line,
+      )
+      .join("\n")
+  );
 };
 
 test("a legacy packaging failure reuses its bundle only when the actual download identifies the publisher", () => {
@@ -219,6 +228,7 @@ test("a legacy packaging failure reuses its bundle only when the actual download
     "",
     legacyLog(41),
     legacyLog(42, { step: "other" }),
+    legacyLog(42, { step: "UNKNOWN STEP" }),
     legacyLog(42, { repo: "Other/Fork" }),
   ]) {
     assert.deepEqual(recovery({ jobs, readLog: () => log, responses: ready(42, "js-bundle") }), {
@@ -226,10 +236,12 @@ test("a legacy packaging failure reuses its bundle only when the actual download
       id: 42,
     });
   }
-  assert.deepEqual(
-    recovery({ jobs, readLog: () => legacyLog(42), responses: ready(502, "js-bundle") }),
-    { action: "rerun", id: 502 },
-  );
+  for (const bom of [true, false]) {
+    assert.deepEqual(
+      recovery({ jobs, readLog: () => legacyLog(42, { bom }), responses: ready(502, "js-bundle") }),
+      { action: "rerun", id: 502 },
+    );
+  }
 });
 
 test("an attach-only rerun requires the signed artifact and a verified preflight and survives expiry of both JS bundles", () => {
@@ -261,6 +273,39 @@ test("an attach-only rerun requires the signed artifact and a verified preflight
       responses: ready(42, "js-bundle"),
     }),
     { action: "dispatch", id: 42 },
+  );
+});
+
+test("the final scheduled attempt attaches a signed build before retrying packaging", () => {
+  const runs = [firstMac, { ...firstMac, id: 501, run_attempt: 22 }];
+  const olderJobs = [
+    preflight(publisherDownload),
+    {
+      ...failedBuild,
+      conclusion: "success",
+      steps: [ok("Upload build artifacts")],
+    },
+    failedAttach,
+  ];
+  const responses = {
+    [jobsPath(501) + "1"]: page("jobs", olderJobs),
+    ...ready(502, "js-bundle"),
+  };
+  assert.deepEqual(
+    recovery({
+      runs,
+      immediate: false,
+      responses: { ...responses, ...ready(501, "desktop-mac-arm64") },
+    }),
+    { action: "rerun", id: 501 },
+  );
+  assert.deepEqual(
+    recovery({
+      runs,
+      immediate: false,
+      responses: { ...responses, ...missing(501, "desktop-mac-arm64") },
+    }),
+    { action: "rerun", id: 502 },
   );
 });
 
