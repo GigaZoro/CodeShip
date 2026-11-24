@@ -2172,6 +2172,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const verify = () =>
         Effect.tryPromise(() => verifyCodexMetadataInstallation(stage, expected));
       yield* verify();
+      yield* fs.remove(inventory);
+      assert.isTrue(yield* verify().pipe(Effect.isFailure), "required inventory is missing");
+      yield* fs.makeDirectory(inventory);
+      assert.isTrue(yield* verify().pipe(Effect.isFailure), "required inventory is not a file");
+      yield* fs.remove(inventory, { recursive: true });
+      yield* fs.writeFileString(inventory, inventoryText);
+      yield* verify();
       const stagedCli = path.join(stage, "codex-metadata/bin/codex");
       const owner = Option.getOrUndefined((yield* fs.stat(stagedCli)).uid);
       if ((yield* HostProcess.Platform) !== "win32" && owner !== undefined && owner !== 0) {

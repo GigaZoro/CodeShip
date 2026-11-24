@@ -29,6 +29,7 @@ import {
   pinnedRuntimeVersionsDir,
   prunePinnedRuntimes,
   repointPinnedRuntimeLauncher,
+  readRuntimeSentinel,
   windowsShimTarget,
 } from "../cloud/pinnedRuntime.ts";
 import { compareExactServiceVersions, isExactServiceVersion } from "../cloud/serviceProtocol.ts";
@@ -398,9 +399,8 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     });
   }
 
-  const alreadyOnDisk = yield* fs.readFileString(paths.sentinelPath).pipe(
-    Effect.map((sentinel) => sentinel.trim() === targetVersion),
-    Effect.orElseSucceed(() => false),
+  const alreadyOnDisk = yield* readRuntimeSentinel(paths.sentinelPath).pipe(
+    Effect.map(Option.exists((sentinel: string) => sentinel.trim() === targetVersion)),
   );
 
   progress.heading(

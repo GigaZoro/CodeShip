@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 // @effect-diagnostics globalTimers:off
 // The launcher must survive unloadable server versions; use Node built-ins without Effect.
+import { readRegularFileUtf8 } from "@t3tools/shared/regularFile";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
@@ -595,7 +596,7 @@ async function runtimeExists(baseDir: string, version: string): Promise<boolean>
   try {
     const [entry, sentinel] = await Promise.all([
       NodeFSP.stat(paths.entryPath),
-      NodeFSP.readFile(paths.sentinelPath, "utf8"),
+      readRegularFileUtf8(paths.sentinelPath),
     ]);
     return entry.isFile() && sentinel.trim() === version;
   } catch {

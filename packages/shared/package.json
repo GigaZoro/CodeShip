@@ -483,6 +483,10 @@
       "types": "./src/hostClassification.ts",
       "import": "./src/hostClassification.ts"
     },
+    "./regularFile": {
+      "types": "./src/regularFile.ts",
+      "import": "./src/regularFile.ts"
+    },
     "./codexMetadataInventory": {
       "types": "./src/codexMetadataInventory.ts",
       "import": "./src/codexMetadataInventory.ts"

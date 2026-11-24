@@ -17,6 +17,7 @@ import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
 import * as ProcessRunner from "../processRunner.ts";
 import {
   ensurePinnedRuntimeInstalled,
+  readRuntimeSentinel,
   launcherOwnsVersionsDir,
   pinnedRuntimeCommand,
   pinnedRuntimePaths,
@@ -996,7 +997,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     const [unit, runtimeEntryExists, runtimeSentinel, stateText] = yield* Effect.all([
       fs.readFileString(unitPath),
       fs.exists(runtimePaths.entryPath),
-      fs.readFileString(runtimePaths.sentinelPath).pipe(Effect.option),
+      readRuntimeSentinel(runtimePaths.sentinelPath),
       fs.readFileString(statePath).pipe(Effect.option),
     ]);
     const state = Option.isSome(stateText) ? parseServiceState(stateText.value) : undefined;

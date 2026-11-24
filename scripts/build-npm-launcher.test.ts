@@ -287,10 +287,21 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
           `import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 const dir = ${JSON.stringify(staleDir)};
-const { readFileSync, renameSync, rmSync, statSync } = fs;
+const { openSync, fstatSync, closeSync, readFileSync, renameSync, rmSync } = fs;
+const markerHandles = new Set();
+fs.openSync = (file, flags, ...args) => {
+  if (file !== dir + "/.install-complete") return openSync(file, flags, ...args);
+  if (typeof flags !== "number" || !(flags & fs.constants.O_NONBLOCK)) {
+    fs.appendFileSync(${JSON.stringify(peerChecks)}, "opened marker without O_NONBLOCK\\n");
+    throw new Error("opening the incomplete marker would block");
+  }
+  const fd = openSync(file, flags, ...args);
+  markerHandles.add(fd);
+  return fd;
+};
 fs.readFileSync = (file, ...args) => {
-  if (file === dir + "/.install-complete" && statSync(file).isFIFO()) {
-    fs.appendFileSync(${JSON.stringify(peerChecks)}, "opened FIFO\\n");
+  if (markerHandles.has(file) && !fstatSync(file).isFile()) {
+    fs.appendFileSync(${JSON.stringify(peerChecks)}, "read nonregular marker\\n");
     throw new Error("reading the incomplete marker would block");
   }
   return readFileSync(file, ...args);
@@ -325,11 +336,11 @@ fs.rmSync = (...args) => {
     if (published) checkPeer();
   }
 };
-fs.statSync = (file, ...rest) => {
+fs.closeSync = (fd, ...rest) => {
   try {
-    return statSync(file, ...rest);
+    return closeSync(fd, ...rest);
   } finally {
-    if (checking && file === dir + "/.install-complete") {
+    if (markerHandles.delete(fd) && checking) {
       checking = false;
       rmSync(dir, { recursive: true });
       renameSync(${JSON.stringify(peerDir)}, dir);

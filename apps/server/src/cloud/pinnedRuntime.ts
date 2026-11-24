@@ -1,3 +1,4 @@
+import { readRegularFileUtf8 } from "@t3tools/shared/regularFile";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
@@ -258,15 +259,8 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
   yield* fs.remove(archivePath, { force: true }).pipe(Effect.ignore);
 });
 
-const readRuntimeSentinel = (fs: FileSystem.FileSystem, sentinel: string) =>
-  fs.stat(sentinel).pipe(
-    Effect.flatMap((info) =>
-      info.type === "File"
-        ? fs.readFileString(sentinel).pipe(Effect.asSome)
-        : Effect.succeed(Option.none<string>()),
-    ),
-    Effect.orElseSucceed(() => Option.none<string>()),
-  );
+export const readRuntimeSentinel = (sentinel: string) =>
+  Effect.tryPromise(() => readRegularFileUtf8(sentinel)).pipe(Effect.option);
 
 const pinnedRuntimeTransaction = Effect.fn("cloud.pinned_runtime.promote")(function* (
   input: PinnedRuntimeInstallInput,
@@ -366,7 +360,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
   const [versionDirExists, entryExists, sentinel] = yield* Effect.all([
     fs.exists(paths.versionDir),
     fs.exists(paths.entryPath),
-    readRuntimeSentinel(fs, paths.sentinelPath),
+    readRuntimeSentinel(paths.sentinelPath),
   ]).pipe(
     Effect.mapError(
       (cause) => new PinnedRuntimeInstallError({ step: "checking the pinned runtime", cause }),
@@ -435,7 +429,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
     const published = yield* fs.rename(stagingDir, paths.versionDir).pipe(
       Effect.as(true),
       Effect.catch((cause) =>
-        Effect.all([fs.exists(paths.entryPath), readRuntimeSentinel(fs, paths.sentinelPath)]).pipe(
+        Effect.all([fs.exists(paths.entryPath), readRuntimeSentinel(paths.sentinelPath)]).pipe(
           Effect.mapError(
             (checkCause) =>
               new PinnedRuntimeInstallError({
@@ -784,7 +778,7 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
     const versionDir = path.join(versionsDir, version);
     const sentinelPath = path.join(versionDir, ".install-complete");
     const isLink = yield* fs.readLink(versionDir).pipe(Effect.isSuccess);
-    const sentinel = yield* readRuntimeSentinel(fs, sentinelPath);
+    const sentinel = yield* readRuntimeSentinel(sentinelPath);
     const completedAt = yield* fs.stat(sentinelPath).pipe(
       Effect.map((info) => Option.getOrUndefined(info.mtime)?.getTime()),
       Effect.orElseSucceed(() => undefined),

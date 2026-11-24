@@ -98,11 +98,15 @@ async function install(dir, key) {
 }
 
 const isComplete = (dir) => {
+  let marker;
   try {
-    const marker = path.join(dir, ".install-complete");
-    return fs.statSync(marker).isFile() && fs.readFileSync(marker, "utf8").trim() === version;
+    const { O_RDONLY, O_NONBLOCK } = fs.constants;
+    marker = fs.openSync(path.join(dir, ".install-complete"), O_RDONLY | (O_NONBLOCK ?? 0));
+    return fs.fstatSync(marker).isFile() && fs.readFileSync(marker, "utf8").trim() === version;
   } catch {
     return false;
+  } finally {
+    if (marker !== undefined) fs.closeSync(marker);
   }
 };
 

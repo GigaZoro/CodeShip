@@ -423,13 +423,7 @@ exec /bin/mv "$@"
       yield* ensurePinnedRuntimeInstalled({
         baseDir,
         version,
-        fs: {
-          ...fs,
-          readFileString: (file, encoding) =>
-            file === finalPaths.sentinelPath
-              ? Effect.die("read a nonregular marker")
-              : fs.readFileString(file, encoding),
-        },
+        fs,
         path,
         platform: installPlatform,
         arch: "x64",

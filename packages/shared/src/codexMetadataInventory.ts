@@ -5,6 +5,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
 import { CODEX_METADATA_INVENTORY } from "./cliRelease.ts";
+import { readRegularFileUtf8, withRegularFile } from "./regularFile.ts";
 
 declare const __T3CODE_CODEX_METADATA_INVENTORY_SHA256__: string | undefined;
 
@@ -25,13 +26,18 @@ export async function codexMetadataInventory(directory: string): Promise<string>
     if (!entry.isFile() || /[\r\n]/.test(member)) {
       throw new Error(`Invalid native Codex package member: ${member}`);
     }
-    const stat = await NodeFSP.stat(file);
-    const posixExecutable = (stat.mode & 0o111) !== 0 && !member.endsWith(".exe");
-    if (posixExecutable) await NodeFSP.access(file, NodeFS.constants.X_OK);
-    const hash = NodeCrypto.createHash("sha256");
-    for await (const chunk of NodeFS.createReadStream(file)) hash.update(chunk);
-    const executable = member.endsWith(".exe") || posixExecutable;
-    rows.push(`${executable ? "x" : "f"} ${hash.digest("hex")} ${member}`);
+    const row = await withRegularFile(
+      file,
+      async (handle, stat) => {
+        const posixExecutable = (stat.mode & 0o111) !== 0 && !member.endsWith(".exe");
+        if (posixExecutable) await NodeFSP.access(file, NodeFS.constants.X_OK);
+        const hash = NodeCrypto.createHash("sha256");
+        for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk);
+        return `${member.endsWith(".exe") || posixExecutable ? "x" : "f"} ${hash.digest("hex")} ${member}`;
+      },
+      { noFollow: true },
+    );
+    rows.push(row);
   }
   if (!rows.length) throw new Error(`Empty Codex package at ${directory}`);
   return rows.sort().join("\n") + "\n";
@@ -46,10 +52,7 @@ export async function verifyCodexMetadataInstallation(
   expectedDigest: string,
 ): Promise<void> {
   if (!expectedDigest) return;
-  const installed = await NodeFSP.readFile(
-    NodePath.join(resources, CODEX_METADATA_INVENTORY),
-    "utf8",
-  );
+  const installed = await readRegularFileUtf8(NodePath.join(resources, CODEX_METADATA_INVENTORY));
   if (
     codexMetadataInventoryDigest(installed) !== expectedDigest ||
     (await codexMetadataInventory(NodePath.join(resources, "codex-metadata"))) !== installed
