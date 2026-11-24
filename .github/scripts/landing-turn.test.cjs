@@ -1794,6 +1794,40 @@ test("a lander whose main stays still checks once, before its wait, and holds th
   }
 });
 
+test("the checks read a private checkout of the landed commit, not the lander's worktree", () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const dir = clone("lander");
+    commit(dir, "change.txt");
+    const landed = git(dir, "rev-parse", "HEAD");
+    let seen;
+    let checkout;
+
+    const result = land({
+      cwd: dir,
+      remote: origin,
+      check: (_turn, _base, _budget, directory) => {
+        checkout = directory;
+        // An edit made and undone while the checks run leaves the worktree clean again.
+        fs.writeFileSync(path.join(dir, "base.txt"), "transient\n");
+        seen = fs.readFileSync(path.join(directory, "base.txt"), "utf8");
+        fs.writeFileSync(path.join(dir, "base.txt"), "base\n");
+        assert.equal(git(directory, "rev-parse", "HEAD"), landed);
+        assert.notEqual(path.resolve(directory), path.resolve(dir));
+        return true;
+      },
+    });
+
+    assert.equal(seen, "base\n");
+    assert.equal(result.status, "landed");
+    assert.equal(git(origin, "rev-parse", "main"), landed);
+    assert.equal(fs.existsSync(checkout), false);
+    assert.equal(git(dir, "worktree", "list", "--porcelain").includes(checkout), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a landing continued after its rebase checks against the main it rebased onto, and stops if its branch left it", () => {
   const { root, origin, git, clone, commit } = setup();
   try {

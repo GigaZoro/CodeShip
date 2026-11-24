@@ -612,10 +612,26 @@ function formatOverlaps(overlaps) {
 }
 
 /**
- * Lands HEAD on main: rebases and runs `check` before the wait, then pushes under the turn, checking again only
- * when main moved during the wait. `check(turn, base, budgetSeconds)` is true when the checks passed against `base`,
- * main's commit, which the push gate requires; `turn` is null before the wait, and `budgetSeconds` is what the lease
- * leaves the longest step. `rebased` continues a landing that returned `rebased`, without fetching main again.
+ * Runs `run(directory)` in a private detached checkout of `commit`. The lander's own worktree stays writable by
+ * editors and other agents while the checks run, and an edit made and undone in it would leave no trace; nothing
+ * outside the landing knows this directory, so the checks read exactly the commit.
+ */
+function withPrivateCheckout({ cwd, commit }, run) {
+  const directory = path.join(os.tmpdir(), `t3-landing-${randomUUID()}`);
+  git(cwd, ["worktree", "add", "--quiet", "--detach", directory, commit]);
+  try {
+    return run(directory);
+  } finally {
+    git(cwd, ["worktree", "remove", "--force", directory], { allowFailure: true });
+    fs.rmSync(directory, { recursive: true, force: true });
+    git(cwd, ["worktree", "prune"], { allowFailure: true });
+  }
+}
+
+/**
+ * Lands HEAD on main: checks before the wait, again under the turn only if main moved. `check(turn, base,
+ * budgetSeconds, directory)` is true when the checks passed in `directory`, a private checkout of the commit,
+ * against `base`; `turn` is null before the wait. `rebased` continues a landing that returned `rebased`.
  */
 function land({
   cwd,
@@ -659,7 +675,13 @@ function land({
     return { status: "rebased", base: checked, head: git(cwd, ["rev-parse", "HEAD"]).stdout };
   }
   // Before the wait too, so a failure holds no turn and the turn lasts for the push alone while main stays still.
-  if (!check(null, checked)) return { status: "check-failed" };
+  if (
+    !withPrivateCheckout({ cwd, commit: tip }, (directory) =>
+      check(null, checked, undefined, directory),
+    )
+  ) {
+    return { status: "check-failed" };
+  }
   return withTurn({ cwd, remote, now, ...rest }, (turn) => {
     const turnStarted = turnClock();
     const leftMs = leaseLeftMs(cwd, turn, now);
@@ -669,7 +691,12 @@ function land({
     if (base !== checked) {
       rebaseOnto(cwd, base);
       tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
-      if (!check(turn, base, checkBudgetSeconds(leftMs, turnClock() - turnStarted))) {
+      const budgetSeconds = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
+      if (
+        !withPrivateCheckout({ cwd, commit: tip }, (directory) =>
+          check(turn, base, budgetSeconds, directory),
+        )
+      ) {
         return { status: "check-failed" };
       }
     }
@@ -725,18 +752,23 @@ function main(argv, { cwd = process.cwd() } = {}) {
       cwd,
       remote: "origin",
       rebased: command === "land-rebased" ? { base, head } : undefined,
-      check: (turn, base, budgetSeconds) =>
-        spawnSync(`vp run check:changed ${base}`, {
-          cwd,
-          shell: true,
-          stdio: "inherit",
-          env: {
-            ...process.env,
-            // Unset before the wait: only the holder's checks take slots ahead of other runs.
-            [TURN_ENV]: turn ?? undefined,
-            [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
-          },
-        }).status === 0,
+      check: (turn, base, budgetSeconds, directory) =>
+        // The private checkout has no node_modules; the store's hardlinks make this install cheap.
+        ["vp i --frozen-lockfile --offline", `vp run check:changed ${base}`].every(
+          (command) =>
+            spawnSync(command, {
+              cwd: directory,
+              shell: true,
+              stdio: "inherit",
+              env: {
+                ...process.env,
+                // Unset before the wait: only the holder's checks take slots ahead of other runs.
+                [TURN_ENV]: turn ?? undefined,
+                [TEST_STEP_MAX_ENV]:
+                  budgetSeconds === undefined ? undefined : String(budgetSeconds),
+              },
+            }).status === 0,
+        ),
     });
     if (result.status === "rebased") {
       return (
