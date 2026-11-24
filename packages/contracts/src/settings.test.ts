@@ -334,6 +334,28 @@ describe("ClientSettings notifications", () => {
   });
 });
 
+describe("ClientSettings density and accent", () => {
+  it("defaults to comfortable density and the theme's own accent", () => {
+    const settings = decodeClientSettings({});
+
+    expect(settings.interfaceDensity).toBe("comfortable");
+    expect(settings.accentColor).toBe("theme");
+  });
+
+  it("accepts a compact density and a palette accent", () => {
+    const patch = decodeClientSettingsPatch({ interfaceDensity: "compact", accentColor: "teal" });
+
+    expect(patch).toEqual({ interfaceDensity: "compact", accentColor: "teal" });
+  });
+
+  it.each([
+    ["interfaceDensity", "cozy"],
+    ["accentColor", "#ff0000"],
+  ])("rejects an unknown %s value", (key, value) => {
+    expect(() => decodeClientSettings({ [key]: value })).toThrow();
+  });
+});
+
 describe("ClientSettings removed keys", () => {
   it("decodes stored settings that still carry removed keys and drops them", () => {
     const settings = decodeStoredClientSettings({

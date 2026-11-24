@@ -39,6 +39,8 @@ export const DEVICE_SETTINGS_PROFILE_KEYS = [
   "diffIgnoreWhitespace",
   "diffFilesCollapsed",
   "chatWidth",
+  "interfaceDensity",
+  "accentColor",
   "effortDisplay",
   "glassOpacity",
   "appearanceContrast",

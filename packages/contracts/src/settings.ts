@@ -369,6 +369,26 @@ export const DiffColorScheme = Schema.Literals(["red-green", "blue-orange"]);
 export const ChatWidth = Schema.Literals(["comfortable", "wide", "full"]);
 export type ChatWidth = typeof ChatWidth.Type;
 
+export const InterfaceDensity = Schema.Literals(["comfortable", "compact"]);
+export type InterfaceDensity = typeof InterfaceDensity.Type;
+
+/** The hues an accent can take; their colors live in `@t3tools/shared/accentPalette`. */
+export const ACCENT_COLOR_HUES = [
+  "blue",
+  "indigo",
+  "violet",
+  "pink",
+  "red",
+  "orange",
+  "green",
+  "teal",
+] as const;
+export type AccentColorHue = (typeof ACCENT_COLOR_HUES)[number];
+
+/** `theme` keeps the active theme's own primary color. */
+export const AccentColor = Schema.Literals(["theme", ...ACCENT_COLOR_HUES]);
+export type AccentColor = typeof AccentColor.Type;
+
 /** How the composer shows reasoning effort: the level's name, or rising bars. */
 export const EffortDisplay = Schema.Literals(["label", "bars"]);
 export type EffortDisplay = typeof EffortDisplay.Type;
@@ -417,6 +437,10 @@ export const ClientSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed("red-green" as const)),
   ),
   chatWidth: ChatWidth.pipe(Schema.withDecodingDefault(Effect.succeed("comfortable" as const))),
+  interfaceDensity: InterfaceDensity.pipe(
+    Schema.withDecodingDefault(Effect.succeed("comfortable" as const)),
+  ),
+  accentColor: AccentColor.pipe(Schema.withDecodingDefault(Effect.succeed("theme" as const))),
   effortDisplay: EffortDisplay.pipe(Schema.withDecodingDefault(Effect.succeed("label" as const))),
   loadBalancingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   loadBalancingWeights: LoadBalancingWeights.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
@@ -2160,6 +2184,8 @@ export const ClientSettingsPatch = Schema.Struct({
   inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
   diffColorScheme: Schema.optionalKey(DiffColorScheme),
   chatWidth: Schema.optionalKey(ChatWidth),
+  interfaceDensity: Schema.optionalKey(InterfaceDensity),
+  accentColor: Schema.optionalKey(AccentColor),
   effortDisplay: Schema.optionalKey(EffortDisplay),
   loadBalancingEnabled: Schema.optionalKey(Schema.Boolean),
   loadBalancingWeights: Schema.optionalKey(LoadBalancingWeights),
