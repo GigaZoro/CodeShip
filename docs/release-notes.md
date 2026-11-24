@@ -117,7 +117,8 @@
 ## 2026-11-22 — Open a thread beside the one you are reading
 
 - Right-click a thread and choose **Open in side panel**, or Alt-click (Option-click on Mac) to open it beside your current thread.
-- In the command palette, highlight a thread and press **Alt+Enter**. Use **Open in main view** to move the thread into the main view.
+- In the command palette, highlight a thread and press **Alt+Enter** (**Option+Enter** on Mac). Use **Open in main view** to move the thread into the main view.
+- A thread from another project, worktree or machine opens a file, browser tab or pull request in its own workspace: the thread moves to the main view with it open.
 
 ## 2026-11-22 — Relay client installs keep each other's locks
 
