@@ -1,11 +1,57 @@
 import { assert, it } from "@effect/vitest";
 import { RunId, ThreadId } from "@t3tools/contracts";
+import * as NetService from "@t3tools/shared/Net";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import { Command } from "effect/cli";
 
-import { readLatestMessages, type ThreadTools, waitForRun } from "./thread.ts";
+import { deriveServerPaths, WORKTREE_RELEASE_DIRECTORY } from "../config.ts";
+import { git, initRepoWithCommit, layerTest, makeTmpDir } from "../vcs/GitVcsDriverCore.testkit.ts";
+import {
+  decodeReleaseRequest,
+  releasePath,
+  worktreeReleaseName,
+} from "../workspace/worktreeRelease.ts";
+import { readLatestMessages, threadCommand, type ThreadTools, waitForRun } from "./thread.ts";
 
 const threadId = ThreadId.make("thread-1");
 const runId = RunId.make("run-1");
+
+it.live("release-worktree queues an ordinary request when --save-ignored is omitted", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* makeTmpDir("thread-release-cli-");
+    const repo = path.join(root, "primary");
+    const worktree = path.join(root, "finished checkout");
+    const { initialBranch } = yield* initRepoWithCommit(repo);
+    yield* git(repo, ["worktree", "add", "-b", "finished", worktree]);
+    const durableRef = `refs/heads/${initialBranch}`;
+    const baseDir = path.join(root, "server");
+    yield* Command.runWith(threadCommand, { version: "0.0.0" })([
+      "release-worktree",
+      threadId,
+      "--run",
+      runId,
+      "--worktree",
+      worktree,
+      "--durable-ref",
+      durableRef,
+      "--base-dir",
+      baseDir,
+    ]);
+    const { stateDir } = yield* deriveServerPaths(baseDir, undefined);
+    const file = worktreeReleaseName(yield* releasePath(worktree));
+    const request = yield* decodeReleaseRequest(
+      yield* fs.readFileString(path.join(stateDir, WORKTREE_RELEASE_DIRECTORY, file)),
+    );
+    assert.strictEqual(request.runId, runId);
+    assert.strictEqual(request.durableRef, durableRef);
+    assert.isUndefined(request.savedFiles);
+  }).pipe(Effect.provide(Layer.merge(layerTest, NetService.layer)), Effect.scoped),
+);
 
 /** Answers each tool call with the next scripted response for that tool. */
 const scriptedTools = (script: Record<string, Array<unknown>>) => {

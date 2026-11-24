@@ -1,3 +1,7 @@
+## 2026-11-24 — Release a finished worktree
+
+- `t3 thread release-worktree` now accepts the documented command with `--save-ignored` omitted. Ignored files keep the checkout in place by default.
+
 ## 2026-11-24 — Auto reviews on one provider when the other cannot run
 
 - Auto mode asks for an independent review from the other provider only while one of its accounts can run that provider's Auto model. When none can (out of usage, signed out or turned off), or that reviewer fails to start, the independent review runs on the coordinator's own provider's Auto model in a fresh chat instead of being reported as incomplete. When no account can run a reviewer at all, the coordinator's own review is the only one, and its report says so.
