@@ -1,5 +1,5 @@
 name: Release (fork) macOS
-run-name: Release (fork) macOS v${{ inputs.version }}
+run-name: Release (fork) macOS v${{ inputs.version }}${{ github.ref_type == 'branch' && ' (branch dispatch)' || '' }}
 
 # Builds the macOS arm64 app for a release that release-fork.yml published, and
 # attaches it with its update feed. It runs apart from that workflow because

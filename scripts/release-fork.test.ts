@@ -13,6 +13,7 @@ import { carryMacosFeed, publicConfig } from "../.github/scripts/fork-release.cj
 const WorkflowJob = Schema.Struct({
   needs: Schema.optional(Schema.Union([Schema.String, Schema.Array(Schema.String)])),
   "runs-on": Schema.optional(Schema.String),
+  uses: Schema.optional(Schema.String),
   with: Schema.optional(
     Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Boolean, Schema.Number])),
   ),
@@ -169,6 +170,32 @@ describe("fork release", () => {
     }
     expect(workflowSource("release-fork-macos.yml")).toContain('"$GITHUB_SHA" != "$sha"');
     expect(workflowSource("release-fork-retry.yml")).toContain('"$RUN_SHA" != "$sha"');
+  });
+
+  it("recovers a Mac build only from a dispatch on its published tag", () => {
+    const retry = workflowSource("release-fork-retry.yml");
+    expect(retry).toContain("RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}");
+    expect(retry).toContain('"$RUN_BRANCH" != "$latest"');
+    const tagLookup = retry
+      .split("\n")
+      .find((line) => line.includes("--workflow release-fork-macos.yml"));
+    expect(tagLookup).toContain('--branch "$tag"');
+    expect(tagLookup).toContain('--commit "$sha"');
+    expect(tagLookup).toContain("--event workflow_dispatch");
+    expect(workflowSource("release-fork-macos.yml")).toMatch(/^run-name:.*github\.ref_type/m);
+  });
+
+  it("populates the Mac package cache on main using the release tag's native recipe", () => {
+    const producerFile = "cache-fork-codex-macos.yml";
+    const producer = readWorkflow(producerFile);
+    const tag = readWorkflow("release-fork-macos.yml");
+    const warm = producer.jobs.metadata_mac!;
+    const tagged = tag.jobs.metadata_mac!;
+    expect(workflowSource(producerFile)).toContain("push:\n    branches: [main]");
+    expect(warm.uses).toBe(tagged.uses);
+    expect(warm.with).toEqual({ ...tagged.with, ref: "${{ github.sha }}" });
+    expect(producer.concurrency.group).not.toBe(readWorkflow("release-fork.yml").concurrency.group);
+    expect(producer.concurrency.group).not.toBe(tag.concurrency.group);
   });
 
   it("serves Macs the previous build until the macOS app is attached", async () => {

@@ -793,7 +793,7 @@ jobs:
             trap 'hdiutil detach "$mount" -force >/dev/null || true' EXIT
             app=$(ls -d "$mount"/*.app)
             if [[ -n "${{ inputs.codex_metadata_key }}" ]]; then
-              node scripts/sign-macos.ts --verify-codex-metadata "$app"
+              node scripts/sign-macos.ts --verify-codex-metadata "$app" "$T3CODE_BUILD_CODEX_METADATA_DIR"
               python3 docs/operations/codex-metadata/smoke.py "$app/Contents/Resources/codex-metadata/bin/codex"
             fi
             executable=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$app/Contents/Info.plist")

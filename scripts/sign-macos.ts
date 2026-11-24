@@ -46,9 +46,11 @@ export default async function sign(options: SignOptions): Promise<void> {
 }
 
 if (import.meta.main) {
-  const [operation, app] = process.argv.slice(2);
-  if (operation !== "--verify-codex-metadata" || !app) {
-    throw new Error("Usage: node scripts/sign-macos.ts --verify-codex-metadata <app>");
+  const [operation, app, staged] = process.argv.slice(2);
+  if (operation !== "--verify-codex-metadata" || !app || !staged) {
+    throw new Error(
+      "Usage: node scripts/sign-macos.ts --verify-codex-metadata <app> <staged-package>",
+    );
   }
   const { cli, host, rg } = metadataBinaries(app);
   const expectedV8 = Object.fromEntries(v8Entitlements.map((key) => [key, true]));
@@ -58,8 +60,12 @@ if (import.meta.main) {
       const id = binary === host ? "codex-code-mode-host" : "com.openai.codex.rg";
       args.push(
         "--test-requirement",
-        `=anchor apple generic and certificate leaf[subject.OU] = "2DC432GLL2" and identifier "${id}"`,
+        "=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists" +
+          " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists" +
+          ` and certificate leaf[subject.OU] = "2DC432GLL2" and identifier "${id}"`,
       );
+      const member = binary === host ? "bin/codex-code-mode-host" : "codex-path/rg";
+      NodeChildProcess.execFileSync("/usr/bin/cmp", ["-s", NodePath.join(staged, member), binary]);
     }
     NodeChildProcess.execFileSync("/usr/bin/codesign", [...args, binary], { stdio: "inherit" });
     const xml = NodeChildProcess.execFileSync(

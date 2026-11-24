@@ -125,7 +125,9 @@ failures are jobs that never got a runner, otherwise twice right away and then f
 schedule, which GitHub often delays by hours. The schedule also starts a release when the head of
 `main` has no run at all, and a macOS build when the latest release has none. Past 24 attempts it
 fails the scheduled run. To repair one by hand, rerun the failed run, or run **Release (fork)
-macOS** with the release's version and the id of the **Release (fork)** run that published it.
+macOS** from the published release tag with its version and the id of the **Release (fork)** run that published it.
+
+Main also prepares the macOS Codex metadata package in a separate workflow. A release tag can reuse the verified archive from main when its native build recipe matches. A cold cache can build the tag’s own recipe. Windows and Linux publication run independently of the Mac runner.
 
 - **One-time setup.** Forks start with Actions disabled; enable them in the fork's Actions tab.
   Most other workflows ask for upstream's Blacksmith runners, which a fork does not have, so their
