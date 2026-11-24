@@ -1099,6 +1099,7 @@ function launcherFixture(realTests = false) {
     "scripts/check-changed.ts",
     "scripts/check-changed-command.ts",
     "scripts/lib/repository-command-source.ts",
+    "packages/shared/src/testing/providerEnv.ts",
     "scripts/lib/staged-test-cache.ts",
     "scripts/lib/cached-tests.ts",
     "scripts/lib/cached-vitest-options.ts",
@@ -1180,7 +1181,7 @@ function launcherFixture(realTests = false) {
     import { cachedTestTasks } from "./scripts/lib/cached-tests.ts";
     export default {
       run: { cache: { scripts: false }, tasks: cachedTestTasks(process.env.T3_CACHED_TESTS) },
-      test: { maxWorkers: 1 }
+      test: { maxWorkers: 1, setupFiles: ["./packages/shared/src/testing/providerEnv.ts"] }
     };
   `,
   );
@@ -1352,7 +1353,10 @@ it("resumes passed groups after a failed gate and invalidates a changed test inp
       .sort();
   project.write(
     "a-quick.test.ts",
-    testSource("quick", 'expect(readFileSync("input.txt", "utf8")).toBe("pass");'),
+    testSource(
+      "quick",
+      'expect(process.env.VITE_CACHE_PATH).toBeUndefined(); expect(readFileSync("input.txt", "utf8")).toBe("pass");',
+    ),
   );
   project.write("input.txt", "pass");
   const failing = "packages/example/z-failing.test.ts";
