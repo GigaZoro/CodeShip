@@ -216,6 +216,7 @@ describe("standaloneMarkdown", () => {
     ["Before <b>open", "Before \\<b>open"],
     [String.raw`Inline \(x\) <b>`, String.raw`Inline \(x\) \<b>`],
     ["> \\( a\n> b \\) <b>", "> \\( a\n> b \\) \\<b>"],
+    ["> \\(\n> a\n> \\) <b>", "> \\(\n> a\n> \\) \\<b>"],
     ["- \\[\n  x\n  \\]\n\n<div>", "- \\[\n  x\n  \\]\n\n```html\n<div>\n```"],
     ["> - $$ m\n>   x\n>   $$\n\n<div>", "> - $$ m\n>   x\n>   $$\n\n```html\n<div>\n```"],
     ["at Array.<anonymous> (pkg@.5g)", "at Array.\\<anonymous> ([pkg@.5g](mailto:pkg@.5g))"],
@@ -294,6 +295,8 @@ describe("standaloneMarkdown", () => {
     inlineMathBesideHtml: String.raw`Inline \(x\) <b>`,
     displayMathBesideHtml: String.raw`Display \[x\] <b>`,
     mathAcrossQuotedLines: "> \\( a\n> b \\) <b>",
+    mathClosingOnItsOwnQuotedLine: "> \\(\n> a\n> \\) <b>",
+    displayMathClosingOnItsOwnQuotedLine: "> \\[ a\n> b\n> \\]\n\n<div>",
     mathInListBesideHtml: "- \\[\n  x\n  \\]\n\n<div>",
     raggedTable: `| h |\n| - |\n|${" c |".repeat(100)}\n${"| r |\n".repeat(100)}<div>`,
   };

@@ -101,9 +101,11 @@ function authoredSpan(node: MathNode | InlineMath, span: string, nested: boolean
     return [opensWithText ? openingLine : opening, ...body, closing].join("\n");
   }
   const inner = span.slice(opening.length, span.lastIndexOf(closing));
-  const padded = /^[ \n].*[ \n]$/su.test(inner) && /[^ \n]/u.test(inner);
-  return padded
-    ? `${opening}${inner[0]}${node.value}${inner.at(-1)}${closing}`
+  // A closing delimiter that starts its line follows a line ending, not the container's markers.
+  const last = /\n[> \t]*$/u.test(inner) ? "\n" : inner.at(-1);
+  const padded = /^[ \n]/u.test(inner) && (last === " " || last === "\n");
+  return padded && /[^ \n]/u.test(node.value)
+    ? `${opening}${inner[0]}${node.value}${last}${closing}`
     : `${opening}${node.value}${closing}`;
 }
 
