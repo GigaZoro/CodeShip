@@ -32,7 +32,6 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 
 const CODEX_TIMEOUT_MS = 180_000;
 const CODEX_MCP_LIST_TIMEOUT_MS = 10_000;
-const CODEX_METADATA_PROBE_TIMEOUT_MS = 5_000;
 const CODEX_METADATA_BINARY_ENV = "T3CODE_CODEX_METADATA_BINARY_PATH";
 const CODEX_METADATA_FLAG = "--codeship-metadata-no-mcp";
 const { binaryPath: defaultCodexBinary } = Schema.decodeSync(CodexSettings)({});
@@ -113,6 +112,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       }
     }
     const [help, , exitCode] = yield* Effect.gen(function* () {
+      // Cold OS verification can take tens of seconds. The enclosing request bounds this probe.
       // Codex initializes its home before parsing help, even with an empty environment.
       const probeHome = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3code-codex-probe-",
@@ -136,7 +136,6 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       );
     }).pipe(
       Effect.scoped,
-      Effect.timeout(CODEX_METADATA_PROBE_TIMEOUT_MS),
       Effect.mapError(() => unusableBinary),
     );
     if (

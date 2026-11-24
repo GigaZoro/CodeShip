@@ -11,6 +11,7 @@ import * as SourceControlProviderRegistry from "../sourceControl/SourceControlPr
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -19,6 +20,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as TestClock from "effect/testing/TestClock";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { createModelSelection } from "@t3tools/shared/model";
 import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
@@ -341,6 +343,41 @@ function withFakeCodexEnv<A, E, R>(
 }
 
 it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
+  it.effect.skipIf(isWindowsHost)("allows a cold metadata launch within the request deadline", () =>
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const checking = yield* Deferred.make<void>();
+      const coldSpawner = ChildProcessSpawner.make((command) =>
+        Effect.gen(function* () {
+          if (command._tag === "StandardCommand" && command.args.includes("--help")) {
+            yield* Deferred.succeed(checking, undefined);
+            yield* Effect.sleep("40 seconds");
+          }
+          return yield* spawner.spawn(command);
+        }),
+      );
+      const request = yield* withFakeCodexEnv(
+        {
+          packaged: true,
+          metadataPath: "unset",
+          metadata: "supported",
+          output: '{"title":"Cold launch"}',
+        },
+        (generation) =>
+          generation.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Name this thread",
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+          }),
+      ).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, coldSpawner),
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(checking);
+      yield* TestClock.adjust("40 seconds");
+      expect((yield* Fiber.join(request)).title).toBe("Cold launch");
+    }),
+  );
   for (const customBinary of ["absolute-shim", "path-shim"] as const) {
     it.effect.skipIf(isWindowsHost)(`invokes the named metadata launcher for ${customBinary}`, () =>
       withFakeCodexEnv(
