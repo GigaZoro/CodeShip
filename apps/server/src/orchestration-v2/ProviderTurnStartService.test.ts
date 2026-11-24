@@ -41,6 +41,7 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
+import { queueWorktreeRelease } from "../workspace/worktreeRelease.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -89,7 +90,10 @@ const layerWorktreeLocation = (
 ) =>
   Layer.mergeAll(
     pathLayer,
-    Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as ServerConfig.ServerConfig["Service"]),
+    Layer.mock(ServerConfig.ServerConfig)({
+      worktreesDir,
+      stateDir: `${worktreesDir}/../state`,
+    } as ServerConfig.ServerConfig["Service"]),
     ServerSettings.layerTest({
       providerInstances: {
         [ProviderInstanceId.make("codex-personal")]: {
@@ -1254,6 +1258,7 @@ effectIt.effect(
 
       const expectedTips = {
         retained: { tip: threadTip, file: "thread.txt", upstream: null, base: "" },
+        released: { tip: projectTip, file: "project.txt", upstream: null, base: "" },
         deleted: { tip: projectTip, file: "project.txt", upstream: null, base: "project-current" },
         pushed: {
           tip: threadTip,
@@ -1287,8 +1292,19 @@ effectIt.effect(
         if (scenario === "detached-no-remote") {
           yield* git(workspaceRoot, ["remote", "remove", "origin"]);
         }
+        if (scenario === "released") {
+          yield* git(worktreePath, ["reset", "--hard", baseTip]);
+          const { file: request } = yield* queueWorktreeRelease({
+            threadId: "thread-native-account-command",
+            runId: "finished",
+            worktreePath,
+            durableRef: "refs/heads/project-current",
+            stateDir: path.join(root, "state"),
+          });
+          yield* fileSystem.rename(request, request + ".released");
+        }
         yield* fileSystem.remove(worktreePath, { recursive: true });
-        if (scenario !== "retained") {
+        if (scenario !== "retained" && scenario !== "released") {
           yield* git(workspaceRoot, ["worktree", "prune"]);
           yield* git(workspaceRoot, ["branch", "-D", "feature/restore"]);
         }

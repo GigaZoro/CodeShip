@@ -1,3 +1,8 @@
+## 2026-11-24 — Release a delivered task’s worktree
+
+- Checkout owners can queue a release for one completed run, save its ignored files, and name the refs that preserve its history. The server waits for delivery and teardown, then releases the checkout. A follow-up opens a fresh checkout.
+- Worktree cleanup can finish a progressing inspection that takes longer than thirty seconds. A stalled or incomplete inspection keeps the checkout.
+
 ## 2026-11-23 — Relay executable validation
 
 - CodeShip requires the relay’s version command to exit successfully before selecting an executable or activating a download. It retries a failed version check the next time it looks for the relay.

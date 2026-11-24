@@ -20,3 +20,21 @@ export const withWorkspaceLease = <A, E, R>(
       ),
     );
   });
+
+// Commands and terminals can start in an arbitrary subdirectory without a thread's checkout key.
+// Keep starts concurrent; a handoff defers if any admission is in flight at its final check.
+const admissionPermits = Number.MAX_SAFE_INTEGER;
+const admissions = Semaphore.makeUnsafe(admissionPermits);
+let completedAdmissions = 0;
+export const workspaceAdmissionGeneration = Effect.sync(() => completedAdmissions);
+export const withWorkspaceProcessStart = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  admissions.withPermit(
+    effect.pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          completedAdmissions++;
+        }),
+      ),
+    ),
+  );
+export const tryWithWorkspaceStartsPaused = admissions.withPermitsIfAvailable(admissionPermits);

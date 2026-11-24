@@ -1,3 +1,4 @@
+import { withWorkspaceProcessStart } from "../workspace/workspaceLease.ts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -188,6 +189,7 @@ export interface ProviderSessionManagerV2Shape {
     instanceIds: ReadonlyArray<ProviderInstanceId>,
     options?: { readonly requireDisconnected?: boolean },
   ) => Effect.Effect<boolean, never, Scope.Scope>;
+  readonly occupiedWorkspaces: Effect.Effect<ReadonlyArray<string>>;
   readonly isLive: (providerSessionId: ProviderSessionId) => Effect.Effect<boolean>;
   readonly close: (
     providerSessionId: ProviderSessionId,
@@ -446,6 +448,7 @@ export const layerWithOptions = (
       );
       const sessions = yield* Ref.make(new Map<string, LiveSessionEntry>());
       const changingCredentials = new Set<ProviderInstanceId>();
+      const scopeWorkspaces = new Map<Scope.Closeable, string>();
       const openingSessions = new Set<{ readonly instanceId: ProviderInstanceId }>();
       const reserveIdleCredentialBinding = Effect.fn(
         "ProviderSessionManager.reserveIdleCredentialBinding",
@@ -1336,6 +1339,7 @@ export const layerWithOptions = (
         annotations: { readonly providerSessionId?: ProviderSessionId; readonly reason: string },
       ) {
         const closeFiber = yield* Scope.close(scope, Exit.void).pipe(
+          Effect.tap(() => Effect.sync(() => scopeWorkspaces.delete(scope))),
           Effect.exit,
           Effect.forkDetach({ startImmediately: true }),
         );
@@ -2572,6 +2576,8 @@ export const layerWithOptions = (
                       }
                     });
                     const sessionScope = yield* Scope.fork(sessionScopes);
+                    // A runtime can still own its cwd after removal from the live-session map.
+                    if (cwd !== null) scopeWorkspaces.set(sessionScope, cwd);
                     yield* agentScope.clear(input.threadId);
                     const runtime = yield* restore(
                       adapter
@@ -2691,7 +2697,8 @@ export const layerWithOptions = (
                 );
               }),
             )
-            .pipe(trackOpeningSession(input)),
+            .pipe(trackOpeningSession(input), withWorkspaceProcessStart),
+        occupiedWorkspaces: Effect.sync(() => [...scopeWorkspaces.values()]),
         isLive: (providerSessionId) =>
           Ref.get(sessions).pipe(
             Effect.map((current) => current.has(sessionKey(providerSessionId))),

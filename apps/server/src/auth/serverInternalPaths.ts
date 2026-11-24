@@ -21,6 +21,7 @@ export const makeIsServerInternalPath = Effect.gen(function* () {
     );
     return (
       isWithinRoot(path, file, secretsDir) ||
+      isWithinRoot(path, file, path.join(stateDir, ServerConfig.WORKTREE_RELEASE_DIRECTORY)) ||
       (path.dirname(file) === stateDir && path.basename(file).includes(".sqlite")) ||
       // macOS does not resolve `/dev/fd/N` to the open file's path.
       isWithinRoot(path, file, "/dev/fd")

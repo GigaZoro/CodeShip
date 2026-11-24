@@ -95,7 +95,9 @@ export class GitWorkflowService extends Context.Service<
     ) => Effect.Effect<VcsListRefsResult, GitCommandError>;
     readonly createWorktree: (
       input: VcsCreateWorktreeInput,
-      options?: GitVcsDriver.CreateWorktreeOptions,
+      options?: GitVcsDriver.CreateWorktreeOptions & {
+        readonly releasedBranch?: { readonly previousHead: string; readonly baseRef: string };
+      },
     ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
     readonly listLocalBranchNames: (cwd: string) => Effect.Effect<string[], GitCommandError>;
     readonly fetchRemote: (input: {
@@ -603,10 +605,34 @@ export const make = Effect.gen(function* () {
         ),
       );
     }),
-    createWorktree: Effect.fn("GitWorkflowService.createWorktree")(function (input, options) {
-      return ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(
-        Effect.andThen(gitManager.createWorktree(input, options)),
-      );
+    createWorktree: Effect.fn("GitWorkflowService.createWorktree")(function* (input, options) {
+      yield* ensureGitCommand("GitWorkflowService.createWorktree", input.cwd);
+      if (options?.releasedBranch) {
+        const ref = "refs/heads/" + input.refName;
+        const { commitSha } = yield* git.resolveCommit({ cwd: input.cwd, revision: ref });
+        if (commitSha === options.releasedBranch.previousHead) {
+          // Local fetch fast-forwards only and refuses to update a branch checked out elsewhere.
+          yield* git.executeRemote({
+            cwd: input.cwd,
+            operation: "GitWorkflowService.advanceReleasedBranch",
+            timeoutMs: 30_000,
+            fallbackErrorDetail:
+              "Git could not fast-forward the released branch to the project's current base.",
+            args: [
+              "fetch",
+              "--quiet",
+              "--no-tags",
+              "--no-recurse-submodules",
+              "--no-write-fetch-head",
+              "--no-auto-maintenance",
+              "--",
+              ".",
+              options.releasedBranch.baseRef + ":" + ref,
+            ],
+          });
+        }
+      }
+      return yield* gitManager.createWorktree(input, options);
     }),
     listLocalBranchNames: Effect.fn("GitWorkflowService.listLocalBranchNames")(function (cwd) {
       return ensureGitCommand("GitWorkflowService.listLocalBranchNames", cwd).pipe(

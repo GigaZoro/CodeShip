@@ -2,6 +2,8 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
+import { flow } from "effect/Function";
+import { withWorkspaceProcessStart } from "../workspace/workspaceLease.ts";
 
 import {
   CommandId,
@@ -2079,7 +2081,7 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.ignoreCause({ log: true })),
     );
 
-  return CommandRunner.of({ run, start });
+  return CommandRunner.of({ run: flow(run, withWorkspaceProcessStart), start });
 });
 
 export const layer = Layer.effect(CommandRunner, make);

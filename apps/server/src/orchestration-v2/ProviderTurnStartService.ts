@@ -37,6 +37,7 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 import { STALL_LOG_NOTE } from "../observability/EventLoopMonitor.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import { releasedWorktree } from "../workspace/worktreeRelease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
@@ -246,6 +247,7 @@ export const layer: Layer.Layer<
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
     const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
     const projects = yield* ProjectService.ProjectService;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
@@ -469,6 +471,7 @@ export const layer: Layer.Layer<
 
     const recreateMissingWorktree = Effect.fn("ProviderTurnStartService.recreateMissingWorktree")(
       function* (input: {
+        readonly threadId: ThreadId;
         readonly cwd: string;
         readonly worktreePath: string;
         readonly branch: string;
@@ -476,6 +479,35 @@ export const layer: Layer.Layer<
         const { cwd, worktreePath, branch } = input;
         yield* gitWorkflow.pruneWorktrees({ cwd });
         const localBranchNames = yield* gitWorkflow.listLocalBranchNames(cwd);
+        const released = yield* releasedWorktree(
+          fileSystem,
+          path.join(config.stateDir, ServerConfig.WORKTREE_RELEASE_DIRECTORY),
+          worktreePath,
+          input.threadId,
+          branch,
+        );
+        if (released) {
+          const base = yield* resolveRecreateBase(cwd);
+          if (!base) return yield* new WorktreeRecreateNoBaseError({ worktreePath, branch });
+          if (localBranchNames.includes(branch)) {
+            yield* gitWorkflow.createWorktree(
+              { cwd, refName: branch, path: worktreePath },
+              {
+                releasedBranch: { previousHead: released.request.head, baseRef: base.refName },
+              },
+            );
+          } else {
+            yield* gitWorkflow.createWorktree({
+              cwd,
+              refName: base.refName,
+              newRefName: branch,
+              path: worktreePath,
+              ...(base.baseRefName ? { baseRefName: base.baseRefName } : {}),
+            });
+          }
+          yield* fileSystem.remove(released.receipt);
+          return;
+        }
         if (localBranchNames.includes(branch)) {
           yield* gitWorkflow.createWorktree({ cwd, refName: branch, path: worktreePath });
           return;
@@ -851,6 +883,7 @@ export const layer: Layer.Layer<
             });
             const recreateResult = yield* Effect.result(
               recreateMissingWorktree({
+                threadId: projection.thread.id,
                 cwd: project.workspaceRoot,
                 worktreePath,
                 branch,

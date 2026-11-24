@@ -26,6 +26,8 @@ declare const __T3CODE_TELEMETRY_CHANNEL__: ReleaseChannel | undefined;
 export const telemetryChannel: ReleaseChannel =
   typeof __T3CODE_TELEMETRY_CHANNEL__ === "undefined" ? "dev" : __T3CODE_TELEMETRY_CHANNEL__;
 
+export const WORKTREE_RELEASE_DIRECTORY = "worktree-releases";
+
 export const DEFAULT_PORT = 3773;
 
 export const RuntimeMode = Schema.Literals(["web", "desktop"]);

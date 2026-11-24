@@ -25,6 +25,8 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as ServerConfig from "./config.ts";
+import { withWorkspaceProcessStart } from "./workspace/workspaceLease.ts";
+import { queueWorktreeRelease } from "./workspace/worktreeRelease.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as GitManager from "./git/GitManager.ts";
@@ -330,6 +332,7 @@ const cleanupFixture = (
     worktreeAfterDays: 8,
     worktreeOnDelete: true,
   },
+  managedLayout = false,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -345,8 +348,21 @@ const cleanupFixture = (
     yield* fs.writeFileString(`${repo}/.gitignore`, ".env\ndist/\nnode_modules/\n");
     yield* command(repo, ["add", "."]);
     yield* command(repo, ["commit", "-m", "initial"]);
+    if (managedLayout) {
+      const base = (yield* command(repo, ["rev-parse", "HEAD"])).stdout.trim();
+      yield* command(repo, [
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        "160000," + base + ",vendor/empty",
+      ]);
+      yield* command(repo, ["commit", "-m", "Record an uninitialized gitlink"]);
+    }
     yield* fs.makeDirectory(config.worktreesDir, { recursive: true });
-    const worktree = NodePath.resolve(config.worktreesDir, "feature");
+    const worktree = NodePath.resolve(
+      config.worktreesDir,
+      ...(managedLayout ? ["project", "feature"] : ["feature"]),
+    );
     yield* command(repo, ["worktree", "add", "-b", "feature", worktree]);
     let settings: import("@t3tools/contracts").ServerSettings = {
       ...DEFAULT_SERVER_SETTINGS,
@@ -361,6 +377,7 @@ const cleanupFixture = (
     let sessionLive = true;
     let onLiveCheck: Effect.Effect<void> = Effect.void;
     let outboxStatus: string | null = null;
+    let delegateDelivered = false;
     const sqlReads: Array<{ readonly query: string; readonly background: boolean }> = [];
     let fullStatusCalls = 0;
     let failUnmergedCount = false;
@@ -442,11 +459,13 @@ const cleanupFixture = (
           Effect.sync(() => threads.find((thread) => thread.id === threadId) ?? null),
       } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
       Effect.provideService(ProviderSessionManager.ProviderSessionManagerV2, {
+        occupiedWorkspaces: Effect.succeed([]),
         isLive: () =>
           Effect.sync(() => sessionLive).pipe(Effect.tap(() => Effect.suspend(() => onLiveCheck))),
       } as unknown as ProviderSessionManager.ProviderSessionManagerV2["Service"]),
       Effect.provideService(Orchestrator.OrchestratorV2, {
         streamDomainEvents: Stream.suspend(() => events),
+        delegatedTaskResultPending: () => Effect.succeed(false),
       } as unknown as Orchestrator.OrchestratorV2["Service"]),
       Effect.provideService(SqlClient.SqlClient, ((strings: TemplateStringsArray) =>
         Effect.sync(() =>
@@ -467,19 +486,21 @@ const cleanupFixture = (
                   }),
                 },
               ]
-            : outboxStatus !== null && strings.join("").includes("orchestration_v2_effect_outbox")
-              ? [{ status: outboxStatus }]
-              : strings.join("").includes("deleted_at IS NOT NULL")
-                ? deletedThreads.map((thread) => ({
-                    payload_json: JSON.stringify(thread),
-                    workspaceRoot: repo,
-                  }))
-                : strings.join("").includes('AS "worktreePath"')
-                  ? [
-                      ...threads.flatMap((thread) => thread.worktreePath ?? []),
-                      ...storedWorktreePaths,
-                    ].map((worktreePath) => ({ worktreePath }))
-                  : [],
+            : delegateDelivered && strings.join("").includes("AND completed_at >=")
+              ? [{ delivered: 1 }]
+              : outboxStatus !== null && strings.join("").includes("orchestration_v2_effect_outbox")
+                ? [{ status: outboxStatus }]
+                : strings.join("").includes("deleted_at IS NOT NULL")
+                  ? deletedThreads.map((thread) => ({
+                      payload_json: JSON.stringify(thread),
+                      workspaceRoot: repo,
+                    }))
+                  : strings.join("").includes('AS "worktreePath"')
+                    ? [
+                        ...threads.flatMap((thread) => thread.worktreePath ?? []),
+                        ...storedWorktreePaths,
+                      ].map((worktreePath) => ({ worktreePath }))
+                    : [],
         ).pipe(
           Effect.tap(() =>
             Effect.map(NodeSqliteClient.Background, (background) => {
@@ -547,6 +568,9 @@ const cleanupFixture = (
       },
       setOnLiveCheck: (hook: Effect.Effect<void>) => {
         onLiveCheck = hook;
+      },
+      recordDelegateDelivery: () => {
+        delegateDelivered = true;
       },
       setOutboxStatus: (status: string | null) => {
         outboxStatus = status;
@@ -631,6 +655,212 @@ const runCleanupTest = <A, E>(
     | Scope.Scope
   >,
 ) => effect.pipe(Effect.provide(cleanupTestLayer), Effect.scoped);
+
+it.live.each(["direct land", "no change"] as const)(
+  "releases only the owner's completed run after delivery and teardown (%s)",
+  (delivery) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture(undefined, true);
+        fixture.disable();
+        if (delivery === "direct land") {
+          yield* fixture.fs.writeFileString(
+            NodePath.join(fixture.worktree, "tracked.txt"),
+            "delivered\n",
+          );
+          yield* fixture.command(fixture.worktree, ["commit", "-am", "delivered"]);
+          yield* fixture.command(fixture.repo, ["merge", "--ff-only", "feature"]);
+        }
+        const runId = RunId.make("run-1");
+        const owner = shell({
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          status: "completed",
+          latestRunId: runId,
+          latestRunCompletedAt: at(0),
+        });
+        fixture.setThreads([owner]);
+        const outputs = [
+          ".t3/setup-done",
+          "node_modules/example/index.js",
+          ".vite-hooks/_/pre-commit",
+          "apps/server/tsconfig.tsbuildinfo",
+          "apps/marketing/.astro/content.d.ts",
+          "apps/mobile/.generated/app.json",
+        ];
+        yield* fixture.fs.writeFileString(
+          NodePath.join(fixture.repo, ".git/info/exclude"),
+          ".t3/\n.vite-hooks/_/\n*.tsbuildinfo\n.astro/\n.generated/\n",
+        );
+        for (const output of outputs) {
+          const target = NodePath.join(fixture.worktree, output);
+          yield* fixture.fs.makeDirectory(NodePath.dirname(target), { recursive: true });
+          yield* fixture.fs.writeFileString(target, output);
+        }
+        const { file: request, savedFiles } = yield* queueWorktreeRelease({
+          stateDir: fixture.config.stateDir,
+          threadId: owner.id,
+          runId,
+          worktreePath: fixture.worktree,
+          durableRef: "refs/heads/main",
+          saveIgnored: true,
+        });
+        fixture.setOpenSessionCwd(fixture.worktree);
+        expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+          "Provider session is still open",
+        );
+        fixture.setOpenSessionCwd(null);
+        fixture.setOutboxStatus("pending");
+        yield* fixture.service.runNow;
+        expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
+        fixture.setOutboxStatus(null);
+        yield* fixture.fs.writeFileString(NodePath.join(fixture.worktree, ".env"), "keep");
+        yield* fixture.service.runNow;
+        expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
+        yield* fixture.fs.remove(NodePath.join(fixture.worktree, ".env"));
+        const insideGitlink = NodePath.join(fixture.worktree, "vendor", "empty", ".env");
+        yield* fixture.fs.writeFileString(insideGitlink, "local");
+        expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+          "Gitlink contains local data",
+        );
+        yield* fixture.fs.remove(insideGitlink);
+        const admitted = yield* Deferred.make<void>();
+        const finishStart = yield* Deferred.make<void>();
+        const admission = yield* withWorkspaceProcessStart(
+          Deferred.succeed(admitted, undefined).pipe(Effect.andThen(Deferred.await(finishStart))),
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(admitted);
+        expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+          "A workspace process is starting",
+        );
+        yield* Deferred.succeed(finishStart, undefined);
+        yield* Fiber.join(admission);
+        fixture.setOpenSessionCwd(fixture.worktree);
+        fixture.setSessionLive(false);
+        fixture.setOnLiveCheck(
+          withWorkspaceProcessStart(Effect.sync(() => fixture.setOnLiveCheck(Effect.void))),
+        );
+        expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+          "A workspace process started during inspection",
+        );
+        fixture.setOpenSessionCwd(null);
+        const released = yield* fixture.service.runNow;
+        expect(released.entries[0]).toMatchObject({
+          outcome: "removed",
+          reason: "Owner released the completed run",
+        });
+        expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+        expect(yield* fixture.fs.exists(request)).toBe(false);
+        expect(yield* fixture.fs.exists(request + ".released")).toBe(true);
+        for (const output of outputs)
+          expect(yield* fixture.fs.readFileString(NodePath.join(savedFiles!, output))).toBe(output);
+      }),
+    ),
+);
+
+it.effect(
+  "replays an owner-qualified delegated checkout release after its parent receives the result",
+  () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW_MS);
+        const fixture = yield* cleanupFixture(undefined, true);
+        fixture.disable();
+        const runId = RunId.make("delegate-run");
+        const thread = shell({
+          status: "completed",
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          latestRunId: runId,
+          latestRunCompletedAt: at(-DAY_MS),
+          settledAt: at(-DAY_MS),
+          lineage: {
+            rootThreadId: ThreadId.make("parent"),
+            parentThreadId: ThreadId.make("parent"),
+            relationshipToParent: "subagent",
+          },
+        });
+        fixture.setThreads([thread]);
+        const { file: request } = yield* queueWorktreeRelease({
+          stateDir: fixture.config.stateDir,
+          threadId: thread.id,
+          runId,
+          worktreePath: fixture.worktree,
+          durableRef: "refs/heads/main",
+        });
+        expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+          "Parent has not received this delegate's result",
+        );
+        yield* fixture.fs.rename(request, request + ".releasing");
+        fixture.recordDelegateDelivery();
+        yield* fixture.activate(Stream.empty);
+        yield* fixture.service.reports.pipe(
+          Stream.filter((report) => report?.counts.removed === 1),
+          Stream.take(1),
+          Stream.runDrain,
+        );
+        expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+      }),
+    ),
+);
+
+it.live("retains worktree-only history and rejects a release overtaken by a follow-up", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fixture = yield* cleanupFixture(undefined, true);
+      fixture.disable();
+      const runId = RunId.make("finished");
+      const owner = shell({
+        branch: "feature",
+        worktreePath: fixture.worktree,
+        status: "completed",
+        latestRunId: runId,
+        latestRunCompletedAt: at(0),
+      });
+      fixture.setThreads([owner]);
+      yield* fixture.command(fixture.worktree, ["commit", "--allow-empty", "-m", "private"]);
+      const unique = (yield* fixture.command(fixture.worktree, [
+        "rev-parse",
+        "HEAD",
+      ])).stdout.trim();
+      yield* fixture.command(fixture.worktree, ["reset", "--hard", "main"]);
+      yield* queueWorktreeRelease({
+        stateDir: fixture.config.stateDir,
+        threadId: owner.id,
+        runId,
+        worktreePath: fixture.worktree,
+        durableRef: "refs/heads/main",
+      });
+      const messageFile = (yield* fixture.command(fixture.worktree, [
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "COMMIT_EDITMSG",
+      ])).stdout.trim();
+      yield* fixture.fs.remove(messageFile);
+      expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+        "Worktree has commits outside the durable ref",
+      );
+      expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
+      const archive = "refs/archive/worktree-handoff/private";
+      yield* fixture.command(fixture.repo, ["update-ref", archive, unique]);
+      yield* queueWorktreeRelease({
+        stateDir: fixture.config.stateDir,
+        threadId: owner.id,
+        runId,
+        worktreePath: fixture.worktree,
+        durableRef: "refs/heads/main",
+        alsoDurable: [archive],
+      });
+      fixture.setThreads([{ ...owner, latestRunId: RunId.make("follow-up") }]);
+      expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+        "Requested run has unfinished work or was superseded",
+      );
+      fixture.setThreads([owner]);
+      expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("removed");
+    }),
+  ),
+);
 
 it.live.each([
   { policy: "tracked-changes", kind: "worktree" },
@@ -2075,9 +2305,7 @@ describe("storage cleanup reports and local file policies", () => {
           );
           const report = yield* service.runNow;
           expect(report.entries[0]).toMatchObject({ outcome: "removed", bytes });
-          expect(
-            statted.includes(NodePath.join(nodeModules, ".pnpm", "pkg@1.0.0", "index.js")),
-          ).toBe(store !== "same-device");
+          expect(statted.includes(storeDir)).toBe(store !== "no-manifest");
         }),
       ),
   );
@@ -2110,6 +2338,46 @@ describe("storage cleanup reports and local file policies", () => {
         expect(statted.filter((target) => target.includes("attacker.test"))).toEqual([]);
       }),
     ),
+  );
+  it.effect.each(["progressing", "stalled"] as const)(
+    "bounds a %s inspection by its filesystem progress",
+    (scenario) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const entered = yield* Effect.forEach([0, 1], () => Deferred.make<void>());
+          const resume = yield* Effect.forEach([0, 1], () => Deferred.make<void>());
+          const directories: string[] = [];
+          const fixture = yield* cleanupFixture().pipe(
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              readDirectory: (directory, options) =>
+                Effect.gen(function* () {
+                  const index = directories.indexOf(directory);
+                  if (index >= 0) {
+                    yield* Deferred.succeed(entered[index]!, undefined);
+                    yield* Deferred.await(resume[index]!);
+                  }
+                  return yield* fs.readDirectory(directory, options);
+                }),
+            }),
+          );
+          directories.push(fixture.worktree, NodePath.join(fixture.worktree, "nested"));
+          yield* fs.makeDirectory(directories[1]!);
+          yield* TestClock.setTime(NOW_MS);
+          const sweep = yield* fixture.service.runNow.pipe(Effect.forkChild);
+          for (const index of [0, 1]) {
+            yield* Deferred.await(entered[index]!);
+            yield* TestClock.adjust(
+              index === 1 && scenario === "stalled" ? "31 seconds" : "18 seconds",
+            );
+            yield* Deferred.succeed(resume[index]!, undefined);
+          }
+          expect((yield* Fiber.join(sweep)).entries[0]?.outcome).toBe(
+            scenario === "stalled" ? "kept" : "removed",
+          );
+        }),
+      ),
   );
   it.live("keeps a worktree when the inspection cannot read its directories", () =>
     runCleanupTest(

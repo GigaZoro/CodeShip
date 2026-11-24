@@ -2760,6 +2760,8 @@ it.effect(
           .release({ providerSessionId, reason: "idle_timeout" })
           .pipe(Effect.forkChild);
         yield* Deferred.await(scopeCloseReached);
+        assert.isFalse(yield* manager.isLive(providerSessionId));
+        assert.include(yield* manager.occupiedWorkspaces, runtimePolicy.cwd);
         // A turn that opens the session while the old one is still closing reads what it stopped.
         yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
         assert.deepStrictEqual(yield* lostWork(), [

@@ -527,6 +527,7 @@ export const make = Effect.gen(function* () {
     );
     if (
       !isInsideRealRoot(realWorkspaceRoot, realTargetPath) ||
+      (yield* isServerInternalPath(realTargetPath)) ||
       (yield* inGitFolder(realTargetPath)) ||
       (yield* inGitFolder(namedTargetPath))
     ) {
