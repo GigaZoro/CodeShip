@@ -21,7 +21,7 @@ const LEASE_RESERVE_MS = 20 * 60 * 1000;
 const POLL_MS = 5000;
 const MAX_WAIT_MS = 6 * 60 * 60 * 1000;
 // A wait polls origin thousands of times, and one poll can meet a passing DNS or credential failure. Failures that go
-// on this long end the wait, so a remote that cannot be reached is not tried for hours.
+// on this long while the machine is awake end the wait, so a remote that cannot be reached is not tried for hours.
 const FAILING_MS = 10 * 60 * 1000;
 // One lease or queue call; a remote that stops answering must not hold a wait past its limits.
 const LEASE_CALL_MS = 60 * 1000;
@@ -161,9 +161,42 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+const UPTIME_SCRIPT = `ObjC.import("Foundation"); String(Math.floor($.NSProcessInfo.processInfo.systemUptime * 1000))`;
+
 /**
- * Waits for the turn on the monotonic clock, so a stepped wall clock cannot cut or stretch the wait. The wait makes its
- * own run id, so no other wait can carry it.
+ * NSProcessInfo.systemUptime in milliseconds: the time a Mac has been awake since boot. The read's timeout counts sleep,
+ * so a read the Mac slept through times out when it wakes; a second read tells that apart from a reader that hangs.
+ */
+function macAwakeMs(spawn = spawnSync) {
+  const read = () =>
+    spawn("/usr/bin/osascript", ["-l", "JavaScript", "-e", UPTIME_SCRIPT], {
+      encoding: "utf8",
+      timeout: 5000,
+    });
+  let result = read();
+  if (result.error?.code === "ETIMEDOUT") result = read();
+  const match = /^(\d+)\s*$/.exec(result.stdout ?? "");
+  if (result.error || result.status !== 0 || !match) {
+    throw new Error(
+      `osascript NSProcessInfo.systemUptime failed: ${result.error?.message ?? (result.stderr.trim() || result.stdout.trim())}`,
+    );
+  }
+  return Number(match[1]);
+}
+
+/**
+ * Milliseconds the machine has been awake, for a span inside one process. On macOS performance.now() counts sleep, and a
+ * Mac asleep with its lid closed wakes for seconds without a network. Linux's monotonic clock stops while it sleeps;
+ * Windows' performance counter does not, so a Windows host that sleeps still counts its sleep.
+ */
+function awakeNow() {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime; tests pass awakeClock.
+  return process.platform === "darwin" ? macAwakeMs() : performance.now();
+}
+
+/**
+ * Waits for the turn on the monotonic clock, so a stepped wall clock cannot cut or stretch the wait. Failures of origin
+ * count on `awakeClock`: a sleep is no time the lander tried. The wait makes its own run id, so no other wait can carry it.
  */
 function acquire({
   maxWaitMs = MAX_WAIT_MS,
@@ -172,6 +205,7 @@ function acquire({
   sleep = sleepSync,
   clock = () => performance.now(),
   now = Date.now,
+  awakeClock = awakeNow,
   ...options
 }) {
   const started = clock();
@@ -243,7 +277,7 @@ function acquire({
         process.stderr.write("landing turn: waiting for its turn in main's landing queue.\n");
       }
       if (failure) {
-        const checkedAt = clock();
+        const checkedAt = awakeClock();
         const first = failingSince === null;
         failingSince ??= checkedAt;
         if (checkedAt - failingSince >= failingMs) throw failure;
@@ -488,6 +522,7 @@ module.exports = {
   tryAcquire,
   release,
   acquire,
+  macAwakeMs,
   withTurn,
   verifyPush,
   land,

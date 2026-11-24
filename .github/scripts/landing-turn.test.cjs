@@ -13,6 +13,7 @@ const {
   checkBudgetSeconds,
   acquire,
   land,
+  macAwakeMs,
   overlappingWorktrees,
   main,
   release,
@@ -981,6 +982,7 @@ test("a waiting lander waits through failed reads of origin, and only failures t
       cwd: waiter,
       remote: origin,
       clock: () => minutes * 60_000,
+      awakeClock: () => minutes * 60_000,
       sleep: () => {
         minutes += 6;
         pauses.shift()();
@@ -988,13 +990,66 @@ test("a waiting lander waits through failed reads of origin, and only failures t
     });
 
     assert.deepEqual([pauses.length, git(origin, "rev-parse", "landing-lease/main")], [0, turn]);
+    release({ cwd: waiter, remote: origin }, turn);
+
+    // A Mac asleep with its lid closed wakes for a few seconds every half hour, without a network. The failures span an
+    // hour of the clock that counts sleep, but under a minute awake, so the wait goes on; failures the lander meets
+    // for as long as failingMs awake end it.
+    const again = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    let asleepMs = 0;
+    let awakeMs = 0;
+    const dark = [
+      () => fs.renameSync(origin, away),
+      () => {},
+      () => {},
+      () => {
+        fs.renameSync(away, origin);
+        release({ cwd: holder, remote: origin }, again);
+      },
+    ];
+    const afterSleep = acquire({
+      cwd: waiter,
+      remote: origin,
+      clock: () => asleepMs + awakeMs,
+      awakeClock: () => awakeMs,
+      sleep: () => {
+        asleepMs += 30 * 60_000;
+        awakeMs += 10_000;
+        dark.shift()();
+      },
+    });
+    assert.deepEqual(
+      [dark.length, git(origin, "rev-parse", "landing-lease/main")],
+      [0, afterSleep],
+    );
+    release({ cwd: waiter, remote: origin }, afterSleep);
+    const stillHeld = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    fs.renameSync(origin, away);
+    let awakeMinutes = 0;
+    assert.throws(
+      () =>
+        acquire({
+          cwd: waiter,
+          remote: origin,
+          clock: () => 0,
+          awakeClock: () => awakeMinutes * 60_000,
+          sleep: () => {
+            awakeMinutes += 6;
+            if (awakeMinutes > 12) assert.fail("waited on after 10 minutes of failures awake");
+          },
+        }),
+      /git ls-remote failed/,
+    );
+    assert.equal(awakeMinutes, 12);
+    fs.renameSync(away, origin);
+    release({ cwd: holder, remote: origin }, stillHeld);
+
     fs.renameSync(origin, away);
     assert.throws(
       () => acquire({ cwd: holder, remote: origin, failingMs: 0 }),
       /git ls-remote failed/,
     );
     fs.renameSync(away, origin);
-    release({ cwd: waiter, remote: origin }, turn);
 
     // Origin answers, but this checkout cannot write the lease commit: waiting does not change that.
     const broken = clone("broken");
@@ -1013,6 +1068,32 @@ test("a waiting lander waits through failed reads of origin, and only failures t
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a Mac's awake clock is read again when the Mac slept through a read, and a reader that fails again throws", () => {
+  const timedOut = {
+    status: null,
+    stdout: "",
+    stderr: "",
+    error: Object.assign(new Error("spawnSync /usr/bin/osascript ETIMEDOUT"), {
+      code: "ETIMEDOUT",
+    }),
+  };
+  const reads =
+    (...results) =>
+    () =>
+      results.shift() ?? assert.fail("read the clock once more than expected");
+  assert.equal(
+    macAwakeMs(reads(timedOut, { status: 0, stdout: "153885715\n", stderr: "" })),
+    153885715,
+  );
+  // A child can still print and exit 0 when the timeout kills it: the timeout decides.
+  const killedLate = { ...timedOut, status: 0, stdout: "153885715\n" };
+  assert.throws(() => macAwakeMs(reads(timedOut, killedLate)), /systemUptime failed: .*ETIMEDOUT/);
+  assert.throws(
+    () => macAwakeMs(reads({ status: 1, stdout: "", stderr: "execution error: -2700" })),
+    /systemUptime failed: execution error: -2700/,
+  );
 });
 
 test("a waiting lander that cannot fetch the holder's lease leaves it in place", () => {
