@@ -25,6 +25,7 @@ import {
   pinnedRuntimeCommand,
   PinnedRuntimeInstallError,
   pinnedRuntimePaths,
+  pinnedRuntimePreviousDir,
   pinnedRuntimeVersionsDir,
   prunePinnedRuntimes,
   repointPinnedRuntimeLauncher,
@@ -377,7 +378,11 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
 
   const paths = pinnedRuntimePaths(path, input.baseDir, targetVersion, platform);
   if (executableCurrent && serviceCurrent) {
-    if (input.requestedVersion !== undefined && (yield* fs.exists(paths.versionDir))) {
+    if (
+      input.requestedVersion !== undefined &&
+      ((yield* fs.exists(paths.versionDir)) ||
+        (yield* fs.exists(pinnedRuntimePreviousDir(path, paths.versionDir))))
+    ) {
       yield* ensureTarget;
     }
     yield* Console.log(

@@ -55,6 +55,10 @@ export function pinnedRuntimeVersionsDir(path: Path.Path, baseDir: string): stri
   return path.join(baseDir, PINNED_RUNTIME_DIR, "versions");
 }
 
+export function pinnedRuntimePreviousDir(path: Path.Path, versionDir: string): string {
+  return path.join(path.dirname(versionDir), `.${path.basename(versionDir)}.previous`);
+}
+
 export function pinnedRuntimePaths(
   path: Path.Path,
   baseDir: string,
@@ -254,13 +258,23 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
   yield* fs.remove(archivePath, { force: true }).pipe(Effect.ignore);
 });
 
+const readRuntimeSentinel = (fs: FileSystem.FileSystem, sentinel: string) =>
+  fs.stat(sentinel).pipe(
+    Effect.flatMap((info) =>
+      info.type === "File"
+        ? fs.readFileString(sentinel).pipe(Effect.asSome)
+        : Effect.succeed(Option.none<string>()),
+    ),
+    Effect.orElseSucceed(() => Option.none<string>()),
+  );
+
 const pinnedRuntimeTransaction = Effect.fn("cloud.pinned_runtime.promote")(function* (
   input: PinnedRuntimeInstallInput,
   paths: PinnedRuntimePaths,
   staging?: string,
 ) {
   const parent = input.path.dirname(paths.versionDir);
-  const previous = input.path.join(parent, `.${input.version}.previous`);
+  const previous = pinnedRuntimePreviousDir(input.path, paths.versionDir);
   if (input.platform === "win32") {
     const { fs } = input;
     return yield* Effect.uninterruptible(
@@ -306,8 +320,8 @@ trap t3_release_lock EXIT
 trap 'exit 143' HUP INT TERM
 t3_acquire_lock "$1" "$2" 360 || exit 1
 if [ -n "$3" ]; then
-  if t3_runtime_ready "$t3_root" "$2"; then exit 10; fi
-  t3_promote_runtime "$3"
+  t3_promote_runtime "$3" || exit 1
+  if [ "$t3_reused" = 1 ]; then exit 10; fi
 fi`,
         "sh",
         parent,
@@ -335,10 +349,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
 ) {
   const { fs } = input;
   const paths = pinnedRuntimePaths(input.path, input.baseDir, input.version, input.platform);
-  const previous = input.path.join(
-    input.path.dirname(paths.versionDir),
-    `.${input.version}.previous`,
-  );
+  const previous = pinnedRuntimePreviousDir(input.path, paths.versionDir);
   if (
     yield* fs.exists(previous).pipe(
       Effect.mapError(
@@ -355,7 +366,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
   const [versionDirExists, entryExists, sentinel] = yield* Effect.all([
     fs.exists(paths.versionDir),
     fs.exists(paths.entryPath),
-    fs.readFileString(paths.sentinelPath).pipe(Effect.option),
+    readRuntimeSentinel(fs, paths.sentinelPath),
   ]).pipe(
     Effect.mapError(
       (cause) => new PinnedRuntimeInstallError({ step: "checking the pinned runtime", cause }),
@@ -424,10 +435,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
     const published = yield* fs.rename(stagingDir, paths.versionDir).pipe(
       Effect.as(true),
       Effect.catch((cause) =>
-        Effect.all([
-          fs.exists(paths.entryPath),
-          fs.readFileString(paths.sentinelPath).pipe(Effect.option),
-        ]).pipe(
+        Effect.all([fs.exists(paths.entryPath), readRuntimeSentinel(fs, paths.sentinelPath)]).pipe(
           Effect.mapError(
             (checkCause) =>
               new PinnedRuntimeInstallError({
@@ -776,7 +784,7 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
     const versionDir = path.join(versionsDir, version);
     const sentinelPath = path.join(versionDir, ".install-complete");
     const isLink = yield* fs.readLink(versionDir).pipe(Effect.isSuccess);
-    const sentinel = yield* fs.readFileString(sentinelPath).pipe(Effect.option);
+    const sentinel = yield* readRuntimeSentinel(fs, sentinelPath);
     const completedAt = yield* fs.stat(sentinelPath).pipe(
       Effect.map((info) => Option.getOrUndefined(info.mtime)?.getTime()),
       Effect.orElseSucceed(() => undefined),

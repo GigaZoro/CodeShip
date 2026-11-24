@@ -99,7 +99,8 @@ async function install(dir, key) {
 
 const isComplete = (dir) => {
   try {
-    return fs.readFileSync(path.join(dir, ".install-complete"), "utf8").trim() === version;
+    const marker = path.join(dir, ".install-complete");
+    return fs.statSync(marker).isFile() && fs.readFileSync(marker, "utf8").trim() === version;
   } catch {
     return false;
   }

@@ -528,6 +528,7 @@ describe("DesktopBackendConfiguration", () => {
 
             assert.deepEqual(observedNodePtyRoots, [mountedAppRoot]);
             assert.equal(config.entryPath, mountedEntryPath);
+            assert.notInclude(config.args, "flock");
             assert.include(config.args, "/usr/bin/node");
             assert.include(config.args, `${mountedAppRoot}/apps/server/dist/bin.mjs`);
             assert.deepEqual(
@@ -579,7 +580,18 @@ describe("DesktopBackendConfiguration", () => {
           assert.include(config.args, "/usr/bin/node");
           assert.include(config.args, `${mountedAppRoot}/apps/server/dist/bin.mjs`);
           assert.notInclude(config.args, `${stagedAppRoot}/t3`);
-          assert.include(config.args, `T3CODE_WSL_CODEX_METADATA_RUNTIME_ROOT=${stagedAppRoot}`);
+          const metadataIndex = config.args.indexOf(
+            `T3CODE_WSL_CODEX_METADATA_RUNTIME_ROOT=${stagedAppRoot}`,
+          );
+          assert.isAtLeast(metadataIndex, 0);
+          assert.deepEqual(config.args.slice(metadataIndex + 1, metadataIndex + 7), [
+            "flock",
+            "--shared",
+            "--no-fork",
+            `${stagedAppRoot}.metadata.lock`,
+            "/usr/bin/node",
+            `${mountedAppRoot}/apps/server/dist/bin.mjs`,
+          ]);
           assert.equal(config.entryPath, mountedEntryPath);
           assert.isUndefined(config.wslRuntimeId);
           assert.isTrue(Option.isNone(config.preflightFailure));

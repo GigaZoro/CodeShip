@@ -11,6 +11,7 @@ import { ManagedPolicyFileError } from "@t3tools/shared/managedPolicyFile";
 
 import * as DesktopManagedPolicy from "../app/DesktopManagedPolicy.ts";
 import {
+  buildWslMountedServerCommand,
   buildWslRuntimeInstallScript,
   makeIsAvailable,
   buildWslRuntimeInvalidateScript,
@@ -477,6 +478,57 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     );
 
     expect(selected.status, `${selected.stdout}\n${selected.stderr}`).toBe(0);
+  });
+
+  it("renews the mounted launch grace when the staged executable is invalidated", () => {
+    const fixture = createFixture();
+    expect(fixture.install().status).toBe(0);
+    const result = runShell(
+      [
+        "set -eu",
+        `export HOME=${sh(`${fixture.work}/home`)}`,
+        `touch -d '10 minutes ago' ${sh(`${fixture.runtimeRoot}/.t3code-wsl-runtime-selected`)}`,
+        `(\n${buildWslRuntimeInvalidateScript(fixture.runtimeId)}\n)`,
+        buildWslRuntimePruneScript("sha256-current"),
+        `test -x ${sh(fixture.serverEntry)}`,
+        `test ! -e ${sh(`${fixture.runtimeRoot}/.t3code-wsl-runtime-ready`)}`,
+      ].join("\n"),
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+  });
+
+  it("keeps a mounted backend's metadata runtime until the backend exits", () => {
+    const fixture = createFixture(SERVER_ENTRY_SOURCE, true);
+    expect(fixture.install().status).toBe(0);
+    const entry = `${fixture.work}/mounted-server.sh`;
+    const selected = `${fixture.runtimeRoot}/.t3code-wsl-runtime-selected`;
+    const prune = `(\n${buildWslRuntimePruneScript("sha256-current")}\n)`;
+    const command = buildWslMountedServerCommand("bash", entry, fixture.runtimeRoot)
+      .map(sh)
+      .join(" ");
+    const result = runShell(
+      [
+        "set -eu",
+        `export HOME=${sh(`${fixture.work}/home`)}`,
+        `export T3CODE_WSL_CODEX_METADATA_RUNTIME_ROOT=${sh(fixture.runtimeRoot)}`,
+        `(\n${buildWslRuntimeInvalidateScript(fixture.runtimeId)}\n)`,
+        prune,
+        `test -x ${sh(`${fixture.runtimeRoot}/codex-metadata/bin/codex`)} || { echo "lost before launch"; exit 1; }`,
+        // Keep an actual mounted process alive on stdin. Only its environment names the sidecar.
+        `printf '%s\\n' 'touch "$HOME/mounted-ready"' 'cat >/dev/null' > ${sh(entry)}`,
+        `exec 6> >(exec ${command})`,
+        "holder=$!",
+        awaitHolder('[ -e "$HOME/mounted-ready" ]'),
+        `touch -d '10 minutes ago' ${sh(selected)}`,
+        prune,
+        `test -x ${sh(`${fixture.runtimeRoot}/codex-metadata/bin/codex`)} || { echo "lost while running"; exit 1; }`,
+        "exec 6>&-",
+        'wait "$holder"',
+        prune,
+        `test ! -e ${sh(fixture.runtimeRoot)} || { echo "retained after exit"; exit 1; }`,
+      ].join("\n"),
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   });
 
   it("prunes old and markerless caches without touching retained, active, locked, or unrelated roots", () => {

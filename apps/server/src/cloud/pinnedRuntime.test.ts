@@ -171,6 +171,71 @@ t3_promote_runtime "$3"`,
 );
 
 it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
+  it.effect.skipIf(isWindowsHost)("validates an npm launcher that wins a first publication", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped();
+      const paths = pinnedRuntimePaths(path, baseDir, version, "linux");
+      const npmStaging = yield* fs.makeTempDirectory({ directory: baseDir });
+      yield* fs.writeFileString(path.join(npmStaging, "t3"), "#!/bin/sh\nexit 0\n");
+      yield* fs.chmod(path.join(npmStaging, "t3"), 0o755);
+      yield* fs.writeFileString(path.join(npmStaging, ".install-complete"), version);
+      const mv = path.join(baseDir, "mv");
+      yield* fs.writeFileString(
+        mv,
+        `#!/bin/sh
+if [ "$2" = "$INSTALL_ROOT" ] || { [ "$2" = "$INSTALL_PARENT/" ] && [ "\${1##*/}" = "$INSTALL_VERSION" ]; }; then
+  "$NODE" -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' "$NPM_STAGING" "$INSTALL_ROOT" || exit 1
+fi
+exec /bin/mv "$@"
+`,
+      );
+      yield* fs.chmod(mv, 0o755);
+      const env = yield* HostProcess.Environment;
+      const node = yield* HostProcess.ExecutablePath;
+      const extractor = extractingRunner(fs, path);
+      const validated: string[] = [];
+      yield* ensurePinnedRuntimeInstalled({
+        fs,
+        path,
+        baseDir,
+        version,
+        platform: "linux",
+        arch: "x64",
+        httpClient: releaseHttpClient(yield* validChecksums),
+        runner: ProcessRunner.ProcessRunner.of({
+          run: (call) =>
+            extractor.run(
+              call.command === "sh"
+                ? {
+                    ...call,
+                    env: {
+                      PATH: baseDir + ":" + env.PATH,
+                      NODE: node,
+                      NPM_STAGING: npmStaging,
+                      INSTALL_ROOT: paths.versionDir,
+                      INSTALL_PARENT: path.dirname(paths.versionDir),
+                      INSTALL_VERSION: version,
+                    },
+                  }
+                : call,
+            ),
+        }),
+        validate: (candidate) =>
+          Effect.sync(() => {
+            validated.push(candidate.versionDir);
+          }),
+      });
+      assert.deepEqual((yield* fs.readDirectory(paths.versionDir)).toSorted(), [
+        ".install-complete",
+        "t3",
+      ]);
+      assert.equal(validated.at(-1), paths.versionDir);
+      assert.equal(yield* fs.readFileString(paths.entryPath), "#!/bin/sh\nexit 0\n");
+    }),
+  );
+
   it.effect("installs the verified release archive as the runtime executable", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -353,11 +418,18 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       const finalPaths = pinnedRuntimePaths(path, baseDir, version, installPlatform);
       yield* fs.makeDirectory(finalPaths.versionDir, { recursive: true });
       yield* fs.writeFileString(path.join(finalPaths.versionDir, "partial"), "incomplete\n");
+      yield* fs.makeDirectory(finalPaths.sentinelPath);
 
       yield* ensurePinnedRuntimeInstalled({
         baseDir,
         version,
-        fs,
+        fs: {
+          ...fs,
+          readFileString: (file, encoding) =>
+            file === finalPaths.sentinelPath
+              ? Effect.die("read a nonregular marker")
+              : fs.readFileString(file, encoding),
+        },
         path,
         platform: installPlatform,
         arch: "x64",

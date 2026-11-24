@@ -724,7 +724,11 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
   const command =
     runtime.kind === "executable"
       ? [runtime.entryPath]
-      : [runtime.nodePath, runtime.linuxEntryPath];
+      : DesktopWslEnvironment.buildWslMountedServerCommand(
+          runtime.nodePath,
+          runtime.linuxEntryPath,
+          runtime.codexMetadataRuntimeRoot,
+        );
 
   return {
     ...baseConfig,

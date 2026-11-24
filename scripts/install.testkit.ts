@@ -108,6 +108,26 @@ export async function verifyBundledRuntimeRepair(
       ].join("\n"),
       { mode: 0o755 },
     );
+    const marker = NodePath.join(root, ".install-complete");
+    await NodeFSP.rm(marker);
+    await exec("mkfifo", [marker]);
+    // Reading a FIFO would block indefinitely; record the attempted read instead.
+    await NodeFSP.writeFile(
+      NodePath.join(mvShim, "cat"),
+      [
+        "#!/bin/sh",
+        'if [ -p "$1" ]; then echo read > "$T3_TEST_FIFO_READ"; exit 1; fi',
+        'exec /bin/cat "$@"',
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const fifoRead = NodePath.join(temp, "opened-fifo");
+    await run({
+      PATH: mvShim + NodePath.delimiter + process.env.PATH,
+      T3_TEST_FIFO_READ: fifoRead,
+    });
+    await NodeAssert.rejects(NodeFSP.stat(fifoRead), { code: "ENOENT" });
+    NodeAssert.ok((await NodeFSP.stat(marker)).isFile());
     const helper = NodePath.join(root, "codex-metadata/bin/helper");
     await NodeFSP.writeFile(helper, "wrong");
     const originalEntries = await NodeFSP.readdir(root);
@@ -130,8 +150,21 @@ export async function verifyBundledRuntimeRepair(
       { code: 143 },
     );
     NodeAssert.equal(await NodeFSP.readFile(helper, "utf8"), "wrong");
-    await run();
+    await NodeFSP.writeFile(
+      NodePath.join(mvShim, "mv"),
+      [
+        "#!/bin/sh",
+        'command -p mv "$@" || exit $?',
+        'if [ -f "$T3_TEST_INSTALLED_ROOT/.install-complete" ] && [ "$(cat "$T3_TEST_INSTALLED_ROOT/codex-metadata/bin/helper")" = valid ]; then kill -TERM "$PPID"; fi',
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    await NodeAssert.rejects(
+      run({ PATH: mvShim + NodePath.delimiter + process.env.PATH, T3_TEST_INSTALLED_ROOT: root }),
+      { code: 143 },
+    );
     NodeAssert.equal(await NodeFSP.readFile(helper, "utf8"), "valid");
+    NodeAssert.deepEqual(await NodeFSP.readdir(NodePath.dirname(root)), [version]);
     offline = true;
     const parent = NodePath.dirname(root);
     const prior = NodePath.join(parent, `.${version}.previous`);

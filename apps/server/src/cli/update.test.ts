@@ -126,22 +126,32 @@ it.layer(NodeServices.layer)("t3 update under a managed policy", (it) => {
 });
 
 it.layer(NodeServices.layer)("t3 update launcher", (it) => {
-  it.effect.each([0, 78])(
-    "checks an explicitly requested current pinned CLI when its integrity probe returns %i",
-    (code) =>
+  it.effect.each([
+    { code: 0, previous: false },
+    { code: 78, previous: false },
+    { code: 0, previous: true },
+  ])(
+    "checks an explicitly requested current CLI (probe exit $code, rollback copy $previous)",
+    ({ code, previous }) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const baseDir = yield* fs.makeTempDirectoryScoped();
         const version = packageJson.version;
         const target = path.join(baseDir, "runtime", "versions", version);
-        yield* fs.makeDirectory(target, { recursive: true });
-        yield* fs.writeFileString(path.join(target, ".install-complete"), version);
-        yield* fs.writeFileString(path.join(target, "t3"), "fixture");
+        const previousDir = path.join(path.dirname(target), `.${version}.previous`);
+        const initialDir = previous ? previousDir : target;
+        const platform = (yield* HostProcess.Platform) === "win32" ? "win32" : "linux";
+        const entryName = platform === "win32" ? "t3.exe" : "t3";
+        yield* fs.makeDirectory(initialDir, { recursive: true });
+        yield* fs.writeFileString(path.join(initialDir, ".install-complete"), version);
+        yield* fs.writeFileString(path.join(initialDir, entryName), "fixture");
+        const hostRunner = yield* ProcessRunner.make();
         const probes: string[] = [];
         const downloads: string[] = [];
         const runner = ProcessRunner.ProcessRunner.of({
           run: (command) => {
+            if (command.command === "sh") return hostRunner.run(command);
             assert.deepStrictEqual(command.args, ["--version"]);
             assert.equal(command.env?.T3CODE_VERIFY_INSTALL, "1");
             probes.push(command.command);
@@ -171,7 +181,7 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
                 }),
               }),
               Layer.succeed(ProcessRunner.ProcessRunner, runner),
-              Layer.succeed(HostProcess.Platform, "linux"),
+              Layer.succeed(HostProcess.Platform, platform),
               Layer.succeed(HostProcess.Architecture, "x64"),
               Layer.succeed(
                 HttpClient.HttpClient,
@@ -185,7 +195,8 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
             ),
           ),
         );
-        assert.deepStrictEqual(probes, [path.join(target, "t3")]);
+        assert.deepStrictEqual(probes, [path.join(target, entryName)]);
+        assert.isFalse(yield* fs.exists(previousDir));
         if (code === 78) {
           assert.lengthOf(downloads, 1);
           assert.match(downloads[0]!, /SHA256SUMS$/);

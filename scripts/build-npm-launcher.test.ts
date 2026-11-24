@@ -205,6 +205,11 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
         const peerDir = path.join(root, "peer-runtime");
         yield* fs.makeDirectory(staleDir, { recursive: true });
         yield* fs.writeFileString(path.join(staleDir, "t3"), "");
+        const fifo = yield* run("mkfifo", [path.join(staleDir, ".install-complete")], {
+          cwd: root,
+          env,
+        });
+        assert.equal(fifo.exitCode, 0, fifo.stderr);
         yield* fs.makeDirectory(peerDir);
         yield* fs.writeFileString(path.join(peerDir, "t3"), '#!/bin/sh\necho "peer $*"\nexit 7\n');
         yield* fs.chmod(path.join(peerDir, "t3"), 0o755);
@@ -218,7 +223,14 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
           `import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 const dir = ${JSON.stringify(staleDir)};
-const { readFileSync, renameSync, rmSync } = fs;
+const { readFileSync, renameSync, rmSync, statSync } = fs;
+fs.readFileSync = (file, ...args) => {
+  if (file === dir + "/.install-complete" && statSync(file).isFIFO()) {
+    fs.appendFileSync(${JSON.stringify(peerChecks)}, "opened FIFO\\n");
+    throw new Error("reading the incomplete marker would block");
+  }
+  return readFileSync(file, ...args);
+};
 let checking = false;
 let published = false;
 const checkPeer = () => {
@@ -249,9 +261,9 @@ fs.rmSync = (...args) => {
     if (published) checkPeer();
   }
 };
-fs.readFileSync = (file, ...rest) => {
+fs.statSync = (file, ...rest) => {
   try {
-    return readFileSync(file, ...rest);
+    return statSync(file, ...rest);
   } finally {
     if (checking && file === dir + "/.install-complete") {
       checking = false;

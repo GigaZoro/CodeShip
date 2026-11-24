@@ -253,6 +253,23 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
 const WSL_RUNTIME_READY_MARKER = ".t3code-wsl-runtime-ready";
 const WSL_RUNTIME_SELECTED_MARKER = ".t3code-wsl-runtime-selected";
 const WSL_RUNTIME_SELECTION_GRACE_MINUTES = 5;
+const WSL_METADATA_LEASE_SUFFIX = ".metadata.lock";
+
+export const buildWslMountedServerCommand = (
+  node: string,
+  entry: string,
+  metadataRuntimeRoot?: string,
+): ReadonlyArray<string> =>
+  metadataRuntimeRoot
+    ? [
+        "flock",
+        "--shared",
+        "--no-fork",
+        `${metadataRuntimeRoot}${WSL_METADATA_LEASE_SUFFIX}`,
+        node,
+        entry,
+      ]
+    : [node, entry];
 
 const sanitizeWslRuntimeId = (value: string): string => value.replace(/[^A-Za-z0-9._-]/g, "_");
 
@@ -381,7 +398,13 @@ export const buildWslRuntimePruneScript = (runtimeId: string): string => {
     "    flock -u 9",
     "    continue",
     "  fi",
-    '  rm -rf -- "$candidate"',
+    // Mounted Node can use the sidecar between requests without its path appearing in argv.
+    // A sibling lease stays on the same inode even when a repair replaces the runtime directory.
+    `  exec 7> "$candidate${WSL_METADATA_LEASE_SUFFIX}"`,
+    "  if flock -n 7; then",
+    '    rm -rf -- "$candidate"',
+    "    flock -u 7",
+    "  fi",
     "  flock -u 9",
     "done",
     'for scratch in "$runtime_parent"/.*.tmp.* "$runtime_parent"/.*.stale.*; do',
@@ -397,7 +420,14 @@ export const buildWslRuntimeInvalidateScript = (runtimeId: string): string => {
   const safeRuntimeId = sanitizeWslRuntimeId(runtimeId);
   return [
     "set -eu",
-    `rm -f "$HOME/.t3/wsl-runtime/${safeRuntimeId}/${WSL_RUNTIME_READY_MARKER}"`,
+    `runtime_root="$HOME/.t3/wsl-runtime/${safeRuntimeId}"`,
+    '[ -d "$runtime_root" ] || exit 0',
+    `exec 9> "$HOME/.t3/wsl-runtime/.${safeRuntimeId}.install.lock"`,
+    "flock -x 9",
+    '[ -d "$runtime_root" ] || exit 0',
+    // Renew the prepare-to-spawn grace after probing the mounted backend, before its process takes the lease.
+    `touch "$runtime_root/${WSL_RUNTIME_SELECTED_MARKER}"`,
+    `rm -f "$runtime_root/${WSL_RUNTIME_READY_MARKER}"`,
   ].join("\n");
 };
 
