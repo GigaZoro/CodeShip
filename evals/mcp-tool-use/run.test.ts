@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { assert, expect, it } from "@effect/vitest";
 import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { ComposerContextId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 
@@ -422,6 +423,87 @@ it("answers simple mocked commands itself and gives the simulator the sample's h
   );
 });
 
+it.effect.each([{}, { projectSkill: "ship" }])(
+  "reads the loaded project skill and simulates the remaining shell command (%j)",
+  (selection) =>
+    Effect.gen(function* () {
+      const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+      const skill = {
+        name: "ship",
+        path: ".agents/skills/ship/SKILL.md",
+        baseDirectory: ".agents/skills/ship",
+        instructions: "The skill from the selected revision.\n",
+      };
+      const other = {
+        name: "brief",
+        path: "/home/user/extra skills/brief/SKILL.md",
+        baseDirectory: "/home/user/extra skills/brief",
+        instructions: "Another skill.",
+      };
+      const sample = makeSample({ ...childCase, ...selection, promptSkills: [other, skill] }, base);
+      const run = (command: string) =>
+        answerToolCall(
+          sample,
+          {
+            apiKey: "",
+            model: "claude-sonnet-5-5",
+            shellModel: "claude-haiku-5-5",
+            effort: "low",
+            maxSteps: 1,
+          },
+          { type: "tool_use", id: "read", name: "mcp__host__term_Bash", input: { command } },
+        );
+      const git =
+        "git status --short --untracked-files=all && git branch --show-current && git worktree list && git remote -v && git symbolic-ref --short refs/remotes/origin/HEAD || true";
+      const read = `cat ${skill.path}`;
+      let reply = `cat: ${skill.path}: No such file or directory`;
+      const requests: string[] = [];
+      const client = HttpClient.make((request) => {
+        assert.equal(request.body._tag, "Uint8Array");
+        if (request.body._tag !== "Uint8Array") return Effect.die("Expected JSON body");
+        const body = JSON.parse(new TextDecoder().decode(request.body.body));
+        const last = body.messages[0].content.at(-1).text.split("New call:\n").at(-1);
+        requests.push(last);
+
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            Response.json({
+              content: [{ type: "text", text: JSON.stringify({ facts: "", output: reply }) }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+              stop_reason: "end_turn",
+            }),
+          ),
+        );
+      });
+      const invoke = (command: string) =>
+        run(command).pipe(Effect.provideService(HttpClient.HttpClient, client));
+
+      assert.equal((yield* invoke(read)).content, skill.instructions);
+      assert.equal(
+        (yield* invoke(`cat "${base.environment.cwd}/${skill.path}"`)).content,
+        skill.instructions,
+      );
+      assert.equal((yield* invoke(`cat '${other.path}'`)).content, other.instructions);
+      reply = "topic\norigin/main";
+      const compound = `${read} && ${git}`;
+      assert.equal((yield* invoke(compound)).content, skill.instructions + "topic\norigin/main");
+      assert.deepEqual(requests, [`<call>Bash ${JSON.stringify({ command: git })}</call>`]);
+      assert.deepEqual(sample.shell.at(-1)?.input, { command: compound });
+
+      for (const file of [`./${skill.path}`, `${base.environment.cwd}/${skill.path}`, other.path]) {
+        reply = `Exit code 2\nsed: can't read '${file}': No such file or directory`;
+        const result = yield* invoke(`git status && sed -n '1,240p' "${file}"`).pipe(Effect.exit);
+        assert.equal(result._tag, "Failure");
+        assert.include(String(result), "Shell simulator reported a missing fixture");
+      }
+      reply = "Exit code 1\ncat: /somewhere/else/SKILL.md: No such file or directory";
+      const missing = yield* invoke("cat /somewhere/else/SKILL.md");
+      assert.isTrue(missing.is_error);
+      assert.equal(missing.content, reply);
+    }),
+);
+
 it("links a PR a shell command created, as T3 does, but not one it only read", () => {
   const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
   const bash = (command: string, result: string) => ({ tool: "Bash", input: { command }, result });
@@ -546,6 +628,147 @@ const deviceCases = () =>
     .trim()
     .split("\n")
     .map((line) => decodeDeviceCase(line));
+
+const pendingReleaseCase = () =>
+  NodeFS.readFileSync(new URL("./cases/skills.ndjson", import.meta.url), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => decodeDeviceCase(line))
+    .find((testCase) => testCase.id === "ship-pending-installed-release")!;
+
+const releaseOwner = "11111111-1111-4111-8111-111111111111";
+const releaseRetry = { type: "once", runAt: "2026-10-19T09:10:00Z" };
+const retryResult = {
+  scheduledTaskId: "33333333-3333-4333-8333-333333333333",
+  title: "Verify the signed app",
+  projectId: "22222222-2222-4222-8222-222222222222",
+  boundThreadId: releaseOwner,
+  enabled: true,
+  schedule: releaseRetry,
+  nextRunAt: "2026-10-19T09:10:00.000Z",
+  lastRunStatus: "never",
+};
+
+it.each([
+  {
+    name: "runnable retry and implicit owner",
+    action: { action: "unsettle" },
+    request: {},
+    result: {},
+    valid: true,
+  },
+  {
+    name: "pinned explicit owner",
+    action: { action: "pin", threadId: releaseOwner },
+    request: { bindToCurrentThread: true },
+    result: {},
+    valid: true,
+  },
+  {
+    name: "disabled request with a stale success",
+    action: { action: "unsettle" },
+    request: { enabled: false },
+    result: {},
+    valid: false,
+  },
+  {
+    name: "organizing another thread despite a success",
+    action: { action: "unsettle", threadId: retryResult.projectId },
+    request: {},
+    result: {},
+    valid: false,
+  },
+  {
+    name: "retry without a next occurrence",
+    action: { action: "unsettle" },
+    request: {},
+    result: { nextRunAt: null },
+    valid: false,
+  },
+  {
+    name: "retry returned for a different thread",
+    action: { action: "pin" },
+    request: {},
+    result: { boundThreadId: retryResult.projectId },
+    valid: false,
+  },
+  {
+    name: "retry blocked by policy",
+    action: { action: "unsettle" },
+    request: {},
+    result: { blockedByPolicy: "Blocked by policy." },
+    valid: false,
+  },
+  {
+    name: "retry before signing resumes",
+    action: { action: "unsettle" },
+    request: { schedule: { type: "once", runAt: "2026-10-18T09:00:00Z" } },
+    result: {
+      schedule: { type: "once", runAt: "2026-10-18T09:00:00Z" },
+      nextRunAt: "2026-10-18T09:00:00Z",
+    },
+    valid: false,
+  },
+])("grades the pending release case with $name", ({ action, request, result, valid }) => {
+  const calls = [
+    {
+      step: 0,
+      tool: "t3_thread_organize",
+      input: action,
+      failed: false,
+      output: JSON.stringify({ sequence: 1 }),
+    },
+    {
+      step: 1,
+      tool: "schedule_task",
+      input: { prompt: "Check the installed app", schedule: releaseRetry, ...request },
+      failed: false,
+      output: JSON.stringify({ ...retryResult, ...result }),
+    },
+  ];
+  assert.equal(
+    failed(pendingReleaseCase().expect, { calls, text: "", stopReason: "end_turn" }).length === 0,
+    valid,
+  );
+});
+
+it.effect("reports the schedule actually requested in the pending-release fixture", () =>
+  Effect.gen(function* () {
+    const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+    const sample = makeSample(pendingReleaseCase(), base);
+    const tool = base.t3.find((tool) => tool.name === "mcp__t3-code__schedule_task")!;
+    sample.tools.push(tool);
+    const call = (args: Record<string, unknown>) =>
+      answerToolCall(
+        sample,
+        {
+          apiKey: "",
+          model: "claude-sonnet-5-5",
+          shellModel: "claude-haiku-5-5",
+          effort: "low",
+          maxSteps: 1,
+        },
+        {
+          type: "tool_use",
+          id: "retry",
+          name: tool.name,
+          input: { prompt: "Check the signed app", schedule: releaseRetry, ...args },
+        },
+      ).pipe(Effect.map((result) => JSON.parse(String(result.content))));
+    const enabled = yield* call({});
+    assert.equal(enabled.boundThreadId, releaseOwner);
+    assert.equal(enabled.nextRunAt, retryResult.nextRunAt);
+    const paused = yield* call({ enabled: false, bindToCurrentThread: false });
+    assert.equal(paused.enabled, false);
+    assert.isNull(paused.nextRunAt);
+    assert.isNull(paused.boundThreadId);
+  }).pipe(
+    Effect.provideService(
+      HttpClient.HttpClient,
+      HttpClient.make(() => Effect.die("Unexpected model request")),
+    ),
+  ),
+);
 
 it.effect("builds device cases from product-backed worlds and synthetic prior turns", () =>
   Effect.gen(function* () {

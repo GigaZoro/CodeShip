@@ -12,6 +12,7 @@ import { autoModeModelFor } from "@t3tools/shared/serverSettings";
  * README.md for how to run it and add cases.
  */
 import * as NodeChildProcess from "node:child_process";
+import * as NodePath from "node:path";
 import { parseCommandLine } from "../../scripts/lib/command-line.ts";
 import * as NodeVM from "node:vm";
 import * as NodeZlib from "node:zlib";
@@ -23,12 +24,15 @@ import {
   ComposerContextRecord,
   DeviceOperationError,
   DeviceSummary,
+  OrchestrationV2DispatchCommandResult,
+  OrchestratorMcpScheduleTaskResult,
   OrchestratorMcpTaskRole,
   ProviderInstanceId,
   type ProviderOptionDescriptor,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -182,6 +186,10 @@ type McpToolUseCall = typeof McpToolUseCall.Type;
 
 /** Grading rules. Tool names are bare: `delegate_task`, `Bash`, `Agent`. */
 const McpToolUseExpect = Schema.Struct({
+  /** Keep this release's owner active and resume it once verification becomes possible. */
+  pendingRelease: Schema.optional(
+    Schema.Struct({ threadId: Schema.String, retryAfter: Schema.String }),
+  ),
   /** Each entry needs one matching call. */
   calls: Schema.optional(Schema.Array(McpToolUseCall)),
   /** At least one of these calls must match, with its own arguments. */
@@ -1528,15 +1536,69 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
   config: Config,
   call: Omit<ShellEntry, "output">,
 ) {
-  const command = call.tool === "Bash" && isRecord(call.input) ? call.input.command : undefined;
-  let output = typeof command === "string" ? cannedOutput(sample, command) : undefined;
+  const input = isRecord(call.input) ? call.input : {};
+  const command =
+    call.tool === "Bash" && typeof input.command === "string" ? input.command : undefined;
+  const skills = sample.testCase.promptSkills ?? [];
+  const { cwd, platform } = sample.base.environment;
+  const paths = platform === "win32" ? NodePath.win32 : NodePath.posix;
+  const workdir = input.workdir ?? input.cwd;
+  const findSkill = (operand: string) => {
+    const file = operand.replace(/^(["'])(.*)\1$/, "$2");
+    const absolute = paths.resolve(cwd, typeof workdir === "string" ? workdir : ".", file);
+    return skills.find((skill) => paths.relative(absolute, paths.resolve(cwd, skill.path)) === "");
+  };
+
+  // A successful literal cat followed by && or ; leaves just the suffix to simulate.
+  // Pipelines, redirections, and shell expansions retain their original semantics in the simulator.
+  const read =
+    command && skills.length > 0
+      ? /^\s*cat[ \t]+(?:--[ \t]+)?('[^'\r\n]+'|"[^"$`\\\r\n]+"|[\w./:-]+)[ \t]*(?:(?:&&|;|\n)\s*([\s\S]+)|$)/.exec(
+          command,
+        )
+      : undefined;
+  const prefix = read ? findSkill(read[1]!)?.instructions : undefined;
+  const rest = prefix === undefined ? command : read?.[2];
+  const remainingCall =
+    prefix === undefined
+      ? call
+      : {
+          ...call,
+          input: { ...input, command: rest, ...(input.cmd === undefined ? {} : { cmd: rest }) },
+        };
+  let output =
+    prefix !== undefined && !rest
+      ? ""
+      : rest === undefined
+        ? undefined
+        : cannedOutput(sample, rest);
   if (output === undefined) {
-    const body = shellRequest(sample, call, config.shellModel);
+    const body = shellRequest(sample, remainingCall, config.shellModel);
     const response = config.proxy
       ? yield* callCodex(config, openAiShellRequest(body))
       : yield* callModel(config.apiKey, body);
     addUsage(sample.shellUsage, response.usage);
     output = shellOutput(response.content);
+    // A fabricated missing skill in any other compound read invalidates the sample before grading.
+    if (skills.length > 0 && rest) {
+      for (const missing of output.matchAll(
+        /^(?:cat|sed|head|tail|rg|grep): (?:can't read |cannot open )?(.+?): No such file or directory\b/gm,
+      )) {
+        const skill = findSkill(missing[1]!);
+        if (skill)
+          return yield* Effect.die(
+            new Error(`Shell simulator reported a missing fixture: ${skill.path}`),
+          );
+      }
+    }
+  }
+  if (prefix !== undefined) {
+    const suffix = output === "(Bash completed with no output)" ? "" : output;
+    // The tool status is separate from stdout and remains first on a failing compound command.
+    output = suffix.replace(
+      /^(Exit code \d+\n)?/,
+      (_, status: string | undefined) => (status ?? "") + prefix,
+    );
   }
   if (call.tool === "Bash" && output === "") output = "(Bash completed with no output)";
   const entry = { ...call, output };
@@ -1586,6 +1648,45 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   if (sample.devices && isT3Name(call.name) && isDeviceTool(name) && fromWorld) {
     const result = yield* sample.devices.call(name, input, failure);
     return result.isError ? failed(result.text) : toolResult(call.id, result.text);
+  }
+  const environment = testCase.setup.world?.environment;
+  const owner = isRecord(environment) ? environment.T3CODE_THREAD_ID : undefined;
+  if (mock === "default" && name === "t3_thread_organize") {
+    if (
+      (input.threadId ?? owner) !== owner ||
+      (input.environmentId !== undefined && input.environmentId !== EVAL_ENVIRONMENT_ID)
+    )
+      return failed("The target thread does not exist in this fixture.");
+    if (input.action === "settle") return toolResult(call.id, { settlesWhenTurnEnds: true });
+    if (input.action === "archive") return toolResult(call.id, { archivesWhenTurnEnds: true });
+    return toolResult(call.id, { sequence: sample.nextTask++ });
+  }
+  if (name === "schedule_task" && mock === "default") {
+    const { schedule } = input;
+    if (input.scheduledTaskId !== undefined)
+      return failed("No existing scheduled task with this id in the fixture.");
+    if ((!input.prompt && !input.promptFile) || !isRecord(schedule) || schedule.type !== "once")
+      return failed("This fixture needs a prompt or prompt file and a one-time schedule.");
+    const sameProject = input.projectId === undefined || input.projectId === EVAL_PROJECT_ID;
+    const bound = input.bindToCurrentThread ?? (input.shared !== true && sameProject);
+    if (
+      (bound && (!sameProject || !owner || input.shared === true)) ||
+      (input.environmentId !== undefined && input.environmentId !== EVAL_ENVIRONMENT_ID)
+    )
+      return failed("The requested task cannot bind to this thread in this environment.");
+    const due = Date.parse(valueText(schedule.runAt));
+    const now = Date.parse(`${base.environment.date ?? "2026-01-01"}T12:00:00Z`);
+    const enabled = input.enabled ?? true;
+    return toolResult(call.id, {
+      scheduledTaskId: uuid(sample.nextTask++),
+      title: input.title ?? "Scheduled task",
+      projectId: input.projectId ?? EVAL_PROJECT_ID,
+      boundThreadId: bound ? owner : null,
+      enabled,
+      schedule,
+      lastRunStatus: "never",
+      nextRunAt: enabled && due > now ? DateTime.formatIso(DateTime.makeUnsafe(due)) : null,
+    });
   }
   if (mock !== undefined && mock !== "default")
     return toolResult(
@@ -1665,6 +1766,72 @@ const withOptionsObject = (input: unknown) => {
   return { ...input, target: { ...input.target, options } };
 };
 
+const dispatchResult = Schema.decodeUnknownOption(
+  Schema.fromJsonString(OrchestrationV2DispatchCommandResult),
+);
+const scheduledResult = Schema.decodeUnknownOption(
+  Schema.fromJsonString(OrchestratorMcpScheduleTaskResult),
+);
+
+/** Replay successful local actions. A canned success cannot override the tool's actual target or inputs. */
+const gradePendingRelease = (
+  release: NonNullable<McpToolUseCase["expect"]["pendingRelease"]>,
+  calls: ReadonlyArray<Call>,
+) => {
+  let pinned = false;
+  let unsettled = false;
+  const retries = new Set<string>();
+  for (const { tool, input, failed, output } of calls) {
+    if (
+      failed !== false ||
+      !isRecord(input) ||
+      (input.environmentId !== undefined && input.environmentId !== EVAL_ENVIRONMENT_ID)
+    )
+      continue;
+    if (
+      tool === "t3_thread_organize" &&
+      (input.threadId ?? release.threadId) === release.threadId &&
+      Option.isSome(dispatchResult(output))
+    ) {
+      if (input.action === "unsettle") unsettled = true;
+      if (input.action === "pin" || input.action === "unpin") pinned = input.action === "pin";
+    }
+    if (tool === "delete_scheduled_task" && typeof input.scheduledTaskId === "string")
+      retries.delete(input.scheduledTaskId);
+    if (tool !== "schedule_task") continue;
+    const result = scheduledResult(output);
+    if (Option.isNone(result)) continue;
+    const task = result.value;
+    retries.delete(task.scheduledTaskId);
+    const next = Date.parse(task.nextRunAt ?? "");
+    const request = input.schedule;
+    if (
+      (input.scheduledTaskId !== undefined ||
+        (input.prompt !== undefined) !== (input.promptFile != null)) &&
+      input.enabled !== false &&
+      input.bindToCurrentThread !== false &&
+      input.shared !== true &&
+      (input.projectId === undefined || input.projectId === task.projectId) &&
+      (input.scheduledTaskId === undefined || input.scheduledTaskId === task.scheduledTaskId) &&
+      isRecord(request) &&
+      request.type === "once" &&
+      typeof request.runAt === "string" &&
+      next === Date.parse(request.runAt) &&
+      next >= Date.parse(release.retryAfter) &&
+      task.schedule.type === "once" &&
+      next === Date.parse(task.schedule.runAt) &&
+      task.boundThreadId === release.threadId &&
+      task.enabled &&
+      task.blockedByPolicy === undefined
+    )
+      retries.add(task.scheduledTaskId);
+  }
+  return [
+    { check: "keeps the owning thread active", pass: pinned || unsettled },
+    { check: "has a runnable one-time retry bound to the owning thread", pass: retries.size > 0 },
+  ];
+};
+
 export const gradeSample = (expect: McpToolUseCase["expect"], run: SampleRun) => {
   const checks: Array<{ readonly check: string; readonly pass: boolean }> = [];
   const add = (check: string, pass: boolean) => checks.push({ check, pass });
@@ -1720,6 +1887,7 @@ export const gradeSample = (expect: McpToolUseCase["expect"], run: SampleRun) =>
     const exact = valueText(numbers.toSorted((a, b) => a - b));
     add("linkedNumbers", exact === valueText(expect.linkedNumbers.toSorted((a, b) => a - b)));
   }
+  if (expect.pendingRelease) checks.push(...gradePendingRelease(expect.pendingRelease, calls));
   checks.push(...gradeDevice(expect.device, run));
   return checks;
 };

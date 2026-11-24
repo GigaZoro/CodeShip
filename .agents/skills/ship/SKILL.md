@@ -8,7 +8,7 @@ description: Finish a T3.CodeShip branch end to end without a PR. Commit the wor
 Invoking `/ship` is the developer's go-ahead to commit and push to the default branch, and so is finishing a task in this repository ([AGENTS.md, "Ship finished work"](../../../AGENTS.md#ship-finished-work)). Do not ask again.
 `$ARGUMENTS` may carry a commit title or a branch to land on. Default to the remote's default branch.
 
-On a resumed handoff with a confirmed landing SHA, start at step 6. Use the recorded results to identify the next outstanding check. For a completed handoff from the primary checkout, call `t3_thread_organize` with `{"action":"settle"}` before the final report.
+On a resumed handoff with a confirmed landing SHA, start at step 6. Use the recorded results to identify the next outstanding check. For a completed handoff from the primary checkout with no owned topic checkout or ref left to retire, call `t3_thread_organize` with `{"action":"settle"}` before the final report.
 
 ## 1. Orient
 
@@ -55,13 +55,14 @@ Use the SHA printed by the landing turn, or the previously confirmed SHA when re
 
 - If a hosted run is active, start an awaited check, such as `gh run watch <run-id> --repo <owner/repo> --exit-status` in `t3_command_run`. Its completion wakes this thread. Resume the requested verification on that wake, including after a timeout.
 - If an external dependency prevents verification and there is no running check to await, call `t3_thread_organize` with `{"action":"unsettle"}` on the current thread, even when it already appears active. Without this override it can settle during an idle wait. Register a one-time `schedule_task` with `bindToCurrentThread: true` at the next useful retry time. Include the exact delivery, outstanding check and evidence location in the task. Reuse an existing retry for this delivery. Check that the saved task is enabled, has the owning thread ID and has a next run time before yielding. Recheck on wake and renew the active state and retry while the dependency is pending. A turn start clears the earlier active override.
-- With every requested result verified, go to step 7 if there is an owned disposable checkout or topic branch to retire. A completed shipment from the clean primary default checkout goes straight to step 8.
+- With every requested result verified, go to step 7 if there is an owned disposable checkout or topic branch to retire. Go straight to step 8 from a clean primary default checkout only when this shipment has no owned topic checkout or ref left to retire.
 
 ## 7. Release the topic checkout
 
 Preserve the full delivery ref and verify that it contains the delivered tip. Keep primary, reusable and shared checkouts. Stop only the processes this task started and remove its disposable scratch data once all verification has finished.
 
-- For a CodeShip-managed checkout, the owning thread reads its exact registered worktree path and finishing run ID. From a stable directory, use the matching released CLI and server to queue `t3 thread release-worktree <thread-id> --run <run-id> --worktree <registered-path> --durable-ref refs/remotes/origin/<default>`. Record the request and report it as **queued** at handoff. If release is unavailable or unconfirmed, retain the checkout and identify its owner and blocker. After handoff, confirm directory absence and Git deregistration from outside the owning thread.
+- For a CodeShip-managed checkout, read the owning thread's registered path and finishing run ID. Verify that the delivery ref covers the checkout's history, including `ORIG_HEAD` and its HEAD reflog. If a rebase left commits outside that ref, preserve each uncovered tip at a separate full archive ref, verify its reachability, and add `--also-durable-ref <full-archive-ref>` for each.
+- From a stable directory on the server host, use the matching released CLI to queue `t3 thread release-worktree <thread-id> --run <run-id> --worktree <registered-path> --durable-ref refs/remotes/origin/<default>` with any additional verified refs. For a custom home, pass the owning server's `--base-dir <base-dir>`. Verify the printed request path is in that server’s state directory under `worktree-releases` before reporting it as **queued**. If release is unavailable or unconfirmed, retain the checkout and identify its owner and blocker. After handoff, confirm directory absence and Git deregistration from outside the owning thread.
 - For another disposable checkout, establish exclusive ownership, preserve local data, and run the worktree handoff preflight. From the primary checkout, remove the verified worktree and confirm both directory absence and deregistration. Preserve any checkout with other owners, pending writes or an unresolved preflight.
 - After confirmed release, retire only the delivered local and remote topic refs this task owned. Preserve the default branch and the durable ref. Use a fast-forward-only update if the primary checkout is clean, on the expected branch and needs the delivered commit.
 
