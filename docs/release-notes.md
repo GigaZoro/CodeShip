@@ -1,3 +1,7 @@
+## 2026-11-24 — A delegated task in plan mode returns its plan
+
+- A delegated task that ran in plan mode and ended with a proposed plan reported "Child task completed without an assistant result" to the chat that started it. Its result is now the proposed plan, also when the task runs on a linked machine.
+
 ## 2026-11-24 — Usage stays visible while it updates
 
 - Usage keeps the last complete totals while a new period or filter loads. Background refreshes leave current figures at full opacity.
@@ -198,10 +202,6 @@
 ## 2026-11-23 — Accounting for messages, failover and review
 
 - New owner requests and accepted guest messages receive a demand ID. Steering, failover, and final review retain the original demand. Delegated questions and completions use their recorded sources. On-return compaction shares the demand ID of the following message.
-
-## 2026-11-22 — A delegated task in plan mode returns its plan
-
-- A delegated task that ran in plan mode and ended with a proposed plan reported "Child task completed without an assistant result" to the chat that started it. Its result is now the proposed plan, also when the task runs on a linked machine.
 
 ## 2026-11-22 — Relay client installs keep each other's locks
 
