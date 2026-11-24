@@ -1249,8 +1249,16 @@ it("checks changed source paths through the Windows launcher", () => {
 
 it("routes a manifest-only change to the repository command guard through the launcher", () => {
   using project = launcherFixture();
+  const marker = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-check-guard-"));
+  using _marker = {
+    [Symbol.dispose]: () => NodeFS.rmSync(marker, { recursive: true, force: true }),
+  };
+  const ran = NodePath.join(marker, "ran");
   const guard = "scripts/command-arguments.test.ts";
-  project.write(guard, `import { it } from "vite-plus/test";\nit("passes", () => {});\n`);
+  project.write(
+    guard,
+    `import { writeFileSync } from "node:fs";\nimport { it } from "vite-plus/test";\nit("passes", () => writeFileSync(${JSON.stringify(ran)}, ""));\n`,
+  );
   project.write(
     "scripts/unrelated.test.ts",
     `import { it } from "vite-plus/test";\nit("fails", () => {\n  throw new Error("ran");\n});\n`,
@@ -1264,6 +1272,7 @@ it("routes a manifest-only change to the repository command guard through the la
   const result = project.run();
   expect(result.status, result.stdout + result.stderr).toBe(0);
   expect(result.stdout).toContain("pass  test (1 files)");
+  expect(NodeFS.existsSync(ran)).toBe(true);
 });
 
 it("finds sibling tests once each, in any case or Unicode form Git spells them", () => {

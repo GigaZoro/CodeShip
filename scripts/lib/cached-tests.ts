@@ -100,6 +100,10 @@ function quoteArgument(value: string) {
 
 // Keep a large selection out of argv and the environment block, especially on Windows.
 const requestFile = "T3_CHECK_CHANGED_TEST_REQUEST";
+// check:changed passes a test its package's config leaves out, so a filter such as a file name or
+// -t would pass a test it never ran, and shell syntax such as `||` would hide a failure.
+const CHANGED_TEST_SCRIPT =
+  /^vp test run(?: --passWithNoTests| --(?:config|dir|project) (?!-)[\w.@/:+=,-]+)*$/;
 const changedTestEnv = "T3_CHECK_CHANGED_TEST_RUNTIME";
 const testInstallEnv = "T3_CHECK_CHANGED_TEST_INSTALL";
 const testWorkersEnv = "T3CODE_TEST_MAX_WORKERS";
@@ -489,8 +493,11 @@ export function cachedTestTasks(
   }
   for (const [directory, entries] of packages) {
     const command = directory === root ? "vp test run" : testScript(directory)!;
-    if (command !== "vp test run" && !command.startsWith("vp test run ")) {
-      throw new Error(`Unsupported test command in ${directory}`);
+    if (
+      (changed && !CHANGED_TEST_SCRIPT.test(command)) ||
+      (command !== "vp test run" && !command.startsWith("vp test run "))
+    ) {
+      throw new Error(`Unsupported test command in ${directory}: ${command}`);
     }
     const runner = relativeTestPath(
       directory,

@@ -168,6 +168,38 @@ describe("cachedTestTasks", () => {
     }
   });
 
+  it.each([
+    "vp test run choice",
+    "vp test run -t smoke",
+    "vp test run --testNamePattern=smoke",
+    "vp test run --project unit || true",
+  ])(
+    "refuses a package test script that can pass a test check:changed never ran: %s",
+    async (test) => {
+      const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cached-test-script-"));
+      try {
+        await NodeFSP.mkdir(NodePath.join(root, "pkg"));
+        await NodeFSP.writeFile(
+          NodePath.join(root, "pkg/package.json"),
+          JSON.stringify({ scripts: { test } }),
+        );
+        const files = ["pkg/a.test.ts"];
+        expect(
+          Object.keys(cachedTestTasks(JSON.stringify({ files, groupSize: 1 }), root)),
+        ).toHaveLength(2);
+        const request = NodePath.join(root, "request.json");
+        await NodeFSP.writeFile(request, JSON.stringify({ files, groupSize: 1 }));
+        vi.stubEnv("T3_CHECK_CHANGED_TEST_REQUEST", request);
+        expect(() => cachedTestTasks(undefined, root)).toThrow(
+          `Unsupported test command in ${NodePath.join(root, "pkg")}: ${test}`,
+        );
+      } finally {
+        vi.unstubAllEnvs();
+        await NodeFSP.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("writes search path entries inside the checkout relative to it", () => {
     const [one, two] = ["one", "two"].map((name) => NodePath.join(NodeOS.tmpdir(), name)) as [
       string,
@@ -428,7 +460,7 @@ describe("cachedTestTasks", () => {
       for (const name of ["test-cached.ts", "check-changed-command.ts"]) {
         await NodeFSP.copyFile(NodePath.join(root, "scripts", name), NodePath.join(scripts, name));
       }
-      await write(".gitignore", "node_modules/\ncache/\nscripts/\n");
+      await write(".gitignore", "node_modules/\ncache/\nscripts/\n.github/\n");
       return subprocess(directory, [NodePath.join(scripts, "test-cached.ts"), ...args]);
     };
     const run = (files = ["a.test.ts", "b.test.ts"], uncached: Array<string> = []) =>
@@ -471,6 +503,12 @@ describe("cachedTestTasks", () => {
       ]) {
         await NodeFSP.copyFile(NodePath.join(import.meta.dirname, file), NodePath.join(lib, file));
       }
+      const github = NodePath.join(directory, ".github", "scripts");
+      await NodeFSP.mkdir(github, { recursive: true });
+      await NodeFSP.copyFile(
+        NodePath.join(root, ".github/scripts/git-history.cjs"),
+        NodePath.join(github, "git-history.cjs"),
+      );
       await NodeFSP.symlink(
         await NodeFSP.realpath(NodePath.join(root, "node_modules/vite-plus")),
         NodePath.join(directory, "node_modules/vite-plus"),

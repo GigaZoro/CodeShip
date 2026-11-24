@@ -257,7 +257,10 @@ inputs, so a pass still replays after a program its tests run
 changes or goes away. A test whose coverage they decide, such as one that skips cases without a
 program or a cgroup it may join, or runs a program a variable names, or that writes a report another
 step needs, needs an uncached task. A group runs its files with the options of the test script of
-the nearest enclosing package that has one, as CI runs that package's suite. A test that skips without a host capability, such as file symlinks or the IPv6 loopback,
+the nearest enclosing package that has one, as CI runs that package's suite. `check:changed` passes a
+test that package's config leaves out, so it refuses a script that adds anything but
+`--passWithNoTests`, `--config`, `--dir` and `--project` with literal values: a filter such as a file
+name or `-t` would pass a test it never ran, and `|| true` would hide a failure. A test that skips without a host capability, such as file symlinks or the IPv6 loopback,
 reads it from `packages/shared/src/testing/hostCapabilities.ts`. The command probes those
 capabilities once, keys the cache on them and passes them to its tests; a probe of the test's own
 would replay the skip after the host gains the capability. With `T3CODE_TEST_KEEP_PROVIDER_ENV=1`,
