@@ -126,7 +126,30 @@ test("computing the working tree writes no objects to the repository", () =>
     fs.utimesSync(index, second, second);
     const racy = workingTree(work);
     git("add", "--all");
+    assert.equal(git("show", ":app.txt"), "edited");
     assert.equal(git("write-tree"), racy);
+  }));
+
+test("computing the working tree leaves a split index and its shared index readable", () =>
+  withRoot((root) => {
+    const { work, git, write } = fixture(root);
+    // Every index write makes a new shared index and removes the old ones, as an old enough base would be removed.
+    git("config", "splitIndex.maxPercentChange", "0");
+    git("config", "splitIndex.sharedIndexExpire", "now");
+    git("update-index", "--split-index");
+    write("app.txt", "edited but never committed\n");
+    git("add", "app.txt");
+    write("app.txt", "edited again\n");
+    const gitDir = git("rev-parse", "--absolute-git-dir");
+    const sharedIndexes = () =>
+      fs.readdirSync(gitDir).filter((name) => name.startsWith("sharedindex."));
+    const shared = sharedIndexes();
+    assert.equal(shared.length, 1);
+    fs.utimesSync(path.join(gitDir, shared[0]), 1_600_000_000, 1_600_000_000);
+
+    workingTree(work);
+    assert.deepEqual(sharedIndexes(), shared);
+    assert.equal(git("show", ":app.txt"), "edited but never committed");
   }));
 
 test("a pass covers the push only when it compared against the commit main is at", () =>

@@ -42,12 +42,19 @@ function workingTree(cwd) {
     const index = path.join(temp, "index");
     const real = git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
     if (fs.existsSync(real)) {
-      // Git rereads a file whose stat it cached only when the file is no older than the index, and a copy is new, so a
-      // same-size edit made in the second git wrote the index would read as unchanged. The time is read before the
-      // copy and floored to whole seconds, so the copy is never newer than the index it copies.
-      const second = Number(fs.statSync(real, { bigint: true }).mtimeNs / 1_000_000_000n);
-      fs.copyFileSync(real, index);
-      fs.utimesSync(index, second, second);
+      // Git rereads a file whose cached stat matches only when the file is no older than the index, and a copy is new,
+      // so the copy takes the index's time, floored to whole seconds, from the open file it copies. At or before the
+      // epoch that floor fails (git ignores a zero time; division rounds a negative one up), so every file is hashed.
+      const source = fs.openSync(real, "r");
+      try {
+        const second = Number(fs.fstatSync(source, { bigint: true }).mtimeNs / 1_000_000_000n);
+        if (second > 0) {
+          fs.writeFileSync(index, fs.readFileSync(source));
+          fs.utimesSync(index, second, second);
+        }
+      } finally {
+        fs.closeSync(source);
+      }
     }
     const objects = path.join(temp, "objects");
     fs.mkdirSync(objects);
@@ -62,8 +69,10 @@ function workingTree(cwd) {
         "objects",
       ]),
     };
-    git(cwd, ["add", "--all", "--", ":/"], env);
-    return git(cwd, ["write-tree"], env);
+    // Shared indexes live in the repository, and the real index may still name one a scratch write would expire.
+    const scratch = ["-c", "core.splitIndex=false", "-c", "splitIndex.sharedIndexExpire=never"];
+    git(cwd, [...scratch, "add", "--all", "--", ":/"], env);
+    return git(cwd, [...scratch, "write-tree"], env);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }
