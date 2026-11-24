@@ -1,3 +1,12 @@
+## 2026-11-24 — Release worktrees on every platform with the same safeguards
+
+- Windows worktrees now keep the macOS and Linux recovery: a release keeps new build caches, ignored files and backups, and `t3 thread backups` lists them. A checkout whose dependencies were installed in place, or whose installed files you edited, stays with you.
+- A setup script that fails after dependencies install is retried from the saved proof instead of reinstalling, and the checkout can still be released afterwards on macOS and Linux.
+
+## 2026-11-24 — Release worktrees after standard Windows setup
+
+- Completed Windows worktrees can release after CodeShip verifies their installed dependencies and checks for private NTFS data. Follow-ups install dependencies in the fresh checkout.
+
 ## 2026-11-24 — Recover setup on a follow-up to released worktrees
 
 - Worktree release keeps recoverable ignored build output in a private backup when dependencies are verified. Follow-ups show setup progress and retry an unfinished setup in the recreated checkout.

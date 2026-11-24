@@ -20,6 +20,11 @@ import {
   setupFileStamp,
   setupProofName,
 } from "../../../../scripts/lib/worktree-setup-proof.ts";
+import {
+  checkWindowsWorktreeFiles,
+  WindowsWorktreeInspectionError,
+  windowsSetupHost,
+} from "../../../../scripts/lib/windows-worktree-files.ts";
 
 const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const durableRef = Schema.String.check(Schema.isPattern(/^refs\/(?:heads|remotes|archive)\//));
@@ -482,8 +487,13 @@ const setupExtras = Effect.fn("WorktreeRelease.setupExtras")(function* (
   ].join("\0");
 });
 
+const setupAdditionsInside = (proof: SetupProof, extras: string) =>
+  extras.split("\0").flatMap((record) => {
+    const name = record.slice(3).replace(/\/$/, "");
+    return Object.keys(proof.modules).some((root) => name.startsWith(root + "/")) ? [name] : [];
+  });
+
 const captureSetupExtras = Effect.fn("WorktreeRelease.captureSetupExtras")(function* (cwd: string) {
-  if (yield* HostProcess.isWindows) return null;
   const admin = (yield* readGit(cwd, ["rev-parse", "--absolute-git-dir"])).trimEnd();
   const fs = yield* FileSystem.FileSystem;
   if (!(yield* fs.exists(NodePath.join(admin, setupProofName)))) return null;
@@ -491,7 +501,9 @@ const captureSetupExtras = Effect.fn("WorktreeRelease.captureSetupExtras")(funct
   const main = registrations.split("\0", 1)[0];
   if (!main?.startsWith("worktree ")) return null;
   const proof = yield* readCheckoutSetupProof(cwd, admin, main.slice("worktree ".length));
-  return proof ? yield* setupExtras(proof, cwd, yield* worktreeStatus(cwd)) : null;
+  return proof && !proof.inPlace
+    ? yield* setupExtras(proof, cwd, yield* worktreeStatus(cwd))
+    : null;
 });
 
 export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function* (input: {
@@ -627,6 +639,23 @@ const readAutoMergeMarker = Effect.fn("WorktreeRelease.readAutoMergeMarker")(fun
   );
 });
 
+const windowsInspectionHold = (
+  root: string,
+  options: Parameters<typeof checkWindowsWorktreeFiles>[1],
+  timeout: "15 seconds" | "10 minutes",
+  reason: string,
+) =>
+  Effect.tryPromise((signal) => checkWindowsWorktreeFiles(root, { ...options, signal })).pipe(
+    Effect.as(null),
+    Effect.catch(({ cause }) =>
+      Effect.succeed(
+        cause instanceof WindowsWorktreeInspectionError ? `${reason} (${cause.check})` : reason,
+      ),
+    ),
+    Effect.timeout(timeout),
+    Effect.orElseSucceed(() => reason),
+  );
+
 export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   request: ReleaseRequest,
   projectRoot: string,
@@ -677,12 +706,20 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   }
   const currentHead = (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
   if (!oid.test(currentHead)) return "worktree history could not be inspected";
+  if (windowsSetupHost) {
+    const hold = yield* windowsInspectionHold(
+      admin,
+      {},
+      "15 seconds",
+      "worktree metadata requires its owner",
+    );
+    if (hold) return hold;
+  }
   const tips = new Set([request.head, currentHead]);
   let setupProof: Awaited<ReturnType<typeof readSetupProof>> = null;
   for (const name of yield* fs.readDirectory(admin)) {
     if (["HEAD", "index", "commondir", "gitdir"].includes(name)) continue;
     if (name === setupProofName) {
-      if (yield* HostProcess.isWindows) return "worktree setup metadata requires its owner";
       setupProof = yield* readCheckoutSetupProof(cwd, admin, projectRoot);
       if (!setupProof) return "worktree setup metadata requires its owner";
       continue;
@@ -737,9 +774,11 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
     return "worktree has commits outside the durable ref";
   const index = yield* readGit(cwd, ["ls-files", "-v", "--stage", "-z"], 64 * 1024 * 1024);
   if (index && !index.endsWith("\0")) return "incomplete worktree index";
+  const trackedLinks: string[] = [];
   for (const item of index.split("\0").filter(Boolean)) {
     const entry = /^H (100644|100755|120000|160000) [a-f0-9]+ 0\t/.exec(item);
     if (!entry) return "worktree index contains hidden changes";
+    if (windowsSetupHost && entry[1] === "120000") trackedLinks.push(item.slice(entry[0].length));
     if (entry[1] !== "160000") continue;
     // Git status can omit arbitrary files inside an uninitialized gitlink.
     const name = item.slice(entry[0].length);
@@ -760,6 +799,19 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   const status = yield* worktreeStatus(cwd);
   if (status.split("\0").some((record) => record && !record.startsWith("!! ")))
     return "worktree contains tracked, untracked or ignored local data";
+  const fullBackup = request.savedFiles !== undefined && !request.savedSetupExtras;
+  if (windowsSetupHost && (!status || request.savedFiles || setupProof)) {
+    const hold = yield* windowsInspectionHold(
+      cwd,
+      {
+        links: [...trackedLinks, ...(setupProof?.links.map((link) => link.name) ?? [])],
+        modules: fullBackup ? [] : Object.keys(setupProof?.modules ?? {}),
+      },
+      "10 minutes",
+      "Windows worktree contains data or filesystem entries that could not be verified",
+    );
+    if (hold) return hold;
+  }
   if (request.savedFiles && !request.savedSetupExtras) {
     if (
       status &&
@@ -769,17 +821,33 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
     )
       return "ignored files have changed or lack a preserved copy";
   } else if (status || setupProof || request.savedSetupExtras) {
-    if (!setupProof) return "worktree contains tracked, untracked or ignored local data";
+    // An in-place receipt only authorizes a setup retry. It never vouches for the installed files.
+    if (!setupProof || setupProof.inPlace)
+      return "worktree contains tracked, untracked or ignored local data";
     const extras = yield* setupExtras(setupProof, cwd, status);
     if (extras === null) return "standard setup output changed or could not be verified";
-    if (
-      extras &&
-      (!request.savedFiles ||
+    if (extras) {
+      if (
+        !request.savedFiles ||
         !(yield* inspectIgnored(cwd, request.savedFiles, extras).pipe(
           Effect.orElseSucceed(() => false),
-        )))
-    )
-      return "ignored files have changed or lack a preserved copy";
+        ))
+      )
+        return "ignored files have changed or lack a preserved copy";
+      if (windowsSetupHost) {
+        // Setup output is vouched for by the receipt. Anything added inside it is ordinary data.
+        const additions = setupAdditionsInside(setupProof, extras);
+        if (additions.length) {
+          const hold = yield* windowsInspectionHold(
+            cwd,
+            { targets: additions },
+            "10 minutes",
+            "Windows worktree contains data or filesystem entries that could not be verified",
+          );
+          if (hold) return hold;
+        }
+      }
+    }
   }
   return null;
 });

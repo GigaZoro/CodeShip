@@ -875,6 +875,21 @@ it.live.each(["direct land", "no change"] as const)(
         yield* fixture.service.runNow;
         expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
         yield* fixture.fs.remove(NodePath.join(fixture.worktree, ".env"));
+        if (isWindowsHost) {
+          const refs = (yield* fixture.command(fixture.worktree, [
+            "rev-parse",
+            "--absolute-git-dir",
+          ])).stdout.trim();
+          const refDir = NodePath.join(refs, "refs");
+          const privateFile = NodePath.join(refDir, "owner.txt");
+          yield* fixture.fs.makeDirectory(refDir, { recursive: true });
+          yield* fixture.fs.writeFileString(privateFile, "preserve");
+          expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+            "Worktree has private refs",
+          );
+          expect(yield* fixture.fs.readFileString(privateFile)).toBe("preserve");
+          yield* fixture.fs.remove(privateFile);
+        }
         const insideGitlink = NodePath.join(fixture.worktree, "vendor", "empty", ".env");
         yield* fixture.fs.writeFileString(insideGitlink, "local");
         expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
@@ -921,8 +936,8 @@ it.live.each(["direct land", "no change"] as const)(
     ),
 );
 
-describe.skipIf(isWindowsHost)("owned setup output on POSIX", () => {
-  it.live.each([
+describe("owned setup output", () => {
+  const scenarios = [
     "standard setup only",
     "an added dependency file",
     "an edited dependency file",
@@ -938,17 +953,74 @@ describe.skipIf(isWindowsHost)("owned setup output on POSIX", () => {
     "an unpublished success marker",
     "a prior proof without dependencies",
     "an unknown proof directory with saved ignored files",
-  ] as const)(
+    "an external junction",
+    "a private file stream",
+    "a private directory stream",
+    "unverifiable staged setup output",
+    "a custom dependency ACL",
+    "an existing stage junction",
+    "a tracked stream on repeat",
+    "a crashed setup publication",
+    "a staged pnpmfile outside the checkout",
+    "a dirty lock on repeat",
+    "a dirty manifest on repeat",
+    "an ignored override on repeat",
+    "a committed lock change",
+    "two in-place reruns",
+    "a failed configure followed by recovery",
+    "an interrupted install followed by two reruns",
+    "an unrelated source edit on repeat",
+  ] as const;
+  const checkSetups = (
+    title: string,
+    run: (scenario: (typeof scenarios)[number]) => Effect.Effect<void, unknown>,
+  ) => {
+    const windowsOnly = [
+      "an external junction",
+      "a private file stream",
+      "a private directory stream",
+      "unverifiable staged setup output",
+      "a custom dependency ACL",
+      "an existing stage junction",
+      "a tracked stream on repeat",
+      "a crashed setup publication",
+      "a staged pnpmfile outside the checkout",
+      "a dirty lock on repeat",
+      "a dirty manifest on repeat",
+      "an ignored override on repeat",
+      "a committed lock change",
+      "two in-place reruns",
+      "an interrupted install followed by two reruns",
+      "an unrelated source edit on repeat",
+    ];
+    const windowsWithPosix = [
+      "standard setup only",
+      "an edited dependency file",
+      "a dirty install input",
+      "a failed configure followed by recovery",
+    ];
+    describe.skipIf(isWindowsHost)("POSIX", () => {
+      it.live.each(scenarios.filter((name) => !windowsOnly.includes(name)))(title, run);
+    });
+    describe.runIf(isWindowsHost)("Windows", () => {
+      it.live.each(
+        scenarios.filter((name) => windowsOnly.includes(name) || windowsWithPosix.includes(name)),
+      )(title, run);
+    });
+  };
+
+  checkSetups(
     "releases an ordinary completed worktree only with unchanged setup output (%s)",
     (scenario) =>
       runCleanupTest(
         Effect.gen(function* () {
           const fixture = yield* cleanupFixture(undefined, true);
           fixture.disable();
-          const { fs, repo, worktree, command } = fixture;
+          const { fs, repo, command } = fixture;
+          const worktree = yield* fs.realPath(fixture.worktree);
           yield* fs.writeFileString(
             NodePath.join(repo, ".gitignore"),
-            ".env\nnode_modules/\n.t3/\n",
+            ".env\n.npmrc\nnode_modules/\n.t3/\n",
           );
           yield* fs.makeDirectory(NodePath.join(repo, "scripts/lib"), { recursive: true });
           yield* fs.makeDirectory(NodePath.join(repo, "packages/shared/src"), { recursive: true });
@@ -962,11 +1034,22 @@ describe.skipIf(isWindowsHost)("owned setup output on POSIX", () => {
             NodePath.join(repo, "pnpm-workspace.yaml"),
             "packages:\n  - apps/*\n",
           );
+          yield* fs.writeFileString(NodePath.join(repo, "pnpm-lock.yaml"), "lockfileVersion: 9\n");
+          const configureFailure = scenario === "a failed configure followed by recovery";
+          if (configureFailure) {
+            const scripts = NodePath.join(repo, ".github/scripts");
+            yield* fs.makeDirectory(scripts, { recursive: true });
+            yield* fs.writeFileString(
+              NodePath.join(scripts, "release-notes.cjs"),
+              "if (process.env.T3_TEST_FAIL_CONFIGURE) process.exit(19);\n",
+            );
+          }
           for (const file of [
             "t3.json",
             "scripts/setup-worktree.ts",
             "scripts/lib/install-worktree-dependencies.ts",
             "scripts/lib/worktree-setup-proof.ts",
+            "scripts/lib/windows-worktree-files.ts",
             "packages/shared/src/processProbe.ts",
           ]) {
             yield* fs.copyFile(
@@ -979,10 +1062,19 @@ describe.skipIf(isWindowsHost)("owned setup output on POSIX", () => {
           yield* command(worktree, ["merge", "--ff-only", "main"]);
           const mainEnv = NodePath.join(repo, ".env");
           const worktreeEnv = NodePath.join(worktree, ".env");
-          yield* fs.writeFileString(mainEnv, "example-main-value");
+          const sentinel = NodePath.join(repo, "sentinel.txt");
+          const existingStage = scenario === "an existing stage junction";
+          if (existingStage) {
+            yield* fs.writeFileString(sentinel, "keep");
+            yield* fs.makeDirectory(NodePath.join(worktree, ".t3"));
+            yield* Effect.promise(() =>
+              NodeFSP.symlink(repo, NodePath.join(worktree, ".t3/setup-stage"), "junction"),
+            );
+          }
+          if (!isWindowsHost) yield* fs.writeFileString(mainEnv, "example-main-value");
           if (scenario === "a real dotenv file")
             yield* fs.writeFileString(worktreeEnv, "local-value");
-          if (scenario === "a dirty install input")
+          if (scenario === "a dirty install input" || scenario === "two in-place reruns")
             yield* fs.writeFileString(
               NodePath.join(worktree, ".pnpmfile.cjs"),
               "use live checkout",
@@ -990,9 +1082,18 @@ describe.skipIf(isWindowsHost)("owned setup output on POSIX", () => {
           const fixturePackageManager = yield* fs.makeTempDirectoryScoped({ prefix: "setup-vp-" });
           yield* fs.writeFileString(
             NodePath.join(fixturePackageManager, "install.mjs"),
-            `import * as fs from "node:fs";
+            String.raw`import * as fs from "node:fs";
 import * as path from "node:path";
 if (process.env.T3_TEST_REJECT_INSTALL) throw new Error("unexpected repeat install");
+const inWindowsStage = process.platform === "win32" && process.cwd().includes(path.sep + "setup-stage" + path.sep);
+fs.appendFileSync(process.env.T3_TEST_INSTALL_LOG, (inWindowsStage ? "stage" : "install") + "\n");
+if (inWindowsStage && process.env.T3_TEST_SETUP_PID) {
+  fs.writeFileSync("owner-sentinel.txt", "keep");
+  process.kill(Number(process.env.T3_TEST_SETUP_PID), "SIGKILL");
+  process.exit(1);
+}
+const withWindowsAliases = (value) =>
+  inWindowsStage ? value[0].toLowerCase() + value.slice(1).split(path.sep).join("/") : value;
 fs.mkdirSync("node_modules/.pnpm/example/node_modules/example", { recursive: true });
 fs.mkdirSync("apps/server/node_modules", { recursive: true });
 fs.writeFileSync("apps/server/node_modules/helper.js", "module");
@@ -1008,32 +1109,61 @@ if (process.env.T3_TEST_CONCURRENT_WORKTREE) {
 fs.writeFileSync("node_modules/.pnpm/example/node_modules/example/index.js", "module");
 
 if (!fs.existsSync("node_modules/example")) {
-  fs.symlinkSync(".pnpm/example/node_modules/example", "node_modules/example", "dir");
+  const target = ".pnpm/example/node_modules/example";
+  fs.symlinkSync(process.platform === "win32" ? withWindowsAliases(path.resolve("node_modules", target)) : target,
+    "node_modules/example", process.platform === "win32" ? "junction" : "dir");
+}
+if (process.env.T3_TEST_STORE && !fs.existsSync("node_modules/shared.js")) {
+  fs.linkSync(path.join(process.env.T3_TEST_STORE, "shared.js"), "node_modules/shared.js");
+}
+if (process.env.T3_TEST_STAGE_STREAM && inWindowsStage) {
+  fs.writeFileSync("node_modules/.pnpm/example/node_modules/example/index.js:private", "keep");
 }
 fs.writeFileSync("node_modules/.modules.yaml", JSON.stringify({ storeDir: process.env.T3_TEST_VP }));
 const cwd = process.cwd();
 fs.writeFileSync("node_modules/.pnpm-workspace-state-v1.json", JSON.stringify({
-  projects: { [cwd]: {}, [path.join(cwd, "apps/server")]: {} },
-  pnpmfiles: [path.join(cwd, ".pnpmfile.cjs")],
+  projects: { [withWindowsAliases(cwd)]: {}, [withWindowsAliases(path.join(cwd, "apps/server"))]: {} },
+  pnpmfiles: [
+    inWindowsStage && process.env.T3_TEST_OUTSIDE_PNPMFILE ||
+    withWindowsAliases(path.join(cwd, ".pnpmfile.cjs"))
+  ],
 }));
 if (fs.existsSync(".pnpmfile.cjs")) {
   fs.copyFileSync(".pnpmfile.cjs", "node_modules/seen-input.cjs");
 }
+fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntries(
+  ["pnpm-lock.yaml", "pnpm-workspace.yaml", "apps/server/package.json", ".npmrc"]
+    .filter((name) => fs.existsSync(name))
+    .map((name) => [name, fs.readFileSync(name, "utf8")])
+)));
 `,
           );
           for (const [name, body] of [
-            ["vp", '#!/bin/sh\nexec node "$T3_TEST_VP/install.mjs"\n'],
-            ["vp.cmd", '@node "%T3_TEST_VP%\\install.mjs"\r\n'],
+            ["vp", '#!/bin/sh\nexec "$T3_TEST_NODE" "$T3_TEST_VP/install.mjs"\n'],
+            ["vp.cmd", '@"%T3_TEST_NODE%" "%T3_TEST_VP%\\install.mjs"\r\n'],
           ] as const) {
             yield* fs.writeFileString(NodePath.join(fixturePackageManager, name), body, {
               mode: 0o755,
             });
           }
+          yield* fs.writeFileString(NodePath.join(fixturePackageManager, "shared.js"), "shared");
           const race = scenario === "a dependency added during setup";
+          const stageStream = scenario === "unverifiable staged setup output";
+          const outsidePnpmfile = scenario === "a staged pnpmfile outside the checkout";
+          const outsideConfig = NodePath.join(fixturePackageManager, "outside.cjs");
+          const installLog = NodePath.join(fixturePackageManager, "install.log");
+          if (outsidePnpmfile) yield* fs.writeFileString(outsideConfig, "preserve");
           const env = {
-            ...process.env,
+            ...Object.fromEntries(
+              Object.entries(process.env).filter(([name]) => name.toUpperCase() !== "PATH"),
+            ),
             T3_TEST_CONCURRENT_WORKTREE: race ? worktree : "",
+            T3_TEST_NODE: process.execPath,
+            T3_TEST_INSTALL_LOG: installLog,
+            T3_TEST_OUTSIDE_PNPMFILE: outsidePnpmfile ? outsideConfig : "",
+            T3_TEST_STAGE_STREAM: stageStream ? "1" : "",
             T3_TEST_VP: fixturePackageManager,
+            T3_TEST_STORE: isWindowsHost ? fixturePackageManager : "",
             T3CODE_PROJECT_ROOT: repo,
             PATH: fixturePackageManager + NodePath.delimiter + process.env.PATH,
           };
@@ -1041,14 +1171,31 @@ if (fs.existsSync(".pnpmfile.cjs")) {
             yield* fs.readFileString(NodePath.join(worktree, "t3.json")),
           ).scripts[0].command;
           expect(setupCommand).toBe("node scripts/setup-worktree.ts");
-          const runSetup = (repeat = false) =>
+          const runSetup = (
+            repeat = false,
+            cwd = worktree,
+            attempt?: "interrupt" | "fail configure",
+          ) =>
             Effect.promise(
               () =>
                 new Promise<{ success: boolean; output: string }>((resolve) => {
                   NodeChildProcess.execFile(
                     process.execPath,
-                    setupCommand.split(" ").slice(1),
-                    { cwd: worktree, env: { ...env, T3_TEST_REJECT_INSTALL: repeat ? "1" : "" } },
+                    attempt === "interrupt"
+                      ? [
+                          "--input-type=module",
+                          "-e",
+                          'process.env.T3_TEST_SETUP_PID = String(process.pid); await import("./scripts/setup-worktree.ts");',
+                        ]
+                      : setupCommand.split(" ").slice(1),
+                    {
+                      cwd,
+                      env: {
+                        ...env,
+                        T3_TEST_REJECT_INSTALL: repeat ? "1" : "",
+                        T3_TEST_FAIL_CONFIGURE: attempt === "fail configure" ? "1" : "",
+                      },
+                    },
                     (error, stdout, stderr) =>
                       resolve({ success: !error, output: stdout + stderr }),
                   );
@@ -1064,13 +1211,13 @@ if (fs.existsSync(".pnpmfile.cjs")) {
                       [
                         "-e",
                         `
-                const fs = require("node:fs");
-                fs.mkdirSync(".t3", { recursive: true });
-                fs.mkdirSync(".t3/setup-owner-" + process.pid, { mode: 0o700 });
-                fs.writeFileSync(".t3/setup-running", process.pid + "\\n");
-                console.log("ready");
-                process.stdin.resume();
-              `,
+                  const fs = require("node:fs");
+                  fs.mkdirSync(".t3", { recursive: true });
+                  fs.mkdirSync(".t3/setup-owner-" + process.pid, { mode: 0o700 });
+                  fs.writeFileSync(".t3/setup-running", process.pid + "\\n");
+                  console.log("ready");
+                  process.stdin.resume();
+                `,
                       ],
                       { cwd: worktree, stdio: ["pipe", "pipe", "inherit"] },
                     );
@@ -1097,19 +1244,70 @@ if (fs.existsSync(".pnpmfile.cjs")) {
                 }),
             );
           }
-          const setup = yield* runSetup();
-          expect(setup.success, setup.output).toBe(!race);
-          if (race) expect(setup.output).toContain("setup destinations changed");
           const done = NodePath.join(worktree, ".t3/setup-done");
+          const failed = NodePath.join(worktree, ".t3/setup-failed");
           const proof = (yield* command(worktree, [
             "rev-parse",
             "--path-format=absolute",
             "--git-path",
             "t3-setup-proof-v1",
           ])).stdout.trim();
+          const interruptedInstall = scenario === "an interrupted install followed by two reruns";
+          const preservedStage = NodePath.join(worktree, ".t3/setup-stage/repo/owner-sentinel.txt");
+          const claimStream = NodePath.join(worktree, ".t3/setup-owner-2147483647:private");
+          let deadClaim: string | undefined;
+          if (interruptedInstall) {
+            const interrupted = yield* runSetup(false, worktree, "interrupt");
+            expect(interrupted.success).toBe(false);
+            expect(yield* fs.readFileString(preservedStage)).toBe("keep");
+            expect(yield* fs.exists(done)).toBe(false);
+            expect(yield* fs.exists(proof)).toBe(false);
+            const pid = (yield* fs.readFileString(
+              NodePath.join(worktree, ".t3/setup-running"),
+            )).trim();
+            deadClaim = NodePath.join(worktree, ".t3", "setup-owner-" + pid);
+            expect(yield* fs.exists(deadClaim)).toBe(true);
+            yield* fs.makeDirectory(NodePath.join(worktree, ".t3/setup-owner-2147483647"));
+            yield* Effect.promise(() => NodeFSP.writeFile(claimStream, "preserve"));
+          }
+          if (configureFailure) {
+            const failedSetup = yield* runSetup(false, worktree, "fail configure");
+            expect(failedSetup.success).toBe(false);
+            expect(yield* fs.exists(failed)).toBe(true);
+            expect(yield* fs.exists(done)).toBe(false);
+            expect(yield* fs.exists(proof)).toBe(true);
+          }
+          const setup = yield* runSetup(configureFailure);
+          expect(setup.success, setup.output).toBe(!race);
+          if (race) expect(setup.output).toContain("setup destinations changed");
+          if (stageStream) {
+            expect(setup.output).toContain("Windows worktree inspection failed (private-stream)");
+            expect(setup.output).not.toContain("-EncodedCommand");
+          }
           expect(yield* fs.exists(done)).toBe(!race);
-          const inPlace = scenario === "a real dotenv file" || scenario === "a dirty install input";
-          expect(yield* fs.exists(proof)).toBe(!race && !inPlace);
+          if (configureFailure) {
+            expect(yield* fs.exists(failed)).toBe(false);
+            expect(yield* fs.readFileString(installLog)).toBe(
+              isWindowsHost ? "stage\n" : "install\n",
+            );
+          }
+          const inPlace =
+            existingStage ||
+            outsidePnpmfile ||
+            stageStream ||
+            interruptedInstall ||
+            scenario === "two in-place reruns" ||
+            scenario === "a real dotenv file" ||
+            scenario === "a dirty install input";
+          expect(yield* fs.exists(proof)).toBe(!race && (!inPlace || isWindowsHost));
+          const expectLocalReceipt = () =>
+            Effect.gen(function* () {
+              const receipt = JSON.parse(yield* fs.readFileString(proof));
+              expect(receipt.inPlace).toBe(true);
+              expect(yield* fs.readFileString(done)).toBe(receipt.marker);
+              expect(yield* fs.exists(failed)).toBe(false);
+            });
+          if (isWindowsHost && inPlace) yield* expectLocalReceipt();
           if (!race) {
             const state = JSON.parse(
               yield* fs.readFileString(
@@ -1126,7 +1324,7 @@ if (fs.existsSync(".pnpmfile.cjs")) {
             expect(
               yield* fs.readFileString(NodePath.join(worktree, "node_modules/seen-input.cjs")),
             ).toBe("use live checkout");
-          if (!race)
+          if (!race && !isWindowsHost)
             expect(yield* fs.readFileString(worktreeEnv)).toBe(
               scenario === "a real dotenv file" ? "local-value" : "example-main-value",
             );
@@ -1134,9 +1332,148 @@ if (fs.existsSync(".pnpmfile.cjs")) {
             worktree,
             "node_modules/.pnpm/example/node_modules/example",
           );
+          const sibling = NodePath.join(NodePath.dirname(worktree), "other");
+          const abandonedClaim = NodePath.join(worktree, ".t3/setup-owner-2147483647");
+          const privateStream = NodePath.join(
+            worktree,
+            scenario === "a private directory stream"
+              ? "node_modules:private"
+              : scenario === "a tracked stream on repeat"
+                ? "tracked.txt:Zone.Identifier"
+                : "tracked.txt:private",
+          );
+          const dependencyAcl = (...args: string[]) =>
+            Effect.tryPromise(
+              () =>
+                new Promise<string>((resolve, reject) => {
+                  NodeChildProcess.execFile(
+                    NodePath.join(process.env.SystemRoot!, "System32", "icacls.exe"),
+                    [NodePath.join(dependency, "index.js"), ...args],
+                    { windowsHide: true },
+                    (error, stdout) => {
+                      if (error) reject(new Error(`Fixture ACL command failed (${error.code})`));
+                      else resolve(stdout);
+                    },
+                  );
+                }),
+            );
+          let customAcl: string | undefined;
+          let refreshedInputs = false;
           switch (scenario) {
+            case "a dirty lock on repeat":
+            case "a dirty manifest on repeat":
+            case "an ignored override on repeat":
+            case "a committed lock change": {
+              const [name, contents] =
+                scenario === "a dirty manifest on repeat"
+                  ? ["pnpm-workspace.yaml", "packages:\n  - apps/*\n\n# update\n"]
+                  : scenario === "an ignored override on repeat"
+                    ? [".npmrc", "node-linker=isolated\n"]
+                    : ["pnpm-lock.yaml", "lockfileVersion: 9\n# update\n"];
+              yield* fs.writeFileString(NodePath.join(worktree, name), contents);
+              if (scenario === "a committed lock change") {
+                yield* command(worktree, ["add", "--", name]);
+                yield* command(worktree, ["commit", "-m", "Change the lockfile"]);
+                yield* command(repo, ["merge", "--ff-only", "feature"]);
+              }
+              const repeated = yield* runSetup();
+              expect(repeated.success, repeated.output).toBe(true);
+              expect(yield* fs.readFileString(installLog)).toBe("stage\ninstall\n");
+              expect(
+                JSON.parse(
+                  yield* fs.readFileString(
+                    NodePath.join(worktree, "node_modules/seen-inputs.json"),
+                  ),
+                )[name],
+              ).toBe(contents);
+              yield* expectLocalReceipt();
+              refreshedInputs = true;
+              break;
+            }
+            case "two in-place reruns":
+            case "an interrupted install followed by two reruns": {
+              const priorInstalls = interruptedInstall ? "stage\ninstall\n" : "install\n";
+              const reruns = interruptedInstall ? 1 : 2;
+              for (let i = 0; i < reruns; i++) {
+                const repeated = yield* runSetup();
+                expect(repeated.success, repeated.output).toBe(true);
+                yield* expectLocalReceipt();
+              }
+              expect(yield* fs.readFileString(installLog)).toBe(
+                priorInstalls + "install\n".repeat(reruns),
+              );
+              if (deadClaim) expect(yield* fs.exists(deadClaim)).toBe(false);
+              if (interruptedInstall) expect(yield* fs.readFileString(preservedStage)).toBe("keep");
+              if (interruptedInstall)
+                expect(yield* Effect.promise(() => NodeFSP.readFile(claimStream, "utf8"))).toBe(
+                  "preserve",
+                );
+              break;
+            }
+            case "an unrelated source edit on repeat": {
+              yield* fs.writeFileString(NodePath.join(worktree, "tracked.txt"), "preserve\n");
+              const repeated = yield* runSetup(true);
+              expect(repeated.success, repeated.output).toBe(true);
+              expect(yield* fs.readFileString(installLog)).toBe("stage\n");
+              expect(yield* fs.readFileString(NodePath.join(worktree, "tracked.txt"))).toBe(
+                "preserve\n",
+              );
+              break;
+            }
+            case "a tracked stream on repeat": {
+              yield* Effect.promise(() => NodeFSP.writeFile(privateStream, "keep"));
+              const repeated = yield* runSetup(true);
+              expect(repeated.success, repeated.output).toBe(true);
+              break;
+            }
+            case "a crashed setup publication": {
+              yield* fs.makeDirectory(abandonedClaim);
+              yield* fs.writeFileString(
+                NodePath.join(abandonedClaim, "proof"),
+                "unrecognized data",
+              );
+              yield* Effect.promise(() =>
+                NodeFSP.link(done, NodePath.join(abandonedClaim, "done")),
+              );
+              const repeated = yield* runSetup(true);
+              expect(repeated.success, repeated.output).toBe(true);
+              break;
+            }
+            case "a custom dependency ACL": {
+              const inheritedAcl = yield* dependencyAcl();
+              yield* dependencyAcl("/grant", "*S-1-1-0:(RX)");
+              customAcl = yield* dependencyAcl();
+              expect(customAcl !== inheritedAcl).toBe(true);
+              break;
+            }
+            case "an external junction":
+              yield* fs.writeFileString(sentinel, "keep");
+              yield* Effect.promise(() =>
+                NodeFSP.symlink(
+                  repo,
+                  NodePath.join(worktree, "node_modules", "external"),
+                  "junction",
+                ),
+              );
+              break;
+            case "a private file stream":
+            case "a private directory stream":
+              yield* Effect.promise(() => NodeFSP.writeFile(privateStream, "keep"));
+              break;
             case "standard setup only":
             case "an unpublished success marker": {
+              if (isWindowsHost && scenario === "standard setup only") {
+                yield* command(repo, ["worktree", "add", "-b", "other", sibling]);
+                const second = yield* runSetup(false, sibling);
+                expect(second.success, second.output).toBe(true);
+                const shared = (checkout: string) =>
+                  Effect.promise(() =>
+                    NodeFSP.stat(NodePath.join(checkout, "node_modules/shared.js")),
+                  );
+                const firstFile = yield* shared(worktree);
+                expect(firstFile.nlink).toBeGreaterThanOrEqual(3);
+                expect((yield* shared(sibling)).ino).toBe(firstFile.ino);
+              }
               if (scenario === "an unpublished success marker") yield* fs.remove(done);
               const repeated = yield* runSetup(true);
               expect(repeated.success, repeated.output).toBe(true);
@@ -1222,6 +1559,7 @@ if (fs.existsSync(".pnpmfile.cjs")) {
               : {}),
           });
           const released =
+            configureFailure ||
             scenario === "standard setup only" ||
             scenario === "a dead setup owner" ||
             scenario === "an unpublished success marker" ||
@@ -1233,27 +1571,82 @@ if (fs.existsSync(".pnpmfile.cjs")) {
               : {
                   outcome: "kept",
                   reason:
-                    race || inPlace || scenario === "a legacy done marker"
-                      ? "Worktree contains tracked, untracked or ignored local data"
-                      : scenario === "a changed proof" ||
-                          scenario === "an unknown proof directory with saved ignored files"
-                        ? "Worktree setup metadata requires its owner"
-                        : "Standard setup output changed or could not be verified",
+                    stageStream || existingStage || interruptedInstall
+                      ? "Worktree has a preserved setup stage"
+                      : race ||
+                          inPlace ||
+                          refreshedInputs ||
+                          scenario === "a legacy done marker" ||
+                          scenario === "an unrelated source edit on repeat"
+                        ? "Worktree contains tracked, untracked or ignored local data"
+                        : scenario === "a changed proof" ||
+                            scenario === "an unknown proof directory with saved ignored files"
+                          ? "Worktree setup metadata requires its owner"
+                          : scenario === "a private file stream" ||
+                              scenario === "a private directory stream" ||
+                              scenario === "a tracked stream on repeat"
+                            ? "Windows worktree contains data or filesystem entries that could not be verified (private-stream)"
+                            : scenario === "a custom dependency ACL"
+                              ? "Windows worktree contains data or filesystem entries that could not be verified (explicit-ace)"
+                              : "Standard setup output changed or could not be verified",
                 },
           );
           expect(yield* fs.exists(worktree)).toBe(!released);
           expect(yield* fs.exists(file + ".released")).toBe(released);
           const registrations = (yield* command(repo, ["worktree", "list", "--porcelain"])).stdout;
           expect(registrations.includes(worktree.split(NodePath.sep).join("/"))).toBe(!released);
-          if (scenario !== "a missing dotenv source") {
+          if (!isWindowsHost && scenario !== "a missing dotenv source") {
             expect(yield* fs.readFileString(mainEnv)).toBe("example-main-value");
           }
           if (scenario === "standard setup only") {
             yield* command(repo, ["worktree", "add", worktree, "feature"]);
             const followUp = yield* runSetup();
             expect(followUp.success, followUp.output).toBe(true);
+            expect(
+              yield* fs.readFileString(NodePath.join(worktree, "node_modules/example/index.js")),
+            ).toBe("module");
+            if (isWindowsHost)
+              expect(
+                yield* fs.readFileString(NodePath.join(sibling, "node_modules/example/index.js")),
+              ).toBe("module");
+          }
+          if (scenario === "an external junction" || existingStage)
+            expect(yield* fs.readFileString(sentinel)).toBe("keep");
+          if (outsidePnpmfile) expect(yield* fs.readFileString(outsideConfig)).toBe("preserve");
+          if (existingStage)
+            expect(yield* fs.realPath(NodePath.join(worktree, ".t3/setup-stage"))).toBe(repo);
+          if (scenario === "a crashed setup publication") {
+            expect(yield* fs.readFileString(NodePath.join(abandonedClaim, "proof"))).toBe(
+              "unrecognized data",
+            );
+            expect(yield* fs.readFileString(NodePath.join(abandonedClaim, "done"))).toBe(
+              yield* fs.readFileString(done),
+            );
+          }
+          if (customAcl !== undefined) {
+            expect((yield* dependencyAcl()) === customAcl).toBe(true);
             expect(yield* fs.readFileString(NodePath.join(dependency, "index.js"))).toBe("module");
           }
+          if (stageStream)
+            expect(
+              yield* Effect.promise(() =>
+                NodeFSP.readFile(
+                  NodePath.join(
+                    worktree,
+                    ".t3/setup-stage/repo/node_modules/.pnpm/example/node_modules/example/index.js:private",
+                  ),
+                  "utf8",
+                ),
+              ),
+            ).toBe("keep");
+          if (
+            scenario === "a private file stream" ||
+            scenario === "a private directory stream" ||
+            scenario === "a tracked stream on repeat"
+          )
+            expect(yield* Effect.promise(() => NodeFSP.readFile(privateStream, "utf8"))).toBe(
+              "keep",
+            );
           if (scenario === "an unknown proof directory with saved ignored files")
             expect(yield* fs.readFileString(NodePath.join(proof, "owner.txt"))).toBe(
               "preserve this",
@@ -1352,9 +1745,11 @@ it.live.each([
       expect(result).toMatchObject({
         outcome: "kept",
         reason:
-          kind === "active merge" || kind === "symlink" || kind === "oversized"
-            ? "Worktree metadata requires its owner"
-            : "Worktree has an unpreserved auto-merge tree",
+          kind === "symlink" && isWindowsHost
+            ? "Worktree metadata requires its owner (reparse-point)"
+            : kind === "active merge" || kind === "symlink" || kind === "oversized"
+              ? "Worktree metadata requires its owner"
+              : "Worktree has an unpreserved auto-merge tree",
       });
       expect(yield* fs.exists(marker)).toBe(true);
       expect(yield* fs.exists(worktree)).toBe(true);

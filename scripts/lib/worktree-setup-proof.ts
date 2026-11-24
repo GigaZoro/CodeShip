@@ -3,8 +3,10 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeWorkerThreads from "node:worker_threads";
+import { windowsSetupHost } from "./windows-worktree-files.ts";
 
 export const setupProofName = "t3-setup-proof-v1";
+export const setupStageName = "setup-stage";
 export const setupEnvFiles = [".env", "infra/relay/.env"] as const;
 const digestPattern = /^[a-f0-9]{64}$/;
 const maxProofBytes = 128 * 1024;
@@ -35,6 +37,7 @@ const scan = function (
   stagingPath: string | undefined,
   cacheNames: readonly string[],
   cacheSlots: CacheSlots | "seal" | undefined,
+  windows: boolean,
 ): TreeScan {
   const validPath = (name: string) =>
     name.length > 0 &&
@@ -59,7 +62,88 @@ const scan = function (
     left.size === right.size;
   let count = 0;
   let totalBytes = 0n;
-  const buffer = Buffer.allocUnsafe(128 * 1024);
+  const buffer = Buffer.allocUnsafe(windows ? 64 * 1024 : 128 * 1024);
+  const hashFile = (file: string, stat: NodeFS.BigIntStats) => {
+    const fd = fs.openSync(
+      file,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+    );
+    try {
+      if (!sameStat(stat, fs.fstatSync(fd, { bigint: true })))
+        throw new Error("Setup file changed before reading");
+      const content = crypto.createHash("sha256");
+      let remaining = Number(stat.size);
+      while (remaining > 0) {
+        const read = fs.readSync(fd, buffer, 0, Math.min(remaining, buffer.length), null);
+        if (read === 0) throw new Error("Setup file was truncated while reading");
+        content.update(buffer.subarray(0, read));
+        remaining -= read;
+      }
+      if (
+        !sameStat(stat, fs.fstatSync(fd, { bigint: true })) ||
+        !sameStat(stat, fs.lstatSync(file, { bigint: true }))
+      )
+        throw new Error("Setup file changed while reading");
+      return content.digest("hex");
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+
+  // NTFS hardlink aliases change a file's change time without touching its bytes, so a changed
+  // stamp is settled by a second identical read instead of refused.
+  const hashWindowsFile = (file: string, stat: NodeFS.BigIntStats) => {
+    const fd = fs.openSync(file, "r");
+    try {
+      const snapshot = () => {
+        const current = fs.fstatSync(fd, { bigint: true });
+        if (
+          !current.isFile() ||
+          current.dev !== stat.dev ||
+          current.ino !== stat.ino ||
+          current.birthtimeNs !== stat.birthtimeNs ||
+          current.mtimeNs !== stat.mtimeNs ||
+          current.size !== stat.size
+        )
+          throw new Error("Setup file changed while reading");
+        return current.ctimeNs;
+      };
+      const readBytes = () => {
+        const hash = crypto.createHash("sha256");
+        let position = 0;
+        while (true) {
+          const bytes = fs.readSync(fd, buffer, { position });
+          if (bytes === 0) break;
+          position += bytes;
+          if (BigInt(position) > stat.size) throw new Error("Setup file grew while reading");
+          hash.update(buffer.subarray(0, bytes));
+        }
+        if (BigInt(position) !== stat.size) throw new Error("Setup file shrank while reading");
+        return hash.digest("hex");
+      };
+      const before = snapshot();
+      const digest = readBytes();
+      const after = snapshot();
+      if (stat.ctimeNs !== before || before !== after) {
+        if (readBytes() !== digest || snapshot() !== after)
+          throw new Error("Setup file changed while reading");
+      }
+      const present = fs.lstatSync(file, { bigint: true });
+      if (
+        !present.isFile() ||
+        present.dev !== stat.dev ||
+        present.ino !== stat.ino ||
+        present.birthtimeNs !== stat.birthtimeNs ||
+        present.mtimeNs !== stat.mtimeNs ||
+        present.size !== stat.size
+      )
+        throw new Error("Setup file was replaced while reading");
+      return digest;
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+
   const results: TreeScan = { modules: {}, cacheSlots: {}, additions: [] };
   for (const name of modules) {
     if (!validPath(name) || !/(^|\/)node_modules$/.test(name))
@@ -85,11 +169,14 @@ const scan = function (
       const stat = fs.lstatSync(file, { bigint: true });
       if (stat.ino === 0n || stat.ctimeNs <= 0n)
         throw new Error("Setup entry has no filesystem change stamp");
-      const stamp = [stat.dev, stat.ino, stat.mode, stat.uid, stat.gid, stat.birthtimeNs];
+      // NTFS reports no POSIX owner or mode, and its change time moves with hardlink aliases.
+      const stamp = windows
+        ? [stat.dev, stat.ino, stat.birthtimeNs]
+        : [stat.dev, stat.ino, stat.mode, stat.uid, stat.gid, stat.birthtimeNs];
       // A root's immediate child list is sealed by the digest. Root times and size can
       // change when a reserved cache is added or when setup publishes the root by rename.
       if (!cacheSlots || relative !== "") stamp.push(stat.mtimeNs, stat.size);
-      if (relative !== "" && (!cacheSlots || !stat.isFile())) stamp.push(stat.ctimeNs);
+      if (!windows && relative !== "" && (!cacheSlots || !stat.isFile())) stamp.push(stat.ctimeNs);
       let link = "";
       if (stat.isDirectory()) {
         const children = fs.readdirSync(file).sort();
@@ -115,6 +202,15 @@ const scan = function (
         throw new Error("Setup output root is not a directory");
       } else if (stat.isSymbolicLink()) {
         const target = fs.readlinkSync(file, { encoding: "buffer" });
+        if (windows && !stagingPath) {
+          const relativeTarget = path.relative(root, fs.realpathSync.native(file));
+          if (
+            relativeTarget === ".." ||
+            relativeTarget.startsWith(".." + path.sep) ||
+            path.isAbsolute(relativeTarget)
+          )
+            throw new Error("Dependency links outside the worktree");
+        }
         if (stagingPath) {
           const value = target.toString("utf8");
           if (path.isAbsolute(value)) {
@@ -128,35 +224,13 @@ const scan = function (
         link = target.toString("base64");
       } else if (!stat.isFile()) {
         throw new Error("Setup output contains a special file");
-      } else if (cacheSlots) {
+      } else if (cacheSlots || windows) {
         // pnpm can add and remove store aliases at any time, changing a file's ctime.
         totalBytes += stat.size;
         if (stat.size > 512n * 1024n ** 2n || totalBytes > 16n * 1024n ** 3n)
           throw new Error("Setup output exceeds content scan limit");
-        const fd = fs.openSync(
-          file,
-          fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
-        );
-        try {
-          if (!sameStat(stat, fs.fstatSync(fd, { bigint: true })))
-            throw new Error("Setup file changed before reading");
-          const content = crypto.createHash("sha256");
-          let remaining = Number(stat.size);
-          while (remaining > 0) {
-            const read = fs.readSync(fd, buffer, 0, Math.min(remaining, buffer.length), null);
-            if (read === 0) throw new Error("Setup file was truncated while reading");
-            content.update(buffer.subarray(0, read));
-            remaining -= read;
-          }
-          if (
-            !sameStat(stat, fs.fstatSync(fd, { bigint: true })) ||
-            !sameStat(stat, fs.lstatSync(file, { bigint: true }))
-          )
-            throw new Error("Setup file changed while reading");
-          link = content.digest("hex");
-        } finally {
-          fs.closeSync(fd);
-        }
+        if (windows) link = hashWindowsFile(file, stat);
+        else link = hashFile(file, stat);
       }
       tree.update(JSON.stringify([relative, stamp.join("/"), link]));
       count++;
@@ -182,12 +256,19 @@ const scanSetupTrees = (
       `
         const { parentPort, workerData } = require("node:worker_threads");
         const scan = (${scan.toString()});
-        parentPort.postMessage(scan(workerData.root, workerData.modules, require("node:fs"), require("node:path"), require("node:crypto"), workerData.stagingPath, workerData.cacheNames, workerData.cacheSlots));
+        parentPort.postMessage(scan(workerData.root, workerData.modules, require("node:fs"), require("node:path"), require("node:crypto"), workerData.stagingPath, workerData.cacheNames, workerData.cacheSlots, workerData.windows));
       `,
       {
         eval: true,
         execArgv: [],
-        workerData: { root, modules, stagingPath, cacheNames, cacheSlots },
+        workerData: {
+          root,
+          modules,
+          stagingPath,
+          cacheNames,
+          cacheSlots,
+          windows: windowsSetupHost,
+        },
       },
     );
     const abort = () => {
@@ -230,6 +311,9 @@ interface SetupProof {
   readonly marker: string;
   readonly modules: Record<string, string>;
   readonly cacheSlots?: CacheSlots;
+  // Setup installed these files in place, so no sealed copy vouches for them. The receipt only
+  // lets a retry tell untouched output from changed files.
+  readonly inPlace?: true;
   readonly links: ReadonlyArray<{ readonly name: string; readonly stamp: string }>;
 }
 
@@ -246,11 +330,15 @@ export const readSetupProof = async (admin: string, projectRoot: string, checkou
     stat.ino === 0n ||
     stat.nlink !== 1n ||
     stat.size > maxProofBytes ||
-    (stat.mode & 0o077n) !== 0n ||
-    stat.uid !== (await NodeFSP.lstat(admin, { bigint: true })).uid
+    (!windowsSetupHost &&
+      ((stat.mode & 0o077n) !== 0n ||
+        stat.uid !== (await NodeFSP.lstat(admin, { bigint: true })).uid))
   )
     throw new Error("Unrecognized setup proof");
-  const handle = await NodeFSP.open(file, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+  const handle = await NodeFSP.open(
+    file,
+    NodeFS.constants.O_RDONLY | (NodeFS.constants.O_NOFOLLOW ?? 0),
+  );
   let proof: SetupProof;
   try {
     const buffer = Buffer.alloc(Number(stat.size) + 1);
@@ -271,6 +359,7 @@ export const readSetupProof = async (admin: string, projectRoot: string, checkou
     !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(proof.head) ||
     typeof proof.marker !== "string" ||
     !markerPattern.test(proof.marker) ||
+    (proof.inPlace !== undefined && proof.inPlace !== true) ||
     !proof.modules ||
     typeof proof.modules !== "object" ||
     !Object.hasOwn(proof.modules, "node_modules") ||
@@ -371,7 +460,7 @@ export const inspectSetupProof = async (
   status: string,
   signal: AbortSignal,
 ): Promise<readonly string[] | null> => {
-  if (!hasSetupOnlyStatus(proof, status)) return null;
+  if (proof.inPlace || !hasSetupOnlyStatus(proof, status)) return null;
   const markerDir = NodePath.join(cwd, ".t3");
   if (!(await NodeFSP.lstat(markerDir)).isDirectory()) return null;
   const markers = await NodeFSP.readdir(markerDir);

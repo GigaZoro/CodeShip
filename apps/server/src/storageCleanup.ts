@@ -66,6 +66,7 @@ import { observeWorkspaceStarts, withWorkspaceLease } from "./workspace/workspac
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { isNetworkPath } from "@t3tools/shared/path";
+import { setupStageName } from "../../../scripts/lib/worktree-setup-proof.ts";
 
 const decodeCleanupThread = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJson),
@@ -391,6 +392,14 @@ const make = Effect.gen(function* () {
           dirents?.map((entry) => entry.name) ??
           (yield* fs.readDirectory(target).pipe(Effect.timeout("30 seconds")));
         const markers = inspectRepositories ? names.map((name) => name.toLowerCase()) : [];
+        if (
+          isWindows &&
+          inspectRepositories &&
+          !measureBytes &&
+          pathKey(target) === pathKey(path.join(root, ".t3")) &&
+          markers.includes(setupStageName)
+        )
+          return { bytes: null, reason: "worktree has a preserved setup stage" };
         if (
           inspectRepositories &&
           !repositories.has(pathKey(target)) &&
