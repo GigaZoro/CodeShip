@@ -306,6 +306,7 @@
 ## 2026-11-21 — A task delegated to a machine that was away finishes sooner
 
 - When a linked machine running a delegated task stops answering (asleep, shut down, or restarting for an update), CodeShip now waits at most 30 seconds after a failed try before trying again, instead of backing off to 5 minutes. A machine that comes back hands over the task's result that much sooner. Moving the finished task's chat there off that machine's active list is retried for up to 20 minutes after the result arrives.
+- A task that could not start on a linked machine now says why it could not start, also when recording that fails at first. Before, it then said only that its chat there was not found.
 
 ## 2026-11-21 — Worktree helpers in another repository on a linked machine start from its default branch
 

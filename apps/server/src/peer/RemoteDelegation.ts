@@ -28,6 +28,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -468,6 +469,9 @@ const make = Effect.gen(function* () {
               }),
           ),
         );
+      // A failure here that could not be recorded is retried before the follower starts, so the
+      // task does not stay open and no other result is recorded ahead of it.
+      const unrecorded = yield* Ref.make<Effect.Effect<void, unknown>>(Effect.void);
       // The first committed command alone sends the launch. Overlapping calls can both finish preflight.
       return yield* Effect.acquireUseRelease(
         record,
@@ -563,17 +567,17 @@ const make = Effect.gen(function* () {
                   Effect.catch((stopError) =>
                     Effect.succeed(stopError.code === "thread_not_found"),
                   ),
-                  Effect.flatMap((nothingThere) =>
-                    nothingThere
-                      ? complete(
-                          scope.thread.threadId,
-                          taskId,
-                          "failed",
-                          `The task could not be started in ${remoteChild.label}: ${error.message}`,
-                          "stopped",
-                        )
-                      : Effect.void,
-                  ),
+                  Effect.flatMap((nothingThere) => {
+                    if (!nothingThere) return Effect.void;
+                    const failHere = complete(
+                      scope.thread.threadId,
+                      taskId,
+                      "failed",
+                      `The task could not be started in ${remoteChild.label}: ${error.message}`,
+                      "stopped",
+                    );
+                    return failHere.pipe(Effect.tapError(() => Ref.set(unrecorded, failHere)));
+                  }),
                   Effect.ignoreCause({ log: true }),
                 ),
               ),
@@ -602,7 +606,13 @@ const make = Effect.gen(function* () {
           recorded.replayed
             ? Effect.void
             : // A disconnect can interrupt the first sender after acceptance. Its recorded task still needs its follower.
-              followOne(scope.thread.threadId, taskId).pipe(Effect.forkIn(followers)),
+              Ref.get(unrecorded).pipe(
+                Effect.flatten,
+                Effect.retry(followRetry),
+                Effect.ignoreCause({ log: true }),
+                Effect.andThen(followOne(scope.thread.threadId, taskId)),
+                Effect.forkIn(followers),
+              ),
       );
     },
   );

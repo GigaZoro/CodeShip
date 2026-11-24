@@ -46,7 +46,6 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Schema from "effect/Schema";
 import { McpSchema, McpServer, Toolkit } from "effect/ai";
-import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
@@ -3181,6 +3180,52 @@ it.effect("fails the task when its thread there is gone, or the link here is", (
         taskId: forgotten.taskId,
         status: "failed",
       });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a task that could not start there is failed once that can be recorded here", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const retries = yield* steppedRetries;
+      const a = yield* makeLaptop(database, offers).pipe(
+        Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
+      );
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      // The launch fails there and keeps no thread, and failing the task here fails at first.
+      yield* Ref.set(
+        thread.afterLaunch,
+        Effect.sync(() => b.launches.clear()).pipe(Effect.andThen(Effect.die("launch failed"))),
+      );
+      const sql = Context.get(database, SqlClient.SqlClient);
+      yield* sql.unsafe(
+        "CREATE TRIGGER fail_remote_task_complete BEFORE INSERT ON orchestration_events WHEN NEW.command_id LIKE 'command:remote-task-complete:%' BEGIN SELECT RAISE(ABORT, 'write failed'); END",
+      );
+      const result = yield* a.call("delegate_task", {
+        task: "Run the full suite on the box.",
+        target: {
+          environmentId: box.environmentId,
+          providerInstanceId: instanceId,
+          model: "gpt-5.4",
+        },
+        mode: "async",
+        clientRequestId: "never-started",
+      });
+      expect(result.isError).toBe(true);
+      const [open] = yield* a.projections.getOpenRemoteDelegatedTasks;
+      yield* Queue.take(retries.failed);
+      yield* sql.unsafe("DROP TRIGGER fail_remote_task_complete");
+      yield* Queue.offer(retries.retry, undefined);
+      const failed = yield* taskResult(a, open!.taskId);
+      expect(failed?.status).toBe("failed");
+      expect(failed?.result).toContain("The task could not be started in Box");
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
