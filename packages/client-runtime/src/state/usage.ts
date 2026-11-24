@@ -1,12 +1,15 @@
-import type {
-  EnvironmentId,
-  ServerProvider,
-  UsageModelFilter,
-  UsageSummary,
-  UsageSummaryInput,
+import {
+  AuthSettingsWriteScope,
+  AuthDiagnosticsReadScope,
+  sessionGrantsScope,
+  type EnvironmentId,
+  type ServerConfig,
+  type SessionGrantInput,
+  type UsageModelFilter,
+  type UsageSummaryInput,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import type { AtomRegistry } from "effect/reactivity";
+import { Atom, type AtomRegistry } from "effect/reactivity";
 
 import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
 import type { createEnvironmentPresentationAtoms } from "./presentation.ts";
@@ -15,15 +18,38 @@ import type { createServerEnvironmentAtoms } from "./server.ts";
 
 const isEnvironmentRpcUnavailable = Schema.is(EnvironmentRpcUnavailableError);
 
-export function needsCursorKeychainAccess(
-  summary: UsageSummary | null,
-  providers: readonly ServerProvider[] | null,
-): boolean {
-  return (
-    summary?.sources.some((source) => source.action === "enableCursorKeychain") === true &&
-    providers?.some((provider) => provider.driver === "cursor" && provider.status === "ready") ===
-      true
-  );
+export function cursorUsageAccess(config: Pick<ServerConfig, "providers"> | null) {
+  const cursor =
+    config?.providers.filter((provider) => provider.driver === "cursor" && provider.enabled) ?? [];
+  const history = cursor.some(({ cursorAccountHistory }) => cursorAccountHistory === "reading")
+    ? ("reading" as const)
+    : cursor.some(({ cursorAccountHistory }) => cursorAccountHistory === "keychainOff")
+      ? ("keychainOff" as const)
+      : ("unavailable" as const);
+  return { history };
+}
+
+export function resolveCursorUsageAccess({
+  access,
+  session,
+  isConnected,
+}: {
+  readonly access: ReturnType<typeof cursorUsageAccess>;
+  readonly session: SessionGrantInput | null;
+  readonly isConnected: boolean;
+}) {
+  return {
+    readsCursorAccount:
+      isConnected &&
+      session !== null &&
+      sessionGrantsScope(session, AuthDiagnosticsReadScope) &&
+      access.history === "reading",
+    needsCursorKeychainAccess:
+      isConnected &&
+      session !== null &&
+      sessionGrantsScope(session, AuthSettingsWriteScope) &&
+      access.history === "keychainOff",
+  };
 }
 
 /**
@@ -31,14 +57,12 @@ export function needsCursorKeychainAccess(
  * history from every machine, so the prompt only adds duplicates there.
  */
 export function cursorKeychainAccessEnvironments<
-  E extends { readonly summary: UsageSummary | null; readonly needsCursorKeychainAccess: boolean },
->(environments: readonly E[]): readonly E[] {
-  const hasCursorAccount = environments.some((environment) =>
-    environment.summary?.sources.some(
-      (source) =>
-        source.fingerprint.provider === "cursor" && source.fingerprint.hostId === "cursor.com",
-    ),
-  );
+  E extends {
+    readonly needsCursorKeychainAccess: boolean;
+    readonly readsCursorAccount?: boolean;
+  },
+>(environments: readonly E[], allEnvironments = environments): readonly E[] {
+  const hasCursorAccount = allEnvironments.some((environment) => environment.readsCursorAccount);
   return hasCursorAccount
     ? []
     : environments.filter((environment) => environment.needsCursorKeychainAccess);
@@ -114,6 +138,7 @@ export async function refreshUsage({
       };
       const unsubscribe = registry.subscribe(presentation, abortWhenDisconnected);
       abortWhenDisconnected();
+      changeUsageRefreshCount(registry, environmentId, 1);
       try {
         const ratesResult = await runAtomCommand(
           registry,
@@ -132,7 +157,30 @@ export async function refreshUsage({
         });
       } finally {
         unsubscribe();
+        changeUsageRefreshCount(registry, environmentId, -1);
       }
     }),
   );
+}
+
+const usageRefreshCountsAtom = Atom.make<ReadonlyMap<EnvironmentId, number>>(new Map()).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("usage-manual-refresh-counts"),
+);
+
+export const usageRefreshingEnvironmentIdsAtom = usageRefreshCountsAtom.pipe(
+  Atom.map((counts) => new Set(counts.keys())),
+  Atom.withLabel("usage-refreshing-environments"),
+);
+
+function changeUsageRefreshCount(
+  registry: AtomRegistry.AtomRegistry,
+  environmentId: EnvironmentId,
+  delta: 1 | -1,
+) {
+  const counts = new Map(registry.get(usageRefreshCountsAtom));
+  const next = (counts.get(environmentId) ?? 0) + delta;
+  if (next > 0) counts.set(environmentId, next);
+  else counts.delete(environmentId);
+  registry.set(usageRefreshCountsAtom, counts);
 }

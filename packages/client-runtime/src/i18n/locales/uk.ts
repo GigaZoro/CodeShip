@@ -1262,6 +1262,8 @@ const catalog: MessageCatalog = {
   "{duration} lost": "втрачено {duration}",
   "{enabled} of {total} on": "увімкнено {enabled} із {total}",
   "{environment} · {provider}": "{environment} · {provider}",
+  "{environment} · {provider}: {message}": "{environment} · {provider}: {message}",
+  "{environment} ({window})": "{environment} ({window})",
   "{environment} (Local)": "{environment} (локальне)",
   "{environment} {preference}": "{environment} {preference}",
   "{environment} can now be reached over SSH {alias}.":
@@ -1279,6 +1281,8 @@ const catalog: MessageCatalog = {
     "{environment} тепер має ще один спосіб підключення.",
   "{environment} runs an older server version and is excluded from totals.":
     "{environment} працює на старішій версії сервера, тому не враховується в підсумках.",
+  "{environment} runs an older server version. Showing its last compatible values.":
+    "У середовищі {environment} працює старіша версія сервера. Показано останні сумісні дані.",
   "{environment} server": "Сервер {environment}",
   "{environment}: ": "{environment}: ",
   "{environment}: {count} more results.": "{environment}: ще {count} результатів.",
@@ -1299,7 +1303,6 @@ const catalog: MessageCatalog = {
     "{error} Збережіть його або відкрийте в іншому застосунку.",
   "{error} Save it to open in another app.":
     "{error} Збережіть його, щоб відкрити в іншому застосунку.",
-  "{error} Showing saved totals.": "{error} Показано збережені підсумки.",
   "{error} Some pull requests may be missing or out of date.":
     "{error} Деякі пул-реквести можуть бути відсутніми або застарілими.",
   "{error} The project is in {path}.": "{error} Проєкт розташований у {path}.",
@@ -3251,6 +3254,8 @@ const catalog: MessageCatalog = {
   "Checked unavailable": "Перевірено, недоступно",
   Checking: "Перевірка",
   "Checking {browser}": "Перевірка {browser}",
+  "Checking access to scheduled task runs on {environment}…":
+    "Перевіряємо доступ до запусків запланованих завдань у середовищі {environment}…",
   "Checking access…": "Перевірка доступу…",
   "Checking Codex.": "Перевірка Codex.",
   "Checking connected environments.": "Перевірка підключених середовищ.",
@@ -3278,6 +3283,8 @@ const catalog: MessageCatalog = {
   "Checking releases…": "Перевірка випусків…",
   "Checking saved environments on this device.":
     "Перевірка збережених середовищ на цьому пристрої.",
+  "Checking scheduled task support on {environment}…":
+    "Перевіряємо підтримку запланованих завдань у середовищі {environment}…",
   "Checking shortcut…": "Перевірка скорочення…",
   "Checking snapshots…": "Перевірка знімків…",
   "Checking stack membership…": "Перевірка належності до стека…",
@@ -4210,6 +4217,8 @@ const catalog: MessageCatalog = {
   "Could not change this browser tab": "Не вдалося змінити цю вкладку браузера",
   "Could not change WSL backend": "Не вдалося змінити бекенд WSL",
   "Could not check {provider}'s MCP servers": "Не вдалося перевірити MCP-сервери {provider}",
+  "Could not check access to scheduled task runs on {environment}.":
+    "Не вдалося перевірити доступ до запусків запланованих завдань у середовищі {environment}.",
   "Could not check desktop capture support. Check your desktop session and try again.":
     "Не вдалося перевірити підтримку захоплення екрана. Перевірте сеанс стільниці та повторіть спробу.",
   "Could not check for updates.": "Не вдалося перевірити оновлення.",
@@ -4541,11 +4550,14 @@ const catalog: MessageCatalog = {
     "Не вдалося отримати вхід MCP на цьому комп’ютері. Повторіть спробу або вставте адресу перенаправлення.",
   "Could not reconnect environment": "Не вдалося перепідключити середовище",
   "Could not refresh guide": "Не вдалося оновити посібник",
+  "Could not refresh limits.": "Не вдалося оновити ліміти.",
   "Could not refresh models": "Не вдалося оновити моделі",
   "Could not refresh plugins": "Не вдалося оновити плагіни",
   "Could not refresh these environments: {names}": "Не вдалося оновити ці середовища: {names}",
   "Could not refresh this chat's analysis, so it may be out of date: {error}":
     "Не вдалося оновити аналіз цього чату, тож він може бути застарілим: {error}",
+  "Could not refresh this usage source. Showing its last values.":
+    "Не вдалося оновити це джерело даних про використання. Показано останні збережені значення.",
   "Could not regenerate title": "Не вдалося перегенерувати назву",
   "Could not register the capture shortcut.": "Не вдалося зареєструвати скорочення захоплення.",
   "Could not release the account": "Не вдалося розблокувати обліковий запис",
@@ -5249,7 +5261,6 @@ const catalog: MessageCatalog = {
   Disconnect: "Відключити",
   "Disconnect agent session": "Від’єднати сесію агента",
   "Disconnect server": "Відключити сервер",
-  "Disconnected · showing saved usage": "Відключено · показано збережене використання",
   "Disconnected locally, but T3 Connect did not confirm it removed this environment":
     "Відключено локально, але T3 Connect не підтвердив видалення цього середовища",
   "Discovering sign-in methods…": "Пошук способів входу…",
@@ -6841,6 +6852,8 @@ const catalog: MessageCatalog = {
   "It’s now active.": "Тепер вона активна.",
   "It’s now your dark theme.": "Тепер це ваша темна тема.",
   "It’s now your light theme.": "Тепер це ваша світла тема.",
+  "Its access changed. Refresh to read its usage again.":
+    "Його доступ змінився. Оновіть, щоб знову зчитати дані про використання.",
   "Its chats move out of the folder. Scheduled tasks in this group lose their group.":
     "Її чати вийдуть із папки. Заплановані завдання цієї групи втратять групу.",
   "Its cookies and logins are deleted. Desktop tabs already open in this profile stay open until you close them; server browser tabs close now.":
@@ -6850,6 +6863,7 @@ const catalog: MessageCatalog = {
   "Its dark palette was added.": "Додано її темну палітру.",
   "its database has changes {version} does not support yet; stay on {from} until {channel} has them":
     "його база даних має зміни, які {version} ще не підтримує; залишайтеся на {from}, доки вони не з’являться в {channel}",
+  "Its latest figures are for {window}.": "Його останні дані охоплюють період {window}.",
   "Its light palette was added.": "Додано її світлу палітру.",
   "Its live-run limit was reached: earlier runs were still working.":
     "Досягнуто ліміту активних запусків: попередні запуски ще працювали.",
@@ -7933,6 +7947,7 @@ const catalog: MessageCatalog = {
   "no cookies": "без cookie",
   "No cookies found": "Cookie не знайдено",
   "No cookies were imported for {environment}.": "Для {environment} не імпортовано жодного cookie.",
+  "No cost breakdown available": "Розподіл витрат недоступний",
   "No custom options. The composer uses the provider's default options.":
     "Власних опцій немає. Поле повідомлення використовує типові опції провайдера.",
   "No custom prices or mappings. Add a row to set one.":
@@ -8060,6 +8075,7 @@ const catalog: MessageCatalog = {
   "No prefix": "Без префікса",
   "No preview for this file": "Для цього файлу немає попереднього перегляду",
   "No preview yet": "Попереднього перегляду ще немає",
+  "No priced usage": "Немає використання з відомою вартістю",
   "No process resource samples found for this window.":
     "Для цього проміжку вибірок ресурсів процесів не знайдено.",
   "No project": "Немає проєкту",
@@ -8171,9 +8187,11 @@ const catalog: MessageCatalog = {
   "No threads yet": "Чатів ще немає",
   "No time counted": "Час не враховано",
   "No time recorded yet.": "Час ще не записано.",
+  "No token breakdown available": "Розподіл токенів недоступний",
   "No token saved; the server uses {envVar} or the {cli} login.":
     "Токен не збережено; сервер використовує {envVar} або вхід {cli}.",
   "No token saved.": "Токен не збережено.",
+  "No tokens recorded": "Токенів не зафіксовано",
   "No transcript yet.": "Запису ще немає.",
   "No video received from the device. Reconnect to try again.":
     "Від пристрою не надійшло відео. Перепідключіться й спробуйте ще раз.",
@@ -9140,6 +9158,7 @@ const catalog: MessageCatalog = {
   "Previous turn": "Попередній хід",
   "Previous worktree": "Попередній worktree",
   "Previous worktree ({branch})": "Попередній worktree ({branch})",
+  "Priced usage costs $0": "Використання з відомою вартістю коштує 0 доларів США",
   "Prices and mappings apply to all past and future usage on the environments you select.":
     "Ціни та зіставлення застосовуються до всього минулого й майбутнього використання у вибраних середовищах.",
   "Prices not loaded": "Ціни не завантажено",
@@ -10043,7 +10062,6 @@ const catalog: MessageCatalog = {
   "resets in {duration}": "скидання через {duration}",
   "Resets in {duration}": "Скидається через {duration}",
   "Resets in {duration} · {time}": "Оновиться за {duration} · {time}",
-  "Resets momentarily": "Скидається за мить",
   "resets now": "скидається зараз",
   "Resets now": "Скидається зараз",
   "Resident memory": "Резидентна пам’ять",
@@ -11159,6 +11177,8 @@ const catalog: MessageCatalog = {
   "Showing diagnostics for": "Показано діагностику для",
   "Showing latest {count} commits": "Показано останні коміти: {count}",
   "Showing previous monitoring results.": "Показано попередні результати моніторингу.",
+  "Showing previous usage for {environments} · {period}":
+    "Попередні дані про використання для {environments} · {period}",
   "Showing tasks for": "Показано завдання для",
   "Showing the first {count} files.": "Показано перші {count} файлів.",
   "Showing the first 1,024 columns. Source and Save retain every column.":
@@ -12789,6 +12809,8 @@ const catalog: MessageCatalog = {
     "Цей клієнт не підтримується цим сервером. Оновіть застосунок або скористайтеся сумісним випуском, щоб підключитися до {label}.",
   "This client is older than the server on {environment}; its usage is excluded from totals.":
     "Цей клієнт старіший за сервер на {environment}; його використання не враховується в підсумках.",
+  "This client is older than the server on {environment}. Showing its last compatible values.":
+    "Цей клієнт старіший за сервер у середовищі {environment}. Показано останні сумісні дані.",
   "This client requires a newer server. Update T3.CodeShip on {label} to connect.":
     "Цей клієнт потребує новішого сервера. Оновіть T3.CodeShip на {label}, щоб підключитися.",
   "This command is too long.": "Ця команда задовга.",
@@ -12870,6 +12892,8 @@ const catalog: MessageCatalog = {
     "Це підключення не має дозволу змінювати налаштування на {environment}.",
   "This connection lacks permission to change these settings.":
     "Це з’єднання не має дозволу змінювати ці налаштування.",
+  "This connection lacks permission to read scheduled task runs on {environment}.":
+    "Це з’єднання не має дозволу на перегляд запусків запланованих завдань у середовищі {environment}.",
   "This connection needs permission to view and manage T3 Connect settings.":
     "Цьому з’єднанню потрібен дозвіл на перегляд і керування налаштуваннями T3 Connect.",
   "This connection needs permission to write source control and add projects.":
@@ -13516,8 +13540,6 @@ const catalog: MessageCatalog = {
     "Сумарна резидентна пам’ять живих дочірніх процесів поточного процесу сервера. Оболонка застосунку для комп’ютера та інші батьківські процеси не враховуються.",
   "Total time": "Загальний час",
   Totals: "Підсумки",
-  "Totals are partial while selected environments scan.":
-    "Підсумки неповні, поки вибрані середовища скануються.",
   "Totals include all changes.": "Підсумки враховують усі зміни.",
   "Totals leave out {count} environments": "Підсумки не враховують середовища: {count}",
   "Totals leave out {environment}": "Підсумки не враховують {environment}",
@@ -13887,6 +13909,7 @@ const catalog: MessageCatalog = {
   "Update ready to download": "Оновлення готове до завантаження",
   "Update release notes": "Примітки до випуску оновлення",
   "Update required": "Потрібне оновлення",
+  "Update required.": "Потрібне оновлення.",
   "Update server to map models": "Оновіть сервер, щоб зіставляти моделі",
   "Update T3.CodeShip on {environment} to manage its secret providers.":
     "Оновіть T3.CodeShip на {environment}, щоб керувати його провайдерами секретів.",
@@ -13983,6 +14006,7 @@ const catalog: MessageCatalog = {
   "Updating agent access…": "Оновлення доступу агентів…",
   "Updating capture settings…": "Оновлення налаштувань захоплення…",
   "Updating device hub…": "Оновлення центру пристроїв…",
+  "Updating limits…": "Оновлення лімітів…",
   "updating providers": "оновлення провайдерів",
   "Updating pull requests": "Оновлення пул-реквестів",
   "Updating queued message": "Оновлення повідомлення в черзі",

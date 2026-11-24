@@ -3,6 +3,7 @@ import type { AgentOptions, SDKModel } from "@cursor/sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
+  DEFAULT_SERVER_SETTINGS,
   MessageId,
   NodeId,
   ProjectId,
@@ -17,6 +18,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { vi } from "vite-plus/test";
@@ -30,6 +32,7 @@ import {
 } from "@t3tools/provider-core/server/handoffBudget";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { CursorDriver } from "./driver.ts";
 import * as CursorAgentSdk from "./CursorAgentSdk.ts";
 import * as CursorSdk from "./CursorSdk.ts";
@@ -71,6 +74,94 @@ const layerTest = TestProviderHost.layer({ runBackgroundWork: false }).pipe(
 );
 
 it.layer(layerTest)("CursorDriver", (it) => {
+  it.effect(
+    "publishes only verified history access and withdraws it when the endpoint rejects the credential",
+    () =>
+      Effect.gen(function* () {
+        const settings = yield* TestProviderHost.TestProviderHostSettings;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped();
+        const token = "header.eyJzdWIiOiJjdXJzb3J8Zml4dHVyZSJ9.signature";
+        yield* fs.makeDirectory(path.join(directory, "cursor"));
+        yield* fs.makeDirectory(path.join(directory, ".cursor"));
+        yield* fs.writeFileString(
+          path.join(directory, "cursor", "auth.json"),
+          JSON.stringify({ accessToken: token }),
+        );
+        for (const [platform, environment, keychainEnabled, expected] of [
+          ["darwin", { HOME: directory }, false, "keychainOff"],
+          ["darwin", { HOME: directory }, true, "reading"],
+          ["darwin", { HOME: path.join(directory, "missing") }, true, "unavailable"],
+          ["linux", { XDG_CONFIG_HOME: directory }, false, "reading"],
+          ["linux", { XDG_CONFIG_HOME: path.join(directory, "missing") }, false, "unavailable"],
+          ["darwin", { AGENT_CLI_CREDENTIAL_STORE: "memory" }, false, "unavailable"],
+          [
+            "linux",
+            { CURSOR_AUTH_TOKEN: "test-token", XDG_CONFIG_HOME: directory },
+            false,
+            "unavailable",
+          ],
+        ] as const) {
+          yield* settings.set({
+            ...DEFAULT_SERVER_SETTINGS,
+            cursorKeychainUsageEnabled: keychainEnabled,
+          });
+          let keychainToken: string | null = null;
+          let status = 200;
+          let requests = 0;
+          let keychainReads = 0;
+          const history = HttpClient.make((req) => {
+            expect(req.url).toBe("https://cursor.com/api/dashboard/get-filtered-usage-events");
+            requests++;
+            return Effect.succeed(
+              HttpClientResponse.fromWeb(
+                req,
+                Response.json({ totalUsageEventsCount: 0 }, { status }),
+              ),
+            );
+          });
+          const instance = yield* CursorDriver.create({
+            instanceId: ProviderInstanceId.make("cursor-history"),
+            displayName: "Cursor",
+            enabled: true,
+            environment: [],
+            config: CursorDriver.defaultConfig(),
+          }).pipe(
+            Effect.provideService(HostProcess.Platform, platform),
+            Effect.provideService(HostProcess.Environment, environment),
+            Effect.provideService(HttpClient.HttpClient, history),
+            Effect.provideService(CursorKeychain.CursorKeychain, {
+              accessToken: Effect.sync(() => {
+                keychainReads++;
+                return keychainToken;
+              }),
+            }),
+          );
+          expect((yield* instance.snapshot.getSnapshot).cursorAccountHistory).toBe("unavailable");
+          expect(requests).toBe(0);
+          if (keychainEnabled) {
+            expect((yield* instance.snapshot.refresh).cursorAccountHistory).toBe("unavailable");
+            expect(requests).toBe(0);
+            keychainToken = token;
+          }
+          expect((yield* instance.snapshot.refresh).cursorAccountHistory).toBe(expected);
+          if (expected === "reading") {
+            for (const code of [401, 403, 200]) {
+              status = code;
+              yield* instance.snapshot.refresh;
+              expect((yield* instance.snapshot.getSnapshot).cursorAccountHistory).toBe(
+                code === 200 ? "reading" : "unavailable",
+              );
+            }
+            expect(requests).toBe(4);
+          } else {
+            expect(requests).toBe(0);
+          }
+          if (!keychainEnabled) expect(keychainReads).toBe(0);
+        }
+      }),
+  );
   it.effect(
     "persists browser credentials, uses them for chat, and closes the SDK session on logout",
     () =>

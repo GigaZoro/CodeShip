@@ -159,13 +159,16 @@ export interface DraftState extends PromptFileDraft {
   readonly savedFilters: ReadonlyArray<WebhookFilterDraft>;
 }
 
-/** The target cannot store a check this draft carries, so saving there would silently drop it. */
+/**
+ * The target cannot store a check this draft carries, so saving there would silently drop it.
+ * An unknown target (`null`: its config has not arrived) is not an older one, so it gets no verdict.
+ */
 export function runConditionLostOnTarget(input: {
-  readonly targetSupportsRunConditions: boolean;
+  readonly targetSupportsRunConditions: boolean | null;
   readonly draft: Pick<DraftState, "scheduleMode" | "runCondition">;
 }): boolean {
   return (
-    !input.targetSupportsRunConditions &&
+    input.targetSupportsRunConditions === false &&
     input.draft.scheduleMode !== "webhook" &&
     input.draft.runCondition.command.trim() !== ""
   );

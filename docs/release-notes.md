@@ -1,3 +1,10 @@
+## 2026-11-24 — Usage stays visible while it updates
+
+- Usage keeps the last complete totals while a new period or filter loads. Background refreshes leave current figures at full opacity.
+- Usage periods advance automatically. Limit countdowns and pace marks update on the Usage screen and sidebar, and account bars keep their order across resets.
+- When an environment's scan fails, Usage keeps the figures every selected environment last shared and names their exact time range, on web and mobile. An environment that loses access never brings its old figures back, and a failed scan's notice names the period it was for.
+- A Mac with a saved Cursor login but no Cursor app no longer counts as reading the Cursor account, so other machines keep their **Enable Cursor usage** prompt. On mobile, an account's details count a reset credit's expiry down each minute.
+
 ## 2026-11-24 — Commands wait for a saturated CPU
 
 - `t3_command_run` now also holds a new command while the machine's CPUs are saturated (busy at or over 0.95 per core), as it already does when memory is short. Before, 18 commands, mostly test suites and pushes, could start together on a 12-core machine, run many times slower and fail their guarded timeouts. A held command waits in the same queue, `task_status` says it is waiting for CPU, its time limit counts from when it starts, and it is never refused. When none of this server's commands is running, the first queued command starts whatever the reading, so a machine loaded by other programs still runs commands.

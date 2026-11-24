@@ -1,3 +1,4 @@
+import { useUsageDocumentVisible, useUsageNow } from "../../hooks/useUsageNow";
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
@@ -23,8 +24,20 @@ import {
 import {
   updatingProvidersLabel,
   usageEnvironmentProgress,
-  usageLoadingState,
+  mergeAnsweredUsage,
+  refreshingUsageProviders,
+  usageWindowKey,
+  usageSelectionKey,
+  usageProgress,
 } from "@t3tools/client-runtime/state/usage-progress";
+import {
+  formatUsageSourceNotices,
+  retainedUsageLabel,
+  usageNotices,
+  type UsageFigures,
+  type UsageProviderRow,
+  type UsageViewEnvironment,
+} from "@t3tools/client-runtime/state/usage-view";
 
 import {
   isCompatibleUsageContractVersion,
@@ -40,7 +53,6 @@ import { usePrimarySettings } from "../../hooks/useSettings";
 import { resolveHour12 } from "../../timestampFormat";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { environmentPresentations } from "../../state/presentation";
-import { supportsScheduledTaskGroups } from "../../state/scheduledTaskStats";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "../../state/server";
 import { isCommandPaletteOpen } from "../../commandPaletteBus";
 import { isModelPickerOpen } from "../../modelPickerVisibility";
@@ -55,10 +67,9 @@ import {
   formatDayShort,
   formatPercent,
   formatTokens,
-  formatUsageContractMismatch,
   formatUsd,
   makeWindow,
-  usageSourceMessages,
+  usageWindowLabel,
 } from "@t3tools/shared/usageFormat";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Button, InlineButton } from "../ui/button";
@@ -93,7 +104,9 @@ import { UsageProviderChart } from "./UsageProviderChart";
 import {
   refreshScheduledTaskGroupUsage,
   UsageScheduledTaskGroups,
+  useScheduledTaskStatsAccess,
 } from "./UsageScheduledTaskGroups";
+import { UsageRetryButton } from "./UsageRetryButton";
 import { SpeedPremium, UsageModelDialog } from "./UsageModelDialog";
 import { UsageShareBar } from "./UsageShareBar";
 import {
@@ -130,23 +143,11 @@ const providerLabel = (provider: UsageProviderKind) => PROVIDER_PRESENTATION[pro
 
 type UsageBreakdown = "model" | "time";
 
-function usageLoading(
-  showingKept: boolean,
-  selectedEnvironments: Parameters<typeof usageLoadingState>[0],
-  refreshingUsage: boolean,
-  hiddenProviders: ReadonlySet<UsageProviderKind>,
-) {
-  if (showingKept) {
-    return { partial: true, everyProvider: true, providers: new Set<UsageProviderKind>() };
-  }
-  const state = usageLoadingState(selectedEnvironments, refreshingUsage);
-  const providers = new Set([...state.providers].filter((p) => !hiddenProviders.has(p)));
-  return {
-    partial: state.everyProvider || providers.size > 0,
-    everyProvider: state.everyProvider,
-    providers,
-  };
-}
+const EMPTY_USAGE = mergeAnsweredUsage([]);
+const skeletonProvidersAtom = Atom.make<readonly UsageProviderKind[]>([]).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("usage:skeleton-providers"),
+);
 
 /** Keep dialog selection outside UsagePage so opening/closing rerenders only its host. */
 const selectedUsageModelKeyAtom = Atom.make<string | null>(null).pipe(
@@ -159,11 +160,13 @@ function selectUsageModel(key: string | null): void {
 }
 
 function UsageModelDialogHost({
-  models,
+  view,
+  pageRef,
   onSetPrice,
   ...dialogProps
-}: Omit<Parameters<typeof UsageModelDialog>[0], "model" | "onSetPrice" | "onClose"> & {
-  readonly models: MergedUsage["models"];
+}: Pick<Parameters<typeof UsageModelDialog>[0], "metric" | "chartWindow"> & {
+  readonly pageRef: React.RefObject<HTMLElement | null>;
+  readonly view: UsageFigures | null;
   readonly onSetPrice: (model: string) => void;
 }) {
   const selectedKey = useAtomValue(selectedUsageModelKeyAtom);
@@ -172,12 +175,28 @@ function UsageModelDialogHost({
   const model =
     selectedKey === null
       ? undefined
-      : models.find((candidate) => `${candidate.provider}:${candidate.model}` === selectedKey);
-  if (model === undefined) return null;
+      : view?.merged.models.find(
+          (candidate) => `${candidate.provider}:${candidate.model}` === selectedKey,
+        );
+  const lost = selectedKey !== null && model === undefined;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes the shared model selection when the shown figures no longer hold the model
+  useEffect(() => {
+    if (!lost) return;
+    selectUsageModel(null);
+    if (document.activeElement === document.body) {
+      const page = pageRef.current;
+      const nextModel = page?.querySelector<HTMLButtonElement>("[data-usage-model]:enabled");
+      (nextModel ?? page)?.focus();
+    }
+  }, [lost, pageRef]);
+  if (model === undefined || view === null) return null;
   return (
     <UsageModelDialog
       {...dialogProps}
       model={model}
+      environments={view.environments}
+      readOnly={view.kept}
+      status={view.kept ? retainedUsageLabel(view, dialogProps.chartWindow.hour12) : undefined}
       onSetPrice={() => {
         selectUsageModel(null);
         onSetPrice(model.model);
@@ -188,6 +207,7 @@ function UsageModelDialogHost({
 }
 
 export function UsagePage() {
+  const pageRef = useRef<HTMLElement>(null);
   const [preferences, setPreferences] = useState(readUsagePagePreferences);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
@@ -199,18 +219,9 @@ export function UsagePage() {
     });
     return shortcut ? `${t(option.label)} (${shortcut})` : t(option.label);
   };
-  const [windowSelection, setWindowSelection] = useState(() => ({
-    days: preferences.windowDays,
-    window: makeWindow(
-      preferences.windowDays,
-      undefined,
-      usageResolution(preferences.windowDays, preferences.weekResolution),
-    ),
-  }));
   const metric = preferences.metric;
   const showingLimits = metric === "limits";
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [limitsNow, setLimitsNow] = useState(() => Date.now());
   const [limitsRefreshFailures, setLimitsRefreshFailures] = useState<ReadonlySet<EnvironmentId>>(
     () => new Set(),
   );
@@ -221,28 +232,71 @@ export function UsagePage() {
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const hiddenProviders = new Set(preferences.hiddenProviders);
-  const { days: windowDays, window } = windowSelection;
+  const windowDays = preferences.windowDays;
+  const resolution = usageResolution(windowDays, preferences.weekResolution);
+  const visible = useUsageDocumentVisible();
+  const advanceWindow = visible && !showingLimits;
+  const now = useUsageNow(advanceWindow);
+  const window = makeWindow(windowDays, new Date(now), resolution);
   const chartType = preferences.chartType ?? "area";
   const {
-    merged: answeredUsage,
+    requestedWindow,
+    refreshingEnvironmentIds,
     environments,
     selectedEnvironments,
-    shown,
-    isPartial,
+    usage,
     refresh,
-  } = useUsage(window, selectedEnvironmentIds, hiddenProviders);
-  const merged = shown?.merged ?? answeredUsage;
+  } = useUsage(window, selectedEnvironmentIds, preferences.hiddenProviders, {
+    advanceWindow,
+    enabled: !showingLimits,
+  });
+  const shown = usage.view.kind === "figures" ? usage.view : null;
+  const showingKept = shown?.kept === true;
+  const merged = shown?.merged ?? EMPTY_USAGE;
+  const shownEnvironments: readonly Pick<UsageViewEnvironment, "environmentId" | "label">[] =
+    shown?.environments ?? selectedEnvironments;
   const shownWindow = shown?.window ?? window;
   const shownHourly = shownWindow.resolution === "hour";
   const refreshingUsage = isRefreshing && !showingLimits;
-  const showingKept = shown !== null && shown.window !== window;
+  const rollingRefresh =
+    shown?.settled === true &&
+    !showingKept &&
+    usageWindowKey(shownWindow) !== usageWindowKey(requestedWindow);
+  const progress = usageProgress(selectedEnvironments, {
+    refreshingEnvironmentIds,
+    providerLabel,
+  });
+  const activeProviders = PROVIDER_ORDER.filter((provider) =>
+    shown?.providers.some((row) => row.provider === provider),
+  );
+  const footprint = providersWithUsage(merged.providers);
+  const settledAnswer =
+    shown !== null &&
+    !showingKept &&
+    !selectedEnvironments.some(({ isConnected, isPending }) => isConnected && isPending);
+  const { coverage, sourceMessages } = usageNotices(usage, selectedEnvironments, requestedWindow, {
+    hidden: hiddenProviders,
+    hour12,
+  });
+  const shownHiddenProviders = shown?.hiddenProviders ?? hiddenProviders;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retain the last settled provider footprint across Usage visits
+  useEffect(() => {
+    if (!settledAnswer) return;
+    const previous = appAtomRegistry.get(skeletonProvidersAtom);
+    if (
+      previous.length !== footprint.length ||
+      previous.some((provider, index) => provider !== footprint[index])
+    ) {
+      appAtomRegistry.set(skeletonProvidersAtom, footprint);
+    }
+  }, [footprint, settledAnswer]);
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
   const presentationsWithProviders = useAtomValue(
     environmentPresentations.presentationsWithProvidersAtom,
   );
   const cursorAccessEnvironments = hiddenProviders.has("cursor")
     ? []
-    : cursorKeychainAccessEnvironments(selectedEnvironments);
+    : cursorKeychainAccessEnvironments(selectedEnvironments, environments);
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -250,6 +304,9 @@ export function UsagePage() {
   const canReadDiagnostics = selectedEnvironments.some(
     (environment) => environment.canReadDiagnostics,
   );
+  const statsAccess = useScheduledTaskStatsAccess(selectedEnvironments);
+  // Each request keeps its own permission check, so Refresh only needs one of them to be readable.
+  const canRefreshUsage = canReadDiagnostics || statsAccess.readableIds.length > 0;
 
   const updatePreferences = (patch: Partial<UsagePagePreferences>) => {
     const nextPreferences = { ...preferences, ...patch };
@@ -259,17 +316,9 @@ export function UsagePage() {
   const selectWindow = (days: number) => {
     if (!isUsageWindowDays(days)) return;
     updatePreferences({ windowDays: days });
-    setWindowSelection({
-      days,
-      window: makeWindow(days, undefined, usageResolution(days, preferences.weekResolution)),
-    });
   };
   const selectWeekResolution = (weekResolution: "day" | "hour") => {
     updatePreferences({ weekResolution });
-    setWindowSelection({
-      days: windowDays,
-      window: makeWindow(windowDays, undefined, usageResolution(windowDays, weekResolution)),
-    });
   };
   const chartControls = (
     <div className="flex flex-wrap items-center gap-2">
@@ -300,11 +349,9 @@ export function UsagePage() {
     </div>
   );
   const selectMetric = (nextMetric: UsageMetric) => {
-    if (nextMetric === "limits") setLimitsNow(Date.now());
     updatePreferences({ metric: nextMetric });
   };
   const refreshLimits = (automatic = false, afterPending = false) =>
-    // Settled so the timestamp still advances when a refresh throws.
     settlePromise(() =>
       Promise.all(
         Array.from(presentations, async ([environmentId, presentation]) => {
@@ -328,7 +375,6 @@ export function UsagePage() {
         }),
       ),
     ).then((result) => {
-      setLimitsNow(Date.now());
       if (!AsyncResult.isSuccess(result)) throw Cause.squash(result.cause);
       const outcomes = result.value.filter((outcome) => outcome !== undefined);
       setLimitsRefreshFailures((previous) => {
@@ -380,30 +426,11 @@ export function UsagePage() {
       });
       return;
     }
-    const nextWindow = makeWindow(
-      windowDays,
-      undefined,
-      usageResolution(windowDays, preferences.weekResolution),
-    );
-    if (
-      nextWindow.sinceDay !== window.sinceDay ||
-      nextWindow.untilDay !== window.untilDay ||
-      nextWindow.sinceTime !== window.sinceTime ||
-      nextWindow.untilTime !== window.untilTime
-    ) {
-      setWindowSelection({ days: windowDays, window: nextWindow });
-    }
-    const statsEnvironmentIds = selectedEnvironments
-      .filter(
-        (environment) =>
-          environment.isConnected &&
-          supportsScheduledTaskGroups(presentations.get(environment.environmentId)),
-      )
-      .map((environment) => environment.environmentId);
+    const statsEnvironmentIds = statsAccess.supportedIds;
     refreshingRef.current = true;
     setIsRefreshing(true);
-    void refresh(nextWindow).finally(() => {
-      refreshScheduledTaskGroupUsage(appAtomRegistry, statsEnvironmentIds, nextWindow);
+    void refresh(requestedWindow).finally(() => {
+      refreshScheduledTaskGroupUsage(appAtomRegistry, statsEnvironmentIds, requestedWindow);
       refreshingRef.current = false;
       setIsRefreshing(false);
     });
@@ -438,23 +465,14 @@ export function UsagePage() {
       ? []
       : enumerateHourStarts(shownWindow.sinceTime, shownWindow.untilTime);
   const showChatGptSharing =
-    !hiddenProviders.has("codex") &&
+    !shownHiddenProviders.has("codex") &&
     [...presentationsWithProviders].some(
       ([id, presentation]) =>
-        (selectedEnvironmentIds === null || selectedEnvironmentIds.has(id)) &&
+        shownEnvironments.some((environment) => environment.environmentId === id) &&
         (presentation.serverConfig?.providers ?? []).some(usesChatGptSharing),
     );
 
-  const windowLabel =
-    shownHourly && shownWindow.sinceTime !== undefined && shownWindow.untilTime !== undefined
-      ? t("{from} to {to}", {
-          from: formatDateTimeShort(shownWindow.sinceTime, shownWindow.timeZone, hour12),
-          to: formatDateTimeShort(shownWindow.untilTime, shownWindow.timeZone, hour12),
-        })
-      : t("{from} to {to}", {
-          from: formatDayShort(shownWindow.sinceDay),
-          to: formatDayShort(shownWindow.untilDay),
-        });
+  const windowLabel = usageWindowLabel(shownWindow, hour12);
   const topbarContent = (
     <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 @4xl/usage-header:flex">
       <WorkspaceBreadcrumb ariaLabel={t("Usage breadcrumb")} className="min-w-0">
@@ -469,10 +487,9 @@ export function UsagePage() {
             selectedEnvironmentIds={selectedEnvironmentIds}
             onSelectionChange={setSelectedEnvironmentIds}
             showUsageStatus={!showingLimits}
-            refreshing={refreshingUsage}
-            isPartial={isPartial}
-            duplicateSources={merged.duplicateSources}
-            contractMismatches={merged.contractMismatches}
+            refreshingEnvironmentIds={refreshingEnvironmentIds}
+            duplicateSources={showingKept ? [] : merged.duplicateSources}
+            coverage={coverage}
             onOpenModelPrices={() => setPriceDialog({})}
           />
         </WorkspaceBreadcrumbItem>
@@ -528,7 +545,7 @@ export function UsagePage() {
           onClick={refreshWindow}
           aria-label={showingLimits ? t("Refresh limits") : t("Refresh usage")}
           aria-busy={isRefreshing}
-          disabled={isRefreshing || (!showingLimits && !canReadDiagnostics)}
+          disabled={isRefreshing || (!showingLimits && !canRefreshUsage)}
           size="icon-sm"
           variant="ghost"
         >
@@ -589,7 +606,7 @@ export function UsagePage() {
           onClick={refreshWindow}
           aria-label={showingLimits ? t("Refresh limits") : t("Refresh usage")}
           aria-busy={isRefreshing}
-          disabled={isRefreshing || (!showingLimits && !canReadDiagnostics)}
+          disabled={isRefreshing || (!showingLimits && !canRefreshUsage)}
           size="icon-sm"
           variant="ghost"
         >
@@ -601,6 +618,7 @@ export function UsagePage() {
 
   return (
     <SidebarInset
+      ref={pageRef}
       {...workspaceAreaProps("usage", 1, t("Usage"))}
       role="main"
       className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
@@ -612,6 +630,18 @@ export function UsagePage() {
 
         <ScrollArea className="min-h-0 flex-1">
           <WorkspacePageContainer width="wide">
+            {!showingLimits ? (
+              <>
+                <span role="status" className="sr-only">
+                  {progress.announcement}
+                </span>
+                <UsageGapsNotice
+                  notice={coverage}
+                  retrying={refreshingUsage}
+                  onRetry={refreshWindow}
+                />
+              </>
+            ) : null}
             {selectedEnvironments.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 {environments.length === 0
@@ -650,21 +680,13 @@ export function UsagePage() {
                       )}
                     </AlertDescription>
                     <AlertAction>
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        disabled={isRefreshing}
-                        onClick={refreshWindow}
-                      >
-                        {t("Retry")}
-                      </Button>
+                      <UsageRetryButton pending={isRefreshing} onRetry={refreshWindow} />
                     </AlertAction>
                   </Alert>
                 ) : null}
                 <UsageLimitsSection
                   selectedEnvironmentIds={selectedEnvironmentIds}
                   hiddenProviders={hiddenProviders}
-                  now={limitsNow}
                   cursorPrompt={
                     cursorAccessEnvironments.length > 0 ? (
                       <CursorEnableLimits
@@ -678,44 +700,15 @@ export function UsagePage() {
                   }
                 />
               </>
-            ) : shown === null ? (
-              <UsageSkeleton />
-            ) : !canReadDiagnostics ||
-              selectedEnvironments.every(
-                (environment) => environment.error !== null && environment.summary === null,
-              ) ? (
-              // Nothing to show at all: an empty overview would read as zero spend.
-              <div
-                role="status"
-                className="space-y-2 py-12 text-center text-sm text-muted-foreground"
-              >
-                {selectedEnvironments.map((environment) => (
-                  <p key={environment.environmentId}>
-                    {selectedEnvironments.length > 1
-                      ? t("{environment}: ", { environment: environment.label })
-                      : null}
-                    {environment.error}
-                  </p>
-                ))}
-                {canReadDiagnostics ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={refreshingUsage}
-                    onClick={refreshWindow}
-                  >
-                    {t("Retry")}
-                  </Button>
-                ) : null}
-              </div>
-            ) : (
+            ) : usage.view.kind === "loading" ? (
+              <UsageSkeleton hiddenProviders={hiddenProviders} />
+            ) : shown === null ? null : (
               <>
-                <UsageGapsNotice
-                  environments={selectedEnvironments}
-                  contractMismatches={merged.contractMismatches}
-                  retrying={refreshingUsage}
-                  onRetry={refreshWindow}
-                />
+                {showingKept ? (
+                  <p className="text-xs text-muted-foreground">
+                    {retainedUsageLabel(shown, hour12)}
+                  </p>
+                ) : null}
                 <UsageOverview
                   merged={merged}
                   shownWindow={shownWindow}
@@ -725,11 +718,21 @@ export function UsagePage() {
                   days={days}
                   hours={hours}
                   showingKept={showingKept}
+                  progressLabel={
+                    rollingRefresh && !refreshingUsage
+                      ? null
+                      : (progress.label ?? (showingKept ? t("Updating…") : null))
+                  }
                   metric={metric === "tokens" ? "tokens" : "cost"}
-                  selectedEnvironments={selectedEnvironments}
-                  hiddenProviders={hiddenProviders}
-                  refreshingUsage={refreshingUsage}
-                  cursorAccessEnvironments={cursorAccessEnvironments}
+                  selectedEnvironments={shownEnvironments}
+                  sourceMessages={formatUsageSourceNotices(sourceMessages, providerLabel)}
+                  activeProviders={activeProviders}
+                  providerRows={shown.providers}
+                  refreshingProviders={refreshingUsageProviders(
+                    selectedEnvironments,
+                    shownHiddenProviders,
+                  )}
+                  cursorAccessEnvironments={showingKept ? [] : cursorAccessEnvironments}
                   showChatGptSharing={showChatGptSharing}
                   onCursorEnabled={() => {
                     void refresh();
@@ -741,13 +744,24 @@ export function UsagePage() {
                 />
               </>
             )}
+            {!showingLimits && selectedEnvironments.length > 0 ? (
+              <UsageScheduledTaskGroups
+                selectionKey={usageSelectionKey(
+                  requestedWindow,
+                  selectedEnvironments,
+                  preferences.hiddenProviders,
+                )}
+                period={requestedWindow}
+                environments={selectedEnvironments}
+              />
+            ) : null}
           </WorkspacePageContainer>
         </ScrollArea>
       </div>
       {showingLimits ? null : (
         <UsageModelDialogHost
-          models={merged.models}
-          environments={selectedEnvironments}
+          pageRef={pageRef}
+          view={shown}
           metric={metric === "tokens" ? "tokens" : "cost"}
           chartWindow={{
             chartType,
@@ -782,12 +796,15 @@ function UsageOverview({
   days,
   hours,
   showingKept,
+  progressLabel,
   chartType,
   chartControls,
   metric,
   selectedEnvironments,
-  hiddenProviders,
-  refreshingUsage,
+  sourceMessages,
+  activeProviders,
+  providerRows,
+  refreshingProviders,
   cursorAccessEnvironments,
   showChatGptSharing,
   onCursorEnabled,
@@ -803,10 +820,13 @@ function UsageOverview({
   readonly days: readonly string[];
   readonly hours: readonly string[];
   readonly showingKept: boolean;
+  readonly progressLabel: string | null;
   readonly metric: "tokens" | "cost";
-  readonly selectedEnvironments: readonly EnvironmentUsageStatus[];
-  readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
-  readonly refreshingUsage: boolean;
+  readonly selectedEnvironments: readonly Pick<UsageViewEnvironment, "environmentId" | "label">[];
+  readonly sourceMessages: ReturnType<typeof formatUsageSourceNotices>;
+  readonly activeProviders: readonly UsageProviderKind[];
+  readonly providerRows: readonly UsageProviderRow[];
+  readonly refreshingProviders: ReadonlySet<UsageProviderKind>;
   readonly cursorAccessEnvironments: readonly EnvironmentUsageStatus[];
   readonly showChatGptSharing: boolean;
   readonly onCursorEnabled: () => void;
@@ -815,30 +835,8 @@ function UsageOverview({
   readonly onBreakdownChange: (breakdown: UsageBreakdown) => void;
 }) {
   const shownHourly = shownWindow.resolution === "hour";
-  const loading = usageLoading(showingKept, selectedEnvironments, refreshingUsage, hiddenProviders);
-  // Copy the primitive; JSX reads of loading.partial would merge all derivations into one compiler cache
-  // scope.
-  const loadingPartial = loading.partial === true;
-  const loadingProviders = new Set(
-    PROVIDER_ORDER.filter((provider) => loading.everyProvider || loading.providers.has(provider)),
-  );
-  const providersWithData = new Set(providersWithUsage(merged.providers));
-  // Only loading.providers excludes hidden providers without data. Filter a fresh array so the compiler can
-  // cache independently.
-  const activeProviders = [...PROVIDER_ORDER].filter(
-    (provider) => providersWithData.has(provider) || loading.providers.has(provider),
-  );
-  const chartLoadingProviders = new Set(
-    activeProviders.filter((provider) => loadingProviders.has(provider)),
-  );
-  const sourceMessages = usageSourceMessages(
-    selectedEnvironments.flatMap(
-      (environment) =>
-        environment.summary?.sources.filter(
-          (source) => !hiddenProviders.has(source.fingerprint.provider),
-        ) ?? [],
-    ),
-  );
+  const loadingPartial = showingKept;
+  const loadingProviders = showingKept ? new Set(activeProviders) : refreshingProviders;
   const breakdownPeriods: readonly (DailyTotals | HourlyTotals)[] = (
     shownHourly ? merged.hourly : merged.daily
   ).toReversed();
@@ -867,9 +865,9 @@ function UsageOverview({
 
   return (
     <div aria-busy={loadingPartial} className="flex flex-col gap-6">
-      {sourceMessages.map((message) => (
-        <p key={message} className="mb-4 text-sm text-muted-foreground">
-          {message}
+      {sourceMessages.map(({ key, text }) => (
+        <p key={key} role="status" className="mb-4 text-sm text-muted-foreground">
+          {text}
         </p>
       ))}
       <section className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
@@ -883,8 +881,8 @@ function UsageOverview({
             >
               {metric === "cost" ? formatUsd(merged.costUsd) : formatTokens(merged.totalTokens)}
             </span>
-            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-              <span>
+            <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+              <span className="shrink-0">
                 <span className={figureClass(loadingPartial)}>
                   {tn(merged.sessions, "{count} session", "{count} sessions", {
                     count: formatCount(merged.sessions),
@@ -908,13 +906,14 @@ function UsageOverview({
                   </PopoverPopup>
                 </Popover>
               )}
+              <span className="min-w-0 truncate">{progressLabel}</span>
             </span>
           </div>
 
           {showChatGptSharing ? (
             <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
               <span>{t("ChatGPT shared usage")}</span>
-              <ChatGptUsageButton size="xs" />
+              <ChatGptUsageButton size="xs" disabled={showingKept} />
             </div>
           ) : null}
 
@@ -927,20 +926,25 @@ function UsageOverview({
                   label={row.environment.label}
                   showEnvironment={selectedEnvironments.length > 1}
                   onEnabled={onCursorEnabled}
+                  disabled={showingKept}
                 />
               );
             }
             const provider = row.provider;
-            const totals = merged.providers.find((entry) => entry.provider === provider);
+            const totals = providerRows.find((entry) => entry.provider === provider)?.totals;
             const share = metric === "cost" ? (totals?.costShare ?? 0) : (totals?.tokenShare ?? 0);
             const providerSessions = totals?.sessions ?? 0;
             const sessionLabel = tn(providerSessions, "{count} session", "{count} sessions", {
               count: formatCount(providerSessions),
             });
             const providerLoading = loadingProviders.has(provider);
-            const awaitingData = providerLoading && !providersWithData.has(provider);
             return (
-              <div key={provider} className="flex flex-col gap-1">
+              <div
+                key={provider}
+                role="group"
+                aria-label={PROVIDER_PRESENTATION[provider].label}
+                className="flex flex-col gap-1"
+              >
                 <div className="flex items-baseline justify-between gap-4">
                   <span className="flex min-w-0 items-center gap-2 text-sm text-foreground">
                     <span
@@ -957,10 +961,9 @@ function UsageOverview({
                         className={cn(
                           "shrink-0 whitespace-nowrap text-2xs text-muted-foreground tabular-nums",
                           figureClass(providerLoading),
-                          awaitingData && "invisible",
                         )}
                       >
-                        {sessionLabel}
+                        {!showingKept && providerLoading ? t("Updating…") : sessionLabel}
                       </span>
                     </span>
                   </span>
@@ -970,29 +973,25 @@ function UsageOverview({
                       figureClass(providerLoading),
                     )}
                   >
-                    {awaitingData
-                      ? "-"
+                    {totals == null
+                      ? "–"
                       : metric === "cost"
-                        ? formatUsd(totals?.costUsd ?? 0)
-                        : formatTokens(totals?.totalTokens ?? 0)}
+                        ? formatUsd(totals.costUsd)
+                        : formatTokens(totals.totalTokens)}
                   </span>
                 </div>
-                <span
-                  className={cn(
-                    "text-xs text-muted-foreground",
-                    figureClass(providerLoading),
-                    awaitingData && "invisible",
-                  )}
-                >
-                  {metric === "cost"
-                    ? t("{percent} of cost · {tokens} tokens", {
-                        percent: formatPercent(share),
-                        tokens: formatTokens(totals?.totalTokens ?? 0),
-                      })
-                    : t("{percent} of tokens · {cost}", {
-                        percent: formatPercent(share),
-                        cost: formatUsd(totals?.costUsd ?? 0),
-                      })}
+                <span className={cn("text-xs text-muted-foreground", figureClass(providerLoading))}>
+                  {totals == null
+                    ? "–"
+                    : metric === "cost"
+                      ? t("{percent} of cost · {tokens} tokens", {
+                          percent: formatPercent(share),
+                          tokens: formatTokens(totals?.totalTokens ?? 0),
+                        })
+                      : t("{percent} of tokens · {cost}", {
+                          percent: formatPercent(share),
+                          cost: formatUsd(totals?.costUsd ?? 0),
+                        })}
                 </span>
               </div>
             );
@@ -1015,7 +1014,7 @@ function UsageOverview({
           <UsageProviderChart
             chartType={chartType}
             providers={activeProviders}
-            loadingProviders={chartLoadingProviders}
+            loadingProviders={loadingProviders}
             days={days}
             daily={merged.daily}
             hours={hours}
@@ -1060,40 +1059,43 @@ function UsageOverview({
         </div>
       </section>
 
-      {merged.totalTokens > 0 ? (
-        <section
-          className={cn("grid gap-x-12 gap-y-8 lg:grid-cols-2", figureClass(loadingPartial))}
-        >
-          {metric === "tokens" ? (
+      <section className={cn("grid gap-x-12 gap-y-8 lg:grid-cols-2", figureClass(loadingPartial))}>
+        {metric === "tokens" ? (
+          <UsageShareBar
+            label={t("Tokens by type")}
+            segments={tokenTypeSegments(merged)}
+            format={formatTokens}
+            recordedUsage={merged}
+            metric="tokens"
+          />
+        ) : (
+          <>
             <UsageShareBar
-              label={t("Tokens by type")}
-              segments={tokenTypeSegments(merged)}
-              format={formatTokens}
+              label={t("Cost by type")}
+              segments={costTypeSegments(merged.categoryCost)}
+              format={formatUsd}
+              recordedUsage={merged}
+              metric="cost"
             />
-          ) : (
-            <>
+            {merged.speedCost.fast + merged.speedCost.ultrafast > 0 ? (
               <UsageShareBar
-                label={t("Cost by type")}
-                segments={costTypeSegments(merged.categoryCost)}
+                label={t("Cost by speed")}
+                segments={speedCostSegments(merged.speedCost)}
                 format={formatUsd}
+                recordedUsage={merged}
+                metric="cost"
+                aside={<SpeedPremium premiumUsd={merged.speedCost.premium} />}
               />
-              {merged.speedCost.fast + merged.speedCost.ultrafast > 0 ? (
-                <UsageShareBar
-                  label={t("Cost by speed")}
-                  segments={speedCostSegments(merged.speedCost)}
-                  format={formatUsd}
-                  aside={<SpeedPremium premiumUsd={merged.speedCost.premium} />}
-                />
-              ) : null}
-            </>
-          )}
-        </section>
-      ) : null}
+            ) : null}
+          </>
+        )}
+      </section>
 
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-sm font-medium text-foreground">{t("Breakdown")}</h2>
           <ToggleGroup
+            disabled={showingKept}
             aria-label={t("Usage breakdown")}
             variant="segmented"
             value={[breakdown]}
@@ -1149,6 +1151,8 @@ function UsageOverview({
                       <td className="py-2.5 text-left whitespace-normal">
                         <button
                           type="button"
+                          disabled={showingKept}
+                          data-usage-model
                           onClick={() => onSelectModel(key)}
                           className={cn(
                             // The ring sits on the overlay that spans the row, so focus shows on the whole row.
@@ -1277,8 +1281,6 @@ function UsageOverview({
           </div>
         )}
       </section>
-
-      <UsageScheduledTaskGroups period={shownWindow} environments={selectedEnvironments} />
     </div>
   );
 }
@@ -1291,12 +1293,14 @@ function CursorEnableButton({
   onEnabled,
   tooltip,
   buttonText,
+  disabled = false,
 }: {
   readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly onEnabled: () => void;
   readonly tooltip: boolean;
   readonly buttonText?: string;
+  readonly disabled?: boolean;
 }) {
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
     label: "enable Cursor account usage",
@@ -1313,7 +1317,7 @@ function CursorEnableButton({
   };
   const button = tooltip ? (
     <InlineButton
-      disabled={pending}
+      disabled={pending || disabled}
       aria-busy={pending}
       aria-label={t("Enable Cursor usage from {environment}", { environment: label })}
       onClick={() => void enable()}
@@ -1324,7 +1328,7 @@ function CursorEnableButton({
     <Button
       size="sm"
       variant="outline"
-      disabled={pending}
+      disabled={pending || disabled}
       aria-busy={pending}
       aria-label={t("Enable Cursor usage from {environment}", { environment: label })}
       onClick={() => void enable()}
@@ -1346,10 +1350,12 @@ function CursorEnableRow({
   label,
   showEnvironment,
   onEnabled,
+  disabled,
 }: {
   readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly showEnvironment: boolean;
+  readonly disabled: boolean;
   readonly onEnabled: () => void;
 }) {
   // oxlint-disable-next-line t3code/no-untranslated-text -- product name plus the environment label, which reads the same in every language
@@ -1369,6 +1375,7 @@ function CursorEnableRow({
         environmentId={environmentId}
         label={label}
         onEnabled={onEnabled}
+        disabled={disabled}
         tooltip
       />
     </div>
@@ -1435,7 +1442,7 @@ function ProviderMark({
 }
 
 function figureClass(loading: boolean) {
-  return cn("transition-opacity", loading && "opacity-40 delay-150");
+  return loading ? "text-usage-retained-foreground" : undefined;
 }
 
 function Metric({
@@ -1460,37 +1467,20 @@ function Metric({
 }
 
 function UsageCoverageNotice({
-  environments,
   duplicateSources,
-  contractMismatches,
+  coverage,
 }: {
-  readonly environments: readonly EnvironmentUsageStatus[];
   readonly duplicateSources: readonly string[];
-  readonly contractMismatches: MergedUsage["contractMismatches"];
+  readonly coverage: ReturnType<typeof usageNotices>["coverage"];
 }) {
-  const failed = environments.filter((environment) => environment.error !== null);
-  const mismatchByEnvironment = new Map(
-    contractMismatches.map((mismatch) => [mismatch.environmentId, mismatch]),
-  );
-  const incompatible = environments.flatMap((environment) => {
-    const mismatch = mismatchByEnvironment.get(environment.environmentId);
-    return mismatch === undefined ? [] : [{ environment, mismatch }];
-  });
-  if (failed.length === 0 && incompatible.length === 0 && duplicateSources.length === 0) {
+  if (coverage === null && duplicateSources.length === 0) {
     return null;
   }
 
   return (
     <div className="flex flex-col gap-1 border-t border-border px-2 py-2 text-xs text-muted-foreground">
-      {failed.map((environment) => (
-        <span key={environment.label}>
-          {environment.label}: {environment.error}
-        </span>
-      ))}
-      {incompatible.map(({ environment, mismatch }) => (
-        <span key={environment.environmentId}>
-          {formatUsageContractMismatch(environment.label, mismatch)}
-        </span>
+      {coverage?.gaps.map(({ environment, message }) => (
+        <span key={environment.environmentId}>{message}</span>
       ))}
       {duplicateSources.length > 0 ? (
         <span>
@@ -1509,10 +1499,9 @@ function UsageEnvironmentFilter({
   selectedEnvironmentIds,
   onSelectionChange,
   showUsageStatus,
-  refreshing,
-  isPartial,
+  refreshingEnvironmentIds,
   duplicateSources,
-  contractMismatches,
+  coverage,
   onOpenModelPrices,
 }: {
   readonly environments: readonly EnvironmentUsageStatus[];
@@ -1520,10 +1509,9 @@ function UsageEnvironmentFilter({
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly onSelectionChange: (ids: ReadonlySet<EnvironmentId> | null) => void;
   readonly showUsageStatus: boolean;
-  readonly refreshing: boolean;
-  readonly isPartial: boolean;
+  readonly refreshingEnvironmentIds: ReadonlySet<EnvironmentId>;
   readonly duplicateSources: readonly string[];
-  readonly contractMismatches: MergedUsage["contractMismatches"];
+  readonly coverage: ReturnType<typeof usageNotices>["coverage"];
   readonly onOpenModelPrices: () => void;
 }) {
   const allSelected = selectedEnvironmentIds === null;
@@ -1532,9 +1520,7 @@ function UsageEnvironmentFilter({
     : selectedEnvironments.length === 1
       ? selectedEnvironments[0]!.label
       : tn(selectedEnvironments.length, "{count} environment", "{count} environments");
-  const hasIssue =
-    selectedEnvironments.some((environment) => environment.error !== null) ||
-    contractMismatches.length > 0;
+  const hasIssue = coverage !== null;
 
   return (
     <Menu>
@@ -1567,10 +1553,18 @@ function UsageEnvironmentFilter({
           const checked =
             selectedEnvironmentIds === null ||
             selectedEnvironmentIds.has(environment.environmentId);
-          const progress = usageEnvironmentProgress(environment, refreshing);
+          const progress = usageEnvironmentProgress(
+            environment,
+            refreshingEnvironmentIds.has(environment.environmentId),
+          );
+          const hasGap = coverage?.gaps.some(
+            (gap) => gap.environment.environmentId === environment.environmentId,
+          );
           const status =
             environment.error !== null
-              ? t("Unavailable")
+              ? hasGap
+                ? t("Unavailable")
+                : environment.error
               : environment.summary !== null &&
                   !isCompatibleUsageContractVersion(
                     environment.summary.contractVersion,
@@ -1603,7 +1597,7 @@ function UsageEnvironmentFilter({
                 {showUsageStatus ? (
                   <span
                     className={cn(
-                      "shrink-0 text-xs text-muted-foreground",
+                      "max-w-60 shrink-0 whitespace-normal text-xs text-muted-foreground",
                       environment.error !== null && "text-destructive-foreground",
                     )}
                   >
@@ -1619,17 +1613,8 @@ function UsageEnvironmentFilter({
             {t("No environments connected.")}
           </p>
         ) : null}
-        {showUsageStatus && isPartial ? (
-          <p className="px-2 py-2 text-xs text-muted-foreground">
-            {t("Totals are partial while selected environments scan.")}
-          </p>
-        ) : null}
         {showUsageStatus ? (
-          <UsageCoverageNotice
-            environments={selectedEnvironments}
-            duplicateSources={duplicateSources}
-            contractMismatches={contractMismatches}
-          />
+          <UsageCoverageNotice duplicateSources={duplicateSources} coverage={coverage} />
         ) : null}
         <MenuSeparator />
         <MenuItem onClick={onOpenModelPrices}>
@@ -1700,7 +1685,14 @@ function UsageProviderFilter({
   );
 }
 
-function UsageSkeleton() {
+function UsageSkeleton({
+  hiddenProviders,
+}: {
+  readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
+}) {
+  const providers = useAtomValue(skeletonProvidersAtom).filter(
+    (provider) => !hiddenProviders.has(provider),
+  );
   return (
     <>
       <span role="status" className="sr-only">
@@ -1712,7 +1704,7 @@ function UsageSkeleton() {
             <Skeleton className="h-10 w-36" />
             <Skeleton className="h-4 w-32" />
           </div>
-          {PROVIDER_ORDER.map((provider) => (
+          {providers.map((provider) => (
             <div key={provider} className="flex flex-col gap-1">
               <div className="flex min-h-5 items-center justify-between gap-4">
                 <span className="flex items-center gap-2">

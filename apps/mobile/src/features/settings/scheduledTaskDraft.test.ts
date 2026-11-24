@@ -302,6 +302,7 @@ describe("a check the target machine cannot keep", () => {
   it.each([
     ["target supports checks", true, checked, false],
     ["target lacks checks and the draft has a command", false, checked, true],
+    ["target's config has not arrived and the draft has a command", null, checked, false],
     ["target lacks checks and the command is empty", false, createDraft(null, null), false],
     [
       "target lacks checks and the command is blank",

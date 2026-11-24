@@ -45,6 +45,76 @@ export class CursorUsageAccounts extends Context.Service<
   }
 >()("@t3tools/provider-cursor/server/CursorUsageAccounts") {}
 
+function cursorHistoryCredentials(platform: NodeJS.Platform, environment: NodeJS.ProcessEnv) {
+  const store = environment["AGENT_CLI_CREDENTIAL_STORE"];
+  if (
+    environment["CURSOR_AUTH_TOKEN"]?.trim() ||
+    environment["CURSOR_API_KEY"]?.trim() ||
+    store === "memory"
+  )
+    return "unavailable";
+  return platform === "darwin" && store !== "file" ? "keychain" : "file";
+}
+
+function cursorHistoryAuthPath(
+  path: Path.Path,
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+  home: string,
+): string {
+  const userHome =
+    (platform === "win32" ? environment["USERPROFILE"] : environment["HOME"]) || home;
+  if (platform === "darwin") return path.join(userHome, ".cursor", "auth.json");
+  if (platform === "win32")
+    return path.join(
+      environment["APPDATA"] || path.join(userHome, "AppData", "Roaming"),
+      "Cursor",
+      "auth.json",
+    );
+  const configHome = environment["XDG_CONFIG_HOME"]?.trim();
+  return path.join(
+    configHome && path.isAbsolute(configHome) ? configHome : path.join(userHome, ".config"),
+    "cursor",
+    "auth.json",
+  );
+}
+
+type CursorHistorySource =
+  | { readonly state: "keychainOff" | "envCredential" | "noLocalLogin"; readonly authPath: string }
+  | {
+      readonly state: "source";
+      readonly credential: CursorCredentialSource;
+      readonly authPath: string;
+    };
+
+/** The usage scan and the provider's history status both read this, so they cannot disagree. */
+export const resolveCursorHistorySource = Effect.fn("CursorUsageAccounts.resolveHistorySource")(
+  function* (input: {
+    readonly platform: NodeJS.Platform;
+    readonly environment: NodeJS.ProcessEnv;
+    readonly home: string;
+    readonly keychainUsageEnabled: boolean;
+  }) {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const credentials = cursorHistoryCredentials(input.platform, input.environment);
+    const authPath = cursorHistoryAuthPath(path, input.platform, input.environment, input.home);
+    if (credentials === "keychain" && !input.keychainUsageEnabled)
+      return { state: "keychainOff", authPath } satisfies CursorHistorySource;
+    if (credentials === "unavailable")
+      return { state: "envCredential", authPath } satisfies CursorHistorySource;
+    // A Keychain login outlives an uninstalled Cursor, so it also needs Cursor's local directory.
+    const localLogin = credentials === "file" ? authPath : path.dirname(authPath);
+    if (!(yield* fileSystem.exists(localLogin).pipe(Effect.orElseSucceed(() => true))))
+      return { state: "noLocalLogin", authPath } satisfies CursorHistorySource;
+    return {
+      state: "source",
+      credential: credentials === "keychain" ? { kind: "keychain" } : authPath,
+      authPath,
+    } satisfies CursorHistorySource;
+  },
+);
+
 const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -186,11 +256,6 @@ const make = Effect.gen(function* () {
     retentionStartMs: number,
     awaitRefresh: boolean,
   ) {
-    // A Keychain login outlives an uninstalled Cursor, so it also needs Cursor's local directory.
-    const localLogin = typeof credential === "string" ? credential : path.dirname(authPath);
-    if (!(yield* fileSystem.exists(localLogin).pipe(Effect.orElseSucceed(() => true)))) {
-      return null;
-    }
     yield* ensureLoaded;
     const credentialKey = typeof credential === "string" ? credential : "keychain";
     const nowMs = yield* Clock.currentTimeMillis;
@@ -239,56 +304,47 @@ const make = Effect.gen(function* () {
 
   const scan: CursorUsageAccounts["Service"]["scan"] = Effect.fn("CursorUsageAccounts.scan")(
     function* ({ keychainUsageEnabled, windowStartMs, retentionCutoffMs, awaitRefresh }) {
-      const home = yield* HostProcess.HomeDirectory;
-      const userHome =
-        (platform === "win32" ? hostEnvironment["USERPROFILE"] : hostEnvironment["HOME"]) || home;
-      const configHome = hostEnvironment["XDG_CONFIG_HOME"]?.trim();
-      const cursorHome =
-        platform === "darwin"
-          ? path.join(userHome, "Library", "Application Support")
-          : platform === "win32"
-            ? hostEnvironment["APPDATA"] || path.join(userHome, "AppData", "Roaming")
-            : configHome && path.isAbsolute(configHome)
-              ? configHome
-              : path.join(userHome, ".config");
-      const authPath =
-        platform === "darwin"
-          ? path.join(userHome, ".cursor", "auth.json")
-          : path.join(cursorHome, platform === "win32" ? "Cursor" : "cursor", "auth.json");
-      const credentialStore = hostEnvironment["AGENT_CLI_CREDENTIAL_STORE"];
-      const loginUnavailable =
-        Boolean(hostEnvironment["CURSOR_AUTH_TOKEN"]?.trim()) ||
-        Boolean(hostEnvironment["CURSOR_API_KEY"]?.trim()) ||
-        credentialStore === "memory";
-      const useKeychain = platform === "darwin" && credentialStore !== "file";
-      if (useKeychain && !loginUnavailable && !keychainUsageEnabled) {
-        return [
-          {
-            dir: authPath,
-            volumeId: "",
-            files: null,
-            message: "Cursor account usage is off on this environment.",
-            action: "enableCursorKeychain",
-          },
-        ];
-      }
-      if (loginUnavailable) {
-        return [
-          {
-            dir: authPath,
-            files: null,
-            message: "Cursor account history needs a Cursor CLI login on this server.",
-          },
-        ];
-      }
-      const source = yield* accountSource(
-        useKeychain ? { kind: "keychain" } : authPath,
-        authPath,
-        windowStartMs,
-        retentionCutoffMs,
-        awaitRefresh,
+      const history = yield* resolveCursorHistorySource({
+        platform,
+        environment: hostEnvironment,
+        home: yield* HostProcess.HomeDirectory,
+        keychainUsageEnabled,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
       );
-      return source === null ? [] : [source];
+      switch (history.state) {
+        case "keychainOff":
+          return [
+            {
+              dir: history.authPath,
+              volumeId: "",
+              files: null,
+              message: "Cursor account usage is off on this environment.",
+              action: "enableCursorKeychain",
+            },
+          ];
+        case "envCredential":
+          return [
+            {
+              dir: history.authPath,
+              files: null,
+              message: "Cursor account history needs a Cursor CLI login on this server.",
+            },
+          ];
+        case "noLocalLogin":
+          return [];
+        case "source": {
+          const source = yield* accountSource(
+            history.credential,
+            history.authPath,
+            windowStartMs,
+            retentionCutoffMs,
+            awaitRefresh,
+          );
+          return source === null ? [] : [source];
+        }
+      }
     },
   );
 

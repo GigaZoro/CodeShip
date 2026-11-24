@@ -1,3 +1,4 @@
+import { useUsageLimitNow, useUsageLimitWorkspaces } from "../../hooks/useUsageNow";
 import { connectionMayStillAnswer } from "@t3tools/client-runtime/connection";
 import {
   AuthProvidersManageScope,
@@ -13,6 +14,8 @@ import { useAtomValue } from "@effect/atom-react";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
   collectAccountFailover,
+  collectLimitAccounts,
+  showsRelativeLimitTimes,
   formatDuration,
   formatResetsIn,
   type LimitPace,
@@ -268,18 +271,28 @@ const OUTCOME_TEXT: Record<ProviderConsumeResetCreditOutcome, Message> = {
 };
 
 export function useResetCredit(
-  environmentId: EnvironmentId,
-  input: ProviderConsumeResetCreditInput,
+  environmentId: EnvironmentId | null,
+  input: ProviderConsumeResetCreditInput | null,
 ) {
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const consume = useAtomCommand(serverEnvironment.consumeResetCredit, { reportFailure: false });
-  const [confirming, setConfirming] = useState(false);
+  const target =
+    environmentId === null || input === null ? null : JSON.stringify([environmentId, input]);
+  const [confirmation, setConfirmation] = useState<string | null>(null);
+  if (confirmation !== null && confirmation !== target) setConfirmation(null);
+  const confirming = confirmation !== null && confirmation === target;
+  const setConfirming = (open: boolean) => setConfirmation(open ? target : null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
   const redeem = async () => {
     setConfirming(false);
-    if (!readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
+    if (
+      environmentId === null ||
+      input === null ||
+      !readEnvironmentScope(environmentId, AuthProvidersManageScope)
+    )
+      return;
     setBusy(true);
     setStatus(null);
     const result = await consume({ environmentId, input });
@@ -401,19 +414,17 @@ export function ResetCredits({
   );
 }
 
-/** Advance now only on explicit refresh to avoid page repaints from ticking. */
 export function UsageLimitsSection({
   selectedEnvironmentIds,
   hiddenProviders,
-  now,
   cursorPrompt,
 }: {
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
-  readonly now: number;
   readonly cursorPrompt?: ReactNode;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
+  const workspaces = useUsageLimitWorkspaces();
   const hiddenDrivers = new Set<ServerProvider["driver"]>(
     [...hiddenProviders].map((provider) => PROVIDER_PRESENTATION[provider].driverKind),
   );
@@ -443,6 +454,8 @@ export function UsageLimitsSection({
       ];
     }),
   );
+  const accounts = collectLimitAccounts(selected, workspaces);
+  const now = useUsageLimitNow(undefined, showsRelativeLimitTimes(accounts));
   // Limits arrive with the server config, so a machine still connecting has none to show yet.
   const connecting = [...selected.values()].filter(
     (presentation) =>
@@ -458,9 +471,10 @@ export function UsageLimitsSection({
       : undefined;
   return (
     <UsageLimitsPooled
+      workspaces={workspaces}
       presentations={selected}
       now={now}
-      failover={collectAccountFailover(selected, now)}
+      getFailover={(now) => collectAccountFailover(selected, now)}
       cursorPrompt={cursorPrompt}
       {...(emptyMessage === undefined ? {} : { emptyMessage })}
     />

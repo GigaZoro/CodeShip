@@ -57,13 +57,14 @@ export function subscribeDocumentActivity(listener: () => void): () => void {
  */
 export function subscribeDocumentReturn(listener: () => void): () => void {
   if (typeof document === "undefined") return () => {};
+  const handleFocus = () => listener();
   const handleVisibilityChange = () => {
     if (document.visibilityState === "visible") listener();
   };
-  window.addEventListener("focus", listener);
+  window.addEventListener("focus", handleFocus);
   document.addEventListener("visibilitychange", handleVisibilityChange);
   return () => {
-    window.removeEventListener("focus", listener);
+    window.removeEventListener("focus", handleFocus);
     document.removeEventListener("visibilitychange", handleVisibilityChange);
   };
 }

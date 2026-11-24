@@ -24,6 +24,7 @@ vi.mock("../../state/server", () => ({
 import {
   environmentIdsKey,
   limitsRefreshFailuresAtom,
+  limitsRefreshingEnvironmentIdsAtom,
   refreshEnvironmentLimits,
 } from "./usageLimitsRefresh";
 
@@ -97,4 +98,64 @@ it("skips an automatic refresh inside the throttle window without touching the o
   expect(failures([a])).toEqual([a]);
   await refreshEnvironmentLimits(registry, a);
   expect(failures([a])).toEqual([]);
+});
+
+it("clears a Limits environment's pending state as soon as its own request settles", async () => {
+  const desk = EnvironmentId.make("mobile-limits-pending-desk");
+  const laptop = EnvironmentId.make("mobile-limits-pending-laptop");
+  const deskRequest = Promise.withResolvers<RefreshResult>();
+  const laptopRequest = Promise.withResolvers<RefreshResult>();
+  const bothStarted = Promise.withResolvers<void>();
+  const started = new Set<string>();
+  const { registry } = setup((id) => {
+    started.add(id);
+    if (started.size === 2) bothStarted.resolve();
+    return id === desk ? deskRequest.promise : laptopRequest.promise;
+  });
+  const atom = limitsRefreshingEnvironmentIdsAtom(environmentIdsKey([desk, laptop]));
+  const unmount = registry.mount(atom);
+  const first = refreshEnvironmentLimits(registry, desk);
+  const second = refreshEnvironmentLimits(registry, laptop);
+  await bothStarted.promise;
+  expect(registry.get(atom)).toEqual(new Set([desk, laptop]));
+  deskRequest.resolve(success);
+  await first;
+  expect(registry.get(atom)).toEqual(new Set([laptop]));
+  laptopRequest.resolve(success);
+  await second;
+  expect(registry.get(atom).size).toBe(0);
+  unmount();
+});
+
+it("keeps the Limits request pending when the view unmounts and remounts", async () => {
+  const id = EnvironmentId.make("remount");
+  const request = Promise.withResolvers<RefreshResult>();
+  const started = Promise.withResolvers<void>();
+  state.refresh = () => {
+    started.resolve();
+    return request.promise;
+  };
+  const tasks = new Set<() => void>();
+  const registry = AtomRegistry.make({
+    scheduleTask: (task) => {
+      tasks.add(task);
+      return () => tasks.delete(task);
+    },
+  });
+  const atom = limitsRefreshingEnvironmentIdsAtom(environmentIdsKey([id]));
+  const stop = registry.mount(atom);
+  const refresh = refreshEnvironmentLimits(registry, id);
+  await started.promise;
+  stop();
+  for (const task of tasks) {
+    tasks.delete(task);
+    task();
+  }
+  const unmount = registry.mount(atom);
+  expect(registry.get(atom).has(id)).toBe(true);
+  request.resolve(success);
+  await refresh;
+  expect(registry.get(atom).has(id)).toBe(false);
+  unmount();
+  registry.dispose();
 });

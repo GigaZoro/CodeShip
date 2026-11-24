@@ -1245,12 +1245,16 @@ function TaskForm({
     }
   };
 
+  // Null until the target's config arrives: a missing config says nothing about its version.
   const targetSupportsRunConditions =
-    config?.environment.capabilities.scheduledTaskRunConditions === true;
-  const offersRunCondition = targetSupportsRunConditions && draft.schedule.mode !== "webhook";
+    config === null ? null : config.environment.capabilities.scheduledTaskRunConditions === true;
+  const offersRunCondition =
+    targetSupportsRunConditions === true && draft.schedule.mode !== "webhook";
   const runConditionLost = runConditionLostOnTarget({ targetSupportsRunConditions, draft });
-  const supportsPromptFiles = config?.environment.capabilities.scheduledTaskPromptFiles === true;
-  const supportsDescriptions = config?.environment.capabilities.scheduledTaskDescriptions === true;
+  const supportsPromptFiles =
+    config === null ? null : config.environment.capabilities.scheduledTaskPromptFiles === true;
+  const supportsDescriptions =
+    config === null ? null : config.environment.capabilities.scheduledTaskDescriptions === true;
   const savedDescription = draft.task?.description ?? "";
   const descriptionField = scheduledTaskDescriptionField({
     supported: supportsDescriptions,
@@ -1287,7 +1291,9 @@ function TaskForm({
       saving ||
       dictationPending ||
       taskMissing ||
-      environmentUnavailable
+      environmentUnavailable ||
+      // An upsert is shaped by what the target stores, so it waits for the target's config.
+      supportsPromptFiles === null
     )
       return;
     // Preserve signatures edited on other clients by sending the task's current value.
@@ -1574,7 +1580,7 @@ function TaskForm({
             placeholder={t("Check for issues")}
             onChange={(title) => setDraft({ ...draft, title })}
           />
-          {supportsDescriptions || draft.description !== "" || savedDescription !== "" ? (
+          {supportsDescriptions === true || draft.description !== "" || savedDescription !== "" ? (
             <View className="gap-2 border-t border-border-subtle px-4 py-3">
               <Text className="text-sm text-foreground-muted">{t("Description (optional)")}</Text>
               <RNTextInput

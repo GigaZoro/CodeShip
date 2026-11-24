@@ -12,11 +12,12 @@ import {
   SettingsIcon,
   ShapesIcon,
 } from "lucide-react";
-import { tightestLimitWindow } from "@t3tools/shared/usageLimits";
-import { memo, useState, type ReactNode } from "react";
+import { collectLimitPools, tightestLimitWindow } from "@t3tools/shared/usageLimits";
+import { memo, type ReactNode } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
 import { isElectron } from "../../env";
+import { useUsageLimitNow } from "../../hooks/useUsageNow";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { MachinesGlance } from "../machines/MachineResources";
 import { primaryServerKeybindingsAtom } from "../../state/server";
@@ -32,7 +33,7 @@ import {
   limitTone,
   limitWindowLabel,
   UsageLimitsGlance,
-  useLimitPools,
+  useLimitAccounts,
 } from "../usage/UsageLimitsGlance";
 import { isSettingsPage, isSidebarSectionPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
@@ -82,7 +83,6 @@ function SidebarNavRailItem({
   label,
   tooltip = label,
   badge,
-  onTooltipOpenChange,
   isActive,
   onClick,
 }: {
@@ -90,13 +90,12 @@ function SidebarNavRailItem({
   label: string;
   tooltip?: ReactNode;
   badge?: ReactNode;
-  onTooltipOpenChange?: (open: boolean) => void;
   isActive: boolean;
   onClick: () => void;
 }) {
   return (
     <SidebarMenuItem>
-      <Tooltip onOpenChange={onTooltipOpenChange}>
+      <Tooltip>
         <TooltipTrigger
           render={
             <SidebarMenuButton
@@ -138,7 +137,7 @@ function SidebarNavRailMonitoringItem({
 }
 
 /** Rings the limit closest to running out; hover summarizes every provider, click opens Usage. */
-function SidebarNavRailUsageItem({
+export function SidebarNavRailUsageItem({
   isActive,
   onClick,
 }: {
@@ -147,10 +146,9 @@ function SidebarNavRailUsageItem({
 }) {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const shortcut = shortcutLabelForCommand(keybindings, "usage.open");
-  // Reset countdowns read the clock when the summary opens instead of ticking.
-  const [now, setNow] = useState(() => Date.now());
-  const pools = useLimitPools(now);
-  const tightest = tightestLimitWindow(pools);
+  const accounts = useLimitAccounts();
+  const now = useUsageLimitNow(undefined, false);
+  const tightest = tightestLimitWindow(collectLimitPools(accounts, now), now);
   if (!tightest) {
     return (
       <SidebarNavRailItem
@@ -177,10 +175,7 @@ function SidebarNavRailUsageItem({
         window: limitWindowLabel(pool, window),
         percent: window.remainingPercent,
       })}
-      tooltip={<UsageLimitsGlance pools={pools} now={now} shortcut={shortcut} />}
-      onTooltipOpenChange={(open) => {
-        if (open) setNow(Date.now());
-      }}
+      tooltip={<UsageLimitsGlance accounts={accounts} shortcut={shortcut} />}
       isActive={isActive}
       onClick={onClick}
     />

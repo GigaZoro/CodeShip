@@ -1,7 +1,9 @@
 import { formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import { isModelCostUnknown, type ModelTotals } from "@t3tools/shared/usageMerge";
 
-import { mergeAnsweredUsage, type EnvironmentUsageStatus } from "../../state/usage";
+import type { UsageViewEnvironment } from "@t3tools/client-runtime/state/usage-view";
+
+import { mergeAnsweredUsage } from "../../state/usage";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { Button } from "../ui/button";
 import {
@@ -42,12 +44,16 @@ export function UsageModelDialog({
   chartWindow,
   onSetPrice,
   onClose,
+  readOnly = false,
+  status,
 }: {
   readonly model: ModelTotals;
-  readonly environments: readonly EnvironmentUsageStatus[];
+  readonly environments: readonly UsageViewEnvironment[];
   readonly metric: UsageChartMetric;
   readonly chartWindow: UsageChartWindow;
   readonly onSetPrice: () => void;
+  readonly readOnly?: boolean;
+  readonly status?: string | undefined;
   readonly onClose: () => void;
 }) {
   const usage = mergeAnsweredUsage(
@@ -92,6 +98,9 @@ export function UsageModelDialog({
                 })}
           </DialogDescription>
         </DialogHeader>
+        {status !== undefined || readOnly ? (
+          <p className="px-6 text-sm text-muted-foreground">{status ?? t("Updating…")}</p>
+        ) : null}
         <DialogPanel>
           <div className="flex flex-col gap-8">
             <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
@@ -124,18 +133,24 @@ export function UsageModelDialog({
                   label={t("Cost by type")}
                   segments={costTypeSegments(usage.categoryCost)}
                   format={formatUsd}
+                  recordedUsage={usage}
+                  metric="cost"
                 />
               )}
               <UsageShareBar
                 label={t("Tokens by type")}
                 segments={tokenTypeSegments(model.tokens)}
                 format={formatTokens}
+                recordedUsage={usage}
+                metric="tokens"
               />
               {usage.speedCost.fast + usage.speedCost.ultrafast > 0 ? (
                 <UsageShareBar
                   label={t("Cost by speed")}
                   segments={speedCostSegments(usage.speedCost)}
                   format={formatUsd}
+                  recordedUsage={usage}
+                  metric="cost"
                   aside={<SpeedPremium premiumUsd={usage.speedCost.premium} />}
                 />
               ) : null}
@@ -149,7 +164,9 @@ export function UsageModelDialog({
                 tokens: formatTokens(model.unpricedTokens),
               })}
             </span>
-            <Button onClick={onSetPrice}>{t("Set price")}</Button>
+            <Button onClick={onSetPrice} disabled={readOnly}>
+              {t("Set price")}
+            </Button>
           </DialogFooter>
         ) : null}
       </DialogPopup>

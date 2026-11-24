@@ -367,6 +367,10 @@
       "types": "./src/state/usageProgress.ts",
       "default": "./src/state/usageProgress.ts"
     },
+    "./state/usage-view": {
+      "types": "./src/state/usageView.ts",
+      "default": "./src/state/usageView.ts"
+    },
     "./state/provider-mcp-problems": {
       "types": "./src/state/providerMcpProblems.ts",
       "default": "./src/state/providerMcpProblems.ts"
