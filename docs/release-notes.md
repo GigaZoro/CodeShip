@@ -1,3 +1,7 @@
+## 2026-11-24 — Shell tests run the Mac's real bash in check:changed
+
+- On macOS, `vp run check:changed` now runs the setup-script and desktop-release signing tests outside Vite+'s file tracker, which swaps every `bash` and `sh` for its bundled Oils shell. They no longer fail with `osh usage error: got invalid flag '--noprofile'`, and a new test that starts bash with bash's own flags must be listed the same way. No change to the app.
+
 ## 2026-11-24 — Release a finished worktree
 
 - `t3 thread release-worktree` now accepts the documented command with `--save-ignored` omitted. Ignored files keep the checkout in place by default.

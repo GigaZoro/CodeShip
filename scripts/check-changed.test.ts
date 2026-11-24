@@ -40,6 +40,7 @@ import {
   testStepTimeoutSeconds,
   type Step,
   testsReaching,
+  uncachedTests,
 } from "./check-changed.ts";
 import { cachedTestTasks } from "./lib/cached-tests.ts";
 import { stageTestCache, testCachePartition } from "./lib/staged-test-cache.ts";
@@ -99,6 +100,23 @@ describe("check:changed", () => {
     ]);
     assert.deepStrictEqual(decide(["docs/user/install.md"], packages, false).affected, []);
     assert.isTrue(decide(["docs/release-notes.md"], packages, false).outputs.test_web);
+  });
+
+  it("keeps every test that starts bash with bash's own flags out of the file tracker", () => {
+    const root = NodePath.join(import.meta.dirname, "..");
+    const tests = NodeChildProcess.execFileSync(
+      "git",
+      ["ls-files", "-z", "--", "*.test.ts", "*.test.tsx", "*.test.mjs", ":(exclude).repos"],
+      { cwd: root, encoding: "utf8" },
+    )
+      .split("\0")
+      .filter(
+        (file) =>
+          file !== "" &&
+          /--no(?:profile|rc)\b/.test(NodeFS.readFileSync(NodePath.join(root, file), "utf8")),
+      );
+    expect(tests).toContain("apps/server/src/project/ProjectSetupScriptRunner.test.ts");
+    expect(tests.filter((file) => !uncachedTests.includes(file))).toEqual([]);
   });
 
   const slotDirectory = Effect.gen(function* () {
