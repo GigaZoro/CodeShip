@@ -464,7 +464,9 @@ const userAction = (
     return userActionOnThread(state, scopedThreadKey(entry.host), updater, closesView);
   }
   const next = userActionOnThread(state, guestKey, updater, closesView);
-  if (entry === undefined || closesView) return next;
+  if (entry === undefined || closesView || next.byThreadKey?.[guestKey]?.isOpen !== true) {
+    return next;
+  }
   return {
     ...next,
     pendingThreadReveal: { hostKey: scopedThreadKey(entry.host), threadKey: guestKey },

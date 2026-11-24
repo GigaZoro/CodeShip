@@ -112,6 +112,17 @@ describe("rightPanelStore", () => {
     },
   );
 
+  it("does not reveal an embedded thread from another workspace for an action that leaves its panel closed", () => {
+    const unembed = embedRightPanelThread(workspace(remoteRef), workspace(refA));
+    useRightPanelStore.getState().close(remoteRef);
+    useRightPanelStore.getState().openFile(remoteRef, "src/app.ts");
+    useRightPanelStore.getState().consumeThreadRevealRequest(refA, remoteRef);
+    useRightPanelStore.getState().close(remoteRef);
+    unembed();
+
+    expect(useRightPanelStore.getState().pendingThreadReveal).toBeNull();
+  });
+
   it("does not open the current thread or change its panel selection", () => {
     const store = useRightPanelStore.getState();
     store.open(refA, "diff");
