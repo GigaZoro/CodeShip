@@ -27,7 +27,7 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { isDarwinHost, isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
-import { windowsStopTreeArgs } from "@t3tools/shared/windowsProcessTree";
+import { windowsStopTreeArgs } from "@t3tools/shared/windowsProcessTreeScript";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

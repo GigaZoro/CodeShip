@@ -70,12 +70,12 @@ import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { AgentScope, agentScopeCommand } from "@t3tools/shared/AgentScope";
 import { sleepAwake, timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { windowsTreeStopper } from "@t3tools/shared/windowsProcessTree";
 import {
   endedWindowsTreeRoot,
   type WindowsProcessTreeRoot,
   windowsTreeRootFromNow,
-  windowsTreeStopper,
-} from "@t3tools/shared/windowsProcessTree";
+} from "@t3tools/shared/windowsProcessTreeScript";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
 import { CLAUDE_MODEL_FAMILIES, claudeUsageWindowScope } from "@t3tools/shared/usageLimits";
 import {

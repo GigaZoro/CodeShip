@@ -387,6 +387,10 @@
       "types": "./src/windowsProcessTree.ts",
       "import": "./src/windowsProcessTree.ts"
     },
+    "./windowsProcessTreeScript": {
+      "types": "./src/windowsProcessTreeScript.ts",
+      "import": "./src/windowsProcessTreeScript.ts"
+    },
     "./testing/longTempDir": {
       "types": "./src/testing/longTempDir.ts",
       "import": "./src/testing/longTempDir.ts"

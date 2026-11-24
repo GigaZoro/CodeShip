@@ -131,7 +131,7 @@ function passCheck(worktree: string) {
 }
 
 /** Step 8's answer to `verify`: the sync branch fast-forwards to the merge `land` made. */
-function fastForward(worktree: string, result: ReturnType<typeof land>): string {
+function fastForward(worktree: string, result: Awaited<ReturnType<typeof land>>): string {
   if (result.status !== "verify") throw new Error(`land answered ${result.status}, not verify`);
   git(worktree, "merge", "-q", "--ff-only", result.commit);
   return result.commit;
@@ -143,12 +143,12 @@ describe("upstream sync", () => {
     expect(begin(repo.sync, START)).toMatchObject({ status: "up-to-date" });
   });
 
-  it("merges upstream into the frozen base and lands it while main has not moved", () => {
+  it("merges upstream into the frozen base and lands it while main has not moved", async () => {
     const repo = fixture();
     const frozen = repo.originMain();
     expect(begin(repo.sync, START)).toMatchObject({ status: "merged", base: frozen });
     passCheck(repo.sync);
-    expect(land(repo.sync, later(60))).toEqual({ status: "landed", commit: repo.head() });
+    expect(await land(repo.sync, later(60))).toEqual({ status: "landed", commit: repo.head() });
     expect(repo.originMain()).toBe(repo.head());
   });
 
@@ -160,20 +160,20 @@ describe("upstream sync", () => {
     expect(begin(repo.sync, START)).toMatchObject({ status: "conflicts", conflicts: names });
   });
 
-  it("merges a main that moved into the checked commit without moving the checkout, and lands the merge once the sync fast-forwards to it and checks it", () => {
+  it("merges a main that moved into the checked commit without moving the checkout, and lands the merge once the sync fast-forwards to it and checks it", async () => {
     const repo = fixture();
     begin(repo.sync, START);
     passCheck(repo.sync);
     const checked = repo.head();
     repo.advanceMain({ "other.txt": "other\n" });
     const moved = repo.originMain();
-    const result = land(repo.sync, later(60));
+    const result = await land(repo.sync, later(60));
     expect(result).toMatchObject({ status: "verify", base: moved });
     expect([repo.head(), NodeFS.existsSync(NodePath.join(repo.sync, "other.txt"))]).toEqual([
       checked,
       false,
     ]);
-    expect(land(repo.sync, later(90))).toEqual({
+    expect(await land(repo.sync, later(90))).toEqual({
       status: "unchecked",
       head: checked,
       checked: null,
@@ -185,10 +185,10 @@ describe("upstream sync", () => {
       repo.originMain(),
     ]).toMatchObject([[merge, checked, moved].join("\n"), { commit: moved, merge }, moved]);
     passCheck(repo.sync);
-    expect(land(repo.sync, later(120))).toEqual({ status: "landed", commit: repo.head() });
+    expect(await land(repo.sync, later(120))).toEqual({ status: "landed", commit: repo.head() });
   });
 
-  it("asks for the checks against a main the checked commit already holds, without merging", () => {
+  it("asks for the checks against a main the checked commit already holds, without merging", async () => {
     const repo = fixture();
     begin(repo.sync, START);
     repo.advanceMain({ "other.txt": "other\n" });
@@ -196,7 +196,7 @@ describe("upstream sync", () => {
     git(repo.sync, "merge", "-q", "--no-ff", "origin/main", "-m", "main by hand");
     const checked = repo.head();
     passCheck(repo.sync);
-    expect(land(repo.sync, later(60))).toEqual({
+    expect(await land(repo.sync, later(60))).toEqual({
       status: "verify",
       base: repo.originMain(),
       commit: checked,
@@ -217,7 +217,7 @@ describe("upstream sync", () => {
     },
   ])(
     "holds without merging when main conflicts with the sync, naming the files from $report",
-    ({ paths }) => {
+    async ({ paths }) => {
       const both = (content: string) =>
         Object.fromEntries(["upstream.txt", ...paths].map((file) => [file, content]));
       const repo = fixture({ upstream: both("upstream\n") });
@@ -226,7 +226,7 @@ describe("upstream sync", () => {
       const synced = repo.head();
       repo.advanceMain(both("ours\n"));
       const main = repo.originMain();
-      expect(land(repo.sync, later(60))).toEqual({
+      expect(await land(repo.sync, later(60))).toEqual({
         status: "hold",
         reason: "conflicts",
         conflicts: [...paths, "upstream.txt"],
@@ -251,19 +251,19 @@ describe("upstream sync", () => {
       main: "2026-11-21 — Main",
       merged: ["2026-11-21 — Main", "2026-11-15 — Sync"],
     },
-  ])("merges the sync's release notes $when", ({ sync, main, merged }) => {
+  ])("merges the sync's release notes $when", async ({ sync, main, merged }) => {
     const repo = fixture();
     begin(repo.sync, START);
     commitFiles(repo.sync, { "docs/release-notes.md": notes(sync, "2026-11-01 — Old") }, "notes");
     passCheck(repo.sync);
     repo.advanceMain({ "docs/release-notes.md": notes(main, "2026-11-01 — Old") });
-    fastForward(repo.sync, land(repo.sync, later(60)));
+    fastForward(repo.sync, await land(repo.sync, later(60)));
     expect(NodeFS.readFileSync(NodePath.join(repo.sync, "docs/release-notes.md"), "utf8")).toBe(
       notes(...merged, "2026-11-01 — Old"),
     );
   });
 
-  it("refuses to merge main where a local rule keeps the release notes from their driver", () => {
+  it("refuses to merge main where a local rule keeps the release notes from their driver", async () => {
     const repo = fixture();
     begin(repo.sync, START);
     passCheck(repo.sync);
@@ -277,11 +277,11 @@ describe("upstream sync", () => {
     );
     NodeFS.mkdirSync(NodePath.dirname(rules), { recursive: true });
     NodeFS.writeFileSync(rules, "docs/release-notes.md merge=text\n");
-    expect(() => land(repo.sync, later(60))).toThrow("instead of its driver");
+    await expect(land(repo.sync, later(60))).rejects.toThrow("instead of its driver");
     expect(status(repo.sync, later(60)).mergesLeft).toBe(2);
   });
 
-  it("holds when merging main leaves a decision Git names only in its messages", () => {
+  it("holds when merging main leaves a decision Git names only in its messages", async () => {
     const repo = fixture({ seed: { "z/b": "b\n", "z/c": "c\n" } });
     begin(repo.sync, START);
     git(repo.sync, "rm", "-q", "-r", "z");
@@ -289,7 +289,7 @@ describe("upstream sync", () => {
     passCheck(repo.sync);
     const checked = repo.head();
     repo.advanceMain({ "z/d": "d\n" });
-    expect(land(repo.sync, later(60))).toEqual({
+    expect(await land(repo.sync, later(60))).toEqual({
       status: "hold",
       reason: "conflicts",
       conflicts: ["z"],
@@ -300,7 +300,7 @@ describe("upstream sync", () => {
   // Only Linux file systems hold a name that is not UTF-8.
   it.runIf(isLinuxHost)(
     "stops at conflicted names that are not UTF-8 instead of merging them",
-    () => {
+    async () => {
       const repo = fixture();
       begin(repo.sync, START);
       // The names differ only in a byte UTF-8 cannot decode, so a lossy read gives both one name.
@@ -316,22 +316,22 @@ describe("upstream sync", () => {
       commitFiles(repo.sync, {}, "names");
       passCheck(repo.sync);
       repo.advanceMain({}, writeNames("main\n"));
-      expect(() => land(repo.sync, later(60))).toThrow(/not UTF-8, so rename it/);
+      await expect(land(repo.sync, later(60))).rejects.toThrow(/not UTF-8, so rename it/);
     },
   );
 
-  it("holds after three merges while main keeps moving", () => {
+  it("holds after three merges while main keeps moving", async () => {
     const repo = fixture();
     begin(repo.sync, START);
     for (const [index, minutes] of [30, 60].entries()) {
       passCheck(repo.sync);
       repo.advanceMain({ [`main-${index}.txt`]: "main\n" });
-      fastForward(repo.sync, land(repo.sync, later(minutes)));
+      fastForward(repo.sync, await land(repo.sync, later(minutes)));
     }
     passCheck(repo.sync);
     repo.advanceMain({ "main-last.txt": "main\n" });
     const main = repo.originMain();
-    expect(land(repo.sync, later(90))).toEqual({
+    expect(await land(repo.sync, later(90))).toEqual({
       status: "hold",
       reason: "merge-limit",
       conflicts: [],
@@ -339,7 +339,7 @@ describe("upstream sync", () => {
     expect(repo.originMain()).toBe(main);
   });
 
-  it("starts new bounds on a held branch that already has upstream merged", () => {
+  it("starts new bounds on a held branch that already has upstream merged", async () => {
     const repo = fixture();
     const frozen = repo.originMain();
     begin(repo.sync, START);
@@ -353,10 +353,10 @@ describe("upstream sync", () => {
     });
     expect(status(followUp, later(600))).toMatchObject({ mergesLeft: 3, minutesLeft: 180 });
     passCheck(followUp);
-    expect(land(followUp, later(610))).toEqual({ status: "landed", commit: repo.head() });
+    expect(await land(followUp, later(610))).toEqual({ status: "landed", commit: repo.head() });
   });
 
-  it("checks against the base in the run's state, which moves with each merged main, and records only a pass the push gate takes", () => {
+  it("checks against the base in the run's state, which moves with each merged main, and records only a pass the push gate takes", async () => {
     const repo = fixture();
     const frozen = repo.originMain();
     begin(repo.sync, START);
@@ -371,7 +371,7 @@ describe("upstream sync", () => {
     passCheck(repo.sync);
     expect(status(repo.sync, later(30)).checked).toBe(repo.head());
     repo.advanceMain({ "other.txt": "other\n" });
-    const result = land(repo.sync, later(60));
+    const result = await land(repo.sync, later(60));
     expect(status(repo.sync, later(60)).checked).toBeNull();
     expect(() => checkCommand(repo.sync, {})).toThrow("does not hold the run's base");
     fastForward(repo.sync, result);
@@ -382,14 +382,14 @@ describe("upstream sync", () => {
     });
   });
 
-  it("holds once three hours have passed, even when it could land", () => {
+  it("holds once three hours have passed, even when it could land", async () => {
     const repo = fixture();
     const frozen = repo.originMain();
     begin(repo.sync, START);
     passCheck(repo.sync);
     const deadline = new Date(START.getTime() + RUN_LIMIT_MS);
     expect(status(repo.sync, later(170)).minutesLeft).toBe(10);
-    expect(land(repo.sync, deadline)).toEqual({
+    expect(await land(repo.sync, deadline)).toEqual({
       status: "hold",
       reason: "time-limit",
       conflicts: [],
@@ -397,18 +397,18 @@ describe("upstream sync", () => {
     expect(repo.originMain()).toBe(frozen);
   });
 
-  it("reports a landing whose push reply was lost as landed, past the time limit too", () => {
+  it("reports a landing whose push reply was lost as landed, past the time limit too", async () => {
     const repo = fixture();
     begin(repo.sync, START);
     passCheck(repo.sync);
     git(repo.sync, "push", "-q", "origin", "HEAD:main");
-    expect(land(repo.sync, new Date(START.getTime() + RUN_LIMIT_MS + 60_000))).toEqual({
+    expect(await land(repo.sync, new Date(START.getTime() + RUN_LIMIT_MS + 60_000))).toEqual({
       status: "landed",
       commit: repo.head(),
     });
   });
 
-  it("reports the checked commit as landed when its checkout moves during a push whose reply was lost", () => {
+  it("reports the checked commit as landed when its checkout moves during a push whose reply was lost", async () => {
     const repo = fixture();
     begin(repo.sync, START);
     passCheck(repo.sync);
@@ -418,10 +418,13 @@ describe("upstream sync", () => {
       git(repo.sync, "reset", "-q", "--hard", "HEAD~1");
       throw new Error("the push's reply was lost");
     };
-    expect(land(repo.sync, later(60), lostReply)).toEqual({ status: "landed", commit: merged });
+    expect(await land(repo.sync, later(60), lostReply)).toEqual({
+      status: "landed",
+      commit: merged,
+    });
   });
 
-  it("lands only the commit the checks passed for, not a checkout that left it for a commit main holds", () => {
+  it("lands only the commit the checks passed for, not a checkout that left it for a commit main holds", async () => {
     const repo = fixture();
     begin(repo.sync, START);
     const synced = repo.head();
@@ -430,7 +433,11 @@ describe("upstream sync", () => {
     const checked = repo.head();
     git(repo.sync, "push", "-q", "origin", `${synced}:main`);
     git(repo.sync, "reset", "-q", "--hard", synced);
-    expect(land(repo.sync, later(60))).toEqual({ status: "unchecked", head: synced, checked });
+    expect(await land(repo.sync, later(60))).toEqual({
+      status: "unchecked",
+      head: synced,
+      checked,
+    });
     const during = checkCommand(repo.sync, {}).covers;
     recordReceipt(repo.sync, during);
     commitFiles(repo.sync, { "late.txt": "late\n" }, "late");
@@ -438,7 +445,7 @@ describe("upstream sync", () => {
     expect(status(repo.sync, later(60)).checked).toBe(checked);
   });
 
-  it("reports a checkout that leaves the checked commit while it lands, and neither pushes it nor merges main into it", () => {
+  it("reports a checkout that leaves the checked commit while it lands, and neither pushes it nor merges main into it", async () => {
     const repo = fixture();
     const frozen = repo.originMain();
     begin(repo.sync, START);
@@ -456,7 +463,7 @@ describe("upstream sync", () => {
     };
     for (const push of [moveCheckout, switchedWhileMainMoved]) {
       git(repo.sync, "reset", "-q", "--hard", checked);
-      expect(land(repo.sync, later(60), push)).toEqual({
+      expect(await land(repo.sync, later(60), push)).toEqual({
         status: "unchecked",
         head: frozen,
         checked,
@@ -469,7 +476,7 @@ describe("upstream sync", () => {
     ]).toEqual([frozen, checked, 1]);
   });
 
-  it("refuses to check a checkout without the upstream merge, such as main or a commit with its tree on main", () => {
+  it("refuses to check a checkout without the upstream merge, such as main or a commit with its tree on main", async () => {
     const repo = fixture();
     const frozen = repo.originMain();
     begin(repo.sync, START);
@@ -478,7 +485,7 @@ describe("upstream sync", () => {
       git(repo.sync, "reset", "-q", "--hard", commit);
       expect(() => checkCommand(repo.sync, {})).toThrow("does not hold upstream");
     }
-    expect(land(repo.sync, later(60))).toEqual({
+    expect(await land(repo.sync, later(60))).toEqual({
       status: "unchecked",
       head: sibling,
       checked: null,
@@ -486,17 +493,17 @@ describe("upstream sync", () => {
     expect(repo.originMain()).toBe(frozen);
   });
 
-  it("refuses to check or land a worktree with untracked files or files marked assume-unchanged", () => {
+  it("refuses to check or land a worktree with untracked files or files marked assume-unchanged", async () => {
     const repo = fixture();
     begin(repo.sync, START);
     passCheck(repo.sync);
     git(repo.sync, "config", "status.showUntrackedFiles", "no");
     NodeFS.writeFileSync(NodePath.join(repo.sync, "untracked.txt"), "new\n");
     expect(() => checkCommand(repo.sync, {})).toThrow("untracked files included");
-    expect(() => land(repo.sync, later(60))).toThrow("untracked files included");
+    await expect(land(repo.sync, later(60))).rejects.toThrow("untracked files included");
     NodeFS.rmSync(NodePath.join(repo.sync, "untracked.txt"));
     git(repo.sync, "update-index", "--assume-unchanged", "shared.txt");
     expect(() => checkCommand(repo.sync, {})).toThrow("untracked files included");
-    expect(() => land(repo.sync, later(60))).toThrow("untracked files included");
+    await expect(land(repo.sync, later(60))).rejects.toThrow("untracked files included");
   });
 });

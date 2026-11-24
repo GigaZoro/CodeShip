@@ -5,7 +5,10 @@ import * as NodeWorkerThreads from "node:worker_threads";
 import { flattenCommand } from "@effect/platform-node-shared/NodeChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
-import { WINDOWS_STOP_TREE_ARGS, windowsStopTreeArgs } from "@t3tools/shared/windowsProcessTree";
+import {
+  WINDOWS_STOP_TREE_ARGS,
+  windowsStopTreeArgs,
+} from "@t3tools/shared/windowsProcessTreeScript";
 import type * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -108,7 +111,7 @@ const isAlive = (entry) => {
   }
 };
 // Windows has no process groups, and taskkill finds descendants only through a running leader, so
-// this walks the tree in PowerShell (windowsProcessTree.ts), also after the leader exited.
+// this walks the tree in PowerShell (windowsProcessTreeScript.ts), also after the leader exited.
 // "ended" is when the leader's exit was seen, or "running": a walk bounds an ended root's children
 // by it and never takes a later holder of its pid for the root.
 const stopTree = ({ pid, since, spawnedAt, ended }, done) => {

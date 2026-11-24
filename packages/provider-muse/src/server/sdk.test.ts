@@ -14,7 +14,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { leaderLeavingChild } from "@t3tools/shared/testing/leftoverChild";
 import { probeProcess } from "@t3tools/shared/processProbe";
-import { type WindowsProcessTreeRoot } from "@t3tools/shared/windowsProcessTree";
+import { type WindowsProcessTreeRoot } from "@t3tools/shared/windowsProcessTreeScript";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

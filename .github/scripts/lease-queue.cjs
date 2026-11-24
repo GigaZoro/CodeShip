@@ -1,3 +1,4 @@
+const { createHash } = require("node:crypto");
 const { hostname } = require("node:os");
 
 const QUEUE_PREFIX = "refs/heads/landing-lease/queue/";
@@ -12,6 +13,11 @@ const QUEUE_FETCH_MAX = 100;
 // Names of its own entry a waiter leaves on origin when origin will not delete the old ones; then it renews the newest
 // in place.
 const OWN_NAMES_MAX = 3;
+
+/** A short hash of this machine's name: origin is public, and its lease and queue entries say which machine wrote them. */
+function machineTag() {
+  return createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
+}
 
 function waitingSince(message) {
   let entry;
@@ -149,14 +155,20 @@ function createQueueWaiter({
     if (!removeOrWarn(batch, "stale queue entries")) pruneFrom = from + batch.length;
   }
 
-  /** True when the latest listing is read whole and no entry in it comes before this waiter's. */
-  function first() {
-    if (fresh.some(({ sha }) => !times.has(sha))) return false;
-    const [head] = fresh
+  /** The first entry of the latest listing: undefined until that listing is read whole, null when it has none. */
+  function headEntry() {
+    if (fresh.some(({ sha }) => !times.has(sha))) return undefined;
+    const [entry] = fresh
       .map(({ ref, sha }) => ({ ref, since: times.get(sha) }))
       .filter(({ since }) => since !== null)
       .sort((a, b) => a.since - b.since || (a.ref < b.ref ? -1 : 1));
-    return head === undefined || isOwn(head.ref);
+    return entry ?? null;
+  }
+
+  /** True when the latest listing is read whole and no entry in it comes before this waiter's. */
+  function first() {
+    const entry = headEntry();
+    return entry !== undefined && (entry === null || isOwn(entry.ref));
   }
 
   /** Starts a poll with a new fetch budget. True when this waiter may take the turn. */
@@ -197,7 +209,7 @@ function createQueueWaiter({
       if (since === null) return;
       ownEntry = {
         kind: "land",
-        host: hostname(),
+        host: machineTag(),
         run_id: runId,
         waiting_since: new Date(since).toISOString(),
       };
@@ -236,6 +248,11 @@ function createQueueWaiter({
   return {
     poll,
     stillFirst,
+    /** The run id of the waiter first in the latest listing: null when it has none, undefined while that is unknown. */
+    head: () => {
+      const entry = headEntry();
+      return entry ? entry.ref.slice(QUEUE_PREFIX.length).replace(/\.\d+$/, "") : entry;
+    },
     refresh,
     leave: () => {
       if (sequence > 0) remove(list(`${ownRef}*`).filter(({ ref }) => isOwn(ref)));
@@ -243,4 +260,4 @@ function createQueueWaiter({
   };
 }
 
-module.exports = { createQueueWaiter };
+module.exports = { QUEUE_STALE_MS, createQueueWaiter, machineTag };

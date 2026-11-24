@@ -1,3 +1,10 @@
+## 2026-11-26 — A landing that stops frees main within minutes
+
+- A landing that crashes or whose machine sleeps now frees main within about 10 minutes instead of 3 hours: the lander renews its turn every few minutes while it rebases, checks and pushes, and a lander that lost its turn stops its checks, with every process they started, and pushes nothing. Main moves only in the push that gives back the lander's own lease, so a lander that never learned it lost its turn cannot move main. A waiting landing waits as long as the queue keeps moving.
+- A push to main whose answer was lost counts as landed when main holds it, also once other landings moved main on. A waiting lander whose clock runs ahead no longer takes the lease of a holder that still renews it, also near the end of a turn.
+- A sleep is no time a waiting lander watched a lease, so a landing waiting on the same Mac as the landing that holds the turn leaves that turn alone when the Mac wakes.
+- The checks of a lost turn end with every process they started, also one whose parent already exited, and they end when the lander itself dies.
+
 ## 2026-11-26 — Claude settings failures in server logs
 
 - When Claude settings resolution fails, the server log records which step failed and the failure category without exposing settings contents or raw SDK errors.

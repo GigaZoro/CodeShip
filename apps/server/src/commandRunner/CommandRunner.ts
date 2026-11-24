@@ -28,7 +28,7 @@ import { overrideEnvironment } from "@t3tools/shared/shell";
 import {
   WINDOWS_PROCESS_TREE_FUNCTIONS,
   windowsStopTreeArgs,
-} from "@t3tools/shared/windowsProcessTree";
+} from "@t3tools/shared/windowsProcessTreeScript";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
