@@ -1,3 +1,7 @@
+## 2026-11-24 — Library upgrade instructions corrected
+
+- The weekly library upgrade's instructions now say that its landing step takes only a full commit id. No change to the app.
+
 ## 2026-11-24 — Restart tests of delegated runs no longer hang
 
 - Maintainers: the restart tests of delegated runs drive the server until the delegated run ends, so they pass whichever restarted run starts first instead of hanging about one run in five.
