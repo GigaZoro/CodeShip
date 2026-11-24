@@ -3469,6 +3469,116 @@ it.effect("a task that could not start there is failed once that can be recorded
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+/** Counts the launches this side sends the box. */
+const countingLaunches = Effect.gen(function* () {
+  const nativeFetch = yield* FetchHttpClient.Fetch;
+  const sent = { launches: 0 };
+  const fetch: typeof globalThis.fetch = (input, init) => {
+    const body = init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : null;
+    const rpc: { params?: { name?: string } } = body?.startsWith("{") ? JSON.parse(body) : {};
+    if (rpc.params?.name === "t3_thread_launch") sent.launches += 1;
+    return nativeFetch(input, init);
+  };
+  return { sent, fetch };
+});
+
+const refusedLaunchRequest = (clientRequestId: string) => ({
+  task: "Run the full suite on the box.",
+  target: { environmentId: box.environmentId, providerInstanceId: instanceId, model: "gpt-5.4" },
+  mode: "async",
+  clientRequestId,
+});
+
+it.effect(
+  "a request sent again while its refused launch is still being failed here launches nothing",
+  () =>
+    Effect.gen(function* () {
+      const { sent, fetch } = yield* countingLaunches;
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const thread = yield* makeBoxThread;
+          const b = yield* serveBox(thread);
+          const offers = yield* SubscriptionRef.make<
+            ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+          >([]);
+          const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+          const retries = yield* steppedRetries;
+          const a = yield* makeLaptop(database, offers).pipe(
+            Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
+          );
+          yield* linkTo(a.links, b, "full-access");
+          yield* seedParent(a);
+          yield* Ref.set(
+            thread.afterLaunch,
+            Ref.set(thread.launched, null).pipe(
+              Effect.andThen(Effect.sync(() => b.launches.clear())),
+              Effect.andThen(Effect.die("launch failed")),
+            ),
+          );
+          const sql = Context.get(database, SqlClient.SqlClient);
+          yield* sql.unsafe(
+            "CREATE TRIGGER fail_remote_task_complete BEFORE INSERT ON orchestration_events WHEN NEW.command_id LIKE 'command:remote-task-complete:%' BEGIN SELECT RAISE(ABORT, 'write failed'); END",
+          );
+          const request = refusedLaunchRequest("refused-then-sent-again");
+          expect((yield* a.call("delegate_task", request)).isError).toBe(true);
+          const [open] = yield* a.projections.getOpenRemoteDelegatedTasks;
+          // Failing the task here waits to try again, and the box would now start it.
+          yield* Queue.take(retries.failed);
+          yield* Ref.set(thread.afterLaunch, Effect.void);
+          const again = yield* a.call("delegate_task", request);
+          expect(again.structuredContent).toMatchObject({ taskId: open!.taskId });
+          expect(sent.launches).toBe(1);
+          yield* sql.unsafe("DROP TRIGGER fail_remote_task_complete");
+          yield* Queue.offer(retries.retry, undefined);
+          expect((yield* taskResult(a, open!.taskId))?.status).toBe("failed");
+          expect(yield* Ref.get(thread.launched)).toBeNull();
+          expect(sent.launches).toBe(1);
+        }),
+      ).pipe(
+        Effect.provide(NodeHttpServer.layerTest),
+        Effect.provideService(FetchHttpClient.Fetch, fetch),
+      );
+    }),
+);
+
+it.effect("a request sent again for a task that could not start there launches nothing", () =>
+  Effect.gen(function* () {
+    const { sent, fetch } = yield* countingLaunches;
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        yield* Ref.set(
+          thread.afterLaunch,
+          Ref.set(thread.launched, null).pipe(
+            Effect.andThen(Effect.sync(() => b.launches.clear())),
+            Effect.andThen(Effect.die("launch failed")),
+          ),
+        );
+        const request = refusedLaunchRequest("refused-and-failed");
+        expect((yield* a.call("delegate_task", request)).isError).toBe(true);
+        // The box would now start it.
+        yield* Ref.set(thread.afterLaunch, Effect.void);
+        const again = yield* a.call("delegate_task", request);
+        const { taskId } = again.structuredContent as { taskId: NodeId };
+        expect((yield* taskResult(a, taskId))?.status).toBe("failed");
+        expect(yield* Ref.get(thread.launched)).toBeNull();
+        expect(sent.launches).toBe(1);
+      }),
+    ).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.provideService(FetchHttpClient.Fetch, fetch),
+    );
+  }),
+);
+
 it.effect("cancel ends the task here even when the link is gone", () =>
   Effect.scoped(
     Effect.gen(function* () {

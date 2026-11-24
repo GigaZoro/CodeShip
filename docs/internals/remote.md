@@ -177,7 +177,11 @@ follower starts once a launch answers. A stop sent meanwhile finds no thread the
 so a launch that answers for a task already ended here records a stop it owes its
 new thread (`delegated_task.remote.stop`, keyed by the launch), which the follower
 sends. A launch refused there is stopped there, and the task fails here once
-nothing is left there, a write that fails being retried until it is recorded.
+nothing is left there, a write that fails being retried until it is recorded. The
+same request sent again launches nothing and returns the task, also while the first
+launch is still being sent or failed here, or after it could not start: `delegate_task`
+resolves it to the task first accepted for its key, and of overlapping requests that
+both get past that, only the one whose record command commits sends the launch.
 
 A task with `isolation: "worktree"` branches its child's worktree there from the
 parent checkout's HEAD commit, passed as a SHA `baseRef` with `startFromOrigin`.
