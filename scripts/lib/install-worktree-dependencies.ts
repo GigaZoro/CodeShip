@@ -2,7 +2,7 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import { missingSetupPath, setupTreeDigests } from "./worktree-setup-proof.ts";
+import { missingSetupPath, sealSetupTrees } from "./worktree-setup-proof.ts";
 
 const git = (cwd: string, ...args: string[]) =>
   NodeChildProcess.execFileSync("git", args, {
@@ -241,19 +241,12 @@ export const installWorktreeDependencies = async (
       await NodeFSP.rename(source, target);
     }
     await NodeFSP.rm(cwd, { recursive: true });
-    const digests = await setupTreeDigests(
+    const digests = await sealSetupTrees(
       payload,
       modules,
       AbortSignal.timeout(600_000),
       staging,
-    ).catch((error) => {
-      if (
-        error instanceof Error &&
-        error.message === "Dependency links to the private setup checkout"
-      )
-        return null;
-      throw error;
-    });
+    ).catch(() => null);
     if (!digests) return null;
 
     if (

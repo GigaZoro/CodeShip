@@ -258,21 +258,21 @@ const setup = async () => {
     }
     if (previousDone !== undefined) NodeFS.unlinkSync(doneMarker);
     if (context && priorProof) await NodeFSP.unlink(NodePath.join(context.admin, setupProofName));
-    const modules =
+    const sealed =
       context && (await installWorktreeDependencies(worktree, context.head, staging, install));
-    if (modules) await configureWorktreePrepare(worktree);
+    if (sealed) await configureWorktreePrepare(worktree);
     else await installInPlace();
     requireActive();
     warnAboutStore();
     const links = await linkEnvFiles(projectRoot);
-    const marker = context && modules ? NodeCrypto.randomUUID() + "\n" : "";
-    if (context && modules) {
+    const marker = context && sealed ? NodeCrypto.randomUUID() + "\n" : "";
+    if (context && sealed) {
       await writeSetupProof(context.admin, NodePath.join(claim, "proof"), {
         root: projectRoot,
         checkout,
         head: context.head,
         marker,
-        modules,
+        ...sealed,
         links,
       });
     }

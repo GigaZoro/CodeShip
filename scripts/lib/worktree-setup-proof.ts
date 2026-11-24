@@ -8,6 +8,15 @@ export const setupProofName = "t3-setup-proof-v1";
 export const setupEnvFiles = [".env", "infra/relay/.env"] as const;
 const digestPattern = /^[a-f0-9]{64}$/;
 const maxProofBytes = 128 * 1024;
+// Bit positions are stored in the proof. Keep this order stable.
+const cacheNames = [".cache", ".vite", ".vite-temp", ".vitest-cache"] as const;
+
+type CacheSlots = Record<string, number>;
+interface TreeScan {
+  modules: Record<string, string>;
+  cacheSlots: CacheSlots;
+  additions: string[];
+}
 
 export const missingSetupPath = (error: unknown) => {
   if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
@@ -24,7 +33,9 @@ const scan = function (
   path: typeof NodePath,
   crypto: typeof import("node:crypto"),
   stagingPath: string | undefined,
-) {
+  cacheNames: readonly string[],
+  cacheSlots: CacheSlots | "seal" | undefined,
+): TreeScan {
   const validPath = (name: string) =>
     name.length > 0 &&
     !name.includes("\\") &&
@@ -36,8 +47,20 @@ const scan = function (
         (part) => part !== "" && part !== "." && part !== ".." && part.toLowerCase() !== ".git",
       );
 
+  const sameStat = (left: NodeFS.BigIntStats, right: NodeFS.BigIntStats) =>
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.uid === right.uid &&
+    left.gid === right.gid &&
+    left.birthtimeNs === right.birthtimeNs &&
+    left.ctimeNs === right.ctimeNs &&
+    left.mtimeNs === right.mtimeNs &&
+    left.size === right.size;
   let count = 0;
-  const results: Record<string, string> = {};
+  let totalBytes = 0n;
+  const buffer = Buffer.allocUnsafe(128 * 1024);
+  const results: TreeScan = { modules: {}, cacheSlots: {}, additions: [] };
   for (const name of modules) {
     if (!validPath(name) || !/(^|\/)node_modules$/.test(name))
       throw new Error("Invalid setup output path");
@@ -49,29 +72,42 @@ const scan = function (
         throw new Error("Setup output has a redirected parent");
     }
     const tree = crypto.createHash("sha256");
-    const pending = [""];
+    const pending: Array<string | { file: string; stat: NodeFS.BigIntStats }> = [""];
+    let slots = cacheSlots === "seal" ? 0 : (cacheSlots?.[name] ?? 0);
     while (pending.length) {
       const relative = pending.pop()!;
+      if (typeof relative !== "string") {
+        if (!sameStat(relative.stat, fs.lstatSync(relative.file, { bigint: true })))
+          throw new Error("Setup directory changed while scanning");
+        continue;
+      }
       const file = path.join(base, relative);
       const stat = fs.lstatSync(file, { bigint: true });
       if (stat.ino === 0n || stat.ctimeNs <= 0n)
         throw new Error("Setup entry has no filesystem change stamp");
-      const stamp = [
-        stat.dev,
-        stat.ino,
-        stat.mode,
-        stat.uid,
-        stat.gid,
-        stat.birthtimeNs,
-        stat.mtimeNs,
-        stat.size,
-      ];
-      // Renaming each pre-sealed root changes its ctime. The entries inside retain theirs.
-      if (relative !== "") stamp.push(stat.ctimeNs);
+      const stamp = [stat.dev, stat.ino, stat.mode, stat.uid, stat.gid, stat.birthtimeNs];
+      // A root's immediate child list is sealed by the digest. Root times and size can
+      // change when a reserved cache is added or when setup publishes the root by rename.
+      if (!cacheSlots || relative !== "") stamp.push(stat.mtimeNs, stat.size);
+      if (relative !== "" && (!cacheSlots || !stat.isFile())) stamp.push(stat.ctimeNs);
       let link = "";
       if (stat.isDirectory()) {
         const children = fs.readdirSync(file).sort();
+        if (cacheSlots) pending.push({ file, stat });
+        if (relative === "" && cacheSlots === "seal") {
+          for (const [index, cache] of cacheNames.entries()) {
+            if (!children.includes(cache)) slots |= 1 << index;
+          }
+        }
         for (const child of children) {
+          const index = relative === "" && slots !== 0 ? cacheNames.indexOf(child) : -1;
+          if (index >= 0 && (slots & (1 << index)) !== 0) {
+            const extra = fs.lstatSync(path.join(file, child), { bigint: true });
+            if (!extra.isDirectory() || extra.ino === 0n || extra.ctimeNs <= 0n)
+              throw new Error("Uninspectable setup cache");
+            results.additions.push(name + "/" + child);
+            continue;
+          }
           if (!validPath(child)) throw new Error("Uninspectable setup entry");
           pending.push(relative === "" ? child : relative + "/" + child);
         }
@@ -87,35 +123,72 @@ const scan = function (
               throw new Error("Dependency links to the private setup checkout");
           }
         }
+        if (cacheSlots && !sameStat(stat, fs.lstatSync(file, { bigint: true })))
+          throw new Error("Setup link changed while scanning");
         link = target.toString("base64");
       } else if (!stat.isFile()) {
         throw new Error("Setup output contains a special file");
+      } else if (cacheSlots) {
+        // pnpm can add and remove store aliases at any time, changing a file's ctime.
+        totalBytes += stat.size;
+        if (stat.size > 512n * 1024n ** 2n || totalBytes > 16n * 1024n ** 3n)
+          throw new Error("Setup output exceeds content scan limit");
+        const fd = fs.openSync(
+          file,
+          fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+        );
+        try {
+          if (!sameStat(stat, fs.fstatSync(fd, { bigint: true })))
+            throw new Error("Setup file changed before reading");
+          const content = crypto.createHash("sha256");
+          let remaining = Number(stat.size);
+          while (remaining > 0) {
+            const read = fs.readSync(fd, buffer, 0, Math.min(remaining, buffer.length), null);
+            if (read === 0) throw new Error("Setup file was truncated while reading");
+            content.update(buffer.subarray(0, read));
+            remaining -= read;
+          }
+          if (
+            !sameStat(stat, fs.fstatSync(fd, { bigint: true })) ||
+            !sameStat(stat, fs.lstatSync(file, { bigint: true }))
+          )
+            throw new Error("Setup file changed while reading");
+          link = content.digest("hex");
+        } finally {
+          fs.closeSync(fd);
+        }
       }
       tree.update(JSON.stringify([relative, stamp.join("/"), link]));
       count++;
       if (count + pending.length > 2_000_000) throw new Error("Setup output exceeds entry limit");
     }
-    results[name] = tree.digest("hex");
+    results.modules[name] = tree.digest("hex");
+    results.cacheSlots[name] = slots;
   }
   return results;
 };
 
-export const setupTreeDigests = (
+const scanSetupTrees = (
   root: string,
   modules: readonly string[],
   signal?: AbortSignal,
   stagingPath?: string,
+  cacheSlots?: CacheSlots | "seal",
 ) =>
-  new Promise<Record<string, string>>((resolve, reject) => {
+  new Promise<TreeScan>((resolve, reject) => {
     signal?.throwIfAborted();
     // Keep synchronous filesystem calls off the event loop, including in the single-file CLI.
     const worker = new NodeWorkerThreads.Worker(
       `
         const { parentPort, workerData } = require("node:worker_threads");
         const scan = (${scan.toString()});
-        parentPort.postMessage(scan(workerData.root, workerData.modules, require("node:fs"), require("node:path"), require("node:crypto"), workerData.stagingPath));
+        parentPort.postMessage(scan(workerData.root, workerData.modules, require("node:fs"), require("node:path"), require("node:crypto"), workerData.stagingPath, workerData.cacheNames, workerData.cacheSlots));
       `,
-      { eval: true, execArgv: [], workerData: { root, modules, stagingPath } },
+      {
+        eval: true,
+        execArgv: [],
+        workerData: { root, modules, stagingPath, cacheNames, cacheSlots },
+      },
     );
     const abort = () => {
       void worker.terminate();
@@ -129,6 +202,16 @@ export const setupTreeDigests = (
       reject(new Error(`Setup proof scanner exited without a result (${code})`));
     });
   });
+
+export const sealSetupTrees = async (
+  root: string,
+  modules: readonly string[],
+  signal: AbortSignal,
+  stagingPath?: string,
+) => {
+  const sealed = await scanSetupTrees(root, modules, signal, stagingPath, "seal");
+  return { modules: sealed.modules, cacheSlots: sealed.cacheSlots };
+};
 
 export const setupEnvTarget = async (projectRoot: string, name: string) => {
   const source = NodePath.join(projectRoot, name);
@@ -146,6 +229,7 @@ interface SetupProof {
   readonly head: string;
   readonly marker: string;
   readonly modules: Record<string, string>;
+  readonly cacheSlots?: CacheSlots;
   readonly links: ReadonlyArray<{ readonly name: string; readonly stamp: string }>;
 }
 
@@ -194,6 +278,18 @@ export const readSetupProof = async (admin: string, projectRoot: string, checkou
       ([name, value]) =>
         modulePathPattern.test(name) && typeof value === "string" && digestPattern.test(value),
     ) ||
+    (proof.cacheSlots !== undefined &&
+      (!proof.cacheSlots ||
+        Object.keys(proof.cacheSlots).length !== Object.keys(proof.modules).length ||
+        !Object.keys(proof.modules).every((name) => {
+          const slots = proof.cacheSlots?.[name];
+          return (
+            typeof slots === "number" &&
+            Number.isInteger(slots) &&
+            slots >= 0 &&
+            slots < 1 << cacheNames.length
+          );
+        }))) ||
     !Array.isArray(proof.links) ||
     proof.links.length > setupEnvFiles.length ||
     new Set(proof.links.map((link) => link?.name)).size !== proof.links.length ||
@@ -234,24 +330,29 @@ export const hasSetupOnlyStatus = (proof: SetupProof, status: string) => {
     );
 };
 
-export const matchesSetupFiles = async (proof: SetupProof, cwd: string, signal: AbortSignal) => {
+const inspectSetupFiles = async (proof: SetupProof, cwd: string, signal: AbortSignal) => {
   for (const { name, stamp } of proof.links) {
     const source = await setupEnvTarget(proof.root, name);
     const target = NodePath.join(cwd, name);
     if (!source || (await NodeFSP.realpath(NodePath.dirname(target))) !== NodePath.dirname(target))
-      return false;
+      return null;
     const link = await NodeFSP.lstat(target, { bigint: true });
     if (
       !link.isSymbolicLink() ||
       setupFileStamp(link) !== stamp ||
       (await NodeFSP.readlink(target)) !== source
     )
-      return false;
+      return null;
   }
   const modules = Object.keys(proof.modules);
-  const current = await setupTreeDigests(cwd, modules, signal);
-  return modules.every((name) => current[name] === proof.modules[name]);
+  const current = await scanSetupTrees(cwd, modules, signal, undefined, proof.cacheSlots);
+  return modules.every((name) => current.modules[name] === proof.modules[name])
+    ? current.additions.sort()
+    : null;
 };
+
+export const matchesSetupFiles = async (proof: SetupProof, cwd: string, signal: AbortSignal) =>
+  (await inspectSetupFiles(proof, cwd, signal))?.length === 0;
 
 export const hasSetupDone = async (marker: string, expected: string) => {
   const stat = await NodeFSP.lstat(marker).catch(missingSetupPath);
@@ -263,20 +364,29 @@ export const hasSetupDone = async (marker: string, expected: string) => {
   );
 };
 
+// Returned cache roots must be preserved and revalidated by the release caller.
+export const inspectSetupProof = async (
+  proof: SetupProof,
+  cwd: string,
+  status: string,
+  signal: AbortSignal,
+): Promise<readonly string[] | null> => {
+  if (!hasSetupOnlyStatus(proof, status)) return null;
+  const markerDir = NodePath.join(cwd, ".t3");
+  if (!(await NodeFSP.lstat(markerDir)).isDirectory()) return null;
+  const markers = await NodeFSP.readdir(markerDir);
+  if (
+    markers.length !== 1 ||
+    markers[0] !== "setup-done" ||
+    !(await hasSetupDone(NodePath.join(markerDir, "setup-done"), proof.marker))
+  )
+    return null;
+  return inspectSetupFiles(proof, cwd, signal);
+};
+
 export const matchesSetupProof = async (
   proof: SetupProof,
   cwd: string,
   status: string,
   signal: AbortSignal,
-) => {
-  if (!hasSetupOnlyStatus(proof, status)) return false;
-  const markerDir = NodePath.join(cwd, ".t3");
-  if (!(await NodeFSP.lstat(markerDir)).isDirectory()) return false;
-  const markers = await NodeFSP.readdir(markerDir);
-  return (
-    markers.length === 1 &&
-    markers[0] === "setup-done" &&
-    (await hasSetupDone(NodePath.join(markerDir, "setup-done"), proof.marker)) &&
-    (await matchesSetupFiles(proof, cwd, signal))
-  );
-};
+) => (await inspectSetupProof(proof, cwd, status, signal))?.length === 0;
