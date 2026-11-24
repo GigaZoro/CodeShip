@@ -1,6 +1,7 @@
 ## 2026-11-24 — Recover setup on a follow-up to released worktrees
 
 - Worktree release keeps recoverable ignored build output in a private backup when dependencies are verified. Follow-ups show setup progress and retry an unfinished setup in the recreated checkout.
+- The backup includes new build caches inside verified dependency directories. Release keeps the checkout when it finds directory metadata it cannot preserve.
 
 ## 2026-11-24 — Release worktrees after completed merges
 

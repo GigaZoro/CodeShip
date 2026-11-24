@@ -1,18 +1,23 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Native stamps are part of the worktree setup proof.
 import * as NodeFSP from "node:fs/promises";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeUtil from "node:util";
 import { expect, it } from "@effect/vitest";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import {
+  sealSetupTrees,
   setupFileStamp,
-  setupTreeDigests,
   writeSetupProof,
 } from "../../../../scripts/lib/worktree-setup-proof.ts";
 import { layerRealGit } from "../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { decodeReleaseRequest, queueWorktreeRelease, releaseHold } from "./worktreeRelease.ts";
+
+const runFile = NodeUtil.promisify(NodeChildProcess.execFile);
 
 it.live.skipIf(isWindowsHost)(
   "retains unknown ignored build files without relinking installed dependencies",
@@ -20,6 +25,7 @@ it.live.skipIf(isWindowsHost)(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
+      const platform = yield* HostProcess.Platform;
       const gitDriver = yield* GitVcsDriver.GitVcsDriver;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-worktree-release-" });
       const project = path.join(root, "project");
@@ -57,7 +63,7 @@ it.live.skipIf(isWindowsHost)(
       yield* fs.symlink(env, link);
       const admin = yield* git(checkout, "rev-parse", "--absolute-git-dir");
       const head = yield* git(checkout, "rev-parse", "HEAD");
-      yield* Effect.tryPromise(async () =>
+      yield* Effect.tryPromise(async (signal) =>
         writeSetupProof(admin, path.join(admin, "staging-proof"), {
           root: project,
           checkout: setupFileStamp(
@@ -65,19 +71,22 @@ it.live.skipIf(isWindowsHost)(
           ),
           head,
           marker,
-          modules: await setupTreeDigests(checkout, ["node_modules"]),
+          ...(await sealSetupTrees(checkout, ["node_modules"], signal)),
           links: [
             { name: ".env", stamp: setupFileStamp(await NodeFSP.lstat(link, { bigint: true })) },
           ],
         }),
       );
       const generated = path.join(checkout, "dist");
-      yield* fs.makeDirectory(generated);
+      yield* fs.makeDirectory(generated, { mode: 0o750 });
       yield* fs.writeFileString(path.join(generated, "bundle.js"), "generated");
       yield* fs.writeFileString(
         path.join(generated, "private.txt"),
         "user data in generated directory",
       );
+      const cache = path.join(modules, ".vite-temp");
+      yield* fs.makeDirectory(cache);
+      yield* fs.writeFileString(path.join(cache, "private.txt"), "user data in dependency cache");
       const release = yield* queueWorktreeRelease({
         stateDir: path.join(root, "state"),
         threadId: "thread",
@@ -92,18 +101,49 @@ it.live.skipIf(isWindowsHost)(
       expect(yield* fs.readFileString(path.join(saved, "dist/private.txt"))).toBe(
         "user data in generated directory",
       );
-      expect(yield* fs.exists(path.join(saved, "node_modules"))).toBe(false);
+      expect(
+        yield* fs.readFileString(path.join(saved, "node_modules/.vite-temp/private.txt")),
+      ).toBe("user data in dependency cache");
+      expect(yield* fs.exists(path.join(saved, "node_modules/installed.js"))).toBe(false);
       expect(yield* fs.exists(path.join(saved, ".env"))).toBe(false);
       const refs = path.join(admin, "refs");
       yield* fs.makeDirectory(refs, { recursive: true });
       expect(yield* releaseHold(request, project)).toBeNull();
-      const lateChange = path.join(generated, "created-after-request.txt");
+      const lateCache = path.join(modules, ".vite");
+      yield* fs.makeDirectory(lateCache);
+      expect(yield* releaseHold(request, project)).toBe(
+        "ignored files have changed or lack a preserved copy",
+      );
+      yield* Effect.tryPromise(() => NodeFSP.rmdir(lateCache));
+      const lateChange = path.join(cache, "created-after-request.txt");
       yield* fs.writeFileString(lateChange, "new local data");
       expect(yield* releaseHold(request, project)).toBe(
         "ignored files have changed or lack a preserved copy",
       );
       expect(yield* fs.readFileString(lateChange)).toBe("new local data");
       yield* fs.remove(lateChange);
+      yield* Effect.tryPromise(() =>
+        platform === "darwin"
+          ? runFile("/usr/bin/xattr", ["-w", "com.example.codeship", "private data", cache])
+          : runFile("python3", [
+              "-c",
+              "import os, sys; os.setxattr(sys.argv[1], 'user.codeship', b'private data')",
+              cache,
+            ]),
+      );
+      expect(yield* releaseHold(request, project)).toBe(
+        "ignored files have changed or lack a preserved copy",
+      );
+      yield* Effect.tryPromise(() =>
+        platform === "darwin"
+          ? runFile("/usr/bin/xattr", ["-d", "com.example.codeship", cache])
+          : runFile("python3", [
+              "-c",
+              "import os, sys; os.removexattr(sys.argv[1], 'user.codeship')",
+              cache,
+            ]),
+      );
+      expect(yield* releaseHold(request, project)).toBeNull();
       const privateRefs = path.join(refs, "worktree");
       yield* fs.makeDirectory(privateRefs);
       yield* fs.writeFileString(path.join(privateRefs, "local-work"), head + "\n");

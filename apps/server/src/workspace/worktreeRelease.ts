@@ -15,7 +15,7 @@ import { WORKTREE_RELEASE_DIRECTORY } from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import {
   hasSetupOnlyStatus,
-  matchesSetupProof,
+  inspectSetupProof,
   readSetupProof,
   setupFileStamp,
   setupProofName,
@@ -164,6 +164,54 @@ async function verifySavedLink(source: string, target: string) {
     throw new Error("Ignored file has no matching retained link");
 }
 
+async function verifyPlainDirectories(
+  platform: NodeJS.Platform,
+  directories: readonly string[],
+  signal: AbortSignal,
+) {
+  if (directories.length === 0 || platform === "win32") return;
+  const options = { signal, timeout: 30_000 };
+  const plain = await (async () => {
+    if (platform === "darwin") {
+      // The mode suffix marks xattrs and ACLs. The flags column is "-" for an ordinary directory.
+      const { stdout, stderr } = await runFile("/bin/ls", ["-ldnObe@", ...directories], options);
+      const entries = stdout.trimEnd().split("\n");
+      return (
+        !stderr &&
+        entries.length === directories.length &&
+        entries.every((entry) => /^d[rwxstST-]{9} +\d+ +\d+ +\d+ +- +/.test(entry))
+      );
+    }
+    if (platform !== "linux") return false;
+    // After dropping timestamps and long path records, any PAX header carries unsupported metadata.
+    const { stdout, stderr } = await runFile(
+      "/bin/tar",
+      [
+        "--create",
+        "--file=-",
+        "--format=pax",
+        "--xattrs",
+        "--acls",
+        "--selinux",
+        "--no-recursion",
+        "--pax-option=delete=atime,delete=ctime,delete=mtime,delete=path",
+        "-C",
+        "/",
+        ...directories.map((directory) => "." + directory),
+      ],
+      { ...options, encoding: "buffer", env: { ...process.env, TAR_OPTIONS: "" } },
+    );
+    const end = directories.length * 512;
+    return (
+      stderr.length === 0 &&
+      stdout.length >= end + 512 &&
+      directories.every((_, index) => stdout[index * 512 + 156] === 53) &&
+      stdout.subarray(end, end + 512).every((byte) => byte === 0)
+    );
+  })().catch(() => false);
+  if (!plain) throw new Error("Ignored directory metadata cannot be preserved");
+}
+
 // Only unlink a staged name while the source still owns the same inode. Never recursively remove a backup.
 async function discardUnpublished(source: string, saved: string): Promise<void> {
   if ((await NodeFSP.realpath(saved)) !== saved || (await NodeFSP.realpath(source)) !== source)
@@ -191,7 +239,7 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
   capture?: BackupCapture,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const mac = (yield* HostProcess.Platform) === "darwin";
+  const platform = yield* HostProcess.Platform;
   const saved = yield* fs.realPath(savedFiles);
   if (saved !== savedFiles || saved === cwd || saved.startsWith(cwd + NodePath.sep)) return false;
   const pending: string[] = [];
@@ -213,6 +261,7 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
     const batch = pending.splice(-64);
     const results = yield* Effect.tryPromise((signal) => {
       const symlinks = new Map<string, string[]>();
+      const directories: Array<{ source: string; target: string; stat: NodeFS.BigIntStats }> = [];
       const work = allCompleted(
         batch.map(async (name) => {
           const source = NodePath.join(cwd, name);
@@ -232,6 +281,7 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
               !(await NodeFSP.lstat(target)).isDirectory()
             )
               throw new Error("Missing saved directory");
+            directories.push({ source, target, stat: original });
             return (await NodeFSP.readdir(source)).map((child) => {
               if (child.includes("\uFFFD") || child.toLowerCase() === ".git")
                 throw new Error("Uninspectable directory");
@@ -247,7 +297,7 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
               capture.allocatedBytes += Number(original.blocks * 512n);
             }
           }
-          if (capture && mac && original.isSymbolicLink()) {
+          if (capture && platform === "darwin" && original.isSymbolicLink()) {
             const siblings = symlinks.get(targetParent) ?? [];
             siblings.push(source);
             symlinks.set(targetParent, siblings);
@@ -258,6 +308,31 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
           return [];
         }),
       ).then(async (children) => {
+        await verifyPlainDirectories(
+          platform,
+          directories.map(({ source }) => source),
+          signal,
+        );
+        if (platform !== "win32") {
+          await allCompleted(
+            directories.map(async ({ source, target, stat }) => {
+              const mode = Number(stat.mode & 0o7777n);
+              if (capture && (mode & 0o7700) === 0o700) await NodeFSP.chmod(target, mode);
+              const [current, saved] = await Promise.all([
+                NodeFSP.lstat(source, { bigint: true }),
+                NodeFSP.lstat(target, { bigint: true }),
+              ]);
+              if (
+                setupFileStamp(current) !== setupFileStamp(stat) ||
+                !saved.isDirectory() ||
+                current.mode !== saved.mode ||
+                current.uid !== saved.uid ||
+                current.gid !== saved.gid
+              )
+                throw new Error("Ignored directory metadata has changed or lacks a preserved copy");
+            }),
+          );
+        }
         // Darwin's link(2) follows the source symlink. ln -P links the inode and accepts siblings in one call.
         for (const [parent, sources] of symlinks) {
           await runFile("/bin/ln", ["-P", ...sources, parent], { signal, timeout: 30_000 });
@@ -307,15 +382,19 @@ const setupExtras = Effect.fn("WorktreeRelease.setupExtras")(function* (
   const records = status.split("\0").filter(Boolean);
   if (records.some((record) => !record.startsWith("!! "))) return null;
   const setup = records.filter((record) => hasSetupOnlyStatus(proof, record));
-  const valid = yield* Effect.tryPromise((signal) =>
-    matchesSetupProof(proof, cwd, setup.join("\0"), signal),
+  const additions = yield* Effect.tryPromise((signal) =>
+    inspectSetupProof(proof, cwd, setup.join("\0"), signal),
   ).pipe(
     Effect.timeout("10 minutes"),
-    Effect.orElseSucceed(() => false),
+    Effect.orElseSucceed(() => null),
   );
-  if (!valid) return null;
+  if (additions === null) return null;
   const owned = new Set(setup);
-  return records.filter((record) => !owned.has(record)).join("\0");
+  // Git collapses these roots into the ignored node_modules entry.
+  return [
+    ...records.filter((record) => !owned.has(record)),
+    ...additions.map((name) => `!! ${name}/`),
+  ].join("\0");
 });
 
 const captureSetupExtras = Effect.fn("WorktreeRelease.captureSetupExtras")(function* (cwd: string) {
