@@ -1,3 +1,8 @@
+## 2026-11-24 — Compact density and an accent colour
+
+- Settings → Appearance has a **Compact spacing** option that tightens thread lists, chat message gaps and settings rows on web, desktop and mobile.
+- Pick an accent colour from eight hues, or keep your theme's own. It applies over any theme and meets contrast requirements in light and dark.
+
 ## 2026-11-24 — Open a thread beside the one you are reading
 
 - Right-click a thread and choose **Open in side panel**, or Alt-click (Option-click on Mac) to open it beside your current thread.
