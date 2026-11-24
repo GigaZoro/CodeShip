@@ -28,6 +28,8 @@
         // These fixture scripts are injected into a browser page by path.
         "fixtures/*/*.js",
         "knip-schemas.ts",
+        // The cache task launches each test group in its own Node process.
+        "lib/run-cached-test-group.ts",
         "mobile-behavior/run.ts",
         "mobile-native-client.ts",
         "setup-worktree.ts",
@@ -52,6 +54,9 @@
         "scripts/cli.ts",
         "scripts/fetch-expo-schema.ts",
         "scripts/probe-claude-fork-local-rollback-replay.ts",
+        // run-replay-recorder.ts selects the recorder by filename.
+        "scripts/record-claude-agent-sdk-replay-fixture.ts",
+        "scripts/record-codex-app-server-replay-fixture.ts",
         "scripts/update-test-shard-weights.ts",
         "scripts/verify-background-live.ts",
         "src/provider/testFixtures/*.mjs",
