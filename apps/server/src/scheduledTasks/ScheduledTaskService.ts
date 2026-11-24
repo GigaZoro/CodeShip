@@ -1806,7 +1806,19 @@ export const layer = Layer.effect(
           prompt = excluded.prompt,
           enabled = excluded.enabled,
           schedule_json = excluded.schedule_json,
-          usage_hold_json = CASE WHEN ${keptSchedule !== null ? 1 : 0} THEN scheduled_tasks.usage_hold_json END,
+          usage_hold_json = CASE WHEN ${keptSchedule !== null ? 1 : 0} THEN scheduled_tasks.usage_hold_json
+            ELSE ${
+              task.schedule.type === "fixed_time" && task.nextRunAt !== null
+                ? encodeUsageHold({
+                    until: task.nextRunAt,
+                    heldOccurrence: {
+                      at: task.nextRunAt,
+                      schedule: task.schedule,
+                      timeZone: DateTime.zoneMakeLocal().id,
+                    },
+                  })
+                : null
+            } END,
           project_id = excluded.project_id,
           thread_id = excluded.thread_id,
           workspace_strategy_json = excluded.workspace_strategy_json,
@@ -2477,7 +2489,7 @@ export const layer = Layer.effect(
       const startedAtIso = iso(startedAt);
       const recordTrigger: ScheduledTaskRunTrigger =
         trigger === "scheduled" && fire?.catchUp === true ? "catch_up" : trigger;
-      const runRecordId = `${task.id}:${DateTime.toEpochMillis(startedAt)}:${recordTrigger}`;
+      let runRecordId = `${task.id}:${DateTime.toEpochMillis(startedAt)}:${recordTrigger}`;
       const run = Effect.gen(function* () {
         // Re-read stale poll snapshots so deleted, paused or postponed tasks cannot fire.
         const active = yield* findTask(task.id);
@@ -2554,19 +2566,6 @@ export const layer = Layer.effect(
                   ),
                 );
 
-        yield* insertRunRecord({
-          id: runRecordId,
-          taskId: active.id,
-          trigger: recordTrigger,
-          scheduledFor,
-          startedAt: startedAtIso,
-          completedAt: null,
-          outcome: "running",
-          failover: null,
-          check: fire?.check,
-        });
-        yield* notifyChanged;
-
         const fixedTime = fire?.localFixedTime;
         const demand =
           fixedTime === undefined
@@ -2588,6 +2587,40 @@ export const layer = Layer.effect(
                       )
                     : null,
               };
+        if (fixedTime !== undefined && incarnation !== undefined && scheduledFor !== null) {
+          // Older commands used dispatch time. Reuse one only when its projection proves which
+          // incarnation and occurrence received the prompt.
+          const prior =
+            demand.demandId == null
+              ? undefined
+              : (yield* sql<{ run_id: string }>`
+            SELECT h.run_id FROM scheduled_task_runs h
+            JOIN orchestration_v2_projection_runs r ON r.thread_id = h.thread_id
+            WHERE h.task_id = ${active.id} AND h.trigger IN ('scheduled', 'catch_up')
+              AND h.scheduled_for IN (${scheduledFor}, ${fixedTime.origin?.at ?? null})
+              AND json_extract(r.payload_json, '$.demandId') = ${demand.demandId}
+              AND json_extract(r.payload_json, '$.userMessageId') = 'scheduled-task-message:' ||
+                CASE WHEN h.trigger = 'catch_up' AND substr(h.run_id, -9) = ':catch_up'
+                  THEN substr(h.run_id, 1, length(h.run_id) - 9) || ':scheduled' ELSE h.run_id END
+            LIMIT 1
+          `.pipe(NodeSqliteClient.readOnly))[0];
+          runRecordId =
+            prior?.run_id ??
+            `${active.id}:fixed:${incarnation}:${demand.demandId ?? scheduledFor}:scheduled`;
+        }
+        yield* insertRunRecord({
+          id: runRecordId,
+          taskId: active.id,
+          trigger: recordTrigger,
+          scheduledFor,
+          startedAt: startedAtIso,
+          completedAt: null,
+          outcome: "running",
+          failover: null,
+          check: fire?.check,
+        });
+        yield* notifyChanged;
+
         const fireKey =
           webhook === undefined
             ? launchKey(runRecordId)
@@ -2678,10 +2711,20 @@ export const layer = Layer.effect(
                 Effect.gen(function* () {
                   // A webhook delivery cut by a restart is replayed under its command id, and its
                   // launch finds the chat it started then.
+                  const [receipt] =
+                    fixedTime === undefined
+                      ? []
+                      : yield* sql<{ thread_id: string }>`
+                    SELECT aggregate_id AS thread_id FROM orchestration_command_receipts
+                    WHERE command_id = ${commandId} AND command_type = 'thread.create'
+                      AND aggregate_kind = 'thread' AND status = 'accepted'
+                  `.pipe(NodeSqliteClient.readOnly);
                   const threadId =
-                    webhook === undefined
-                      ? yield* ids.allocate.thread({ projectId: active.projectId })
-                      : undefined;
+                    receipt !== undefined
+                      ? ThreadId.make(receipt.thread_id)
+                      : webhook === undefined
+                        ? yield* ids.allocate.thread({ projectId: active.projectId })
+                        : undefined;
                   if (threadId !== undefined) {
                     yield* nameRunChat(task.id, runRecordId, threadId, active.group ?? null);
                   }
@@ -4212,14 +4255,14 @@ export const layer = Layer.effect(
       );
       const missed = latestMissedFixedTimeRun(task.schedule, now);
       const origin = task.oneMachine ? null : fixedTimeOrigin(task);
-      // The host may still be before its first local slot after a move. Judge the retry
-      // against the next local time, keeping the occurrence the original host admitted.
+      // A slot already past when the retry became eligible cannot supersede its admitted occurrence.
       if (
         catchUp &&
         task.usageHold !== null &&
         origin &&
         missed &&
-        Date.parse(origin.at) > DateTime.toEpochMillis(missed.at)
+        task.nextRunAt !== null &&
+        Date.parse(task.nextRunAt) >= DateTime.toEpochMillis(missed.at)
       ) {
         const next = nextScheduledRunAt(task.schedule, now);
         const nowMs = DateTime.toEpochMillis(now);
@@ -4422,7 +4465,16 @@ export const layer = Layer.effect(
                   ? encodeUsageHold({ until: task.nextRunAt, heldOccurrence: null })
                   : task.usageHold,
             };
-            return isMissedFixedTimeRun(task.schedule, dueAt, now)
+            const following =
+              dueTask.usageHold !== null && !dueTask.oneMachine
+                ? nextScheduledRunAt(
+                    task.schedule,
+                    DateTime.setZone(dueAt, DateTime.zoneMakeLocal()),
+                  )
+                : null;
+            return isMissedFixedTimeRun(task.schedule, dueAt, now) ||
+              (following !== null &&
+                DateTime.toEpochMillis(following) <= DateTime.toEpochMillis(now))
               ? yield* settleMissedRun(dueTask, now)
               : yield* runDueOccurrence(dueTask, now);
           }).pipe(

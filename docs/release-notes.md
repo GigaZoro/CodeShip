@@ -1,3 +1,7 @@
+## 2026-11-24 — Fixed-time retries and recreated tasks
+
+- A delayed task keeps its occurrence when the host moves past a local slot. Editing its schedule starts a new occurrence, and recreating the task can send a fresh prompt even in the same clock tick.
+
 ## 2026-11-24 — Fixed-time task usage accounting
 
 - A local task delayed by an account usage limit keeps its original scheduled occurrence across retries, restarts, and time-zone changes. Older retries with insufficient timing information count as unknown.

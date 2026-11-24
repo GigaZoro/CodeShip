@@ -1055,6 +1055,50 @@ it.effect.each([
 );
 
 it.effect.each([
+  ...[false, true].map((late) => ({
+    from: "Europe/Kyiv",
+    to: "Europe/London",
+    first: "2026-11-10T05:00Z",
+    retry: "2026-11-10T07:25Z",
+    last: "2026-11-10T08:00Z",
+    next: "2026-11-11T07:00Z",
+    legacy: "",
+    late,
+    probe: "move-after-slot",
+  })),
+  {
+    from: "Europe/Kyiv",
+    to: "Europe/London",
+    first: "2026-11-10T05:00Z",
+    retry: "2026-11-10T06:50Z",
+    last: "2026-11-10T08:00Z",
+    next: "2026-11-11T07:00Z",
+    legacy: "",
+    late: true,
+    probe: "superseded",
+  },
+  {
+    from: "UTC",
+    to: "UTC",
+    first: "2026-11-10T07:00Z",
+    retry: "2026-11-10T09:00Z",
+    last: "2026-11-10T09:30Z",
+    next: "2026-11-11T09:00Z",
+    legacy: "",
+    late: false,
+    probe: "reschedule",
+  },
+  {
+    from: "Europe/Kyiv",
+    to: "Europe/London",
+    first: "2026-11-10T05:00Z",
+    retry: "2026-11-10T07:00Z",
+    last: "2026-11-10T07:30Z",
+    next: "2026-11-11T07:00Z",
+    legacy: "migrate",
+    late: true,
+    probe: "migrate",
+  },
   {
     from: "Europe/London",
     to: "UTC",
@@ -1096,10 +1140,11 @@ it.effect.each([
     late: true,
   })),
 ])(
-  "admits the held fixed time from $from after restart in $to (legacy=$legacy, late=$late)",
+  "admits the held fixed time from $from after restart in $to (retry=$retry, legacy=$legacy, late=$late)",
   (scenario) =>
     Effect.gen(function* () {
       const { from, to, first, retry, last, next, legacy, late } = scenario;
+      const probe = "probe" in scenario ? scenario.probe : undefined;
       yield* Effect.acquireRelease(
         Effect.sync(() => vi.stubEnv("TZ", from)),
         () => Effect.sync(() => vi.unstubAllEnvs()),
@@ -1147,7 +1192,23 @@ it.effect.each([
         });
       expect((yield* poll(Date.parse(first))).nextRunAt).toBe(iso(retry));
       const sql = yield* SqlClient.SqlClient;
-      if (legacy) {
+      if (probe === "move-after-slot") yield* TestClock.setTime(Date.parse("2026-11-10T07:22Z"));
+      if (probe === "reschedule") {
+        yield* TestClock.setTime(Date.parse("2026-11-10T07:05Z"));
+        yield* Effect.gen(function* () {
+          const svc = yield* ScheduledTaskService.ScheduledTaskService;
+          const edited = yield* svc.upsert(
+            { ...input, id: task.id, schedule: { type: "fixed_time", timeOfDay: "09:00" } },
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
+          expect(edited.task.nextRunAt).toBe(iso(retry));
+        }).pipe(Effect.provide(layer));
+      }
+      if (legacy === "migrate") {
+        yield* sql`DROP TRIGGER scheduled_task_clear_usage_hold`;
+        yield* sql`ALTER TABLE scheduled_tasks DROP COLUMN incarnation_id`;
+        yield* sql`ALTER TABLE scheduled_tasks DROP COLUMN usage_hold_json`;
+      } else if (legacy) {
         yield* sql`UPDATE scheduled_tasks SET usage_hold_json = ${legacy === "history" ? sql`NULL` : sql`json_remove(usage_hold_json, '$.heldOccurrence.timeZone')`} WHERE task_id = ${task.id}`;
       }
       vi.stubEnv("TZ", to);
@@ -1156,7 +1217,11 @@ it.effect.each([
       yield* Effect.gen(function* () {
         const service = yield* ScheduledTaskService.ScheduledTaskService;
         const edit = yield* service.upsert(
-          { ...input, id: task.id, schedule: { type: "fixed_time", timeOfDay: "7:00" } },
+          {
+            ...input,
+            id: task.id,
+            schedule: { type: "fixed_time", timeOfDay: probe === "reschedule" ? "9:00" : "7:00" },
+          },
           ScheduledTaskService.CHANGED_IN_APP,
         );
         expect(edit.task.nextRunAt).toBe(iso(last));
@@ -1172,11 +1237,18 @@ it.effect.each([
           "scheduled-task",
           HERE_ENVIRONMENT_ID,
           task.id,
-          row!.incarnation_id,
+          row!.incarnation_id ?? task.createdAt,
           "scheduled",
           iso(at),
         );
-      expect(demands).toEqual([legacy ? null : demand(first), demand(next)]);
+      expect(demands).toEqual([
+        legacy
+          ? null
+          : demand(
+              probe === "reschedule" ? retry : probe === "superseded" ? "2026-11-10T07:00Z" : first,
+            ),
+        demand(next),
+      ]);
     }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
 );
 
