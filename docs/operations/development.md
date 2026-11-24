@@ -241,7 +241,9 @@ On a large machine a run takes about as long as its slowest step, usually
 knip's exports pass at about 10 s. Pass `--concurrency <n>` or set `CHECK_CHANGED_CONCURRENCY` to
 change the limit (`1` runs the steps one by one). A step that runs past `--timeout <seconds>` or
 `CHECK_CHANGED_TIMEOUT` (default 900) is killed with every process it started and reported as
-`TIMEOUT`, not as a failing check. Test groups run concurrently within the test step's worker
+`TIMEOUT`, not as a failing check. A run whose checkout changed while it ran fails and lists the
+changed paths. One nobody edited was written inside the checkout by a check or a tool, which should
+write under the system temp folder or a gitignored folder instead. Test groups run concurrently within the test step's worker
 budget. Server groups run one at a time alongside other packages. If Vite+ interrupts an in-flight
 group after another group fails, the test step runs it again and reports failures across the full
 selection. Each run uses a private copy of the cache kept for its HEAD. When the test step ends,

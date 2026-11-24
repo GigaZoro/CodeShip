@@ -37,6 +37,7 @@ import noRpcPermissionBypass from "./rules/no-rpc-permission-bypass.ts";
 import noUnscopedHas from "./rules/no-unscoped-has.ts";
 import noWallClockInTests from "./rules/no-wall-clock-in-tests.ts";
 import noWildcardListenInTests from "./rules/no-wildcard-listen-in-tests.ts";
+import noCheckoutTempDirInTests from "./rules/no-checkout-temp-dir-in-tests.ts";
 import preferCatchTags from "./rules/prefer-catch-tags.ts";
 import preferEffectFn from "./rules/prefer-effect-fn.ts";
 import requireCenteredScrollGutter from "./rules/require-centered-scroll-gutter.ts";
@@ -86,6 +87,7 @@ export default definePlugin({
     "no-unscoped-has": noUnscopedHas,
     "no-wall-clock-in-tests": noWallClockInTests,
     "no-wildcard-listen-in-tests": noWildcardListenInTests,
+    "no-checkout-temp-dir-in-tests": noCheckoutTempDirInTests,
     "prefer-catch-tags": preferCatchTags,
     "prefer-effect-fn": preferEffectFn,
     "require-centered-scroll-gutter": requireCenteredScrollGutter,

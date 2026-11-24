@@ -13,12 +13,13 @@ import * as Logger from "effect/Logger";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as ServerConfig from "../config.ts";
+import { pathEntryTempRoot } from "../serverTemp.testkit.ts";
 import { makeCodexAppServerSpawnCommand } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { classifyScope, make, ownedAgentSlice, type ScopeState } from "./agentScope.ts";
 
-// A relative directory keeps PATH free of the drive colon its POSIX delimiter would split.
-const makeBinDirectory = () => NodeFS.mkdtempSync(".t3-agent-scope-");
+const makeBinDirectory = () =>
+  NodeFS.mkdtempSync(NodePath.join(pathEntryTempRoot(), "agent-scope-"));
 
 const running: ScopeState = {
   loadState: "loaded",

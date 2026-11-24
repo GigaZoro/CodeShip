@@ -17,6 +17,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as NetService from "@t3tools/shared/Net";
 import * as ServerConfig from "../config.ts";
+import { pathEntryTempRoot } from "../serverTemp.testkit.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import {
   AGENT_DEVICE_VERSION,
@@ -583,8 +584,10 @@ it.effect("keeps local Android and iOS available without ffmpeg", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-device-ffmpeg-" });
-    // A relative PATH entry has no drive colon for the darwin delimiter to split.
-    const binDir = yield* fs.makeTempDirectoryScoped({ directory: ".", prefix: ".t3-device-bin-" });
+    const binDir = yield* fs.makeTempDirectoryScoped({
+      directory: pathEntryTempRoot(),
+      prefix: "device-bin-",
+    });
     yield* fs.writeFileString(`${binDir}/xcrun`, "#!/bin/sh\nexit 0\n");
     yield* fs.chmod(`${binDir}/xcrun`, 0o755);
     for (const [directory, tool] of [

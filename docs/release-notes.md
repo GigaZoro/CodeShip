@@ -1,3 +1,8 @@
+## 2026-11-24 — Name the files that changed during check:changed
+
+- When files change while `vp run check:changed` runs, its failure now lists the changed paths, up to 20, so the writer can be found without another full run.
+- Tests that build fake binaries or a throwaway Knip project now do it in gitignored folders, where check:changed does not count them as changed files, and the `t3code/no-checkout-temp-dir-in-tests` lint rule stops tests from making temp folders elsewhere in the checkout.
+
 ## 2026-11-24 — Weekly library upgrades are ready
 
 - A weekly task is ready to move every library, Node, pnpm, Electron, the Rust crates' dependencies and the GitHub Actions to their newest stable releases, the day after the sync from T3 Code. It takes only releases at least 3 days old (a younger one only when it fixes a known vulnerability), reads every changed install script before it runs, ports local patches, and lands only after the full checks and two reviewers pass. The mobile app's native packages keep following T3 Code, and a version it cannot take yet is recorded as a hold and retried every week. No change to the app.

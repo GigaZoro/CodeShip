@@ -7,6 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import packageJson from "../../package.json" with { type: "json" };
+import { pathEntryTempRoot } from "../serverTemp.testkit.ts";
 import {
   resolveHostCliCommand,
   resolveRootCliCommand,
@@ -16,10 +17,12 @@ import {
 const isWindows = HostProcess.Platform.defaultValue() === "win32";
 
 it.layer(NodeServices.layer)("root CLI commands", (it) => {
-  // A relative PATH entry has no drive colon for the POSIX delimiter the tests run under to split.
   const makePathDirectory = Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    return yield* fs.makeTempDirectoryScoped({ directory: ".", prefix: ".t3-invocation-" });
+    return yield* fs.makeTempDirectoryScoped({
+      directory: pathEntryTempRoot(),
+      prefix: "invocation-",
+    });
   });
 
   const rootCommand = (input: {
