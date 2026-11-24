@@ -1,3 +1,8 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Exercise native Windows realpath results on every test host.
+import * as NodeFSP from "node:fs/promises";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import { vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as FileSystem from "effect/FileSystem";
@@ -19,6 +24,8 @@ import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import { makeAcpRegistryAuth } from "./auth.ts";
 import * as AcpRegistrySupport from "./AcpRegistrySupport.ts";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+
+vi.mock("node:fs/promises", { spy: true });
 
 const decodeSettings = Schema.decodeSync(AcpRegistrySettings);
 const instanceId = ProviderInstanceId.make("acp-auth-test");
@@ -290,6 +297,37 @@ it.effect("keeps local credentials separate from a matching registry agent ID", 
     assert.deepEqual(local.controller.credentialBinding, alias.controller.credentialBinding);
     assert.notDeepEqual(local.controller.credentialBinding, registry.controller.credentialBinding);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("binds Windows local sign-in to the canonical executable name", () =>
+  Effect.gen(function* () {
+    const selected = String.raw`C:\agents\Agent.exe`;
+    const alias = String.raw`C:\AGENTS\Agent.exe`;
+    const distinct = String.raw`C:\agents\agent.exe`;
+    using realpath = vi
+      .spyOn(NodeFSP, "realpath")
+      .mockResolvedValueOnce(selected)
+      .mockResolvedValueOnce(selected)
+      .mockResolvedValueOnce(distinct);
+    const binding = (commandPath: string) =>
+      makeHarness(
+        browserMethod,
+        false,
+        decodeSettings({ source: "local", commandPath, commandArgs: ["--acp"] }),
+      ).pipe(Effect.map(({ controller }) => controller.credentialBinding));
+    const first = yield* binding(selected);
+    assert.deepEqual(yield* binding(alias), first);
+    assert.notDeepEqual(yield* binding(distinct), first);
+    assert.deepEqual(
+      realpath.mock.calls.map(([input]) => input),
+      [selected, alias, distinct],
+    );
+  }).pipe(
+    Effect.scoped,
+    Effect.provideService(HostProcess.Platform, "win32"),
+    Effect.provideService(SpawnExecutableResolution, (command) => command),
+    Effect.provide(NodeServices.layer),
+  ),
 );
 
 it.effect.skipIf(isWindowsHost)(

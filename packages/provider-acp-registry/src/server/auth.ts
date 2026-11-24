@@ -66,13 +66,10 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
       resolveExecutable(options.settings.commandPath, platform, options.environment, options.cwd) ??
       options.settings.commandPath;
     const path = yield* Effect.tryPromise(() => NodeFSP.realpath(executable)).pipe(
-      Effect.orElseSucceed(() => executable),
+      Effect.orElseSucceed(() => (platform === "win32" ? executable.toLowerCase() : executable)),
     );
     // Local launcher arguments can identify different agents and can contain secrets.
-    const command = encodeCommand([
-      platform === "win32" ? path.toLowerCase() : path,
-      ...options.settings.commandArgs,
-    ]);
+    const command = encodeCommand([path, ...options.settings.commandArgs]);
     const digest = yield* crypto
       .digest("SHA-256", new TextEncoder().encode(command))
       .pipe(Effect.map(Hex.encode), Effect.orDie);
