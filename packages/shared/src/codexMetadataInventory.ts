@@ -26,9 +26,11 @@ export async function codexMetadataInventory(directory: string): Promise<string>
       throw new Error(`Invalid native Codex package member: ${member}`);
     }
     const stat = await NodeFSP.stat(file);
+    const posixExecutable = (stat.mode & 0o111) !== 0 && !member.endsWith(".exe");
+    if (posixExecutable) await NodeFSP.access(file, NodeFS.constants.X_OK);
     const hash = NodeCrypto.createHash("sha256");
     for await (const chunk of NodeFS.createReadStream(file)) hash.update(chunk);
-    const executable = member.endsWith(".exe") || (stat.mode & 0o111) !== 0;
+    const executable = member.endsWith(".exe") || posixExecutable;
     rows.push(`${executable ? "x" : "f"} ${hash.digest("hex")} ${member}`);
   }
   if (!rows.length) throw new Error(`Empty Codex package at ${directory}`);

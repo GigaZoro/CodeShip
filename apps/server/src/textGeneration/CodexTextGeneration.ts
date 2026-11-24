@@ -76,9 +76,11 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     !resolveRuntime && codexConfig.binaryPath !== defaultCodexBinary
       ? codexConfig.binaryPath
       : undefined;
-  const metadataBinaryPath =
-    hostOverride ??
-    (nativeCustomLauncher ? undefined : yield* resolvePackagedCodexMetadataBinary());
+  const selectedMetadataPath = yield* Effect.result(
+    hostOverride !== undefined || nativeCustomLauncher
+      ? Effect.succeed(hostOverride)
+      : resolvePackagedCodexMetadataBinary(),
+  );
   const platform = yield* HostProcess.Platform;
 
   const resolveMetadataBinary = Effect.fn("CodexTextGeneration.resolveMetadataBinary")(function* (
@@ -324,6 +326,9 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     TextGenerationError,
     S["DecodingServices"]
   > {
+    const metadataBinaryPath = yield* Effect.fromResult(selectedMetadataPath).pipe(
+      Effect.mapError((cause) => new TextGenerationError({ operation, detail: cause.message })),
+    );
     const imagePaths = yield* materializeImageAttachments(attachments);
     const schemaJson = yield* encodeJsonForOperation(
       operation,

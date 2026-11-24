@@ -305,7 +305,10 @@ t3_contender=
 trap t3_release_lock EXIT
 trap 'exit 143' HUP INT TERM
 t3_acquire_lock "$1" "$2" 360 || exit 1
-if [ -n "$3" ]; then t3_promote_runtime "$3"; fi`,
+if [ -n "$3" ]; then
+  if t3_runtime_ready "$t3_root" "$2"; then exit 10; fi
+  t3_promote_runtime "$3"
+fi`,
         "sh",
         parent,
         input.version,
@@ -318,6 +321,8 @@ if [ -n "$3" ]; then t3_promote_runtime "$3"; fi`,
         (cause) => new PinnedRuntimeInstallError({ step: "restoring the pinned runtime", cause }),
       ),
     );
+  // Another installer published a complete runtime while this one was downloading.
+  if (result.code === 10) return yield* input.validate(paths);
   if (result.code !== 0)
     return yield* new PinnedRuntimeInstallError({
       step: "restoring the pinned runtime",
@@ -412,7 +417,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
             new PinnedRuntimeInstallError({ step: "recording the completed install", cause }),
         ),
       );
-    if (versionDirExists) {
+    if (input.platform !== "win32" || versionDirExists) {
       yield* pinnedRuntimeTransaction(input, paths, stagingDir);
       return paths;
     }

@@ -144,6 +144,7 @@ const withPackagedWslHarness = <A, E, R>(
     readonly wsl: (
       context: PackagedWslHarnessContext,
     ) => DesktopWslEnvironment.DesktopWslEnvironmentTestStub;
+    readonly metadataRequired?: boolean;
     readonly forbidFallback?: string;
     readonly cleanupLegacy?: Effect.Effect<void>;
     readonly forbidCleanup?: string;
@@ -164,8 +165,17 @@ const withPackagedWslHarness = <A, E, R>(
     });
     const archivePath = path.join(baseDir, "wsl-runtime.tar.gz");
     const hashPath = `${archivePath}.sha256`;
-    const mountedAppRoot = "/mnt/c/app.asar.unpacked";
-    const mountedEntryPath = path.join(baseDir, "app.asar.unpacked/apps/server/dist/bin.mjs");
+    const mountedAppRoot = "/mnt/c/userdata/wsl-server-tree/1.2.3";
+    const extractedRoot = path.join(baseDir, "userdata/wsl-server-tree/1.2.3");
+    const mountedEntryPath = path.join(extractedRoot, "apps/server/dist/bin.mjs");
+    const installedDist = path.join(baseDir, "server.asar/apps/server/dist");
+    yield* fileSystem.makeDirectory(installedDist, { recursive: true });
+    if (input.metadataRequired) {
+      yield* fileSystem.writeFileString(
+        path.join(installedDist, "codex-metadata.files"),
+        "required",
+      );
+    }
     yield* fileSystem.makeDirectory(path.dirname(mountedEntryPath), { recursive: true });
     yield* fileSystem.writeFileString(mountedEntryPath, "");
     yield* fileSystem.writeFileString(archivePath, "archive");
@@ -190,7 +200,7 @@ const withPackagedWslHarness = <A, E, R>(
           }),
         )
       : DesktopWslServerTree.layerTest({
-          result: { ok: true, root: path.join(baseDir, "app.asar.unpacked") },
+          result: { ok: true, root: extractedRoot },
           cleanupLegacy: input.cleanupLegacy ?? Effect.void,
         });
 
@@ -494,34 +504,44 @@ describe("DesktopBackendConfiguration", () => {
     );
   });
 
-  it.effect("resolveWsl falls back to the mounted runtime when archive staging fails", () => {
-    const observedNodePtyRoots: string[] = [];
-    return withPackagedWslHarness(
-      {
-        archiveHash: "b".repeat(64),
-        wsl: () => ({
-          prepareRuntime: () => ({ ok: false, reason: "archive is corrupt" }),
-          invalidateRuntime: () => Effect.die("failed staging must not invalidate a runtime"),
-          ensureNodePty: (_distro, root) => {
-            observedNodePtyRoots.push(root);
-            return { ok: true, nodePath: "/usr/bin/node", resolvedPath: "/usr/bin:/bin" };
-          },
-        }),
-      },
-      ({ mountedAppRoot, mountedEntryPath }) =>
-        Effect.gen(function* () {
-          const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
-          const config = yield* configuration.resolveWsl({ port: 5000, distro: "Ubuntu" });
+  it.effect.each([true, false])(
+    "resolveWsl falls back after staging fails with metadata required=%s",
+    (metadataRequired) => {
+      const observedNodePtyRoots: string[] = [];
+      return withPackagedWslHarness(
+        {
+          archiveHash: "b".repeat(64),
+          metadataRequired,
+          wsl: () => ({
+            prepareRuntime: () => ({ ok: false, reason: "archive is corrupt" }),
+            invalidateRuntime: () => Effect.die("failed staging must not invalidate a runtime"),
+            ensureNodePty: (_distro, root) => {
+              observedNodePtyRoots.push(root);
+              return { ok: true, nodePath: "/usr/bin/node", resolvedPath: "/usr/bin:/bin" };
+            },
+          }),
+        },
+        ({ mountedAppRoot, mountedEntryPath }) =>
+          Effect.gen(function* () {
+            const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+            const config = yield* configuration.resolveWsl({ port: 5000, distro: "Ubuntu" });
 
-          assert.deepEqual(observedNodePtyRoots, [mountedAppRoot]);
-          assert.equal(config.entryPath, mountedEntryPath);
-          assert.include(config.args, "/usr/bin/node");
-          assert.include(config.args, `${mountedAppRoot}/apps/server/dist/bin.mjs`);
-          assert.isUndefined(config.wslRuntimeId);
-          assert.isTrue(Option.isNone(config.preflightFailure));
-        }),
-    );
-  });
+            assert.deepEqual(observedNodePtyRoots, [mountedAppRoot]);
+            assert.equal(config.entryPath, mountedEntryPath);
+            assert.include(config.args, "/usr/bin/node");
+            assert.include(config.args, `${mountedAppRoot}/apps/server/dist/bin.mjs`);
+            assert.deepEqual(
+              config.args.filter((arg) =>
+                arg.startsWith("T3CODE_WSL_CODEX_METADATA_RUNTIME_ROOT="),
+              ),
+              metadataRequired ? ["T3CODE_WSL_CODEX_METADATA_RUNTIME_ROOT="] : [],
+            );
+            assert.isUndefined(config.wslRuntimeId);
+            assert.isTrue(Option.isNone(config.preflightFailure));
+          }),
+      );
+    },
+  );
 
   it.effect("resolveWsl retires a staged runtime whose executable does not start", () => {
     const archiveHash = "c".repeat(64);
@@ -532,6 +552,7 @@ describe("DesktopBackendConfiguration", () => {
     return withPackagedWslHarness(
       {
         archiveHash,
+        metadataRequired: true,
         wsl: () => ({
           prepareRuntime: () => ({ ok: true, linuxAppRoot: stagedAppRoot }),
           invalidateRuntime: (_distro, runtimeId) =>
@@ -558,6 +579,7 @@ describe("DesktopBackendConfiguration", () => {
           assert.include(config.args, "/usr/bin/node");
           assert.include(config.args, `${mountedAppRoot}/apps/server/dist/bin.mjs`);
           assert.notInclude(config.args, `${stagedAppRoot}/t3`);
+          assert.include(config.args, `T3CODE_WSL_CODEX_METADATA_RUNTIME_ROOT=${stagedAppRoot}`);
           assert.equal(config.entryPath, mountedEntryPath);
           assert.isUndefined(config.wslRuntimeId);
           assert.isTrue(Option.isNone(config.preflightFailure));
@@ -612,6 +634,9 @@ describe("DesktopBackendConfiguration", () => {
         const entryPath = path.join(baseDir, "apps/server/dist/bin.mjs");
         yield* fileSystem.makeDirectory(path.dirname(entryPath), { recursive: true });
         yield* fileSystem.writeFileString(entryPath, "");
+        yield* fileSystem.makeDirectory(path.join(baseDir, "server.asar/apps/server/dist"), {
+          recursive: true,
+        });
 
         const nodePath = "/home/test user's/.nvm/versions/node/v22.0.0/bin/node";
         const linuxAppRoot = "/tmp/t3 code's launch";

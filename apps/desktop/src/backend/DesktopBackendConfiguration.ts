@@ -1,3 +1,7 @@
+import {
+  CODEX_METADATA_INVENTORY,
+  WSL_CODEX_METADATA_RUNTIME_ROOT_ENV,
+} from "@t3tools/shared/cliRelease";
 import { t } from "@t3tools/shared/i18n";
 import * as NodeOS from "node:os";
 
@@ -252,6 +256,7 @@ type WslPreflightRuntime =
       // Launch the exact Node path probed with node-pty, even if later PATH lookup would resolve another version.
       readonly nodePath: string;
       readonly linuxEntryPath: string;
+      readonly codexMetadataRuntimeRoot?: string;
     };
 
 interface WslPreflightSuccess {
@@ -379,7 +384,13 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
       : ({ ok: true, windowsEntryPath, linuxAppRoot: mountedAppRoot.value } as const);
   });
 
-  let stagedFailure: { readonly runtimeId?: string; readonly reason: string } | undefined;
+  let stagedFailure:
+    | {
+        readonly runtimeId?: string;
+        readonly linuxAppRoot?: string;
+        readonly reason: string;
+      }
+    | undefined;
   const failedStaged = (failure: { readonly reason: string }) =>
     ({
       _tag: "Failed",
@@ -407,7 +418,11 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
         "The staged WSL runtime did not start; retrying from the mounted server tree.",
         { reason: stagedProbe.reason },
       );
-      stagedFailure = { runtimeId: input.runtimeArchive.runtimeId, reason: stagedProbe.reason };
+      stagedFailure = {
+        runtimeId: input.runtimeArchive.runtimeId,
+        linuxAppRoot: runtime.linuxAppRoot,
+        reason: stagedProbe.reason,
+      };
     } else {
       stagedFailure = { reason: runtime.reason };
       yield* Effect.logWarning(
@@ -440,6 +455,16 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
     yield* wslEnv.invalidateRuntime(runningDistro, stagedFailure.runtimeId);
   }
 
+  // The installed Windows ASAR declares what the distribution requires, even if the loose
+  // extraction is damaged. Its Windows executables cannot run inside the Linux backend.
+  const requiresCodexMetadata =
+    environment.isPackaged &&
+    (yield* fileSystem.readDirectory(environment.path.dirname(environment.backendEntryPath)).pipe(
+      Effect.match({
+        onFailure: () => true,
+        onSuccess: (entries) => entries.includes(CODEX_METADATA_INVENTORY),
+      }),
+    ));
   return {
     _tag: "Ready",
     runningDistro,
@@ -448,6 +473,9 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
       kind: "node-script",
       nodePath: nodePtyResult.nodePath,
       linuxEntryPath: `${mounted.linuxAppRoot}/apps/server/dist/bin.mjs`,
+      ...(requiresCodexMetadata
+        ? { codexMetadataRuntimeRoot: stagedFailure?.linuxAppRoot ?? "" }
+        : {}),
     },
     resolvedPath: nodePtyResult.resolvedPath,
   } as const;
@@ -708,6 +736,9 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
       "--exec",
       "env",
       `PATH=${launchPath}`,
+      ...(runtime.kind === "node-script" && runtime.codexMetadataRuntimeRoot !== undefined
+        ? [`${WSL_CODEX_METADATA_RUNTIME_ROOT_ENV}=${runtime.codexMetadataRuntimeRoot}`]
+        : []),
       ...command,
       "--bootstrap-fd",
       "0",

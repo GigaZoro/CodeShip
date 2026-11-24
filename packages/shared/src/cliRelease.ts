@@ -39,6 +39,8 @@ export function cliInstallCommand(
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 // Release staging also embeds this inventory in the desktop server archive.
 export const CODEX_METADATA_INVENTORY = "codex-metadata.files";
+// For the mounted WSL backend, an empty value means the distribution requires an unavailable sidecar.
+export const WSL_CODEX_METADATA_RUNTIME_ROOT_ENV = "T3CODE_WSL_CODEX_METADATA_RUNTIME_ROOT";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
 
 // Keep archive keys aligned with the Linux matrix, Windows ARM64 build, and cli_archive rows in release.yml.

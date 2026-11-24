@@ -7,11 +7,15 @@ import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
+import { cliArchiveFileName, cliArchiveTarCommand } from "@t3tools/shared/cliRelease";
+import { runtimePromotion } from "@t3tools/shared/runtimePromotion";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ProcessRunner from "../processRunner.ts";
@@ -26,7 +30,10 @@ import {
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
 const version = "1.2.3";
-const archiveName = `t3-${version}-linux-x64.tar.gz`;
+const installPlatform = isWindowsHost ? "win32" : "linux";
+const archiveName = cliArchiveFileName(version, isWindowsHost ? "win32-x64" : "linux-x64");
+const entryName = isWindowsHost ? "t3.exe" : "t3";
+const tarCommand = cliArchiveTarCommand(installPlatform, HostProcess.Environment.defaultValue());
 const archiveBytes = new TextEncoder().encode("not really a tarball");
 const archiveHex = (bytes: Uint8Array) =>
   Effect.promise(() => crypto.subtle.digest("SHA-256", bytes)).pipe(
@@ -57,10 +64,12 @@ const extractingRunner = (fs: FileSystem.FileSystem, path: Path.Path, commands: 
         }
         const targetIndex = input.args.indexOf("-C");
         const stagingDir = input.args[targetIndex + 1];
-        if (input.command !== "tar" || stagingDir === undefined) {
+        if (input.command !== tarCommand || stagingDir === undefined) {
           return yield* Effect.die(`unexpected command ${input.command}`);
         }
-        yield* fs.writeFileString(path.join(stagingDir, "t3"), "#!/bin/sh\n").pipe(Effect.orDie);
+        yield* fs
+          .writeFileString(path.join(stagingDir, entryName), "#!/bin/sh\n")
+          .pipe(Effect.orDie);
         return {
           stdout: "",
           stderr: "",
@@ -73,6 +82,93 @@ const extractingRunner = (fs: FileSystem.FileSystem, path: Path.Path, commands: 
         };
       }),
   });
+
+it.live.skipIf(isWindowsHost)(
+  "serializes first publication with a shell installer already promoting",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped();
+      const paths = pinnedRuntimePaths(path, baseDir, version, "linux");
+      const versions = path.dirname(paths.versionDir);
+      yield* fs.makeDirectory(versions, { recursive: true });
+      const staged = yield* fs.makeTempDirectory({ directory: versions, prefix: ".staging-" });
+      yield* fs.writeFileString(path.join(staged, "t3"), "#!/bin/sh\nexit 0\n");
+      yield* fs.chmod(path.join(staged, "t3"), 0o755);
+      yield* fs.writeFileString(path.join(staged, ".install-complete"), version);
+      const allowRename = yield* Deferred.make<void>();
+      const peer = yield* ChildProcess.make(
+        "sh",
+        [
+          "-c",
+          `set -eu
+${runtimePromotion}
+trap t3_release_lock EXIT
+t3_acquire_lock "$1" "$2" 5
+mv() {
+  if [ "$1" = "$t3_staged" ]; then echo ready; read -r _; fi
+  command mv "$@"
+}
+t3_promote_runtime "$3"`,
+          "sh",
+          versions,
+          version,
+          staged,
+        ],
+        {
+          stdin: Stream.fromEffect(Deferred.await(allowRename).pipe(Effect.as("go\n"))).pipe(
+            Stream.encodeText,
+          ),
+        },
+      );
+      yield* peer.stdout.pipe(Stream.runHead);
+      // Signal the first publisher when the service actually waits on its claim.
+      yield* fs.writeFileString(
+        path.join(baseDir, "sleep"),
+        '#!/bin/sh\necho waiting\nexec /bin/sleep "$@"\n',
+      );
+      yield* fs.chmod(path.join(baseDir, "sleep"), 0o755);
+      const env = yield* HostProcess.Environment;
+      const extractor = extractingRunner(fs, path);
+      let waited = false;
+      let checkedWinner = false;
+      yield* ensurePinnedRuntimeInstalled({
+        fs,
+        path,
+        baseDir,
+        version,
+        platform: "linux",
+        arch: "x64",
+        httpClient: releaseHttpClient(yield* validChecksums),
+        runner: ProcessRunner.ProcessRunner.of({
+          run: (call) =>
+            call.command === "sh"
+              ? extractor.run({
+                  ...call,
+                  env: { PATH: baseDir + ":" + env.PATH },
+                  onStdoutChunk: () => {
+                    waited = true;
+                    Deferred.doneUnsafe(allowRename, Effect.void);
+                  },
+                })
+              : extractor.run(call),
+        }),
+        validate: (candidate) =>
+          Effect.sync(() => {
+            if (candidate.versionDir === paths.versionDir) checkedWinner = true;
+          }),
+      }).pipe(Effect.ensuring(Deferred.succeed(allowRename, undefined)));
+      assert.equal(Number(yield* peer.exitCode), 0);
+      assert.deepEqual((yield* fs.readDirectory(paths.versionDir)).toSorted(), [
+        ".install-complete",
+        "t3",
+      ]);
+      assert.isTrue(waited);
+      assert.isTrue(checkedWinner);
+      assert.equal(yield* fs.readFileString(paths.entryPath), "#!/bin/sh\nexit 0\n");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
 it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
   it.effect("installs the verified release archive as the runtime executable", () =>
@@ -87,7 +183,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         version,
         fs,
         path,
-        platform: "linux",
+        platform: installPlatform,
         arch: "x64",
         httpClient: releaseHttpClient(yield* validChecksums, requests),
         releaseBaseUrl: "https://releases.example/download",
@@ -98,13 +194,13 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
             Effect.orDie,
           ),
       });
-      assert.equal(paths.entryPath, path.join(paths.versionDir, "t3"));
+      assert.equal(paths.entryPath, path.join(paths.versionDir, entryName));
       assert.deepEqual(pinnedRuntimeCommand(paths), { command: paths.entryPath, args: [] });
       assert.deepEqual(requests, [
         `https://releases.example/download/v${version}/SHA256SUMS`,
         `https://releases.example/download/v${version}/${archiveName}`,
       ]);
-      assert.deepEqual(commands, ["tar"]);
+      assert.deepEqual(commands, isWindowsHost ? [tarCommand] : [tarCommand, "sh"]);
       assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);
       assert.isFalse(yield* fs.exists(path.join(paths.versionDir, "t3-runtime-archive")));
     }),
@@ -143,7 +239,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         version,
         fs,
         path,
-        platform: "linux",
+        platform: installPlatform,
         arch: "x64",
         httpClient: client,
         runner: extractingRunner(fs, path),
@@ -174,7 +270,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         version,
         fs,
         path,
-        platform: "linux",
+        platform: installPlatform,
         arch: "x64",
         httpClient: releaseHttpClient(`${"0".repeat(64)}  ${archiveName}\n`),
         runner: extractingRunner(fs, path, commands),
@@ -192,7 +288,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-runtime-test-" });
-      const finalPaths = pinnedRuntimePaths(path, baseDir, version, "linux");
+      const finalPaths = pinnedRuntimePaths(path, baseDir, version, installPlatform);
       let validatedDirectory = "";
 
       const installed = yield* ensurePinnedRuntimeInstalled({
@@ -200,7 +296,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         version,
         fs,
         path,
-        platform: "linux",
+        platform: installPlatform,
         arch: "x64",
         httpClient: releaseHttpClient(yield* validChecksums),
         runner: extractingRunner(fs, path),
@@ -224,14 +320,14 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-runtime-test-" });
-      const finalPaths = pinnedRuntimePaths(path, baseDir, version, "linux");
+      const finalPaths = pinnedRuntimePaths(path, baseDir, version, installPlatform);
 
       yield* ensurePinnedRuntimeInstalled({
         baseDir,
         version,
         fs,
         path,
-        platform: "linux",
+        platform: installPlatform,
         arch: "x64",
         httpClient: releaseHttpClient(yield* validChecksums),
         runner: extractingRunner(fs, path),
@@ -254,7 +350,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-runtime-repair-" });
-      const finalPaths = pinnedRuntimePaths(path, baseDir, version, "linux");
+      const finalPaths = pinnedRuntimePaths(path, baseDir, version, installPlatform);
       yield* fs.makeDirectory(finalPaths.versionDir, { recursive: true });
       yield* fs.writeFileString(path.join(finalPaths.versionDir, "partial"), "incomplete\n");
 
@@ -263,7 +359,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         version,
         fs,
         path,
-        platform: "linux",
+        platform: installPlatform,
         arch: "x64",
         httpClient: releaseHttpClient(yield* validChecksums),
         runner: extractingRunner(fs, path),
@@ -275,45 +371,47 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
     }),
   );
 
-  it.effect("restores an interrupted promotion before checking the cache or network", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const baseDir = yield* fs.makeTempDirectoryScoped();
-      const paths = pinnedRuntimePaths(path, baseDir, version, "linux");
-      const versions = path.dirname(paths.versionDir);
-      const previous = path.join(versions, `.${version}.previous`);
-      yield* fs.makeDirectory(previous, { recursive: true });
-      yield* fs.writeFileString(path.join(previous, "t3"), "runnable");
-      yield* fs.writeFileString(path.join(previous, ".install-complete"), version);
-      yield* fs.writeFileString(path.join(versions, `.${version}.install.lock`), "999999999");
-      const requests: string[] = [];
-      yield* ensurePinnedRuntimeInstalled({
-        baseDir,
-        version,
-        fs,
-        path,
-        platform: "linux",
-        arch: "x64",
-        runner: extractingRunner(fs, path),
-        httpClient: releaseHttpClient("", requests),
-        validate: (candidate) =>
-          fs.readFileString(candidate.entryPath).pipe(
-            Effect.tap((text) => Effect.sync(() => assert.equal(text, "runnable"))),
-            Effect.asVoid,
-            Effect.orDie,
-          ),
-      });
-      assert.deepEqual(requests, []);
-      assert.equal(yield* fs.readFileString(paths.entryPath), "runnable");
-    }),
+  it.effect.each(isWindowsHost ? (["win32"] as const) : (["linux", "win32"] as const))(
+    "restores an interrupted %s promotion before checking the cache or network",
+    (platform) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseDir = yield* fs.makeTempDirectoryScoped();
+        const paths = pinnedRuntimePaths(path, baseDir, version, platform);
+        const versions = path.dirname(paths.versionDir);
+        const previous = path.join(versions, `.${version}.previous`);
+        yield* fs.makeDirectory(previous, { recursive: true });
+        yield* fs.writeFileString(path.join(previous, path.basename(paths.entryPath)), "runnable");
+        yield* fs.writeFileString(path.join(previous, ".install-complete"), version);
+        yield* fs.writeFileString(path.join(versions, `.${version}.install.lock`), "999999999");
+        const requests: string[] = [];
+        yield* ensurePinnedRuntimeInstalled({
+          baseDir,
+          version,
+          fs,
+          path,
+          platform,
+          arch: "x64",
+          runner: extractingRunner(fs, path),
+          httpClient: releaseHttpClient("", requests),
+          validate: (candidate) =>
+            fs.readFileString(candidate.entryPath).pipe(
+              Effect.tap((text) => Effect.sync(() => assert.equal(text, "runnable"))),
+              Effect.asVoid,
+              Effect.orDie,
+            ),
+        });
+        assert.deepEqual(requests, []);
+        assert.equal(yield* fs.readFileString(paths.entryPath), "runnable");
+      }),
   );
   it.effect("repairs a missing release component only after validating its replacement", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const baseDir = yield* fs.makeTempDirectoryScoped();
-      const paths = pinnedRuntimePaths(path, baseDir, version, "linux");
+      const paths = pinnedRuntimePaths(path, baseDir, version, installPlatform);
       yield* fs.makeDirectory(paths.versionDir, { recursive: true });
       yield* fs.writeFileString(paths.entryPath, "old");
       yield* fs.writeFileString(paths.sentinelPath, version);
@@ -323,7 +421,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         version,
         fs,
         path,
-        platform: "linux",
+        platform: installPlatform,
         arch: "x64",
         runner: extractingRunner(fs, path),
         httpClient: releaseHttpClient(yield* validChecksums),
@@ -350,7 +448,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-runtime-repair-" });
-      const finalPaths = pinnedRuntimePaths(path, baseDir, version, "linux");
+      const finalPaths = pinnedRuntimePaths(path, baseDir, version, installPlatform);
       yield* fs.makeDirectory(path.dirname(finalPaths.entryPath), { recursive: true });
       yield* fs.writeFileString(finalPaths.entryPath, "broken\n");
       yield* fs.writeFileString(finalPaths.sentinelPath, `${version}\n`);
@@ -362,7 +460,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         version,
         fs,
         path,
-        platform: "linux",
+        platform: installPlatform,
         arch: "x64",
         httpClient: releaseHttpClient(yield* validChecksums, requests),
         runner: extractingRunner(fs, path),

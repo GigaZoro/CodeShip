@@ -90,11 +90,21 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
     run: (input) =>
       Effect.gen(function* () {
         if (input.command === "lsof") return yield* otherProcesses.run(input);
-        if (input.command === "tar") {
-          order.push("extract");
-          const stagingDir = input.args[input.args.indexOf("-C") + 1];
-          if (stagingDir === undefined) return yield* Effect.die("missing tar target");
-          yield* fs.writeFileString(path.join(stagingDir, "t3"), "#!/bin/sh\n").pipe(Effect.orDie);
+        if (input.command === "sh" || input.command === "tar") {
+          if (input.command === "sh") {
+            // Emulate the POSIX promotion transaction on every test host.
+            const [parentDir, version, stagingDir] = input.args.slice(-3);
+            if (!parentDir || !version || !stagingDir)
+              return yield* Effect.die("missing runtime paths");
+            yield* fs.rename(stagingDir, path.join(parentDir, version)).pipe(Effect.orDie);
+          } else {
+            order.push("extract");
+            const stagingDir = input.args[input.args.indexOf("-C") + 1];
+            if (stagingDir === undefined) return yield* Effect.die("missing tar target");
+            yield* fs
+              .writeFileString(path.join(stagingDir, "t3"), "#!/bin/sh\n")
+              .pipe(Effect.orDie);
+          }
           return {
             stdout: "",
             stderr: "",

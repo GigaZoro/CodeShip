@@ -442,10 +442,7 @@ fi
 T3_RELEASE_BASE_URL=@@T3_RELEASE_BASE_URL@@
 T3_RUNTIME_DIR="$HOME/.t3/runtime/versions/$T3_ARCHIVE_VERSION"
 ${runtimePromotion}
-t3_runtime_ready() {
-  [ -x "$T3_RUNTIME_DIR/t3" ] && [ "$(cat "$T3_RUNTIME_DIR/.install-complete" 2>/dev/null)" = "$T3_ARCHIVE_VERSION" ] && T3CODE_VERIFY_INSTALL=1 "$T3_RUNTIME_DIR/t3" --version >/dev/null
-}
-if t3_runtime_ready; then
+if t3_runtime_ready "$T3_RUNTIME_DIR" "$T3_ARCHIVE_VERSION"; then
   exec "$T3_RUNTIME_DIR/t3" "$@"
 fi
 mkdir -p "$HOME/.t3/runtime/versions"
@@ -463,7 +460,7 @@ if ! t3_acquire_lock "$HOME/.t3/runtime/versions" "$T3_ARCHIVE_VERSION" @@T3_ARC
   printf 'Another installer holds the runtime lock for %s.\\n' "$T3_ARCHIVE_VERSION" >&2
   exit 1
 fi
-if ! t3_runtime_ready; then
+if ! t3_runtime_ready "$T3_RUNTIME_DIR" "$T3_ARCHIVE_VERSION"; then
   case "$(uname -s)" in
     Darwin) T3_PLATFORM="darwin" ;;
     Linux) T3_PLATFORM="linux" ;;

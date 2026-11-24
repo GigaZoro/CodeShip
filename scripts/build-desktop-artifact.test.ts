@@ -2172,7 +2172,18 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const verify = () =>
         Effect.tryPromise(() => verifyCodexMetadataInstallation(stage, expected));
       yield* verify();
-      yield* fs.writeFileString(path.join(stage, "codex-metadata/bin/codex"), "bad!!");
+      const stagedCli = path.join(stage, "codex-metadata/bin/codex");
+      const owner = Option.getOrUndefined((yield* fs.stat(stagedCli)).uid);
+      if ((yield* HostProcess.Platform) !== "win32" && owner !== undefined && owner !== 0) {
+        yield* fs.chmod(stagedCli, 0o655);
+        assert.isTrue(
+          yield* verify().pipe(Effect.isFailure),
+          "the owner cannot execute the helper",
+        );
+        yield* fs.chmod(stagedCli, 0o755);
+        yield* verify();
+      }
+      yield* fs.writeFileString(stagedCli, "bad!!");
       assert.isTrue(yield* verify().pipe(Effect.isFailure));
       yield* fs.remove(path.join(stage, "codex-metadata"), { recursive: true });
       yield* fs.remove(inventory);

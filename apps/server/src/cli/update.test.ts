@@ -17,25 +17,27 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { afterEach, vi } from "vite-plus/test";
 
+import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
 import { prunePinnedRuntimes } from "../cloud/pinnedRuntime.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { repointLauncher, resolveLauncherPath, resolveNewestVersion, runUpdate } from "./update.ts";
 
-// lsof listing one process, so prune sees a process list in which no runtime is running.
+const processOutput = (code: number, stdout: string): ProcessRunner.ProcessRunOutput => ({
+  code: ChildProcessSpawner.ExitCode(code),
+  stdout,
+  stderr: "",
+  timedOut: false,
+  stdoutTruncated: false,
+  stderrTruncated: false,
+  stdoutInvalidUtf8: false,
+  stderrInvalidUtf8: false,
+});
+
+// lsof shows one process outside the runtime tree.
 const unrelatedLsof = ProcessRunner.ProcessRunner.of({
-  run: () =>
-    Effect.succeed({
-      stdout: "p1\nftxt\nn/usr/bin/true\n",
-      stderr: "",
-      code: ChildProcessSpawner.ExitCode(0),
-      timedOut: false,
-      stdoutTruncated: false,
-      stderrTruncated: false,
-      stdoutInvalidUtf8: false,
-      stderrInvalidUtf8: false,
-    }),
+  run: () => Effect.succeed(processOutput(0, "p1\nftxt\nn/usr/bin/true\n")),
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -124,6 +126,77 @@ it.layer(NodeServices.layer)("t3 update under a managed policy", (it) => {
 });
 
 it.layer(NodeServices.layer)("t3 update launcher", (it) => {
+  it.effect.each([0, 78])(
+    "checks an explicitly requested current pinned CLI when its integrity probe returns %i",
+    (code) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseDir = yield* fs.makeTempDirectoryScoped();
+        const version = packageJson.version;
+        const target = path.join(baseDir, "runtime", "versions", version);
+        yield* fs.makeDirectory(target, { recursive: true });
+        yield* fs.writeFileString(path.join(target, ".install-complete"), version);
+        yield* fs.writeFileString(path.join(target, "t3"), "fixture");
+        const probes: string[] = [];
+        const downloads: string[] = [];
+        const runner = ProcessRunner.ProcessRunner.of({
+          run: (command) => {
+            assert.deepStrictEqual(command.args, ["--version"]);
+            assert.equal(command.env?.T3CODE_VERIFY_INSTALL, "1");
+            probes.push(command.command);
+            return Effect.succeed(processOutput(code, `t3 v${version}\n`));
+          },
+        });
+        const result = yield* runUpdate({
+          baseDir,
+          logsDir: baseDir,
+          serverRuntimeStatePath: path.join(baseDir, "state"),
+          channel: undefined,
+          requestedVersion: version,
+          allowDowngrade: false,
+          assumeYes: false,
+        }).pipe(
+          Effect.result,
+          Effect.provide(
+            Layer.mergeAll(
+              ManagedPolicy.layerTest(),
+              Layer.mock(BootService.BootService, {
+                status: Effect.succeed({
+                  supported: true,
+                  installed: false,
+                  current: false,
+                  unitPath: "",
+                  logPath: "",
+                }),
+              }),
+              Layer.succeed(ProcessRunner.ProcessRunner, runner),
+              Layer.succeed(HostProcess.Platform, "linux"),
+              Layer.succeed(HostProcess.Architecture, "x64"),
+              Layer.succeed(
+                HttpClient.HttpClient,
+                HttpClient.make((request) => {
+                  downloads.push(request.url);
+                  return Effect.succeed(
+                    HttpClientResponse.fromWeb(request, new Response(null, { status: 404 })),
+                  );
+                }),
+              ),
+            ),
+          ),
+        );
+        assert.deepStrictEqual(probes, [path.join(target, "t3")]);
+        if (code === 78) {
+          assert.lengthOf(downloads, 1);
+          assert.match(downloads[0]!, /SHA256SUMS$/);
+          assert.equal(result._tag, "Failure");
+        } else {
+          assert.deepStrictEqual(downloads, []);
+          assert.equal(result._tag, "Success");
+        }
+      }).pipe(Effect.scoped),
+  );
+
   const fileSymlinkTest = it.effect.skipIf(!symlinksSupported);
 
   fileSymlinkTest("repoints a symlink that lives in a runtime versions tree", () =>

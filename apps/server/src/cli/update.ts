@@ -324,61 +324,7 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
       ? serviceVersion
       : currentVersion;
 
-  if (executableCurrent && serviceCurrent) {
-    yield* Console.log(
-      serviceVersion !== undefined
-        ? `t3 and its background service are already on ${targetVersion} (${targetChannel}).`
-        : `t3 is already on ${targetVersion} (${targetChannel}).`,
-    );
-    return;
-  }
-  if (!input.allowDowngrade && compareExactServiceVersions(targetVersion, newestInstalled) < 0) {
-    return yield* new CliUpdateError({
-      reason: `t3@${targetVersion} is older than the installed ${newestInstalled}. Pass --allow-downgrade to install it anyway.`,
-    });
-  }
-
-  const alreadyOnDisk = yield* fs
-    .readFileString(pinnedRuntimePaths(path, input.baseDir, targetVersion, platform).sentinelPath)
-    .pipe(
-      Effect.map((sentinel) => sentinel.trim() === targetVersion),
-      Effect.orElseSucceed(() => false),
-    );
-
-  progress.heading(
-    executableCurrent && restartPending
-      ? `The background service is still running the version before ${targetVersion} (${targetChannel}).`
-      : executableCurrent
-        ? `Updating the background service ${serviceVersion ?? "(unknown version)"} -> ${targetVersion} (${targetChannel}).`
-        : alreadyOnDisk
-          ? "Switching T3.CodeShip"
-          : "Updating T3.CodeShip",
-    executableCurrent
-      ? ""
-      : `${currentVersion} → ${targetVersion}${targetChannel === "stable" ? "" : ` (${targetChannel})`}`,
-  );
-  let restartService = false;
-  if (serviceInstalled && !serviceCurrent) {
-    yield* Console.log(
-      "  A background service is installed for this T3 home. Restarting it interrupts anything running in it: agent turns, terminals, remote clients.",
-    );
-    if (input.assumeYes) {
-      restartService = true;
-    } else if (process.stdin.isTTY && process.stdout.isTTY) {
-      restartService = yield* Prompt.run(
-        Prompt.Confirm({
-          message: "Restart the background service once the download is verified?",
-          initial: true,
-        }),
-      ).pipe(Effect.catchTags({ QuitError: () => Effect.succeed(false) }));
-    } else {
-      yield* Console.log(
-        "  Not a terminal, so the service keeps running its current version. Rerun with --yes to restart it now, or run `t3 service restart` later.",
-      );
-    }
-  }
-
-  const runtime = yield* ensurePinnedRuntimeInstalled({
+  const ensureTarget = ensurePinnedRuntimeInstalled({
     onProgress: progress.report,
     baseDir: input.baseDir,
     version: targetVersion,
@@ -428,6 +374,64 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
         ),
     ),
   );
+
+  const paths = pinnedRuntimePaths(path, input.baseDir, targetVersion, platform);
+  if (executableCurrent && serviceCurrent) {
+    if (input.requestedVersion !== undefined && (yield* fs.exists(paths.versionDir))) {
+      yield* ensureTarget;
+    }
+    yield* Console.log(
+      serviceVersion !== undefined
+        ? `t3 and its background service are already on ${targetVersion} (${targetChannel}).`
+        : `t3 is already on ${targetVersion} (${targetChannel}).`,
+    );
+    return;
+  }
+  if (!input.allowDowngrade && compareExactServiceVersions(targetVersion, newestInstalled) < 0) {
+    return yield* new CliUpdateError({
+      reason: `t3@${targetVersion} is older than the installed ${newestInstalled}. Pass --allow-downgrade to install it anyway.`,
+    });
+  }
+
+  const alreadyOnDisk = yield* fs.readFileString(paths.sentinelPath).pipe(
+    Effect.map((sentinel) => sentinel.trim() === targetVersion),
+    Effect.orElseSucceed(() => false),
+  );
+
+  progress.heading(
+    executableCurrent && restartPending
+      ? `The background service is still running the version before ${targetVersion} (${targetChannel}).`
+      : executableCurrent
+        ? `Updating the background service ${serviceVersion ?? "(unknown version)"} -> ${targetVersion} (${targetChannel}).`
+        : alreadyOnDisk
+          ? "Switching T3.CodeShip"
+          : "Updating T3.CodeShip",
+    executableCurrent
+      ? ""
+      : `${currentVersion} → ${targetVersion}${targetChannel === "stable" ? "" : ` (${targetChannel})`}`,
+  );
+  let restartService = false;
+  if (serviceInstalled && !serviceCurrent) {
+    yield* Console.log(
+      "  A background service is installed for this T3 home. Restarting it interrupts anything running in it: agent turns, terminals, remote clients.",
+    );
+    if (input.assumeYes) {
+      restartService = true;
+    } else if (process.stdin.isTTY && process.stdout.isTTY) {
+      restartService = yield* Prompt.run(
+        Prompt.Confirm({
+          message: "Restart the background service once the download is verified?",
+          initial: true,
+        }),
+      ).pipe(Effect.catchTags({ QuitError: () => Effect.succeed(false) }));
+    } else {
+      yield* Console.log(
+        "  Not a terminal, so the service keeps running its current version. Rerun with --yes to restart it now, or run `t3 service restart` later.",
+      );
+    }
+  }
+
+  const runtime = yield* ensureTarget;
 
   const launchedAs = (yield* HostProcess.IsExecutable) ? yield* resolveLauncherPath : undefined;
   const repointed = yield* repointLauncher({

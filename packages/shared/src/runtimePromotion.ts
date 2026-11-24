@@ -1,6 +1,9 @@
 export const runtimePromotion = `# Runtime promotion, also embedded in the SSH bootstrap and service installer.
 t3_release_lock() {
   if [ -n "$t3_claim_dir" ] && [ -f "$t3_claim_dir/$$" ]; then
+    if [ -n "\${t3_displaced:-}" ] && [ ! -e "$t3_root" ] && [ ! -L "$t3_root" ] && [ -d "$t3_displaced" ]; then
+      mv "$t3_displaced" "$t3_root" || return 1
+    fi
     if [ "$t3_legacy_lock" -ef "$t3_claim_dir/$$" ]; then rm -f "$t3_legacy_lock" || return 1; fi
     rm -f "$t3_claim_dir/$$" || return 1
     rmdir "$t3_claim_dir" 2>/dev/null || :
@@ -9,6 +12,7 @@ t3_release_lock() {
 }
 
 t3_acquire_lock() {
+  t3_displaced=
   t3_parent=$1
   t3_version=$2
   t3_limit=$3
@@ -57,6 +61,11 @@ t3_acquire_lock() {
     t3_waited=$((t3_waited + 1))
   done
   if [ ! -e "$t3_root" ] && [ -d "$t3_previous" ]; then mv "$t3_previous" "$t3_root" || return 1; fi
+}
+
+t3_runtime_ready() {
+  [ -x "$1/t3" ] && [ "$(cat "$1/.install-complete" 2>/dev/null)" = "$2" ] &&
+    T3CODE_VERIFY_INSTALL=1 "$1/t3" --version >/dev/null
 }
 
 t3_promote_runtime() {

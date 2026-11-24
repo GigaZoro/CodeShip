@@ -43,3 +43,30 @@ it.effect("selects only the installed server's native metadata package", () =>
     assert.isUndefined(yield* resolve(false, "checkout", "linux", true));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+
+it.effect(
+  "uses the verified Linux runtime or reports the mounted WSL installation needs repair",
+  () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped();
+      const mounted = path.join(dir, "wsl-server-tree", "1.2.3", "apps/server/dist");
+      const runtime = path.join(dir, "linux-runtime");
+      const resolve = (root?: string, moduleDirectory = mounted) =>
+        resolvePackagedCodexMetadataBinary(moduleDirectory).pipe(
+          Effect.provideService(HostProcess.IsExecutable, false),
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provideService(HostProcess.Environment, {
+            T3CODE_WSL_CODEX_METADATA_RUNTIME_ROOT: root,
+          }),
+        );
+      assert.isUndefined(yield* resolve());
+      assert.isUndefined(yield* resolve(runtime, path.join(dir, "checkout/apps/server/dist")));
+      assert.equal(yield* resolve(runtime), path.join(runtime, "codex-metadata/bin/codex"));
+      for (const invalidRoot of ["", "relative/runtime"]) {
+        const failure = yield* Effect.flip(resolve(invalidRoot));
+        assert.match(String(failure), /Reinstall CodeShip.*Linux Codex metadata runtime.*WSL/);
+      }
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);

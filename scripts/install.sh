@@ -198,6 +198,9 @@ target_dir="${versions_dir}/${version}"
 # Runtime promotion, also embedded in the SSH bootstrap and service installer.
 t3_release_lock() {
   if [ -n "$t3_claim_dir" ] && [ -f "$t3_claim_dir/$$" ]; then
+    if [ -n "${t3_displaced:-}" ] && [ ! -e "$t3_root" ] && [ ! -L "$t3_root" ] && [ -d "$t3_displaced" ]; then
+      mv "$t3_displaced" "$t3_root" || return 1
+    fi
     if [ "$t3_legacy_lock" -ef "$t3_claim_dir/$$" ]; then rm -f "$t3_legacy_lock" || return 1; fi
     rm -f "$t3_claim_dir/$$" || return 1
     rmdir "$t3_claim_dir" 2>/dev/null || :
@@ -206,6 +209,7 @@ t3_release_lock() {
 }
 
 t3_acquire_lock() {
+  t3_displaced=
   t3_parent=$1
   t3_version=$2
   t3_limit=$3
@@ -256,6 +260,11 @@ t3_acquire_lock() {
   if [ ! -e "$t3_root" ] && [ -d "$t3_previous" ]; then mv "$t3_previous" "$t3_root" || return 1; fi
 }
 
+t3_runtime_ready() {
+  [ -x "$1/t3" ] && [ "$(cat "$1/.install-complete" 2>/dev/null)" = "$2" ] &&
+    T3CODE_VERIFY_INSTALL=1 "$1/t3" --version >/dev/null
+}
+
 t3_promote_runtime() {
   t3_staged=$1
   t3_displaced="$t3_previous"
@@ -273,11 +282,6 @@ t3_promote_runtime() {
   fi
   rm -rf "$t3_displaced" "$t3_previous"
 }
-
-runtime_ready() {
-  [ -f "${target_dir}/.install-complete" ] && [ "$(cat "${target_dir}/.install-complete")" = "$version" ] &&
-    T3CODE_VERIFY_INSTALL=1 "${target_dir}/t3" --version >/dev/null
-}
 staging=
 download_pid=
 t3_claim_dir=
@@ -290,11 +294,11 @@ finish_install() {
 trap finish_install EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-if ! runtime_ready; then
+if ! t3_runtime_ready "$target_dir" "$version"; then
   mkdir -p "$versions_dir"
   t3_acquire_lock "$versions_dir" "$version" 360 || fail "another installer holds the runtime lock for $version"
 fi
-if [ -z "$t3_claim_dir" ] || runtime_ready; then
+if [ -z "$t3_claim_dir" ] || t3_runtime_ready "$target_dir" "$version"; then
   step "Version ${version} is already downloaded."
 else
   staging="$(mktemp -d "${versions_dir}/.staging-XXXXXX")"

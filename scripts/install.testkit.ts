@@ -116,6 +116,20 @@ export async function verifyBundledRuntimeRepair(
     );
     NodeAssert.deepEqual(await NodeFSP.readdir(root), originalEntries);
     NodeAssert.equal(await NodeFSP.readFile(helper, "utf8"), "wrong");
+    await NodeFSP.writeFile(
+      NodePath.join(mvShim, "mv"),
+      [
+        "#!/bin/sh",
+        'command -p mv "$@" || exit $?',
+        'if [ "$1" = "$T3_TEST_INSTALLED_ROOT" ]; then kill -TERM "$PPID"; fi',
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    await NodeAssert.rejects(
+      run({ PATH: mvShim + NodePath.delimiter + process.env.PATH, T3_TEST_INSTALLED_ROOT: root }),
+      { code: 143 },
+    );
+    NodeAssert.equal(await NodeFSP.readFile(helper, "utf8"), "wrong");
     await run();
     NodeAssert.equal(await NodeFSP.readFile(helper, "utf8"), "valid");
     offline = true;
