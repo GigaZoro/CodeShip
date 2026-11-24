@@ -171,8 +171,13 @@ function gh(args) {
 }
 
 if (require.main === module) {
-  const [repository, runId] = process.argv.slice(2);
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repository ?? "") || !/^\d+$/.test(runId ?? "")) {
+  const args = process.argv.slice(2);
+  const [repository, runId] = args;
+  if (
+    args.length !== 2 ||
+    !/^[\w.-]+\/[\w.-]+$/.test(repository ?? "") ||
+    !/^\d+$/.test(runId ?? "")
+  ) {
     console.error(
       "usage: node .github/scripts/release-macos-run.cjs <owner/repo> <Release (fork) run id>",
     );

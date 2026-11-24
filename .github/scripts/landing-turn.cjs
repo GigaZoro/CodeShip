@@ -427,8 +427,8 @@ function pushUnderTurn({ cwd, remote, ref, turn, timeoutMs }) {
 }
 
 /**
- * Pushes `head`, a commit verified against main's current commit elsewhere (the upstream sync). The push is a
- * fast-forward, so it takes the turn alone and a main that moved makes git refuse it.
+ * Pushes `head`, a commit verified against main's current commit elsewhere (the upstream sync, the weekly dependency
+ * upgrade). The push is a fast-forward, so it takes the turn alone and a main that moved makes git refuse it.
  */
 function pushChecked({ cwd, remote, head }) {
   withTurn({ cwd, remote }, (turn) => {
@@ -635,8 +635,8 @@ function land({
 // How many arguments each command takes: an argument `land` does not take, such as a mistyped flag, must not start
 // a real landing.
 const USAGE =
-  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | holder | verify <remote>";
-const ARGUMENTS = { land: 0, "land-rebased": 4, holder: 0, verify: 1 };
+  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote>";
+const ARGUMENTS = { land: 0, "land-rebased": 4, push: 1, holder: 0, verify: 1 };
 
 function main(argv, { cwd = process.cwd() } = {}) {
   const [command, ...rest] = argv;
@@ -706,6 +706,17 @@ function main(argv, { cwd = process.cwd() } = {}) {
     }
     console.log(JSON.stringify(result));
     return result.status === "landed" ? 0 : 1;
+  }
+  if (command === "push") {
+    // A full id, never a ref: the commit is fixed before the wait, so nothing the checkout does meanwhile can land.
+    const [head] = rest;
+    if (!OBJECT_ID.test(head)) {
+      console.error(USAGE);
+      return 2;
+    }
+    pushChecked({ cwd, remote: "origin", head });
+    console.log(JSON.stringify({ status: "landed", commit: head }));
+    return 0;
   }
   if (command === "holder") {
     // `local` is null when no worktree of this clone took the lease, and `gone` says whether a waiter here takes it.

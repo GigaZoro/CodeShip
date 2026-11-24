@@ -1933,14 +1933,25 @@ test("a command given an argument it does not take is refused before it takes th
     const errors = [];
     t.mock.method(console, "error", (line) => errors.push(line));
     // `land` first: a mistyped flag there once started a real landing. `verify` would wait on stdin.
-    const refused = [["land", "--quick-precheck"], ["push", "HEAD"], ["precheck"], [], ["verify"]];
-    for (const argv of [...refused, ["verify", "origin", "extra"]]) {
+    const refused = [
+      ["land", "--quick-precheck"],
+      ["push"],
+      ["push", "HEAD"],
+      ["precheck"],
+      [],
+      ["verify"],
+    ];
+    for (const argv of [
+      ...refused,
+      ["push", git(dir, "rev-parse", "HEAD"), "extra"],
+      ["verify", "origin", "extra"],
+    ]) {
       assert.equal(main(argv, { cwd: dir }), 2, JSON.stringify(argv));
     }
     assert.deepEqual(
       errors,
-      Array(6).fill(
-        "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | holder | verify <remote>",
+      Array(8).fill(
+        "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote>",
       ),
     );
     assert.equal(git(origin, "rev-parse", "main"), main_);
