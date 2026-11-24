@@ -24,6 +24,7 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { gitErrorLines } from "../vcs/GitVcsDriverCore.ts";
 import * as ProjectService from "./ProjectService.ts";
 
 export class ScratchUnavailableError extends Schema.TaggedError<ScratchUnavailableError>()(
@@ -187,14 +188,13 @@ function namedProjectReadme(name: string): string {
 }
 
 function describeCommitFailure(stderr: string): string {
-  if (/identity unknown|tell me who you are|no (name|email) was given/i.test(stderr)) {
+  if (
+    /identity unknown|tell me who you are|no (name|email) was given|empty ident name/i.test(stderr)
+  ) {
     return "Git has no name or email on this machine. Set user.name and user.email, then commit.";
   }
-  const lines = stderr
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  return lines.at(-1) ?? "Git could not make the first commit.";
+  const lines = gitErrorLines(stderr);
+  return `Git could not make the first commit.${lines === "" ? "" : ` Git said: ${lines}`}`;
 }
 
 const isVcsProcessSpawnError = Schema.is(VcsProcessSpawnError);

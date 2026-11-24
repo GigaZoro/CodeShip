@@ -201,7 +201,7 @@ interface ExecuteGitOptions {
   appendTruncationMarker?: boolean | undefined;
   progress?: GitVcsDriver.ExecuteGitProgress | undefined;
   writesSharedConfig?: boolean | undefined;
-  /** For a command whose arguments hold no secret: a failure then carries Git's own lines. */
+  /** A failure then carries the shapes of Git's own lines, their values removed. */
   quoteGitLines?: boolean | undefined;
 }
 
@@ -629,28 +629,120 @@ export function remoteFailureText(error: GitCommandError): string {
 // Git's own diagnostics; credential helpers and the remote (`remote:`) can print anything.
 const GIT_OWN_DIAGNOSTIC_LINE = /^(?:fatal|error|warning): /;
 const MAX_FETCH_DIAGNOSTIC_LINES = 3;
-const MAX_FETCH_DIAGNOSTIC_LINE_LENGTH = 300;
 
-// Git strips passwords from the URLs it prints, but not tokens in user names or query strings.
-function withoutUrlCredentials(line: string): string {
-  return line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@'"]*@)?([^\s?#'"]*)[^\s'"]*/gi, "$1$2");
+const HTTP_ERROR_STATUSES = [400, 401, 403, 404, 407, 429, 500, 502, 503, 504];
+
+// The messages a failure may quote, after Git's own `fatal: `, `error: ` or `warning: `. Each …
+// is a value Git fills in (a URL, host, path, ref, name or e-mail) and is never quoted. The first
+// fit wins, so a narrower shape comes before a wider one.
+const GIT_MESSAGE_SHAPES = [
+  "unable to access '…': Could not resolve host: …",
+  "unable to access '…': Failed to connect to …",
+  ...HTTP_ERROR_STATUSES.map(
+    (status) => `unable to access '…': The requested URL returned error: ${status}`,
+  ),
+  "unable to access '…': SSL certificate problem: …",
+  "unable to access '…': …",
+  "Authentication failed for '…'",
+  "could not read Username for '…': terminal prompts disabled",
+  "could not read Password for '…': terminal prompts disabled",
+  "Could not resolve host: …",
+  "repository '…' not found",
+  "'…' does not appear to be a git repository",
+  "… does not appear to be a git repository",
+  "… not valid: is this a git repository?",
+  "Could not read from remote repository.",
+  "the remote end hung up unexpectedly",
+  "early EOF",
+  "index-pack failed",
+  "RPC failed; …",
+  "couldn't find remote ref …",
+  "Server does not allow request for unadvertised object …",
+  "remote error: upload-pack: not our ref …",
+  "remote error: …",
+  "failed to push some refs to '…'",
+  "redirecting to …",
+  "…: Permission denied (publickey).",
+  "…: Permission denied (…).",
+  "Host key verification failed.",
+  "ssh: Could not resolve hostname …",
+  "ssh: connect to host …",
+  "not a valid branch point: '…'",
+  "empty ident name (for <…>) not allowed",
+  "unable to auto-detect email address (got '…')",
+  "detected dubious ownership in repository at '…'",
+  "not a git repository (or any of the parent directories): …",
+  "not a git repository: …",
+  "bad config line … in file …",
+  "ambiguous argument '…': unknown revision or path not in the working tree.",
+  "bad revision '…'",
+  "bad object …",
+  "invalid reference: …",
+  "Needed a single revision",
+  "not a valid object name: '…'",
+  "Not a valid object name …",
+  "'…' is not a commit and a branch '…' cannot be created from it",
+  "pathspec '…' did not match any file(s) known to git",
+  "'…' is not a working tree",
+  "a branch named '…' already exists",
+  "'…' is already checked out at '…'",
+  "'…' is already used by worktree at '…'",
+  "'…' already exists",
+  "destination path '…' already exists and is not an empty directory.",
+  "could not create work tree dir '…': …",
+  "You appear to have cloned an empty repository.",
+  "your current branch '…' does not have any commits yet",
+  "Unable to create '…': File exists.",
+  "cannot lock ref '…': …",
+  "fetching ref … failed: incorrect old value provided",
+  "fetching ref … failed: reference already exists",
+  "index file corrupt",
+  "failed to remove …: …",
+].map((shape) => shape.split("…"));
+
+// Each literal part is taken at its first place after the last one, which finds a fit whenever
+// there is one, in time linear in the line; every value holds at least one character.
+function fitsShape(message: string, parts: ReadonlyArray<string>): boolean {
+  const first = parts[0] ?? "";
+  if (parts.length === 1) return message === first;
+  if (!message.startsWith(first)) return false;
+  let end = first.length;
+  for (const part of parts.slice(1, -1)) {
+    const at = message.indexOf(part, end + 1);
+    if (at === -1) return false;
+    end = at + part.length;
+  }
+  const last = parts.at(-1) ?? "";
+  return message.length - last.length > end && message.endsWith(last);
 }
 
-/** The last lines Git itself printed, with URL credentials stripped, for a failure message. */
+/**
+ * One line Git printed, for a person or a log: its shape with every value removed, or only its
+ * severity when it fits no shape, since Git, a hook, a credential helper or the remote can print
+ * anything there.
+ */
+export function gitDiagnosticLine(line: string): string {
+  const trimmed = line.trim();
+  const severity = GIT_OWN_DIAGNOSTIC_LINE.exec(trimmed)?.[0] ?? "";
+  const message = trimmed.slice(severity.length);
+  const shape = GIT_MESSAGE_SHAPES.find((parts) => fitsShape(message, parts));
+  return `${severity}${shape === undefined ? "(message withheld)" : shape.join("…")}`;
+}
+
+/** The last lines Git itself printed, each as gitDiagnosticLine gives it, for a failure message. */
 export function gitErrorLines(stderr: string): string {
   return stderr
     .split(/\r?\n/)
     .filter((line) => GIT_OWN_DIAGNOSTIC_LINE.test(line))
     .slice(-MAX_FETCH_DIAGNOSTIC_LINES)
-    .map((line) => withoutUrlCredentials(line).slice(0, MAX_FETCH_DIAGNOSTIC_LINE_LENGTH))
+    .map(gitDiagnosticLine)
     .join(" | ");
 }
 
 /**
  * What a failed Git command leaves on its error: the exit code, the output sizes, and with
- * `quoteGitLines` Git's last lines. Those lines can echo the command's arguments, so only a command
- * whose arguments hold no secret asks for them. A classified failure never quotes them: they name
- * refs and paths, and its reason already says what went wrong.
+ * `quoteGitLines` the shapes of Git's last lines, their values removed (gitDiagnosticLine). A
+ * classified failure never quotes them: its reason already says what went wrong.
  */
 export function gitFailureFacts(
   result: {
@@ -694,7 +786,7 @@ function makeRemoteTimeline() {
     onStderrLine: (line) =>
       Effect.sync(() => {
         if (!GIT_OWN_DIAGNOSTIC_LINE.test(line)) return;
-        gitLines.push(withoutUrlCredentials(line).slice(0, MAX_FETCH_DIAGNOSTIC_LINE_LENGTH));
+        gitLines.push(gitDiagnosticLine(line));
         if (gitLines.length > MAX_FETCH_DIAGNOSTIC_LINES) gitLines.shift();
       }),
     onCredentialHelperStarted: (helper) =>
@@ -4158,7 +4250,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       remoteNamesResult.exitCode === 0 ? parseRemoteNames(remoteNamesResult.stdout) : [];
     if (remoteNamesResult.exitCode !== 0 && remoteNamesResult.stderr.trim().length > 0) {
       yield* Effect.logWarning(
-        `GitVcsDriver.listRefs: remote name lookup returned code ${remoteNamesResult.exitCode} for ${gitCommonDir}: ${remoteNamesResult.stderr.trim()}. Falling back to an empty remote name list.`,
+        `GitVcsDriver.listRefs: remote name lookup returned code ${remoteNamesResult.exitCode} for ${gitCommonDir}: ${gitErrorLines(remoteNamesResult.stderr) || "Git printed no error line"}. Falling back to an empty remote name list.`,
       );
     }
     const defaultBranch =
