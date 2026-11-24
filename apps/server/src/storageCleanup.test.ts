@@ -955,6 +955,7 @@ describe("owned setup output", () => {
     "an existing stage junction",
     "a tracked stream on repeat",
     "a crashed setup publication",
+    "a staged pnpmfile outside the checkout",
   ] as const;
   const checkSetups = (
     title: string,
@@ -969,6 +970,7 @@ describe("owned setup output", () => {
       "an existing stage junction",
       "a tracked stream on repeat",
       "a crashed setup publication",
+      "a staged pnpmfile outside the checkout",
     ];
     const windowsWithPosix = [
       "standard setup only",
@@ -1083,7 +1085,10 @@ fs.writeFileSync("node_modules/.modules.yaml", JSON.stringify({ storeDir: proces
 const cwd = process.cwd();
 fs.writeFileSync("node_modules/.pnpm-workspace-state-v1.json", JSON.stringify({
   projects: { [withWindowsAliases(cwd)]: {}, [withWindowsAliases(path.join(cwd, "apps/server"))]: {} },
-  pnpmfiles: [withWindowsAliases(path.join(cwd, ".pnpmfile.cjs"))],
+  pnpmfiles: [
+    inWindowsStage && process.env.T3_TEST_OUTSIDE_PNPMFILE ||
+    withWindowsAliases(path.join(cwd, ".pnpmfile.cjs"))
+  ],
 }));
 if (fs.existsSync(".pnpmfile.cjs")) {
   fs.copyFileSync(".pnpmfile.cjs", "node_modules/seen-input.cjs");
@@ -1101,12 +1106,16 @@ if (fs.existsSync(".pnpmfile.cjs")) {
           yield* fs.writeFileString(NodePath.join(fixturePackageManager, "shared.js"), "shared");
           const race = scenario === "a dependency added during setup";
           const stageStream = scenario === "unverifiable staged setup output";
+          const outsidePnpmfile = scenario === "a staged pnpmfile outside the checkout";
+          const outsideConfig = NodePath.join(fixturePackageManager, "outside.cjs");
+          if (outsidePnpmfile) yield* fs.writeFileString(outsideConfig, "preserve");
           const env = {
             ...Object.fromEntries(
               Object.entries(process.env).filter(([name]) => name.toUpperCase() !== "PATH"),
             ),
             T3_TEST_CONCURRENT_WORKTREE: race ? worktree : "",
             T3_TEST_NODE: process.execPath,
+            T3_TEST_OUTSIDE_PNPMFILE: outsidePnpmfile ? outsideConfig : "",
             T3_TEST_STAGE_STREAM: stageStream ? "1" : "",
             T3_TEST_VP: fixturePackageManager,
             T3_TEST_STORE: isWindowsHost ? fixturePackageManager : "",
@@ -1190,6 +1199,7 @@ if (fs.existsSync(".pnpmfile.cjs")) {
           expect(yield* fs.exists(done)).toBe(!race);
           const inPlace =
             existingStage ||
+            outsidePnpmfile ||
             stageStream ||
             scenario === "a real dotenv file" ||
             scenario === "a dirty install input";
@@ -1432,6 +1442,7 @@ if (fs.existsSync(".pnpmfile.cjs")) {
           }
           if (scenario === "an external junction" || existingStage)
             expect(yield* fs.readFileString(sentinel)).toBe("keep");
+          if (outsidePnpmfile) expect(yield* fs.readFileString(outsideConfig)).toBe("preserve");
           if (existingStage)
             expect(yield* fs.realPath(NodePath.join(worktree, ".t3/setup-stage"))).toBe(repo);
           if (scenario === "a crashed setup publication") {

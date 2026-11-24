@@ -31,7 +31,9 @@ import {
   writeSetupProof,
 } from "./lib/worktree-setup-proof.ts";
 
-const worktree = NodeFS.realpathSync(NodePath.dirname(import.meta.dirname));
+const worktree = (isWindows ? NodeFS.realpathSync.native : NodeFS.realpathSync)(
+  NodePath.dirname(import.meta.dirname),
+);
 const markerDir = NodePath.join(worktree, ".t3");
 const runningMarker = NodePath.join(markerDir, "setup-running");
 const doneMarker = NodePath.join(markerDir, "setup-done");

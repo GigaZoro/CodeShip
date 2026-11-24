@@ -192,7 +192,7 @@ const relocatePnpmState = async (staged: string, worktree: string) => {
   const movePath = async (value: string) => {
     if (windowsSetupHost) {
       const relative = await windowsStagedPath(canonicalStage, value);
-      return relative === undefined ? value : NodePath.join(worktree, relative);
+      return relative === undefined ? undefined : NodePath.join(worktree, relative);
     }
     return value === staged || value.startsWith(staged + NodePath.sep)
       ? worktree + value.slice(staged.length)
@@ -236,17 +236,18 @@ const relocatePnpmState = async (staged: string, worktree: string) => {
       pnpmfiles: string[];
     };
     if (!state.projects || !Array.isArray(state.pnpmfiles)) return false;
+    const projects = new Map<string, unknown>();
+    for (const [name, entry] of Object.entries(state.projects)) {
+      const destination = await movePath(name);
+      if (destination === undefined || projects.has(destination)) return false;
+      projects.set(destination, entry);
+    }
+    const pnpmfiles = await Promise.all(state.pnpmfiles.map(movePath));
+    if (pnpmfiles.includes(undefined)) return false;
     const relocated = JSON.stringify({
       ...state,
-      projects: Object.fromEntries(
-        await Promise.all(
-          Object.entries(state.projects).map(async ([name, entry]) => [
-            await movePath(name),
-            entry,
-          ]),
-        ),
-      ),
-      pnpmfiles: await Promise.all(state.pnpmfiles.map(movePath)),
+      projects: Object.fromEntries(projects),
+      pnpmfiles,
     });
     if (includesStage(relocated)) return false;
     await NodeFSP.writeFile(statePath, relocated);
