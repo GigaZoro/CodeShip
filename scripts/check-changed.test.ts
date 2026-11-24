@@ -837,21 +837,22 @@ describe("check:changed", () => {
     );
   });
 
-  it.each(["apps/mobile/src/fixtures/package.json", ".repos/vendor/package.json"])(
-    "does not select the repository command guard for %s",
-    (changed) => {
-      const guard = "scripts/command-arguments.test.ts";
-      assert.deepStrictEqual(
-        testsReaching({
-          changed: [changed],
-          files: new Set([changed, guard]),
-          packages: [],
-          read: () => "",
-        }),
-        [],
-      );
-    },
-  );
+  it.each([
+    "apps/mobile/src/fixtures/package.json",
+    ".repos/vendor/package.json",
+    ".REPOS/vendor/package.json",
+  ])("does not select the repository command guard for %s", (changed) => {
+    const guard = "scripts/command-arguments.test.ts";
+    assert.deepStrictEqual(
+      testsReaching({
+        changed: [changed],
+        files: new Set([changed, guard]),
+        packages: [],
+        read: () => "",
+      }),
+      [],
+    );
+  });
 
   it.each([
     "packages/shared/src/testing/longTempDir.ts",
