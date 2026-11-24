@@ -440,8 +440,13 @@ function chooseView(
   }
   const slots = [...newestBySlot].sort(([, left], [, right]) => right - left).map(([slot]) => slot);
   const requestedSlot = slotOf(window, windowKey, hidden);
+  // Returning to a period or showing a hidden provider again finds its reading older than the
+  // one on screen, so newest-first alone would keep showing the other request.
+  const candidates = newestBySlot.has(requestedSlot)
+    ? [requestedSlot, ...slots.filter((slot) => slot !== requestedSlot)]
+    : slots;
   const chosen =
-    slots.find((slot) => {
+    candidates.find((slot) => {
       const holders = holdersAt(slot);
       return (
         holders.length === members.length ||

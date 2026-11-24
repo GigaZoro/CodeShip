@@ -385,6 +385,63 @@ describe("settleUsageView choosing the shown key", () => {
     expect(messages(monthly, lost)).toEqual(["Laptop: Laptop scan failed."]);
   });
 
+  describe("returning to a request it already holds", () => {
+    const week = daily(7, "2026-09-05");
+    const month = daily(30, "2026-09-05");
+    const atMonth: Step = {
+      window: month,
+      environments: [answered("Desk", 130), answered("Laptop", 230)],
+    };
+    const monthly = run([
+      { window: week, environments: [desk, laptop] },
+      { window: month, environments: [pending("Desk"), pending("Laptop")] },
+      atMonth,
+    ]);
+
+    it("shows the 7-day figures again from the cached answers after a 30-day visit", () => {
+      expect(shown(monthly)).toMatchObject({ tokens: 360, window: month, kept: false });
+      const back = settle(monthly, { window: week, environments: [desk, laptop] });
+      expect(shown(back)).toEqual({
+        environments: ["Desk", "Laptop"],
+        tokens: 300,
+        window: week,
+        kept: false,
+      });
+      expect(figures(back).settled).toBe(true);
+    });
+
+    it("shows the cached 7-day figures while they refresh", () => {
+      const refreshing = settle(monthly, {
+        window: week,
+        environments: [
+          status("Desk", { summary: desk.summary, isPending: true }),
+          status("Laptop", { summary: laptop.summary, isPending: true }),
+        ],
+      });
+      expect(shown(refreshing)).toEqual({
+        environments: ["Desk", "Laptop"],
+        tokens: 300,
+        window: week,
+        kept: false,
+      });
+      expect(figures(refreshing).settled).toBe(false);
+    });
+
+    it("shows a provider again after it is hidden and shown", () => {
+      const hidden = settle(monthly, { ...atMonth, hidden: ["codex"] });
+      expect(figures(hidden).hiddenProviders).toEqual(new Set(["codex"]));
+      expect(figures(hidden).merged.totalTokens).toBe(0);
+      const visible = settle(hidden, atMonth);
+      expect(figures(visible).hiddenProviders).toEqual(new Set());
+      expect(shown(visible)).toEqual({
+        environments: ["Desk", "Laptop"],
+        tokens: 360,
+        window: month,
+        kept: false,
+      });
+    });
+  });
+
   it("keeps Desk's figures as its last values while it reconnects", () => {
     const reconnecting = (summary: UsageSummary | null) =>
       status("Desk", { isConnected: false, isPending: true, summary });
