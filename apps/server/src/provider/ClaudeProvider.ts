@@ -397,6 +397,7 @@ const probeClaudeCapabilities = (
     const executablePath = yield* resolveClaudeSdkExecutablePath(
       claudeSettings.binaryPath,
       claudeEnvironment,
+      cwd,
     );
     const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
     const homeDirectory = yield* HostProcess.HomeDirectory;

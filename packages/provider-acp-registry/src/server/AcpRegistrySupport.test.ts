@@ -262,6 +262,14 @@ describe("AcpRegistrySupport", () => {
           shell: false,
         },
       });
+      const relativeEnvironment = { PATH: "." };
+      expect(yield* resolver.inspect(localSettings, relativeEnvironment, cacheDir)).toMatchObject({
+        status: "ready",
+      });
+      const fromRepository = yield* resolver.resolve(localSettings, cacheDir, relativeEnvironment);
+      expect(yield* fileSystem.realPath(fromRepository.spawn.command)).toBe(
+        yield* fileSystem.realPath(commandPath),
+      );
       expect(requests).toEqual([]);
       expect(yield* fileSystem.exists(`${cacheDir}/tools`)).toBe(false);
     }).pipe(
@@ -400,6 +408,15 @@ describe("AcpRegistrySupport", () => {
         HOST_VALUE: "host",
         OVERRIDE_ME: "host",
       });
+
+      const relativeOverride = settings({ commandPath: "./example-agent" });
+      expect(yield* resolver.inspect(relativeOverride, {}, cacheDir)).toMatchObject({
+        status: "ready",
+      });
+      const fromRepository = yield* resolver.resolve(relativeOverride, cacheDir, {});
+      expect(yield* fileSystem.realPath(fromRepository.spawn.command)).toBe(
+        yield* fileSystem.realPath(commandPath),
+      );
 
       expect(resolved.distribution).toBe("binary");
       expect(resolved.spawn).toEqual({

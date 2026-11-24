@@ -332,6 +332,25 @@ describe("Muse launch", () => {
       Effect.provideService(SpawnExecutableResolution, () => resolved),
     );
 
+  it.effect("resolves the Windows Muse SDK launcher from its child directory", () =>
+    Effect.gen(function* () {
+      const cwd = "C:\\checkout";
+      const expected = `${cwd}\\tools\\muse.exe`;
+      const createHost = vi.fn<typeof createMuseSdkHost>().mockRejectedValue(new Error("fixture"));
+      yield* createMuseSdkHostEffect(
+        { binaryPath: "muse", environment: { PATH: "tools" }, cwd },
+        createHost,
+      ).pipe(
+        Effect.provideService(HostProcess.Platform, "win32"),
+        Effect.provideService(SpawnExecutableResolution, (_command, _platform, _env, directory) =>
+          directory === cwd ? expected : "C:\\server\\tools\\muse.exe",
+        ),
+        Effect.flip,
+      );
+      expect(createHost.mock.lastCall?.[0]).toMatchObject({ cwd, launch: { command: expected } });
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("runs an exe directly and a launcher script under cmd.exe on Windows", () =>
     Effect.gen(function* () {
       expect(yield* onWindows("C:\\Muse\\muse.exe")).toEqual({

@@ -368,6 +368,7 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
   const executablePath = yield* resolveClaudeSdkExecutablePath(
     options.binaryPath,
     options.environment,
+    options.cwd,
   );
   // Claude rewrites its whole config file for every change.
   const writes = yield* Semaphore.make(1);

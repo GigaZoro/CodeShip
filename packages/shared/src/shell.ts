@@ -75,7 +75,7 @@ export type SpawnExecutableResolver = (
   cwd?: string,
 ) => string | undefined;
 
-function resolveSpawnExecutableWithNode(
+export function resolveSpawnExecutableWithNode(
   command: string,
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
@@ -777,12 +777,15 @@ export const resolveMatchingLauncher = Effect.fn("shell.resolveMatchingLauncher"
     if (parent !== configuredParent) return null;
     const launcher = path.join(parent, name);
     if (name === configuredName) return launcher;
-    // Windows directories may opt into case sensitivity; compare the named entries including symlinks.
-    const [selectedInfo, configuredInfo] = await Promise.all([
+    // Case-sensitive Windows directories can contain two hard-link names with identical file IDs.
+    const [entries, selectedInfo, configuredInfo] = await Promise.all([
+      NodeFS.promises.readdir(parent),
       NodeFS.promises.lstat(launcher, { bigint: true }),
       NodeFS.promises.lstat(path.join(configuredParent, configuredName), { bigint: true }),
     ]);
-    return selectedInfo.dev === configuredInfo.dev &&
+    const foldedName = name.toLowerCase();
+    return entries.filter((entry) => entry.toLowerCase() === foldedName).length === 1 &&
+      selectedInfo.dev === configuredInfo.dev &&
       selectedInfo.ino !== 0n &&
       selectedInfo.ino === configuredInfo.ino
       ? launcher
@@ -900,7 +903,8 @@ const resolveMacosGit = Effect.fnUntraced(function* (
 ) {
   const locateXcodeGit = yield* XcodeGitLocation;
   const cache = yield* CommandResolutionCache;
-  const searchPath = commandSearchPath(env, "darwin", cwd);
+  const childCwd = cwd ?? (yield* HostProcess.WorkingDirectory);
+  const searchPath = commandSearchPath(env, "darwin", childCwd);
   const relativeSearch = searchPath.split(":").some((entry) => !NodePath.posix.isAbsolute(entry));
   const developerDir = env.DEVELOPER_DIR ?? "";
   const cacheKey = [
@@ -909,9 +913,7 @@ const resolveMacosGit = Effect.fnUntraced(function* (
     String(spawnResolverCacheId(locateXcodeGit)),
     searchPath,
     developerDir,
-    relativeSearch || (developerDir && !NodePath.posix.isAbsolute(developerDir))
-      ? (cwd ?? process.cwd())
-      : "",
+    relativeSearch || (developerDir && !NodePath.posix.isAbsolute(developerDir)) ? childCwd : "",
   ].join(COMMAND_RESOLUTION_CACHE_KEY_SEPARATOR);
   const nowNanos = yield* Clock.currentTimeNanos;
   const cached = cache.get(cacheKey);
@@ -920,16 +922,16 @@ const resolveMacosGit = Effect.fnUntraced(function* (
     cached !== undefined &&
     cached.expiresAtNanos > nowNanos &&
     (cached.resolvedPath === null ||
-      resolveExecutable(cached.resolvedPath, "darwin", env, cwd) !== undefined)
+      resolveExecutable(cached.resolvedPath, "darwin", env, childCwd) !== undefined)
   ) {
     return cached.resolvedPath ?? "git";
   }
   const located =
-    resolveExecutable("git", "darwin", env, cwd) === MACOS_GIT_SHIM
-      ? locateXcodeGit(env, cwd)
+    resolveExecutable("git", "darwin", env, childCwd) === MACOS_GIT_SHIM
+      ? locateXcodeGit(env, childCwd)
       : undefined;
   const realGit =
-    located !== undefined && resolveExecutable(located, "darwin", env, cwd) !== undefined
+    located !== undefined && resolveExecutable(located, "darwin", env, childCwd) !== undefined
       ? located
       : null;
   cacheCommandResolution(cache, cacheKey, realGit, nowNanos);

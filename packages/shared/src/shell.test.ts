@@ -658,6 +658,33 @@ effectIt.layer(NodeServices.layer)("resolveCommandPath", (it) => {
 });
 
 effectIt.layer(NodeServices.layer)("resolveMatchingLauncher", (it) => {
+  it.effect(
+    "rejects case-distinct directory entries even when both names are hard links to one executable",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped();
+        const selected = path.join(root, "Codex.exe");
+        const configured = path.join(root, "CODEX.exe");
+        yield* fs.writeFileString(selected, "launcher");
+        if (!(yield* fs.exists(configured))) {
+          yield* fs.link(selected, configured);
+          expect(yield* resolveMatchingLauncher(selected, configured)).toBeNull();
+          return;
+        }
+        // Simulate the case-sensitive directory's two hard-link entries on a case-insensitive test volume.
+        const directory: { readdir(path: string): Promise<string[]> } = NodeFS.promises;
+        const listing = vi
+          .spyOn(directory, "readdir")
+          .mockResolvedValue(["Codex.exe", "CODEX.exe"]);
+        try {
+          expect(yield* resolveMatchingLauncher(selected, configured)).toBeNull();
+        } finally {
+          listing.mockRestore();
+        }
+      }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
+  );
   it.effect("uses the actual identity of case variants in the launcher directory", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -1016,6 +1043,34 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
           Effect.provideService(XcodeGitLocation, () => XCODE_GIT),
           Effect.provideService(CommandResolutionCache, new Map()),
         ),
+    );
+    it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+      "uses the same literal PATH when the current working directory is omitted or explicit",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const cwd = yield* fs.makeTempDirectoryScoped();
+          const locate = vi.fn(() => "/usr/bin/true");
+          for (const entry of ["", " local tools ", '"tools"']) {
+            const directory = path.join(cwd, entry);
+            yield* fs.makeDirectory(directory, { recursive: true });
+            yield* fs.writeFileString(path.join(directory, "git"), "#!/bin/sh\nexit 0\n", {
+              mode: 0o700,
+            });
+            const env = { PATH: entry + ":/usr/bin" };
+            yield* Effect.gen(function* () {
+              expect((yield* resolveSpawnCommand("git", [], { env })).command).toBe("git");
+              expect((yield* resolveSpawnCommand("git", [], { env, cwd })).command).toBe("git");
+            }).pipe(
+              Effect.provideService(HostProcess.WorkingDirectory, cwd),
+              Effect.provideService(HostProcess.Platform, "darwin"),
+              Effect.provideService(XcodeGitLocation, locate),
+              Effect.provideService(CommandResolutionCache, new Map()),
+            );
+          }
+          expect(locate).not.toHaveBeenCalled();
+        }),
     );
     it.effect("keeps git when PATH has another git or the host is not macOS", () =>
       Effect.gen(function* () {

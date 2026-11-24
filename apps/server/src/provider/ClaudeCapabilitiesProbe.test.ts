@@ -3,6 +3,8 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import { query as claudeQuery } from "@anthropic-ai/claude-agent-sdk";
+import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ClaudeSettings, type ServerProvider } from "@t3tools/contracts";
 import { vi } from "vite-plus/test";
@@ -37,6 +39,30 @@ it("drops strict MCP mode, and only that, next to an administrator's managed-mcp
   assert.deepEqual(options.mcpServers, {});
   assert.equal(options.env?.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
 });
+
+it.effect("resolves the Windows Claude SDK probe launcher from its child directory", () =>
+  Effect.gen(function* () {
+    const cwd = "C:\\checkout";
+    const expected = `${cwd}\\tools\\claude.exe`;
+    const query = vi.mocked(claudeQuery).mockImplementationOnce(() => {
+      throw new Error("probe fixture");
+    });
+    yield* probeClaudeCapabilities(
+      yield* decodeClaudeSettings({ binaryPath: "claude" }),
+      { PATH: "tools" },
+      cwd,
+      false,
+    ).pipe(
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.provideService(SpawnExecutableResolution, (_command, _platform, _env, directory) =>
+        directory === cwd ? expected : "C:\\server\\tools\\claude.exe",
+      ),
+      Effect.flip,
+    );
+    assert.equal(query.mock.lastCall?.[0].options?.cwd, cwd);
+    assert.equal(query.mock.lastCall?.[0].options?.pathToClaudeCodeExecutable, expected);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
 
 it.effect("reports a deleted worktree's scan as finished, not pending", () =>
   Effect.gen(function* () {

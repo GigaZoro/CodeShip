@@ -40,7 +40,11 @@ export const ClaudeExecutableFileCheck = Context.Reference<ExecutableFileCheck>(
 
 /** On Windows the SDK skips shell and PATH/PATHEXT lookup: bare names and .cmd shims fail. */
 export const resolveClaudeSdkExecutablePath = Effect.fn("resolveClaudeSdkExecutablePath")(
-  function* (binaryPath: string, environment: NodeJS.ProcessEnv): Effect.fn.Return<string> {
+  function* (
+    binaryPath: string,
+    environment: NodeJS.ProcessEnv,
+    cwd?: string,
+  ): Effect.fn.Return<string> {
     const platform = yield* HostProcess.Platform;
     if (platform !== "win32") {
       return binaryPath;
@@ -48,7 +52,7 @@ export const resolveClaudeSdkExecutablePath = Effect.fn("resolveClaudeSdkExecuta
 
     const resolveExecutable = yield* SpawnExecutableResolution;
     const isFile = yield* ClaudeExecutableFileCheck;
-    const resolved = resolveExecutable(binaryPath, platform, environment) ?? binaryPath;
+    const resolved = resolveExecutable(binaryPath, platform, environment, cwd) ?? binaryPath;
     const extension = NodePath.win32.extname(resolved).toLowerCase();
     if (!WINDOWS_SHIM_EXTENSIONS.has(extension)) {
       return resolved;

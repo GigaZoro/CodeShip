@@ -62,7 +62,7 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
     const platform = yield* HostProcess.Platform;
     const resolveExecutable = yield* SpawnExecutableResolution;
     const executable =
-      resolveExecutable(options.settings.commandPath, platform, options.environment) ??
+      resolveExecutable(options.settings.commandPath, platform, options.environment, options.cwd) ??
       options.settings.commandPath;
     const fs = yield* FileSystem.FileSystem;
     const path = yield* fs.realPath(executable).pipe(Effect.orElseSucceed(() => executable));
@@ -125,7 +125,7 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
   const discoverMethods = Effect.scoped(
     Effect.gen(function* () {
       const inspected = yield* catalog
-        .inspect(options.settings, options.environment)
+        .inspect(options.settings, options.environment, options.cwd)
         .pipe(
           Effect.mapError((cause) =>
             failure("methods", "Could not inspect the selected ACP agent.", cause),

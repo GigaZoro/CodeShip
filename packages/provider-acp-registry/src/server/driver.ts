@@ -390,7 +390,9 @@ export const checkAcpRegistryProviderStatus = Effect.fn("AcpRegistryDriver.check
       return yield* buildInitialAcpRegistrySnapshot(input);
     }
     const catalog = yield* AcpRegistrySupport.AcpRegistryCatalog;
-    const inspected = yield* Effect.result(catalog.inspect(input.settings, input.environment));
+    const inspected = yield* Effect.result(
+      catalog.inspect(input.settings, input.environment, input.cwd),
+    );
     if (Result.isFailure(inspected)) {
       return buildCheckedAcpRegistrySnapshot({
         ...input,
@@ -438,6 +440,7 @@ export const checkAcpRegistryProviderReadiness = Effect.fn(
   input: SnapshotIdentity & {
     readonly settings: AcpRegistrySettings;
     readonly environment: NodeJS.ProcessEnv;
+    readonly cwd?: string;
   },
 ): Effect.fn.Return<ServerProvider, never, AcpRegistrySupport.AcpRegistryCatalog> {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
@@ -445,7 +448,9 @@ export const checkAcpRegistryProviderReadiness = Effect.fn(
     return yield* buildInitialAcpRegistrySnapshot(input);
   }
   const catalog = yield* AcpRegistrySupport.AcpRegistryCatalog;
-  const inspected = yield* Effect.result(catalog.inspect(input.settings, input.environment));
+  const inspected = yield* Effect.result(
+    catalog.inspect(input.settings, input.environment, input.cwd),
+  );
   const snapshot = buildCheckedAcpRegistrySnapshot({
     ...input,
     checkedAt,
@@ -535,6 +540,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
     );
     const readinessInput = {
       ...identity,
+      cwd: host.paths.cwd,
       settings: effectiveConfig,
       environment: processEnvironment,
     };
@@ -584,10 +590,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
       Effect.flatMap(withLiveRuntimeState),
     );
     const enrichProvider = checkAcpRegistryProviderStatus(
-      {
-        ...readinessInput,
-        cwd: host.paths.cwd,
-      },
+      readinessInput,
       probeAcpRegistryConfiguration,
     ).pipe(
       Effect.provideService(AcpRegistrySupport.AcpRegistryCatalog, catalog),

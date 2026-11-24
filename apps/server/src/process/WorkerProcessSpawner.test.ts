@@ -5,6 +5,7 @@ import * as NodeModule from "node:module";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { leaderLeavingChild, processPipe } from "@t3tools/shared/testing/leftoverChild";
 import * as Cause from "effect/Cause";
@@ -12,9 +13,11 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -101,6 +104,40 @@ describe("WorkerProcessSpawner", () => {
       assert.equal(stdout, "hello worker");
       assert.equal(yield* handle.exitCode, ChildProcessSpawner.ExitCode(3));
     }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.live.skipIf(isWindowsHost)("runs Git in the directory used to look up its launcher", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const repository = path.join(root, "repo");
+      yield* fs.makeDirectory(path.join(repository, "child"), { recursive: true });
+      yield* fs.symlink("repo/child", path.join(root, "link"));
+      for (const [directory, marker] of [
+        [root, "other"],
+        [repository, "repository"],
+      ] as const) {
+        yield* fs.makeDirectory(path.join(directory, "bin"));
+        yield* fs.writeFileString(
+          path.join(directory, "bin/git"),
+          `#!/bin/sh\necho ${marker}\npwd -P\n`,
+          {
+            mode: 0o700,
+          },
+        );
+      }
+      const cwd = path.join(root, "link") + "/..";
+      const env = { PATH: "bin" };
+      const git = yield* resolveSpawnCommand("git", [], { cwd, env });
+      const child = yield* ChildProcess.make(git.command, git.args, { cwd, env });
+      const output = yield* child.stdout.pipe(Stream.decodeText(), Stream.mkString);
+      assert.equal(yield* child.exitCode, ChildProcessSpawner.ExitCode(0));
+      assert.equal(output, `repository\n${yield* fs.realPath(repository)}\n`);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(WorkerProcessSpawner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    ),
   );
 
   it.live("relays output past the high-water mark intact", () =>

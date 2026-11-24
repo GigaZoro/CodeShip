@@ -141,7 +141,7 @@ export const triageCommand = Command.make("triage", {
 
       const installed: Array<TriageAgent> = [];
       for (const agent of TRIAGE_AGENTS) {
-        if (yield* isCommandAvailable(agent.command)) {
+        if (yield* isCommandAvailable(agent.command, { cwd: session.sessionDir })) {
           installed.push(agent);
         }
       }

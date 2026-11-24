@@ -512,6 +512,7 @@ export class AcpRegistryCatalog extends Context.Service<
     readonly inspect: (
       settings: AcpRegistrySettings,
       environment?: NodeJS.ProcessEnv,
+      cwd?: string,
     ) => Effect.Effect<AcpRegistryInspection, AcpRegistryError>;
     readonly resolve: (
       settings: AcpRegistrySettings,
@@ -1727,11 +1728,16 @@ export const makeAcpRegistryCatalog = Effect.fn("AcpRegistryCatalog.make")(funct
       : Effect.void;
 
   const inspect: AcpRegistryCatalog["Service"]["inspect"] = Effect.fn("AcpRegistryCatalog.inspect")(
-    function* (settings, environment) {
+    function* (settings, environment, cwd) {
       if (settings.source === "local") {
         const command = settings.commandPath.trim();
         if (!command) return { status: "unconfigured" } as const;
-        const executable = resolveExecutable(command, platform, environment ?? hostEnvironment);
+        const executable = resolveExecutable(
+          command,
+          platform,
+          environment ?? hostEnvironment,
+          cwd,
+        );
         if (executable !== undefined) yield* validateLocalExecutable(executable);
         return executable === undefined
           ? ({
@@ -1759,7 +1765,7 @@ export const makeAcpRegistryCatalog = Effect.fn("AcpRegistryCatalog.make")(funct
       const commandOverride = settings.commandPath.trim();
       if (commandOverride.length > 0) {
         const available =
-          resolveExecutable(commandOverride, platform, environment ?? hostEnvironment) !==
+          resolveExecutable(commandOverride, platform, environment ?? hostEnvironment, cwd) !==
           undefined;
         return available
           ? ({
@@ -1854,7 +1860,7 @@ export const makeAcpRegistryCatalog = Effect.fn("AcpRegistryCatalog.make")(funct
           });
         }
         const env = environment ?? hostEnvironment;
-        const command = resolveExecutable(executable, platform, env);
+        const command = resolveExecutable(executable, platform, env, cwd);
         if (command === undefined) {
           return yield* new AcpRegistryError({
             reason: "runner_unavailable",
@@ -1884,7 +1890,12 @@ export const makeAcpRegistryCatalog = Effect.fn("AcpRegistryCatalog.make")(funct
       const effectiveEnvironment = environment ?? hostEnvironment;
       const commandOverride = settings.commandPath.trim();
       if (commandOverride.length > 0) {
-        const resolvedOverride = resolveExecutable(commandOverride, platform, effectiveEnvironment);
+        const resolvedOverride = resolveExecutable(
+          commandOverride,
+          platform,
+          effectiveEnvironment,
+          cwd,
+        );
         if (resolvedOverride === undefined) {
           return yield* new AcpRegistryError({
             reason: "runner_unavailable",
