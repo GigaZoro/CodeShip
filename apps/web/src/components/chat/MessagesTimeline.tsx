@@ -100,6 +100,7 @@ import { TooltipScrollDismissArea } from "../ui/tooltip";
 import { WorktreeSetupCard } from "./WorktreeSetupCard";
 import { useOpenPrLink } from "~/lib/openPullRequestLink";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
+import { useClientSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { type HandoffTimelineRun } from "./V2LifecycleRow";
@@ -215,6 +216,8 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH = {
 } as const satisfies MaintainScrollAtEndOptions;
 
 const CITED_HISTORY_LOADING: CitedHistory = { _tag: "loading" };
+// Compact density trims about 4px of gap per row (the --timeline-gap-* tokens in index.css).
+const TIMELINE_ESTIMATED_ITEM_SIZE = { comfortable: 90, compact: 86 } as const;
 // How far below the viewport's top a revealed prompt lands.
 const PROMPT_SCROLL_OFFSET = 24;
 
@@ -451,6 +454,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   );
   const restoringThreadPosition = positionedThreadKey !== listIdentityKey;
   const prefersReducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
+  const interfaceDensity = useClientSettings((settings) => settings.interfaceDensity);
   const [settlingListIdentity, setSettlingListIdentity] = useState<string | null>(listIdentityKey);
   const [playingAudioRows, setPlayingAudioRows] = useState<ReadonlyMap<HTMLAudioElement, string>>(
     () => new Map(),
@@ -1438,7 +1442,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
               keyExtractor={keyExtractor}
               getItemType={getItemType}
               renderItem={renderItem}
-              estimatedItemSize={90}
+              estimatedItemSize={TIMELINE_ESTIMATED_ITEM_SIZE[interfaceDensity]}
               initialScrollAtEnd={
                 !findActive && citationRequest === null && rememberedPosition?.atEnd !== false
               }
@@ -1561,9 +1565,9 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
         isWorkLogRow || isSubagentGroup
           ? undefined
           : row.kind === "turn-fold" || row.kind === "working"
-            ? "pb-1.5"
+            ? "pb-(--timeline-gap-tight)"
             : row.kind === "message" && row.groupedWithNext
-              ? "pb-1"
+              ? "pb-(--timeline-gap-grouped)"
               : (row.kind === "message" &&
                     row.message.role === "assistant" &&
                     !row.showAssistantMeta) ||
@@ -1572,8 +1576,8 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
                   row.kind === "attempt-fold" ||
                   row.kind === "html-render" ||
                   row.kind === "mcp-app"
-                ? "pb-2"
-                : "pb-4",
+                ? "pb-(--timeline-gap-row)"
+                : "pb-(--timeline-gap-message)",
         (row.kind === "message" && row.message.role === "assistant") ||
           row.kind === "assistant-meta"
           ? "group/assistant"

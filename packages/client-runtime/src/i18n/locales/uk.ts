@@ -2041,6 +2041,7 @@ const catalog: MessageCatalog = {
   "About {name}": "Про {name}",
   Accent: "Акцент",
   "Accent color": "Акцентний колір",
+  "accent color": "акцентний колір",
   "Accent color hue": "Відтінок акцентного кольору",
   Accept: "Прийняти",
   "Accepted as {account}.": "Прийнято як {account}.",
@@ -3729,6 +3730,8 @@ const catalog: MessageCatalog = {
   "Collection health": "Стан збору даних",
   "Collection time": "Час збору",
   Color: "Колір",
+  "Color buttons, selections, and focus rings. Theme keeps the theme's own.":
+    "Колір кнопок, виділення та контурів фокуса. «Тема» залишає власний колір теми.",
   "Color filter": "Колірний фільтр",
   "Color scheme": "Колірна схема",
   colors: "кольори",
@@ -3799,6 +3802,7 @@ const catalog: MessageCatalog = {
   "Committed changes": "Зміни закомічено",
   "Committing...": "Створення коміту…",
   Compact: "Стиснути",
+  "Compact spacing": "Компактні відступи",
   "Compact {tokens} tokens of history before sending":
     "Стиснути {tokens} токенів історії перед надсиланням",
   "Compact and send": "Стиснути й надіслати",
@@ -6735,6 +6739,8 @@ const catalog: MessageCatalog = {
   "Interactive 3D iPhone Duo. Drag the screen to interact. Drag outside it or swipe with two fingers to turn. Pinch over the device to open or close its hinge.":
     "Інтерактивний 3D iPhone Duo. Перетягуйте екран, щоб взаємодіяти. Перетягуйте поза ним або проведіть двома пальцями, щоб повернути. Зведіть чи розведіть пальці над пристроєм, щоб відкрити або закрити шарнір.",
   Interface: "Інтерфейс",
+  "Interface density": "Щільність інтерфейсу",
+  "interface density": "щільність інтерфейсу",
   "Interface font": "Шрифт інтерфейсу",
   "Interface font size": "Розмір шрифту інтерфейсу",
   interrupt: "перервати",
@@ -13392,6 +13398,8 @@ const catalog: MessageCatalog = {
   Thursday: "Четвер",
   time: "час",
   Time: "Час",
+  "Tighten spacing in the sidebar, the conversation, and settings.":
+    "Зменшити відступи в бічній панелі, розмові та налаштуваннях.",
   "Time between automatic updates": "Час між автоматичними оновленнями",
   "time format": "формат часу",
   "Time format": "Формат часу",

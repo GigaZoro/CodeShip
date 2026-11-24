@@ -363,6 +363,18 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["wide full width column layout messages composer monitor"],
   },
   {
+    id: "interface-density",
+    title: msg("Interface density"),
+    to: "/settings/appearance",
+    searchTerms: ["compact comfortable spacing tight dense rows sidebar padding"],
+  },
+  {
+    id: "accent-color",
+    title: msg("Accent color"),
+    to: "/settings/appearance",
+    searchTerms: ["colour hue palette primary buttons highlight focus ring swatch"],
+  },
+  {
     id: "thread-details-items",
     title: msg("Thread details"),
     to: "/settings/chat",

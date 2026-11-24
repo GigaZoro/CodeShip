@@ -364,6 +364,8 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/appearance", msg("Glass opacity"), ["glassOpacity"]),
   restorable("/settings/chat", msg("Diff colors"), ["diffColorScheme"]),
   restorable("/settings/appearance", msg("Chat width"), ["chatWidth"]),
+  restorable("/settings/appearance", msg("Interface density"), ["interfaceDensity"]),
+  restorable("/settings/appearance", msg("Accent color"), ["accentColor"]),
   restorable("/settings/appearance", msg("Effort display"), ["effortDisplay"]),
   restorable("/settings/chat", msg("Render math"), ["mathRenderingEnabled"]),
   restorable("/settings/appearance", msg("Panel animations"), ["panelAnimationDurationMs"]),

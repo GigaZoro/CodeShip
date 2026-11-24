@@ -1408,6 +1408,23 @@ html[data-theme-id]:not([data-theme-id=""]) {
   --terminal-selection-background: var(--app-theme-terminal-selection-background);
 }
 
+/* The accent color setting lays one palette hue over the theme's primary (appearanceAccent.ts
+   publishes both appearances). Same specificity as the theme block above, so it must follow it. */
+html[data-accent-color]:not([data-accent-color=""]) {
+  --primary: var(--accent-light-primary);
+  --primary-foreground: var(--accent-light-primary-foreground);
+  --ring: var(--accent-light-ring);
+  --message-action: var(--primary);
+  --message-action-foreground: var(--primary-foreground);
+  --message-action-hover: color-mix(in srgb, var(--primary) 90%, var(--background));
+
+  @variant dark {
+    --primary: var(--accent-dark-primary);
+    --primary-foreground: var(--accent-dark-primary-foreground);
+    --ring: var(--accent-dark-ring);
+  }
+}
+
 /* Theme-token dependency probes are restored synchronously, before paint. Keep
    transitions from observing the temporary sentinel color in between. */
 html[data-theme-token-probe],
@@ -2299,6 +2316,33 @@ code {
   --diff-deletion: var(--destructive);
   --diff-addition-foreground: light-dark(var(--color-emerald-700), var(--color-emerald-400));
   --diff-deletion-foreground: light-dark(var(--color-red-700), var(--color-red-400));
+}
+
+/* Interface density. Comfortable is the default; compact tightens the sidebar rows, the
+   timeline gaps and the settings rows. Every pointer target stays at 24px or more. The
+   timeline's estimated row height (TIMELINE_ESTIMATED_ITEM_SIZE) follows the same switch. */
+:root {
+  --sidebar-thread-row-height: 2.25rem;
+  --sidebar-thread-card-height: 4.875rem;
+  --sidebar-folder-header-height: 2rem;
+  --sidebar-row-gap: 0.125rem;
+  --timeline-gap-grouped: 0.25rem;
+  --timeline-gap-tight: 0.375rem;
+  --timeline-gap-row: 0.5rem;
+  --timeline-gap-message: 1rem;
+  --settings-row-padding-y: 0.75rem;
+}
+
+:root[data-interface-density="compact"] {
+  --sidebar-thread-row-height: 1.75rem;
+  --sidebar-thread-card-height: 4.25rem;
+  --sidebar-folder-header-height: 1.75rem;
+  --sidebar-row-gap: 0.0625rem;
+  --timeline-gap-grouped: 0.125rem;
+  --timeline-gap-tight: 0.25rem;
+  --timeline-gap-row: 0.375rem;
+  --timeline-gap-message: 0.75rem;
+  --settings-row-padding-y: 0.5rem;
 }
 
 /* Chat width setting. Comfortable keeps the default --chat-content-max-width,
