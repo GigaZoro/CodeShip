@@ -4,6 +4,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
+  ENVIRONMENT_DESCRIPTOR_PATH,
   EventId,
   MessageId,
   type ModelSelection,
@@ -1824,13 +1825,16 @@ it.effect("a launch whose answer is lost on the way is sent again and followed t
   Effect.gen(function* () {
     const nativeFetch = yield* FetchHttpClient.Fetch;
     let launches = 0;
+    const keys: Array<string | undefined> = [];
     // The box records each launch whole, and the first two answers never arrive here.
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const body = init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : null;
-      const rpc: { params?: { name?: string } } = body?.startsWith("{") ? JSON.parse(body) : {};
+      const rpc: { params?: { name?: string; arguments?: { clientRequestId?: string } } } =
+        body?.startsWith("{") ? JSON.parse(body) : {};
       const response = await nativeFetch(input, init);
       if (rpc.params?.name !== "t3_thread_launch") return response;
       launches += 1;
+      keys.push(rpc.params.arguments?.clientRequestId);
       if (launches > 2) return response;
       await response.arrayBuffer();
       throw new TypeError("fetch failed");
@@ -1864,12 +1868,112 @@ it.effect("a launch whose answer is lost on the way is sent again and followed t
         // The thread there was answered as launched, not stopped as a refusal.
         expect(yield* Ref.get(thread.stops)).toEqual([]);
         expect(launches).toBe(3);
+        // Each resend carries the first launch's key, so the box records the launch once.
+        expect(keys[0]).toEqual(expect.any(String));
+        expect(new Set(keys)).toEqual(new Set([keys[0]]));
       }),
     ).pipe(
       Effect.provide(NodeHttpServer.layerTest),
       Effect.provideService(FetchHttpClient.Fetch, fetch),
     );
   }),
+);
+
+it.effect("a launch resent while the box cannot be reached is sent again, not stopped there", () =>
+  Effect.gen(function* () {
+    const nativeFetch = yield* FetchHttpClient.Fetch;
+    let launches = 0;
+    let unreachableProbes = 0;
+    // The box records the first launch, whose answer never arrives; then, once, no address of it answers.
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (unreachableProbes > 0 && url.pathname === ENVIRONMENT_DESCRIPTOR_PATH) {
+        unreachableProbes -= 1;
+        throw new TypeError("fetch failed");
+      }
+      const body = init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : null;
+      const rpc: { params?: { name?: string } } = body?.startsWith("{") ? JSON.parse(body) : {};
+      const response = await nativeFetch(input, init);
+      if (rpc.params?.name !== "t3_thread_launch") return response;
+      launches += 1;
+      if (launches > 1) return response;
+      await response.arrayBuffer();
+      unreachableProbes = 1;
+      throw new TypeError("fetch failed");
+    };
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const retries = yield* steppedRetries;
+        const a = yield* makeLaptop(database, offers).pipe(
+          Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
+        );
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const delegated = yield* delegateToBox(a);
+        // The resend finds no address of the box answering, so it backs off; a stop sent instead would
+        // reach the box, which answers again, and stop the thread the first launch started.
+        const next = yield* Effect.raceAll([
+          Queue.take(retries.failed).pipe(Effect.as("backed off")),
+          taskResult(a, delegated.taskId).pipe(Effect.as("ended")),
+          Deferred.await(thread.interruptedOnce).pipe(Effect.as("stopped there")),
+        ]);
+        expect(next).toBe("backed off");
+        expect(yield* Ref.get(thread.stops)).toEqual([]);
+        yield* Queue.offer(retries.retry, undefined);
+        yield* Ref.set(thread.reply, "Done on the box.");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+          status: "completed",
+          result: "Done on the box.",
+        });
+        expect(yield* Ref.get(thread.stops)).toEqual([]);
+        expect(launches).toBe(2);
+      }),
+    ).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.provideService(FetchHttpClient.Fetch, fetch),
+    );
+  }),
+);
+
+it.effect(
+  "a task whose box cannot be reached when delegated fails at once, with nothing sent there",
+  () =>
+    Effect.gen(function* () {
+      const { sent, fetch } = yield* countingLaunches;
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const thread = yield* makeBoxThread;
+          const b = yield* serveBox(thread);
+          const offers = yield* SubscriptionRef.make<
+            ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+          >([]);
+          const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+          const a = yield* makeLaptop(database, offers);
+          yield* linkTo(a.links, b, "full-access");
+          yield* seedParent(a);
+          // Its address now answers as another environment, so nothing is sent there.
+          yield* Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere"));
+          const refused = yield* a.call("delegate_task", refusedLaunchRequest("box-unreachable"));
+          expect(refused.isError).toBe(true);
+          expect(JSON.stringify(refused.content)).toContain("unreachable");
+          // Failed here before the caller heard, it is not followed, and no stop went there.
+          expect(yield* a.projections.getOpenRemoteDelegatedTasks).toEqual([]);
+          expect(yield* Ref.get(thread.stops)).toEqual([]);
+          expect(sent.launches).toBe(0);
+        }),
+      ).pipe(
+        Effect.provide(NodeHttpServer.layerTest),
+        Effect.provideService(FetchHttpClient.Fetch, fetch),
+      );
+    }),
 );
 
 it.effect(

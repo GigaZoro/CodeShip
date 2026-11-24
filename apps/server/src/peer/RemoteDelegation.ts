@@ -140,6 +140,13 @@ const isFinal = (error: OrchestratorMcpFailure) =>
   error.code === "thread_not_found" ||
   error.code === "run_not_found";
 
+/**
+ * A launch that failed without an answer from the other machine: its answer was lost, or the
+ * machine could not be reached this time. A launch sent before with the same key may have started.
+ */
+const launchOutcomeUnknown = (error: OrchestratorMcpFailure) =>
+  error.code === "no_answer" || error.code === "unreachable";
+
 const make = Effect.gen(function* () {
   const followRetry = yield* FollowRetrySchedule;
   const settleRetry = followRetry.pipe(
@@ -609,23 +616,28 @@ const make = Effect.gen(function* () {
               }
               yield* Ref.set(owed, owedStop);
             });
+            // Nothing is left there to follow. A failure write that did not happen is owed, so the
+            // follower's fiber retries it before it follows.
+            const failHere = (error: OrchestratorMcpFailure) => {
+              const write = complete(
+                scope.thread.threadId,
+                taskId,
+                "failed",
+                `The task could not be started in ${remoteChild.label}: ${error.message}`,
+                "stopped",
+              );
+              return write.pipe(
+                Effect.tapError(() => Ref.set(owed, write)),
+                Effect.ignoreCause({ log: true }),
+              );
+            };
             // A launch refused there may still have left its thread, so the task stays on record
             // and is followed while something is there, and is failed here only once nothing is.
             const notStarted = (error: OrchestratorMcpFailure) =>
               stopThere(followScope(scope.thread, remoteChild), remoteChild, "stop").pipe(
                 Effect.as(true),
                 Effect.catch((stopError) => Effect.succeed(stopError.code === "thread_not_found")),
-                Effect.flatMap((nothingThere) => {
-                  if (!nothingThere) return Effect.void;
-                  const failHere = complete(
-                    scope.thread.threadId,
-                    taskId,
-                    "failed",
-                    `The task could not be started in ${remoteChild.label}: ${error.message}`,
-                    "stopped",
-                  );
-                  return failHere.pipe(Effect.tapError(() => Ref.set(owed, failHere)));
-                }),
+                Effect.flatMap((nothingThere) => (nothingThere ? failHere(error) : Effect.void)),
                 Effect.ignoreCause({ log: true }),
               );
             const first = yield* Effect.result(launch);
@@ -633,20 +645,24 @@ const make = Effect.gen(function* () {
               yield* started(first.success);
               return { taskId };
             }
-            if (first.failure.code !== "no_answer") {
+            // This request just recorded the task, so an unreachable link means nothing was sent
+            // there, and nothing there needs a stop.
+            if (first.failure.code === "unreachable") {
+              yield* failHere(first.failure);
+              return yield* first.failure;
+            }
+            if (!launchOutcomeUnknown(first.failure)) {
               yield* notStarted(first.failure);
               return yield* first.failure;
             }
-            // The launch may have started there or not. Sent again with the same key, it is answered
-            // as recorded there, or starts then, so the task runs once. A task stopped or cancelled
-            // meanwhile has its thread there stopped once the launch answers.
+            // The launch may have started there or not. Sent again with the same key until the
+            // machine answers, it is answered as recorded there, or starts then, so the task runs
+            // once. A task stopped or cancelled meanwhile has its thread there stopped once the
+            // launch answers.
             yield* Ref.set(
               relaunch,
               launch.pipe(
-                Effect.retry({
-                  schedule: followRetry,
-                  while: (error) => error.code === "no_answer",
-                }),
+                Effect.retry({ schedule: followRetry, while: launchOutcomeUnknown }),
                 Effect.matchEffect({ onSuccess: started, onFailure: notStarted }),
               ),
             );

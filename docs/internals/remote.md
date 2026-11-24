@@ -116,7 +116,10 @@ Unlinking on the linking side only forgets the token.
   leave. Without that, two agents reusing a key would collide on the far side.
 - **Each peer MCP POST has a 75 s deadline**, including reading its response
   body. A missed deadline is recorded as a transport failure and fails as
-  `no_answer`, so delegated work backs off and retries. Worktree launches have 90 s for Git preflight,
+  `no_answer`, as does an HTTP 5xx answer, which a gateway on the route can give
+  after the call ran, so delegated work backs off and retries. When no address
+  answers as the linked environment, the call is not sent and fails as
+  `unreachable`. Worktree launches have 90 s for Git preflight,
   thread pages and PR guide reads have 2 minutes, repository clones have
   270 s for SSH and HTTPS attempts, scheduled task saves and manual runs have
   3 minutes for prompt-file fetches, and PR guide batches have 5 minutes for
@@ -172,8 +175,10 @@ A cancel's stop goes under the cancel's own key (`remoteChild.stopKey`), which t
 other side records once, so a cancel sent again, or one whose stop lost its answer,
 stops nothing that started there since; a Stop here gets a numbered key of its own.
 A launch whose answer was lost (`no_answer`) hands the caller its task and is sent
-again in the background with the same key, which the other side records once; the
-follower starts once a launch answers. A stop sent meanwhile finds no thread there,
+again in the background with the same key, which the other side records once, while
+its answer is lost or the machine cannot be reached (`unreachable`); the follower
+starts once a launch answers. A task this request just recorded whose machine cannot
+be reached fails at once, since nothing was sent there. A stop sent meanwhile finds no thread there,
 so a launch that answers for a task already ended here records a stop it owes its
 new thread (`delegated_task.remote.stop`, keyed by the launch), which the follower
 sends. A launch refused there is stopped there, and the task fails here once

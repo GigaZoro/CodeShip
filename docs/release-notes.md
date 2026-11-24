@@ -314,6 +314,7 @@
 - A task that could not start on a linked machine now says why it could not start, also when recording that fails at first. Before, it then said only that its chat there was not found.
 - Delegating a task to a linked machine whose answer is lost on the way, as on a dropped connection, now returns the task, and CodeShip sends the start again until that machine answers, without starting it twice. Before, the call failed and the task was stopped there although it had started. A task stopped or cancelled before its start reaches that machine now has its chat there stopped once the start arrives, instead of left running.
 - Cancelling a delegated task again with the same request, or a cancel whose answer was lost on the way, no longer stops new work started in its chat on the other machine since the first cancel.
+- A delegated task whose start lost its answer keeps being sent while the linked machine cannot be reached for a while, instead of being stopped there although it may have started. A task delegated to a machine none of whose addresses answers fails at once with `unreachable`, as nothing reached it, and an error page from a gateway on the way counts as a lost answer, since the machine may have acted on it.
 
 ## 2026-11-21 — Worktree helpers in another repository on a linked machine start from its default branch
 

@@ -1411,6 +1411,11 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
        * call sent again with its clientRequestId is recorded there once.
        */
       "no_answer",
+      /**
+       * No address of a linked environment answered as it, so the call was not sent there. A call
+       * sent earlier with the same clientRequestId may still have arrived.
+       */
+      "unreachable",
       /** A linked environment answered, but its version answers in a way this one cannot read. */
       "version_mismatch",
     ]),

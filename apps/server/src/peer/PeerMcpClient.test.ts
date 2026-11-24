@@ -383,6 +383,7 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
   let started = 0;
   let listError: string | undefined;
   let dropCall = false;
+  let callStatus: number | undefined;
   let heldList:
     | { readonly received: Deferred.Deferred<void>; readonly release: Deferred.Deferred<void> }
     | undefined;
@@ -426,6 +427,11 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
         return answer(200, { result: { tools } });
       }
       ran.push(body.params?.arguments);
+      if (callStatus !== undefined) {
+        const status = callStatus;
+        callStatus = undefined;
+        return answer(status);
+      }
       if (dropCall) {
         dropCall = false;
         return yield* new HttpClientError.HttpClientError({
@@ -508,6 +514,10 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
     dropNextCall: () => {
       dropCall = true;
     },
+    /** The next call runs there, and what answers it is only this HTTP status. */
+    answerNextCallWith: (status: number) => {
+      callStatus = status;
+    },
     /** Holds the next tools/list answer, as listed when it arrived, until `release`. */
     holdNextList: Effect.gen(function* () {
       const held = {
@@ -585,6 +595,56 @@ it.effect("a call whose answer never arrives fails as no answer, not as a refusa
     });
     expect(peer.ran).toEqual([{}]);
   }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "a call a gateway answers with a server error fails as no answer, since it may have run",
+  () =>
+    Effect.gen(function* () {
+      const peer = yield* fakePeerClient({});
+      peer.answerNextCallWith(502);
+      expect(yield* Effect.flip(peer.call({}))).toMatchObject({
+        code: "no_answer",
+        message:
+          "The linked environment's address answered HTTP 502, so whether it acted is unknown.",
+      });
+      expect(peer.ran).toEqual([{}]);
+      // A refusal by status alone is still the machine's answer.
+      peer.answerNextCallWith(429);
+      expect(yield* Effect.flip(peer.call({}))).toMatchObject({ code: "orchestration_error" });
+    }).pipe(Effect.scoped),
+);
+
+it.effect("a call to a linked environment no address answers as fails as unreachable", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const handlers = McpToolAccess.toLayer(toolkit, {
+        probe: McpToolAccess.reads(() => Effect.succeed({ modes: "probe" })),
+        hold: McpToolAccess.reads(() => Effect.never),
+      });
+      const box = descriptorOf("environment-box", "Box");
+      const b = yield* servePeer(box, McpHttpServer.toolkitRegistration(toolkit, handlers));
+      const context = yield* Layer.build(
+        layerLinkingEnvironment(descriptorOf("environment-a", "A")),
+      );
+      const links = Context.get(context, PeerLinks.PeerLinks);
+      const client = Context.get(context, PeerMcpClient.PeerMcpClient);
+      yield* linkTo(links, b);
+      // Its address now answers as another environment, so the link's token is not sent there.
+      yield* Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere"));
+      const failure = yield* client
+        .call({
+          environmentId: box.environmentId,
+          tool: "probe",
+          arguments: {},
+          limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
+          success: Result,
+        })
+        .pipe(Effect.flip);
+      expect(failure.code).toBe("unreachable");
+      expect(failure.message).toContain("Box did not answer");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("a peer whose tool list errors fails the call with its error, not as unreadable", () =>

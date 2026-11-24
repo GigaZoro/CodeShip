@@ -143,7 +143,9 @@ const fromLinkError = (error: PeerLinkError) =>
         ? "invalid_request"
         : error.reason === "expired" || error.reason === "incompatible"
           ? "capability_denied"
-          : "orchestration_error",
+          : error.reason === "unreachable"
+            ? "unreachable"
+            : "orchestration_error",
     message: error.message,
   });
 
@@ -367,6 +369,13 @@ const make = Effect.gen(function* () {
       });
     }
     if (response.status === 403) return yield* linkedEnvironmentsOffThere;
+    // A server error comes from the machine or a gateway on its route, after the call may have run.
+    if (response.status >= 500) {
+      return yield* new OrchestratorMcpFailure({
+        code: "no_answer",
+        message: `The linked environment's address answered HTTP ${response.status}, so whether it acted is unknown.`,
+      });
+    }
     if (response.status !== 200) {
       return yield* new OrchestratorMcpFailure({
         code: "orchestration_error",

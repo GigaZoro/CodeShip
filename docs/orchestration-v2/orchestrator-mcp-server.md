@@ -675,12 +675,17 @@ target_required
 memory_short
 auto_mode_unavailable
 no_answer
+unreachable
 version_mismatch
 ```
 
 `no_answer` means a linked environment's answer did not arrive, so whether it
 acted is unknown; the same call sent again with its `clientRequestId` is
-recorded there once.
+recorded there once. An address that answers with a server error (HTTP 5xx)
+gives `no_answer` too, since a gateway can answer that after the call ran.
+`unreachable` means no address of the linked environment answered as it, so
+this call was not sent there; a call sent earlier with the same
+`clientRequestId` may still have arrived.
 
 ## Code Ownership
 
