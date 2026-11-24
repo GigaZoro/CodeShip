@@ -66,7 +66,8 @@ const awaitHolder = (condition: string) =>
 const holdRuntimeBusy = (entry: string) =>
   [
     `exec 7> >(exec -a ${entry} cat >/dev/null 2>&1)`,
-    awaitHolder(`grep -qF -- ${entry} /proc/[0-9]*/cmdline 2>/dev/null`),
+    "runtime_holder=$!",
+    awaitHolder(`grep -qF -- ${entry} "/proc/$runtime_holder/cmdline" 2>/dev/null`),
   ].join("\n");
 
 const holdInstallLock = (lock: string) =>
@@ -300,9 +301,15 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
   });
 
   it.each([
-    ["extraction", "tar() { return 1; }"],
-    ["verification", 'tar() { command tar "$@" && rm "$runtime_tmp/codex-metadata.files"; }'],
-    ["promotion", 'mv() { if [ "$3" = "$runtime_tmp" ]; then return 1; fi; command mv "$@"; }'],
+    ["extraction", "tar() { confirm_backend; return 1; }"],
+    [
+      "verification",
+      'tar() { command tar "$@" && confirm_backend && rm "$runtime_tmp/codex-metadata.files"; }',
+    ],
+    [
+      "promotion",
+      'mv() { if [ "$3" = "$runtime_tmp" ]; then confirm_backend; return 1; fi; command mv "$@"; }',
+    ],
   ])("keeps the installed backend at its path after failed %s", (_, injectFailure) => {
     const fixture = createFixture(SERVER_ENTRY_SOURCE, true);
     expect(fixture.install().status).toBe(0);
@@ -312,10 +319,17 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     expect(damage.status, damage.stderr).toBe(0);
 
     const failed = runShell(
-      [holdRuntimeBusy(sh(fixture.serverEntry)), injectFailure, fixture.installScript()].join("\n"),
+      [
+        holdRuntimeBusy(sh(fixture.serverEntry)),
+        `confirm_backend() { grep -qF -- ${sh(fixture.serverEntry)} "/proc/$runtime_holder/cmdline" && echo "injected failure with live backend" >&2; }`,
+        injectFailure,
+        // The parent owns the holder's pipe while the installer opens its own lock descriptors.
+        `(\n${fixture.installScript()}\n)`,
+      ].join("\n"),
     );
 
     expect(failed.status).not.toBe(0);
+    expect(failed.stderr).toContain("injected failure with live backend");
     expect(parseWslRuntimeRoot(failed.stdout)).toBeNull();
     const original = runShell(
       `test -f ${sh(`${fixture.runtimeRoot}/original-install`)} && ${sh(fixture.serverEntry)} --version`,
@@ -394,12 +408,16 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
           warm ? 'grep -Fxq "runtimeRoot:$root" held.out' : 'grep -q "repair deferred" held.err',
           'kill -0 "$holder"',
           `${whileMounted} || { echo "changed the leased installation"; exit 1; }`,
-          'if [ -n "${before:-}" ]; then test "$before" = "$(stat -c %i "$helper")" && test "$(cat "$helper")" = champ; fi',
+          'if [ -n "${before:-}" ]; then',
+          '  test "$before" = "$(stat -c %i "$helper")" || { echo "leased helper inode changed"; exit 1; }',
+          '  test "$(cat "$helper")" = champ || { echo "leased helper contents changed"; exit 1; }',
+          "fi",
           stopMountedBackend,
           "sh install.sh > retried.out",
           'grep -Fxq "runtimeRoot:$root" retried.out',
           `${afterExit} || { echo "repair did not finish after release"; exit 1; }`,
-          'test -x "$helper" && test "$(cat "$helper")" = champ',
+          'test -x "$helper"',
+          'test "$(cat "$helper")" = champ',
         ].join("\n"),
       );
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
