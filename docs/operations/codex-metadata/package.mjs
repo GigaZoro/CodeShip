@@ -32,8 +32,9 @@ const platforms = {
 };
 
 function layout(target) {
+  if (!Object.hasOwn(platforms, target))
+    throw new Error(`Unsupported Codex metadata target: ${target}`);
   const platform = platforms[target];
-  if (!platform) throw new Error(`Unsupported Codex metadata target: ${target}`);
   const suffix = platform.npm.startsWith("win32") ? ".exe" : "";
   return {
     ...platform,
@@ -105,8 +106,15 @@ async function prepareHelpers(root, target) {
 }
 
 if (process.argv[1] && import.meta.url === NodeURL.pathToFileURL(process.argv[1]).href) {
-  const [command, root, target] = process.argv.slice(2);
+  const [command, root, target, ...unread] = process.argv.slice(2);
+  if (
+    (command !== "helpers" && command !== "verify") ||
+    !root?.trim() ||
+    !target?.trim() ||
+    unread.length > 0
+  ) {
+    throw new Error("Usage: node package.mjs <helpers|verify> <directory> <rust-target>");
+  }
   if (command === "helpers") await prepareHelpers(root, target);
-  else if (command === "verify") verifyPackage(root, target);
-  else throw new Error("Usage: node package.mjs <helpers|verify> <directory> <rust-target>");
+  else verifyPackage(root, target);
 }

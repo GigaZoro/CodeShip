@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 import { sign as signApplication, type SignOptions } from "@electron/osx-sign";
 import Plist from "plist";
+import { nonBlankPath } from "./lib/command-line.ts";
 
 // Pinned upstream codex and codex-code-mode-host entitlement plists.
 const v8Entitlements = [
@@ -46,12 +47,14 @@ export default async function sign(options: SignOptions): Promise<void> {
 }
 
 if (import.meta.main) {
-  const [operation, app, staged] = process.argv.slice(2);
-  if (operation !== "--verify-codex-metadata" || !app || !staged) {
+  const [operation, app, staged, ...unread] = process.argv.slice(2);
+  if (operation !== "--verify-codex-metadata" || !app || !staged || unread.length > 0) {
     throw new Error(
       "Usage: node scripts/sign-macos.ts --verify-codex-metadata <app> <staged-package>",
     );
   }
+  nonBlankPath(app, "App");
+  nonBlankPath(staged, "Staged package");
   const { cli, host, rg } = metadataBinaries(app);
   const expectedV8 = Object.fromEntries(v8Entitlements.map((key) => [key, true]));
   for (const binary of [cli, host, rg]) {
