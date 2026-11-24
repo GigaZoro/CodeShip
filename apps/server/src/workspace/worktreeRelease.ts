@@ -1,5 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeUtil from "node:util";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
 import { GitCommandError, RunId, ThreadId } from "@t3tools/contracts";
@@ -118,15 +121,61 @@ const worktreeStatus = (cwd: string) =>
     "--ignore-submodules=none",
   ]);
 
+const runFile = NodeUtil.promisify(NodeChildProcess.execFile);
+type BackupCapture = { pending: Promise<void> };
+
+async function allCompleted<A>(tasks: Promise<A>[]) {
+  const results = await Promise.allSettled(tasks);
+  return results.map((result) => {
+    if (result.status === "rejected") throw result.reason;
+    return result.value;
+  });
+}
+
+async function verifySavedLink(source: string, target: string) {
+  const [original, copy] = await Promise.all([
+    NodeFSP.lstat(source, { bigint: true }),
+    NodeFSP.lstat(target, { bigint: true }),
+  ]);
+  if (
+    (!original.isFile() && !original.isSymbolicLink()) ||
+    original.ino === 0n ||
+    original.ino !== copy.ino ||
+    original.dev !== copy.dev ||
+    original.nlink < 2n ||
+    copy.nlink < 2n
+  )
+    throw new Error("Ignored file has no matching retained link");
+}
+
+// Only unlink a staged name while the source still owns the same inode. Never recursively remove a backup.
+async function discardUnpublished(source: string, saved: string): Promise<void> {
+  if ((await NodeFSP.realpath(saved)) !== saved || (await NodeFSP.realpath(source)) !== source)
+    throw new Error("Backup directory changed");
+  const entries = await NodeFSP.readdir(saved, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name.includes("\uFFFD")) throw new Error("Uninspectable backup name");
+    const original = NodePath.join(source, entry.name);
+    const target = NodePath.join(saved, entry.name);
+    if (entry.isDirectory()) await discardUnpublished(original, target);
+    else {
+      await verifySavedLink(original, target);
+      await NodeFSP.unlink(target);
+    }
+  }
+  await NodeFSP.rmdir(saved);
+}
+
 // A second hard link preserves the file itself, including its metadata and alternate streams.
 // Capture never opens file contents or follows directory symlinks.
 const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
   cwd: string,
   savedFiles: string,
   status: string,
-  capture: boolean,
+  capture?: BackupCapture,
 ) {
   const fs = yield* FileSystem.FileSystem;
+  const mac = (yield* HostProcess.Platform) === "darwin";
   const saved = yield* fs.realPath(savedFiles);
   if (saved !== savedFiles || saved === cwd || saved.startsWith(cwd + NodePath.sep)) return false;
   const pending: string[] = [];
@@ -146,8 +195,9 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
   let count = 0;
   while (pending.length) {
     const batch = pending.splice(-64);
-    const results = yield* Effect.tryPromise(() =>
-      Promise.all(
+    const results = yield* Effect.tryPromise((signal) => {
+      const symlinks = new Map<string, string[]>();
+      const work = allCompleted(
         batch.map(async (name) => {
           const source = NodePath.join(cwd, name);
           const target = NodePath.join(saved, name);
@@ -174,19 +224,35 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
           }
           if (!original.isFile() && !original.isSymbolicLink())
             throw new Error("Special file requires its owner");
-          if (capture) await NodeFSP.link(source, target);
-          const copy = await NodeFSP.lstat(target, { bigint: true });
-          if (
-            original.ino === 0n ||
-            original.ino !== copy.ino ||
-            original.dev !== copy.dev ||
-            original.nlink < (capture ? 1n : 2n)
-          )
-            throw new Error("Ignored file has no matching retained link");
+          if (capture && mac && original.isSymbolicLink()) {
+            const siblings = symlinks.get(targetParent) ?? [];
+            siblings.push(source);
+            symlinks.set(targetParent, siblings);
+          } else {
+            if (capture) await NodeFSP.link(source, target);
+            await verifySavedLink(source, target);
+          }
           return [];
         }),
-      ),
-    ).pipe(Effect.timeout("30 seconds"));
+      ).then(async (children) => {
+        // Darwin's link(2) follows the source symlink. ln -P links the inode and accepts siblings in one call.
+        for (const [parent, sources] of symlinks) {
+          await runFile("/bin/ln", ["-P", ...sources, parent], { signal, timeout: 30_000 });
+          await allCompleted(
+            sources.map((source) =>
+              verifySavedLink(source, NodePath.join(parent, NodePath.basename(source))),
+            ),
+          );
+        }
+        return children;
+      });
+      if (capture)
+        capture.pending = work.then(
+          () => undefined,
+          () => undefined,
+        );
+      return work;
+    }).pipe(Effect.timeout("30 seconds"));
     for (const children of results) {
       for (const child of children) pending.push(child);
     }
@@ -230,14 +296,32 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
     head: (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim(),
     identity,
   });
+  const capture: BackupCapture = { pending: Promise.resolve() };
+  let unpublished = true;
   const savedFiles = input.saveIgnored
-    ? yield* fs
-        .makeTempDirectory({ directory, prefix: "saved-" })
-        .pipe(Effect.flatMap((saved) => fs.realPath(saved)))
+    ? yield* Effect.acquireRelease(
+        fs
+          .realPath(directory)
+          .pipe(
+            Effect.flatMap((parent) =>
+              fs.makeTempDirectory({ directory: parent, prefix: "saved-" }),
+            ),
+          ),
+        (saved) =>
+          unpublished
+            ? Effect.promise(() => capture.pending).pipe(
+                Effect.timeout("30 seconds"),
+                Effect.andThen(Effect.tryPromise(() => discardUnpublished(cwd, saved))),
+                Effect.catch(() =>
+                  Effect.logWarning("Retained unpublished worktree backup", { saved }),
+                ),
+              )
+            : Effect.void,
+      )
     : undefined;
   if (savedFiles) {
     const records = yield* worktreeStatus(cwd);
-    if (!(yield* inspectIgnored(cwd, savedFiles, records, true)))
+    if (!(yield* inspectIgnored(cwd, savedFiles, records, capture)))
       return yield* new GitCommandError({
         operation: "WorktreeRelease.queue",
         command: "save ignored files",
@@ -248,16 +332,24 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
   const body = yield* encodeRequest({ ...request, ...(savedFiles ? { savedFiles } : {}) });
   const destination = releaseFile(directory, cwd);
   // The worker treats the filename as a commit marker. A partial write must never be consumed.
-  yield* Effect.scoped(
+  const staging = yield* fs.makeTempDirectoryScoped({ directory, prefix: ".release-" });
+  const temp = path.join(staging, "request");
+  yield* fs.writeFileString(temp, body);
+  // A worker can consume the accepted request before rename reports its result.
+  yield* Effect.uninterruptible(
     Effect.gen(function* () {
-      const staging = yield* fs.makeTempDirectoryScoped({ directory, prefix: ".release-" });
-      const temp = path.join(staging, "request");
-      yield* fs.writeFileString(temp, body);
-      yield* fs.rename(temp, destination);
+      unpublished = false;
+      yield* fs.rename(temp, destination).pipe(
+        Effect.tapError(() =>
+          Effect.gen(function* () {
+            unpublished = yield* fs.exists(temp).pipe(Effect.orElseSucceed(() => false));
+          }),
+        ),
+      );
     }),
   );
   return { file: destination, savedFiles };
-});
+}, Effect.scoped);
 
 export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   request: ReleaseRequest,
@@ -371,7 +463,7 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
     )
       return "worktree contains tracked, untracked or ignored local data";
     if (
-      !(yield* inspectIgnored(cwd, request.savedFiles, status, false).pipe(
+      !(yield* inspectIgnored(cwd, request.savedFiles, status).pipe(
         Effect.orElseSucceed(() => false),
       ))
     )

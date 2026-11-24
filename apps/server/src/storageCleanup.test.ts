@@ -1,4 +1,6 @@
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- Fixture paths must match the host-normalized ones the service reports, outside any Effect layer.
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Link identity requires native lstat, including dangling links.
+import * as NodeFSP from "node:fs/promises";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Fixture paths match host paths.
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -22,6 +24,7 @@ import {
   type TerminalMetadataStreamEvent,
   type TerminalSummary,
 } from "@t3tools/contracts";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as ServerConfig from "./config.ts";
@@ -661,6 +664,146 @@ const runCleanupTest = <A, E>(
     | Scope.Scope
   >,
 ) => effect.pipe(Effect.provide(cleanupTestLayer), Effect.scoped);
+
+describe.skipIf(isWindowsHost)("physical links in ignored dependency trees", () => {
+  it.live("preserves directory, file, dangling and external symlinks and holds a replacement", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture(undefined, true);
+        fixture.disable();
+        const runId = RunId.make("delivered");
+        const owner = shell({
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          status: "completed",
+          latestRunId: runId,
+          latestRunCompletedAt: at(0),
+        });
+        fixture.setThreads([owner]);
+        const modules = NodePath.join(fixture.worktree, "node_modules");
+        yield* fixture.fs.makeDirectory(modules);
+        const external = NodePath.join(fixture.repo, "external-file");
+        yield* fixture.fs.writeFileString(external, "outside");
+        const targets = ["../vendor", "../tracked.txt", "../absent", external];
+        for (let i = 0; i < 1024; i++)
+          yield* fixture.fs.symlink(
+            targets[i % targets.length]!,
+            NodePath.join(modules, String(i)),
+          );
+        const input = {
+          stateDir: fixture.config.stateDir,
+          threadId: owner.id,
+          runId,
+          worktreePath: fixture.worktree,
+          durableRef: "refs/heads/main",
+        };
+        yield* queueWorktreeRelease(input);
+        expect((yield* fixture.service.runNow).entries[0]?.reason).toMatch(/local data/i);
+        const { savedFiles } = yield* queueWorktreeRelease({ ...input, saveIgnored: true });
+        for (const [i, target] of targets.entries()) {
+          const saved = NodePath.join(savedFiles!, "node_modules", String(i));
+          const original = yield* Effect.promise(() =>
+            NodeFSP.lstat(NodePath.join(modules, String(i)), { bigint: true }),
+          );
+          const copy = yield* Effect.promise(() => NodeFSP.lstat(saved, { bigint: true }));
+          expect([copy.isSymbolicLink(), copy.dev, copy.ino]).toEqual([
+            true,
+            original.dev,
+            original.ino,
+          ]);
+          expect(yield* fixture.fs.readLink(saved)).toBe(target);
+        }
+        const replaced = NodePath.join(modules, "0");
+        yield* fixture.fs.remove(replaced);
+        yield* fixture.fs.symlink(targets[0]!, replaced);
+        expect((yield* fixture.service.runNow).entries[0]?.reason).toMatch(/changed or lack/);
+        yield* fixture.fs.remove(replaced);
+        expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("removed");
+        expect(yield* fixture.fs.readFileString(external)).toBe("outside");
+      }),
+    ),
+  );
+});
+
+it.live("disposes partial capture after a sibling directory fails inspection", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fixture = yield* cleanupFixture(undefined, true);
+      const modules = NodePath.join(fixture.worktree, "node_modules");
+      const nested = NodePath.join(modules, "local", ".git");
+      yield* fixture.fs.makeDirectory(nested, { recursive: true });
+      for (let i = 0; i < 128; i++)
+        yield* fixture.fs.writeFileString(NodePath.join(modules, String(i)), "installed");
+      const result = yield* queueWorktreeRelease({
+        stateDir: fixture.config.stateDir,
+        threadId: "owner",
+        runId: "run",
+        worktreePath: fixture.worktree,
+        durableRef: "refs/heads/main",
+        saveIgnored: true,
+      }).pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+      expect(
+        yield* fixture.fs.readDirectory(
+          NodePath.join(fixture.config.stateDir, ServerConfig.WORKTREE_RELEASE_DIRECTORY),
+        ),
+      ).toEqual([]);
+      expect(yield* fixture.fs.readFileString(NodePath.join(modules, "0"))).toBe("installed");
+      expect(yield* fixture.fs.exists(nested)).toBe(true);
+    }),
+  ),
+);
+
+it.live.each(["redundant", "unique", "published"] as const)(
+  "disposes only unpublished redundant backup links after a %s staging failure",
+  (kind) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture(undefined, true);
+        const source = NodePath.join(fixture.worktree, ".env");
+        yield* fixture.fs.writeFileString(source, "accepted");
+        const input = {
+          stateDir: fixture.config.stateDir,
+          threadId: "owner",
+          runId: "run",
+          worktreePath: fixture.worktree,
+          durableRef: "refs/heads/main",
+          saveIgnored: true,
+        };
+        const accepted = yield* queueWorktreeRelease(input);
+        yield* fixture.fs.remove(source);
+        yield* fixture.fs.writeFileString(source, "second");
+        const second = yield* queueWorktreeRelease(input).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fixture.fs,
+            rename: (from, to) =>
+              Effect.gen(function* () {
+                if (kind === "published") yield* fixture.fs.rename(from, to);
+                if (kind === "unique") yield* fixture.fs.remove(source);
+                return yield* fixture.fs.rename(from, NodePath.join(from, "impossible"));
+              }),
+          }),
+          Effect.result,
+        );
+        expect(second._tag).toBe("Failure");
+        expect(yield* fixture.fs.readFileString(NodePath.join(accepted.savedFiles!, ".env"))).toBe(
+          "accepted",
+        );
+        const dir = NodePath.dirname(accepted.file);
+        const other = (yield* fixture.fs.readDirectory(dir)).filter(
+          (n) => n.startsWith("saved-") && n !== NodePath.basename(accepted.savedFiles!),
+        );
+        expect(other).toHaveLength(kind === "redundant" ? 0 : 1);
+        if (other.length)
+          expect(yield* fixture.fs.readFileString(NodePath.join(dir, other[0]!, ".env"))).toBe(
+            "second",
+          );
+        expect(JSON.parse(yield* fixture.fs.readFileString(accepted.file)).savedFiles).toBe(
+          kind === "published" ? NodePath.join(dir, other[0]!) : accepted.savedFiles,
+        );
+      }),
+    ),
+);
 
 it.live.each(["direct land", "no change"] as const)(
   "releases only the owner's completed run after delivery and teardown (%s)",

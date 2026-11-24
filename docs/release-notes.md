@@ -1,3 +1,7 @@
+## 2026-11-24 — Preserve ignored symlinks during worktree release
+
+- On macOS, worktree owners can save ignored dependency trees containing relative or dangling symlinks. When a release request fails before publication, CodeShip removes redundant backup links where the checkout still has the original files.
+
 ## 2026-11-24 — Release a delivered task’s worktree
 
 - Checkout owners can queue a release for one completed run, save its ignored files, and name the refs that preserve its history. The server waits for delivery and teardown, then releases the checkout. A follow-up opens a fresh checkout.
