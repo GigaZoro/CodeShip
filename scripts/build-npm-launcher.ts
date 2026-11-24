@@ -104,7 +104,10 @@ t3_contender=
 trap t3_release_lock EXIT
 trap 'exit 143' HUP INT TERM
 t3_acquire_lock "$1" "$2" 360
-if [ "$#" -eq 3 ]; then t3_promote_runtime "$3" 0; fi
+if [ "$#" -eq 3 ]; then
+  t3_promote_runtime "$3" 0
+  printf '%s\\n' "$t3_reused"
+fi
 `,
   );
   yield* fs.copyFile(path.join(sourceDir, "bin.mjs"), path.join(stageDir, "dist/bin.mjs"));

@@ -11,6 +11,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeEvents from "node:events";
+import * as NodeFS from "node:fs";
 import * as NodeHttp from "node:http";
 
 import { npmReleaseDatabaseMigration } from "@t3tools/shared/cliRelease";
@@ -47,7 +48,10 @@ const run = Effect.fn("test.run")(function* (
   return { stdout, stderr, exitCode };
 }, Effect.scoped);
 
-const serveFakeRelease = Effect.fn("test.serveFakeRelease")(function* (root: string) {
+const serveFakeRelease = Effect.fn("test.serveFakeRelease")(function* (
+  root: string,
+  beforeChecksum?: () => void,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const key = `${yield* HostProcess.Platform}-${yield* HostProcess.Architecture}`;
@@ -78,11 +82,13 @@ exit 7
   });
   assert.equal(tar.exitCode, 0, tar.stderr);
   const archive = yield* fs.readFile(path.join(root, "release", archiveName));
-  let checksum = NodeCrypto.createHash("sha256").update(archive).digest("hex");
+  const archiveChecksum = NodeCrypto.createHash("sha256").update(archive).digest("hex");
+  let checksum = archiveChecksum;
   const requests: Array<string> = [];
   const server = NodeHttp.createServer((request, response) => {
     requests.push(request.url ?? "");
     if (request.url === `/v${VERSION}/SHA256SUMS`) {
+      beforeChecksum?.();
       response.end(`${checksum}  ${archiveName}\n`);
     } else if (request.url === `/v${VERSION}/${archiveName}`) {
       response.writeHead(200, { "Content-Length": archive.length }).end(archive);
@@ -104,8 +110,8 @@ exit 7
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
     requests,
-    corruptChecksum: () => {
-      checksum = "0".repeat(64);
+    setChecksumValid: (valid: boolean) => {
+      checksum = valid ? archiveChecksum : "0".repeat(64);
     },
   };
 });
@@ -226,6 +232,87 @@ syncBuiltinESMExports();
   );
 
   describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("download verification", () => {
+    it.effect.each([
+      { reported: "2.0.0", status: 0 },
+      { reported: VERSION, status: 78 },
+    ])(
+      "never launches a rejected peer on retry (reported $reported, exit $status)",
+      ({ reported, status }) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+          const { packageDir } = yield* buildNpmLauncher({
+            version: VERSION,
+            outputDir: path.join(root, "out"),
+          });
+          const home = path.join(root, "home");
+          const versions = path.join(home, "runtime/versions");
+          const installed = path.join(versions, VERSION);
+          const peer = path.join(versions, "peer");
+          yield* fs.makeDirectory(peer, { recursive: true });
+          yield* fs.writeFileString(path.join(peer, ".install-complete"), VERSION);
+          if (status === 78) yield* fs.writeFileString(path.join(peer, ".npm-verified"), VERSION);
+          yield* fs.writeFileString(
+            path.join(peer, "t3"),
+            `#!/bin/sh
+if [ "$T3CODE_VERIFY_INSTALL" = 1 ]; then
+  printf 'probe\\n' >> "$TRACE"
+  echo 't3 v${reported}'
+  exit ${status}
+fi
+printf 'ordinary launch\\n' >> "$TRACE"
+`,
+          );
+          yield* fs.chmod(path.join(peer, "t3"), 0o755);
+          const release = yield* serveFakeRelease(root, () => {
+            if (NodeFS.existsSync(peer)) NodeFS.renameSync(peer, installed);
+          });
+          const trace = path.join(root, "trace");
+          const invoke = run(process.execPath, [path.join(packageDir, "bin/t3.mjs"), "serve"], {
+            cwd: root,
+            env: {
+              PATH: process.env.PATH,
+              T3CODE_HOME: home,
+              T3CODE_RELEASE_BASE_URL: release.baseUrl,
+              TRACE: trace,
+            },
+          });
+          const first = yield* invoke;
+          assert.equal(first.exitCode, 1, first.stderr);
+          assert.include(first.stderr, "verification");
+          assert.equal(yield* fs.readFileString(trace), "probe\n");
+          release.setChecksumValid(false);
+          const retry = yield* invoke;
+          assert.notInclude(yield* fs.readFileString(trace), "ordinary launch");
+          assert.equal(retry.exitCode, 1, retry.stderr);
+          assert.include(retry.stderr, "checksum mismatch");
+          release.setChecksumValid(true);
+          const repaired = yield* invoke;
+          assert.equal(repaired.exitCode, 7, repaired.stderr);
+          assert.include(repaired.stdout, "stub serve launcher=");
+          const requestsAfterRepair = release.requests.length;
+          const warmProbe = path.join(root, "probe-after-repair");
+          const cached = yield* run(
+            process.execPath,
+            [path.join(packageDir, "bin/t3.mjs"), "serve"],
+            {
+              cwd: root,
+              env: {
+                PATH: process.env.PATH,
+                T3CODE_HOME: home,
+                T3CODE_RELEASE_BASE_URL: release.baseUrl,
+                FIXTURE_PROBE_RECEIPT: warmProbe,
+              },
+            },
+          );
+          assert.equal(cached.exitCode, 7, cached.stderr);
+          assert.isFalse(yield* fs.exists(warmProbe));
+          assert.equal(release.requests.length, requestsAfterRepair);
+          assert.notInclude(yield* fs.readFileString(trace), "ordinary launch");
+        }),
+    );
+
     it.effect.each(["missing", "empty", "damaged"] as const)(
       "preserves the %s destination when the downloaded runtime fails verification",
       (destination) =>
@@ -355,7 +442,12 @@ syncBuiltinESMExports();
         );
 
         const requestsAfterFirst = release.requests.length;
-        const second = yield* run(process.execPath, [launcher, "--version"], { cwd: root, env });
+        const warmProbe = path.join(root, "warm-probe");
+        const second = yield* run(process.execPath, [launcher, "--version"], {
+          cwd: root,
+          env: { ...env, FIXTURE_PROBE_RECEIPT: warmProbe },
+        });
+        assert.isFalse(yield* fs.exists(warmProbe));
         assert.equal(second.exitCode, 7);
         assert.equal(release.requests.length, requestsAfterFirst);
 
@@ -538,7 +630,7 @@ fs.closeSync = (fd, ...rest) => {
           [VERSION],
         );
 
-        release.corruptChecksum();
+        release.setChecksumValid(false);
         const corrupt = yield* run(process.execPath, [launcher, "--version"], {
           cwd: root,
           env: { ...env, T3CODE_HOME: path.join(root, "other-home") },
