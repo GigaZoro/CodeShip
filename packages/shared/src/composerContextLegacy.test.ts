@@ -129,6 +129,13 @@ describe("upgradeLegacyContextMessage", () => {
     },
   );
 
+  it.each(["a \uFFFC b\n", "code:\n\n    \uFFFC\n\n", "<review_comment>open\n"])(
+    "returns %j unchanged when it carries no legacy context",
+    (text) => {
+      expect(upgradeLegacyContextMessage(text)).toEqual({ text, records: [] });
+    },
+  );
+
   it("preserves literal review tokens even beside real review blocks", () => {
     const review =
       '<review_comment sectionId="s" filePath="f.ts" startIndex="1" endIndex="1">note</review_comment>';

@@ -1,3 +1,7 @@
+## 2026-11-24 — Export a thread as Markdown
+
+- Choose **Export as Markdown** in a thread's menu or the command palette to save it as a `.md` file; on mobile, the same action on a thread row shares the file. Each message renders in the file as it does in the chat, formulas and chat-only formatting included: it is kept as written where it reads the same there, rewritten where it would not, and shown as a Markdown code block in the rare case neither works. References and footnotes stay within their message, and raw HTML shows as text, an HTML block as a code block. Failed commands and tools are marked, the window stays responsive while a long thread exports, and on mobile a new export cancels the one in progress.
+
 ## 2026-11-24 — Require Git 2.47 on development machines
 
 - `machine-config.json` now requires Git 2.47.0 or later. `node ~/.agents/tools/machine-config.mjs check <checkout>` reports an older Git, which takes minutes on the UTF-16 rows of the Git driver tests. No change to the app.

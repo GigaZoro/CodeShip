@@ -43,6 +43,7 @@ import {
   createEnvironmentSubscriptionAtomFamily,
   createRuntimeCommand,
   environmentSessionGenerationAtom,
+  runAtomCommand,
   scheduleAtomCommandEffect,
   executeAtomQuery,
   type QueryAnswerHandler,
@@ -1026,6 +1027,37 @@ describe("runtime command runner", () => {
       expect(Cause.squash(result.cause)).toBe(defect);
     }
     registry.dispose();
+  });
+
+  it.effect("interrupts the executing effect when the command caller aborts", () => {
+    const controller = new AbortController();
+    return Effect.gen(function* () {
+      const runtime = Atom.runtime(Layer.empty);
+      const registry = AtomRegistry.make();
+      const started = yield* Deferred.make<void>();
+      const interrupted = yield* Deferred.make<void>();
+      const command = createRuntimeCommand(runtime, {
+        label: "test.abort",
+        execute: () =>
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Effect.never),
+            Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+          ),
+      });
+
+      try {
+        const pending = runAtomCommand(registry, command, undefined, { signal: controller.signal });
+        yield* Deferred.await(started);
+        controller.abort();
+
+        const result = yield* Effect.promise(() => pending);
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") expect(Cause.hasInterruptsOnly(result.cause)).toBe(true);
+        yield* Deferred.await(interrupted);
+      } finally {
+        registry.dispose();
+      }
+    });
   });
 
   it("serializes commands that share a scheduler and lane", async () => {

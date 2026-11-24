@@ -97,6 +97,7 @@ import {
   PinIcon,
   PinOffIcon,
   SquarePenIcon,
+  DownloadIcon,
   TextSearchIcon,
   UserPlusIcon,
 } from "lucide-react";
@@ -119,6 +120,7 @@ import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstra
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { copyThreadReference } from "../lib/copyThreadReference";
+import { useExportThreadMarkdown } from "../hooks/useExportThreadMarkdown";
 import {
   queueWorkspaceFocusFromPalette,
   restoreWorkspaceFocusFromPalette,
@@ -577,6 +579,7 @@ function OpenCommandPaletteDialog(props: {
           linkedPullRequestUrl:
             activeThread?.linkedPullRequest?.url ?? activeThread?.branchPullRequest?.url ?? null,
         });
+  const exportThreadMarkdown = useExportThreadMarkdown();
   const copyActiveThreadReference = async () => {
     if (activeThreadReferenceCopyTarget === null) return;
     await copyThreadReference(activeThreadReferenceCopyTarget);
@@ -1571,6 +1574,19 @@ function OpenCommandPaletteDialog(props: {
       icon: <LinkIcon className={ITEM_ICON_CLASS} />,
       shortcutCommand: "thread.copyReference",
       run: copyActiveThreadReference,
+    });
+  }
+
+  if (activeThread !== null) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    actionItems.push({
+      kind: "action",
+      value: "action:export-thread-markdown",
+      searchTerms: ["export", "download", "save", "markdown", "thread", "conversation"],
+      title: t("Export thread as Markdown"),
+      description: activeThread.title,
+      icon: <DownloadIcon className={ITEM_ICON_CLASS} />,
+      run: () => exportThreadMarkdown(threadRef),
     });
   }
 

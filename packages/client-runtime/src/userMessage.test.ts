@@ -8,6 +8,7 @@ import {
   resolveUserMessageGrouping,
   resolveUserMessagePresentation,
 } from "./userMessage.ts";
+import { guestMessage, legacyScheduledMessage } from "./userMessageTestFixtures.ts";
 
 describe("resolveUserMessageGrouping", () => {
   const own = { role: "user", text: "hello" };
@@ -154,7 +155,7 @@ describe("resolveUserMessageFileCards", () => {
 });
 
 describe("resolveUserMessagePresentation", () => {
-  const legacyText = "[Triggered by schedule task: Daily audit]\n\nCheck for crashes.\n";
+  const legacyText = legacyScheduledMessage("scheduled").text;
 
   it("preserves user-written and assistant-quoted schedule headers", () => {
     for (const message of [
@@ -184,20 +185,12 @@ describe("resolveUserMessagePresentation", () => {
   });
 
   it("shows a guest's own words and name, not the attributed text the agent reads", () => {
-    expect(
-      resolveUserMessagePresentation({
-        role: "user",
-        createdBy: "user",
-        text: "Message from guest Sam, sent by the owner:\n\nWhy?",
-        context: {
-          guest: {
-            guestMessageId: GuestMessageId.make("guest-message:one"),
-            name: "Sam",
-            text: "Why?",
-          },
-        },
-      }),
-    ).toEqual({ text: "Why?", attribution: "guest", scheduledTaskId: undefined, guestName: "Sam" });
+    expect(resolveUserMessagePresentation(guestMessage)).toEqual({
+      text: "Why?",
+      attribution: "guest",
+      scheduledTaskId: undefined,
+      guestName: "Sam",
+    });
   });
 
   it("attributes older server-sent restart continuations to T3.CodeShip, not another agent", () => {
@@ -219,14 +212,7 @@ describe("resolveUserMessagePresentation", () => {
 
   it("recovers the triggering automation from older scheduler message ids", () => {
     for (const trigger of ["scheduled", "manual"]) {
-      expect(
-        resolveUserMessagePresentation({
-          id: `scheduled-task-message:task:daily-audit:1788661140000:${trigger}`,
-          role: "user",
-          createdBy: "user",
-          text: legacyText,
-        }),
-      ).toEqual({
+      expect(resolveUserMessagePresentation(legacyScheduledMessage(trigger))).toEqual({
         text: "Check for crashes.\n",
         attribution: "automation",
         scheduledTaskId: "task:daily-audit",

@@ -82,7 +82,7 @@ describe("thread row accessibility actions", () => {
         pullRequest: null,
         dismissWoke: false,
       }).map((action) => action.name),
-    ).toEqual(["settle", "snooze:tomorrow", "snooze:custom", "delete"]);
+    ).toEqual(["settle", "snooze:tomorrow", "snooze:custom", "delete", "export-markdown"]);
   });
 
   it("leaves a read-only row only what needs no permission", () => {
@@ -94,6 +94,6 @@ describe("thread row accessibility actions", () => {
         pullRequest: "Open #12 pull request open",
         dismissWoke: true,
       }).map((action) => action.name),
-    ).toEqual(["openPullRequests", "dismissWoke"]);
+    ).toEqual(["export-markdown", "openPullRequests", "dismissWoke"]);
   });
 });

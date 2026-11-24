@@ -1444,6 +1444,7 @@ const catalog: MessageCatalog = {
     "{lane}: {status}, {duration}, початок на +{offset}",
   "{lastRun}, failed": "{lastRun}, не вдалося",
   "{left}% left": "Залишилось {left}%",
+  "{line} (failed)": "{line} (невдало)",
   "{login} · Team": "{login} · Команда",
   "{machine} · {status}": "{machine} · {status}",
   "{machine} cannot read prompts from files. Use the text instead or pick another machine.":
@@ -2500,6 +2501,7 @@ const catalog: MessageCatalog = {
   "Answer the agent's question first.": "Спочатку відповідайте на запитання агента.",
   "Answer the question to edit queued messages":
     "Дайте відповідь на запитання, щоб редагувати повідомлення в черзі",
+  "Answer:": "Відповідь:",
   Answered: "Відповідено на",
   "Answered questions": "Відповіді на запитання",
   "Antigravity download": "Завантаження Antigravity",
@@ -2658,6 +2660,7 @@ const catalog: MessageCatalog = {
   "Asking someone to review needs write access on this repository":
     "Щоб попросити когось зробити рев’ю, потрібен доступ на запис до цього репозиторію",
   Assets: "Ресурси",
+  Assistant: "Асистент",
   "Assistant message": "Повідомлення асистента",
   "Assistant quote": "Цитата асистента",
   at: "о",
@@ -2702,6 +2705,7 @@ const catalog: MessageCatalog = {
     many: "Вкладення ще завантажуються",
     other: "Вкладення ще завантажуються",
   },
+  "Attachments: {names}": "Вкладення: {names}",
   "attachments{targets} {times}": "вкладення{targets} {times}",
   "attempt {attempt}": "спроба {attempt}",
   "Attempted path": "Спробований шлях",
@@ -4870,6 +4874,7 @@ const catalog: MessageCatalog = {
   "Created thread": "Створено чат",
   "Created thread · {title}": "Створено чат · {title}",
   "Created without a first commit": "Створено без першого коміту",
+  "Created: {date}": "Створено: {date}",
   "Creates {path}": "Створить {path}",
   "Creates {path} on {environment}": "Створить {path} у середовищі {environment}",
   "Creates {path} on {machine}": "Створює {path} на {machine}",
@@ -4998,6 +5003,7 @@ const catalog: MessageCatalog = {
   "Delegated from {label}. Connect to it to open the parent thread.":
     "Делеговано з {label}. Підключіться до нього, щоб відкрити батьківський чат.",
   "Delegated tasks": "Делеговані завдання",
+  "Delegated to a subagent: {task}": "Доручено субагенту: {task}",
   delete: "видалити",
   Delete: "Видалити",
   'Delete "{name}" on every machine?\nIt\'s shared, so this deletes it on {machines} and on any other machine with a copy. To remove it from one machine only, edit it and untick that machine. This cannot be undone.':
@@ -5468,6 +5474,7 @@ const catalog: MessageCatalog = {
     "Редагування файлів робочого простору й збереження планів на диск.",
   "Edit your requests": "Редагувати ваші запити",
   Edited: "Відредаговано",
+  "Edited {file}": "Змінено {file}",
   "Edited tracked files": "Змінені відстежувані файли",
   Editing: "Редагування",
   "Editing in the composer": "Редагується в полі повідомлення",
@@ -5769,7 +5776,10 @@ const catalog: MessageCatalog = {
     "Expo дозволяє сеанси до 40 хвилин на безкоштовних облікових записах і до 115 на платних, а сеанс завершується після вказаних хвилин без активності, тому хвилин бездіяльності має бути менше, ніж хвилин сеансу.",
   "EXPO_TOKEN on the server": "EXPO_TOKEN на сервері",
   "Export {name}": "Експортувати {name}",
+  "Export as Markdown": "Експортувати як Markdown",
   "Export theme file": "Експортувати файл теми",
+  "Export thread as Markdown": "Експортувати чат як Markdown",
+  "Exporting thread…": "Експорт чату…",
   "Exposed on all interfaces.": "Відкрито на всіх інтерфейсах.",
   "Exposed on all interfaces. Pairing links use {host}.":
     "Відкрито на всіх інтерфейсах. Посилання сполучення використовують {host}.",
@@ -5842,6 +5852,7 @@ const catalog: MessageCatalog = {
   "Failed to disable Tailscale HTTPS.": "Не вдалося вимкнути Tailscale HTTPS.",
   "Failed to disconnect.": "Не вдалося відключитися.",
   "Failed to discover SSH hosts.": "Не вдалося знайти SSH-хости.",
+  "Failed to export thread": "Не вдалося експортувати чат",
   "Failed to fork this response.": "Не вдалося створити відгалуження цієї відповіді.",
   "Failed to import action.": "Не вдалося імпортувати дію.",
   "Failed to interrupt the current turn.": "Не вдалося перервати поточний хід.",
@@ -9187,6 +9198,7 @@ const catalog: MessageCatalog = {
   "Project source": "Джерело проєкту",
   "Project title cannot be empty": "Назва проєкту не може бути порожньою",
   "Project unavailable": "Проєкт недоступний",
+  "Project: {project}": "Проєкт: {project}",
   "Project: {value}": "Проєкт: {value}",
   Projects: "Проєкти",
   "projects {times}": "проєкти {times}",
@@ -9384,6 +9396,7 @@ const catalog: MessageCatalog = {
   "Raised surface": "Піднесена поверхня",
   ram: "оперативна пам’ять",
   Ran: "Запущено",
+  "Ran {command}": "Виконано {command}",
   "Ran {count} commands": {
     one: "Виконано {count} команду",
     few: "Виконано {count} команди",
@@ -10663,6 +10676,7 @@ const catalog: MessageCatalog = {
   "Searched files": "Пошук файлів виконано",
   "Searched files {glob}": "Пошук файлів {glob}",
   "Searched files {glob} in {target}": "Пошук файлів {glob} у {target}",
+  "Searched files for {pattern}": "Пошук у файлах: {pattern}",
   "Searched in {target}": "Пошук у {target}",
   "Searched the web": "Пошук в інтернеті виконано",
   "Searched the web {count} times": {
@@ -10671,6 +10685,7 @@ const catalog: MessageCatalog = {
     many: "Пошук в інтернеті виконано {count} разів",
     other: "Пошук в інтернеті виконано {count} разу",
   },
+  "Searched the web for {query}": "Пошук в інтернеті: {query}",
   "Searching every host for “{query}”": "Пошук «{query}» на всіх хостах",
   "Searching messages…": "Пошук повідомлень…",
   "Searching project files…": "Пошук файлів проєкту…",
@@ -13285,6 +13300,7 @@ const catalog: MessageCatalog = {
     "Цей чат ще починає хід. Спробуйте ще раз, коли він запрацює.",
   "This thread is the only one linked to this worktree:":
     "Цей чат єдиний, пов’язаний із цим worktree:",
+  "This thread is too large to export.": "Цей чат завеликий для експорту.",
   "This thread is waiting on you. Respond to the pending request before snoozing it.":
     "Цей чат чекає на вас. Відповідайте на запит, перш ніж відкладати його.",
   "This thread is working. Interrupt it first, then try again.":
@@ -13335,6 +13351,7 @@ const catalog: MessageCatalog = {
   "thread details": "відомості про чат",
   "Thread details": "Подробиці чату",
   "Thread details: {enabled} of {total} on": "Відомості про чат: увімкнено {enabled} із {total}",
+  "Thread exported": "Чат експортовано",
   "Thread failed": "Помилка в чаті",
   "Thread forked": "Чат розгалужено",
   "thread grouping": "групування чатів",
@@ -13548,6 +13565,7 @@ const catalog: MessageCatalog = {
   "Try copying again.": "Спробуйте скопіювати ще раз.",
   "Try copying this context again.": "Спробуйте скопіювати цей контекст ще раз.",
   "Try copying this thread again.": "Спробуйте скопіювати цей чат ще раз.",
+  "Try exporting this thread again.": "Спробуйте експортувати цей чат ще раз.",
   "Try loading the diff view again.": "Спробуйте знову завантажити перегляд змін.",
   "Try reinstalling the capture helper, then check again.":
     "Спробуйте перевстановити помічник захоплення, потім перевірте ще раз.",
@@ -14192,6 +14210,8 @@ const catalog: MessageCatalog = {
   },
   "Used for new threads when the default model's provider is out of usage.":
     "Використовується для нових чатів, коли в провайдера моделі за замовчуванням вичерпано ліміт використання.",
+  "Used tool {tool}": "Використано інструмент {tool}",
+  User: "Користувач",
   "User input needed": "Потрібне введення",
   "User message": "Повідомлення користувача",
   "User-configured endpoint for this desktop backend.":

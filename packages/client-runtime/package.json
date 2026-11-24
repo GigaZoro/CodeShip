@@ -535,6 +535,10 @@
       "types": "./src/threadPullRequests.ts",
       "default": "./src/threadPullRequests.ts"
     },
+    "./thread-markdown": {
+      "types": "./src/threadMarkdown.ts",
+      "default": "./src/threadMarkdown.ts"
+    },
     "./thread-reference": {
       "types": "./src/threadReference.ts",
       "default": "./src/threadReference.ts"
