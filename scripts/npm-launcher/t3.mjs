@@ -143,6 +143,47 @@ function publish(staging, dir) {
   }
 }
 
+const entryName = process.platform === "win32" ? "t3.exe" : "t3";
+
+function verifiesVersion(dir) {
+  const probe = spawnSync(path.join(dir, entryName), ["--version"], {
+    env: { ...process.env, T3CODE_VERIFY_INSTALL: "1" },
+    stdio: ["ignore", "pipe", "ignore"],
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  return probe.status === 0 && /\bv(\S+)\s*$/.exec(probe.stdout)?.[1] === version;
+}
+
+function recoverPrevious(dir) {
+  const parent = path.dirname(dir);
+  const previous = path.join(parent, `.${version}.previous`);
+  if (!isComplete(previous) || !verifiesVersion(previous)) return false;
+  if (process.platform === "win32") {
+    try {
+      fs.renameSync(previous, dir);
+    } catch (error) {
+      if (!fs.existsSync(dir)) throw error;
+    }
+  } else {
+    // The shell, SSH and service installers share this claim and rollback directory.
+    const recovery = spawnSync(
+      "/bin/sh",
+      [path.join(import.meta.dirname, "recover-runtime.sh"), parent, version],
+      {
+        stdio: ["ignore", "ignore", "inherit"],
+      },
+    );
+    if (recovery.error) throw recovery.error;
+    if (recovery.status !== 0)
+      throw new Error(`could not recover the local t3 ${version} installation`);
+  }
+  if (!isComplete(dir)) return false;
+  if (!verifiesVersion(dir))
+    throw new Error(`the recovered t3 ${version} installation failed verification`);
+  return true;
+}
+
 async function main() {
   const key = `${process.platform}-${process.arch}`;
   if (!SUPPORTED.includes(key)) {
@@ -152,19 +193,15 @@ async function main() {
     );
   }
   const dir = path.join(t3Home(), "runtime", "versions", version);
-  if (!isComplete(dir)) await install(dir, key);
+  if (!isComplete(dir) && !recoverPrevious(dir)) await install(dir, key);
 
   // Service IPC and signals must reach the child; terminal Ctrl-C already does, so do not forward SIGINT twice.
   const ipc = process.send !== undefined;
-  const child = spawn(
-    path.join(dir, process.platform === "win32" ? "t3.exe" : "t3"),
-    process.argv.slice(2),
-    {
-      stdio: ipc ? ["inherit", "inherit", "inherit", "ipc"] : "inherit",
-      // The executable lives in the T3 home, so this is how it knows npm launched it.
-      env: { ...process.env, T3CODE_NPM_LAUNCHER_PATH: import.meta.filename },
-    },
-  );
+  const child = spawn(path.join(dir, entryName), process.argv.slice(2), {
+    stdio: ipc ? ["inherit", "inherit", "inherit", "ipc"] : "inherit",
+    // The executable lives in the T3 home, so this is how it knows npm launched it.
+    env: { ...process.env, T3CODE_NPM_LAUNCHER_PATH: import.meta.filename },
+  });
   if (ipc) {
     process.on("message", (message) => child.connected && child.send(message));
     child.on("message", (message) => process.connected && process.send(message));

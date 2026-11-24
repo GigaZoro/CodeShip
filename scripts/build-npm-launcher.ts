@@ -12,6 +12,7 @@ import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { runtimePromotion } from "@t3tools/shared/runtimePromotion";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
@@ -85,6 +86,17 @@ export const buildNpmLauncher = Effect.fn("buildNpmLauncher")(function* (input: 
   );
   yield* fs.copyFile(path.join(sourceDir, "t3.mjs"), path.join(stageDir, "bin/t3.mjs"));
   yield* fs.chmod(path.join(stageDir, "bin/t3.mjs"), 0o755);
+  yield* fs.writeFileString(
+    path.join(stageDir, "bin/recover-runtime.sh"),
+    `set -eu
+${runtimePromotion}
+t3_claim_dir=
+t3_contender=
+trap t3_release_lock EXIT
+trap 'exit 143' HUP INT TERM
+t3_acquire_lock "$1" "$2" 360
+`,
+  );
   yield* fs.copyFile(path.join(sourceDir, "bin.mjs"), path.join(stageDir, "dist/bin.mjs"));
   const readme = yield* path.fromFileUrl(new URL("../apps/server/README.md", import.meta.url));
   if (yield* fs.exists(readme)) {

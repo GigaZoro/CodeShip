@@ -100,6 +100,70 @@ const serveFakeRelease = Effect.fn("test.serveFakeRelease")(function* (root: str
 });
 
 it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
+  it.effect.each([
+    { matches: true, outcome: "restores the matching rollback offline" },
+    { matches: false, outcome: "preserves the wrong-version rollback and requests the release" },
+  ])("the npm entry point $outcome", ({ matches }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const version = matches ? process.versions.node : "0.0.1";
+      const { packageDir } = yield* buildNpmLauncher({
+        version,
+        outputDir: path.join(root, "out"),
+      });
+      const launcher = path.join(packageDir, "bin/t3.mjs");
+      const home = path.join(root, "home");
+      const versions = path.join(home, "runtime/versions");
+      const previous = path.join(versions, "." + version + ".previous");
+      const entry = (yield* HostProcess.Platform) === "win32" ? "t3.exe" : "t3";
+      yield* fs.makeDirectory(previous, { recursive: true });
+      yield* fs.writeFileString(path.join(previous, ".install-complete"), version + "\n");
+      // Node provides a portable executable whose --version and launch path are observable.
+      yield* fs
+        .link(process.execPath, path.join(previous, entry))
+        .pipe(Effect.catch(() => fs.copyFile(process.execPath, path.join(previous, entry))));
+      yield* fs.writeFileString(
+        path.join(root, "update"),
+        "console.log(JSON.stringify([process.execPath, ...process.argv.slice(2)]))",
+      );
+      const offline = path.join(root, "offline.mjs");
+      yield* fs.writeFileString(
+        offline,
+        'globalThis.fetch = (url) => { throw new Error("offline fixture refused " + url); };',
+      );
+      const result = yield* run(
+        process.execPath,
+        ["--import", "./offline.mjs", launcher, "update", version],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            T3CODE_HOME: home,
+            T3CODE_RELEASE_BASE_URL: "https://release.invalid",
+          },
+        },
+      );
+      if (matches) {
+        assert.equal(result.exitCode, 0, result.stderr);
+        assert.equal(
+          result.stdout.trim(),
+          JSON.stringify([path.join(versions, version, entry), version]),
+        );
+        assert.isFalse(yield* fs.exists(previous));
+      } else {
+        assert.equal(result.exitCode, 1);
+        assert.include(
+          result.stderr,
+          "offline fixture refused https://release.invalid/v0.0.1/SHA256SUMS",
+        );
+        assert.isTrue(yield* fs.exists(previous));
+        assert.isFalse(yield* fs.exists(path.join(versions, version)));
+      }
+    }),
+  );
+
   it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     "publishes a launcher that downloads, verifies, caches, and runs the release executable",
     () =>
