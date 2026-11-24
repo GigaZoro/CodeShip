@@ -1615,6 +1615,13 @@ export default function ChatView(props: ChatViewProps) {
     followUpSent: timelineMessages.filter((message) => message.role === "user").length > 1,
   });
   const onCancelWorktreeSetupStable = useStableCallback(() => void cancelWorktreeSetup());
+  // The terminal drawer is thread state an embedded chat does not render, so the thread moves to the main view.
+  const onOpenWorktreeSetupTerminalStable = useStableCallback((terminalId: string) => {
+    onOpenWorktreeSetupTerminal?.(terminalId);
+    if (embedded && activeThreadRef) {
+      useRightPanelStore.getState().requestThreadReveal(activeThreadRef);
+    }
+  });
   const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);
   const draftHeroDockRequested =
     activeThreadKey !== null && dockedDraftHeroThreadKey === activeThreadKey;
@@ -3161,9 +3168,10 @@ export default function ChatView(props: ChatViewProps) {
       gitStatus.aheadCount > 0 ||
       (gitStatus.aheadOfDefaultCount ?? 0) > 0
     : null;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- offers this thread's agent actions to the command palette while the chat view shows it
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- offers this thread's agent actions to the command palette while the main chat view shows it
   useEffect(() => {
-    if (!agentActionsOffered) return;
+    // The palette acts on the routed thread; an embedded chat would replace its target.
+    if (!agentActionsOffered || embedded) return;
     return publishAgentActionsTarget({
       threadKey: routeThreadKey,
       isGitRepo,
@@ -3172,6 +3180,7 @@ export default function ChatView(props: ChatViewProps) {
     });
   }, [
     agentActionsOffered,
+    embedded,
     routeThreadKey,
     isGitRepo,
     agentActionsUnavailableReason,
@@ -3650,7 +3659,9 @@ export default function ChatView(props: ChatViewProps) {
                 {...(draftId
                   ? { onWorktreeSetupWorkLocally: onWorktreeSetupWorkLocallyStable }
                   : {})}
-                {...(onOpenWorktreeSetupTerminal ? { onOpenWorktreeSetupTerminal } : {})}
+                {...(onOpenWorktreeSetupTerminal
+                  ? { onOpenWorktreeSetupTerminal: onOpenWorktreeSetupTerminalStable }
+                  : {})}
                 isPreparingWorktree={isPreparingWorktree}
                 footer={timelineFooter}
                 listRef={legendListRef}

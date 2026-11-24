@@ -8,7 +8,11 @@ import {
   withMessageContext,
   deriveWorkspaceMutationId,
 } from "./ChatView.logic";
-import { recallCheckoutIsRepo, rememberCheckoutIsRepo } from "./ChatView.logic";
+import {
+  observeProactivePanelUserChoice,
+  recallCheckoutIsRepo,
+  rememberCheckoutIsRepo,
+} from "./ChatView.logic";
 import { ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { deriveProviderInstanceEntries } from "../providerInstances";
 import { ensureInlineContextReferences } from "../lib/composerContextReferences";
@@ -1063,5 +1067,32 @@ describe("presentThreadShellFromProjection", () => {
     ]);
     expect(isThreadWaitingOnWork(shell)).toBe(true);
     expect(resolveThreadStatus(shell)).toBe("waiting");
+  });
+});
+
+describe("observeProactivePanelUserChoice", () => {
+  const input = {
+    threadKey: "environment-local:thread-1",
+    runningTurnId: null,
+    userActionRevision: 4,
+  };
+
+  it("treats the selection that revealed a thread as a choice made before its first observation", () => {
+    expect(observeProactivePanelUserChoice(null, input).userActionRevision).toBe(4);
+    expect(
+      observeProactivePanelUserChoice(null, { ...input, revealedBySelection: true })
+        .userActionRevision,
+    ).toBe(3);
+  });
+
+  it("ignores the reveal once the thread is already observed", () => {
+    const first = observeProactivePanelUserChoice(null, { ...input, revealedBySelection: true });
+    expect(
+      observeProactivePanelUserChoice(first, {
+        ...input,
+        userActionRevision: 5,
+        revealedBySelection: true,
+      }).userActionRevision,
+    ).toBe(3);
   });
 });

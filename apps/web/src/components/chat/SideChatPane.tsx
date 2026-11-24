@@ -44,7 +44,11 @@ export default function SideChatPane(props: {
     [parentRef, threadId],
   );
   const shell = useQuietThreadShell(threadRef);
-  const parent = useQuietThreadShell(parentRef);
+  // A nested side chat shows in its ancestor's panel but merges into its own parent.
+  const mergeTargetId = shell?.lineage.parentThreadId ?? null;
+  const mergeTarget = useQuietThreadShell(
+    mergeTargetId === null ? null : scopeThreadRef(parentRef.environmentId, mergeTargetId),
+  );
   const snapshotLoaded = useEnvironmentShellHasSnapshot(parentRef.environmentId);
   const projection = useQuietThreadProjection(shell === null ? null : threadRef)?.projection;
   const canOperate = useEnvironmentScope(parentRef.environmentId, AuthOrchestrationOperateScope);
@@ -57,18 +61,19 @@ export default function SideChatPane(props: {
   // A pending merge-back would fail the main thread's queued message, so the server refuses it.
   const bringBackBlockedReason = !canOperate
     ? t("This connection cannot change threads.")
-    : threadRuntimeIsActive(parent?.runtime)
+    : threadRuntimeIsActive(mergeTarget?.runtime)
       ? t("Available when the main thread is idle.")
-      : mergeRun === null
+      : mergeRun === null || mergeTargetId === null
         ? t("Available after a finished reply.")
         : null;
 
   const bringBack = async () => {
-    if (bringBackBlockedReason !== null || mergeRun === null || bringingBack) return;
+    if (bringBackBlockedReason !== null || bringingBack) return;
+    if (mergeRun === null || mergeTargetId === null) return;
     setBringingBack(true);
     const result = await mergeBack({
       environmentId: parentRef.environmentId,
-      input: { sourceThreadId: threadId, targetThreadId: parentRef.threadId, runId: mergeRun.id },
+      input: { sourceThreadId: threadId, targetThreadId: mergeTargetId, runId: mergeRun.id },
     });
     setBringingBack(false);
     if (result._tag === "Success") {

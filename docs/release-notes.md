@@ -1,3 +1,9 @@
+## 2026-11-24 — Open a thread beside the one you are reading
+
+- Right-click a thread and choose **Open in side panel**, or Alt-click (Option-click on Mac) to open it beside your current thread.
+- In the command palette, highlight a thread and press **Alt+Enter** (**Option+Enter** on Mac). Use **Open in main view** to move the thread into the main view.
+- Opening a file, browser tab, pull request or side chat from a thread in the side panel moves that thread to the main view with it open.
+
 ## 2026-11-24 — Scheduler test coverage
 
 - Scheduler changes run the notebook cleanup test and skip 29 unrelated attachment cases. Changes to attachment handling or document extraction still run all 30.
@@ -113,12 +119,6 @@
 ## 2026-11-23 — Accounting for messages, failover and review
 
 - New owner requests and accepted guest messages receive a demand ID. Steering, failover, and final review retain the original demand. Delegated questions and completions use their recorded sources. On-return compaction shares the demand ID of the following message.
-
-## 2026-11-22 — Open a thread beside the one you are reading
-
-- Right-click a thread and choose **Open in side panel**, or Alt-click (Option-click on Mac) to open it beside your current thread.
-- In the command palette, highlight a thread and press **Alt+Enter** (**Option+Enter** on Mac). Use **Open in main view** to move the thread into the main view.
-- A thread from another project, worktree or machine opens a file, browser tab or pull request in its own workspace: the thread moves to the main view with it open.
 
 ## 2026-11-22 — Relay client installs keep each other's locks
 

@@ -222,6 +222,28 @@ export interface CommandPaletteActionItem extends CommandPaletteItem {
   readonly targetThreadRef?: ScopedThreadRef;
 }
 
+/** A thread row listed for a message match: the snippet replaces the project line, so it is as tall as a title row. */
+export function buildMessageMatchItem(
+  item: CommandPaletteActionItem,
+  match: {
+    readonly source: CommandPaletteThreadContentMatch["source"];
+    readonly snippet: string;
+    readonly messageCreatedAt?: string | null | undefined;
+  },
+  query: string,
+): CommandPaletteActionItem {
+  // Find follows a match only in the main view, so the row cannot open in the side panel.
+  const { description: _description, targetThreadRef: _targetThreadRef, ...rest } = item;
+  return {
+    ...rest,
+    // When the matching message was written, not when the thread last moved.
+    ...(match.messageCreatedAt
+      ? { timestamp: formatRelativeTimeLabel(match.messageCreatedAt) }
+      : {}),
+    threadContentMatch: { source: match.source, snippet: match.snippet, query },
+  };
+}
+
 export interface CommandPaletteItemPin {
   readonly name: string;
   readonly pinned: boolean;

@@ -777,9 +777,9 @@ sidebar. Find one again under **Side chats** in thread details.
 To read an existing thread alongside the current one, right-click its sidebar row and choose
 **Open in side panel**, or Alt-click (Option-click on Mac). In the command palette, highlight a
 thread and press **Alt+Enter** (**Option+Enter** on Mac). Choose **Open in main view** to move
-it out of the panel. Use `mod+shift+t` to reopen a closed tab. When the thread belongs to another
-project, worktree or machine, opening a file, browser tab or pull request from it moves the thread
-to the main view, so the panel shows that thread's own workspace.
+it out of the panel. Use `mod+shift+t` to reopen a closed tab. Opening a file, browser tab, pull
+request or side chat from a thread in the side panel moves that thread to the main view with it
+open.
 
 A side chat works in the same folder as the thread. Its first reply asks before it
 edits files or runs commands. After that, it uses the permission mode you choose

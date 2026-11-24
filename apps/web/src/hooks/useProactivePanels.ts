@@ -76,10 +76,12 @@ export function useProactivePanels(input: {
       return;
     }
     const panels = useRightPanelStore.getState();
+    const firstObservation = proactivePanelObservationRef.current?.threadKey !== threadKey;
     const observation = observeProactivePanelUserChoice(proactivePanelObservationRef.current, {
       threadKey: threadKey,
       runningTurnId: activeRunningTurnId,
       userActionRevision: panels.getUserActionRevision(threadRef),
+      revealedBySelection: firstObservation && panels.consumeRevealedThread(threadRef),
     });
     proactivePanelObservationRef.current = observation;
     const {

@@ -101,6 +101,7 @@ import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanel
 import { FaviconImage } from "./preview/PreviewFaviconIcon";
 import { previewBridge } from "./preview/previewBridge";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
+import { useEmbeddableThread } from "./chat/useEmbeddableThread";
 import { resolvePullRequestState } from "./pullRequest/pullRequestPresentation";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { observeResize } from "~/lib/observeResize";
@@ -894,15 +895,14 @@ function RightPanelTab(
     id: surface.id,
     disabled: props.dragDisabled,
   });
-  const threadShell = useQuietThreadShell(
-    surface.kind === "thread"
-      ? surface.threadRef
-      : surface.kind === "side-chat" && props.environmentId !== null
-        ? scopeThreadRef(props.environmentId, surface.threadId)
-        : null,
+  const sideChatShell = useQuietThreadShell(
+    surface.kind === "side-chat" && props.environmentId !== null
+      ? scopeThreadRef(props.environmentId, surface.threadId)
+      : null,
   );
-  const title = threadShell?.title ?? props.title;
-  const sideChatState = surface.kind === "side-chat" ? sideChatTabState(threadShell) : null;
+  const embedded = useEmbeddableThread(surface.kind === "thread" ? surface.threadRef : null);
+  const title = (surface.kind === "thread" ? embedded.thread : sideChatShell)?.title ?? props.title;
+  const sideChatState = surface.kind === "side-chat" ? sideChatTabState(sideChatShell) : null;
   const content = (
     <>
       <PanelTabCloseButton label={t("Close {title}", { title })} onClick={() => onClose(surface)}>

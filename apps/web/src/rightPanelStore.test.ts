@@ -1,11 +1,5 @@
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import {
-  type EnvironmentId,
-  ProjectId,
-  RunId,
-  type ScopedThreadRef,
-  ThreadId,
-} from "@t3tools/contracts";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { type EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { useClosedViewStore } from "./closedViewStore";
@@ -22,21 +16,13 @@ import {
   selectThreadPanelVisibility,
   selectThreadRightPanelState,
   useRightPanelStore,
+  withoutPanelRouting,
 } from "./rightPanelStore";
 
 const refA = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-A"));
 const refB = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-B"));
 const remoteRef = scopeThreadRef("env-2" as EnvironmentId, refB.threadId);
 const remoteSurface = { id: "thread:env-2:thread-B", kind: "thread", threadRef: remoteRef };
-const workspace = (
-  ref: ScopedThreadRef,
-  projectId = "project-1",
-  worktreePath: string | null = null,
-) => ({
-  ref,
-  projectId: ProjectId.make(projectId),
-  worktreePath,
-});
 
 beforeEach(() => {
   useClosedViewStore.setState({ entries: [] });
@@ -46,6 +32,7 @@ beforeEach(() => {
     userActionRevisionByThreadKey: {},
     closeRevisionByThreadKey: {},
     pendingThreadReveal: null,
+    revealedThreadKey: null,
   });
 });
 
@@ -77,50 +64,104 @@ describe("rightPanelStore", () => {
     );
   });
 
-  it("opens an embedded thread's panel actions in the host's panel when it shares the workspace", () => {
-    const unembed = embedRightPanelThread(
-      workspace(refB, "project-1", "/worktrees/a"),
-      workspace(refA, "project-1", "/worktrees/a"),
-    );
-    useRightPanelStore.getState().openFile(refB, "src/app.ts");
-    unembed();
-
-    const state = useRightPanelStore.getState();
-    expect(selectActiveRightPanelSurface(state.byThreadKey, refA)?.id).toBe("file:src/app.ts");
-    expect(selectThreadRightPanelState(state.byThreadKey, refB).surfaces).toEqual([]);
-    expect(state.pendingThreadReveal).toBeNull();
-  });
-
   it.each([
-    ["another project", workspace(refB, "project-2")],
-    ["another worktree", workspace(refB, "project-1", "/worktrees/b")],
-    ["another environment", workspace(remoteRef)],
+    ["in the host environment", refB],
+    ["from another environment", remoteRef],
   ])(
-    "keeps panel actions of an embedded thread from %s on its own panel and asks once to reveal it",
+    "keeps panel actions of an embedded thread %s on its own panel and asks once to reveal it",
     (_label, guest) => {
-      const unembed = embedRightPanelThread(guest, workspace(refA));
+      const unembed = embedRightPanelThread(guest, refA);
       const store = useRightPanelStore.getState();
-      store.openFile(guest.ref, "src/app.ts");
-      expect(rightPanelHostRef(guest.ref)).toBe(guest.ref);
-      unembed();
+      store.openFile(guest, "src/app.ts");
+      expect(rightPanelHostRef(guest)).toBe(guest);
 
       const { byThreadKey } = useRightPanelStore.getState();
-      expect(selectActiveRightPanelSurface(byThreadKey, guest.ref)?.id).toBe("file:src/app.ts");
+      expect(selectActiveRightPanelSurface(byThreadKey, guest)?.id).toBe("file:src/app.ts");
       expect(selectThreadRightPanelState(byThreadKey, refA).surfaces).toEqual([]);
-      expect(store.consumeThreadRevealRequest(refA, guest.ref)).toBe(true);
-      expect(store.consumeThreadRevealRequest(refA, guest.ref)).toBe(false);
+      expect(store.consumeThreadRevealRequest(refA, guest)).toBe(true);
+      expect(store.consumeThreadRevealRequest(refA, guest)).toBe(false);
+      unembed();
     },
   );
 
-  it("does not reveal an embedded thread from another workspace for an action that leaves its panel closed", () => {
-    const unembed = embedRightPanelThread(workspace(remoteRef), workspace(refA));
-    useRightPanelStore.getState().close(remoteRef);
-    useRightPanelStore.getState().openFile(remoteRef, "src/app.ts");
-    useRightPanelStore.getState().consumeThreadRevealRequest(refA, remoteRef);
-    useRightPanelStore.getState().close(remoteRef);
+  it("opens a side chat of an embedded thread in that thread's panel and reveals the thread", () => {
+    const sideChatId = ThreadId.make("thread-C");
+    const unembed = embedRightPanelThread(refB, refA);
+    useRightPanelStore.getState().openSideChat(refB, sideChatId);
+
+    const { byThreadKey, pendingThreadReveal } = useRightPanelStore.getState();
+    expect(selectActiveRightPanelSurface(byThreadKey, refB)?.id).toBe("side-chat:thread-C");
+    expect(selectThreadRightPanelState(byThreadKey, refA).surfaces).toEqual([]);
+    expect(pendingThreadReveal).toEqual({
+      hostKey: scopedThreadKey(refA),
+      threadKey: scopedThreadKey(refB),
+    });
+    unembed();
+  });
+
+  it("does not reveal an embedded thread for an action that leaves its panel closed or changes nothing", () => {
+    const unembed = embedRightPanelThread(remoteRef, refA);
+    const store = useRightPanelStore.getState();
+    store.close(remoteRef);
+    expect(useRightPanelStore.getState().pendingThreadReveal).toBeNull();
+
+    store.openFile(remoteRef, "src/app.ts");
+    expect(store.consumeThreadRevealRequest(refA, remoteRef)).toBe(true);
+    store.activateSurface(remoteRef, "missing");
+    expect(useRightPanelStore.getState().pendingThreadReveal).toBeNull();
+    store.close(remoteRef);
     unembed();
 
     expect(useRightPanelStore.getState().pendingThreadReveal).toBeNull();
+  });
+
+  it("cancels a reveal request when the embedding that made it ends", () => {
+    const unembed = embedRightPanelThread(refB, refA);
+    useRightPanelStore.getState().openFile(refB, "src/app.ts");
+    unembed();
+    expect(useRightPanelStore.getState().pendingThreadReveal).toBeNull();
+
+    const unembedAgain = embedRightPanelThread(refB, refA);
+    expect(useRightPanelStore.getState().consumeThreadRevealRequest(refA, refB)).toBe(false);
+    unembedAgain();
+  });
+
+  it("asks the host to reveal an embedded thread for state outside its panel, and no other thread", () => {
+    const store = useRightPanelStore.getState();
+    store.requestThreadReveal(refB);
+    expect(useRightPanelStore.getState().pendingThreadReveal).toBeNull();
+
+    const unhost = hostRightPanel(refB, refA);
+    store.requestThreadReveal(refB);
+    unhost();
+    expect(useRightPanelStore.getState().pendingThreadReveal).toBeNull();
+
+    const unembed = embedRightPanelThread(refB, refA);
+    store.requestThreadReveal(refB);
+    expect(store.consumeThreadRevealRequest(refA, refB)).toBe(true);
+    unembed();
+  });
+
+  it("marks a revealed thread once, for its first proactive observation in the main view", () => {
+    const unembed = embedRightPanelThread(refB, refA);
+    const store = useRightPanelStore.getState();
+    store.requestThreadReveal(refB);
+    expect(store.consumeThreadRevealRequest(refA, refB)).toBe(true);
+    unembed();
+
+    expect(store.consumeRevealedThread(refA)).toBe(false);
+    expect(store.consumeRevealedThread(refB)).toBe(true);
+    expect(store.consumeRevealedThread(refB)).toBe(false);
+  });
+
+  it("applies a hosted thread's panel actions to the thread itself when routing is suspended", () => {
+    const unhost = hostRightPanel(refB, refA);
+    withoutPanelRouting(() => useRightPanelStore.getState().openFile(refB, "src/app.ts"));
+    unhost();
+
+    const { byThreadKey } = useRightPanelStore.getState();
+    expect(selectActiveRightPanelSurface(byThreadKey, refB)?.id).toBe("file:src/app.ts");
+    expect(selectThreadRightPanelState(byThreadKey, refA).surfaces).toEqual([]);
   });
 
   it("does not open the current thread or change its panel selection", () => {

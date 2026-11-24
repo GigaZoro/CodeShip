@@ -177,7 +177,13 @@ interface ProactivePanelObservation {
 
 export function observeProactivePanelUserChoice(
   previous: ProactivePanelObservation | null,
-  input: { threadKey: string; runningTurnId: RunId | null; userActionRevision: number },
+  input: {
+    threadKey: string;
+    runningTurnId: RunId | null;
+    userActionRevision: number;
+    /** The thread entered the main view because a panel action in it selected a surface. */
+    revealedBySelection?: boolean;
+  },
 ): ProactivePanelObservation {
   const sameThread = previous?.threadKey === input.threadKey;
   const newTurn =
@@ -187,8 +193,12 @@ export function observeProactivePanelUserChoice(
     runningTurnId: sameThread ? previous.runningTurnId : undefined,
     targetKey: sameThread ? previous.targetKey : undefined,
     userActionTurnId: input.runningTurnId ?? (sameThread ? previous.userActionTurnId : null),
-    userActionRevision:
-      !sameThread || newTurn ? input.userActionRevision : previous.userActionRevision,
+    // The selection that revealed the thread is the user's choice, which a first-entry offer must not undo.
+    userActionRevision: !sameThread
+      ? input.userActionRevision - (input.revealedBySelection ? 1 : 0)
+      : newTurn
+        ? input.userActionRevision
+        : previous.userActionRevision,
   };
 }
 

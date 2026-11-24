@@ -13,6 +13,7 @@ import { __setClientSettingsForTests } from "./hooks/useSettings";
 import { readThreadPreviewState, resetPreviewStateForTests } from "./previewStateStore";
 import { planNextReopen, type ReopenOwnerState, reopenClosedView } from "./reopenClosedView";
 import {
+  hostRightPanel,
   selectThreadRightPanelState,
   type ThreadRightPanelState,
   useRightPanelStore,
@@ -62,6 +63,34 @@ describe("reopenClosedView", () => {
     expect(state.isOpen).toBe(true);
     expect(state.surfaces).toMatchObject([{ id: "file:src/app.ts", revealLine: 18 }]);
     expect(openPreview).not.toHaveBeenCalled();
+  });
+
+  it("restores a file into the recorded owner even while a host routes that thread's actions", async () => {
+    const hostRef = { ...threadRef, threadId: "host" as ScopedThreadRef["threadId"] };
+    const unhost = hostRightPanel(threadRef, hostRef);
+    try {
+      await reopenClosedView(
+        {
+          kind: "panel-tab",
+          threadRef,
+          surface: {
+            kind: "file",
+            id: "file:src/app.ts",
+            relativePath: "src/app.ts",
+            revealLine: null,
+            revealRequestId: 0,
+          },
+        },
+        { openPreview: vi.fn(), workspaceAvailable: true },
+      );
+    } finally {
+      unhost();
+    }
+    const panels = useRightPanelStore.getState().byThreadKey;
+    expect(selectThreadRightPanelState(panels, threadRef).surfaces).toMatchObject([
+      { id: "file:src/app.ts" },
+    ]);
+    expect(selectThreadRightPanelState(panels, hostRef).surfaces).toEqual([]);
   });
 
   it("reopens a closed cross-environment thread tab in its original panel", async () => {

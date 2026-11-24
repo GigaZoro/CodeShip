@@ -18,9 +18,7 @@ import { resolveStorage } from "./lib/storage";
 import type { ThreadPanelPresentation } from "./rightPanelLayout";
 import {
   isThreadPanelSurface,
-  sharesThreadWorkspace,
   threadPanelSurface,
-  type RightPanelThreadWorkspace,
   type ThreadPanelSurface,
 } from "./rightPanelThreadSurface";
 import type { ChatFileAttachment } from "./types";
@@ -125,6 +123,11 @@ interface RightPanelStoreState {
   /** Set when a thread embedded in `hostKey`'s tab opened a panel surface of its own. */
   pendingThreadReveal: { readonly hostKey: string; readonly threadKey: string } | null;
   consumeThreadRevealRequest: (host: ScopedThreadRef, thread: ScopedThreadRef) => boolean;
+  /** Asks the host of an embedded `thread` to move it to the main view, for state outside its panel. */
+  requestThreadReveal: (thread: ScopedThreadRef) => void;
+  /** Set when a reveal moved a thread to the main view; its first proactive observation takes it. */
+  revealedThreadKey: string | null;
+  consumeRevealedThread: (thread: ScopedThreadRef) => boolean;
   threadPanelVisibilityByThreadKey: Record<string, ThreadPanelVisibility>;
   userActionRevisionByThreadKey: Record<string, number>;
   closeRevisionByThreadKey: Record<string, number>;
@@ -413,44 +416,60 @@ const automaticUpdate = (
   ...updateThread(state, threadKey, updater),
 });
 
-// The host renders panel surfaces in its own workspace, so only a guest sharing it may use its panel.
-interface PanelHost {
+// A side chat shares its parent's workspace, so its panel actions run on the parent's panel. An
+// embedded thread keeps its own panel and asks its host to move it to the main view instead.
+interface PanelRoute {
   readonly host: ScopedThreadRef;
-  readonly sharesWorkspace: boolean;
+  readonly requestsReveal: boolean;
 }
-const panelHosts = new Map<string, PanelHost>();
+const panelRoutes = new Map<string, PanelRoute>();
+let panelRoutingSuspended = false;
 
-function registerPanelHost(guest: ScopedThreadRef, entry: PanelHost): () => void {
+const panelRouteOf = (threadKey: string) =>
+  panelRoutingSuspended ? undefined : panelRoutes.get(threadKey);
+
+function registerPanelRoute(guest: ScopedThreadRef, route: PanelRoute): () => void {
   const guestKey = scopedThreadKey(guest);
-  panelHosts.set(guestKey, entry);
+  panelRoutes.set(guestKey, route);
   return () => {
-    if (panelHosts.get(guestKey) === entry) panelHosts.delete(guestKey);
+    if (panelRoutes.get(guestKey) !== route) return;
+    panelRoutes.delete(guestKey);
+    const pending = useRightPanelStore.getState().pendingThreadReveal;
+    if (pending?.threadKey === guestKey && pending.hostKey === scopedThreadKey(route.host)) {
+      useRightPanelStore.setState({ pendingThreadReveal: null });
+    }
   };
 }
 
 /** Routes `guest`'s panel actions to `host`'s panel until the returned cleanup runs. */
 export function hostRightPanel(guest: ScopedThreadRef, host: ScopedThreadRef): () => void {
-  return registerPanelHost(guest, { host, sharesWorkspace: true });
+  return registerPanelRoute(guest, { host, requestsReveal: false });
 }
 
 /**
- * Embeds `guest` in `host`'s thread tab. Its panel actions use `host`'s panel only when both
- * threads share a workspace; otherwise they stay on `guest`'s panel and request a reveal.
+ * Embeds `guest` in `host`'s thread tab. Its panel actions use `guest`'s own panel, which the
+ * tab does not show, and ask `host` to move `guest` to the main view. Ending the embedding
+ * cancels a request it made.
  */
-export function embedRightPanelThread(
-  guest: RightPanelThreadWorkspace,
-  host: RightPanelThreadWorkspace,
-): () => void {
-  return registerPanelHost(guest.ref, {
-    host: host.ref,
-    sharesWorkspace: sharesThreadWorkspace(guest, host),
-  });
+export function embedRightPanelThread(guest: ScopedThreadRef, host: ScopedThreadRef): () => void {
+  return registerPanelRoute(guest, { host, requestsReveal: true });
 }
 
 /** The thread whose panel shows `ref`'s panel actions, so it also owns their browser tabs. */
 export function rightPanelHostRef(ref: ScopedThreadRef): ScopedThreadRef {
-  const entry = panelHosts.get(scopedThreadKey(ref));
-  return entry?.sharesWorkspace ? entry.host : ref;
+  const route = panelRouteOf(scopedThreadKey(ref));
+  return route !== undefined && !route.requestsReveal ? route.host : ref;
+}
+
+/** Runs synchronous panel actions on the threads they name, for restoring a thread's own history. */
+export function withoutPanelRouting<T>(run: () => T): T {
+  const previous = panelRoutingSuspended;
+  panelRoutingSuspended = true;
+  try {
+    return run();
+  } finally {
+    panelRoutingSuspended = previous;
+  }
 }
 
 const userAction = (
@@ -459,17 +478,23 @@ const userAction = (
   updater: (current: ThreadRightPanelState) => ThreadRightPanelState,
   closesView = false,
 ): Partial<RightPanelStoreState> => {
-  const entry = panelHosts.get(guestKey);
-  if (entry?.sharesWorkspace) {
-    return userActionOnThread(state, scopedThreadKey(entry.host), updater, closesView);
+  const route = panelRouteOf(guestKey);
+  if (route !== undefined && !route.requestsReveal) {
+    return userActionOnThread(state, scopedThreadKey(route.host), updater, closesView);
   }
   const next = userActionOnThread(state, guestKey, updater, closesView);
-  if (entry === undefined || closesView || next.byThreadKey?.[guestKey]?.isOpen !== true) {
+  const guestPanel = next.byThreadKey?.[guestKey];
+  if (
+    route === undefined ||
+    closesView ||
+    guestPanel === state.byThreadKey[guestKey] ||
+    guestPanel?.isOpen !== true
+  ) {
     return next;
   }
   return {
     ...next,
-    pendingThreadReveal: { hostKey: scopedThreadKey(entry.host), threadKey: guestKey },
+    pendingThreadReveal: { hostKey: scopedThreadKey(route.host), threadKey: guestKey },
   };
 };
 
@@ -716,7 +741,20 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         ) {
           return false;
         }
-        set({ pendingThreadReveal: null });
+        set({ pendingThreadReveal: null, revealedThreadKey: pending.threadKey });
+        return true;
+      },
+      requestThreadReveal: (thread) => {
+        const threadKey = scopedThreadKey(thread);
+        const route = panelRouteOf(threadKey);
+        if (route?.requestsReveal) {
+          set({ pendingThreadReveal: { hostKey: scopedThreadKey(route.host), threadKey } });
+        }
+      },
+      revealedThreadKey: null,
+      consumeRevealedThread: (thread) => {
+        if (get().revealedThreadKey !== scopedThreadKey(thread)) return false;
+        set({ revealedThreadKey: null });
         return true;
       },
       threadPanelVisibilityByThreadKey: {},

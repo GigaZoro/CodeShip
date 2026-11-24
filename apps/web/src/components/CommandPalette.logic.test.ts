@@ -6,6 +6,7 @@ import {
   newThreadNoProjectIndex,
   buildNestedSearchItems,
   resolveCommandPaletteProject,
+  buildMessageMatchItem,
   buildThreadActionItems,
   buildLinkedThreadActionItems,
   filterPinnedBrowseEntries,
@@ -308,6 +309,22 @@ describe("buildThreadActionItems", () => {
       ["Threads", ["thread:environment-local:title"]],
       ["In messages", ["thread:environment-local:message"]],
     ]);
+  });
+
+  it("lists a message match without a side panel target, since find only follows it in the main view", () => {
+    const [item] = buildThreadActionItems({
+      threads: [makeThread({ title: "Fix schema validation" })],
+      projectByKey: new Map(),
+      icon: null,
+      runThread: async () => undefined,
+    });
+    expect(item?.targetThreadRef).toBeDefined();
+    const row = buildMessageMatchItem(item!, { source: "user", snippet: "schema" }, "schema");
+    expect(row).toMatchObject({
+      value: item!.value,
+      threadContentMatch: { source: "user", snippet: "schema", query: "schema" },
+    });
+    expect(row.targetThreadRef).toBeUndefined();
   });
 
   it("keeps an active thread first while its title is typed, above settings and actions", () => {

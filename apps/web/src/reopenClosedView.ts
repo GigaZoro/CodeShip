@@ -8,6 +8,7 @@ import {
   type RightPanelSurface,
   type ThreadRightPanelState,
   useRightPanelStore,
+  withoutPanelRouting,
 } from "./rightPanelStore";
 
 export interface ReopenOwnerState {
@@ -109,7 +110,7 @@ export async function reopenClosedView(
       ...(view.snapshot.profileId === undefined ? {} : { profileId: view.snapshot.profileId }),
     });
     if (result._tag === "Failure") return false;
-    panels.openBrowser(ref, result.value.tabId);
+    withoutPanelRouting(() => panels.openBrowser(ref, result.value.tabId));
     return true;
   }
   const surface = view.surface;
@@ -118,31 +119,34 @@ export async function reopenClosedView(
     (surface.kind === "files" || (surface.kind === "file" && !surface.attachment))
   )
     return false;
-  switch (surface.kind) {
-    case "preview":
-      if (surface.resourceId !== null) return false;
-      panels.openBrowser(ref, null);
-      break;
-    case "file":
-      if (surface.attachment) panels.openAttachment(ref, surface.attachment);
-      else panels.openFile(ref, surface.relativePath, surface.revealLine ?? undefined);
-      break;
-    case "device":
-      if (surface.target) {
-        panels.openDevice(ref, surface.target);
-        if (surface.title) panels.renameDevice(ref, surface.id, surface.title);
-      } else panels.open(ref, "device");
-      break;
-    case "pull-request":
-      panels.openPullRequest(ref, surface);
-      break;
-    case "thread":
-      return panels.openThread(ref, surface.threadRef);
-    case "side-chat":
-      panels.openSideChat(ref, surface.threadId);
-      break;
-    default:
-      panels.open(ref, surface.kind);
-  }
-  return true;
+  // The entry names the panel that held the tab, whichever thread hosts the recorded owner now.
+  return withoutPanelRouting(() => {
+    switch (surface.kind) {
+      case "preview":
+        if (surface.resourceId !== null) return false;
+        panels.openBrowser(ref, null);
+        break;
+      case "file":
+        if (surface.attachment) panels.openAttachment(ref, surface.attachment);
+        else panels.openFile(ref, surface.relativePath, surface.revealLine ?? undefined);
+        break;
+      case "device":
+        if (surface.target) {
+          panels.openDevice(ref, surface.target);
+          if (surface.title) panels.renameDevice(ref, surface.id, surface.title);
+        } else panels.open(ref, "device");
+        break;
+      case "pull-request":
+        panels.openPullRequest(ref, surface);
+        break;
+      case "thread":
+        return panels.openThread(ref, surface.threadRef);
+      case "side-chat":
+        panels.openSideChat(ref, surface.threadId);
+        break;
+      default:
+        panels.open(ref, surface.kind);
+    }
+    return true;
+  });
 }
