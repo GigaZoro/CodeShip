@@ -31,6 +31,7 @@ import {
   readEnvironmentFromLoginShell,
   readEnvironmentFromWindowsShell,
   resolveCommandPath,
+  resolveMatchingLauncher,
   resolveSpawnCommand,
   resolveWindowsEnvironment,
   SpawnExecutableResolution,
@@ -508,6 +509,44 @@ effectIt.layer(NodeServices.layer)("resolveCommandPath", (it) => {
       return probed;
     });
 
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "follows directory links before parent components as the child process does",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* fs.makeTempDirectoryScoped();
+        yield* fs.makeDirectory(path.join(cwd, "selected", "child"), { recursive: true });
+        yield* fs.symlink("selected/child", path.join(cwd, "linked"));
+        yield* fs.writeFileString(path.join(cwd, "which-launcher"), "#!/bin/sh\necho lexical\n", {
+          mode: 0o700,
+        });
+        const env = { PATH: "linked/.." };
+        for (const command of ["./linked/../which-launcher", "which-launcher"]) {
+          const resolve = resolveCommandPath(command, { cwd, env }).pipe(
+            Effect.provideService(CommandResolutionCache, new Map()),
+          );
+          expect(NodeChildProcess.spawnSync(command, [], { cwd, env }).error?.message).toMatch(
+            /ENOENT/,
+          );
+          expect(yield* resolve).toBeNull();
+        }
+        yield* fs.writeFileString(
+          path.join(cwd, "selected", "which-launcher"),
+          "#!/bin/sh\necho physical\n",
+          { mode: 0o700 },
+        );
+        for (const command of ["./linked/../which-launcher", "which-launcher"]) {
+          const resolved = yield* resolveCommandPath(command, { cwd, env }).pipe(
+            Effect.provideService(CommandResolutionCache, new Map()),
+          );
+          expect(resolved).not.toBeNull();
+          expect(NodeChildProcess.execFileSync(resolved!, [], { cwd, env, encoding: "utf8" })).toBe(
+            "physical\n",
+          );
+        }
+      }),
+  );
   it.effect("still visits a PATH entry that differs only in case", () =>
     Effect.gen(function* () {
       const probed = yield* recordProbes({
@@ -615,6 +654,27 @@ effectIt.layer(NodeServices.layer)("resolveCommandPath", (it) => {
       Effect.provideService(HostProcess.Platform, "win32"),
       Effect.provideService(CommandResolutionCache, new Map()),
     ),
+  );
+});
+
+effectIt.layer(NodeServices.layer)("resolveMatchingLauncher", (it) => {
+  it.effect("uses the actual identity of case variants in the launcher directory", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const selected = path.join(root, "Codex.exe");
+      const configured = path.join(root, "CODEX.exe");
+      yield* fs.writeFileString(selected, "selected");
+      const caseInsensitive = yield* fs.exists(configured);
+      if (!caseInsensitive) yield* fs.writeFileString(configured, "configured");
+      const match = yield* resolveMatchingLauncher(selected, configured);
+      if (caseInsensitive) {
+        expect(path.basename(match!)).toBe("Codex.exe");
+      } else {
+        expect(match).toBeNull();
+      }
+    }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
   );
 });
 
@@ -936,6 +996,27 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
       }).pipe(Effect.provideService(CommandResolutionCache, new Map())),
     );
 
+    it.effect(
+      "looks up git in the spawn directory and scopes cached relative PATH results to it",
+      () =>
+        Effect.gen(function* () {
+          const check = (cwd: string) =>
+            resolveSpawnCommand("git", ["status"], { cwd, env: { PATH: "bin:/usr/bin" } });
+          expect((yield* check("/no-local-git")).command).toBe(XCODE_GIT);
+          expect((yield* check("/custom-git")).command).toBe("git");
+        }).pipe(
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.provideService(SpawnExecutableResolution, (command, _platform, _env, cwd) =>
+            command === "git"
+              ? cwd === "/custom-git"
+                ? "/custom-git/bin/git"
+                : "/usr/bin/git"
+              : command,
+          ),
+          Effect.provideService(XcodeGitLocation, () => XCODE_GIT),
+          Effect.provideService(CommandResolutionCache, new Map()),
+        ),
+    );
     it.effect("keeps git when PATH has another git or the host is not macOS", () =>
       Effect.gen(function* () {
         const homebrew = setup({ gitOnPath: "/opt/homebrew/bin/git", xcrunGit: XCODE_GIT });

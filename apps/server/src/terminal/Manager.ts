@@ -2517,6 +2517,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       command: candidate.shell,
       args: candidate.args ?? [],
       name: "terminal",
+      cwd: session.cwd,
       env: spawnEnv,
       survivesRestart: true,
     });

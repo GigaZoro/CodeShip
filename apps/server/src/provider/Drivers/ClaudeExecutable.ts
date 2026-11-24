@@ -78,6 +78,7 @@ export const runClaudeCli = Effect.fn("runClaudeCli")(function* (input: {
   readonly cwd: string;
 }) {
   const command = yield* resolveSpawnCommand(input.binaryPath, input.args, {
+    cwd: input.cwd,
     env: input.environment,
   });
   return yield* spawnAndCollect(

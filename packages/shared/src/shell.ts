@@ -43,7 +43,7 @@ export interface CommandAvailabilityOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly extendEnv?: boolean;
   /** Working directory of the child when resolving relative executables and PATH entries. */
-  readonly cwd?: string;
+  readonly cwd?: string | undefined;
 }
 
 export type CommandAvailabilityChecker = (
@@ -101,20 +101,20 @@ function resolveSpawnExecutableWithNode(
     }
   };
 
-  if (command.includes("/") || command.includes("\\")) {
+  if (isCommandPath(command, platform)) {
     return candidates
-      .map((candidate) => (cwd ? path.resolve(cwd, candidate) : candidate))
+      .map((candidate) => childPath(cwd, candidate, platform, path))
       .find(isExecutable);
   }
 
   for (const directory of commandSearchDirectories(
-    readEnvPath(env) ?? "",
+    commandSearchPath(env, platform, cwd),
     platform,
     cwd,
-    path.resolve,
+    path,
   )) {
     for (const candidate of candidates) {
-      const candidatePath = path.join(directory, candidate);
+      const candidatePath = appendCommandName(directory, candidate, platform, path);
       if (isExecutable(candidatePath)) return candidatePath;
     }
   }
@@ -452,18 +452,56 @@ function readEnvPath(env: NodeJS.ProcessEnv): string | undefined {
   return env.PATH ?? env.Path ?? env.path;
 }
 
+function isCommandPath(command: string, platform: NodeJS.Platform): boolean {
+  return command.includes("/") || (platform === "win32" && command.includes("\\"));
+}
+
+function commandSearchPath(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  cwd?: string,
+): string {
+  return cwd !== undefined && platform !== "win32"
+    ? (env.PATH ?? "/usr/bin:/bin")
+    : (readEnvPath(env) ?? "");
+}
+
+// POSIX traverses symlinks before "..". path.join and path.resolve would change the file opened.
+function appendCommandName(
+  directory: string,
+  name: string,
+  platform: NodeJS.Platform,
+  path: Pick<Path.Path, "join">,
+): string {
+  if (platform === "win32") return path.join(directory, name);
+  return directory.endsWith("/") ? directory + name : directory + "/" + name;
+}
+
+function childPath(
+  directory: string | undefined,
+  name: string,
+  platform: NodeJS.Platform,
+  path: Pick<Path.Path, "resolve" | "join" | "isAbsolute">,
+): string {
+  if (!directory) return name;
+  if (platform === "win32") return path.resolve(directory, name);
+  if (path.isAbsolute(name)) return name;
+  const base = path.isAbsolute(directory) ? directory : process.cwd() + "/" + directory;
+  return name ? appendCommandName(base, name, platform, path) : base;
+}
+
 // With a child cwd, POSIX PATH entries are literal and an empty entry denotes that directory.
 function commandSearchDirectories(
   value: string,
   platform: NodeJS.Platform,
   cwd: string | undefined,
-  resolve: (...paths: string[]) => string,
+  path: Pick<Path.Path, "resolve" | "join" | "isAbsolute">,
 ): Set<string> {
   const directories = new Set<string>();
   const literal = cwd !== undefined && platform !== "win32";
   for (const raw of value.split(pathDelimiterForPlatform(platform))) {
     const entry = literal ? raw : stripWrappingQuotes(raw.trim());
-    if (entry || literal) directories.add(cwd === undefined ? entry : resolve(cwd, entry));
+    if (entry || literal) directories.add(childPath(cwd, entry, platform, path));
   }
   return directories;
 }
@@ -650,9 +688,9 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
     path.extname,
   );
 
-  if (command.includes("/") || command.includes("\\")) {
+  if (isCommandPath(command, platform)) {
     for (const candidate of commandCandidates) {
-      const file = options.cwd ? path.resolve(options.cwd, candidate) : candidate;
+      const file = childPath(options.cwd, candidate, platform, path);
       if (yield* isExecutableFile(file, platform, windowsPathExtensions)) {
         return file;
       }
@@ -660,10 +698,7 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
     return null;
   }
 
-  const pathValue =
-    options.cwd && platform !== "win32"
-      ? (env.PATH ?? "/usr/bin:/bin")
-      : resolvePathEnvironmentVariable(env);
+  const pathValue = commandSearchPath(env, platform, options.cwd);
 
   const cacheKey = [
     platform,
@@ -687,7 +722,7 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
     return resolvedPath;
   };
 
-  const pathEntries = commandSearchDirectories(pathValue, platform, options.cwd, path.resolve);
+  const pathEntries = commandSearchDirectories(pathValue, platform, options.cwd, path);
 
   const listings = yield* PathDirectoryListings;
   for (const pathEntry of pathEntries) {
@@ -698,7 +733,7 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
     }
     for (const candidate of commandCandidates) {
       if (listing?.names && !listing.names.has(candidate.toLowerCase())) continue;
-      const candidatePath = path.join(pathEntry, candidate);
+      const candidatePath = appendCommandName(pathEntry, candidate, platform, path);
       if (yield* isExecutableFile(candidatePath, platform, windowsPathExtensions)) {
         return remember(candidatePath);
       }
@@ -716,6 +751,43 @@ export const resolveCommandPath = Effect.fn("shell.resolveCommandPath")(function
     env: options.env ?? (yield* HostProcess.Environment),
     platform: yield* HostProcess.Platform,
   });
+});
+
+/** Resolve directories natively while retaining the account launcher's final name for argv[0]. */
+export const resolveMatchingLauncher = Effect.fn("shell.resolveMatchingLauncher")(function* (
+  selected: string,
+  configured: string,
+) {
+  const path = yield* Path.Path;
+  const platform = yield* HostProcess.Platform;
+  const name = path.basename(selected);
+  const configuredName = path.basename(configured);
+  if (
+    name !== configuredName &&
+    (platform !== "win32" || name.toLowerCase() !== configuredName.toLowerCase())
+  ) {
+    return null;
+  }
+  return yield* Effect.tryPromise(async () => {
+    // fs.promises.realpath uses native traversal; callback fs.realpath normalizes ".." first.
+    const [parent, configuredParent] = await Promise.all([
+      NodeFS.promises.realpath(path.dirname(selected)),
+      NodeFS.promises.realpath(path.dirname(configured)),
+    ]);
+    if (parent !== configuredParent) return null;
+    const launcher = path.join(parent, name);
+    if (name === configuredName) return launcher;
+    // Windows directories may opt into case sensitivity; compare the named entries including symlinks.
+    const [selectedInfo, configuredInfo] = await Promise.all([
+      NodeFS.promises.lstat(launcher, { bigint: true }),
+      NodeFS.promises.lstat(path.join(configuredParent, configuredName), { bigint: true }),
+    ]);
+    return selectedInfo.dev === configuredInfo.dev &&
+      selectedInfo.ino !== 0n &&
+      selectedInfo.ino === configuredInfo.ino
+      ? launcher
+      : null;
+  }).pipe(Effect.orElseSucceed(() => null));
 });
 
 // Git 2.56 x64 uses ucrt64; ARM64 uses clangarm64; older x64/32-bit builds use mingw64/mingw32.
@@ -792,12 +864,13 @@ export function npmShimExecutable(
   return isFile(executable) ? executable : undefined;
 }
 
-export type XcodeGitLocator = (env: NodeJS.ProcessEnv) => string | undefined;
+export type XcodeGitLocator = (env: NodeJS.ProcessEnv, cwd?: string) => string | undefined;
 
 // xcrun honors DEVELOPER_DIR and the `xcode-select` choice, as the shim does.
-function locateXcodeGitWithXcrun(env: NodeJS.ProcessEnv): string | undefined {
+function locateXcodeGitWithXcrun(env: NodeJS.ProcessEnv, cwd?: string): string | undefined {
   try {
     const located = NodeChildProcess.execFileSync("/usr/bin/xcrun", ["--find", "git"], {
+      cwd,
       encoding: "utf8",
       env,
       timeout: 5_000,
@@ -823,15 +896,22 @@ const MACOS_GIT_SHIM = "/usr/bin/git";
 const resolveMacosGit = Effect.fnUntraced(function* (
   env: NodeJS.ProcessEnv,
   resolveExecutable: SpawnExecutableResolver,
+  cwd: string | undefined,
 ) {
   const locateXcodeGit = yield* XcodeGitLocation;
   const cache = yield* CommandResolutionCache;
+  const searchPath = commandSearchPath(env, "darwin", cwd);
+  const relativeSearch = searchPath.split(":").some((entry) => !NodePath.posix.isAbsolute(entry));
+  const developerDir = env.DEVELOPER_DIR ?? "";
   const cacheKey = [
     "xcode-git",
     String(spawnResolverCacheId(resolveExecutable)),
     String(spawnResolverCacheId(locateXcodeGit)),
-    resolvePathEnvironmentVariable(env),
-    env.DEVELOPER_DIR ?? "",
+    searchPath,
+    developerDir,
+    relativeSearch || (developerDir && !NodePath.posix.isAbsolute(developerDir))
+      ? (cwd ?? process.cwd())
+      : "",
   ].join(COMMAND_RESOLUTION_CACHE_KEY_SEPARATOR);
   const nowNanos = yield* Clock.currentTimeNanos;
   const cached = cache.get(cacheKey);
@@ -840,14 +920,16 @@ const resolveMacosGit = Effect.fnUntraced(function* (
     cached !== undefined &&
     cached.expiresAtNanos > nowNanos &&
     (cached.resolvedPath === null ||
-      resolveExecutable(cached.resolvedPath, "darwin", env) !== undefined)
+      resolveExecutable(cached.resolvedPath, "darwin", env, cwd) !== undefined)
   ) {
     return cached.resolvedPath ?? "git";
   }
   const located =
-    resolveExecutable("git", "darwin", env) === MACOS_GIT_SHIM ? locateXcodeGit(env) : undefined;
+    resolveExecutable("git", "darwin", env, cwd) === MACOS_GIT_SHIM
+      ? locateXcodeGit(env, cwd)
+      : undefined;
   const realGit =
-    located !== undefined && resolveExecutable(located, "darwin", env) !== undefined
+    located !== undefined && resolveExecutable(located, "darwin", env, cwd) !== undefined
       ? located
       : null;
   cacheCommandResolution(cache, cacheKey, realGit, nowNanos);
@@ -880,7 +962,7 @@ export const resolveSpawnCommand = Effect.fnUntraced(function* (
   const resolveExecutable = yield* SpawnExecutableResolution;
   if (isMacosGit) {
     return {
-      command: yield* resolveMacosGit(env, resolveExecutable),
+      command: yield* resolveMacosGit(env, resolveExecutable, options.cwd),
       args: [...args],
       shell: false,
     };

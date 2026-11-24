@@ -929,11 +929,10 @@ export const makeAcpRegistryCatalog = Effect.fn("AcpRegistryCatalog.make")(funct
     } = {},
   ) {
     const collect = Effect.gen(function* () {
-      const resolved = yield* resolveSpawnCommand(
-        command,
-        args,
-        options.env === undefined ? {} : { env: options.env },
-      );
+      const resolved = yield* resolveSpawnCommand(command, args, {
+        cwd: options.cwd,
+        ...(options.env === undefined ? {} : { env: options.env }),
+      });
       const child = yield* spawner.spawn(
         ChildProcess.make(resolved.command, resolved.args, {
           ...(options.cwd ? { cwd: options.cwd } : {}),

@@ -77,6 +77,7 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
     });
   const versionResult = yield* Effect.gen(function* () {
     const spawnCommand = yield* resolveSpawnCommand(settings.binaryPath, ["--version"], {
+      cwd,
       env: museEnvironment,
     });
     return yield* spawnAndCollect(

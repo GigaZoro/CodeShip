@@ -167,7 +167,10 @@ export const makeGrokPluginManagement = Effect.fn("makeGrokPluginManagement")(fu
       args: ReadonlyArray<string>,
       _timeout: Duration.Input,
     ) {
-      const spawnCommand = yield* resolveSpawnCommand(command, args, { env: environment });
+      const spawnCommand = yield* resolveSpawnCommand(command, args, {
+        cwd: options.cwd,
+        env: environment,
+      });
       return yield* spawnAndCollect(
         command,
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {

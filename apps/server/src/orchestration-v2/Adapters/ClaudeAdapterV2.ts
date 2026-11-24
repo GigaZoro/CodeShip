@@ -1090,6 +1090,7 @@ export const layerQueryRunner: Layer.Layer<
                   command: binaryPath,
                   args: [],
                   name: "claude",
+                  cwd: queryOptions.cwd,
                   threadId: input.threadId,
                   env: queryOptions.env,
                 });

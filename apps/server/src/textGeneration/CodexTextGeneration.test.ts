@@ -246,6 +246,7 @@ function withFakeCodexEnv<A, E, R>(
       | "path-shim"
       | "relative-shim"
       | "relative-path-shim"
+      | "linked-parent-shim"
       | "different-shim-name";
   },
   effectFn: (
@@ -266,6 +267,7 @@ function withFakeCodexEnv<A, E, R>(
       input.customBinary === "relative-shim" || input.customBinary === "relative-path-shim";
     const shim =
       relativeShim ||
+      input.customBinary === "linked-parent-shim" ||
       input.customBinary === "absolute-shim" ||
       input.customBinary === "path-shim" ||
       input.customBinary === "different-shim-name";
@@ -291,6 +293,9 @@ function withFakeCodexEnv<A, E, R>(
     if (shim && metadataBinary) {
       metadataPath = path.join(path.dirname(metadataBinary), "account-codex");
       yield* fs.symlink(metadataBinary, metadataPath);
+      if (input.customBinary === "linked-parent-shim") {
+        yield* fs.symlink(path.dirname(metadataBinary), path.join(tempDir, "linked"));
+      }
       if (relativeShim) yield* fs.symlink(codexPath, path.join(tempDir, "bin", "account-codex"));
     }
     const configuredPath = {
@@ -306,6 +311,7 @@ function withFakeCodexEnv<A, E, R>(
       "path-shim": "account-codex",
       "relative-shim": "./bin/account-codex",
       "relative-path-shim": "account-codex",
+      "linked-parent-shim": "./linked/../bin/account-codex",
       "different-shim-name": metadataBinary,
     };
     const config = decodeCodexSettings({
@@ -384,6 +390,26 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
       ),
     );
   }
+  it.effect.skipIf(isWindowsHost)(
+    "invokes the selected named shim reached through a linked parent",
+    () =>
+      withFakeCodexEnv(
+        {
+          customBinary: "linked-parent-shim",
+          metadata: "supported",
+          output: '{"title":"Physical launcher"}',
+        },
+        (generation, cwd) =>
+          Effect.gen(function* () {
+            const result = yield* generation.generateThreadTitle({
+              cwd,
+              message: "Name this thread",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            });
+            expect(result.title).toBe("Physical launcher");
+          }),
+      ),
+  );
   it.effect.skipIf(isWindowsHost)("allows a cold metadata launch within the request deadline", () =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;

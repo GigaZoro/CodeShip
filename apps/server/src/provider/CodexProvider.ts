@@ -575,7 +575,7 @@ export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(fu
   const spawnCommand = yield* resolveSpawnCommand(
     input.binaryPath,
     codexAppServerArgs(input.launchArgs),
-    { env: environment, extendEnv: true },
+    { cwd: input.cwd, env: environment, extendEnv: true },
   );
   const child = yield* spawner
     .spawn(
@@ -701,6 +701,7 @@ export const runCodexCli = Effect.fn("runCodexCli")(function* (
 ) {
   const environment = yield* codexProcessEnvironment(input);
   const spawnCommand = yield* resolveSpawnCommand(input.binaryPath, args, {
+    cwd: input.cwd,
     env: environment,
     extendEnv: true,
   });

@@ -193,6 +193,7 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
   const scope = yield* Effect.scope;
 
   const spawnCommand = yield* resolveSpawnCommand(options.command, [...options.args], {
+    cwd: options.cwd,
     env: options.env,
   }).pipe(Effect.mapError((cause) => new PiRpcError({ operation: "spawn", cause })));
   const { handle: child, stopTree } = yield* spawner

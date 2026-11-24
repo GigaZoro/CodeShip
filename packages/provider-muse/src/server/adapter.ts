@@ -1746,6 +1746,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           command: options.settings.binaryPath || "muse",
           args: [],
           name: "muse",
+          cwd,
           threadId: input.threadId,
           env: environment,
         });

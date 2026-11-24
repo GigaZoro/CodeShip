@@ -490,6 +490,7 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
 ) {
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
   const spawnCommand = yield* resolveSpawnCommand(claudeSettings.binaryPath, args, {
+    cwd,
     env: claudeEnvironment,
   });
   const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {

@@ -425,14 +425,23 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
   const serverLedger = yield* OpenCodeServerLedger.OpenCodeServerLedger;
   const agentScope = yield* AgentScope;
   // npm's Windows shim lets the child escape libuv kill-on-close; run its executable directly.
-  const resolveCommand = (command: string, args: ReadonlyArray<string>, env?: NodeJS.ProcessEnv) =>
-    resolveSpawnCommand(command, args, { ...(env ? { env } : {}), bypassNpmShim: true });
+  const resolveCommand = (
+    command: string,
+    args: ReadonlyArray<string>,
+    env?: NodeJS.ProcessEnv,
+    cwd?: string,
+  ) => resolveSpawnCommand(command, args, { cwd, ...(env ? { env } : {}), bypassNpmShim: true });
 
   const runOpenCodeCommand: OpenCodeRuntime["Service"]["runOpenCodeCommand"] = Effect.fn(
     "OpenCodeRuntime.runOpenCodeCommand",
   )(
     function* (input) {
-      const spawnCommand = yield* resolveCommand(input.binaryPath, input.args, input.environment);
+      const spawnCommand = yield* resolveCommand(
+        input.binaryPath,
+        input.args,
+        input.environment,
+        input.cwd,
+      );
       const child = yield* spawner.spawn(
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           detached: hostPlatform !== "win32",

@@ -475,6 +475,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         command: options.settings.binaryPath || "pi",
         args: launch.args,
         name: "pi",
+        cwd,
         threadId: input.threadId,
         env: launch.env,
       });

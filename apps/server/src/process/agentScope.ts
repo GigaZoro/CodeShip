@@ -107,8 +107,8 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const hostEnvironment = yield* HostProcess.Environment;
 
-  const resolve = (command: string, env: NodeJS.ProcessEnv) =>
-    resolveCommandPath(command, { env }).pipe(
+  const resolve = (command: string, env: NodeJS.ProcessEnv, cwd?: string) =>
+    resolveCommandPath(command, { cwd, env }).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.provideService(HostProcess.Platform, platform),
@@ -117,8 +117,8 @@ export const make = Effect.gen(function* () {
   if (platform !== "linux") {
     return {
       ...AgentScope.defaultValue(),
-      wrap: Effect.fn("AgentScope.wrap")(function* ({ command, args, env }) {
-        const resolved = yield* resolve(command, env ?? hostEnvironment);
+      wrap: Effect.fn("AgentScope.wrap")(function* ({ command, args, env, cwd }) {
+        const resolved = yield* resolve(command, env ?? hostEnvironment, cwd);
         return resolved === null
           ? { command, args }
           : agentScopeCommand({ command: resolved, args });
@@ -420,10 +420,11 @@ export const make = Effect.gen(function* () {
       name,
       threadId,
       env,
+      cwd,
       survivesRestart,
       shared,
     }) {
-      const resolved = yield* resolve(command, env ?? hostEnvironment);
+      const resolved = yield* resolve(command, env ?? hostEnvironment, cwd);
       if (resolved === null) return { command, args };
       const scope = yield* systemd;
       if (scope === undefined) return agentScopeCommand({ command: resolved, args });

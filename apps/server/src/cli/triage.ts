@@ -182,10 +182,14 @@ export const triageCommand = Command.make("triage", {
       }
 
       const model = Option.getOrUndefined(flags.model);
-      const spawnSpec = yield* resolveSpawnCommand(selected.command, [
-        ...(model === undefined ? [] : ["--model", model]),
-        buildTriageLaunchPrompt(promptFilePath),
-      ]);
+      const spawnSpec = yield* resolveSpawnCommand(
+        selected.command,
+        [
+          ...(model === undefined ? [] : ["--model", model]),
+          buildTriageLaunchPrompt(promptFilePath),
+        ],
+        { cwd: sessionDir },
+      );
       yield* Console.log(`Starting ${selected.label}. It will ask what went wrong.\n`);
       const exitCode = yield* runInteractiveSession({ ...spawnSpec, cwd: sessionDir });
       if (exitCode !== 0) {

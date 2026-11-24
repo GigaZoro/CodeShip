@@ -16,6 +16,7 @@ import {
 import {
   CommandResolutionCache,
   resolveCommandPath,
+  resolveMatchingLauncher,
   resolveSpawnCommand,
 } from "@t3tools/shared/shell";
 
@@ -101,6 +102,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       return yield* unusableBinary;
     }
     // A native custom launcher can own sign-in or policy. Shims dispatch by their invoked name.
+    let executable = configuredPath;
     if (nativeCustomLauncher) {
       const launcher = yield* resolveCommandPath(nativeCustomLauncher, {
         cwd,
@@ -112,12 +114,20 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
       );
-      if (launcher === null || path.relative(configuredPath, launcher) !== "") {
+      const matched =
+        launcher === null
+          ? null
+          : yield* resolveMatchingLauncher(launcher, configuredPath).pipe(
+              Effect.provideService(Path.Path, path),
+              Effect.provideService(HostProcess.Platform, platform),
+            );
+      if (matched === null) {
         return yield* new TextGenerationError({
           operation,
           detail: `This Codex instance uses a different custom launcher. Provision that launcher for metadata and point ${CODEX_METADATA_BINARY_ENV} at it, or unset the host override to use this account’s launcher.`,
         });
       }
+      executable = matched;
     }
     const [help, , exitCode] = yield* Effect.gen(function* () {
       // Cold OS verification can take tens of seconds. The enclosing request bounds this probe.
@@ -126,8 +136,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         prefix: "t3code-codex-probe-",
       });
       const child = yield* commandSpawner.spawn(
-        ChildProcess.make(configuredPath, ["exec", "--help"], {
-          cwd: path.dirname(configuredPath),
+        ChildProcess.make(executable, ["exec", "--help"], {
+          cwd: path.dirname(executable),
           env: { CODEX_HOME: probeHome, HOME: probeHome, USERPROFILE: probeHome },
           extendEnv: false,
           stdin: "ignore",
@@ -152,7 +162,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     ) {
       return yield* unusableBinary;
     }
-    return configuredPath;
+    return executable;
   });
 
   const readStreamAsString = <E>(

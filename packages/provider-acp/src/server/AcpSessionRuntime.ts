@@ -1336,6 +1336,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     options.spawn.shell === false
       ? { command: options.spawn.command, args: options.spawn.args, shell: false }
       : yield* resolveSpawnCommand(options.spawn.command, options.spawn.args, {
+          cwd: options.spawn.cwd,
           ...(options.spawn.env ? { env: options.spawn.env } : {}),
           extendEnv: options.spawn.extendEnv ?? true,
         });
@@ -1383,6 +1384,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           command: spawnCommand.command,
           args: spawnCommand.args,
           name: "acp",
+          cwd: options.spawn.cwd,
           threadId: yield* AgentScopeThreadId,
           env: { ...process.env, ...options.spawn.env },
         });
