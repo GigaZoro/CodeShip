@@ -18,6 +18,7 @@ import {
   isCompactionCommandMessage,
   isListedThreadLineage,
   parseGoalCommand,
+  type ProjectId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -37,7 +38,7 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 import { STALL_LOG_NOTE } from "../observability/EventLoopMonitor.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
-import { releasedWorktree } from "../workspace/worktreeRelease.ts";
+import { releasedWorktree, restoringWorktreeFile } from "../workspace/worktreeRelease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
@@ -472,21 +473,47 @@ export const layer: Layer.Layer<
     const recreateMissingWorktree = Effect.fn("ProviderTurnStartService.recreateMissingWorktree")(
       function* (input: {
         readonly threadId: ThreadId;
+        readonly projectId: ProjectId;
+        readonly exists: boolean;
         readonly cwd: string;
         readonly worktreePath: string;
         readonly branch: string;
       }) {
         const { cwd, worktreePath, branch } = input;
-        yield* gitWorkflow.pruneWorktrees({ cwd });
-        const localBranchNames = yield* gitWorkflow.listLocalBranchNames(cwd);
+        const directory = path.join(config.stateDir, ServerConfig.WORKTREE_RELEASE_DIRECTORY);
         const released = yield* releasedWorktree(
           fileSystem,
-          path.join(config.stateDir, ServerConfig.WORKTREE_RELEASE_DIRECTORY),
+          directory,
           worktreePath,
           input.threadId,
           branch,
+          input.projectId,
         );
+        const restoring = restoringWorktreeFile(directory, worktreePath);
+        if (input.exists) {
+          if (released?.receipt !== restoring) return;
+          if (yield* fileSystem.exists(path.join(worktreePath, ".git"))) {
+            if ((yield* gitWorkflow.currentBranch(worktreePath)) !== branch)
+              return yield* new WorktreeRecreateError({
+                worktreePath,
+                branch,
+                cause: "Restored checkout branch changed",
+              });
+            yield* fileSystem.remove(restoring);
+            return;
+          }
+          if ((yield* fileSystem.readDirectory(worktreePath)).length)
+            return yield* new WorktreeRecreateError({
+              worktreePath,
+              branch,
+              cause: "Interrupted checkout contains local files",
+            });
+        }
+        yield* gitWorkflow.pruneWorktrees({ cwd });
+        const localBranchNames = yield* gitWorkflow.listLocalBranchNames(cwd);
         if (released) {
+          const receipt = released.request.family ? restoring : released.receipt;
+          if (receipt !== released.receipt) yield* fileSystem.rename(released.receipt, receipt);
           const base = yield* resolveRecreateBase(cwd);
           if (!base) return yield* new WorktreeRecreateNoBaseError({ worktreePath, branch });
           if (localBranchNames.includes(branch)) {
@@ -505,7 +532,7 @@ export const layer: Layer.Layer<
               ...(base.baseRefName ? { baseRefName: base.baseRefName } : {}),
             });
           }
-          yield* fileSystem.remove(released.receipt);
+          yield* fileSystem.remove(receipt);
           return;
         }
         if (localBranchNames.includes(branch)) {
@@ -870,7 +897,14 @@ export const layer: Layer.Layer<
         const exists = yield* fileSystem
           .exists(worktreePath)
           .pipe(Effect.orElseSucceed(() => true));
-        if (!exists && (yield* isManagedWorktreePath(worktreePath))) {
+        const restoring = restoringWorktreeFile(
+          path.join(config.stateDir, ServerConfig.WORKTREE_RELEASE_DIRECTORY),
+          worktreePath,
+        );
+        if (
+          (!exists || (yield* fileSystem.exists(restoring))) &&
+          (yield* isManagedWorktreePath(worktreePath))
+        ) {
           const project = yield* projects.getById(projection.thread.projectId).pipe(
             Effect.map(Option.getOrUndefined),
             Effect.orElseSucceed(() => undefined),
@@ -884,6 +918,8 @@ export const layer: Layer.Layer<
             const recreateResult = yield* Effect.result(
               recreateMissingWorktree({
                 threadId: projection.thread.id,
+                projectId: projection.thread.projectId,
+                exists,
                 cwd: project.workspaceRoot,
                 worktreePath,
                 branch,

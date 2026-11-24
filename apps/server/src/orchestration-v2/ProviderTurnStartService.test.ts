@@ -1090,7 +1090,7 @@ function makeLocalCommandHarness(input: {
           list: () => Effect.succeed([ProviderInstanceId.make("claude_work")]),
         }),
         input.fileSystem === undefined
-          ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
+          ? FileSystem.layerNoop({ exists: (file) => Effect.succeed(!file.endsWith(".restoring")) })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
         input.gitWorkflow === undefined
           ? Layer.mock(GitWorkflow.GitWorkflowService)({

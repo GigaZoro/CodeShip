@@ -1,11 +1,19 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeSqlite from "node:sqlite";
 import * as NodeUtil from "node:util";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
-import { GitCommandError, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  GitCommandError,
+  OrchestrationV2AppThreadLineage,
+  type OrchestrationV2ThreadShell,
+  ProjectId,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -13,13 +21,56 @@ import * as Schema from "effect/Schema";
 import { WORKTREE_RELEASE_DIRECTORY } from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 
+/** Only a complete subagent or side chat chain within this worktree shares ownership. */
+export function worktreeOwner<T extends Pick<OrchestrationV2ThreadShell, "id" | "lineage">>(
+  threads: ReadonlyArray<T>,
+) {
+  if (threads.length === 1) return threads[0];
+  const byId = new Map(threads.map((thread) => [thread.id, thread]));
+  const tops = threads.filter((thread) => !byId.has(thread.lineage.parentThreadId!));
+  if (tops.length !== 1) return undefined;
+  const owner = tops[0]!;
+  for (const thread of threads) {
+    let current = thread;
+    const seen = new Set<string>();
+    while (current.id !== owner.id) {
+      if (
+        seen.has(current.id) ||
+        (current.lineage.relationshipToParent !== "subagent" &&
+          current.lineage.sideChat !== true) ||
+        current.lineage.rootThreadId !== owner.lineage.rootThreadId
+      )
+        return undefined;
+      seen.add(current.id);
+      const parent = byId.get(current.lineage.parentThreadId!);
+      if (parent === undefined) return undefined;
+      current = parent;
+    }
+  }
+  return owner;
+}
+
 const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const durableRef = Schema.String.check(Schema.isPattern(/^refs\/(?:heads|remotes|archive)\//));
+const ReleaseMember = Schema.Struct({
+  threadId: ThreadId,
+  runId: RunId,
+  projectId: ProjectId,
+  lineage: OrchestrationV2AppThreadLineage,
+});
+
+const decodeReleaseMemberRow = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    ...ReleaseMember.fields,
+    lineage: Schema.fromJsonString(OrchestrationV2AppThreadLineage),
+  }),
+);
 const ReleaseRequest = Schema.Struct({
   threadId: ThreadId,
   runId: RunId,
   worktreePath: Schema.String,
   branch: Schema.String,
+  family: Schema.optional(Schema.Array(ReleaseMember)),
   durableRef,
   alsoDurable: Schema.optional(Schema.Array(durableRef)),
   savedFiles: Schema.optional(Schema.String),
@@ -49,27 +100,42 @@ export const releasePath = (cwd: string) =>
     Effect.timeout("5 seconds"),
   );
 
+export const restoringWorktreeFile = (directory: string, cwd: string) =>
+  releaseFile(directory, cwd) + ".restoring";
+
 export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(function* (
   fs: FileSystem.FileSystem,
   directory: string,
   cwd: string,
   threadId: string,
   branch: string,
+  projectId: ProjectId,
 ) {
   if (!(yield* fs.exists(directory))) return null;
   const parent = yield* releasePath(NodePath.dirname(cwd));
   const canonical = NodePath.join(parent, NodePath.basename(cwd));
   const file = releaseFile(directory, canonical);
-  for (const suffix of [".releasing", ".released"]) {
+  for (const suffix of [".restoring", ".releasing", ".released"]) {
     const receipt = file + suffix;
     if (!(yield* fs.exists(receipt))) continue;
     const request = yield* decodeReleaseRequest(yield* fs.readFileString(receipt));
     if (
-      request.threadId === threadId &&
+      (request.family
+        ? request.family.some(
+            (member) => member.threadId === threadId && member.projectId === projectId,
+          )
+        : request.threadId === threadId) &&
       request.branch === branch &&
       request.worktreePath === canonical
     )
       return { request, receipt };
+    if (request.family)
+      return yield* new GitCommandError({
+        operation: "WorktreeRelease.readReceipt",
+        command: "restore",
+        cwd,
+        detail: "This thread does not own the released checkout.",
+      });
   }
   return null;
 });
@@ -262,8 +328,58 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
   return true;
 }, Effect.timeout("10 minutes"));
 
+// The local completion CLI snapshots all exact-path owners in one read-only SQLite statement.
+const observeFamily = Effect.fn("WorktreeRelease.observeFamily")(function* (
+  database: string,
+  cwd: string,
+  threadId: string,
+  runId: string,
+  branch: string,
+) {
+  const rows = yield* Effect.try(() => {
+    const db = new NodeSqlite.DatabaseSync(database, { readOnly: true });
+    try {
+      return db
+        .prepare(`
+        SELECT t.thread_id AS threadId, t.project_id AS projectId,
+          json_extract(t.payload_json, '$.lineage') AS lineage,
+          json_extract(t.payload_json, '$.branch') AS branch,
+          (SELECT run_id FROM orchestration_v2_projection_runs r WHERE r.thread_id = t.thread_id
+           ORDER BY ordinal DESC, run_id DESC LIMIT 1) AS runId
+        FROM orchestration_v2_projection_threads t
+        WHERE t.deleted_at IS NULL AND json_extract(t.payload_json, '$.worktreePath') = ?
+        ORDER BY t.thread_id
+      `)
+        .all(cwd);
+    } finally {
+      db.close();
+    }
+  });
+  if (rows.length < 2) return undefined;
+  const family = yield* Effect.forEach(rows, (row) => decodeReleaseMemberRow(row));
+  const owner = worktreeOwner(family.map((member) => ({ ...member, id: member.threadId })));
+  if (
+    !owner ||
+    owner.id !== threadId ||
+    owner.lineage.parentThreadId !== null ||
+    owner.lineage.rootThreadId !== owner.id ||
+    owner.runId !== runId ||
+    family.some((member) => member.projectId !== owner.projectId) ||
+    rows.some((row) => row.branch !== branch)
+  ) {
+    return yield* new GitCommandError({
+      operation: "WorktreeRelease.observeFamily",
+      command: "release-worktree",
+      cwd,
+      detail: "Only the root of the exact checkout family can release its current run.",
+    });
+  }
+  return family;
+});
+
 export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function* (input: {
   stateDir: string;
+  dbPath?: string;
   threadId: string;
   runId: string;
   worktreePath: string;
@@ -286,7 +402,17 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
     });
   const directory = path.join(input.stateDir, WORKTREE_RELEASE_DIRECTORY);
   yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
+  const family = input.dbPath
+    ? yield* observeFamily(
+        input.dbPath,
+        cwd,
+        input.threadId,
+        input.runId,
+        branchRef.slice("refs/heads/".length),
+      )
+    : undefined;
   const request = yield* validateRequest({
+    ...(family ? { family } : {}),
     threadId: input.threadId,
     runId: input.runId,
     worktreePath: cwd,
@@ -403,6 +529,12 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   for (const name of yield* fs.readDirectory(admin)) {
     if (["HEAD", "index", "commondir", "gitdir"].includes(name)) continue;
     let file = path.join(admin, name);
+    if (
+      name === "refs" &&
+      (yield* Effect.tryPromise(() => NodeFSP.lstat(file))).isDirectory() &&
+      (yield* fs.readDirectory(file)).length === 0
+    )
+      continue;
     if (name === "logs") {
       const logs = yield* fs.readDirectory(file);
       if (logs.length !== 1 || logs[0] !== "HEAD") return "worktree has private reflogs";

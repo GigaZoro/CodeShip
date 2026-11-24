@@ -640,6 +640,11 @@ the delivered commits.
 t3 thread release-worktree "$thread_id" --run "$run_id" --worktree "$checkout" --durable-ref refs/remotes/origin/main
 ```
 
+When a root chat shares the exact checkout and branch with its subagents or side chats, pass
+the root chat's IDs. The command records every member and its current run. All members must
+settle and finish delivery before removal. If membership or a run changes, issue a new
+request after the family finishes. Any recorded member can start the first follow-up.
+
 For a local no-change handoff, use the primary checkout's branch, such as `refs/heads/main`.
 If earlier commits are preserved elsewhere, repeat `--also-durable-ref <full-ref>` for each
 additional local branch, remote-tracking branch or archive ref that covers them.

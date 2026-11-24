@@ -1,3 +1,4 @@
+import { withWorkspaceProcessStart } from "../workspace/workspaceLease.ts";
 import type {
   GuestShareId,
   OrchestrationV2SearchThreadInput,
@@ -15503,6 +15504,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       commandThreadId(command),
       dispatchWithReceiptEffect(command),
     );
+    if (
+      (command.type === "thread.create" || command.type === "thread.metadata.update") &&
+      command.worktreePath
+    )
+      return yield* withWorkspaceProcessStart(dispatch, [command.worktreePath]);
+    if (command.type === "thread.fork" && command.sideChat !== true) {
+      const source = yield* findThread(command.sourceThreadId);
+      if (source?.worktreePath)
+        return yield* withWorkspaceProcessStart(dispatch, [source.worktreePath]);
+    }
     // A parent's lock comes before its side chats' locks, so a delete cascade and a side chat
     // fork or command never interleave. A fork from a side chat or onto an existing thread would
     // invert that order; dispatch rejects both, so they skip the source lock.

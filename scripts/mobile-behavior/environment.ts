@@ -27,10 +27,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
-import { RpcClient, RpcSerialization } from "effect/rpc";
+import { RpcClient, type RpcClientError, type RpcGroup, RpcSerialization } from "effect/rpc";
 import { Socket } from "effect/socket";
 
 const REPO_ROOT = NodePath.resolve(import.meta.dirname, "../..");
+type EnvironmentRpcClient = RpcClient.RpcClient<
+  RpcGroup.Rpcs<typeof WsRpcGroup>,
+  RpcClientError.RpcClientError
+>;
 export const EVAL_INSTANCE = ProviderInstanceId.make("evalbot");
 export const EVAL_MODEL = "eval/scripted";
 
@@ -140,7 +144,7 @@ export const startEnvironment = Effect.fn("environment.start")(function* (input:
           "apps/server/src/bin.ts",
           "serve",
           "--host",
-          "0.0.0.0",
+          input.deviceHost === "127.0.0.1" ? "127.0.0.1" : "0.0.0.0",
           "--port",
           String(port),
           "--base-dir",
@@ -229,7 +233,9 @@ export const startEnvironment = Effect.fn("environment.start")(function* (input:
       Layer.provide(NodeSocket.layerWebSocketConstructorWS),
     ),
   );
-  const client = yield* RpcClient.make(WsRpcGroup).pipe(Effect.provideContext(protocol));
+  const client: EnvironmentRpcClient = yield* RpcClient.make(WsRpcGroup).pipe(
+    Effect.provideContext(protocol),
+  );
   const environmentId = EnvironmentId.make(descriptor.environmentId);
 
   const command = Effect.map(uuid, CommandId.make);
@@ -371,6 +377,13 @@ export const startEnvironment = Effect.fn("environment.start")(function* (input:
       ),
     origin,
     environmentId,
+    releaseClient: (): Pick<
+      EnvironmentRpcClient,
+      "orchestration.launchThread" | "orchestration.dispatchCommand" | "server.runStorageCleanup"
+    > => client,
+    projectId,
+    workspace,
+    until,
     archive: (threadId: ThreadId) =>
       command.pipe(
         Effect.flatMap((commandId) =>

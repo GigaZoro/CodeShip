@@ -1089,6 +1089,77 @@ it.effect(
     ),
 );
 
+it.live("releases the bound family only after every member settles and delivers", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fixture = yield* cleanupFixture(undefined, true);
+      fixture.disable();
+      const owner = shell({
+        branch: "feature",
+        worktreePath: fixture.worktree,
+        status: "completed",
+        latestRunId: RunId.make("root-run"),
+        latestRunCompletedAt: at(-DAY_MS),
+        settledAt: at(-DAY_MS),
+        settledOverride: "settled",
+      });
+      const child = {
+        ...owner,
+        id: ThreadId.make("child"),
+        latestRunId: RunId.make("child-run"),
+        lineage: {
+          ...owner.lineage,
+          parentThreadId: owner.id,
+          relationshipToParent: "subagent" as const,
+        },
+      };
+      fixture.setThreads([child, owner]);
+      const { file } = yield* queueWorktreeRelease({
+        stateDir: fixture.config.stateDir,
+        threadId: owner.id,
+        runId: owner.latestRunId!,
+        worktreePath: fixture.worktree,
+        durableRef: "refs/heads/main",
+      });
+      expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("kept");
+      const request = JSON.parse(yield* fixture.fs.readFileString(file));
+      request.family = [child, owner].map((member) => ({
+        threadId: member.id,
+        runId: member.latestRunId,
+        projectId: member.projectId,
+        lineage: member.lineage,
+      }));
+      yield* fixture.fs.writeFileString(file, JSON.stringify(request));
+      expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+        "Parent has not received this delegate's result",
+      );
+      fixture.recordDelegateDelivery();
+      for (const changed of [
+        { ...child, status: "failed" as const },
+        { ...child, latestRunId: RunId.make("another-run") },
+        { ...child, settledAt: null },
+      ]) {
+        fixture.setThreads([owner, changed]);
+        expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("kept");
+      }
+      fixture.setThreads([
+        owner,
+        child,
+        shell({ id: ThreadId.make("other"), worktreePath: fixture.worktree }),
+      ]);
+      expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("kept");
+      fixture.setThreads([child, owner]);
+      const entry = (yield* fixture.service.runNow).entries[0];
+      expect(entry?.outcome, entry?.reason).toBe("removed");
+      expect(yield* fixture.fs.exists(file + ".released")).toBe(true);
+      expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+      expect(
+        (yield* fixture.command(fixture.repo, ["worktree", "list", "--porcelain"])).stdout,
+      ).not.toContain(fixture.worktree);
+    }),
+  ),
+);
+
 it.live("retains worktree-only history and rejects a release overtaken by a follow-up", () =>
   runCleanupTest(
     Effect.gen(function* () {

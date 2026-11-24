@@ -775,6 +775,7 @@ const releaseWorktreeCommand = Command.make("release-worktree", {
   durableRef: Flag.String("durable-ref"),
   alsoDurable: Flag.String("also-durable-ref").pipe(Flag.atLeast(0)),
   saveIgnored: Flag.Boolean("save-ignored").pipe(
+    Flag.withDefault(false),
     Flag.withDescription(
       "Keep ignored files in a private, same-volume hard-link backup before queuing release.",
     ),
@@ -788,6 +789,7 @@ const releaseWorktreeCommand = Command.make("release-worktree", {
       const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel);
       const request = yield* queueWorktreeRelease({
         stateDir: config.stateDir,
+        dbPath: config.dbPath,
         threadId: flags.thread,
         runId: flags.run,
         worktreePath: flags.worktree,

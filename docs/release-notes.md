@@ -1,3 +1,7 @@
+## 2026-11-24 — Release a completed family's shared checkout
+
+- A root chat can release the checkout it shares with settled subagents and side chats. A follow-up from any member can recreate it from the project's current base.
+
 ## 2026-11-24 — Resume chats promptly after a restart
 
 - A chat ready to resume while the server checks its memory queue now starts as soon as memory permits, including during startup.
