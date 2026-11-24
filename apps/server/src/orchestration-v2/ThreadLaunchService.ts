@@ -74,7 +74,7 @@ export type ThreadLaunchWorkspaceStrategy =
     };
 
 export interface ThreadLaunchInitialMessage {
-  readonly demandId?: string;
+  readonly demandId?: string | null;
   readonly messageId?: MessageId;
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly crossProviderFailoverFrom?: ProviderInstanceId;

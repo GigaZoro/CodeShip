@@ -1,3 +1,7 @@
+## 2026-11-24 — Fixed-time task usage accounting
+
+- A local task delayed by an account usage limit keeps its original scheduled occurrence across retries, restarts, and time-zone changes. Older retries with insufficient timing information count as unknown.
+
 ## 2026-11-24 — Keep schedule edits made during a missed run
 
 - Editing a task while the scheduler skips a missed run now preserves the new schedule. Run history records the skip only when the scheduler advances that occurrence.
