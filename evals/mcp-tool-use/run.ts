@@ -203,6 +203,8 @@ const McpToolUseExpect = Schema.Struct({
       retryAfter: Schema.String,
       /** Case-insensitive patterns identifying this delivery, its outstanding check and its evidence. */
       promptMust: Schema.NonEmptyArray(Schema.NonEmptyString),
+      /** Known command exit codes at the scheduled occurrence on this fixture's machine. */
+      conditionExitCodes: Schema.optional(Schema.Record(Schema.String, Schema.Int)),
     }),
   ),
   /** Each entry needs one matching call. */
@@ -1768,6 +1770,31 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
   return output;
 });
 
+// Creates (including replays) use the caller's defaults. Updates by ID keep the stored choices.
+const scheduledWriteDestination = (
+  save: OrchestratorMcpSaveScheduledTaskInput,
+  stored: OrchestratorMcpScheduleTaskResult | undefined,
+  hasOwner: boolean,
+) => {
+  const update = save.scheduledTaskId === undefined ? undefined : stored;
+  const projectId = update?.projectId ?? save.projectId ?? ProjectId.make(EVAL_PROJECT_ID);
+  const requestShared = save.shared ?? update?.shared ?? false;
+  // The create API sends sharing to the scheduler only when enabling it.
+  const shared = requestShared || (!update && stored?.shared === true);
+  const bound =
+    save.bindToCurrentThread ??
+    (update
+      ? update.boundThreadId !== null
+      : !requestShared && projectId === EVAL_PROJECT_ID && hasOwner);
+  return {
+    projectId,
+    requestShared,
+    shared,
+    bound,
+    enabled: save.enabled ?? update?.enabled ?? true,
+  };
+};
+
 /** The result for one tool call. */
 export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(function* (
   sample: Sample,
@@ -1866,6 +1893,8 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     const edit = scheduledEdit(input);
     if (Option.isNone(edit)) return failed("Invalid scheduled task arguments.");
     const save = edit.value;
+    // Only a save by task ID is a partial update. Replaying a create reapplies its defaults.
+    const update = id === undefined ? undefined : stored;
     if (
       id === undefined &&
       (!save.schedule || (save.prompt === undefined && save.promptFile == null))
@@ -1877,7 +1906,10 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     const world = testCase.setup.world;
     const promptFilePath =
       save.promptFile === undefined ? stored?.promptFile?.path : save.promptFile;
-    if (save.prompt !== undefined && promptFilePath != null)
+    if (
+      save.prompt !== undefined &&
+      (save.promptFile != null || (update && promptFilePath != null))
+    )
       return failed("Supply either a prompt or a prompt file.");
     const fileText =
       promptFilePath && isRecord(world?.files) ? world.files[promptFilePath] : undefined;
@@ -1886,22 +1918,19 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     const prompt = typeof fileText === "string" ? fileText : (save.prompt ?? stored?.prompt);
     if (!prompt?.trim()) return failed("A scheduled task needs a prompt or a prompt file.");
 
-    const projectId = stored?.projectId ?? save.projectId ?? ProjectId.make(EVAL_PROJECT_ID);
-    const shared = save.shared ?? stored?.shared ?? false;
-    const oneMachine = save.oneMachine ?? stored?.oneMachine;
-    if ((save.oneMachine === true || save.excludedMachines !== undefined) && !shared)
+    const { projectId, requestShared, shared, bound, enabled } = scheduledWriteDestination(
+      save,
+      stored,
+      typeof owner === "string",
+    );
+    const requestOneMachine = save.oneMachine ?? update?.oneMachine;
+    if ((save.oneMachine === true || save.excludedMachines !== undefined) && !requestShared)
       return failed("oneMachine and excludedMachines require a shared task.");
-    if (save.machineOrder !== undefined && (!shared || !oneMachine))
+    if (save.machineOrder !== undefined && (!requestShared || !requestOneMachine))
       return failed("machineOrder requires a one-machine shared task.");
     if (save.catchUpMissedRun !== undefined && schedule.type !== "fixed_time")
       return failed("catchUpMissedRun applies only to a fixed_time schedule.");
-    const sameProject = projectId === EVAL_PROJECT_ID;
-    const bound =
-      save.bindToCurrentThread ??
-      (stored
-        ? stored.boundThreadId !== null
-        : !shared && sameProject && typeof owner === "string");
-    if (bound && (!sameProject || typeof owner !== "string" || shared))
+    if (bound && (projectId !== EVAL_PROJECT_ID || typeof owner !== "string" || shared))
       return failed("The requested task cannot bind to this thread in this environment.");
 
     if (save.modelSelection && (bound || save.followsDefaultModel === true))
@@ -1916,7 +1945,6 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
         timeoutSeconds: save.runCondition.timeoutSeconds ?? DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS,
       };
     }
-    const enabled = save.enabled ?? (id === undefined ? true : (stored?.enabled ?? true));
     const now = DateTime.makeUnsafe(`${base.environment.date ?? "2026-01-01"}T12:00:00Z`);
     const next = enabled ? nextScheduledRunAt(schedule, now) : null;
     if (enabled && schedule.type === "once" && next === null)
@@ -1927,6 +1955,7 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     const lastRead =
       typeof commit === "string" ? { at: DateTime.formatIso(now), ref, commit } : null;
     const preview = prompt.replace(/\s+/g, " ").trim();
+    const oneMachine = requestShared ? (save.oneMachine ?? stored?.oneMachine) : stored?.oneMachine;
     const task: OrchestratorMcpScheduleTaskResult = {
       scheduledTaskId:
         stored?.scheduledTaskId ?? replayId ?? ScheduledTaskId.make(uuid(sample.nextTask++)),
@@ -1934,8 +1963,9 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
       boundThreadId: bound && typeof owner === "string" ? ThreadId.make(owner) : null,
       title:
         save.title ??
-        stored?.title ??
-        (promptFilePath ?? prompt).split("\n")[0]!.trim().slice(0, 80),
+        update?.title ??
+        ((save.prompt ?? save.promptFile ?? "").split("\n")[0]!.trim().slice(0, 80) ||
+          "Scheduled task"),
       description:
         save.description === undefined ? stored?.description : (save.description ?? undefined),
       prompt,
@@ -2087,9 +2117,13 @@ const gradePendingRelease = (
       task.nextRunAt && Date.parse(task.nextRunAt),
       task.blockedByPolicy,
       task.runCondition?.command,
+      task.runCondition?.timeoutSeconds,
       task.promptFile?.path,
       task.promptHash,
     ]);
+  // Recorded samples from older fixtures can assign two IDs to one idempotent create.
+  const idByCreateKey = new Map<string, string>();
+  const conflictingIds = new Set<string>();
   const retries = new Map<
     string,
     {
@@ -2164,7 +2198,40 @@ const gradePendingRelease = (
       if (scheduledTaskId !== undefined && scheduledTaskId !== reply.value.scheduledTaskId)
         continue;
       const task = reply.value;
-      const requested = { ...retries.get(task.scheduledTaskId)?.requested, ...edit.value };
+      if (scheduledTaskId === undefined && edit.value.clientRequestId !== undefined) {
+        const key = edit.value.clientRequestId;
+        const first = idByCreateKey.get(key);
+        if (first === undefined) idByCreateKey.set(key, task.scheduledTaskId);
+        else if (first !== task.scheduledTaskId) {
+          conflictingIds.add(first);
+          conflictingIds.add(task.scheduledTaskId);
+        }
+      }
+      const previous = retries.get(task.scheduledTaskId);
+      // A trace can start with an update to a task created before this sample.
+      const stored = previous?.task ?? (scheduledTaskId === undefined ? undefined : task);
+      const { projectId, shared, bound, enabled } = scheduledWriteDestination(
+        edit.value,
+        stored,
+        true,
+      );
+      const requested = {
+        ...edit.value,
+        projectId,
+        shared,
+        bindToCurrentThread: bound,
+        enabled,
+        // The scheduler retains these fields when omitted. Model validation is per write.
+        prompt: prompt ?? previous?.requested.prompt,
+        promptFile: promptFile === undefined ? previous?.requested.promptFile : promptFile,
+        schedule: schedule ?? stored?.schedule,
+        runCondition:
+          edit.value.runCondition === undefined
+            ? previous?.requested.runCondition === undefined
+              ? stored?.runCondition
+              : previous.requested.runCondition
+            : edit.value.runCondition,
+      };
       // Even a partial update requires a fresh read of the saved task.
       retries.set(task.scheduledTaskId, {
         task,
@@ -2175,7 +2242,11 @@ const gradePendingRelease = (
     }
   }
   const hasRetry = [...retries.values()].some(({ task, saved, requested, readPrompt }) => {
-    if (typeof readPrompt !== "string" || (saved !== undefined && saved !== retryState(task)))
+    if (
+      conflictingIds.has(task.scheduledTaskId) ||
+      typeof readPrompt !== "string" ||
+      (saved !== undefined && saved !== retryState(task))
+    )
       return false;
     const next = Date.parse(task.nextRunAt ?? "");
     const schedule = requested.schedule ?? task.schedule;
@@ -2198,9 +2269,14 @@ const gradePendingRelease = (
       task.enabled &&
       requested.enabled !== false &&
       task.blockedByPolicy === undefined &&
-      // A condition can skip the only occurrence. The fixture can guarantee an unconditional wake.
-      task.runCondition === undefined &&
-      requested.runCondition == null &&
+      // The one occurrence is usable only if its stored condition is known to allow it to run.
+      (task.runCondition === undefined ||
+        release.conditionExitCodes?.[task.runCondition.command] === 0) &&
+      (requested.runCondition === undefined ||
+        (requested.runCondition?.command === task.runCondition?.command &&
+          (requested.runCondition == null ||
+            (requested.runCondition.timeoutSeconds ?? DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS) ===
+              task.runCondition?.timeoutSeconds))) &&
       requested.catchUpMissedRun === undefined;
     const expectedPrompt = task.promptFile
       ? isRecord(files) && Object.hasOwn(files, task.promptFile.path) && files[task.promptFile.path]

@@ -1108,8 +1108,14 @@ const releaseSchedulerFixture = () => {
     ...base,
     environment: { ...base.environment, date: "2026-10-14" },
   });
-  const tools = ["schedule_task", "list_scheduled_tasks", "delete_scheduled_task"];
+  const tools = [
+    "schedule_task",
+    "list_scheduled_tasks",
+    "delete_scheduled_task",
+    "t3_thread_organize",
+  ];
   sample.tools.push(...base.t3.filter((tool) => tools.includes(normalizeToolName(tool.name))));
+  const calls: Array<SampleRun["calls"][number]> = [];
   const invoke = (name: string, input: Record<string, unknown>) =>
     answerToolCall(
       sample,
@@ -1126,6 +1132,16 @@ const releaseSchedulerFixture = () => {
         HttpClient.HttpClient,
         HttpClient.make(() => Effect.die("Unexpected model request")),
       ),
+      Effect.map((answer) => {
+        calls.push({
+          step: calls.length,
+          tool: name,
+          input,
+          failed: answer.is_error === true,
+          output: String(answer.content),
+        });
+        return answer;
+      }),
     );
   const success = (name: string, input: Record<string, unknown>) =>
     invoke(name, input).pipe(
@@ -1134,8 +1150,95 @@ const releaseSchedulerFixture = () => {
         return JSON.parse(String(answer.content));
       }),
     );
-  return { invoke, success };
+  const handoffPasses = (trace: SampleRun["calls"] = calls) =>
+    failed(testCase.expect, { calls: trace, text: "", stopReason: "end_turn" }).length === 0;
+  const readHandoff = () =>
+    Effect.gen(function* () {
+      yield* success("t3_thread_organize", { action: "unsettle" });
+      yield* success("list_scheduled_tasks", { includePrompt: true });
+      return handoffPasses();
+    });
+  return { invoke, success, calls, handoffPasses, readHandoff };
 };
+
+const shippingRetry = {
+  clientRequestId: "signing-retry",
+  prompt: releasePrompt,
+  schedule: releaseRetry,
+};
+
+it.effect("grades a shared retry as bound only after an explicit update by ID", () =>
+  Effect.gen(function* () {
+    const { invoke, success, readHandoff } = releaseSchedulerFixture();
+    const shared = yield* success("schedule_task", { ...shippingRetry, shared: true });
+    const bind = { shared: false, bindToCurrentThread: true };
+    const replay = yield* invoke("schedule_task", { ...shippingRetry, ...bind });
+    assert.isTrue(replay.is_error);
+    assert.isFalse(yield* readHandoff());
+
+    yield* success("schedule_task", { scheduledTaskId: shared.scheduledTaskId, ...bind });
+    assert.isTrue(yield* readHandoff());
+  }),
+);
+
+it.effect("grades distinct returned task IDs as conflicting when they replay one create key", () =>
+  Effect.gen(function* () {
+    const { success, readHandoff, calls, handoffPasses } = releaseSchedulerFixture();
+    yield* success("schedule_task", shippingRetry);
+    assert.isTrue(yield* readHandoff());
+    const second = { ...shippingRetry, clientRequestId: "different-retry", enabled: false };
+    yield* success("schedule_task", second);
+    assert.isTrue(yield* readHandoff(), "the independent disabled task leaves the first runnable");
+
+    // Historical fixtures returned distinct task IDs even when the create key was replayed.
+    const conflicting = calls.map((call) =>
+      call.input === second
+        ? { ...call, input: { ...second, clientRequestId: shippingRetry.clientRequestId } }
+        : call,
+    );
+    assert.isFalse(handoffPasses(conflicting));
+  }),
+);
+
+it.effect("grades a disabled retry as enabled after a create replay with default settings", () =>
+  Effect.gen(function* () {
+    const { success, readHandoff } = releaseSchedulerFixture();
+    yield* success("schedule_task", { ...shippingRetry, enabled: false });
+    assert.isFalse(yield* readHandoff());
+    yield* success("schedule_task", shippingRetry);
+    assert.isTrue(yield* readHandoff());
+  }),
+);
+
+it.effect("grades a newly bound retry after an earlier unbound model selection", () =>
+  Effect.gen(function* () {
+    const { success, readHandoff } = releaseSchedulerFixture();
+    const unbound = yield* success("schedule_task", {
+      ...shippingRetry,
+      shared: true,
+      modelSelection: { instanceId: "codex", model: "gpt-6-luna" },
+    });
+    assert.isFalse(yield* readHandoff());
+    yield* success("schedule_task", {
+      scheduledTaskId: unbound.scheduledTaskId,
+      shared: false,
+      bindToCurrentThread: true,
+    });
+    assert.isTrue(yield* readHandoff());
+  }),
+);
+
+it.effect.each([
+  { command: "/usr/bin/true", runnable: true },
+  { command: "node -e process.exit(10)", runnable: false },
+  { command: "node check-signing.mjs", runnable: false },
+])("grades the saved retry condition $command from the fixture", ({ command, runnable }) =>
+  Effect.gen(function* () {
+    const { success, readHandoff } = releaseSchedulerFixture();
+    yield* success("schedule_task", { ...shippingRetry, runCondition: { command } });
+    assert.equal(yield* readHandoff(), runnable);
+  }),
+);
 
 it.effect(
   "replaying a scheduled retry updates the same task and preserves or clears its run condition",
