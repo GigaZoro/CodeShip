@@ -7,6 +7,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeUtil from "node:util";
+import * as NodeWorkerThreads from "node:worker_threads";
 import { expect, onTestFinished, vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Option from "effect/Option";
@@ -1340,8 +1341,11 @@ const env: Record<string, string> = {
 // Code for node -e that runs `code` until the file `hold` is gone, or this test process is (a run cut
 // short never removes it), then exits whatever `code` still waits for. A test ends it by removing
 // its folder, never by signalling an id the system may have given an unrelated process since.
-const whileHeld = (hold: string, code: string) =>
-  `{ const tester = ${process.pid}; const testing = () => { try { process.kill(tester, 0); return true; } catch (error) { return error.code === "EPERM"; } }; setInterval(() => { if (!require("node:fs").existsSync(${JSON.stringify(hold)}) || !testing()) process.exit(); }, 50).unref(); } ${code}`;
+const whileHeld = (hold: string, code: string) => {
+  // A worker thread shares its pid with the runner, which outlives a worker cut short.
+  assert.isTrue(NodeWorkerThreads.isMainThread, "a holder needs its test in a process of its own");
+  return `{ const tester = ${process.pid}; const testing = () => { try { process.kill(tester, 0); return true; } catch (error) { return error.code === "EPERM"; } }; setInterval(() => { if (!require("node:fs").existsSync(${JSON.stringify(hold)}) || !testing()) process.exit(); }, 50).unref(); } ${code}`;
+};
 
 // The stdio pipes that keep this process's event loop running. A stdin pipe, which Node destroys
 // once its process exits, counts until it has closed on a later turn of the loop, so a test that
