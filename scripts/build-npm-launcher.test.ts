@@ -65,9 +65,9 @@ const serveFakeRelease = Effect.fn("test.serveFakeRelease")(function* (
     path.join(root, "release", stem, "t3"),
     `#!/bin/sh
 if [ "$T3CODE_VERIFY_INSTALL" = 1 ]; then
-  if [ -n "$FIXTURE_PROBE_RECEIPT" ]; then
-    if [ -e "\${0%/*}/.install-complete" ]; then echo marked; else echo unmarked; fi > "$FIXTURE_PROBE_RECEIPT"
-    if [ -n "$FIXTURE_INSTALLED_DIR" ]; then cat "$FIXTURE_INSTALLED_DIR/sidecar" >> "$FIXTURE_PROBE_RECEIPT"; fi
+  if [ -n "$FIXTURE_PROBE_LOG" ]; then
+    if [ -e "\${0%/*}/.install-complete" ]; then echo marked; else echo unmarked; fi >> "$FIXTURE_PROBE_LOG"
+    if [ -n "$FIXTURE_INSTALLED_DIR" ]; then cat "$FIXTURE_INSTALLED_DIR/sidecar" >> "$FIXTURE_PROBE_LOG"; fi
   fi
   echo "t3 v\${FIXTURE_PROBE_VERSION:-${VERSION}}"
   exit "\${FIXTURE_PROBE_STATUS:-0}"
@@ -233,6 +233,97 @@ syncBuiltinESMExports();
   );
 
   describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("download verification", () => {
+    it.effect.each(["a concurrent rejection", "restoring the completion marker"] as const)(
+      "rechecks a damaged warm runtime after %s",
+      (scenario) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+          const { packageDir } = yield* buildNpmLauncher({
+            version: VERSION,
+            outputDir: path.join(root, "out"),
+          });
+          const release = yield* serveFakeRelease(root);
+          const home = path.join(root, "home");
+          const dir = path.join(home, "runtime/versions", VERSION);
+          const entry = path.join(dir, "t3");
+          const launcher = path.join(packageDir, "bin/t3.mjs");
+          const trace = path.join(root, "events");
+          const options = {
+            cwd: root,
+            env: {
+              PATH: process.env.PATH,
+              T3CODE_HOME: home,
+              T3CODE_RELEASE_BASE_URL: release.baseUrl,
+              TRACE: trace,
+              PROBE_OWNER: "npm",
+            },
+          };
+          const invoke = (...preloads: string[]) =>
+            run(process.execPath, [...preloads, launcher, "serve"], options);
+          const cold = yield* invoke();
+          assert.equal(cold.exitCode, 7, cold.stderr);
+          // An old verification marker must not authorize a subsequently damaged runtime.
+          yield* fs.writeFileString(path.join(dir, ".npm-verified"), VERSION);
+          yield* fs.writeFileString(
+            entry,
+            `#!/bin/sh
+if [ "$T3CODE_VERIFY_INSTALL" = 1 ]; then
+  echo "$PROBE_OWNER probe" >> "$TRACE"
+  echo "t3 v${VERSION}"
+  exit 78
+fi
+echo 'ordinary launch' >> "$TRACE"
+`,
+          );
+          release.setChecksumValid(false);
+          const preloads: string[] = [];
+          if (scenario === "restoring the completion marker") {
+            const sentinel = path.join(dir, ".install-complete");
+            const saved = path.join(root, "saved-marker");
+            yield* fs.rename(sentinel, saved);
+            const missing = yield* invoke();
+            assert.equal(missing.exitCode, 1, missing.stderr);
+            assert.include(missing.stderr, "checksum mismatch");
+            yield* fs.rename(saved, sentinel);
+          } else {
+            // Finish an independent installer's check before the warm launcher's first child runs.
+            yield* fs.writeFileString(
+              path.join(root, "peer.sh"),
+              runtimePromotion + '\nt3_runtime_ready "$1" "$2"',
+            );
+            const hook = path.join(root, "peer.mjs");
+            yield* fs.writeFileString(
+              hook,
+              `import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+const { spawn, spawnSync } = childProcess;
+let checked = false;
+function rejectPeer(file) {
+  if (checked || file !== ${JSON.stringify(entry)}) return;
+  checked = true;
+  const peer = spawnSync("sh", ["peer.sh", ${JSON.stringify(dir)}, ${JSON.stringify(VERSION)}], {
+    env: { ...process.env, PROBE_OWNER: "shared" }, timeout: 5000,
+  });
+  if (peer.error || peer.status !== 1) throw new Error("unexpected shared verification result: " + peer.status);
+}
+childProcess.spawnSync = (file, ...args) => { rejectPeer(file); return spawnSync(file, ...args); };
+childProcess.spawn = (file, ...args) => { rejectPeer(file); return spawn(file, ...args); };
+syncBuiltinESMExports();
+`,
+            );
+            preloads.push("--import", hook);
+          }
+          const refused = yield* invoke(...preloads);
+          const expected =
+            scenario === "a concurrent rejection" ? "shared probe\nnpm probe\n" : "npm probe\n";
+          assert.equal(yield* fs.readFileString(trace), expected);
+          assert.equal(refused.exitCode, 1, refused.stderr);
+          assert.include(refused.stderr, "checksum mismatch");
+        }),
+    );
+
     it.effect(
       "reuses a healthy npm publication that replaced a runtime during its failed probe",
       () =>
@@ -256,7 +347,7 @@ syncBuiltinESMExports();
               PATH: process.env.PATH,
               T3CODE_HOME: home,
               T3CODE_RELEASE_BASE_URL: release.baseUrl,
-              FIXTURE_PROBE_RECEIPT: probe,
+              FIXTURE_PROBE_LOG: probe,
               INSTALLED: installed,
               WINNER: winner,
               DISPLACED: displaced,
@@ -288,7 +379,7 @@ exit 78
           const warm = yield* invoke;
           assert.equal(warm.exitCode, 7, warm.stderr);
           assert.include(warm.stdout, "stub serve launcher=");
-          assert.isFalse(yield* fs.exists(probe));
+          assert.equal(yield* fs.readFileString(probe), "marked\n");
           assert.deepEqual(release.requests, coldRequests);
         }),
     );
@@ -375,12 +466,12 @@ printf 'ordinary launch\\n' >> "$TRACE"
                 PATH: process.env.PATH,
                 T3CODE_HOME: home,
                 T3CODE_RELEASE_BASE_URL: release.baseUrl,
-                FIXTURE_PROBE_RECEIPT: warmProbe,
+                FIXTURE_PROBE_LOG: warmProbe,
               },
             },
           );
           assert.equal(cached.exitCode, 7, cached.stderr);
-          assert.isFalse(yield* fs.exists(warmProbe));
+          assert.equal(yield* fs.readFileString(warmProbe), "marked\n");
           assert.equal(release.requests.length, requestsAfterRepair);
           assert.notInclude(yield* fs.readFileString(trace), "ordinary launch");
         }),
@@ -424,7 +515,7 @@ printf 'ordinary launch\\n' >> "$TRACE"
                   FIXTURE_PROBE_VERSION: probeVersion,
                   FIXTURE_PROBE_STATUS: probeStatus,
                   FIXTURE_INSTALLED_DIR: destination === "damaged" ? installed : undefined,
-                  FIXTURE_PROBE_RECEIPT: receipt,
+                  FIXTURE_PROBE_LOG: receipt,
                 },
               },
             );
@@ -509,6 +600,7 @@ printf 'ordinary launch\\n' >> "$TRACE"
           VERSION,
         );
         assert.isTrue(yield* fs.exists(path.join(versionDir, "node_modules/native")));
+        assert.isFalse(yield* fs.exists(path.join(versionDir, ".npm-verified")));
         assert.deepStrictEqual(
           (yield* fs.readDirectory(path.join(home, "runtime/versions"))).sort(),
           [VERSION],
@@ -518,16 +610,24 @@ printf 'ordinary launch\\n' >> "$TRACE"
         const warmProbe = path.join(root, "warm-probe");
         const second = yield* run(process.execPath, [launcher, "--version"], {
           cwd: root,
-          env: { ...env, FIXTURE_PROBE_RECEIPT: warmProbe },
+          env: { ...env, FIXTURE_PROBE_LOG: warmProbe },
         });
-        assert.isFalse(yield* fs.exists(warmProbe));
+        assert.equal(yield* fs.readFileString(warmProbe), "marked\n");
         assert.equal(second.exitCode, 7);
         assert.equal(release.requests.length, requestsAfterFirst);
 
         const ipcServer = path.join(home, "runtime/versions", VERSION, "t3");
         yield* fs.writeFileString(
           ipcServer,
-          `#!${process.execPath}\nprocess.on("SIGTERM", () => process.exit(23));\nprocess.on("message", (m) => process.send({ reply: m }));\nprocess.send({ args: process.argv.slice(2) });\n`,
+          `#!${process.execPath}
+if (process.env.T3CODE_VERIFY_INSTALL === "1" && process.argv[2] === "--version") {
+  console.log("t3 v${VERSION}");
+} else {
+  process.on("SIGTERM", () => process.exit(23));
+  process.on("message", (m) => process.send({ reply: m }));
+  process.send({ args: process.argv.slice(2) });
+}
+`,
         );
         const legacy = NodeChildProcess.fork(
           path.join(packageDir, "dist/bin.mjs"),
@@ -559,12 +659,13 @@ printf 'ordinary launch\\n' >> "$TRACE"
         ]);
 
         const requestsAfterRace = release.requests.length;
+        yield* fs.remove(warmProbe);
         const afterRace = yield* run(process.execPath, [launcher, "--version"], {
           cwd: root,
-          env: { ...env, T3CODE_HOME: raceHome, FIXTURE_PROBE_RECEIPT: warmProbe },
+          env: { ...env, T3CODE_HOME: raceHome, FIXTURE_PROBE_LOG: warmProbe },
         });
         assert.equal(afterRace.exitCode, 7, afterRace.stderr);
-        assert.isFalse(yield* fs.exists(warmProbe), "a verified npm winner stays warm");
+        assert.equal(yield* fs.readFileString(warmProbe), "marked\n");
         assert.equal(release.requests.length, requestsAfterRace);
 
         // A peer's executable and sidecar stay available after every later rename or removal,

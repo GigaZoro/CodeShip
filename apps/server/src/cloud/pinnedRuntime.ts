@@ -1,5 +1,5 @@
 import { readRegularFileUtf8 } from "@t3tools/shared/regularFile";
-import { openRuntimeVerificationReceipt } from "@t3tools/shared/runtimeVerificationReceipt";
+import { trackRuntimeDirectory } from "@t3tools/shared/runtimeDirectoryIdentity";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
@@ -16,7 +16,6 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import {
   CLI_RELEASE_CHECKSUMS_FILE,
-  NPM_RUNTIME_VERIFICATION_MARKER,
   cliArchiveFileName,
   cliArchivePlatformKey,
   cliArchiveTarCommand,
@@ -270,45 +269,31 @@ const validateInstalledRuntime = Effect.fn("cloud.pinned_runtime.validate_instal
   paths: PinnedRuntimePaths,
   reportCacheHit = false,
 ) {
-  const marker = input.path.join(paths.versionDir, NPM_RUNTIME_VERIFICATION_MARKER);
   const inspect = <A>(read: () => A) =>
     Effect.try({
       try: read,
       catch: (cause) =>
         new PinnedRuntimeInstallError({ step: "checking the pinned runtime", cause }),
     });
-  const check = Effect.scoped(
-    Effect.gen(function* () {
-      const receipt = yield* Effect.acquireRelease(
-        inspect(() => openRuntimeVerificationReceipt(marker, input.version)),
-        (opened) => Effect.sync(() => opened.close()),
-      );
-      if (!(yield* inspect(receipt.current))) return;
-      const [entryExists, sentinel] = yield* Effect.all([
-        input.fs.exists(paths.entryPath),
-        readRuntimeSentinel(paths.sentinelPath),
-      ]).pipe(
-        Effect.mapError(
-          (cause) => new PinnedRuntimeInstallError({ step: "checking the pinned runtime", cause }),
-        ),
-      );
-      const complete =
-        entryExists && Option.isSome(sentinel) && sentinel.value.trim() === input.version;
-      if (complete && reportCacheHit) input.onProgress?.({ stage: "cached" });
-      const result = complete
-        ? yield* Effect.result(input.validate(paths))
-        : Result.fail(
-            new PinnedRuntimeInstallError({ step: "checking the pinned runtime", exitCode: 78 }),
-          );
-      if (!(yield* inspect(receipt.current))) return;
-      if (Result.isFailure(result) && result.failure._tag === "PinnedRuntimeInstallError")
-        yield* inspect(receipt.revoke);
-      if (yield* inspect(receipt.current)) return result;
-    }),
-  );
   for (let attempt = 0; attempt < 3; attempt++) {
-    const result = yield* check;
-    if (result !== undefined) return yield* Effect.fromResult(result);
+    const current = yield* inspect(() => trackRuntimeDirectory(paths.versionDir));
+    const [entryExists, sentinel] = yield* Effect.all([
+      input.fs.exists(paths.entryPath),
+      readRuntimeSentinel(paths.sentinelPath),
+    ]).pipe(
+      Effect.mapError(
+        (cause) => new PinnedRuntimeInstallError({ step: "checking the pinned runtime", cause }),
+      ),
+    );
+    const complete =
+      entryExists && Option.isSome(sentinel) && sentinel.value.trim() === input.version;
+    if (complete && reportCacheHit) input.onProgress?.({ stage: "cached" });
+    const result = complete
+      ? yield* Effect.result(input.validate(paths))
+      : Result.fail(
+          new PinnedRuntimeInstallError({ step: "checking the pinned runtime", exitCode: 78 }),
+        );
+    if (yield* inspect(current)) return yield* Effect.fromResult(result);
   }
   return yield* new PinnedRuntimeInstallError({
     step: "selecting a runtime that changed repeatedly during verification",

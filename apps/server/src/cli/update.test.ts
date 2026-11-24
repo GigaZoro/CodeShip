@@ -3,7 +3,6 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import type { ManagedUpdatesPolicy } from "@t3tools/contracts";
-import { NPM_RUNTIME_VERIFICATION_MARKER } from "@t3tools/shared/cliRelease";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as Duration from "effect/Duration";
@@ -131,6 +130,7 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
     { code: 0, previous: false },
     { code: 78, previous: false },
     { code: 0, previous: true },
+    { code: 78, previous: true },
   ])(
     "checks an explicitly requested current CLI (probe exit $code, rollback copy $previous)",
     ({ code, previous }) =>
@@ -146,7 +146,6 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
         const entryName = platform === "win32" ? "t3.exe" : "t3";
         yield* fs.makeDirectory(initialDir, { recursive: true });
         yield* fs.writeFileString(path.join(initialDir, ".install-complete"), version);
-        yield* fs.writeFileString(path.join(initialDir, NPM_RUNTIME_VERIFICATION_MARKER), version);
         yield* fs.writeFileString(path.join(initialDir, entryName), "fixture");
         const hostRunner = yield* ProcessRunner.make();
         const probes: string[] = [];
@@ -199,10 +198,7 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
         );
         assert.deepStrictEqual(probes, [path.join(target, entryName)]);
         assert.isFalse(yield* fs.exists(previousDir));
-        assert.equal(
-          yield* fs.readFileString(path.join(target, NPM_RUNTIME_VERIFICATION_MARKER)),
-          code === 0 ? version : "",
-        );
+        assert.equal(yield* fs.readFileString(path.join(target, entryName)), "fixture");
         if (code === 78) {
           assert.lengthOf(downloads, 1);
           assert.match(downloads[0]!, /SHA256SUMS$/);

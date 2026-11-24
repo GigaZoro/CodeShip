@@ -229,12 +229,20 @@ globalThis.fetch = (url) => {
   assert.equal(yield* fs.readFileString(requests), `SHA256SUMS\n${archive}\n`);
   yield* fs.writeFileString(requests, "");
   yield* fs.writeFileString(probes, "");
-  return { root, home, platform, arch, archive, launch, requests, probes };
+  return { root, home, platform, arch, archive, packageDir, launch, requests, probes };
 });
+
+const rejectedNpmExecutable = `#!/bin/sh
+if [ "$T3CODE_VERIFY_INSTALL" = 1 ]; then
+  echo 'rejected probe' >> "$PROBE_LOG"
+  exit 78
+fi
+echo 'rejected ordinary launch' >> "$PROBE_LOG"
+`;
 
 it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
   it.effect.skipIf(isWindowsHost)(
-    "reuses the healthy npm publication when the displaced runtime fails service validation",
+    "rechecks a displaced npm runtime if it returns after the service accepts its healthy replacement",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -244,7 +252,12 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         const winner = path.join(npm.root, "winner");
         yield* fs.rename(paths.versionDir, winner);
         yield* fs.makeDirectory(paths.versionDir);
-        yield* fs.writeFileString(paths.entryPath, "old runtime");
+        const versions = path.dirname(paths.versionDir);
+        const displaced = path.join(versions, `.${version}.previous`);
+        yield* fs.writeFileString(paths.entryPath, rejectedNpmExecutable);
+        yield* fs.chmod(paths.entryPath, 0o755);
+        // An earlier candidate wrote this version marker for a previously verified installation.
+        yield* fs.writeFileString(path.join(paths.versionDir, ".npm-verified"), version);
         yield* fs.writeFileString(paths.sentinelPath, version);
         const checked: string[] = [];
         const requests: string[] = [];
@@ -260,11 +273,9 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
           validate: (candidate) =>
             Effect.gen(function* () {
               const content = yield* fs.readFileString(candidate.entryPath).pipe(Effect.orDie);
-              if (content === "old runtime") {
+              if (content === rejectedNpmExecutable) {
                 checked.push("displaced");
-                yield* fs
-                  .rename(paths.versionDir, path.join(npm.root, "displaced"))
-                  .pipe(Effect.orDie);
+                yield* fs.rename(paths.versionDir, displaced).pipe(Effect.orDie);
                 yield* fs.rename(winner, paths.versionDir).pipe(Effect.orDie);
                 return yield* new PinnedRuntimeInstallError({
                   step: "validating displaced runtime",
@@ -281,8 +292,25 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         const warm = yield* npm.launch;
         assert.equal(Number(warm.code), 0, warm.stderr);
         assert.equal(warm.stdout.trim(), "healthy launch");
-        assert.equal(yield* fs.readFileString(npm.probes), "");
+        const healthyProbes = yield* fs.readFileString(npm.probes);
         assert.equal(yield* fs.readFileString(npm.requests), "");
+
+        yield* fs.rename(paths.versionDir, winner);
+        const runner = yield* ProcessRunner.make();
+        const restore = yield* runner.run({
+          command: "sh",
+          args: [path.join(npm.packageDir, "bin", "promote-runtime.sh"), versions, version],
+        });
+        assert.equal(Number(restore.code), 0, restore.stderr);
+        assert.equal(yield* fs.readFileString(paths.entryPath), rejectedNpmExecutable);
+        assert.isFalse(yield* fs.exists(displaced));
+        yield* fs.remove(path.join(npm.root, "SHA256SUMS"));
+        yield* fs.writeFileString(npm.probes, "");
+        const rollback = yield* npm.launch;
+        assert.equal(Number(rollback.code), 1, rollback.stderr);
+        assert.equal(yield* fs.readFileString(npm.probes), "rejected probe\n");
+        assert.equal(yield* fs.readFileString(npm.requests), "SHA256SUMS\n");
+        assert.equal(healthyProbes, "probe\n");
       }),
   );
 
@@ -295,6 +323,9 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         const npm = yield* publishedNpmRuntime();
         const paths = pinnedRuntimePaths(path, npm.home, version, npm.platform);
         yield* fs.remove(paths.entryPath);
+        const legacyReceipt = path.join(paths.versionDir, ".npm-verified");
+        yield* fs.writeFileString(legacyReceipt, version);
+        yield* fs.chmod(legacyReceipt, 0o444);
         const requests: string[] = [];
         const offline = HttpClient.make((request) => {
           requests.push(request.url);
@@ -318,20 +349,53 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         }).pipe(Effect.flip);
         assert.equal(requests.length, 1);
         assert.isTrue(requests[0]?.endsWith("/SHA256SUMS"));
-        // Even if an incomplete executable reappears, it must earn verification before running.
-        yield* fs.writeFileString(paths.entryPath, "#!/bin/sh\nexit 78\n");
+        // Restoring write access to an old receipt must not make this incomplete executable runnable.
+        if (yield* fs.exists(legacyReceipt)) yield* fs.chmod(legacyReceipt, 0o644);
+        yield* fs.writeFileString(paths.entryPath, rejectedNpmExecutable);
         yield* fs.chmod(paths.entryPath, 0o755);
         const repaired = yield* npm.launch;
         assert.equal(Number(repaired.code), 0, repaired.stderr);
         assert.equal(repaired.stdout.trim(), "healthy launch");
         assert.equal(yield* fs.readFileString(npm.requests), `SHA256SUMS\n${npm.archive}\n`);
         const probesAfterRepair = yield* fs.readFileString(npm.probes);
-        assert.include(probesAfterRepair, "probe");
+        assert.include(probesAfterRepair, "rejected probe\n");
+        assert.notInclude(probesAfterRepair, "rejected ordinary launch");
         const warm = yield* npm.launch;
         assert.equal(Number(warm.code), 0, warm.stderr);
         assert.equal(warm.stdout.trim(), "healthy launch");
         assert.equal(yield* fs.readFileString(npm.requests), `SHA256SUMS\n${npm.archive}\n`);
-        assert.equal(yield* fs.readFileString(npm.probes), probesAfterRepair);
+        assert.equal(yield* fs.readFileString(npm.probes), probesAfterRepair + "probe\n");
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "revalidates the installation offline after service validation is cancelled",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const npm = yield* publishedNpmRuntime();
+        const started = yield* Deferred.make<void>();
+        const requests: string[] = [];
+        const service = yield* ensurePinnedRuntimeInstalled({
+          fs,
+          path,
+          baseDir: npm.home,
+          version,
+          platform: npm.platform,
+          arch: npm.arch,
+          httpClient: releaseHttpClient("", requests),
+          runner: extractingRunner(fs, path),
+          validate: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+        }).pipe(Effect.forkScoped);
+        yield* Deferred.await(started);
+        yield* Fiber.interrupt(service);
+        const warm = yield* npm.launch;
+        assert.equal(Number(warm.code), 0, warm.stderr);
+        assert.equal(warm.stdout.trim(), "healthy launch");
+        assert.equal(yield* fs.readFileString(npm.probes), "probe\n");
+        assert.equal(yield* fs.readFileString(npm.requests), "");
+        assert.deepEqual(requests, []);
       }),
   );
 

@@ -5,8 +5,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { matchesCliVersion, NPM_RUNTIME_VERIFICATION_MARKER } from "./cliVersionProbe.mjs";
-import { openRuntimeVerificationReceipt } from "./runtimeVerificationReceipt.mjs";
+import { matchesCliVersion } from "./cliVersionProbe.mjs";
+import { trackRuntimeDirectory } from "./runtimeDirectoryIdentity.mjs";
 
 const { version } = JSON.parse(
   fs.readFileSync(path.join(import.meta.dirname, "../package.json"), "utf8"),
@@ -95,21 +95,17 @@ async function install(dir, key, repairMarkedRuntime) {
     if (!verifiesVersion(staging))
       throw new Error(`the downloaded t3 ${version} runtime failed verification`);
     fs.writeFileSync(path.join(staging, ".install-complete"), `${version}\n`);
-    // Only this verified staging tree can carry npm's receipt into the cache.
-    fs.writeFileSync(path.join(staging, NPM_RUNTIME_VERIFICATION_MARKER), `${version}\n`, {
-      flag: "wx",
-    });
     publish(staging, dir, repairMarkedRuntime);
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }
 }
 
-const hasVersionMarker = (dir, name = ".install-complete") => {
+const hasVersionMarker = (dir) => {
   let marker;
   try {
     const { O_RDONLY, O_NONBLOCK } = fs.constants;
-    marker = fs.openSync(path.join(dir, name), O_RDONLY | (O_NONBLOCK ?? 0));
+    marker = fs.openSync(path.join(dir, ".install-complete"), O_RDONLY | (O_NONBLOCK ?? 0));
     return fs.fstatSync(marker).isFile() && fs.readFileSync(marker, "utf8").trim() === version;
   } catch {
     return false;
@@ -131,21 +127,11 @@ function promotePosixRuntime(dir, staging) {
   return result.stdout.trim() === "0";
 }
 
-function recheckRuntime(dir, useReceipt = false) {
-  const marker = path.join(dir, NPM_RUNTIME_VERIFICATION_MARKER);
+function recheckRuntime(dir) {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const receipt = openRuntimeVerificationReceipt(marker, version);
-    try {
-      if (!receipt.current()) continue;
-      const verified =
-        hasVersionMarker(dir) &&
-        ((useReceipt && receipt.trusted && canRunEntry(dir)) || verifiesVersion(dir));
-      if (!receipt.current()) continue;
-      if (!verified) receipt.revoke();
-      if (receipt.current()) return verified;
-    } finally {
-      receipt.close();
-    }
+    const current = trackRuntimeDirectory(dir);
+    const verified = hasVersionMarker(dir) && verifiesVersion(dir);
+    if (current()) return verified;
   }
   throw new Error(`the local t3 ${version} installation changed repeatedly during verification`);
 }
@@ -206,16 +192,6 @@ function publish(staging, dir, repairMarkedRuntime) {
 
 const entryName = process.platform === "win32" ? "t3.exe" : "t3";
 
-function canRunEntry(dir) {
-  try {
-    const entry = path.join(dir, entryName);
-    fs.accessSync(entry, fs.constants.X_OK);
-    return fs.statSync(entry).isFile();
-  } catch {
-    return false;
-  }
-}
-
 function verifiesVersion(dir) {
   const probe = spawnSync(path.join(dir, entryName), ["--version"], {
     env: { ...process.env, T3CODE_VERIFY_INSTALL: "1" },
@@ -257,7 +233,7 @@ async function main() {
   const marked = cached || hasVersionMarker(dir);
   if (!marked) {
     await install(dir, key, false);
-  } else if (!recheckRuntime(dir, cached)) {
+  } else if (!recheckRuntime(dir)) {
     await install(dir, key, true);
   }
 

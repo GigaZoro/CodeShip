@@ -310,12 +310,10 @@ t3_verify_version() {
 }
 
 t3_runtime_ready() (
-  # Keep verification and receipt removal in the selected tree if its directory is renamed.
+  # Resolve the marker and executable in the same tree even if its directory is renamed.
   CDPATH= cd -P -- "$1" 2>/dev/null || return 1
-  if [ -x ./t3 ] && [ -f .install-complete ] && [ "$(cat .install-complete 2>/dev/null)" = "$2" ] &&
-     t3_verify_version . "$2"; then return 0; fi
-  rm -f "./.npm-verified" || return 1
-  return 1
+  [ -x ./t3 ] && [ -f .install-complete ] && [ "$(cat .install-complete 2>/dev/null)" = "$2" ] &&
+    t3_verify_version . "$2"
 )
 
 t3_promote_runtime() {

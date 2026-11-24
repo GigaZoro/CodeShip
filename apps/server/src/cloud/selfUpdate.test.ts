@@ -1,7 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { type ManagedPolicyDocument, ServerSelfUpdateError } from "@t3tools/contracts";
-import { NPM_RUNTIME_VERIFICATION_MARKER } from "@t3tools/shared/cliRelease";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { linkDirectory } from "@t3tools/shared/testing/symlinks";
@@ -213,23 +212,22 @@ it.layer(NodeServices.layer)("server self update", (it) => {
     }),
   );
 
-  it.effect("keeps npm verification when service preflight blocks a compatible CLI", () =>
+  it.effect("keeps the local CLI in place when service preflight blocks an update", () =>
     Effect.gen(function* () {
       const { selfUpdate, order, baseDir } = yield* makeHarness({ preflight: "blocked" });
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const version = "1.1.0";
       const directory = path.join(baseDir, "runtime", "versions", version);
-      const receipt = path.join(directory, NPM_RUNTIME_VERIFICATION_MARKER);
+      const entry = path.join(directory, "t3");
       yield* fs.makeDirectory(directory, { recursive: true });
-      yield* fs.writeFileString(path.join(directory, "t3"), "");
+      yield* fs.writeFileString(entry, "cached CLI");
       yield* fs.writeFileString(path.join(directory, ".install-complete"), version);
-      yield* fs.writeFileString(receipt, version);
 
       const result = yield* selfUpdate.update({ targetVersion: version }).pipe(Effect.flip);
       expect(result.reason).toBe("local update required");
       expect(order).toEqual(["preflight"]);
-      expect(yield* fs.readFileString(receipt)).toBe(version);
+      expect(yield* fs.readFileString(entry)).toBe("cached CLI");
     }),
   );
 

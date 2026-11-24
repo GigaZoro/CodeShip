@@ -495,9 +495,9 @@
       "types": "./src/runtimePromotion.ts",
       "import": "./src/runtimePromotion.ts"
     },
-    "./runtimeVerificationReceipt": {
-      "types": "./src/runtimeVerificationReceipt.ts",
-      "import": "./src/runtimeVerificationReceipt.ts"
+    "./runtimeDirectoryIdentity": {
+      "types": "./src/runtimeDirectoryIdentity.ts",
+      "import": "./src/runtimeDirectoryIdentity.ts"
     },
     "./cliRelease": {
       "types": "./src/cliRelease.ts",

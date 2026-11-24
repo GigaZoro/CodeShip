@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 
 import { compareSemverVersions } from "./semver.ts";
 
-export { matchesCliVersion, NPM_RUNTIME_VERIFICATION_MARKER } from "./cliVersionProbe.ts";
+export { matchesCliVersion } from "./cliVersionProbe.ts";
 
 // Builds define it from the repository that runs the release, so a fork's server and desktop
 // look up and download the fork's own releases. Unbundled code and local builds get upstream.

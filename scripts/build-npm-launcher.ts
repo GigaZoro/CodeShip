@@ -87,7 +87,7 @@ export const buildNpmLauncher = Effect.fn("buildNpmLauncher")(function* (input: 
   );
   yield* fs.copyFile(path.join(sourceDir, "t3.mjs"), path.join(stageDir, "bin/t3.mjs"));
   // The published launcher supports Node 20, so remove the types at build time.
-  for (const name of ["cliVersionProbe", "runtimeVerificationReceipt"]) {
+  for (const name of ["cliVersionProbe", "runtimeDirectoryIdentity"]) {
     const source = yield* path.fromFileUrl(
       new URL(`../packages/shared/src/${name}.ts`, import.meta.url),
     );

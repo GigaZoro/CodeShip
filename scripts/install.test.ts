@@ -59,7 +59,6 @@ describe.runIf(isDarwinHost || isLinuxHost)("a competing npm publisher", () => {
           probe !== "exit 78",
           probe === "wrong version" ? "2.0.0" : version,
         );
-        await NodeFSP.writeFile(NodePath.join(peer, ".npm-verified"), version);
         await install(staged, "download", true);
         if (phase === "startup" || phase === "repair with a rollback") {
           await install(prior, "original", true);
@@ -136,7 +135,6 @@ fi`,
         expect(await NodeFSP.readFile(NodePath.join(root, "owner"), "utf8")).toBe("npm");
         expect((await NodeFSP.readdir(root)).toSorted()).toEqual([
           ".install-complete",
-          ...(probe === "ok" ? [".npm-verified"] : []),
           "owner",
           "t3",
         ]);
