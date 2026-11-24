@@ -24,8 +24,10 @@ import {
   exhaustedUsageWindow,
   isSubscriptionAccount,
   nextWeeklyResetMs,
+  spendsCredits,
   usageHoldMs,
   usageScopeCoversModel,
+  usageOrCreditsAllowed,
   usageWindowLimitEnd,
 } from "@t3tools/shared/usageLimits";
 import * as Context from "effect/Context";
@@ -314,11 +316,20 @@ interface AccountSearch extends AccountRoutingContext {
   readonly preferEarliestReset?: boolean;
 }
 
+/** Whether an account with room runs its model only by spending its credits. */
+function runsOnCredits(
+  input: Pick<AccountRoutingContext, "providers" | "nowMs">,
+  account: { readonly instanceId: ProviderInstanceId; readonly model: string },
+): boolean {
+  const provider = input.providers.find((candidate) => candidate.instanceId === account.instanceId);
+  return provider !== undefined && spendsCredits(provider, input.nowMs, account.model);
+}
+
 /**
  * Accounts of `driver` that can run `model` now, highest in the saved account order first, or with
- * `preferEarliestReset` the one whose weekly usage resets first, since room it leaves unused is lost
- * at its reset. An account that must sign in to an MCP server again comes after every account that
- * need not, since its agents would run without that server's tools.
+ * `preferEarliestReset` the one whose weekly usage resets first, since its unused room is lost then.
+ * Accounts that would spend credits follow those with included usage left, and an account that must
+ * sign in to an MCP server again comes last, since its agents would lack that server's tools.
  */
 export function accountsWithRoom(
   input: AccountSearch & McpSignIns,
@@ -333,6 +344,7 @@ export function accountsWithRoom(
           {
             instanceId: provider.instanceId,
             model,
+            credits: spendsCredits(provider, input.nowMs, model) ? 1 : 0,
             resetAt: input.preferEarliestReset
               ? (nextWeeklyResetMs(provider, input.nowMs, model) ?? Infinity)
               : Infinity,
@@ -343,7 +355,9 @@ export function accountsWithRoom(
     input.settings.providerInstanceFailoverOrder,
     eligible,
   )
-    .toSorted((a, b) => (a.resetAt === b.resetAt ? 0 : a.resetAt - b.resetAt))
+    .toSorted(
+      (a, b) => a.credits - b.credits || (a.resetAt === b.resetAt ? 0 : a.resetAt - b.resetAt),
+    )
     .map(({ instanceId, model }) => ({ instanceId, model }));
   const signedIn = (account: { readonly instanceId: ProviderInstanceId }) =>
     pendingSignIns(input, account.instanceId).length === 0;
@@ -452,10 +466,15 @@ export function routeAutoAccount(
       const model = modelWithRoom(current, search);
       if (model !== null) {
         const keep = { instanceId: current.instanceId, model };
-        if (pendingSignIns(input, current.instanceId).length === 0) return keep;
-        // Accounts that need no sign-in come first, so the top one is the move or there is none.
+        const signedIn = (account: { readonly instanceId: ProviderInstanceId }) =>
+          pendingSignIns(input, account.instanceId).length === 0;
+        const free = (account: typeof keep) => !runsOnCredits(input, account);
+        if (signedIn(keep) && free(keep)) return keep;
+        // Accounts that need no sign-in come first, then those that spend no credits, so the top
+        // one is the move or there is none.
         const top = accountsWithRoom(search)[0];
-        return top !== undefined && pendingSignIns(input, top.instanceId).length === 0 ? top : keep;
+        if (top === undefined || !signedIn(top)) return keep;
+        return signedIn(keep) && !free(top) ? keep : top;
       }
     }
     const withRoom = accountsWithRoom(search)[0];
@@ -784,7 +803,7 @@ type ReadingFrees = (provider: ServerProvider, nowMs: number) => boolean;
 /** The ten-minute Codex path frees only on Codex's explicit yes; silence leaves the hourly path. */
 const providerAllows: ReadingFrees = (provider) => provider.usageLimits?.usageAllowed === true;
 const usageHasRoom: ReadingFrees = (provider, nowMs) =>
-  provider.usageLimits?.usageAllowed !== false &&
+  usageOrCreditsAllowed(provider.usageLimits) &&
   exhaustedUsageWindow(provider, nowMs) === undefined;
 
 export class AccountRouting extends Context.Service<

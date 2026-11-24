@@ -7871,6 +7871,10 @@ const catalog: MessageCatalog = {
   "No {provider} servers match.": "Немає відповідних серверів {provider}.",
   "No access": "Без доступу",
   "No accessibility data": "Немає даних доступності",
+  "No account has included usage left until {time}, so limited threads continue on {account} and spend its credits.":
+    "До {time} жоден обліковий запис не має залишку включеного використання, тому чати на ліміті продовжуються на {account} і витрачають його кредити.",
+  "No account has included usage left, so limited threads continue on {account} and spend its credits.":
+    "Жоден обліковий запис не має залишку включеного використання, тому чати на ліміті продовжуються на {account} і витрачають його кредити.",
   "No accounts reported.": "Облікових записів не повідомлено.",
   "No actions configured.": "Дії не налаштовано.",
   "No active project is available for this pull request.":

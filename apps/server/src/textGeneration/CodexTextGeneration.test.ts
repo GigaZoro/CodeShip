@@ -459,7 +459,34 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
   );
 });
 
-it.effect.each([false, true])("text generation preflight: exhausted=%s", (exhausted) =>
+const spentSession = {
+  checkedAt: "1970-01-01T00:00:00Z",
+  windows: [{ id: "session", kind: "session" as const, label: "Session", usedPercent: 100 }],
+};
+const onCredits = { ...spentSession, credits: { balance: "25.00", unlimited: false } };
+
+it.effect.each([
+  { name: "room", primaryLimits: undefined, fallbackLimits: undefined, onFallback: false },
+  { name: "exhausted", primaryLimits: spentSession, fallbackLimits: undefined, onFallback: true },
+  {
+    name: "credits, while another account has included usage",
+    primaryLimits: onCredits,
+    fallbackLimits: undefined,
+    onFallback: true,
+  },
+  {
+    name: "credits, while no account has included usage",
+    primaryLimits: onCredits,
+    fallbackLimits: spentSession,
+    onFallback: false,
+  },
+  {
+    name: "exhausted, while another account has credits",
+    primaryLimits: spentSession,
+    fallbackLimits: onCredits,
+    onFallback: true,
+  },
+])("text generation preflight: $name", ({ primaryLimits, fallbackLimits, onFallback }) =>
   Effect.gen(function* () {
     const primary = ProviderInstanceId.make("codex");
     const fallback = ProviderInstanceId.make("claude_work");
@@ -471,6 +498,7 @@ it.effect.each([false, true])("text generation preflight: exhausted=%s", (exhaus
     const calls: ModelSelection[] = [];
     const instances: ProviderInstance[] = [primary, fallback].map((instanceId) => {
       const driver = ProviderDriverKind.make(instanceId === primary ? "codex" : "claudeAgent");
+      const usageLimits = instanceId === primary ? primaryLimits : fallbackLimits;
       const snapshot: ServerProvider = {
         instanceId,
         driver,
@@ -483,14 +511,7 @@ it.effect.each([false, true])("text generation preflight: exhausted=%s", (exhaus
         models: [],
         slashCommands: [],
         skills: [],
-        ...(exhausted && instanceId === primary
-          ? {
-              usageLimits: {
-                checkedAt: "1970-01-01T00:00:00Z",
-                windows: [{ id: "session", kind: "session", label: "Session", usedPercent: 100 }],
-              },
-            }
-          : {}),
+        ...(usageLimits ? { usageLimits } : {}),
       };
       return {
         instanceId,
@@ -542,7 +563,7 @@ it.effect.each([false, true])("text generation preflight: exhausted=%s", (exhaus
       }),
     ).toEqual({ title: "Generated title" });
     expect(calls).toEqual([
-      exhausted
+      onFallback
         ? {
             instanceId: fallback,
             model:

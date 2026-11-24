@@ -618,7 +618,10 @@ another model, or a newer usage check, does not. Agent launches (`t3_thread_laun
 in the app is not refused. Used-up usage windows still block until the last of them
 resets. A used-up window that reports no reset blocks for at most the same hold, counted
 from when CodeShip first saw it used up. A Codex account that Codex says may not be used now
-is skipped, even while its meters show room, until its fullest usage window resets. If none is free, the thread waits as above, and moves to the first
+is skipped, even while its meters show room, until its fullest usage window resets. An account
+with Codex credits or Claude extra usage left keeps running past its plan's used-up windows,
+because the provider spends them by itself; accounts with included usage left are used first,
+and a used-up limit on the credits themselves, or on one model, still blocks. If none is free, the thread waits as above, and moves to the first
 account that gets usage back unless you stop it, snooze it or cancel its auto-resume; a thread
 hidden by **Hide limited threads until the limit resets** moves too, with or without
 **Resume when the limit resets**, and shows again. It moves when that account's last

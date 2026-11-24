@@ -11,6 +11,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   type LimitAccount,
   accountFailoverStatus,
+  describeAccountFailover,
   collectProviderUsageLimits,
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
@@ -27,6 +28,7 @@ import {
   tightestLimitWindow,
   usesChatGptSharing,
   resolveNewThreadModelSelection,
+  spendsCredits,
 } from "./usageLimits.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
@@ -295,6 +297,72 @@ describe("new thread model fallback", () => {
         now,
       ),
     ).toEqual(held);
+  });
+  const spent = { ...weekly, id: "secondary", usedPercent: 100 } as const;
+  const credits = { balance: "10952.18", unlimited: false } as const;
+  it.each([
+    { name: "a credit balance", driver: "codex", credits, windows: [spent], held: undefined },
+    {
+      name: "unlimited credits",
+      driver: "codex",
+      credits: { unlimited: true },
+      windows: [spent],
+      held: undefined,
+    },
+    { name: "no credits", driver: "codex", credits: undefined, windows: [spent], held: spent },
+    {
+      name: "a zero balance",
+      driver: "codex",
+      credits: { balance: "0.0000", unlimited: false },
+      windows: [spent],
+      held: spent,
+    },
+    {
+      name: "a used-up Codex credit limit",
+      driver: "codex",
+      credits,
+      windows: [spent, { ...spent, id: "individual", kind: "monthly" }],
+      held: { ...spent, id: "individual", kind: "monthly" },
+    },
+    {
+      name: "Claude extra usage",
+      driver: "claudeAgent",
+      credits: { balance: "12.00", currency: "USD", unlimited: false },
+      windows: [{ ...spent, id: "seven_day" }],
+      held: undefined,
+    },
+    {
+      name: "a used-up Claude monthly spend",
+      driver: "claudeAgent",
+      credits: { balance: "12.00", currency: "USD", unlimited: false },
+      windows: [
+        { ...spent, id: "seven_day" },
+        { ...spent, id: "monthly_spend" },
+      ],
+      held: { ...spent, id: "monthly_spend" },
+    },
+    {
+      name: "a used-up model cap",
+      driver: "claudeAgent",
+      credits: { balance: "12.00", currency: "USD", unlimited: false },
+      windows: [{ ...spent, id: "seven_day_opus" }],
+      held: { ...spent, id: "seven_day_opus" },
+    },
+  ] as const)("runs past the plan's no on $name", ({ driver, credits, windows, held }) => {
+    const account = provider({
+      driver: ProviderDriverKind.make(driver),
+      usageLimits: {
+        checkedAt: limited.checkedAt,
+        windows,
+        usageAllowed: false,
+        ...(credits ? { credits } : {}),
+      },
+    });
+    expect(exhaustedUsageWindow(account, now, "claude-opus-5-5")).toEqual(held);
+    expect(
+      exhaustedUsageWindow(account, now, "claude-opus-5-5", { spendCredits: false }),
+    ).toBeDefined();
+    expect(spendsCredits(account, now, "claude-opus-5-5")).toBe(held === undefined);
   });
   it.each([undefined, "invalid"])("treats an unknown reset as exhausted: %s", (resetsAt) => {
     expect(
@@ -2006,6 +2074,54 @@ describe("accountFailoverStatus", () => {
       { kind: "exhausted", until: "2026-09-03T14:00:00.000Z" },
     ],
     [
+      "an account with credits gives way to one with included usage",
+      [
+        account("a", {
+          usageLimits: {
+            ...limitedUntil("2026-09-03T14:00:00.000Z"),
+            credits: { balance: "25.00", unlimited: false },
+          },
+        }),
+        account("b"),
+      ],
+      {},
+      { kind: "switched", active: "b", limited: ["a"], until: "2026-09-03T14:00:00.000Z" },
+    ],
+    [
+      "with no included usage left, threads spend the first account's credits",
+      [
+        account("a", { usageLimits: limitedUntil("2026-09-03T16:00:00.000Z") }),
+        account("b", {
+          usageLimits: {
+            ...limitedUntil("2026-09-03T14:00:00.000Z"),
+            credits: { unlimited: true },
+          },
+        }),
+        account("c", {
+          usageLimits: {
+            ...limitedUntil("2026-09-03T15:00:00.000Z"),
+            credits: { balance: "25.00", unlimited: false },
+          },
+        }),
+      ],
+      {},
+      { kind: "credits", active: "b", until: "2026-09-03T14:00:00.000Z" },
+    ],
+    [
+      "a used-up credit cap leaves the account limited",
+      [
+        account("a", {
+          usageLimits: {
+            ...limitedUntil("2026-09-03T14:00:00.000Z", "individual"),
+            credits: { balance: "25.00", unlimited: false },
+          },
+        }),
+        account("b", { usageLimits: limitedUntil("2026-09-03T16:00:00.000Z") }),
+      ],
+      {},
+      { kind: "exhausted", until: "2026-09-03T14:00:00.000Z" },
+    ],
+    [
       "an unknown reset limits until the hold ends",
       [account("a", { usageLimits: limitedUntil(undefined) }), account("b")],
       {},
@@ -2045,5 +2161,22 @@ describe("accountFailoverStatus", () => {
         }),
       ),
     ).toEqual({ kind: "ready", active: "a" });
+  });
+
+  it("says that limited threads spend credits, and until when", () => {
+    const format = { accountName: (entry: ServerProvider) => entry.instanceId, time: () => "2pm" };
+    expect(
+      describeAccountFailover({ kind: "credits", active: account("b"), until: null }, format),
+    ).toBe(
+      "No account has included usage left, so limited threads continue on b and spend its credits.",
+    );
+    expect(
+      describeAccountFailover(
+        { kind: "credits", active: account("b"), until: "2026-09-03T14:00:00.000Z" },
+        format,
+      ),
+    ).toBe(
+      "No account has included usage left until 2pm, so limited threads continue on b and spend its credits.",
+    );
   });
 });

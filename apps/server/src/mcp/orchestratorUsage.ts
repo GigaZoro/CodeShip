@@ -9,6 +9,8 @@ import type {
   ServerProviderResetKindUnknownReason,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
+import { usageOrCreditsAllowed } from "@t3tools/shared/usageLimits";
+
 /** How old a usage reading may be before `orchestrator_capabilities` with `usage` reads it again. */
 const USAGE_READING_MAX_AGE_MS = 10 * 60_000;
 
@@ -145,7 +147,7 @@ export function providerUsageFields(
               weeklySessionAvailableAt: limits.resetPrograms.weeklySessionAvailableAt ?? null,
             },
           }),
-      usageAllowed: !limited && limits.usageAllowed !== false,
+      usageAllowed: !limited && usageOrCreditsAllowed(limits),
       lastRedemption:
         (limits.accountKey === undefined ? undefined : redemptions.get(limits.accountKey)) ?? null,
     },

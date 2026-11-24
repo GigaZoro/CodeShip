@@ -308,6 +308,42 @@ describe("routeAutoAccount", () => {
   });
 
   it.each([
+    ["a new thread starts on included usage", null, false, second],
+    ["a thread leaves credits for included usage", primary, false, second],
+    ["a new thread spends credits when no account has included usage", null, true, primary],
+    ["a thread keeps spending credits when no account has included usage", primary, true, primary],
+  ] as const)("%s", (_, currentInstanceId, secondSpent, expected) => {
+    const weekly = (resetsAt: string) => ({
+      checkedAt: "2026-11-03T11:59:00.000Z",
+      windows: [
+        { id: "seven_day", kind: "weekly", label: "Weekly", usedPercent: 100, resetsAt },
+      ] as const,
+    });
+    assert.equal(
+      routeAutoAccount({
+        selection: { ...auto, instanceId: primary },
+        projectId,
+        currentInstanceId,
+        providers: [
+          provider(primary, {
+            usageLimits: {
+              ...weekly("2026-11-08T12:00:00.000Z"),
+              credits: { balance: "25.00", currency: "USD", unlimited: false },
+            },
+          }),
+          provider(second, secondSpent ? { usageLimits: weekly("2026-11-05T12:00:00.000Z") } : {}),
+        ],
+        settings: settings([primary, second]),
+        mcpSignInsNeeded: signIns(),
+        recordedLimits: new Map(),
+        nowMs,
+        started: currentInstanceId !== null,
+      }).instanceId,
+      expected,
+    );
+  });
+
+  it.each([
     ["a scheduled run takes the account whose weekly usage resets first", true, third],
     ["any other run follows the saved order", false, primary],
   ] as const)("%s", (_, scheduled, expected) => {
@@ -1578,14 +1614,30 @@ it.effect.each([
 );
 
 describe("accountsWithRoom", () => {
+  const onCredits = provider(primary, {
+    usageLimits: {
+      checkedAt: "2026-11-03T11:59:00.000Z",
+      windows: [
+        {
+          id: "seven_day",
+          kind: "weekly",
+          label: "Weekly",
+          usedPercent: 100,
+          resetsAt: "2026-11-08T12:00:00.000Z",
+        },
+      ],
+      credits: { unlimited: true },
+    },
+  });
   const room = (
     needingSignIn: ReadonlyArray<ProviderInstanceId>,
+    first = provider(primary),
   ): ReadonlyArray<ProviderInstanceId> =>
     accountsWithRoom({
       driver: claude,
       projectId,
       model: "claude-opus-5-5",
-      providers: [provider(third), provider(second), provider(primary)],
+      providers: [provider(third), provider(second), first],
       settings: settings([primary, second, third]),
       recordedLimits: new Map(),
       mcpSignInsNeeded: signIns(needingSignIn),
@@ -1593,14 +1645,32 @@ describe("accountsWithRoom", () => {
     }).map((account) => account.instanceId);
 
   it.each([
-    ["keeps the saved order when every sign-in is in place", [], [primary, second, third]],
+    [
+      "keeps the saved order when every sign-in is in place",
+      [],
+      undefined,
+      [primary, second, third],
+    ],
     [
       "puts accounts that must sign in again last, in their order",
       [primary, third],
+      undefined,
       [second, primary, third],
     ],
-  ] as const)("%s", (_, needingSignIn, expected) => {
-    assert.deepEqual(room(needingSignIn), expected);
+    [
+      "puts an account that would spend credits after included usage",
+      [],
+      onCredits,
+      [second, third, primary],
+    ],
+    [
+      "puts credits before an account that must sign in again",
+      [second],
+      onCredits,
+      [third, primary, second],
+    ],
+  ] as const)("%s", (_, needingSignIn, first, expected) => {
+    assert.deepEqual(room(needingSignIn, first), expected);
   });
 });
 

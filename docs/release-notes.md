@@ -1,3 +1,9 @@
+## 2026-11-24 — Accounts with credits keep running past their plan's limit
+
+- A Codex account with credits left, or a Claude account with extra usage left, is no longer held as usage-limited when its plan's included usage runs out. Agent launches, Auto and account switching use it again, as Codex and Claude spend that balance by themselves, instead of waiting days for the weekly reset.
+- Accounts with included usage left still go first, and a thread running on credits moves to one when it can. Thread titles, commit messages and other generated text use another provider's included usage before they spend credits. The Limits panel says when limited threads are spending an account's credits. A used-up limit on the credits themselves (Codex's monthly credit limit, Claude's monthly spend) or on one model still holds the account.
+- `orchestrator_capabilities` reports `usageAllowed: true` for such an account.
+
 ## 2026-11-24 — Export a thread as Markdown
 
 - Choose **Export as Markdown** in a thread's menu or the command palette to save it as a `.md` file; on mobile, the same action on a thread row shares the file. Each message renders in the file as it does in the chat, formulas and chat-only formatting included: it is kept as written where it reads the same there, rewritten where it would not, and shown as a Markdown code block in the rare case neither works. References and footnotes stay within their message, and raw HTML shows as text, an HTML block as a code block. Failed commands and tools are marked, the window stays responsive while a long thread exports, and on mobile a new export cancels the one in progress.

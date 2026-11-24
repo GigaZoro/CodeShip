@@ -123,7 +123,40 @@ export function nextWeeklyResetMs(
   return resets.length === 0 ? null : Math.min(...resets);
 }
 
-function usedUpWindows(provider: ServerProvider | undefined, now: number) {
+/**
+ * Whether the account still has paid usage beyond its plan to spend: Codex credits, or Claude's
+ * extra usage. Both providers spend it by themselves once the plan's included usage is used up.
+ */
+function hasSpendableCredits(limits: ServerProviderUsageLimits | undefined): boolean {
+  const credits = limits?.credits;
+  if (credits === undefined) return false;
+  if (credits.unlimited) return true;
+  const balance = Number(credits.balance);
+  return credits.balance !== undefined && Number.isFinite(balance) && balance > 0;
+}
+
+/** Whether the provider's answer lets the account run: its plan may (Codex), or credits can pay. */
+export function usageOrCreditsAllowed(limits: ServerProviderUsageLimits | undefined): boolean {
+  return limits?.usageAllowed !== false || hasSpendableCredits(limits);
+}
+
+/** The windows that cap paid credits themselves, which credits cannot run past. */
+function capsCredits(driver: ServerProvider["driver"], windowId: string): boolean {
+  switch (driver) {
+    case "codex":
+      return windowId === "individual";
+    case "claudeAgent":
+      return windowId === "monthly_spend";
+    default:
+      return false;
+  }
+}
+
+function usedUpWindows(
+  provider: ServerProvider | undefined,
+  now: number,
+  options: { readonly spendCredits: boolean } = { spendCredits: true },
+) {
   const limits = provider?.usageLimits;
   if (provider === undefined || limits === undefined) return null;
   const end = (window: ServerProviderUsageWindow) => usageWindowLimitEnd(limits, window);
@@ -133,6 +166,16 @@ function usedUpWindows(provider: ServerProvider | undefined, now: number) {
   const usedUp = live.filter((window) => window.usedPercent >= 100);
   const accountWide = (window: ServerProviderUsageWindow) =>
     windowLimitsModel(provider.driver, window.id, null);
+  if (options.spendCredits && hasSpendableCredits(limits)) {
+    // Credits run past the plan's account-wide windows and its no, but not past a model's own
+    // cap or their own.
+    return {
+      end,
+      windows: usedUp.filter(
+        (window) => !accountWide(window) || capsCredits(provider.driver, window.id),
+      ),
+    };
+  }
   if (limits.usageAllowed !== false || usedUp.some(accountWide)) return { end, windows: usedUp };
   // Its no outranks them too: the fullest account-wide windows hold the account until they reset.
   const held = live.filter(accountWide);
@@ -152,14 +195,16 @@ function latestEnding(
 
 /**
  * The used-up window that holds `model` longest, so its end is when the model has room again.
- * Omit the model to inspect any pool; null asks only for an account-wide limit.
+ * Omit the model to inspect any pool; null asks only for an account-wide limit. Credits the
+ * account can spend free it from its plan's account-wide windows unless `spendCredits` is false.
  */
 export function exhaustedUsageWindow(
   provider: ServerProvider | undefined,
   now: number,
   model?: string | null,
+  options?: { readonly spendCredits: boolean },
 ) {
-  const used = usedUpWindows(provider, now);
+  const used = usedUpWindows(provider, now, options);
   if (provider === undefined || used === null) return undefined;
   const { windows, end } = used;
   if (model === undefined) return latestEnding(windows, end);
@@ -194,6 +239,14 @@ export function exhaustedModelUsageWindow(
         !windowLimitsModel(provider.driver, window.id, null),
     ),
     used.end,
+  );
+}
+
+/** Whether `model` runs on this account only by spending its credits, its plan's usage used up. */
+export function spendsCredits(provider: ServerProvider, now: number, model: string): boolean {
+  return (
+    exhaustedUsageWindow(provider, now, model) === undefined &&
+    exhaustedUsageWindow(provider, now, model, { spendCredits: false }) !== undefined
   );
 }
 
@@ -1267,23 +1320,28 @@ export type AccountFailoverStatus =
       /** The first of them back, null when no reset is known. */
       readonly until: string | null;
     }
+  /** No account has included usage left, so limited threads run on `active` by spending its credits. */
+  | {
+      readonly kind: "credits";
+      readonly active: ServerProvider;
+      /** When the first account's included usage is back, null when no reset is known. */
+      readonly until: string | null;
+    }
   | { readonly kind: "exhausted"; readonly until: string | null };
 
-/** When a limited account has room again: its last exhausted window's end, as routing counts it. */
-function limitedUntil(provider: ServerProvider, now: number): string | undefined {
-  const limits = provider.usageLimits;
-  let latest: number | undefined;
-  for (const window of limits?.windows ?? []) {
-    // A model-scoped window, such as Claude's weekly cap on one model, leaves the account usable.
-    if (
-      window.usedPercent < 100 ||
-      (provider.driver === "claudeAgent" && claudeUsageWindowScope(window.id) !== undefined)
-    )
-      continue;
-    const end = usageWindowLimitEnd(limits!, window);
-    if (end > now) latest = Math.max(latest ?? end, end);
-  }
-  return latest === undefined ? undefined : DateTime.formatIso(DateTime.makeUnsafe(latest));
+/**
+ * When a limited account has room again, as routing counts it. A model-scoped window, such as
+ * Claude's weekly cap on one model, leaves the account usable.
+ */
+function limitedUntil(
+  provider: ServerProvider,
+  now: number,
+  options?: { readonly spendCredits: boolean },
+): string | undefined {
+  const window = exhaustedUsageWindow(provider, now, null, options);
+  return window === undefined
+    ? undefined
+    : DateTime.formatIso(DateTime.makeUnsafe(usageWindowLimitEnd(provider.usageLimits!, window)));
 }
 
 function earliest(times: ReadonlyArray<string | null>): string | null {
@@ -1318,7 +1376,9 @@ export function accountFailoverStatus(input: {
   if (accounts.length < 2) return null;
   if (!input.settings.failoverLimitedThreads) return { kind: "off" };
   const limited: ServerProvider[] = [];
-  const returns: Array<string | null> = [];
+  const returns: string[] = [];
+  // Routing spends credits only when no account has included usage left.
+  let onCredits: ServerProvider | undefined;
   for (const account of accounts) {
     if (
       !account.installed ||
@@ -1327,15 +1387,20 @@ export function accountFailoverStatus(input: {
       !isProviderAvailable(account)
     )
       continue;
-    const until = limitedUntil(account, input.now);
+    const until = limitedUntil(account, input.now, { spendCredits: false });
     if (until === undefined) {
       return limited.length === 0
         ? { kind: "ready", active: account }
         : { kind: "switched", active: account, limited, until: earliest(returns) };
     }
+    if (onCredits === undefined && limitedUntil(account, input.now) === undefined) {
+      onCredits = account;
+    }
     limited.push(account);
     returns.push(until);
   }
+  if (onCredits !== undefined)
+    return { kind: "credits", active: onCredits, until: earliest(returns) };
   return limited.length === 0 ? null : { kind: "exhausted", until: earliest(returns) };
 }
 
@@ -1421,6 +1486,16 @@ export function describeAccountFailover(
             { ...values, time: format.time(status.until) },
           );
     }
+    case "credits":
+      return status.until === null
+        ? t(
+            "No account has included usage left, so limited threads continue on {account} and spend its credits.",
+            { account: format.accountName(status.active) },
+          )
+        : t(
+            "No account has included usage left until {time}, so limited threads continue on {account} and spend its credits.",
+            { account: format.accountName(status.active), time: format.time(status.until) },
+          );
     case "exhausted":
       return status.until === null
         ? t("Every account is at its limit, so limited threads wait for a reset.")

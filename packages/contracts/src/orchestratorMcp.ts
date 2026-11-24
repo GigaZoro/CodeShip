@@ -749,7 +749,10 @@ export const OrchestratorMcpProviderUsage = Schema.Struct({
       weeklySessionAvailableAt: Schema.NullOr(Schema.String),
     }),
   ),
-  /** False while the account is usageLimited or its provider says it may not run (Codex). */
+  /**
+   * False while the account is usageLimited, or its provider says its plan may not run (Codex)
+   * and it has no credits to spend.
+   */
   usageAllowed: Schema.Boolean,
   /** The last banked reset this server claimed for the account; null when it has claimed none. */
   lastRedemption: Schema.NullOr(OrchestratorMcpLastRedemption),

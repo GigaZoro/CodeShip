@@ -64,7 +64,9 @@ Then choose what the agent may do:
   It expires even when usage reporting is unavailable. A newer usage check does not
   clear it early; a run on that account started after the refusal that got an answer does.
   A used-up usage window with no reset holds the same way, for at most that hold from
-  when CodeShip first saw it used up.
+  when CodeShip first saw it used up. An account with Codex credits or Claude extra usage
+  left is not limited by its plan's used-up windows; Auto and account switching use it
+  only when no account has included usage left.
   Named targets, including targets supplied in Auto's brief, obey the same hold as
   Auto and inherited targets.
   Provider-only targets keep the parent's account and effort while it can run the

@@ -89,12 +89,9 @@ export const make = Effect.gen(function* () {
       ),
     );
     const now = DateTime.toEpochMillis(yield* DateTime.now);
-    const limited = exhaustedUsageWindow(
-      snapshots.find((provider) => provider.instanceId === selection.instanceId),
-      now,
-      selection.model,
-    );
-    if (limited) {
+    const selected = snapshots.find((provider) => provider.instanceId === selection.instanceId);
+    // Included usage goes first; credits are spent only when no account has any left.
+    if (exhaustedUsageWindow(selected, now, selection.model, { spendCredits: false })) {
       const settings = yield* serverSettings.getSettings.pipe(
         Effect.mapError(
           (cause) =>
@@ -105,7 +102,7 @@ export const make = Effect.gen(function* () {
             }),
         ),
       );
-      selection =
+      const fallback = (spendCredits: boolean) =>
         fallbackTextGenerationModelSelection(
           settings.providerInstances,
           (instanceId, driver) => {
@@ -119,11 +116,17 @@ export const make = Effect.gen(function* () {
               isProviderAvailable(provider) &&
               isProviderTextGenerationCapable(provider) &&
               (operation !== "generateReviewGuide" || INVESTIGATING_DRIVERS.has(driver)) &&
-              !exhaustedUsageWindow(provider, now, defaultTextGenerationModel(driver))
+              !exhaustedUsageWindow(provider, now, defaultTextGenerationModel(driver), {
+                spendCredits,
+              })
             );
           },
           { includeConfiguredInstances: true },
-        ) ?? selection;
+        );
+      selection =
+        fallback(false) ??
+        (exhaustedUsageWindow(selected, now, selection.model) ? fallback(true) : null) ??
+        selection;
     }
     return yield* resolveInstance(registry, operation, selection.instanceId).pipe(
       Effect.flatMap((service) => invoke(service, selection)),
