@@ -1,3 +1,8 @@
+## 2026-11-24 — Weekly library upgrades are ready
+
+- A weekly task is ready to move every library, Node, pnpm, Electron, the Rust crates' dependencies and the GitHub Actions to their newest stable releases, the day after the sync from T3 Code. It takes only releases at least 3 days old (a younger one only when it fixes a known vulnerability), reads every changed install script before it runs, ports local patches, and lands only after the full checks and two reviewers pass. The mobile app's native packages keep following T3 Code, and a version it cannot take yet is recorded as a hold and retried every week. No change to the app.
+- A landing that was checked elsewhere (the weekly sync from T3 Code, the library upgrade) now pushes the exact commit its checks passed on, so a commit made in its folder while it waits for its turn can no longer land unchecked.
+
 ## 2026-11-24 — Export a thread as Markdown
 
 - Choose **Export as Markdown** in a thread's menu or the command palette to save it as a `.md` file; on mobile, the same action on a thread row shares the file. Each message renders in the file as it does in the chat, formulas and chat-only formatting included: it is kept as written where it reads the same there, rewritten where it would not, and shown as a Markdown code block in the rare case neither works. References and footnotes stay within their message, and raw HTML shows as text, an HTML block as a code block. Failed commands and tools are marked, the window stays responsive while a long thread exports, and on mobile a new export cancels the one in progress.
@@ -132,11 +137,6 @@
 ## 2026-11-23 — Accounting for messages, failover and review
 
 - New owner requests and accepted guest messages receive a demand ID. Steering, failover, and final review retain the original demand. Delegated questions and completions use their recorded sources. On-return compaction shares the demand ID of the following message.
-
-## 2026-11-22 — Weekly library upgrades are ready
-
-- A weekly task is ready to move every library, Node, pnpm, Electron, the Rust crates' dependencies and the GitHub Actions to their newest stable releases, the day after the sync from T3 Code. It takes only releases at least 3 days old (a younger one only when it fixes a known vulnerability), reads every changed install script before it runs, ports local patches, and lands only after the full checks and two reviewers pass. The mobile app's native packages keep following T3 Code, and a version it cannot take yet is recorded as a hold and retried every week. No change to the app.
-- A landing that was checked elsewhere (the weekly sync from T3 Code, the library upgrade) now pushes the exact commit its checks passed on, so a commit made in its folder while it waits for its turn can no longer land unchecked.
 
 ## 2026-11-22 — Relay client installs keep each other's locks
 
