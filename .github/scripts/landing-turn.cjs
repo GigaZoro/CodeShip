@@ -20,7 +20,7 @@ const LEASE_RESERVE_MS = 20 * 60 * 1000;
 const POLL_MS = 5000;
 const MAX_WAIT_MS = 6 * 60 * 60 * 1000;
 // A wait polls origin thousands of times, and one poll can meet a passing DNS or credential failure. Failures that go
-// on this long end the wait, so a remote that cannot be reached is not tried for hours.
+// on this long while the machine is awake end the wait, so a remote that cannot be reached is not tried for hours.
 const FAILING_MS = 10 * 60 * 1000;
 // One lease or queue call; a remote that stops answering must not hold a wait past its limits.
 const LEASE_CALL_MS = 60 * 1000;
@@ -268,35 +268,44 @@ function landingCommit(cwd, data, parent) {
   }).stdout;
 }
 
-/** Gives the lease back. A passing failure of origin is tried again as `acquire` does: a turn left held stalls every lander. */
+/**
+ * Gives the lease back. A passing failure of origin is tried again as `acquire` does, for `failingMs` of `awakeClock`: a
+ * turn left held stalls every lander.
+ */
 function release(
-  {
-    failingMs = FAILING_MS,
-    pollMs = POLL_MS,
-    sleep = sleepSync,
-    clock = () => performance.now(),
-    ...lease
-  },
+  { failingMs = FAILING_MS, pollMs = POLL_MS, sleep = sleepSync, awakeClock = awakeNow, ...lease },
   sha,
 ) {
-  const started = clock();
+  let failingSince = null;
   for (let first = true; ; first = false) {
+    let failure;
     try {
       // False when a waiter took over a lease that had expired; either way it is no longer this lander's.
       moveLease(lease, sha, null);
       forgetHolder(lease.cwd, sha);
       return;
     } catch (error) {
-      if (!(error instanceof RemoteFailure) || clock() - started >= failingMs) {
-        // Thrown from withTurn's finally block, it would replace the landing's own result.
-        process.stderr.write(
-          `landing turn: the turn may stay held until its lease expires: ${error.message}\n`,
-        );
-        return;
-      }
-      if (first) process.stderr.write(`landing turn: ${error.message}\nTrying again.\n`);
-      sleep(pollMs);
+      failure = error;
     }
+    let spent = true;
+    if (failure instanceof RemoteFailure) {
+      try {
+        const checkedAt = awakeClock();
+        failingSince ??= checkedAt;
+        spent = checkedAt - failingSince >= failingMs;
+      } catch (error) {
+        failure = new Error(`${failure.message}\n${error.message}`);
+      }
+    }
+    if (spent) {
+      // Thrown from withTurn's finally block, it would replace the landing's own result.
+      process.stderr.write(
+        `landing turn: the turn may stay held until its lease expires: ${failure.message}\n`,
+      );
+      return;
+    }
+    if (first) process.stderr.write(`landing turn: ${failure.message}\nTrying again.\n`);
+    sleep(pollMs);
   }
 }
 
@@ -304,9 +313,43 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+const UPTIME_SCRIPT = `ObjC.import("Foundation"); String(Math.floor($.NSProcessInfo.processInfo.systemUptime * 1000))`;
+
 /**
- * Waits for the turn on the monotonic clock, so a stepped wall clock cannot cut or stretch the wait. The wait makes its
- * own run id, so no other wait can carry it.
+ * NSProcessInfo.systemUptime in milliseconds: the time a Mac has been awake since boot. The read's timeout counts sleep,
+ * so a read the Mac slept through times out when it wakes. One such read is read again; a second timeout ends the wait.
+ */
+function macAwakeMs(spawn = spawnSync) {
+  const read = () =>
+    spawn("/usr/bin/osascript", ["-l", "JavaScript", "-e", UPTIME_SCRIPT], {
+      encoding: "utf8",
+      timeout: 5000,
+      windowsHide: true,
+    });
+  let result = read();
+  if (result.error?.code === "ETIMEDOUT") result = read();
+  const match = /^(\d+)\s*$/.exec(result.stdout ?? "");
+  if (result.error || result.status !== 0 || !match) {
+    const exit = result.signal ? `signal ${result.signal}` : `exit status ${result.status}`;
+    const detail = result.error?.message ?? (result.stderr.trim() || result.stdout.trim() || exit);
+    throw new Error(`osascript NSProcessInfo.systemUptime failed: ${detail}`);
+  }
+  return Number(match[1]);
+}
+
+/**
+ * Milliseconds the machine has been awake, for a span inside one process. On macOS performance.now() counts sleep, and a
+ * Mac asleep with its lid closed wakes for seconds without a network. Linux's monotonic clock stops while it sleeps;
+ * Windows' performance counter does not, so a Windows host that sleeps still counts its sleep.
+ */
+function awakeNow() {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime; tests pass awakeClock.
+  return process.platform === "darwin" ? macAwakeMs() : performance.now();
+}
+
+/**
+ * Waits for the turn on the monotonic clock, so a stepped wall clock cannot cut or stretch the wait. Failures of origin
+ * count on `awakeClock`: a sleep is no time the lander tried. The wait makes its own run id, so no other wait can carry it.
  */
 function acquire({
   maxWaitMs = MAX_WAIT_MS,
@@ -315,6 +358,7 @@ function acquire({
   sleep = sleepSync,
   clock = () => performance.now(),
   now = Date.now,
+  awakeClock = awakeNow,
   ...options
 }) {
   const started = clock();
@@ -389,7 +433,7 @@ function acquire({
         process.stderr.write("landing turn: waiting for its turn in main's landing queue.\n");
       }
       if (failure) {
-        const checkedAt = clock();
+        const checkedAt = awakeClock();
         const first = failingSince === null;
         failingSince ??= checkedAt;
         if (checkedAt - failingSince >= failingMs) throw failure;
@@ -748,6 +792,7 @@ module.exports = {
   tryAcquire,
   release,
   acquire,
+  macAwakeMs,
   withTurn,
   pushChecked,
   verifyPush,

@@ -1,3 +1,11 @@
+## 2026-11-24 — check:changed leaves a split index intact
+
+- With `core.splitIndex` on, the copy of git's index that `vp run check:changed` hashes the working tree through could write a new shared index into the repository and remove the one the repository's own index still used, leaving that index unreadable. The copy no longer writes or removes shared indexes. No change to the app.
+
+## 2026-11-24 — A landing waits through a Mac's sleep
+
+- A landing waiting in main's landing queue ends its wait when origin stays unreachable for 10 minutes, and a landing giving its turn back tries for as long. On macOS that limit counted the time the Mac slept, so a landing left on a closed laptop gave up during a brief wake without a network, or left main's turn held until its lease expired. It now counts only the time the machine is awake. No change to the app.
+
 ## 2026-11-24 — Library upgrade instructions corrected
 
 - The weekly library upgrade's instructions now say that its landing step takes only a full commit id. No change to the app.
