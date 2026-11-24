@@ -14,6 +14,7 @@ import {
 } from "./lib/install-worktree-dependencies.ts";
 import {
   checkWindowsWorktreeFiles,
+  WindowsWorktreeInspectionError,
   windowsSetupHost as isWindows,
 } from "./lib/windows-worktree-files.ts";
 import {
@@ -191,10 +192,29 @@ const setup = async () => {
     throw new Error("T3CODE_PROJECT_ROOT is not set. Run this through the t3.json setup action.");
   const projectRoot = await NodeFSP.realpath(project);
 
-  NodeFS.mkdirSync(markerDir, { recursive: true });
-  if (!NodeFS.lstatSync(markerDir).isDirectory())
-    throw new Error("Setup marker directory is redirected");
-  if (isWindows) await checkWindowsWorktreeFiles(markerDir);
+  const createdMarkerDir = NodeFS.mkdirSync(markerDir, { recursive: true }) === markerDir;
+  const markerDirectory = NodeFS.lstatSync(markerDir, { bigint: true });
+  if (!markerDirectory.isDirectory()) throw new Error("Setup marker directory is redirected");
+  let canRecordProof = true;
+  if (isWindows) {
+    try {
+      await checkWindowsWorktreeFiles(markerDir);
+    } catch (error) {
+      if (
+        !createdMarkerDir ||
+        !(error instanceof WindowsWorktreeInspectionError) ||
+        error.check.startsWith("reparse-") ||
+        markerDirectory.ino === 0n ||
+        setupFileStamp(await NodeFSP.lstat(markerDir, { bigint: true })) !==
+          setupFileStamp(markerDirectory) ||
+        NodeFS.readdirSync(markerDir).length ||
+        (await NodeFSP.realpath(markerDir)) !== markerDir
+      )
+        throw error;
+      process.stderr.write(`${error.message} for new setup markers. Installing in place.\n`);
+      canRecordProof = false;
+    }
+  }
   // Register before checking peers. A simultaneous contender either sees us or makes both back off.
   NodeFS.mkdirSync(claim, { mode: 0o700 });
   let running = false;
@@ -214,15 +234,17 @@ const setup = async () => {
         "An interrupted in-place install may still be writing. Verify it has stopped before clearing its marker.",
       );
 
-    let context = await setupCheckout(worktree, projectRoot);
+    let context = canRecordProof ? await setupCheckout(worktree, projectRoot) : null;
     if (isWindows && context) {
       try {
         await checkWindowsWorktreeFiles(context.admin);
       } catch (error) {
-        if (await hasSetupEntry(NodePath.join(context.admin, setupProofName))) throw error;
-        process.stderr.write(
-          "Windows setup metadata could not be verified. Installing in place.\n",
-        );
+        if (
+          (await hasSetupEntry(NodePath.join(context.admin, setupProofName))) ||
+          !(error instanceof WindowsWorktreeInspectionError)
+        )
+          throw error;
+        process.stderr.write(`${error.message} for Git setup metadata. Installing in place.\n`);
         context = null;
       }
     }

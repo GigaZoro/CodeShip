@@ -21,6 +21,7 @@ import {
 } from "../../../../scripts/lib/worktree-setup-proof.ts";
 import {
   checkWindowsWorktreeFiles,
+  WindowsWorktreeInspectionError,
   windowsSetupHost,
 } from "../../../../scripts/lib/windows-worktree-files.ts";
 
@@ -390,6 +391,23 @@ const readAutoMergeMarker = Effect.fn("WorktreeRelease.readAutoMergeMarker")(fun
   );
 });
 
+const windowsInspectionHold = (
+  root: string,
+  options: Parameters<typeof checkWindowsWorktreeFiles>[1],
+  timeout: "15 seconds" | "10 minutes",
+  reason: string,
+) =>
+  Effect.tryPromise((signal) => checkWindowsWorktreeFiles(root, { ...options, signal })).pipe(
+    Effect.as(null),
+    Effect.catch(({ cause }) =>
+      Effect.succeed(
+        cause instanceof WindowsWorktreeInspectionError ? `${reason} (${cause.check})` : reason,
+      ),
+    ),
+    Effect.timeout(timeout),
+    Effect.orElseSucceed(() => reason),
+  );
+
 export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   request: ReleaseRequest,
   projectRoot: string,
@@ -441,14 +459,13 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   const currentHead = (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
   if (!oid.test(currentHead)) return "worktree history could not be inspected";
   if (windowsSetupHost) {
-    const safeAdmin = yield* Effect.tryPromise((signal) =>
-      checkWindowsWorktreeFiles(admin, { signal }),
-    ).pipe(
-      Effect.as(true),
-      Effect.timeout("15 seconds"),
-      Effect.orElseSucceed(() => false),
+    const hold = yield* windowsInspectionHold(
+      admin,
+      {},
+      "15 seconds",
+      "worktree metadata requires its owner",
     );
-    if (!safeAdmin) return "worktree metadata requires its owner";
+    if (hold) return hold;
   }
   const tips = new Set([request.head, currentHead]);
   let setupProof: Awaited<ReturnType<typeof readSetupProof>> = null;
@@ -535,19 +552,16 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   if (status.split("\0").some((record) => record && !record.startsWith("!! ")))
     return "worktree contains tracked, untracked or ignored local data";
   if (windowsSetupHost && (!status || request.savedFiles || setupProof)) {
-    const safeWorktree = yield* Effect.tryPromise((signal) =>
-      checkWindowsWorktreeFiles(cwd, {
+    const hold = yield* windowsInspectionHold(
+      cwd,
+      {
         links: [...trackedLinks, ...(setupProof?.links.map((link) => link.name) ?? [])],
         modules: request.savedFiles ? [] : Object.keys(setupProof?.modules ?? {}),
-        signal,
-      }),
-    ).pipe(
-      Effect.as(true),
-      Effect.timeout("10 minutes"),
-      Effect.orElseSucceed(() => false),
+      },
+      "10 minutes",
+      "Windows worktree contains data or filesystem entries that could not be verified",
     );
-    if (!safeWorktree)
-      return "Windows worktree contains data or filesystem entries that could not be verified";
+    if (hold) return hold;
   }
   if (status && request.savedFiles) {
     if (

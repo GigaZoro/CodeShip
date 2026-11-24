@@ -2,7 +2,11 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import { checkWindowsWorktreeFiles, windowsSetupHost } from "./windows-worktree-files.ts";
+import {
+  checkWindowsWorktreeFiles,
+  WindowsWorktreeInspectionError,
+  windowsSetupHost,
+} from "./windows-worktree-files.ts";
 import { missingSetupPath, setupTreeDigests } from "./worktree-setup-proof.ts";
 
 const git = (cwd: string, ...args: string[]) =>
@@ -249,10 +253,9 @@ export const installWorktreeDependencies = async (
   const inspectWindowsStage = () =>
     checkWindowsWorktreeFiles(staging, { privateStage: true }).then(
       () => true,
-      () => {
-        process.stderr.write(
-          "Preserving private setup stage because its contents could not be verified.\n",
-        );
+      (error) => {
+        if (!(error instanceof WindowsWorktreeInspectionError)) throw error;
+        process.stderr.write(`${error.message} for the dependency stage. Preserving the stage.\n`);
         return false;
       },
     );

@@ -935,6 +935,8 @@ describe("owned setup output", () => {
     "an external junction",
     "a private file stream",
     "a private directory stream",
+    "unverifiable staged setup output",
+    "a custom dependency ACL",
   ] as const;
   const checkSetups = (
     title: string,
@@ -944,6 +946,8 @@ describe("owned setup output", () => {
       "an external junction",
       "a private file stream",
       "a private directory stream",
+      "unverifiable staged setup output",
+      "a custom dependency ACL",
     ];
     const windowsWithPosix = [
       "standard setup only",
@@ -967,7 +971,8 @@ describe("owned setup output", () => {
         Effect.gen(function* () {
           const fixture = yield* cleanupFixture(undefined, true);
           fixture.disable();
-          const { fs, repo, worktree, command } = fixture;
+          const { fs, repo, command } = fixture;
+          const worktree = yield* fs.realPath(fixture.worktree);
           yield* fs.writeFileString(
             NodePath.join(repo, ".gitignore"),
             ".env\nnode_modules/\n.t3/\n",
@@ -1038,6 +1043,9 @@ if (!fs.existsSync("node_modules/example")) {
 if (process.env.T3_TEST_STORE) {
   fs.linkSync(path.join(process.env.T3_TEST_STORE, "shared.js"), "node_modules/shared.js");
 }
+if (process.env.T3_TEST_STAGE_STREAM && process.cwd().includes(path.sep + "setup-stage" + path.sep)) {
+  fs.writeFileSync("node_modules/.pnpm/example/node_modules/example/index.js:private", "keep");
+}
 fs.writeFileSync("node_modules/.modules.yaml", JSON.stringify({ storeDir: process.env.T3_TEST_VP }));
 const cwd = process.cwd();
 fs.writeFileSync("node_modules/.pnpm-workspace-state-v1.json", JSON.stringify({
@@ -1050,8 +1058,8 @@ if (fs.existsSync(".pnpmfile.cjs")) {
 `,
           );
           for (const [name, body] of [
-            ["vp", '#!/bin/sh\nexec node "$T3_TEST_VP/install.mjs"\n'],
-            ["vp.cmd", '@node "%T3_TEST_VP%\\install.mjs"\r\n'],
+            ["vp", '#!/bin/sh\nexec "$T3_TEST_NODE" "$T3_TEST_VP/install.mjs"\n'],
+            ["vp.cmd", '@"%T3_TEST_NODE%" "%T3_TEST_VP%\\install.mjs"\r\n'],
           ] as const) {
             yield* fs.writeFileString(NodePath.join(fixturePackageManager, name), body, {
               mode: 0o755,
@@ -1059,9 +1067,14 @@ if (fs.existsSync(".pnpmfile.cjs")) {
           }
           yield* fs.writeFileString(NodePath.join(fixturePackageManager, "shared.js"), "shared");
           const race = scenario === "a dependency added during setup";
+          const stageStream = scenario === "unverifiable staged setup output";
           const env = {
-            ...process.env,
+            ...Object.fromEntries(
+              Object.entries(process.env).filter(([name]) => name.toUpperCase() !== "PATH"),
+            ),
             T3_TEST_CONCURRENT_WORKTREE: race ? worktree : "",
+            T3_TEST_NODE: process.execPath,
+            T3_TEST_STAGE_STREAM: stageStream ? "1" : "",
             T3_TEST_VP: fixturePackageManager,
             T3_TEST_STORE: isWindowsHost ? fixturePackageManager : "",
             T3CODE_PROJECT_ROOT: repo,
@@ -1130,6 +1143,10 @@ if (fs.existsSync(".pnpmfile.cjs")) {
           const setup = yield* runSetup();
           expect(setup.success, setup.output).toBe(!race);
           if (race) expect(setup.output).toContain("setup destinations changed");
+          if (stageStream) {
+            expect(setup.output).toContain("Windows worktree inspection failed (private-stream)");
+            expect(setup.output).not.toContain("-EncodedCommand");
+          }
           const done = NodePath.join(worktree, ".t3/setup-done");
           const proof = (yield* command(worktree, [
             "rev-parse",
@@ -1138,7 +1155,10 @@ if (fs.existsSync(".pnpmfile.cjs")) {
             "t3-setup-proof-v1",
           ])).stdout.trim();
           expect(yield* fs.exists(done)).toBe(!race);
-          const inPlace = scenario === "a real dotenv file" || scenario === "a dirty install input";
+          const inPlace =
+            stageStream ||
+            scenario === "a real dotenv file" ||
+            scenario === "a dirty install input";
           expect(yield* fs.exists(proof)).toBe(!race && !inPlace);
           if (!race) {
             const state = JSON.parse(
@@ -1172,7 +1192,30 @@ if (fs.existsSync(".pnpmfile.cjs")) {
               ? "node_modules:private"
               : "tracked.txt:private",
           );
+          const dependencyAcl = (...args: string[]) =>
+            Effect.tryPromise(
+              () =>
+                new Promise<string>((resolve, reject) => {
+                  NodeChildProcess.execFile(
+                    NodePath.join(process.env.SystemRoot!, "System32", "icacls.exe"),
+                    [NodePath.join(dependency, "index.js"), ...args],
+                    { windowsHide: true },
+                    (error, stdout) => {
+                      if (error) reject(new Error(`Fixture ACL command failed (${error.code})`));
+                      else resolve(stdout);
+                    },
+                  );
+                }),
+            );
+          let customAcl: string | undefined;
           switch (scenario) {
+            case "a custom dependency ACL": {
+              const inheritedAcl = yield* dependencyAcl();
+              yield* dependencyAcl("/grant", "*S-1-1-0:(RX)");
+              customAcl = yield* dependencyAcl();
+              expect(customAcl !== inheritedAcl).toBe(true);
+              break;
+            }
             case "an external junction":
               yield* fs.writeFileString(sentinel, "keep");
               yield* Effect.promise(() =>
@@ -1304,8 +1347,10 @@ if (fs.existsSync(".pnpmfile.cjs")) {
                         ? "Worktree setup metadata requires its owner"
                         : scenario === "a private file stream" ||
                             scenario === "a private directory stream"
-                          ? "Windows worktree contains data or filesystem entries that could not be verified"
-                          : "Standard setup output changed or could not be verified",
+                          ? "Windows worktree contains data or filesystem entries that could not be verified (private-stream)"
+                          : scenario === "a custom dependency ACL"
+                            ? "Windows worktree contains data or filesystem entries that could not be verified (explicit-ace)"
+                            : "Standard setup output changed or could not be verified",
                 },
           );
           expect(yield* fs.exists(worktree)).toBe(!released);
@@ -1329,6 +1374,22 @@ if (fs.existsSync(".pnpmfile.cjs")) {
           }
           if (scenario === "an external junction")
             expect(yield* fs.readFileString(sentinel)).toBe("keep");
+          if (customAcl !== undefined) {
+            expect((yield* dependencyAcl()) === customAcl).toBe(true);
+            expect(yield* fs.readFileString(NodePath.join(dependency, "index.js"))).toBe("module");
+          }
+          if (stageStream)
+            expect(
+              yield* Effect.promise(() =>
+                NodeFSP.readFile(
+                  NodePath.join(
+                    worktree,
+                    ".t3/setup-stage/repo/node_modules/.pnpm/example/node_modules/example/index.js:private",
+                  ),
+                  "utf8",
+                ),
+              ),
+            ).toBe("keep");
           if (scenario === "a private file stream" || scenario === "a private directory stream")
             expect(yield* Effect.promise(() => NodeFSP.readFile(privateStream, "utf8"))).toBe(
               "keep",
