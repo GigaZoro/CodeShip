@@ -39,6 +39,7 @@ import { STALL_LOG_NOTE } from "../observability/EventLoopMonitor.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import { releasedWorktree } from "../workspace/worktreeRelease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -233,6 +234,7 @@ export const layer: Layer.Layer<
   | ProviderSkills.ProviderSkills
   | GitWorkflowService.GitWorkflowService
   | ProjectService.ProjectService
+  | ProjectSetupScriptRunner.ProjectSetupScriptRunner
   | ProviderAuthService.ProviderAuthService
   | ProjectionStore.ProjectionStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
@@ -250,6 +252,8 @@ export const layer: Layer.Layer<
     const config = yield* ServerConfig.ServerConfig;
     const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
     const projects = yield* ProjectService.ProjectService;
+    const setupScripts = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
+    const serviceScope = yield* Effect.scope;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
     const providerSkills = yield* ProviderSkills.ProviderSkills;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -472,6 +476,7 @@ export const layer: Layer.Layer<
     const recreateMissingWorktree = Effect.fn("ProviderTurnStartService.recreateMissingWorktree")(
       function* (input: {
         readonly threadId: ThreadId;
+        readonly projectId: string;
         readonly cwd: string;
         readonly worktreePath: string;
         readonly branch: string;
@@ -506,6 +511,23 @@ export const layer: Layer.Layer<
             });
           }
           yield* fileSystem.remove(released.receipt);
+          const setup = yield* setupScripts
+            .runForThread({
+              threadId: input.threadId,
+              projectId: input.projectId,
+              projectCwd: cwd,
+              worktreePath,
+              observeCompletion: {},
+            })
+            .pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("Setup failed for a recreated worktree", { worktreePath, cause }),
+              ),
+            );
+          if (setup?.status === "started" && setup.completion) {
+            if (setup.async) yield* Effect.forkIn(setup.completion, serviceScope);
+            else yield* setup.completion;
+          }
           return;
         }
         if (localBranchNames.includes(branch)) {
@@ -884,6 +906,7 @@ export const layer: Layer.Layer<
             const recreateResult = yield* Effect.result(
               recreateMissingWorktree({
                 threadId: projection.thread.id,
+                projectId: projection.thread.projectId,
                 cwd: project.workspaceRoot,
                 worktreePath,
                 branch,

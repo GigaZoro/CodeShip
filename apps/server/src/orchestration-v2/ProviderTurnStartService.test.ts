@@ -46,6 +46,7 @@ import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { layerRealGit } from "./ProviderTurnStartService.testkit.ts";
+import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -187,6 +188,7 @@ function startWithMissingWorktree(
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
@@ -326,6 +328,7 @@ function makeLocalCommandHarness(input: {
   readonly worktreesDir?: string;
   readonly workspaceRoot?: string;
   readonly gitWorkflow?: GitWorkflow.GitWorkflowService["Service"];
+  readonly runSetup?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"];
   readonly fileSystem?: FileSystem.FileSystem;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
@@ -995,6 +998,9 @@ function makeLocalCommandHarness(input: {
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)(
+          input.runSetup ? { runForThread: input.runSetup } : {},
+        ),
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: (handoff) =>
             input.sideChat?.nativeForkFrom === undefined
@@ -1316,12 +1322,24 @@ effectIt.effect(
           fileSystem,
           gitWorkflow,
           failReadsAfterRunning: true,
+          runSetup: (input) =>
+            Effect.gen(function* () {
+              expect(scenario).toBe("released");
+              expect(input.worktreePath).toBe(worktreePath);
+              expect(input.projectCwd).toBe(workspaceRoot);
+              expect(yield* fileSystem.exists(path.join(worktreePath, "project.txt"))).toBe(true);
+              yield* fileSystem.writeFileString(path.join(worktreePath, "setup-ran"), "ready");
+              return { status: "no-script" } as const;
+            }).pipe(Effect.orDie),
         });
         const open = harness.open.getMockImplementation()!;
         harness.open.mockImplementation(() =>
           Effect.gen(function* () {
             expect(yield* git(worktreePath, ["branch", "--show-current"])).toBe("feature/restore");
             expect(yield* git(worktreePath, ["rev-parse", "HEAD"])).toBe(expected.tip);
+            expect(yield* fileSystem.exists(path.join(worktreePath, "setup-ran"))).toBe(
+              scenario === "released",
+            );
             for (const file of ["thread.txt", "project.txt"]) {
               expect(yield* fileSystem.exists(path.join(worktreePath, file))).toBe(
                 file === expected.file,

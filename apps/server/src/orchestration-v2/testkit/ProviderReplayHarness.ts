@@ -1,3 +1,4 @@
+import * as ProjectSetupScriptRunner from "../../project/ProjectSetupScriptRunner.ts";
 import * as ProviderSkillsTestkit from "../../provider/ProviderSkills.testkit.ts";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
@@ -425,6 +426,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(ProviderSkillsTestkit.layer),
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
         layerContextHandoffServiceProvided,
         layerEventSinkProvided,
         IdAllocator.layer,

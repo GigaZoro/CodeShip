@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Exercises the real setup script in a linked Git checkout.
+import * as NodeChildProcess from "node:child_process";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Link identity requires native lstat, including dangling links.
 import * as NodeFSP from "node:fs/promises";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Fixture paths match host paths.
@@ -912,6 +914,358 @@ it.live.each(["direct land", "no change"] as const)(
       }),
     ),
 );
+
+describe.skipIf(isWindowsHost)("owned setup output on POSIX", () => {
+  it.live.each([
+    "standard setup only",
+    "an added dependency file",
+    "an edited dependency file",
+    "a replaced done marker",
+    "a changed proof",
+    "a legacy done marker",
+    "a real dotenv file",
+    "a missing dotenv source",
+    "a retargeted dependency symlink",
+    "a dependency added during setup",
+    "a dirty install input",
+    "a dead setup owner",
+    "an unpublished success marker",
+    "a prior proof without dependencies",
+    "an unknown proof directory with saved ignored files",
+  ] as const)(
+    "releases an ordinary completed worktree only with unchanged setup output (%s)",
+    (scenario) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const fixture = yield* cleanupFixture(undefined, true);
+          fixture.disable();
+          const { fs, repo, worktree, command } = fixture;
+          yield* fs.writeFileString(
+            NodePath.join(repo, ".gitignore"),
+            ".env\nnode_modules/\n.t3/\n",
+          );
+          yield* fs.makeDirectory(NodePath.join(repo, "scripts/lib"), { recursive: true });
+          yield* fs.makeDirectory(NodePath.join(repo, "packages/shared/src"), { recursive: true });
+          yield* fs.makeDirectory(NodePath.join(repo, "apps/server"), { recursive: true });
+          yield* fs.writeFileString(NodePath.join(repo, "apps/server/package.json"), "{}");
+          yield* fs.writeFileString(
+            NodePath.join(repo, "apps/server/local-source.txt"),
+            "linked package source",
+          );
+          yield* fs.writeFileString(
+            NodePath.join(repo, "pnpm-workspace.yaml"),
+            "packages:\n  - apps/*\n",
+          );
+          for (const file of [
+            "t3.json",
+            "scripts/setup-worktree.ts",
+            "scripts/lib/install-worktree-dependencies.ts",
+            "scripts/lib/worktree-setup-proof.ts",
+            "packages/shared/src/processProbe.ts",
+          ]) {
+            yield* fs.copyFile(
+              NodePath.resolve(import.meta.dirname, "../../../", file),
+              NodePath.join(repo, file),
+            );
+          }
+          yield* command(repo, ["add", "."]);
+          yield* command(repo, ["commit", "-m", "Configure standard setup"]);
+          yield* command(worktree, ["merge", "--ff-only", "main"]);
+          const mainEnv = NodePath.join(repo, ".env");
+          const worktreeEnv = NodePath.join(worktree, ".env");
+          yield* fs.writeFileString(mainEnv, "example-main-value");
+          if (scenario === "a real dotenv file")
+            yield* fs.writeFileString(worktreeEnv, "local-value");
+          if (scenario === "a dirty install input")
+            yield* fs.writeFileString(
+              NodePath.join(worktree, ".pnpmfile.cjs"),
+              "use live checkout",
+            );
+          const fixturePackageManager = yield* fs.makeTempDirectoryScoped({ prefix: "setup-vp-" });
+          yield* fs.writeFileString(
+            NodePath.join(fixturePackageManager, "install.mjs"),
+            `import * as fs from "node:fs";
+import * as path from "node:path";
+if (process.env.T3_TEST_REJECT_INSTALL) throw new Error("unexpected repeat install");
+fs.mkdirSync("node_modules/.pnpm/example/node_modules/example", { recursive: true });
+fs.mkdirSync("apps/server/node_modules", { recursive: true });
+fs.writeFileSync("apps/server/node_modules/helper.js", "module");
+if (!fs.existsSync("apps/server/node_modules/hardlinked.txt")) {
+  fs.linkSync("apps/server/local-source.txt", "apps/server/node_modules/hardlinked.txt");
+}
+if (process.env.T3_TEST_CONCURRENT_WORKTREE) {
+  const added = path.join(process.env.T3_TEST_CONCURRENT_WORKTREE, "apps/server/node_modules");
+  fs.mkdirSync(added, { recursive: true });
+  fs.writeFileSync(path.join(added, "local.js"), "added during setup");
+}
+
+fs.writeFileSync("node_modules/.pnpm/example/node_modules/example/index.js", "module");
+
+if (!fs.existsSync("node_modules/example")) {
+  fs.symlinkSync(".pnpm/example/node_modules/example", "node_modules/example", "dir");
+}
+fs.writeFileSync("node_modules/.modules.yaml", JSON.stringify({ storeDir: process.env.T3_TEST_VP }));
+const cwd = process.cwd();
+fs.writeFileSync("node_modules/.pnpm-workspace-state-v1.json", JSON.stringify({
+  projects: { [cwd]: {}, [path.join(cwd, "apps/server")]: {} },
+  pnpmfiles: [path.join(cwd, ".pnpmfile.cjs")],
+}));
+if (fs.existsSync(".pnpmfile.cjs")) {
+  fs.copyFileSync(".pnpmfile.cjs", "node_modules/seen-input.cjs");
+}
+`,
+          );
+          for (const [name, body] of [
+            ["vp", '#!/bin/sh\nexec node "$T3_TEST_VP/install.mjs"\n'],
+            ["vp.cmd", '@node "%T3_TEST_VP%\\install.mjs"\r\n'],
+          ] as const) {
+            yield* fs.writeFileString(NodePath.join(fixturePackageManager, name), body, {
+              mode: 0o755,
+            });
+          }
+          const race = scenario === "a dependency added during setup";
+          const env = {
+            ...process.env,
+            T3_TEST_CONCURRENT_WORKTREE: race ? worktree : "",
+            T3_TEST_VP: fixturePackageManager,
+            T3CODE_PROJECT_ROOT: repo,
+            PATH: fixturePackageManager + NodePath.delimiter + process.env.PATH,
+          };
+          const setupCommand = JSON.parse(
+            yield* fs.readFileString(NodePath.join(worktree, "t3.json")),
+          ).scripts[0].command;
+          expect(setupCommand).toBe("node scripts/setup-worktree.ts");
+          const runSetup = (repeat = false) =>
+            Effect.promise(
+              () =>
+                new Promise<{ success: boolean; output: string }>((resolve) => {
+                  NodeChildProcess.execFile(
+                    process.execPath,
+                    setupCommand.split(" ").slice(1),
+                    { cwd: worktree, env: { ...env, T3_TEST_REJECT_INSTALL: repeat ? "1" : "" } },
+                    (error, stdout, stderr) =>
+                      resolve({ success: !error, output: stdout + stderr }),
+                  );
+                }),
+            );
+          if (scenario === "a dead setup owner") {
+            const child = yield* Effect.acquireRelease(
+              Effect.tryPromise(
+                () =>
+                  new Promise<NodeChildProcess.ChildProcess>((resolve, reject) => {
+                    const running = NodeChildProcess.spawn(
+                      process.execPath,
+                      [
+                        "-e",
+                        `
+                const fs = require("node:fs");
+                fs.mkdirSync(".t3", { recursive: true });
+                fs.mkdirSync(".t3/setup-owner-" + process.pid, { mode: 0o700 });
+                fs.writeFileSync(".t3/setup-running", process.pid + "\\n");
+                console.log("ready");
+                process.stdin.resume();
+              `,
+                      ],
+                      { cwd: worktree, stdio: ["pipe", "pipe", "inherit"] },
+                    );
+                    running.stdout.once("data", () => resolve(running));
+                    running.once("error", reject);
+                    running.once("exit", () =>
+                      reject(new Error("Setup owner quit before it was ready")),
+                    );
+                  }),
+              ),
+              (running) =>
+                Effect.sync(() => {
+                  running.stdin?.end();
+                }),
+            );
+            const blocked = yield* runSetup();
+            expect(blocked.success).toBe(false);
+            expect(blocked.output).toContain("Another worktree setup");
+            yield* Effect.promise(
+              () =>
+                new Promise<void>((resolve) => {
+                  child.once("exit", () => resolve());
+                  child.kill("SIGKILL");
+                }),
+            );
+          }
+          const setup = yield* runSetup();
+          expect(setup.success, setup.output).toBe(!race);
+          if (race) expect(setup.output).toContain("setup destinations changed");
+          const done = NodePath.join(worktree, ".t3/setup-done");
+          const proof = (yield* command(worktree, [
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "t3-setup-proof-v1",
+          ])).stdout.trim();
+          expect(yield* fs.exists(done)).toBe(!race);
+          const inPlace = scenario === "a real dotenv file" || scenario === "a dirty install input";
+          expect(yield* fs.exists(proof)).toBe(!race && !inPlace);
+          if (!race) {
+            const state = JSON.parse(
+              yield* fs.readFileString(
+                NodePath.join(worktree, "node_modules/.pnpm-workspace-state-v1.json"),
+              ),
+            );
+            expect(Object.keys(state.projects)).toEqual([
+              worktree,
+              NodePath.join(worktree, "apps/server"),
+            ]);
+            expect(state.pnpmfiles).toEqual([NodePath.join(worktree, ".pnpmfile.cjs")]);
+          }
+          if (scenario === "a dirty install input")
+            expect(
+              yield* fs.readFileString(NodePath.join(worktree, "node_modules/seen-input.cjs")),
+            ).toBe("use live checkout");
+          if (!race)
+            expect(yield* fs.readFileString(worktreeEnv)).toBe(
+              scenario === "a real dotenv file" ? "local-value" : "example-main-value",
+            );
+          const dependency = NodePath.join(
+            worktree,
+            "node_modules/.pnpm/example/node_modules/example",
+          );
+          switch (scenario) {
+            case "standard setup only":
+            case "an unpublished success marker": {
+              if (scenario === "an unpublished success marker") yield* fs.remove(done);
+              const repeated = yield* runSetup(true);
+              expect(repeated.success, repeated.output).toBe(true);
+              expect(yield* fs.exists(done)).toBe(true);
+              break;
+            }
+            case "a prior proof without dependencies": {
+              for (const name of ["node_modules", "apps/server/node_modules", ".env"])
+                yield* fs.remove(NodePath.join(worktree, name), { recursive: true });
+              const repeated = yield* runSetup();
+              expect(repeated.success, repeated.output).toBe(true);
+              expect(yield* fs.exists(proof)).toBe(true);
+              break;
+            }
+            case "an unknown proof directory with saved ignored files":
+              yield* fs.remove(proof);
+              yield* fs.makeDirectory(proof);
+              yield* fs.writeFileString(NodePath.join(proof, "owner.txt"), "preserve this");
+              break;
+            case "an added dependency file": {
+              yield* fs.writeFileString(NodePath.join(dependency, "local.js"), "added");
+              const repeated = yield* runSetup(true);
+              expect(repeated.success).toBe(false);
+              expect(repeated.output).toContain("Installed files changed");
+              break;
+            }
+            case "an edited dependency file": {
+              const file = NodePath.join(dependency, "index.js");
+              const original = yield* fs.stat(file);
+              yield* fs.writeFileString(file, "edited");
+              if (Option.isSome(original.atime) && Option.isSome(original.mtime))
+                yield* fs.utimes(file, original.atime.value, original.mtime.value);
+              break;
+            }
+            case "a replaced done marker":
+              yield* fs.remove(done);
+              yield* fs.writeFileString(done, "");
+              break;
+            case "a changed proof":
+              yield* fs.writeFileString(proof, "{}");
+              break;
+            case "a legacy done marker":
+              yield* fs.remove(proof);
+              break;
+            case "a missing dotenv source":
+              yield* fs.remove(mainEnv);
+              break;
+            case "a retargeted dependency symlink": {
+              const link = NodePath.join(worktree, "node_modules/example");
+              yield* fs.remove(link);
+              yield* fs.symlink("missing-target", link);
+              break;
+            }
+          }
+          const status = (yield* command(worktree, [
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--ignored=matching",
+            "--untracked-files=all",
+          ])).stdout;
+          expect(status.split("\0")).toContain("!! apps/server/node_modules/");
+          if (!race) expect(status.split("\0")).toContain("!! node_modules/");
+          expect(status).not.toContain("index.js");
+          expect(status).not.toContain("local.js");
+          const runId = RunId.make("finished-setup");
+          const owner = shell({
+            branch: "feature",
+            worktreePath: worktree,
+            status: "completed",
+            latestRunId: runId,
+            latestRunCompletedAt: at(0),
+          });
+          fixture.setThreads([owner]);
+          const { file } = yield* queueWorktreeRelease({
+            stateDir: fixture.config.stateDir,
+            threadId: owner.id,
+            runId,
+            worktreePath: worktree,
+            durableRef: "refs/heads/main",
+            ...(scenario === "an unknown proof directory with saved ignored files"
+              ? { saveIgnored: true }
+              : {}),
+          });
+          const released =
+            scenario === "standard setup only" ||
+            scenario === "a dead setup owner" ||
+            scenario === "an unpublished success marker" ||
+            scenario === "a prior proof without dependencies";
+          const result = (yield* fixture.service.runNow).entries[0];
+          expect(result).toMatchObject(
+            released
+              ? { outcome: "removed", reason: "Owner released the completed run" }
+              : {
+                  outcome: "kept",
+                  reason:
+                    race || inPlace || scenario === "a legacy done marker"
+                      ? "Worktree contains tracked, untracked or ignored local data"
+                      : scenario === "a changed proof" ||
+                          scenario === "an unknown proof directory with saved ignored files"
+                        ? "Worktree setup metadata requires its owner"
+                        : "Standard setup output changed or could not be verified",
+                },
+          );
+          expect(yield* fs.exists(worktree)).toBe(!released);
+          expect(yield* fs.exists(file + ".released")).toBe(released);
+          const registrations = (yield* command(repo, ["worktree", "list", "--porcelain"])).stdout;
+          expect(registrations.includes(worktree.split(NodePath.sep).join("/"))).toBe(!released);
+          if (scenario !== "a missing dotenv source") {
+            expect(yield* fs.readFileString(mainEnv)).toBe("example-main-value");
+          }
+          if (scenario === "standard setup only") {
+            yield* command(repo, ["worktree", "add", worktree, "feature"]);
+            const followUp = yield* runSetup();
+            expect(followUp.success, followUp.output).toBe(true);
+            expect(yield* fs.readFileString(NodePath.join(dependency, "index.js"))).toBe("module");
+          }
+          if (scenario === "an unknown proof directory with saved ignored files")
+            expect(yield* fs.readFileString(NodePath.join(proof, "owner.txt"))).toBe(
+              "preserve this",
+            );
+          if (scenario === "an added dependency file")
+            expect(yield* fs.readFileString(NodePath.join(dependency, "local.js"))).toBe("added");
+          if (scenario === "an edited dependency file")
+            expect(yield* fs.readFileString(NodePath.join(dependency, "index.js"))).toBe("edited");
+          if (race)
+            expect(
+              yield* fs.readFileString(
+                NodePath.join(worktree, "apps/server/node_modules/local.js"),
+              ),
+            ).toBe("added during setup");
+        }),
+      ),
+  );
+});
 
 it.live(
   "unrelated process starts proceed during inspection and removal of a different worktree",

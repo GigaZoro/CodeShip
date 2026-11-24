@@ -12,6 +12,12 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { WORKTREE_RELEASE_DIRECTORY } from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import {
+  matchesSetupProof,
+  readSetupProof,
+  setupFileStamp,
+  setupProofName,
+} from "../../../../scripts/lib/worktree-setup-proof.ts";
 
 const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const durableRef = Schema.String.check(Schema.isPattern(/^refs\/(?:heads|remotes|archive)\//));
@@ -400,8 +406,24 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
     anchors.push(anchor[1]!);
   }
   const tips = new Set([request.head]);
+  let setupProof: Awaited<ReturnType<typeof readSetupProof>> = null;
   for (const name of yield* fs.readDirectory(admin)) {
     if (["HEAD", "index", "commondir", "gitdir"].includes(name)) continue;
+    if (name === setupProofName) {
+      if (yield* HostProcess.isWindows) return "worktree setup metadata requires its owner";
+      setupProof = yield* Effect.tryPromise(async () =>
+        readSetupProof(
+          admin,
+          await NodeFSP.realpath(projectRoot),
+          setupFileStamp(await NodeFSP.lstat(path.join(cwd, ".git"), { bigint: true })),
+        ),
+      ).pipe(
+        Effect.timeout("5 seconds"),
+        Effect.orElseSucceed(() => null),
+      );
+      if (!setupProof) return "worktree setup metadata requires its owner";
+      continue;
+    }
     let file = path.join(admin, name);
     if (name === "logs") {
       const logs = yield* fs.readDirectory(file);
@@ -456,18 +478,25 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
       return "gitlink contains local data";
   }
   const status = yield* worktreeStatus(cwd);
-  if (status) {
-    if (
-      !request.savedFiles ||
-      status.split("\0").some((record) => record && !record.startsWith("!! "))
-    )
-      return "worktree contains tracked, untracked or ignored local data";
+  if (status.split("\0").some((record) => record && !record.startsWith("!! ")))
+    return "worktree contains tracked, untracked or ignored local data";
+  if (status && request.savedFiles) {
     if (
       !(yield* inspectIgnored(cwd, request.savedFiles, status).pipe(
         Effect.orElseSucceed(() => false),
       ))
     )
       return "ignored files have changed or lack a preserved copy";
+  } else if (!request.savedFiles && (status || setupProof)) {
+    if (!setupProof) return "worktree contains tracked, untracked or ignored local data";
+    const proof = setupProof;
+    const clean = yield* Effect.tryPromise((signal) =>
+      matchesSetupProof(proof, cwd, status, signal),
+    ).pipe(
+      Effect.timeout("10 minutes"),
+      Effect.orElseSucceed(() => false),
+    );
+    if (!clean) return "standard setup output changed or could not be verified";
   }
   return null;
 });
