@@ -1,3 +1,7 @@
+## 2026-11-24 — Restart tests of delegated runs no longer hang
+
+- Maintainers: the restart tests of delegated runs drive the server until the delegated run ends, so they pass whichever restarted run starts first instead of hanging about one run in five.
+
 ## 2026-11-24 — New projects keep the default model they are given
 
 - A project created with a default model, by an agent's `t3_project_create` or through the server's project API, now starts with that model instead of with none.
