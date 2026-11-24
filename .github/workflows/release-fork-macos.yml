@@ -111,9 +111,17 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  metadata_mac:
+    needs: preflight
+    uses: ./.github/workflows/release-codex-metadata.yml
+    with:
+      ref: ${{ needs.preflight.outputs.sha }}
+      target: aarch64-apple-darwin
+      runner: macos-26
+
   desktop_mac_arm64:
     name: Desktop macOS arm64
-    needs: [preflight]
+    needs: [preflight, metadata_mac]
     uses: ./.github/workflows/release-desktop.yml
     secrets: inherit
     with:
@@ -125,6 +133,7 @@ jobs:
       clerk_jwt_template: ${{ needs.preflight.outputs.clerk_jwt_template }}
       clerk_cli_oauth_client_id: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
       relay_url: ${{ needs.preflight.outputs.relay_url }}
+      codex_metadata_key: ${{ needs.metadata_mac.outputs.cache_key }}
       label: macOS arm64
       # The macOS version upstream's release.yml builds on.
       runner: macos-26

@@ -61,6 +61,7 @@ const runExecutable = Effect.fn("runExecutable")(function* (
 const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
   readonly archive: string;
   readonly expectVersion: string;
+  readonly expectCodexMetadata: boolean;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -123,6 +124,22 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
       return yield* new CliArchiveSmokeError({
         step: "checking that t3 loads the bundled libatomic",
         detail: ldd,
+      });
+    }
+  }
+
+  if (input.expectCodexMetadata) {
+    const cli = path.join(
+      contentDir,
+      "codex-metadata",
+      "bin",
+      platform === "win32" ? "codex.exe" : "codex",
+    );
+    const help = yield* runExecutable(cli, ["exec", "--help"], scratch);
+    if (help.exitCode !== 0 || !/^\s*--codeship-metadata-no-mcp(?:\s|$)/m.test(help.stdout)) {
+      return yield* new CliArchiveSmokeError({
+        step: "running the bundled Codex metadata program",
+        detail: `exit ${String(help.exitCode)}\n${help.stderr}`,
       });
     }
   }
@@ -199,6 +216,7 @@ const command = Command.make(
   {
     archive: Flag.String("archive"),
     expectVersion: Flag.String("expect-version"),
+    expectCodexMetadata: Flag.Boolean("expect-codex-metadata"),
   },
   (input) => smokeCliArchive(input).pipe(Effect.scoped),
 ).pipe(Command.withDescription("Extract a CLI archive and run its executable."));

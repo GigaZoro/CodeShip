@@ -1,0 +1,157 @@
+name: Prepare fork Codex metadata package
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+      target:
+        required: true
+        type: string
+      runner:
+        required: true
+        type: string
+    outputs:
+      cache_key:
+        value: ${{ jobs.lookup.outputs.key }}
+
+permissions:
+  contents: read
+
+jobs:
+  lookup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      key: ${{ steps.recipe.outputs.key }}
+      hit: ${{ steps.cache.outputs.cache-hit }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+          sparse-checkout: |
+            docs/operations/codex-metadata
+            .github/workflows
+      - run: node --test docs/operations/codex-metadata/package.test.mjs
+      - id: recipe
+        env:
+          RECIPE: ${{ hashFiles('docs/operations/codex-metadata/*.patch', 'docs/operations/codex-metadata/*.diff', 'docs/operations/codex-metadata/package.mjs', 'docs/operations/codex-metadata/smoke.py', '.github/workflows/release-codex-metadata.yml') }}
+          TARGET: ${{ inputs.target }}
+          IMAGE: ${{ inputs.runner }}
+        run: echo "key=codex-metadata-$IMAGE-$TARGET-$RECIPE" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: codex-metadata.tar.gz
+          enableCrossOsArchive: true
+          lookup-only: true
+          key: ${{ steps.recipe.outputs.key }}
+
+  build:
+    needs: lookup
+    if: needs.lookup.outputs.hit != 'true'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ inputs.target }}
+      RECIPE: codeship/docs/operations/codex-metadata
+      STABLE_GIT_COMMIT: 3d86e43b075adeba2193ec5c22ac92f55afd82e6
+      # Keep the native build within a standard hosted runner's RAM and disk.
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_RELEASE_DEBUG: 0
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+          path: codeship
+          sparse-checkout: docs/operations/codex-metadata
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Prepare pinned source and CLI helpers
+        run: |
+          set -euo pipefail
+          curl -fLsS --retry 3 --max-time 300 \
+            https://codeload.github.com/openai/codex/tar.gz/refs/tags/rust-v0.172.0 -o source.tar.gz
+          if command -v sha256sum >/dev/null; then checksum=(sha256sum); else checksum=(shasum -a 256); fi
+          echo '8a4a4bd174f87394ed7a63c8fe1bf8207d9d691468e465fe56e418018ecc5549  source.tar.gz' | "${checksum[@]}" -c -
+          tar -xzf source.tar.gz --strip-components=1
+          if [[ "$RUNNER_OS" == Windows ]]; then git config --global core.longpaths true; fi
+          git apply "$RECIPE/codeship-metadata.patch"
+          echo "45523edd17c7d09b394043592f50ef10c6be1bfa59348c7e663d30f130ac07ed  $RECIPE/cargo-lock.diff" | "${checksum[@]}" -c -
+          patch codex-rs/Cargo.lock < "$RECIPE/cargo-lock.diff"
+          echo '0c017d96dae581ea09834ddbda7c572dd48e771cf86e9f87f8b3bcb4ab16f686  codex-rs/Cargo.lock' | "${checksum[@]}" -c -
+          node "$RECIPE/package.mjs" helpers codex-metadata "$TARGET"
+          cp LICENSE NOTICE codex-metadata/
+          echo 'CodeShip modifies Codex for one-shot metadata generation.' >> codex-metadata/NOTICE
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            cp codex-rs/vendor/bubblewrap/COPYING codex-metadata/BUBBLEWRAP-LICENSE
+            echo "CODEX_BWRAP_SHA256=$(sha256sum codex-metadata/codex-resources/bwrap | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          fi
+
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+        with:
+          toolchain: 1.99.1
+          targets: ${{ inputs.target }}
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        if: runner.os == 'Linux'
+        with:
+          version: 0.14.0
+          use-cache: false
+
+      - name: Prepare upstream musl toolchain
+        if: runner.os == 'Linux'
+        env:
+          CODEX_MUSL_RELEASE_LINK_FLAGS: 1
+        run: bash .github/scripts/install-musl-build-tools.sh
+
+      - uses: openai/codex/.github/actions/setup-msvc-env@3d86e43b075adeba2193ec5c22ac92f55afd82e6 # 0.172.0
+        if: runner.os == 'Windows'
+        with:
+          target: ${{ inputs.target }}
+
+      - name: Build the patched CLI
+        working-directory: codex-rs
+        env:
+          AWS_LC_SYS_NO_JITTER_ENTROPY: 1
+          LIBSQLITE3_FLAGS: ${{ runner.os == 'Windows' && 'SQLITE_DISABLE_INTRINSIC' || '' }}
+        run: |
+          set -euo pipefail
+          cargo +1.99.1 build --release --locked -j 3 --target "$TARGET" -p codex-cli --bin codex
+          suffix=""
+          if [[ "$RUNNER_OS" == Windows ]]; then suffix=.exe; fi
+          cp "target/$TARGET/release/codex$suffix" "../codex-metadata/bin/codex$suffix"
+
+      - name: Verify and archive the metadata program
+        run: |
+          set -euo pipefail
+          node "$RECIPE/package.mjs" verify codex-metadata "$TARGET"
+          cli=codex-metadata/bin/codex
+          if [[ "$RUNNER_OS" == Windows ]]; then cli+=.exe; fi
+          export CODEX_HOME="$RUNNER_TEMP/metadata-probe"
+          mkdir -p "$CODEX_HOME"
+          test "$("$cli" --version)" = 'codex-cli 0.172.0'
+          "$cli" exec --help > help.txt
+          grep -E -- '^[[:space:]]*--codeship-metadata-no-mcp([[:space:]]|$)' help.txt
+          python3 "$RECIPE/smoke.py" "$cli"
+          tar -czf codex-metadata.tar.gz codex-metadata
+          ls -lh codex-metadata.tar.gz
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: codex-metadata.tar.gz
+          enableCrossOsArchive: true
+          key: ${{ needs.lookup.outputs.key }}

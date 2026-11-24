@@ -1070,6 +1070,8 @@ export const DESKTOP_ELECTRON_LANGUAGES = ["en-US"] as const;
 export const DESKTOP_FILE_EXCLUSIONS = [
   // Cursor walks from argv[1] to platform assets; helpers and native addons need real paths outside ASAR.
   "!**/node_modules/@cursor/sdk-*/**/*",
+  "!apps/desktop/prod-resources/codex-metadata",
+  "!apps/desktop/prod-resources/codex-metadata/**/*",
   "!apps/desktop/prod-resources/cursor-sdk",
   "!apps/desktop/prod-resources/cursor-sdk/**/*",
   // The installed Claude CLI is supplied explicitly; exclude optional bundled executables, retaining SDK JavaScript.
@@ -1174,6 +1176,7 @@ export const WSL_RUNTIME_EXTRA_RESOURCES = [
   WSL_RUNTIME_ARCHIVE_HASH_EXTRA_RESOURCE,
 ] as const;
 export const DESKTOP_EXTRA_RESOURCES = [
+  { from: "apps/desktop/prod-resources", to: ".", filter: ["codex-metadata/**/*"] },
   {
     from: "apps/desktop/prod-resources/cursor-sdk",
     to: "node_modules/@cursor",
@@ -1525,6 +1528,15 @@ export function resolveMergedStageDependencies(input: {
     ...resolveFffNativeDependencies(input.platform, input.arch, input.fffNodeVersion),
   };
 }
+
+export const stageCodexMetadata = Effect.fn("stageCodexMetadata")(function* (resourcesDir: string) {
+  const source = yield* Config.String("T3CODE_BUILD_CODEX_METADATA_DIR").pipe(Config.option);
+  if (Option.isSome(source)) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* fs.copy(source.value, path.join(resourcesDir, "codex-metadata"));
+  }
+});
 
 /** Cursor's helper lookup falls through the archive to this real resources tree. */
 export const stageCursorSdkPlatformPackages = Effect.fn("stageCursorSdkPlatformPackages")(
@@ -4363,6 +4375,7 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   const stageProdResourcesDir = path.join(stageAppDir, "apps/desktop/prod-resources");
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
+  yield* stageCodexMetadata(stageProdResourcesDir);
 
   const stageDependencies =
     options.platform === "win"

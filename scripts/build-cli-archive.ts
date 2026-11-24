@@ -25,6 +25,7 @@ import {
   installStagedDependencies,
   readWorkspaceConfig,
   resolveFffNativeDependencies,
+  stageCodexMetadata,
   writeStageWorkspace,
 } from "./build-desktop-artifact.ts";
 import { assertLinuxArm64PageCompatibility } from "./lib/linux-arm64-sea.ts";
@@ -516,6 +517,7 @@ const stageCliArchive = Effect.fn("stageCliArchive")(function* (
   yield* fs.copyFile(builtExecutable, path.join(contentDir, executableName));
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
   yield* fs.copy(resourceMonitorDir, path.join(contentDir, "resource-monitor"));
+  yield* stageCodexMetadata(contentDir);
   yield* stageRuntimeExternals({
     repoRoot,
     stageDir: contentDir,

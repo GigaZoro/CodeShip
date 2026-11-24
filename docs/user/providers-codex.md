@@ -32,14 +32,20 @@ copy yet, the provider's settings offer **Install Codex**. Signing in through th
 settings selects a private login for the app. Running chats can use the previous
 account until the new login is saved.
 
-## Omit personal instructions from generated metadata
+## Which instructions generated metadata uses
 
-An environment operator can opt in to a Codex executable that skips automatic
-loading of the Codex home's personal `AGENTS.md` for generated titles, branch names,
-commit messages, pull request text, review guides, and manual step reviews. These
-requests still use the selected account, repository instructions and applicable policy.
-Interactive chats use their normal instructions. See the
-[host provisioning guide](../operations/codex-metadata/README.md).
+CodeShip uses your selected account, repository instructions, and applicable policy
+when it generates titles, branch names, commit messages, pull request text, review
+guides, and manual step reviews. The metadata runtime skips the personal
+`AGENTS.md` in your Codex home and disables MCP servers for these requests.
+Standard desktop and standalone server installations select the bundled runtime
+automatically. Source checkouts use the regular Codex executable. If you set a
+custom binary for an account using native sign-in, CodeShip uses that launcher.
+You can enable metadata mode for the launcher with a compatible host override.
+Interactive chats use your usual Codex launcher and instructions.
+
+See the [host provisioning guide](../operations/codex-metadata/README.md) for the
+override and installation details.
 
 ## Use multiple accounts
 

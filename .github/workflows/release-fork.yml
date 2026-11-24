@@ -166,13 +166,30 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  metadata_linux:
+    needs: preflight
+    uses: ./.github/workflows/release-codex-metadata.yml
+    with:
+      ref: ${{ github.sha }}
+      target: x86_64-unknown-linux-musl
+      # Exercise the bundled bwrap on a standard runner permitting unprivileged namespaces.
+      runner: ubuntu-22.04
+
+  metadata_windows:
+    needs: preflight
+    uses: ./.github/workflows/release-codex-metadata.yml
+    with:
+      ref: ${{ github.sha }}
+      target: x86_64-pc-windows-msvc
+      runner: windows-2025
+
   # Runs for the Linux CLI archive: the Windows app embeds it as its WSL runtime
   # (the Windows job waits for a job named "Build Linux x64"), and the release
   # publishes it for Linux servers. Its Linux installers are not published, so
   # the release does not wait on them; the archive is uploaded before they build.
   desktop_linux_x64:
     name: Desktop Linux x64
-    needs: [preflight, bundle]
+    needs: [preflight, bundle, metadata_linux]
     uses: ./.github/workflows/release-desktop.yml
     secrets: inherit
     with:
@@ -184,6 +201,7 @@ jobs:
       clerk_jwt_template: ${{ needs.preflight.outputs.clerk_jwt_template }}
       clerk_cli_oauth_client_id: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
       relay_url: ${{ needs.preflight.outputs.relay_url }}
+      codex_metadata_key: ${{ needs.metadata_linux.outputs.cache_key }}
       label: Linux x64
       runner: ubuntu-24.04
       platform: linux
@@ -196,7 +214,7 @@ jobs:
 
   desktop_win_x64:
     name: Desktop Windows x64
-    needs: [preflight, bundle]
+    needs: [preflight, bundle, metadata_linux, metadata_windows]
     uses: ./.github/workflows/release-desktop.yml
     secrets: inherit
     with:
@@ -208,6 +226,7 @@ jobs:
       clerk_jwt_template: ${{ needs.preflight.outputs.clerk_jwt_template }}
       clerk_cli_oauth_client_id: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
       relay_url: ${{ needs.preflight.outputs.relay_url }}
+      codex_metadata_key: ${{ needs.metadata_windows.outputs.cache_key }}
       label: Windows x64
       runner: ubuntu-24.04
       verify_runner: windows-2025

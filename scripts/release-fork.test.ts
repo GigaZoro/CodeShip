@@ -125,6 +125,22 @@ describe("fork release", () => {
     expect(macos.concurrency.group).not.toBe(release.concurrency.group);
   });
 
+  it("stages the native metadata package built for each released server", () => {
+    const release = readWorkflow("release-fork.yml");
+    const mac = readWorkflow("release-fork-macos.yml");
+    for (const [workflow, packager, builder, target] of [
+      [release, "desktop_linux_x64", "metadata_linux", "x86_64-unknown-linux-musl"],
+      [release, "desktop_win_x64", "metadata_windows", "x86_64-pc-windows-msvc"],
+      [mac, "desktop_mac_arm64", "metadata_mac", "aarch64-apple-darwin"],
+    ] as const) {
+      expect(jobsNeededBy(workflow.jobs, packager)).toContain(builder);
+      expect(workflow.jobs[builder]?.with?.target).toBe(target);
+      expect(workflow.jobs[packager]?.with?.codex_metadata_key).toBe(
+        `\${{ needs.${builder}.outputs.cache_key }}`,
+      );
+    }
+  });
+
   it("treats only a run on the default branch as main's release run", () => {
     const release = readWorkflow("release-fork.yml");
     expect(release.concurrency.group).toContain("github.ref");

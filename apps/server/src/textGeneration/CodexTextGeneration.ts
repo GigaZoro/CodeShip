@@ -13,9 +13,11 @@ import {
   type ServerProviderModel,
   TextGenerationError,
 } from "@t3tools/contracts";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveCommandPath, resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import { resolveAttachmentPath } from "../attachmentStore.ts";
+import { codexExecArgsWithoutMcp } from "./codexStockMcpArgs.ts";
+import { resolvePackagedCodexMetadataBinary } from "./packagedCodexMetadata.ts";
 import * as ServerConfig from "../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { codexExecLaunchArgs, resolveCodexLaunchArgs } from "../provider/codexLaunchArgs.ts";
@@ -32,7 +34,7 @@ const CODEX_TIMEOUT_MS = 180_000;
 const CODEX_MCP_LIST_TIMEOUT_MS = 10_000;
 const CODEX_METADATA_PROBE_TIMEOUT_MS = 5_000;
 const CODEX_METADATA_BINARY_ENV = "T3CODE_CODEX_METADATA_BINARY_PATH";
-const CODEX_METADATA_FLAG = "--codeship-metadata";
+const CODEX_METADATA_FLAG = "--codeship-metadata-no-mcp";
 const { binaryPath: defaultCodexBinary } = Schema.decodeSync(CodexSettings)({});
 // Plugins/apps add MCP servers; use trailing config overrides because --disable loses to user -c flags.
 const CODEX_NO_PLUGIN_ARGS = [
@@ -46,11 +48,6 @@ const CodexMcpServers = Schema.fromJsonString(
 );
 const decodeCodexMcpServers = Schema.decodeEffect(CodexMcpServers);
 
-// mcp_servers={} merges instead of replacing; disable named entries and quote dotted names.
-const codexMcpServersOff = (names: ReadonlyArray<string>): string | null =>
-  names.length === 0
-    ? null
-    : `mcp_servers={${names.map((name) => `${JSON.stringify(name)}={enabled=false}`).join(",")}}`;
 const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(function* (
   codexConfig: CodexSettings,
@@ -70,8 +67,15 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   const serverConfig = yield* Effect.service(ServerConfig.ServerConfig);
   const resolvedEnvironment = environment ?? process.env;
   const hostEnvironment = yield* HostProcess.Environment;
-  const metadataBinaryPath = hostEnvironment[CODEX_METADATA_BINARY_ENV];
-  const windows = yield* HostProcess.isWindows;
+  const hostOverride = hostEnvironment[CODEX_METADATA_BINARY_ENV];
+  const nativeCustomLauncher =
+    !resolveRuntime && codexConfig.binaryPath !== defaultCodexBinary
+      ? codexConfig.binaryPath
+      : undefined;
+  const metadataBinaryPath =
+    hostOverride ??
+    (nativeCustomLauncher ? undefined : yield* resolvePackagedCodexMetadataBinary());
+  const platform = yield* HostProcess.Platform;
 
   const resolveMetadataBinary = Effect.fn("CodexTextGeneration.resolveMetadataBinary")(function* (
     operation: TextGenerationOperations.Operation,
@@ -79,36 +83,44 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   ) {
     const unusableBinary = new TextGenerationError({
       operation,
-      detail: `Set ${CODEX_METADATA_BINARY_ENV} on the CodeShip host to the absolute path of an executable patched Codex that supports ${CODEX_METADATA_FLAG}, then restart CodeShip.`,
+      detail:
+        hostOverride === undefined
+          ? `Reinstall CodeShip to restore its bundled Codex metadata runtime. The installed executable must support ${CODEX_METADATA_FLAG}.`
+          : `Set ${CODEX_METADATA_BINARY_ENV} on the CodeShip host to the absolute path of an executable patched Codex that supports ${CODEX_METADATA_FLAG}, then restart CodeShip.`,
     });
     if (
       !path.isAbsolute(configuredPath) ||
-      (windows &&
+      (platform === "win32" &&
         (!/^[a-z]:[/\\]/i.test(configuredPath) ||
           path.extname(configuredPath).toLowerCase() !== ".exe"))
     ) {
       return yield* unusableBinary;
     }
-    const binary = yield* fileSystem
-      .realPath(configuredPath)
-      .pipe(Effect.mapError(() => unusableBinary));
-    // A provider's explicit launcher can own account setup, or be required by host policy.
-    if (
-      codexConfig.binaryPath &&
-      codexConfig.binaryPath !== defaultCodexBinary &&
-      path.normalize(codexConfig.binaryPath) !== path.normalize(configuredPath) &&
-      path.normalize(codexConfig.binaryPath) !== binary
-    ) {
-      return yield* new TextGenerationError({
-        operation,
-        detail: `This Codex instance uses a different custom launcher. Provision that launcher for metadata and point ${CODEX_METADATA_BINARY_ENV} at it, or unset the host opt-in to use ordinary Codex text generation.`,
-      });
+    // A native custom launcher can own sign-in or policy. Shims dispatch by their invoked name.
+    if (nativeCustomLauncher) {
+      const launcher = yield* resolveCommandPath(nativeCustomLauncher, {
+        env: resolvedEnvironment,
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, platform),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+      if (launcher === null || path.relative(configuredPath, launcher) !== "") {
+        return yield* new TextGenerationError({
+          operation,
+          detail: `This Codex instance uses a different custom launcher. Provision that launcher for metadata and point ${CODEX_METADATA_BINARY_ENV} at it, or unset the host override to use this account’s launcher.`,
+        });
+      }
     }
     const [help, , exitCode] = yield* Effect.gen(function* () {
+      // Codex initializes its home before parsing help, even with an empty environment.
+      const probeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3code-codex-probe-",
+      });
       const child = yield* commandSpawner.spawn(
-        ChildProcess.make(binary, ["exec", "--help"], {
-          cwd: path.dirname(binary),
-          env: {},
+        ChildProcess.make(configuredPath, ["exec", "--help"], {
+          cwd: path.dirname(configuredPath),
+          env: { CODEX_HOME: probeHome, HOME: probeHome, USERPROFILE: probeHome },
           extendEnv: false,
           stdin: "ignore",
           forceKillAfter: "1 second",
@@ -133,7 +145,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     ) {
       return yield* unusableBinary;
     }
-    return binary;
+    return configuredPath;
   });
 
   const readStreamAsString = <E>(
@@ -230,16 +242,12 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       readonly cwd: string;
       readonly env: NodeJS.ProcessEnv;
       readonly launchArgs: ReadonlyArray<string>;
-      readonly metadata: boolean;
     }) {
       const args = [...input.launchArgs, ...CODEX_NO_PLUGIN_ARGS, "mcp", "list", "--json"];
-      const spawnCommand = input.metadata
-        ? { command: input.binary, args, shell: false }
-        : yield* resolveSpawnCommand(input.binary, args, { env: input.env });
+      const spawnCommand = yield* resolveSpawnCommand(input.binary, args, { env: input.env });
       const child = yield* commandSpawner.spawn(
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           env: input.env,
-          ...(input.metadata ? { extendEnv: false } : {}),
           cwd: input.cwd,
           shell: spawnCommand.shell,
           forceKillAfter: "1 second",
@@ -366,27 +374,23 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         }
       }
       const execLaunchArgs = codexExecLaunchArgs(launchArgs);
-      const mcpServers = yield* listEnabledMcpServers({
-        binary,
-        cwd,
-        env,
-        metadata: metadataBinary !== undefined,
-        // `codex mcp` rejects --strict-config; the overrides still apply.
-        launchArgs: execLaunchArgs.filter((arg) => arg !== "--strict-config"),
-      });
-      if (metadataBinary !== undefined && mcpServers === null) {
-        return yield* new TextGenerationError({
-          operation,
-          detail: `Codex metadata could not list MCP servers. Check that the executable in ${CODEX_METADATA_BINARY_ENV} supports \`codex mcp list --json\` with this account's configuration.`,
-        });
-      }
-      const mcpServersOff = codexMcpServersOff(mcpServers ?? []);
+      // The metadata runtime disables MCP in the resolved thread, including launch-argument servers.
+      const mcpServers =
+        metadataBinary === undefined
+          ? yield* listEnabledMcpServers({
+              binary,
+              cwd,
+              env,
+              // `codex mcp` rejects --strict-config; the overrides still apply.
+              launchArgs: execLaunchArgs.filter((arg) => arg !== "--strict-config"),
+            })
+          : null;
+      const launchWithPluginsOff = [...execLaunchArgs, ...CODEX_NO_PLUGIN_ARGS];
       const args = [
         "exec",
-        ...execLaunchArgs,
-        // A user's MCP server could act on the text-generation prompt.
-        ...CODEX_NO_PLUGIN_ARGS,
-        ...(mcpServersOff ? ["--config", mcpServersOff] : []),
+        ...(mcpServers?.length
+          ? codexExecArgsWithoutMcp(launchWithPluginsOff, mcpServers)
+          : launchWithPluginsOff),
         ...(metadataBinary !== undefined ? [CODEX_METADATA_FLAG] : []),
         "--ephemeral",
         "--skip-git-repo-check",

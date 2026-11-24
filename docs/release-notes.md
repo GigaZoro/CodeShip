@@ -41,7 +41,7 @@
 
 ## 2026-11-24 — Codex metadata instructions
 
-- CodeShip hosts can opt in to a separate Codex executable that omits personal Codex instructions from generated metadata while keeping repository instructions and the selected account.
+- CodeShip’s metadata runtime uses fewer input tokens for titles and other generated text by skipping personal Codex instructions. It retains repository guidance and the selected account.
 
 ## 2026-11-24 — Requests stop waiting when a linked machine goes quiet
 

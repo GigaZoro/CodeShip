@@ -63,9 +63,11 @@ on:
       resource_key:
         required: true
         type: string
-      # Whether the job also builds the self-contained CLI archive for its own
-      # platform/arch, on this runner, and smoke-tests it here. Every archive
-      # is built on hardware of its own architecture.
+      codex_metadata_key:
+        description: Exact native metadata package built for this fork release.
+        required: false
+        type: string
+      # Whether to build the self-contained CLI archive for this platform and architecture.
       cli_archive:
         required: false
         default: false
@@ -398,6 +400,26 @@ jobs:
       # can read them. The package steps below sign only what the stages built
       # (scripts/lib/stage-dir.ts); scripts/release-desktop-workflow.test.ts
       # keeps that order.
+      - name: Restore fork Codex metadata
+        if: inputs.codex_metadata_key != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: codex-metadata.tar.gz
+          enableCrossOsArchive: true
+          key: ${{ inputs.codex_metadata_key }}
+          fail-on-cache-miss: true
+
+      - name: Unpack native metadata for staging
+        if: inputs.codex_metadata_key != ''
+        shell: bash
+        env:
+          TARGET: ${{ inputs.platform == 'linux' && 'x86_64-unknown-linux-musl' || inputs.rust_target }}
+        run: |
+          set -euo pipefail
+          tar -xzf codex-metadata.tar.gz -C "$RUNNER_TEMP"
+          node docs/operations/codex-metadata/package.mjs verify "$RUNNER_TEMP/codex-metadata" "$TARGET"
+          echo "T3CODE_BUILD_CODEX_METADATA_DIR=$RUNNER_TEMP/codex-metadata" >> "$GITHUB_ENV"
+
       - name: Stage CLI archive
         if: inputs.cli_archive
         shell: bash
@@ -548,7 +570,7 @@ jobs:
       - name: Smoke-test CLI archive
         if: inputs.cli_archive && inputs.verify_runner == ''
         shell: bash
-        run: node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{ inputs.version }}"
+        run: node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{ inputs.version }}" ${{ inputs.codex_metadata_key != '' && '--expect-codex-metadata' || '' }}
 
       - name: Upload CLI archive
         if: inputs.cli_archive
@@ -770,6 +792,9 @@ jobs:
             hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$(ls "$GITHUB_WORKSPACE"/release/*.dmg)"
             trap 'hdiutil detach "$mount" -force >/dev/null || true' EXIT
             app=$(ls -d "$mount"/*.app)
+            if [[ -n "${{ inputs.codex_metadata_key }}" ]]; then
+              python3 docs/operations/codex-metadata/smoke.py "$app/Contents/Resources/codex-metadata/bin/codex"
+            fi
             executable=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$app/Contents/Info.plist")
             "${check[@]}" --executable "$app/Contents/MacOS/$executable"
           else
@@ -796,6 +821,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p verify
+          if [[ -n "${{ inputs.codex_metadata_key }}" ]]; then
+            cp docs/operations/codex-metadata/smoke.py verify/
+          fi
           tar -C "$RUNNER_TEMP/desktop-artifact-stage/app/dist" -cf verify/unpacked.tar "$UNPACKED_DIR"
           esbuild=scripts/node_modules/.bin/esbuild
           banner="import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);"
@@ -914,6 +942,9 @@ jobs:
         run: |
           set -euo pipefail
           tar -C verify -xf verify/unpacked.tar
+          if [[ -n "${{ inputs.codex_metadata_key }}" ]]; then
+            python3 verify/smoke.py "verify/$UNPACKED_DIR/resources/codex-metadata/bin/codex.exe"
+          fi
           node verify/verify-windows-desktop-artifact.mjs \
             --app-dir "$(cygpath -w "$PWD/verify/$UNPACKED_DIR")" \
             --arch "${{ inputs.arch }}" --build-version "${{ inputs.version }}" --verbose
