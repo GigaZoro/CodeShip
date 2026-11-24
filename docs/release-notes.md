@@ -1,3 +1,7 @@
+## 2026-11-24 — Keep schedule edits made during a missed run
+
+- Editing a task while the scheduler skips a missed run now preserves the new schedule. Run history records the skip only when the scheduler advances that occurrence.
+
 ## 2026-11-24 — Release a delivered task’s worktree
 
 - Checkout owners can queue a release for one completed run, save its ignored files, and name the refs that preserve its history. The server waits for delivery and teardown, then releases the checkout. A follow-up opens a fresh checkout.

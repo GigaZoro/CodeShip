@@ -2773,34 +2773,58 @@ export const layer = Layer.effect(
       now: DateTime.DateTime,
       missedAt: string | null,
       reason: "missed" | "next_run_sooner",
+      storedCatchUp: number | null,
+      heldAt: string | null,
     ) {
       const next = nextRunAt(task, now);
+      const skipped = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const [current] = yield* sql<{ schedule_json: string }>`
+              SELECT schedule_json FROM scheduled_tasks WHERE task_id = ${task.id}
+            `;
+            if (
+              !current ||
+              !isSameSchedule(task.schedule, yield* decodeScheduleJson(current.schedule_json))
+            ) {
+              return false;
+            }
+            const moved = yield* sql`
+              UPDATE scheduled_tasks SET next_run_at = ${next}, updated_at = ${iso(now)}
+              WHERE ${occurrenceUnmoved(task)}
+                AND created_at = ${task.createdAt} AND updated_at = ${task.updatedAt}
+                AND (SELECT enabled FROM scheduled_task_catch_up WHERE task_id = ${task.id})
+                  IS ${storedCatchUp}
+                AND (SELECT held_at FROM scheduled_task_drain_holds
+                     WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}) IS ${heldAt}
+              RETURNING task_id
+            `;
+            if (moved.length === 0) return false;
+            yield* writeRunRecord({
+              id: `${task.id}:${missedAt ?? task.nextRunAt}:skipped`,
+              taskId: task.id,
+              trigger: "scheduled",
+              scheduledFor: missedAt,
+              startedAt: iso(now),
+              completedAt: iso(now),
+              outcome: "skipped",
+              skipReason: reason,
+              failover: null,
+            });
+            return true;
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not reschedule missed schedule task run.", { taskId: task.id, cause }),
+          ),
+        );
+      if (!skipped) return;
       yield* Effect.logInfo("Skipping missed schedule task run", {
         taskId: task.id,
         missedRunAt: missedAt,
         rescheduledTo: next,
         reason,
-      });
-      yield* sql`
-        UPDATE scheduled_tasks
-        SET next_run_at = ${next},
-            updated_at = ${iso(now)}
-        WHERE task_id = ${task.id}
-      `.pipe(
-        Effect.mapError((cause) =>
-          taskError("Could not reschedule missed schedule task run.", { taskId: task.id, cause }),
-        ),
-      );
-      yield* insertRunRecord({
-        id: `${task.id}:${missedAt ?? task.nextRunAt}:skipped`,
-        taskId: task.id,
-        trigger: "scheduled",
-        scheduledFor: missedAt,
-        startedAt: iso(now),
-        completedAt: iso(now),
-        outcome: "skipped",
-        skipReason: reason,
-        failover: null,
       });
       yield* notifyChanged;
     });
@@ -4082,7 +4106,14 @@ export const layer = Layer.effect(
         DateTime.toEpochMillis(missed.at) <= Date.parse(held.held_at);
       if (heldByUpdate) {
         if (!missed.catchUp) {
-          return yield* rescheduleMissedRun(task, now, missedAt, "next_run_sooner");
+          return yield* rescheduleMissedRun(
+            task,
+            now,
+            missedAt,
+            "next_run_sooner",
+            stored?.enabled ?? null,
+            held.held_at,
+          );
         }
         // next_run_at is its time, or the later time a one-machine turn asks about it at.
         if (DateTime.toEpochMillis(missed.at) <= Date.parse(task.nextRunAt)) {
@@ -4100,6 +4131,8 @@ export const layer = Layer.effect(
             now,
             missedAt,
             catchUp ? "next_run_sooner" : "missed",
+            stored?.enabled ?? null,
+            held?.held_at ?? null,
           );
         }
       }
