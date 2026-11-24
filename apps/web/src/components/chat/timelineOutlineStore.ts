@@ -1,3 +1,4 @@
+import type { MessageId } from "@t3tools/contracts";
 import { create } from "zustand";
 
 export interface TimelineOutlinePrompt {
@@ -69,6 +70,13 @@ export function publishTimelineOutline(
 
 export type TimelinePromptStep = "previous" | "next";
 
+type StarredMessageNavigation = {
+  readonly reveal: (messageId: MessageId) => void;
+  readonly next: () => void;
+};
+
+const starredNavigationByThreadKey = new Map<string, StarredMessageNavigation>();
+
 const revealByThreadKey = new Map<string, (promptId: string) => void>();
 const stepByThreadKey = new Map<string, (direction: TimelinePromptStep) => boolean>();
 
@@ -77,13 +85,16 @@ export function attachTimelineOutline(
   threadKey: string,
   reveal: (promptId: string) => void,
   step: (direction: TimelinePromptStep) => boolean,
+  starred: StarredMessageNavigation,
 ): () => void {
   revealByThreadKey.set(threadKey, reveal);
   stepByThreadKey.set(threadKey, step);
+  starredNavigationByThreadKey.set(threadKey, starred);
   return () => {
     if (revealByThreadKey.get(threadKey) !== reveal) return;
     revealByThreadKey.delete(threadKey);
     stepByThreadKey.delete(threadKey);
+    starredNavigationByThreadKey.delete(threadKey);
     const { [threadKey]: _detached, ...rest } = useTimelineOutlineStore.getState().byThreadKey;
     useTimelineOutlineStore.setState({ byThreadKey: rest });
   };
@@ -96,4 +107,12 @@ export function revealTimelinePrompt(threadKey: string, promptId: string): void 
 /** Scrolls the thread's timeline to the prompt before or after the one in view; false when none. */
 export function stepTimelinePrompt(threadKey: string, direction: TimelinePromptStep): boolean {
   return stepByThreadKey.get(threadKey)?.(direction) ?? false;
+}
+
+export function revealTimelineStarredMessage(threadKey: string, messageId: MessageId): void {
+  starredNavigationByThreadKey.get(threadKey)?.reveal(messageId);
+}
+
+export function stepTimelineStarredMessage(threadKey: string): void {
+  starredNavigationByThreadKey.get(threadKey)?.next();
 }

@@ -98,11 +98,12 @@ import {
   PinOffIcon,
   SquarePenIcon,
   DownloadIcon,
+  StarIcon,
   TextSearchIcon,
   UserPlusIcon,
 } from "lucide-react";
 import { openThreadFind } from "./chat/threadFindStore";
-import { stepTimelinePrompt } from "./chat/timelineOutlineStore";
+import { stepTimelinePrompt, stepTimelineStarredMessage } from "./chat/timelineOutlineStore";
 import {
   useDeferredValue,
   useEffect,
@@ -138,7 +139,11 @@ import { filesystemEnvironment, useFilesystemReadAccess } from "../state/filesys
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
-import { environmentThreadShells, threadEnvironment } from "../state/threads";
+import {
+  environmentThreadDetails,
+  environmentThreadShells,
+  threadEnvironment,
+} from "../state/threads";
 import { useReopenLastArchivedThread } from "../hooks/useReopenLastArchivedThread";
 import { nextNeedsYouThread } from "@t3tools/client-runtime/state/thread-inbox";
 import { anyEnvironmentSupportsThreadFolders } from "@t3tools/client-runtime/thread-folders";
@@ -756,9 +761,13 @@ function OpenCommandPaletteDialog(props: {
 
   const { projectByKey } = useProjectLookups();
 
-  const activeThreadKey = activeThread
-    ? scopedThreadKey(scopeThreadRef(activeThread.environmentId, activeThread.id))
+  const activeThreadRef = activeThread
+    ? scopeThreadRef(activeThread.environmentId, activeThread.id)
     : null;
+  const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  const starredMessageIds = useAtomValue(
+    environmentThreadDetails.starredMessageIdsAtom(activeThreadRef),
+  );
   const supportsThreadFind =
     environments.find((environment) => environment.environmentId === activeThread?.environmentId)
       ?.serverConfig?.threadFind === true;
@@ -1475,6 +1484,17 @@ function OpenCommandPaletteDialog(props: {
         },
       },
     );
+  }
+
+  if (activeThreadKey !== null && starredMessageIds.length > 0) {
+    actionItems.push({
+      kind: "action",
+      value: "action:next-starred-message",
+      title: t("Jump to next starred message"),
+      searchTerms: ["star", "bookmark", "favorite", "next", "jump", "message"],
+      icon: <StarIcon className={ITEM_ICON_CLASS} />,
+      run: async () => stepTimelineStarredMessage(activeThreadKey),
+    });
   }
 
   if (nextNeedsYou !== null) {

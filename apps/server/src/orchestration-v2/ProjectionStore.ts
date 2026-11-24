@@ -547,6 +547,15 @@ export interface ProjectionStoreV2Shape {
     threadId: ThreadId,
     options: ProjectionTimelinePageOptions,
   ) => Effect.Effect<ProjectionTimelinePage, ProjectionStoreV2Error>;
+  readonly hasStarableMessage: (
+    thread: OrchestrationV2AppThread,
+    messageId: MessageId,
+  ) => Effect.Effect<boolean, ProjectionStoreV2Error>;
+  readonly getMessageIdsInRuns: (
+    threadId: ThreadId,
+    messageIds: ReadonlyArray<MessageId>,
+    runIds: ReadonlyArray<RunId>,
+  ) => Effect.Effect<ReadonlyArray<MessageId>, ProjectionStoreV2Error>;
   readonly getMessageCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
   readonly getSubagentCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
   readonly getNextTurnItemOrdinal: (
@@ -1017,6 +1026,8 @@ export function applyToProjection(
   };
 
   switch (event.type) {
+    case "thread.message-stars-updated":
+      return { ...projection, thread: { ...projection.thread, starredMessageIds: event.payload } };
     case "thread.pull-request-link-updated":
       return {
         ...projection,
@@ -1042,7 +1053,7 @@ export function applyToProjection(
     case "thread.guest-share-updated":
       return {
         ...base,
-        thread: event.payload,
+        thread: { ...event.payload, starredMessageIds: projection.thread.starredMessageIds },
       };
     // Reordering, putting off, and PR refreshes preserve the orchestrator's activity timestamp.
     case "thread.active-reordered":
@@ -1055,14 +1066,14 @@ export function applyToProjection(
     case "thread.pull-request-synced":
       return {
         ...base,
-        thread: event.payload,
+        thread: { ...event.payload, starredMessageIds: projection.thread.starredMessageIds },
         updatedAt: event.payload.updatedAt,
       };
     case "thread.visited":
     case "thread.marked-unread":
       return {
         ...projection,
-        thread: event.payload,
+        thread: { ...event.payload, starredMessageIds: projection.thread.starredMessageIds },
       };
     case "run.created":
     case "run.updated":
@@ -2247,6 +2258,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.fnUntraced(
         function* (event) {
           switch (event.type) {
+            case "thread.message-stars-updated":
+              yield* sql`
+                UPDATE orchestration_v2_projection_threads
+                SET payload_json = json_set(payload_json, '$.starredMessageIds', json(${encodeIdList(event.payload)}))
+                WHERE thread_id = ${event.threadId}
+              `;
+              break;
             case "thread.pull-request-link-updated": {
               const thread = yield* getThread(event.threadId);
               yield* apply({
@@ -2330,7 +2348,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 updated_at = excluded.updated_at,
                 archived_at = excluded.archived_at,
                 deleted_at = excluded.deleted_at,
-                payload_json = excluded.payload_json
+                payload_json = json_patch(excluded.payload_json, json_object(
+                  'starredMessageIds', json_extract(orchestration_v2_projection_threads.payload_json, '$.starredMessageIds')
+                ))
             `;
               break;
             }
@@ -3110,6 +3130,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             event.type !== "thread.color-updated" &&
             event.type !== "thread.folder-updated" &&
             event.type !== "thread.artifacts-updated" &&
+            event.type !== "thread.message-stars-updated" &&
             event.type !== "thread.visited" &&
             event.type !== "thread.marked-unread" &&
             event.type !== "thread.metadata-updated" &&
@@ -6345,6 +6366,23 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
+    const getMessageIdsInRuns: ProjectionStoreV2Shape["getMessageIdsInRuns"] = Effect.fn(
+      "ProjectionStore.getMessageIdsInRuns",
+    )(
+      function* (threadId, messageIds, runIds) {
+        const rows = yield* sql<{ message_id: MessageId }>`
+          SELECT DISTINCT message.message_id
+          FROM json_each(${encodeIdList(messageIds)}) AS wanted
+          CROSS JOIN orchestration_v2_projection_messages AS message
+            ON message.message_id = wanted.value
+          WHERE message.thread_id = ${threadId}
+            AND message.run_id IN (SELECT value FROM json_each(${encodeIdList(runIds)}))
+        `;
+        return rows.map((row) => row.message_id);
+      },
+      (effect, threadId) => effect.pipe(Effect.mapError(controlReadError(threadId))),
+    );
+
     const getMessageCount: ProjectionStoreV2Shape["getMessageCount"] = (threadId) =>
       sql<{
         count: number;
@@ -6638,6 +6676,59 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               : new ProjectionStoreReadError({ threadId, cause }),
           ),
         ),
+    );
+
+    const hasStarableMessage: ProjectionStoreV2Shape["hasStarableMessage"] = Effect.fn(
+      "ProjectionStore.hasStarableMessage",
+    )(
+      function* (thread, messageId) {
+        const starableRun = sql`
+          (run.status IS NULL OR run.status NOT IN ('rolled_back', 'queued', 'preparing'))
+          AND (run.status IS NOT 'cancelled' OR json_extract(run.payload_json, '$.startedAt') IS NOT NULL)
+        `;
+        const rows = yield* sql<{ eligible: number }>`
+          SELECT 1 AS eligible
+          FROM orchestration_v2_projection_messages AS message
+          LEFT JOIN orchestration_v2_projection_runs AS run ON run.run_id = message.run_id
+          WHERE message.thread_id = ${thread.id} AND message.message_id = ${messageId}
+            AND message.role IN ('user', 'assistant') AND ${starableRun}
+        `;
+        if (rows.length > 0) return true;
+
+        const seen = new Set([thread.id]);
+        let fork = inheritedRunFork(thread);
+        while (fork !== null && !seen.has(fork.threadId)) {
+          seen.add(fork.threadId);
+          const source = yield* getThread(fork.threadId);
+          const [boundary] = yield* sql<{ eligible: number }>`
+            SELECT EXISTS (
+              SELECT 1
+              FROM orchestration_v2_projection_turn_items AS item
+                INDEXED BY orchestration_v2_projection_turn_items_message_idx
+              LEFT JOIN orchestration_v2_projection_runs AS run ON run.run_id = item.run_id
+              WHERE item.thread_id = boundary.thread_id
+                AND item.type IN ('user_message', 'assistant_message')
+                AND json_extract(item.payload_json, '$.messageId') = ${messageId}
+                AND NOT (
+                  item.type = 'user_message'
+                  AND json_extract(item.payload_json, '$.inputIntent') IS 'queued_turn'
+                  AND item.status IS 'pending'
+                )
+                AND (
+                  run.ordinal <= boundary.ordinal
+                  OR (item.run_id IS NULL AND ${source.historyOrigin ?? null} = 'v1_import')
+                )
+            ) AS eligible
+            FROM orchestration_v2_projection_runs AS boundary
+            WHERE boundary.run_id = ${fork.runId} AND boundary.thread_id = ${fork.threadId}
+          `;
+          if (boundary === undefined) break;
+          if (boundary.eligible === 1) return true;
+          fork = inheritedRunFork(source);
+        }
+        return false;
+      },
+      (effect, thread) => effect.pipe(Effect.mapError(controlReadError(thread.id))),
     );
 
     const { searchThread, searchThreadStream } = yield* makeThreadFind((threadId) =>
@@ -8336,6 +8427,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getRunTurnItemIdentities: readOnReader(getRunTurnItemIdentities),
       getRunsWithLostBackgroundWork: readOnReader(getRunsWithLostBackgroundWork),
       isNodeStored: readOnReader(isNodeStored),
+      hasStarableMessage: readOnReader(hasStarableMessage),
+      getMessageIdsInRuns: readOnReader(getMessageIdsInRuns),
       getMessageCount: readOnReader(getMessageCount),
       getSubagentCount: readOnReader(getSubagentCount),
       getNextTurnItemOrdinal: readOnReader(getNextTurnItemOrdinal),

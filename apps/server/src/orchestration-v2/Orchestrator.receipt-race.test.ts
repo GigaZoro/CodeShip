@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  MessageId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -12,6 +13,8 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -120,4 +123,62 @@ it.effect("a command id reused concurrently for two threads succeeds for only on
       );
     }
   }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each([
+  { outcome: "a rejected star", starred: true },
+  { outcome: "a no-op unstar", starred: false },
+])(
+  "replays the winning cross-thread rejection when $outcome loses the receipt insert",
+  ({ starred }) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sql = yield* SqlClient.SqlClient;
+      const loserThreadId = ThreadId.make("thread:race-loser");
+      const winnerThreadId = ThreadId.make("thread:race-winner");
+      for (const threadId of [loserThreadId, winnerThreadId]) {
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`create:${threadId}`),
+          threadId,
+          projectId: ProjectId.make("project:receipt-race"),
+          title: threadId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+      }
+
+      // Insert the other thread's receipt after the lookup and before the dispatch reserves it.
+      yield* sql`
+        CREATE TEMP TRIGGER win_receipt_race BEFORE INSERT ON orchestration_command_receipts
+        WHEN NEW.command_id = 'command:star-race' AND NEW.aggregate_id = 'thread:race-loser'
+        BEGIN
+          INSERT INTO orchestration_command_receipts (
+            command_id, aggregate_kind, aggregate_id, command_type,
+            accepted_at, result_sequence, status, error
+          ) VALUES (
+            NEW.command_id, 'thread', 'thread:race-winner', 'queued-run.edit',
+            NEW.accepted_at, NEW.result_sequence, 'rejected', 'The queued run is missing.'
+          );
+        END
+      `;
+      const command = {
+        type: "thread.message.star",
+        commandId: CommandId.make("command:star-race"),
+        threadId: loserThreadId,
+        messageId: MessageId.make("message:missing"),
+        starred,
+      } as const;
+      const lost = yield* orchestrator.dispatch(command).pipe(Effect.result);
+      const retry = yield* orchestrator.dispatch(command).pipe(Effect.result);
+      assert(Result.isFailure(retry));
+      assert.equal(retry.failure._tag, "OrchestratorCommandPreviouslyRejectedError");
+      assert(Result.isFailure(lost), "the initial dispatch must replay the winning rejection");
+      assert.deepEqual(lost.failure, retry.failure);
+    }).pipe(Effect.provide(layerTest)),
 );

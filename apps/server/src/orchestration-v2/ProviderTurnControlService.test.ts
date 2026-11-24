@@ -290,6 +290,8 @@ it.effect(
           getThreadSnapshot: () => Effect.die("unused getThreadSnapshot"),
           getThreadSnapshotWindow: () => Effect.die("unused getThreadSnapshotWindow"),
           hasUserWrittenMessage: () => Effect.die("unused hasUserWrittenMessage"),
+          hasStarableMessage: () => Effect.die("unused hasStarableMessage"),
+          getMessageIdsInRuns: () => Effect.die("unused getMessageIdsInRuns"),
         }),
       );
       const layerSessionManager = Layer.succeed(

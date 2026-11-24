@@ -2,9 +2,10 @@ import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
-import { NodeId, RunAttemptId, TrimmedNonEmptyString } from "./index.ts";
+import { CommandId, NodeId, RunAttemptId, TrimmedNonEmptyString } from "./index.ts";
 import {
   latestProviderTurnForAttempt,
+  OrchestrationV2DispatchCommandError,
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
@@ -35,6 +36,20 @@ const decodeOrchestrationV2ProviderCapabilities = Schema.decodeUnknownSync(
 );
 
 describe("orchestration V2 contracts", () => {
+  it.each(["message-not-found", "limit-reached"] as const)(
+    "preserves the %s message star rejection across RPC encoding",
+    (messageStarReason) => {
+      const codec = Schema.toCodecJson(OrchestrationV2DispatchCommandError);
+      const error = new OrchestrationV2DispatchCommandError({
+        commandId: CommandId.make("star"),
+        commandType: "thread.message.star",
+        message: "Command rejected",
+        messageStarReason,
+      });
+      const encoded = Schema.encodeSync(codec)(error);
+      expect(Schema.decodeSync(codec)(encoded).messageStarReason).toBe(messageStarReason);
+    },
+  );
   it("decodes thread event types from a newer server as skippable items", () => {
     const decodeWireItems = Schema.decodeUnknownSync(
       Schema.toCodecJson(Schema.Array(OrchestrationV2RpcSchemas.subscribeThread.output)),

@@ -267,6 +267,8 @@ export function applyOrchestrationV2ProjectionEvent(
   const latestLocalTurnOrdinal = options?.latestLocalTurnOrdinal;
   const base = { ...projection, updatedAt: event.occurredAt };
   switch (event.type) {
+    case "thread.message-stars-updated":
+      return { ...projection, thread: { ...projection.thread, starredMessageIds: event.payload } };
     case "thread.pull-request-link-updated":
       return {
         ...base,
@@ -292,7 +294,10 @@ export function applyOrchestrationV2ProjectionEvent(
     case "thread.model-selection-updated":
     case "thread.provider-switched":
     case "thread.guest-share-updated":
-      return { ...base, thread: event.payload };
+      return {
+        ...base,
+        thread: { ...event.payload, starredMessageIds: projection.thread.starredMessageIds },
+      };
     // These events preserve the thread’s activity timestamp.
     case "thread.visited":
     case "thread.later-set":
@@ -302,7 +307,10 @@ export function applyOrchestrationV2ProjectionEvent(
     case "thread.folder-updated":
     case "thread.artifacts-updated":
     case "thread.marked-unread":
-      return { ...projection, thread: event.payload };
+      return {
+        ...projection,
+        thread: { ...event.payload, starredMessageIds: projection.thread.starredMessageIds },
+      };
     case "run.created":
     case "run.updated": {
       const current = base.runs.find((run) => run.id === event.payload.id);

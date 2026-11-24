@@ -182,6 +182,7 @@ describe("command permissions", () => {
           "thread.notification-level.set",
           "thread.color.set",
           "thread.tag.set",
+          "thread.message.star",
         ]) {
           const input = { type };
           expect(registry.get(dispatch.permissionAtom(env, input))).toBe(false);

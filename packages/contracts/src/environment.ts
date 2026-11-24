@@ -160,6 +160,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * chats in its group's folder, and serves `threadFolders.rename`; hide folder actions where absent.
    */
   threadFolders: Schema.optionalKey(Schema.Boolean),
+  /** Accepts the thread.message.star command. */
+  threadMessageStars: Schema.optionalKey(Schema.Boolean),
   /** Stores a task's `delegateProviders` and skips its runs while one is out of usage; hide that choice where absent. */
   scheduledTaskDelegateProviders: Schema.optionalKey(Schema.Boolean),
   /** Stores a task's `maxLiveRuns` and skips its runs while that many still work; hide that choice where absent. */

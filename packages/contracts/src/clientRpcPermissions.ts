@@ -105,6 +105,11 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 
+const CLIENT_GUARDED_COMMAND_SCOPES = {
+  "thread.message.star": AuthOrchestrationOperateScope,
+  "thread.tag.set": AuthOrchestrationOperateScope,
+} as const;
+
 const decodePrepareThread = Schema.decodeUnknownSync(GitPreparePullRequestThreadInput);
 const decodeStackedAction = Schema.decodeUnknownSync(GitRunStackedActionInput);
 
@@ -117,9 +122,9 @@ export function clientRpcRequiredScopes(
     typeof input === "object" &&
     input !== null &&
     "type" in input &&
-    input.type === "thread.tag.set"
+    (input.type === "thread.message.star" || input.type === "thread.tag.set")
   ) {
-    return [AuthOrchestrationOperateScope];
+    return [CLIENT_GUARDED_COMMAND_SCOPES[input.type]];
   }
   if (method === WS_METHODS.gitPreparePullRequestThread && input !== undefined) {
     const payload = decodePrepareThread(input);

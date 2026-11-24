@@ -177,7 +177,10 @@ export interface EventSinkV2Shape {
     readonly commandType: string;
     readonly rejectedAt: DateTime.Utc;
     readonly error: string;
-  }) => Effect.Effect<CommandReceiptStore.CommandReceiptV2, EventSinkV2Error>;
+  }) => Effect.Effect<
+    { readonly receipt: CommandReceiptStore.CommandReceiptV2; readonly inserted: boolean },
+    EventSinkV2Error
+  >;
   readonly commitProjectCommand: (input: {
     readonly commandId: CommandId;
     readonly projectId: ProjectId;
@@ -798,11 +801,12 @@ const layerBase: Layer.Layer<
             error: input.error,
           };
           const inserted = yield* commandReceipts.insertIfAbsent(receipt);
-          if (inserted) {
-            return receipt;
-          }
+          if (inserted) return { receipt, inserted };
           const existing = yield* commandReceipts.getByCommandId(input.commandId);
-          return Option.getOrElse(existing, () => receipt);
+          if (Option.isNone(existing)) {
+            return yield* Effect.fail(`Command ${input.commandId} has no thread receipt.`);
+          }
+          return { receipt: existing.value, inserted };
         }),
       );
     });

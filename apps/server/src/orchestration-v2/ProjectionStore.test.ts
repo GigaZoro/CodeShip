@@ -7483,6 +7483,30 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         },
       });
 
+      const { statements, tracer } = traceSqlStatements();
+      assert.deepEqual(
+        yield* projectionStore
+          .getMessageIdsInRuns(threadId, [userMessageId, userMessageId], [runId])
+          .pipe(Effect.withTracer(tracer)),
+        [userMessageId],
+      );
+      const [query] = statements.filter((statement) =>
+        statement.includes("orchestration_v2_projection_messages"),
+      );
+      assert.isDefined(query);
+      const sql = yield* SqlClient.SqlClient;
+      const plan = yield* sql.unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, [
+        "[]",
+        "[]",
+        "[]",
+      ]);
+      assert.deepEqual(
+        plan.map((row) => row.detail).filter((detail) => detail.includes(" USING INDEX ")),
+        [
+          "SEARCH message USING INDEX sqlite_autoindex_orchestration_v2_projection_messages_1 (message_id=?)",
+        ],
+      );
+
       const projection = yield* projectionStore.getThreadProjection(threadId);
 
       assert.deepEqual(
@@ -7616,7 +7640,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           payload: {
             id: runId,
             threadId: sourceThreadId,
-            ordinal,
+            ordinal: ordinal === 1 ? 1 : 3,
             providerInstanceId,
             modelSelection,
             providerThreadId: sourceProviderThreadId,
@@ -7704,6 +7728,37 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         ["user_message", "assistant_message", "user_message", "assistant_message", "fork"],
       );
 
+      const rolledBackReply = MessageId.make("message:projection-fork-source-rollback:assistant:2");
+      yield* projectionStore.apply({
+        id: EventId.make("event:projection-fork-source-rollback:source-reply"),
+        type: "message.updated",
+        threadId: sourceThreadId,
+        runId: sourceRun2Id,
+        nodeId: sourceRun2NodeId,
+        driver,
+        occurredAt: now,
+        payload: {
+          createdBy: "agent",
+          creationSource: "provider",
+          id: rolledBackReply,
+          threadId: sourceThreadId,
+          runId: sourceRun2Id,
+          nodeId: sourceRun2NodeId,
+          role: "assistant",
+          text: "two",
+          attachments: [],
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      assert.isTrue(
+        yield* projectionStore.hasStarableMessage(
+          yield* projectionStore.getThread(sourceThreadId),
+          rolledBackReply,
+        ),
+      );
+
       yield* projectionStore.apply({
         id: EventId.make("event:projection-fork-source-rollback:run-2-rolled-back"),
         type: "run.updated",
@@ -7715,7 +7770,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         payload: {
           id: sourceRun2Id,
           threadId: sourceThreadId,
-          ordinal: 2,
+          ordinal: 3,
           providerInstanceId,
           modelSelection,
           providerThreadId: sourceProviderThreadId,
@@ -7806,7 +7861,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         payload: {
           id: sourceRun3Id,
           threadId: sourceThreadId,
-          ordinal: 4,
+          ordinal: 5,
           providerInstanceId,
           modelSelection,
           providerThreadId: sourceProviderThreadId,
@@ -7904,7 +7959,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         payload: {
           id: emptyBoundaryRunId,
           threadId: sourceThreadId,
-          ordinal: 3,
+          ordinal: 4,
           providerInstanceId,
           modelSelection,
           providerThreadId: sourceProviderThreadId,
@@ -8130,6 +8185,47 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           deletedAt: null,
         },
       });
+      const sourceReply = targetBeforeRollback.visibleTurnItems.find(
+        ({ item }) => item.type === "assistant_message",
+      )?.item;
+      assert(sourceReply?.type === "assistant_message");
+      const pastFork = MessageId.make("message:projection-fork-source-rollback:past-fork");
+      yield* projectionStore.apply({
+        id: EventId.make("event:projection-fork-source-rollback:past-fork-message"),
+        type: "turn-item.updated",
+        threadId: sourceThreadId,
+        runId: sourceRun3Id,
+        occurredAt: now,
+        payload: {
+          ...sourceReply,
+          id: TurnItemId.make("turn-item:projection-fork-source-rollback:past-fork"),
+          messageId: pastFork,
+          runId: sourceRun3Id,
+          nodeId: sourceRun3NodeId,
+          ordinal: 600,
+        },
+      });
+      const nested = yield* projectionStore.getThread(nestedThreadId);
+      const { statements: lookupStatements, tracer: lookupTracer } = traceSqlStatements();
+      assert.isTrue(
+        yield* projectionStore
+          .hasStarableMessage(nested, sourceReply.messageId)
+          .pipe(Effect.withTracer(lookupTracer)),
+      );
+      assert.lengthOf(
+        lookupStatements.filter((statement) =>
+          statement.includes("INDEXED BY orchestration_v2_projection_turn_items_message_idx"),
+        ),
+        2,
+      );
+      const target = yield* projectionStore.getThread(targetThreadId);
+      const source = yield* projectionStore.getThread(sourceThreadId);
+      assert.isTrue(yield* projectionStore.hasStarableMessage(target, rolledBackReply));
+      assert.isTrue(yield* projectionStore.hasStarableMessage(nested, rolledBackReply));
+      assert.isFalse(yield* projectionStore.hasStarableMessage(source, rolledBackReply));
+      assert.isFalse(yield* projectionStore.hasStarableMessage(target, pastFork));
+      assert.isFalse(yield* projectionStore.hasStarableMessage(nested, pastFork));
+
       const boundedNested = yield* projectionStore.getThreadSnapshotWindow(nestedThreadId, {
         rowLimit: 2,
       });
@@ -8349,9 +8445,73 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         ],
       );
 
+      const cancelledRunId = RunId.make("run:projection-fork-source-rollback:cancelled");
+      const cancelledNodeId = NodeId.make("node:projection-fork-source-rollback:cancelled");
+      const queuedPrompt = MessageId.make("message:projection-fork-source-rollback:queued");
+      yield* projectionStore.apply({
+        id: EventId.make("event:projection-fork-source-rollback:cancelled-run"),
+        type: "run.updated",
+        threadId: sourceThreadId,
+        runId: cancelledRunId,
+        nodeId: cancelledNodeId,
+        driver,
+        occurredAt: now,
+        payload: {
+          id: cancelledRunId,
+          threadId: sourceThreadId,
+          ordinal: 2,
+          providerInstanceId,
+          modelSelection,
+          providerThreadId: sourceProviderThreadId,
+          userMessageId: queuedPrompt,
+          rootNodeId: cancelledNodeId,
+          activeAttemptId: null,
+          status: "cancelled",
+          requestedAt: now,
+          startedAt: null,
+          completedAt: now,
+          checkpointId: null,
+          contextHandoffId: null,
+        },
+      });
+      yield* projectionStore.apply({
+        id: EventId.make("event:projection-fork-source-rollback:queued-prompt"),
+        type: "turn-item.updated",
+        threadId: sourceThreadId,
+        runId: cancelledRunId,
+        nodeId: cancelledNodeId,
+        driver,
+        occurredAt: now,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: TurnItemId.make("turn-item:projection-fork-source-rollback:queued-prompt"),
+          threadId: sourceThreadId,
+          runId: cancelledRunId,
+          nodeId: cancelledNodeId,
+          providerThreadId: sourceProviderThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 50,
+          status: "pending",
+          title: null,
+          startedAt: null,
+          completedAt: null,
+          updatedAt: now,
+          type: "user_message",
+          messageId: queuedPrompt,
+          inputIntent: "queued_turn",
+          text: "queued prompt",
+          attachments: [],
+        },
+      });
+      assert.isFalse(yield* projectionStore.hasStarableMessage(target, queuedPrompt));
+      assert.isFalse(yield* projectionStore.hasStarableMessage(nested, queuedPrompt));
+
       yield* sql`
         DELETE FROM orchestration_v2_projection_turn_items
-        WHERE run_id IN (${sourceRun1Id}, ${sourceRun2Id})
+        WHERE run_id IN (${sourceRun1Id}, ${sourceRun2Id}, ${cancelledRunId})
       `;
       const importedItemId = "turn-item:projection-fork-source-rollback:legacy-import";
       yield* sql`

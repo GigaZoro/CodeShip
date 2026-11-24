@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+import * as Struct from "effect/Struct";
 
 import {
   CheckpointId,
@@ -462,6 +463,11 @@ const StoredHiddenArtifacts = Schema.Array(Schema.String).pipe(
   Schema.catchDecoding(() => Effect.succeedSome([])),
 );
 
+export const MAX_THREAD_STARRED_MESSAGES = 200;
+const StarredMessageIds = Schema.Array(MessageId).check(
+  Schema.isMaxLength(MAX_THREAD_STARRED_MESSAGES),
+);
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -523,6 +529,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   folder: Schema.optional(StoredThreadFolder),
   /** Pages (by html_render attachment id) removed from the Artifacts gallery; the thread keeps rendering them inline. */
   hiddenArtifacts: Schema.optional(StoredHiddenArtifacts),
+  starredMessageIds: Schema.optional(StarredMessageIds),
   lastVisitedAt: Schema.NullOr(Schema.DateTimeUtc).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
@@ -2096,11 +2103,16 @@ const OrchestrationV2EventBase = Schema.Struct({
   occurredAt: Schema.DateTimeUtc,
 });
 
+// The star list is owned by its dedicated event and appears on thread snapshots.
+const WholeThreadEventPayload = OrchestrationV2AppThread.mapFields(
+  Struct.omit(["starredMessageIds"]),
+);
+
 export const OrchestrationV2DomainEvent = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
     type: Schema.Literal("thread.created"),
-    payload: OrchestrationV2AppThread,
+    payload: WholeThreadEventPayload,
   }),
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
@@ -2133,7 +2145,12 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.provider-switched",
       "thread.guest-share-updated",
     ]),
-    payload: OrchestrationV2AppThread,
+    payload: WholeThreadEventPayload,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("thread.message-stars-updated"),
+    payload: StarredMessageIds,
   }),
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
@@ -3055,11 +3072,15 @@ const OrchestrationV2JsonEventBaseFields = {
   occurredAt: Schema.DateTimeUtcFromString,
 } as const;
 
+const WholeThreadEventJsonPayload = OrchestrationV2AppThreadJson.mapFields(
+  Struct.omit(["starredMessageIds"]),
+);
+
 export const OrchestrationV2DomainEventJson = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
     type: Schema.Literal("thread.created"),
-    payload: OrchestrationV2AppThreadJson,
+    payload: WholeThreadEventJsonPayload,
   }),
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
@@ -3092,7 +3113,12 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.provider-switched",
       "thread.guest-share-updated",
     ]),
-    payload: OrchestrationV2AppThreadJson,
+    payload: WholeThreadEventJsonPayload,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2JsonEventBaseFields,
+    type: Schema.Literal("thread.message-stars-updated"),
+    payload: StarredMessageIds,
   }),
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
@@ -3371,6 +3397,13 @@ export const OrchestrationV2Command = Schema.Union([
      * `threadFolderKey`; otherwise it fails as stale, so a move made meanwhile wins.
      */
     from: Schema.optional(Schema.NullOr(ThreadFolder)),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.message.star"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    messageId: MessageId,
+    starred: Schema.Boolean,
   }),
   Schema.Struct({
     type: Schema.Literal("thread.artifact.hide"),
@@ -4480,6 +4513,11 @@ export const OrchestrationV2ThreadStreamItem = withRecordIdTable(
 );
 export type OrchestrationV2ThreadStreamItem = typeof OrchestrationV2ThreadStreamItem.Type;
 
+export const OrchestrationV2MessageStarRejection = Schema.Literals([
+  "message-not-found",
+  "limit-reached",
+]);
+
 export class OrchestrationV2DispatchCommandError extends Schema.TaggedError<OrchestrationV2DispatchCommandError>()(
   "OrchestrationV2DispatchCommandError",
   {
@@ -4489,6 +4527,7 @@ export class OrchestrationV2DispatchCommandError extends Schema.TaggedError<Orch
     detail: Schema.optional(Schema.String),
     /** Refused because the thread changed since the caller read it; its newer state stands. */
     stale: Schema.optional(Schema.Boolean),
+    messageStarReason: Schema.optional(OrchestrationV2MessageStarRejection),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}

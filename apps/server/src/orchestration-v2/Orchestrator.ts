@@ -32,6 +32,8 @@ import {
   isCompactionCommandMessage,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
+  MAX_THREAD_STARRED_MESSAGES,
+  OrchestrationV2MessageStarRejection,
   MessageId,
   NodeId,
   type ModelSelection,
@@ -123,7 +125,7 @@ import {
   isNativeMaintenanceCommand,
   resolveMessageDispatchIntent,
 } from "./CommandPolicy.ts";
-import { CommandReceiptStoreV2 } from "./CommandReceiptStore.ts";
+import { CommandReceiptStoreV2, type CommandReceiptV2 } from "./CommandReceiptStore.ts";
 import {
   ContextHandoffServiceV2,
   readForkHistoryItems,
@@ -250,6 +252,31 @@ export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDi
     return `Failed to dispatch orchestration command ${this.commandType} (${this.commandId}).`;
   }
 }
+
+export class OrchestratorMessageStarError extends Schema.TaggedError<OrchestratorMessageStarError>()(
+  "OrchestratorMessageStarError",
+  {
+    threadId: ThreadId,
+    messageId: MessageId,
+    reason: OrchestrationV2MessageStarRejection,
+  },
+) {
+  override get message(): string {
+    return this.reason === "message-not-found"
+      ? "This message is no longer in the conversation."
+      : `This thread already has ${MAX_THREAD_STARRED_MESSAGES} starred messages.`;
+  }
+}
+
+const MessageStarReceiptError = Schema.fromJsonString(
+  Schema.Struct({
+    messageId: MessageId,
+    starred: Schema.Boolean,
+    reason: OrchestrationV2MessageStarRejection,
+  }),
+);
+const encodeMessageStarReceiptError = Schema.encodeSync(MessageStarReceiptError);
+const decodeMessageStarReceiptError = Schema.decodeUnknownOption(MessageStarReceiptError);
 
 export class OrchestratorThreadAlreadyExistsError extends Schema.TaggedError<OrchestratorThreadAlreadyExistsError>()(
   "OrchestratorThreadAlreadyExistsError",
@@ -402,6 +429,35 @@ export class OrchestratorCommandPreviouslyRejectedError extends Schema.TaggedErr
   }
 }
 
+function replayRejectedCommand(command: OrchestrationV2ServerCommand, receipt: CommandReceiptV2) {
+  if (
+    command.type === "thread.message.star" &&
+    receipt.commandType === command.type &&
+    receipt.threadId === command.threadId
+  ) {
+    const error = decodeMessageStarReceiptError(receipt.error);
+    if (
+      Option.isSome(error) &&
+      error.value.messageId === command.messageId &&
+      error.value.starred === command.starred
+    ) {
+      return new OrchestratorMessageStarError({
+        threadId: command.threadId,
+        messageId: error.value.messageId,
+        reason: error.value.reason,
+      });
+    }
+  }
+  return new OrchestratorCommandPreviouslyRejectedError({
+    commandId: command.commandId,
+    commandType: command.type,
+    detail:
+      receipt.commandType === "thread.message.star"
+        ? "Previously rejected."
+        : (receipt.error ?? "Previously rejected."),
+  });
+}
+
 export class OrchestratorCommandIdConflictError extends Schema.TaggedError<OrchestratorCommandIdConflictError>()(
   "OrchestratorCommandIdConflictError",
   {
@@ -418,6 +474,7 @@ export class OrchestratorCommandIdConflictError extends Schema.TaggedError<Orche
 
 export const OrchestratorV2Error = Schema.Union([
   OrchestratorDispatchError,
+  OrchestratorMessageStarError,
   OrchestratorThreadAlreadyExistsError,
   OrchestratorCommandRejectedError,
   OrchestratorProjectionError,
@@ -684,6 +741,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.color.set":
     case "thread.folder.set":
     case "thread.artifact.hide":
+    case "thread.message.star":
     case "thread.visit":
     case "thread.mark-unread":
     case "thread.metadata.update":
@@ -3550,6 +3608,48 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       payload: decided.success.thread,
     });
     return decided.success;
+  });
+
+  const dispatchMessageStar = Effect.fn("orchestrationV2.dispatch.messageStar")(function* (
+    command: Extract<OrchestrationV2Command, { type: "thread.message.star" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const { threadId, messageId, starred } = command;
+    const thread = yield* projectionStore.getThread(threadId).pipe(mapDispatchError(command));
+    const ids = thread.starredMessageIds ?? [];
+    // Removing a listed star needs no message: one left without its message must stay removable.
+    const needsMessage = starred && !ids.includes(messageId);
+    if (
+      thread.deletedAt !== null ||
+      (needsMessage &&
+        !(yield* projectionStore
+          .hasStarableMessage(thread, messageId)
+          .pipe(mapDispatchError(command))))
+    ) {
+      return yield* new OrchestratorMessageStarError({
+        threadId,
+        messageId,
+        reason: "message-not-found",
+      });
+    }
+
+    if (ids.includes(messageId) === starred) return;
+    if (starred && ids.length >= MAX_THREAD_STARRED_MESSAGES) {
+      return yield* new OrchestratorMessageStarError({
+        threadId,
+        messageId,
+        reason: "limit-reached",
+      });
+    }
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "thread.message-stars-updated",
+      threadId,
+      occurredAt: yield* DateTime.now,
+      payload: starred ? [...ids, messageId] : ids.filter((id) => id !== messageId),
+    });
   });
 
   const dispatchThreadMutation = Effect.fn("orchestrationV2.dispatch.threadMutation")(function* (
@@ -7086,6 +7186,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             completedAt: null,
             updatedAt: now,
           },
+        });
+      }
+      const starredMessageIds = projection.thread.starredMessageIds;
+      if (starredMessageIds?.includes(command.messageId)) {
+        yield* emitEvent({
+          type: "thread.message-stars-updated",
+          threadId: command.threadId,
+          occurredAt: now,
+          payload: starredMessageIds.filter((id) => id !== command.messageId),
         });
       }
       if (goalStopRunId !== undefined || redispatchedSteer) {
@@ -15002,6 +15111,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.pull-request-watch.sync":
         yield* dispatchPullRequestWatchSync(command, events, effects);
         break;
+      case "thread.message.star":
+        yield* dispatchMessageStar(command, events);
+        break;
       case "thread.guest-share.open":
       case "thread.guest-share.redeem":
       case "thread.guest-share.close":
@@ -15353,6 +15465,40 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+  const replayCommandReceipt = Effect.fn("orchestrationV2.dispatch.replayReceipt")(function* (
+    command: OrchestrationV2ServerCommand,
+    receipt: CommandReceiptV2,
+    knownEvents?: ReadonlyArray<OrchestrationV2StoredEvent>,
+  ) {
+    if (receipt.status === "rejected") {
+      return yield* replayRejectedCommand(command, receipt);
+    }
+    const dispatchThreadId = commandThreadId(command);
+    // Receipts only prove execution for the thread they were recorded against.
+    if (receipt.threadId !== dispatchThreadId) {
+      return yield* new OrchestratorCommandIdConflictError({
+        commandId: command.commandId,
+        commandType: command.type,
+        receiptThreadId: receipt.threadId,
+        commandThreadId: dispatchThreadId,
+      });
+    }
+    const storedEvents = knownEvents ?? (yield* readCommandEvents(command));
+    if (command.type === "queue.resume" || command.type === "queued-run.start") {
+      yield* mapDispatchError(command)(
+        startNextQueuedRun(
+          command.threadId,
+          command.type === "queued-run.start" ? { queuedRunId: command.runId } : undefined,
+        ),
+      );
+    }
+    return {
+      sequence: receipt.resultSequence,
+      storedEvents,
+      replayed: true,
+    } satisfies OrchestratorV2DispatchResult;
+  });
+
   /** `sideChatIds` are the live side chats a `thread.delete` cascades to, read under their locks. */
   const dispatchWithReceiptEffect = Effect.fn("orchestrationV2.dispatch.withReceipt")(function* (
     command: OrchestrationV2ServerCommand,
@@ -15364,50 +15510,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       "orchestration_v2.thread_id": commandThreadId(command),
     });
 
-    const existingReceipt = yield* commandReceipts.getByCommandId(command.commandId).pipe(
-      Effect.mapError(
-        (cause) =>
-          new OrchestratorDispatchError({
-            commandId: command.commandId,
-            commandType: command.type,
-            cause,
-          }),
-      ),
-    );
-
+    const existingReceipt = yield* commandReceipts
+      .getByCommandId(command.commandId)
+      .pipe(mapDispatchError(command));
     if (Option.isSome(existingReceipt)) {
-      const receipt = existingReceipt.value;
-      if (receipt.status === "rejected") {
-        return yield* new OrchestratorCommandPreviouslyRejectedError({
-          commandId: command.commandId,
-          commandType: command.type,
-          detail: receipt.error ?? "Previously rejected.",
-        });
-      }
-      const dispatchThreadId = commandThreadId(command);
-      // Receipts only prove execution for the thread they were recorded against.
-      if (receipt.threadId !== dispatchThreadId) {
-        return yield* new OrchestratorCommandIdConflictError({
-          commandId: command.commandId,
-          commandType: command.type,
-          receiptThreadId: receipt.threadId,
-          commandThreadId: dispatchThreadId,
-        });
-      }
-      const storedEvents = yield* readCommandEvents(command);
-      if (command.type === "queue.resume" || command.type === "queued-run.start") {
-        yield* mapDispatchError(command)(
-          startNextQueuedRun(
-            command.threadId,
-            command.type === "queued-run.start" ? { queuedRunId: command.runId } : undefined,
-          ),
-        );
-      }
-      return {
-        sequence: receipt.resultSequence,
-        storedEvents,
-        replayed: true,
-      } satisfies OrchestratorV2DispatchResult;
+      return yield* replayCommandReceipt(command, existingReceipt.value);
     }
 
     // Recheck under the lock; the user may have raised modes since sender preflight.
@@ -15421,7 +15528,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (shell !== null) yield* refuseAboveDispatchModeLimit(command, threadId, shell);
     }
 
-    const plan = yield* dispatchOnce(command, sideChatIds).pipe(
+    const decision = yield* dispatchOnce(command, sideChatIds).pipe(
       Effect.tap((planned) => refuseAboveRuntimeModeCeiling(command, planned.events)),
       Effect.filterOrFail(
         (planned) =>
@@ -15435,6 +15542,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           // A report the task already holds, or a stop a newer one superseded, is done; its
           // sender then fails only on a write that did not happen.
           command.type === "delegated_task.remote.complete" ||
+          command.type === "thread.message.star" ||
           // Closing a share again, or after it ended, is not an error.
           command.type === "thread.guest-share.close" ||
           command.type === "provider-session.detach-idle" ||
@@ -15449,65 +15557,64 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             cause: "Command produced no domain events.",
           }),
       ),
-      Effect.catch((cause) =>
-        Effect.gen(function* () {
-          // A refusal based on current thread state or modes must allow a retry when they change.
-          if (
-            cause._tag === "OrchestratorSendTargetUnavailableError" ||
-            cause._tag === "OrchestratorThreadAboveModeLimitError" ||
-            cause._tag === "OrchestratorRuntimeModeAboveCeilingError" ||
-            cause._tag === "OrchestratorContinuationSnoozedError"
-          ) {
-            return yield* cause;
-          }
-          // Resolving a turn's policy refuses the same way, from inside the decision.
-          const ceiling = runtimePolicyCeilingCause(cause);
-          if (ceiling !== undefined) {
-            const { threadId, runtimeMode, maxRuntimeMode, organization } = ceiling;
-            return yield* new OrchestratorRuntimeModeAboveCeilingError({
-              commandId: command.commandId,
-              threadId,
-              refused: "turn",
-              runtimeMode,
-              maxRuntimeMode,
-              organization,
-            });
-          }
-          const rejectedAt = yield* DateTime.now;
-          const receipt = yield* eventSink
-            .commitRejectedCommand({
-              commandId: command.commandId,
-              threadId: commandThreadId(command),
-              commandType: command.type,
-              rejectedAt,
-              error: cause instanceof Error ? cause.message : String(cause),
-            })
-            .pipe(
-              Effect.mapError(
-                (receiptCause) =>
-                  new OrchestratorDispatchError({
-                    commandId: command.commandId,
-                    commandType: command.type,
-                    cause: receiptCause,
-                  }),
-              ),
-            );
-          if (
-            command.type === "queued-run.edit" &&
-            receipt.status === "rejected" &&
-            cause._tag === "OrchestratorDispatchError"
-          ) {
-            return yield* new OrchestratorCommandRejectedError({
-              commandId: cause.commandId,
-              commandType: cause.commandType,
-              cause: cause.cause,
-            });
-          }
-          return yield* cause;
-        }),
-      ),
+      Effect.result,
     );
 
+    if (Result.isFailure(decision)) {
+      const cause = decision.failure;
+      // A refusal based on current thread state or modes must allow a retry when they change.
+      if (
+        cause._tag === "OrchestratorSendTargetUnavailableError" ||
+        cause._tag === "OrchestratorThreadAboveModeLimitError" ||
+        cause._tag === "OrchestratorRuntimeModeAboveCeilingError" ||
+        cause._tag === "OrchestratorContinuationSnoozedError"
+      ) {
+        return yield* cause;
+      }
+      // Resolving a turn's policy refuses the same way, from inside the decision.
+      const ceiling = runtimePolicyCeilingCause(cause);
+      if (ceiling !== undefined) {
+        const { threadId, runtimeMode, maxRuntimeMode, organization } = ceiling;
+        return yield* new OrchestratorRuntimeModeAboveCeilingError({
+          commandId: command.commandId,
+          threadId,
+          refused: "turn",
+          runtimeMode,
+          maxRuntimeMode,
+          organization,
+        });
+      }
+      const rejectedAt = yield* DateTime.now;
+      const { receipt, inserted } = yield* eventSink
+        .commitRejectedCommand({
+          commandId: command.commandId,
+          threadId: commandThreadId(command),
+          commandType: command.type,
+          rejectedAt,
+          error:
+            cause._tag === "OrchestratorMessageStarError" && command.type === "thread.message.star"
+              ? encodeMessageStarReceiptError({
+                  messageId: command.messageId,
+                  starred: command.starred,
+                  reason: cause.reason,
+                })
+              : cause instanceof Error
+                ? cause.message
+                : String(cause),
+        })
+        .pipe(mapDispatchError(command));
+      if (!inserted) return yield* replayCommandReceipt(command, receipt);
+      if (command.type === "queued-run.edit" && cause._tag === "OrchestratorDispatchError") {
+        return yield* new OrchestratorCommandRejectedError({
+          commandId: cause.commandId,
+          commandType: cause.commandType,
+          cause: cause.cause,
+        });
+      }
+      return yield* cause;
+    }
+
+    const plan = decision.success;
     if (plan.events.length === 0 && plan.effects.length === 0) {
       // A settle that ended nothing still records its receipt: a replayed Stop
       // effect then finds it instead of settling work that appeared since.
@@ -15523,21 +15630,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           error: null,
         });
         return { resultSequence: sequence, inserted };
-      }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorDispatchError({
-              commandId: command.commandId,
-              commandType: command.type,
-              cause,
+      }).pipe(mapDispatchError(command));
+      if (!inserted) {
+        const winner = yield* commandReceipts.getByCommandId(command.commandId).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () => Effect.fail(`Command ${command.commandId} has no thread receipt.`),
+              onSome: Effect.succeed,
             }),
-        ),
-      );
-      return {
-        sequence: resultSequence,
-        storedEvents: [],
-        ...(inserted ? {} : { replayed: true as const }),
-      } satisfies OrchestratorV2DispatchResult;
+          ),
+          mapDispatchError(command),
+        );
+        return yield* replayCommandReceipt(command, winner);
+      }
+      return { sequence: resultSequence, storedEvents: [] };
     }
     const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
     const committed = yield* eventSink
@@ -15552,33 +15658,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
       })
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorDispatchError({
-              commandId: command.commandId,
-              commandType: command.type,
-              cause,
-            }),
-        ),
-      );
+      .pipe(mapDispatchError(command));
 
-    if (committed.receipt.status === "rejected") {
-      return yield* new OrchestratorCommandPreviouslyRejectedError({
-        commandId: command.commandId,
-        commandType: command.type,
-        detail: committed.receipt.error ?? "Previously rejected.",
-      });
-    }
-    // A concurrent command with this id for another thread can commit first,
-    // under that thread's lock; its receipt is not this command's result.
-    if (committed.receipt.threadId !== commandThreadId(command)) {
-      return yield* new OrchestratorCommandIdConflictError({
-        commandId: command.commandId,
-        commandType: command.type,
-        receiptThreadId: committed.receipt.threadId,
-        commandThreadId: commandThreadId(command),
-      });
+    if (!committed.committed) {
+      return yield* replayCommandReceipt(command, committed.receipt, committed.storedEvents);
     }
     if (
       command.type === "queue.resume" ||
@@ -15606,7 +15689,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return {
       sequence: committed.receipt.resultSequence,
       storedEvents: committed.storedEvents,
-      ...(committed.committed ? {} : { replayed: true as const }),
     } satisfies OrchestratorV2DispatchResult;
   }, withCommandMetrics);
 

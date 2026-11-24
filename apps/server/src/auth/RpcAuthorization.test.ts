@@ -455,7 +455,7 @@ it.effect("denies manual cleanup before the handler without settings permission"
   }).pipe(Effect.scoped),
 );
 
-it.effect("requires provider management to send /logout through chat", () =>
+it.effect("checks orchestration writes and requires provider management for /logout", () =>
   Effect.gen(function* () {
     const group = WsRpcGroup.omit(
       ...[...WsRpcGroup.requests.keys()].filter(
@@ -489,6 +489,21 @@ it.effect("requires provider management to send /logout through chat", () =>
       Effect.provide(Layer.merge(handler, RpcAuthorization.layer([AuthOrchestrationOperateScope]))),
     );
     yield* operator[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](message("hello", "hello"));
+    const reader = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(Layer.merge(handler, RpcAuthorization.layer([AuthOrchestrationReadScope]))),
+    );
+    const star = {
+      type: "thread.message.star" as const,
+      commandId: CommandId.make("star"),
+      threadId: ThreadId.make("thread"),
+      messageId: MessageId.make("hello"),
+      starred: true,
+    };
+    expect(
+      yield* reader[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](star).pipe(Effect.flip),
+    ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
+    yield* operator[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](star);
+
     for (const command of [
       message("logout", " /LOGOUT "),
       {
@@ -512,6 +527,6 @@ it.effect("requires provider management to send /logout through chat", () =>
       ),
     );
     yield* manager[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](message("manager", "/logout"));
-    expect(handled).toEqual(["hello", "manager"]);
+    expect(handled).toEqual(["hello", "star", "manager"]);
   }).pipe(Effect.scoped),
 );

@@ -150,6 +150,18 @@ On mobile, long-press an assistant response, adjust the text selection, and choo
 or edit its comment, or to remove it. To open the source message, tap a quote in
 a draft or sent message, then choose **Go to message**.
 
+## Star messages
+
+Use the star near **Copy** on a prompt or reply to bookmark it. Select the star
+again to remove the bookmark. Stars sync across devices connected to the same
+environment, and a thread can hold up to 200. A message loses its star when it
+is rolled back or sent back to the queue.
+
+On web and desktop, open **Outline → Starred** and select a message to jump to
+it. The command palette also has **Jump to next starred message**. On mobile,
+tap the star in the thread header to open the list. Use **Unstar message** next
+to a list entry to remove its bookmark directly.
+
 ## Recall a sent prompt
 
 Press `ArrowUp` in an empty composer to bring back the last prompt you sent in this thread. Press

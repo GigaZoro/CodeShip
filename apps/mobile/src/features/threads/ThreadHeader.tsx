@@ -30,6 +30,13 @@ export function ThreadHeader(
   const preferences = native.preferences;
   const androidHeaderActions = useMemo<ReadonlyArray<AppBarAction>>(() => {
     const actions: AppBarAction[] = [];
+    if (props.onOpenStarred) {
+      actions.push({
+        accessibilityLabel: t("Starred messages"),
+        icon: "star.fill",
+        onPress: props.onOpenStarred,
+      });
+    }
     if (props.onReturnToThread) {
       actions.push({
         accessibilityLabel: t("Return to chat"),
@@ -86,6 +93,7 @@ export function ThreadHeader(
     toggleAuxiliaryPane,
     props.onReturnToThread,
     props.pin,
+    props.onOpenStarred,
     props.hasThreadCwd,
     props.hasWorkspaceRoot,
     props.gitControls.canOpenTerminal,

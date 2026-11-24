@@ -38,6 +38,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { starsAfterRunRollback } from "./messageStars.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { makeProviderFailureTurnItem } from "@t3tools/provider-core/server/failure";
@@ -507,6 +508,16 @@ export const layer: Layer.Layer<
           });
         }
       }
+      const stars = yield* starsAfterRunRollback(projections, rewind.threadId, [...runIds]);
+      if (stars !== undefined) {
+        events.push({
+          id: yield* eventId(),
+          type: "thread.message-stars-updated",
+          threadId: rewind.threadId,
+          occurredAt: now,
+          payload: stars,
+        });
+      }
       return events;
     });
 
@@ -942,6 +953,14 @@ export const layer: Layer.Layer<
           },
           (effect, input) =>
             effect.pipe(
+              (write) =>
+                input.event.type === "provider_thread.updated" &&
+                input.event.retainedNativeTurnIds !== undefined
+                  ? threadCommands.withLock(
+                      input.event.providerThread.appThreadId ?? input.threadId,
+                      write,
+                    )
+                  : write,
               Effect.tap((storedEvents) =>
                 Effect.gen(function* () {
                   if (

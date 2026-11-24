@@ -4219,6 +4219,7 @@ const catalog: MessageCatalog = {
   "Could not change limit recovery.": "Не вдалося змінити відновлення після ліміту.",
   "Could not change Open at login": "Не вдалося змінити «Відкривати під час входу»",
   "Could not change project": "Не вдалося змінити проєкт",
+  "Could not change the message star.": "Не вдалося змінити позначку повідомлення.",
   "Could not change the viewport": "Не вдалося змінити область перегляду",
   "Could not change this browser tab": "Не вдалося змінити цю вкладку браузера",
   "Could not change WSL backend": "Не вдалося змінити бекенд WSL",
@@ -6915,6 +6916,7 @@ const catalog: MessageCatalog = {
   "Jump to latest": "Перейти до останнього",
   "Jump to message: {text}": "Перейти до повідомлення: {text}",
   "Jump to next prompt": "Перейти до наступного запиту",
+  "Jump to next starred message": "До наступного позначеного повідомлення",
   "Jump to previous prompt": "Перейти до попереднього запиту",
   "just now": "щойно",
   Kagi: "Kagi",
@@ -8186,6 +8188,7 @@ const catalog: MessageCatalog = {
   "No spans found.": "Спанів не знайдено.",
   "No speech was detected.": "Мовлення не виявлено.",
   "No SSH route to {machine}": "Немає SSH-маршруту до {machine}",
+  "No starred messages": "Немає позначених повідомлень",
   "No startup crashes": "Збоїв під час запуску немає",
   "No suggestions": "Немає пропозицій",
   "No supported browsers found": "Підтримуваних браузерів не знайдено",
@@ -11532,7 +11535,11 @@ const catalog: MessageCatalog = {
   "Standard Android navigation bar and side rail.":
     "Стандартна панель навігації Android і бічна панель.",
   "Standard Webhooks": "Standard Webhooks",
+  "Star message": "Позначити повідомлення зірочкою",
   "Star on GitHub": "Зірка на GitHub",
+  Starred: "Позначені зірочкою",
+  "Starred message {number}": "Позначене повідомлення {number}",
+  "Starred messages": "Позначені зірочкою повідомлення",
   start: "запустити",
   Start: "Запустити",
   "Start {name}": "Запустити {name}",
@@ -12835,6 +12842,8 @@ const catalog: MessageCatalog = {
   "This change has more files than the host will report ticks for in one read, so the count is short and some boxes below start empty.":
     "У цій зміні більше файлів, ніж хост повертає позначок за одне читання, тому підрахунок неповний, а деякі прапорці нижче спочатку порожні.",
   "This change has no files to tour.": "У цій зміні немає файлів для туру.",
+  "This chat has reached the limit of {limit} starred messages.":
+    "У цьому чаті досягнуто ліміту позначених зірочкою повідомлень ({limit}).",
   "This chat is not settled, not analyzed, or no longer exists.":
     "Цей чат не завершено, не проаналізовано або його більше не існує.",
   "This checkout could not be confirmed at the {term}'s latest commit, so its code may differ. Local commits or uncommitted work keep a checkout where it is.":
@@ -13169,6 +13178,7 @@ const catalog: MessageCatalog = {
     "До цього повідомлення вже додано максимальну кількість вкладень.",
   "This message has an attachment that cannot be restored.":
     "У цьому повідомленні є вкладення, яке неможливо відновити.",
+  "This message is no longer in the conversation.": "Цього повідомлення вже немає в чаті.",
   "This model already has a row. Edit its prices there.":
     "Для цієї моделі вже є рядок. Змініть її ціни там.",
   "This model is unavailable on {environment}. Select that environment to choose its model separately.":
@@ -13841,6 +13851,8 @@ const catalog: MessageCatalog = {
   "Unsent draft": "Ненадіслана чернетка",
   Unsettle: "Скасувати завершення",
   Unsnooze: "Повернути",
+  "Unstar {label}": "Зняти зірочку з «{label}»",
+  "Unstar message": "Зняти зірочку з повідомлення",
   Unsupported: "Не підтримується",
   "Unsupported diff format. Showing raw patch.":
     "Непідтримуваний формат змін. Показано необроблений патч.",

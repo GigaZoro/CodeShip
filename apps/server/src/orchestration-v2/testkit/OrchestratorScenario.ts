@@ -153,6 +153,7 @@ function commandThreadIds(command: OrchestrationV2Command): ReadonlyArray<Thread
     case "thread.color.set":
     case "thread.folder.set":
     case "thread.artifact.hide":
+    case "thread.message.star":
     case "thread.visit":
     case "thread.mark-unread":
     case "thread.metadata.update":

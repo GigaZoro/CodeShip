@@ -165,6 +165,7 @@ const COLD_HISTORY_RULE: Record<OrchestrationV2DomainEvent["type"], "latest" | "
   "thread.tags-updated": "all",
   "thread.notification-level-updated": "all",
   "thread.color-updated": "all",
+  "thread.message-stars-updated": "all",
   "thread.folder-updated": "all",
   "thread.artifacts-updated": "all",
   "thread.visited": "all",

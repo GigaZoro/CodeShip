@@ -4,6 +4,7 @@ import {
   CheckpointId,
   CheckpointRef,
   CheckpointScopeId,
+  EventId,
   MessageId,
   GitCommandError,
   type ModelSelection,
@@ -753,6 +754,45 @@ layer("ProviderEventIngestorV2", (it) => {
         nativeTurnId: null,
       });
 
+      const keptStar = MessageId.make("message:rewound:2");
+      const abandonedStar = MessageId.make("message:rewound:3");
+      yield* eventSink.write({
+        events: [
+          ...(
+            [
+              [keptRun, keptStar],
+              [abandonedRun, abandonedStar],
+            ] as const
+          ).map(([runId, id]) => ({
+            id: EventId.make(id),
+            type: "message.updated" as const,
+            threadId,
+            occurredAt: now,
+            payload: {
+              id,
+              threadId,
+              runId,
+              nodeId: null,
+              role: "assistant" as const,
+              text: "Starred reply",
+              createdBy: "agent" as const,
+              creationSource: "provider" as const,
+              attachments: [],
+              streaming: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          })),
+          {
+            id: EventId.make("rewind:stars"),
+            type: "thread.message-stars-updated",
+            threadId,
+            occurredAt: now,
+            payload: [keptStar, abandonedStar],
+          },
+        ],
+      });
+
       yield* ingestor.ingestNormalized({
         providerSessionId,
         providerInstanceId: modelSelection.instanceId,
@@ -791,6 +831,7 @@ layer("ProviderEventIngestorV2", (it) => {
       });
 
       const projection = yield* projectionStore.getThreadProjection(threadId);
+      assert.deepEqual(projection.thread.starredMessageIds, [keptStar]);
       const runIds = [otherProviderRun, keptRun, abandonedRun, unlocatedRun, rewindingRun];
       assert.deepEqual(
         runIds.map((runId) => projection.runs.find((run) => run.id === runId)?.status),

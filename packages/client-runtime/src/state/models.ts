@@ -60,7 +60,7 @@ export type ThreadStructureVisibleTurnItem = Omit<
  */
 export type ThreadStructureThread = Omit<
   OrchestrationV2ThreadProjection["thread"],
-  "updatedAt" | "lastVisitedAt"
+  "updatedAt" | "lastVisitedAt" | "starredMessageIds"
 >;
 
 export type ThreadStructure = Omit<

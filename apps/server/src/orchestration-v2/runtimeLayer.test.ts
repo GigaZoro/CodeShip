@@ -24,6 +24,7 @@ import {
   ContextTransferId,
   DEFAULT_SERVER_SETTINGS,
   EventId,
+  MAX_THREAD_STARRED_MESSAGES,
   MessageId,
   NodeId,
   RuntimeRequestId,
@@ -2623,6 +2624,199 @@ const restartHeldQueue = (threadId: ThreadId) =>
   });
 
 it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
+  it.effect("persists the bounded set of starred messages without changing thread activity", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("message-stars");
+      const projectId = ProjectId.make("message-stars-project");
+      yield* seedProject({
+        projectId,
+        title: "Message stars",
+        workspaceRoot: "/workspace/project",
+        defaultModelSelection: null,
+        createdAt: "2026-09-07T00:00:00.000Z",
+      });
+      const createThread = (threadId: ThreadId) =>
+        orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`message-stars-create:${threadId}`),
+          threadId,
+          projectId,
+          title: "Message stars",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+        });
+      const foreignThreadId = ThreadId.make("message-stars-other-thread");
+      const foreignId = MessageId.make("message-stars-foreign");
+      yield* createThread(threadId);
+      yield* createThread(foreignThreadId);
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.starredMessageIds ?? [],
+        [],
+      );
+      const now = yield* DateTime.now;
+      const ids = Array.from({ length: MAX_THREAD_STARRED_MESSAGES + 1 }, (_, index) =>
+        MessageId.make(`message-stars-${index}`),
+      );
+      yield* eventSink.write({
+        events: [...ids, foreignId].map((id) => ({
+          id: EventId.make(id),
+          type: "message.updated" as const,
+          threadId: id === foreignId ? foreignThreadId : threadId,
+          occurredAt: now,
+          payload: {
+            createdBy: "agent" as const,
+            creationSource: "provider" as const,
+            id,
+            threadId: id === foreignId ? foreignThreadId : threadId,
+            runId: null,
+            nodeId: null,
+            role: "assistant" as const,
+            text: "Bookmark this",
+            attachments: [],
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        })),
+      });
+      const setStar = (messageId: MessageId, starred: boolean, step = `star:set:${messageId}`) =>
+        orchestrator.dispatch({
+          type: "thread.message.star",
+          commandId: CommandId.make(step),
+          threadId,
+          messageId,
+          starred,
+        });
+      for (const id of [MessageId.make("message-stars-missing"), foreignId]) {
+        const rejected = yield* setStar(id, true).pipe(Effect.flip);
+        assert.instanceOf(rejected, Orchestrator.OrchestratorMessageStarError);
+        assert.equal(
+          (rejected as Orchestrator.OrchestratorMessageStarError).reason,
+          "message-not-found",
+        );
+      }
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.starredMessageIds ?? [],
+        [],
+      );
+      const before = (yield* orchestrator.getThreadProjection(threadId)).thread.updatedAt;
+      yield* TestClock.adjust("1 minute");
+      const beforeLimit = ids.slice(0, MAX_THREAD_STARRED_MESSAGES - 1);
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make("message-stars-near-limit"),
+            type: "thread.message-stars-updated",
+            threadId,
+            occurredAt: yield* DateTime.now,
+            payload: beforeLimit,
+          },
+        ],
+      });
+      const maximum = ids.slice(0, MAX_THREAD_STARRED_MESSAGES);
+      yield* setStar(maximum.at(-1)!, true);
+      const last = ids[MAX_THREAD_STARRED_MESSAGES]!;
+      const rejectedId = `star:set:${last}`;
+      const expectLimitRejection = (error: Orchestrator.OrchestratorV2Error) => {
+        assert.instanceOf(error, Orchestrator.OrchestratorMessageStarError);
+        assert.equal((error as Orchestrator.OrchestratorMessageStarError).reason, "limit-reached");
+      };
+      expectLimitRejection(yield* setStar(last, true, rejectedId).pipe(Effect.flip));
+      const first = maximum[0]!;
+      const same = yield* setStar(first, true, "already-starred");
+      assert.deepEqual(same.storedEvents, []);
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(projection.thread.starredMessageIds, maximum);
+      assert.equal(
+        DateTime.toEpochMillis(projection.thread.updatedAt),
+        DateTime.toEpochMillis(before),
+      );
+      yield* setStar(first, false, "remove");
+      expectLimitRejection(yield* setStar(last, true, rejectedId).pipe(Effect.flip));
+      const added = yield* setStar(last, true, `star:add-after-removal:${last}`);
+      for (const mismatch of [setStar(first, true, rejectedId), setStar(last, false, rejectedId)]) {
+        const error = yield* mismatch.pipe(Effect.flip);
+        assert.instanceOf(error, Orchestrator.OrchestratorCommandPreviouslyRejectedError);
+      }
+      const expected = ids.slice(1);
+      const stored = Array.from(
+        yield* eventSink
+          .readByCommandId({ commandId: CommandId.make(`star:add-after-removal:${last}`) })
+          .pipe(Stream.runCollect),
+      );
+      assert.deepEqual(
+        stored.map(({ event }) => [event.type, event.payload]),
+        [["thread.message-stars-updated", expected]],
+      );
+      assert.equal(added.storedEvents[0]?.sequence, stored[0]?.sequence);
+      yield* orchestrator.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("message-stars-rename"),
+        threadId,
+        title: "Renamed",
+      });
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.starredMessageIds,
+        expected,
+      );
+      const sql = yield* SqlClient.SqlClient;
+      const visitId = CommandId.make("message-stars-visit");
+      const visit = yield* orchestrator.dispatch({
+        type: "thread.visit",
+        commandId: visitId,
+        threadId,
+        visitedAt: DateTime.formatIso(yield* DateTime.now),
+      });
+      assert.equal(visit.storedEvents[0]?.event.type, "thread.visited");
+      assert.notProperty(visit.storedEvents[0]!.event.payload, "starredMessageIds");
+      const rows = yield* sql<{ payload_json: string }>`
+        SELECT payload_json FROM orchestration_events WHERE command_id = ${visitId}
+      `;
+      assert.lengthOf(rows, 1);
+      assert.notProperty(JSON.parse(rows[0]!.payload_json), "starredMessageIds");
+      const sent = yield* eventSink
+        .stream({ threadId, eventType: "thread.visited", bounded: true })
+        .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+      assert.equal(sent.sequence, visit.storedEvents[0]?.sequence);
+      assert.notProperty(sent.event.payload, "starredMessageIds");
+      assert.deepEqual(
+        (yield* orchestrator.getThreadSnapshotWindow(threadId, { rowLimit: 10 })).projection.thread
+          .starredMessageIds,
+        expected,
+      );
+      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+      assert.isTrue((yield* maintenance.rebuild).valid);
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.starredMessageIds,
+        expected,
+      );
+      const gone = MessageId.make("message-stars-gone");
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make("message-stars-dangling"),
+            type: "thread.message-stars-updated",
+            threadId,
+            occurredAt: yield* DateTime.now,
+            payload: [...expected.slice(1), gone],
+          },
+        ],
+      });
+      yield* setStar(gone, false, "remove-dangling");
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.starredMessageIds,
+        expected.slice(1),
+      );
+    }),
+  );
+
   it.effect("applies lifecycle commands idempotently and emits archive/removal shell deltas", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

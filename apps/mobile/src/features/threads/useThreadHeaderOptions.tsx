@@ -28,6 +28,7 @@ export function useThreadHeaderOptions(props: {
   readonly usesNativeHeaderGlass: boolean;
   readonly gitControls: ThreadGitControlsProps;
   readonly onReturnToThread?: () => void;
+  readonly onOpenStarred?: () => void;
   readonly draft?: boolean;
   readonly pin?: ThreadPinAction | null;
 }) {
@@ -130,6 +131,17 @@ export function useThreadHeaderOptions(props: {
   const rightHeaderItems =
     usesDuoHeader || layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems;
 
+  const starredHeaderItems = props.onOpenStarred
+    ? [
+        withNativeGlassHeaderItem({
+          accessibilityLabel: t("Starred messages"),
+          icon: { name: "star.fill", type: "sfSymbol" as const },
+          identifier: "thread-starred-messages",
+          onPress: props.onOpenStarred,
+          type: "button" as const,
+        }),
+      ]
+    : [];
   const options: AppNativeStackNavigationOptions = {
     ...threadHeaderAppearance(props.usesNativeHeaderGlass),
     headerTitle: props.title,
@@ -141,8 +153,11 @@ export function useThreadHeaderOptions(props: {
         ? undefined
         : () => compactHomeHeaderItems,
     // The workspace navigator adds compose to the Duo detail column's bar.
-    unstable_headerRightItems: () =>
-      preferenceMenu ? [...rightHeaderItems, preferenceMenu] : rightHeaderItems,
+    unstable_headerRightItems: () => [
+      ...starredHeaderItems,
+      ...rightHeaderItems,
+      ...(preferenceMenu ? [preferenceMenu] : []),
+    ],
     unstable_headerToolbarItems: () => [],
     unstable_headerSubtitle: props.usesNativeHeaderGlass ? props.subtitle : undefined,
     contentStyle: undefined,
@@ -156,6 +171,7 @@ export function useThreadHeaderOptions(props: {
       threadCenterHeaderItems,
       compactRightHeaderItems,
       preferenceMenu,
+      starredHeaderItems,
       usesDuoHeader,
       environmentId,
       threadId,

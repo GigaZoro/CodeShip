@@ -119,6 +119,7 @@ function shouldPublishAgentAwarenessEvent(
     case "thread.tags-updated":
     case "thread.folder-updated":
     case "thread.artifacts-updated":
+    case "thread.message-stars-updated":
     case "thread.visited":
     case "thread.marked-unread":
     case "thread.runtime-mode-updated":

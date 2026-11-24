@@ -611,6 +611,33 @@ const seedRollbackHistory = (name: string) =>
         payload: { ...providerThread, pendingBackgroundTasks: tasks },
       });
 
+    const starMessages = Effect.fn("TestRollbackHistory.starMessages")(function* (
+      ordinals: ReadonlyArray<number>,
+    ) {
+      const ids = ordinals.map((ordinal) => MessageId.make(`${name}-message-${ordinal}`));
+      for (const [index, ordinal] of ordinals.entries()) {
+        yield* apply({
+          type: "message.updated",
+          payload: {
+            createdBy: "user",
+            creationSource: "web",
+            id: ids[index]!,
+            threadId,
+            runId: runId(ordinal),
+            nodeId: nodeId(ordinal),
+            role: "user",
+            text: "Bookmark",
+            attachments: [],
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+      }
+      yield* apply({ type: "thread.message-stars-updated", payload: ids });
+      return ids;
+    });
+
     const rollbackCounts: number[] = [];
     /** What the provider reports its rollback stopped by closing the process. */
     const lostBackgroundTasks: OrchestrationV2PendingBackgroundTask[] = [];
@@ -685,6 +712,7 @@ const seedRollbackHistory = (name: string) =>
       checkpointId,
       rollback,
       rollbackCounts,
+      starMessages,
       startBackgroundWork,
       recordLoss,
       listBackgroundTasks,
@@ -724,7 +752,13 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
           "Failure",
         );
 
+        const [kept, discarded] = yield* history.starMessages([2, 3, 5]);
+        assert.isDefined(kept);
+        assert.isDefined(discarded);
+        yield* sql`UPDATE orchestration_v2_projection_messages
+          SET payload_json = '{"obsolete":"message"}' WHERE message_id = ${discarded!}`;
         yield* history.rollback(2);
+        assert.deepEqual((yield* history.store.getThread(threadId)).starredMessageIds, [kept]);
 
         assert.deepEqual(history.rollbackCounts, [4]);
         assert.deepEqual(history.restored, [checkpointId(2)]);

@@ -34,6 +34,7 @@ import { CheckpointRestoreError, CheckpointServiceV2 } from "./CheckpointService
 import { EventSinkV2 } from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
+import { starsAfterRunRollback } from "./messageStars.ts";
 import { GIT_INDEX_LOCKED_DETAIL } from "../vcs/VcsProcess.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -565,6 +566,17 @@ export const layer: Layer.Layer<
                 work: lostWork.filter((work) => !discarded(work)),
                 now,
               })),
+            );
+          }
+          const stars = yield* starsAfterRunRollback(projections, input.threadId, rolledBackRunIds);
+          if (stars !== undefined) {
+            events.push(
+              yield* makeEvent({
+                type: "thread.message-stars-updated",
+                threadId: input.threadId,
+                occurredAt: now,
+                payload: stars,
+              }),
             );
           }
           yield* eventSink.write({ events });

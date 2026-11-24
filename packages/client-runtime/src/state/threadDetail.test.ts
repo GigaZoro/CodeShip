@@ -131,6 +131,63 @@ describe("lastVisitedAtAtom", () => {
   });
 });
 
+describe("message stars", () => {
+  it("updates only the bookmarked row and retains the timeline structure", () => {
+    const projection: OrchestrationV2ThreadProjection = withItem(assistant);
+    const ref = { environmentId: EnvironmentId.make("env"), threadId: v2ThreadId };
+    const state = Atom.make(
+      AsyncResult.success({ ...EMPTY_ENVIRONMENT_THREAD_STATE, data: Option.some(projection) }),
+    );
+    const details = createEnvironmentThreadDetailAtoms(() => state);
+    const registry = AtomRegistry.make();
+    const quiet = details.quietThreadAtom(ref);
+    const selected = details.isMessageStarredAtom(ref, assistant.messageId);
+    const other = details.isMessageStarredAtom(ref, MessageId.make("other-message"));
+    const unmountQuiet = registry.mount(quiet);
+    const unmountSelected = registry.mount(selected);
+    const unmountOther = registry.mount(other);
+    const previewsAtom = details.starredMessagePreviewsAtom(ref);
+    const unmountPreviews = registry.mount(previewsAtom);
+    const before = registry.get(quiet);
+
+    expect(registry.get(selected)).toBe(false);
+    const starred = applyOrchestrationV2ProjectionEvent(projection, {
+      id: EventId.make("starred-message-event"),
+      threadId: v2ThreadId,
+      occurredAt: later,
+      type: "thread.message-stars-updated",
+      payload: [assistant.messageId],
+    });
+    registry.set(
+      state,
+      AsyncResult.success({
+        ...EMPTY_ENVIRONMENT_THREAD_STATE,
+        data: Option.fromNullishOr(starred),
+      }),
+    );
+
+    expect(registry.get(selected)).toBe(true);
+    expect(registry.get(other)).toBe(false);
+    expect(registry.get(quiet)).toBe(before);
+    const previews = registry.get(previewsAtom);
+    expect(previews).toEqual([{ id: assistant.messageId, preview: assistant.text }]);
+    const retitled = {
+      ...withItem({ ...assistant, title: "Answer" }),
+      thread: { ...projection.thread, starredMessageIds: [assistant.messageId] },
+    };
+    registry.set(
+      state,
+      AsyncResult.success({ ...EMPTY_ENVIRONMENT_THREAD_STATE, data: Option.some(retitled) }),
+    );
+    expect(registry.get(previewsAtom)).toBe(previews);
+    unmountPreviews();
+    unmountOther();
+    unmountSelected();
+    unmountQuiet();
+    registry.dispose();
+  });
+});
+
 describe("quietThreadAtom", () => {
   const ref = { environmentId: EnvironmentId.make("environment-1"), threadId: v2ThreadId };
 

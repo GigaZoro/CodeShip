@@ -1,3 +1,8 @@
+## 2026-11-25 — Star messages you want to revisit
+
+- Star prompts and replies to bookmark them across devices. Jump back from **Outline → Starred** or the command palette on web and desktop, or from the star in the thread header on mobile. Repeated jumps cycle through starred messages in conversation order. You can also unstar a message directly from either list.
+- A message loses its star when it is rolled back or sent back to the queue.
+
 ## 2026-11-25 — Worktree removal names Git's failed status check
 
 - When removing a worktree fails because Git could not start `git status` in it, the error now shows Git's line as "fatal: failed to run 'git status' on '…': …", with the path and Git's reason hidden. Before, it showed "(message withheld)".

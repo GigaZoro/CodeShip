@@ -274,6 +274,7 @@ import { composerDocumentAttachmentRecord } from "../../lib/composerContext";
 import * as Option from "effect/Option";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentThreadShells, threadEnvironment } from "../../state/threads";
+import { ThreadMessageStarButton, useThreadMessageStar } from "./ThreadMessageStars";
 import { ThreadWorkflowOpening, useWorkflowOpening } from "./thread-workflow-opening";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useV2ItemCapabilities } from "../../state/v2-item-support";
@@ -380,9 +381,10 @@ export interface ThreadFeedProps {
   readonly listRef: RefObject<LegendListRef | null>;
   readonly freeze: SharedValue<boolean>;
   readonly anchorMessageId: MessageId | null;
-  /** A message to scroll to once it is in the feed; see `onJumpedToMessage`. */
+  /** A message to scroll to once it is in the feed. */
   readonly jumpToMessageId?: MessageId | null;
-  readonly onJumpedToMessage?: () => void;
+  /** Finishes the request and returns whether the scroll is still allowed. */
+  readonly onFinishMessageJump?: () => boolean;
   readonly contentInsetEndAdjustment: SharedValue<number>;
   readonly keyboardOffset: number;
   readonly contentTopInset?: number;
@@ -440,10 +442,13 @@ async function waitForThreadShell(
 }
 
 function UserMessageCopyButton(props: {
+  readonly thread: ScopedThreadRef | null;
+  readonly messageId: MessageId;
   readonly text: string;
   readonly onCopy: (() => Promise<void>) | undefined;
   readonly tintColor: ColorValue;
 }) {
+  const star = useThreadMessageStar(props.thread, props.messageId);
   const button = (
     <CopyTextButton
       accessibilityLabel={t("Copy message")}
@@ -455,12 +460,28 @@ function UserMessageCopyButton(props: {
     />
   );
   const linkText = replaceComposerContextReferences(props.text, (reference) => reference.label);
-  if (linkText.length > PROMPT_LINK_MAX_PROMPT_LENGTH) return button;
+  const canCopyLink = linkText.length <= PROMPT_LINK_MAX_PROMPT_LENGTH;
+  if (!canCopyLink && !star.allowed) return button;
   return (
     <Menu
-      actions={[{ id: "copy-prompt-link", title: t("Copy prompt link"), image: "link" }]}
+      actions={[
+        ...(canCopyLink
+          ? [{ id: "copy-prompt-link", title: t("Copy prompt link"), image: "link" }]
+          : []),
+        ...(star.allowed
+          ? [
+              {
+                id: "toggle-star",
+                title: star.label,
+                image: star.starred ? "star.fill" : "star",
+                attributes: { disabled: star.pending },
+              },
+            ]
+          : []),
+      ]}
       onPressAction={({ nativeEvent }) => {
         if (nativeEvent.event === "copy-prompt-link") void copyPromptLink(linkText);
+        if (nativeEvent.event === "toggle-star") star.toggle();
       }}
       shouldOpenOnLongPress
     >
@@ -1588,6 +1609,8 @@ function OpenSenderThreadButton(props: {
 /** Automation prompts are long, repeated runbooks; a folded bubble keeps them out of the way. */
 function ThreadAutomationMessageRow(props: {
   readonly environmentId: EnvironmentId;
+  readonly messageId: MessageId;
+  readonly thread: ScopedThreadRef | null;
   readonly text: string;
   readonly context?: OrchestrationMessageContext;
   readonly scheduledTaskId: ScheduledTaskId | undefined;
@@ -1676,23 +1699,38 @@ function ThreadAutomationMessageRow(props: {
           </View>
         ) : null}
       </View>
-      {props.expanded ? (
+      {props.expanded || props.thread !== null ? (
         <View className="mt-1 flex-row items-center justify-end gap-2 pr-0.5">
-          {props.scheduledTaskId ? (
+          {props.expanded && props.scheduledTaskId ? (
             <Pressable accessibilityRole="link" hitSlop={6} onPress={() => openScheduledTasks()}>
               <Text className="font-t3-medium text-xs text-foreground-secondary">
                 {t("Open automation")}
               </Text>
             </Pressable>
           ) : null}
-          <Text className="font-t3-medium text-xs tabular-nums text-foreground-secondary">
-            {props.timestampLabel}
-          </Text>
-          <UserMessageCopyButton
-            text={props.text}
-            onCopy={undefined}
-            tintColor={props.iconSubtleColor}
-          />
+          {props.expanded ? (
+            <>
+              <Text className="font-t3-medium text-xs tabular-nums text-foreground-secondary">
+                {props.timestampLabel}
+              </Text>
+              <UserMessageCopyButton
+                thread={props.thread}
+                messageId={props.messageId}
+                text={props.text}
+                onCopy={undefined}
+                tintColor={props.iconSubtleColor}
+              />
+            </>
+          ) : null}
+          {props.thread ? (
+            <ThreadMessageStarButton
+              thread={props.thread}
+              messageId={props.messageId}
+              color={props.iconSubtleColor}
+              buttonSize={USER_MESSAGE_ACTION_SIZE}
+              iconSize={13}
+            />
+          ) : null}
         </View>
       ) : null}
     </View>
@@ -2034,6 +2072,18 @@ function renderFeedEntry(
   if (entry.type === "message") {
     const { message } = entry;
     const isUser = message.role === "user";
+    const starThread = message.projectedItem
+      ? scopeThreadRef(props.environmentId, props.threadId)
+      : null;
+    const messageStar = starThread ? (
+      <ThreadMessageStarButton
+        thread={starThread}
+        messageId={message.id}
+        color={iconSubtleColor}
+        buttonSize={isUser ? USER_MESSAGE_ACTION_SIZE : props.replyActionSize.button}
+        iconSize={isUser ? 13 : props.replyActionSize.icon}
+      />
+    ) : null;
     const presentation = resolveUserMessagePresentation(message);
     const renderedText = presentation.text;
     const styles = isUser ? markdownStyles.user : markdownStyles.assistant;
@@ -2065,11 +2115,14 @@ function renderFeedEntry(
 
     if (isUser && props.workflowOpening?.messageId === message.id) {
       return (
-        <ThreadWorkflowOpening
-          environmentId={props.environmentId}
-          threadId={props.threadId}
-          opening={props.workflowOpening}
-        />
+        <View>
+          <ThreadWorkflowOpening
+            environmentId={props.environmentId}
+            threadId={props.threadId}
+            opening={props.workflowOpening}
+          />
+          <View className="items-end">{messageStar}</View>
+        </View>
       );
     }
     if (isCompactionCommandFeedEntry(entry)) {
@@ -2096,6 +2149,8 @@ function renderFeedEntry(
       return (
         <ThreadAutomationMessageRow
           environmentId={props.environmentId}
+          thread={starThread}
+          messageId={message.id}
           text={presentation.text}
           context={message.context}
           scheduledTaskId={presentation.scheduledTaskId}
@@ -2375,7 +2430,8 @@ function renderFeedEntry(
               </Text>
               {canEditPendingMessage ||
               editTurnCount !== undefined ||
-              presentation.text.trim().length > 0 ? (
+              presentation.text.trim().length > 0 ||
+              messageStar !== null ? (
                 <View
                   className="flex-row items-center"
                   style={{ gap: replyActionGap(USER_MESSAGE_ACTION_SIZE) }}
@@ -2408,6 +2464,8 @@ function renderFeedEntry(
                   ) : null}
                   {presentation.text.trim().length > 0 ? (
                     <UserMessageCopyButton
+                      thread={starThread}
+                      messageId={message.id}
                       text={presentation.text}
                       onCopy={
                         message.context && presentation.attribution !== "guest"
@@ -2425,10 +2483,13 @@ function renderFeedEntry(
                       tintColor={iconSubtleColor}
                     />
                   ) : null}
+                  {messageStar}
                 </View>
               ) : null}
             </View>
-          ) : null}
+          ) : (
+            messageStar
+          )}
         </Animated.View>
       );
     }
@@ -2476,6 +2537,9 @@ function renderFeedEntry(
             onOpenTurnDiff={props.onOpenTurnDiff}
           />
         ) : null}
+        {!showAssistantMeta && messageStar ? (
+          <View className="items-end">{messageStar}</View>
+        ) : null}
         {showAssistantMeta ? (
           <View className="mt-1 flex-row items-center gap-1">
             <View
@@ -2489,6 +2553,7 @@ function renderFeedEntry(
                 buttonSize={props.replyActionSize.button}
                 iconSize={props.replyActionSize.icon}
               />
+              {messageStar}
               {message.projectedItem ? (
                 <AssistantForkButton
                   environmentId={props.environmentId}
@@ -3515,11 +3580,10 @@ export const ThreadFeed = memo(function ThreadFeed({
     : null;
   const followsEnd = endFollowEnabled && !jumpReady;
   const landJump = useEffectEvent((index: number) => {
-    if (index !== -1) {
+    if (props.onFinishMessageJump?.() !== false && index !== -1) {
       setEndFollow(false);
       void listRef.current?.scrollToIndex({ index, viewPosition: 0.2, animated: false });
     }
-    props.onJumpedToMessage?.();
   });
   // Z: a native list scroll after the commit that rendered its target row. The
   // row is often already measured, so no LegendList callback fires for that

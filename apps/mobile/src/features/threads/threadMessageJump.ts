@@ -1,31 +1,40 @@
 import type { MessageId } from "@t3tools/contracts";
 
-// A palette message result opens its thread at that message. The thread
-// screen reads the request while it shows that thread, and finishes it once
-// the feed is there or the message cannot be found. A request whose thread
-// never showed lapses, so a later plain open does not jump, as on web.
+// A request whose thread never showed lapses so a later plain open does not jump.
 const PENDING_JUMP_MS = 30_000;
-let pending: {
-  readonly threadKey: string;
+interface ThreadMessageJump {
   readonly messageId: MessageId;
-  readonly at: number;
-} | null = null;
+  readonly starred: boolean;
+}
+
+let pending: (ThreadMessageJump & { readonly threadKey: string; readonly at: number }) | null =
+  null;
 const listeners = new Set<() => void>();
 
 function notify() {
   for (const listener of listeners) listener();
 }
 
-export function requestThreadMessageJump(threadKey: string, messageId: MessageId): void {
-  pending = { threadKey, messageId, at: Date.now() };
+export function requestThreadMessageJump(
+  threadKey: string,
+  messageId: MessageId,
+  options?: { readonly starred: boolean },
+): void {
+  pending = { threadKey, messageId, starred: options?.starred ?? false, at: Date.now() };
   notify();
 }
 
-/** The message this thread should open at, if a palette pick asked for one. */
-export function pendingThreadMessageJump(threadKey: string): MessageId | null {
+export function pendingThreadMessageJump(threadKey: string): ThreadMessageJump | null {
   return pending?.threadKey === threadKey && Date.now() - pending.at < PENDING_JUMP_MS
-    ? pending.messageId
+    ? pending
     : null;
+}
+
+export function canJumpToThreadMessage(
+  jump: ThreadMessageJump,
+  starredMessageIds: ReadonlyArray<MessageId>,
+): boolean {
+  return !jump.starred || starredMessageIds.includes(jump.messageId);
 }
 
 export function finishThreadMessageJump(threadKey: string): void {

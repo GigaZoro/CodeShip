@@ -265,6 +265,7 @@ export const make = Effect.gen(function* () {
       scheduledTaskGroups: true,
       scheduledTaskSetGroup: true,
       threadFolders: true,
+      threadMessageStars: true,
       scheduledTaskDelegateProviders: true,
       scheduledTaskMaxLiveRuns: true,
       linkedScheduledTasks: true,

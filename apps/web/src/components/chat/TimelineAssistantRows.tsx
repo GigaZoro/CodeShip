@@ -17,6 +17,7 @@ import { ChangedFilesCard } from "./ChangedFilesTree";
 import { useFileContextMenuHandler } from "../../fileContextMenu";
 import { useAssistantMessageText, useProject, useThreadShell } from "../../state/entities";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { MessageStarButton, MessageStarMarker } from "./MessageStarButton";
 import { AssistantCitationSource } from "./AssistantCitationSource";
 import { resolveAssistantMessageCopyState } from "./MessagesTimeline.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -43,6 +44,14 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
     <>
       <div className="relative min-w-0 px-1 py-0.5">
         <MessageAuthorHeading>{"T3.CodeShip"}</MessageAuthorHeading>
+        <div className="pointer-events-none absolute end-0 top-0 z-10 flex items-center gap-1">
+          <MessageStarMarker messageId={row.message.id} />
+          {row.projectedItem && !row.showAssistantMeta && !row.showAssistantTimestamp ? (
+            <div className="pointer-events-auto opacity-0 group-hover/assistant:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
+              <MessageStarButton messageId={row.message.id} />
+            </div>
+          ) : null}
+        </div>
         <div data-thread-find-text="true">
           <AssistantCitationSource
             messageId={row.message.id}
@@ -84,6 +93,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
         ) : row.showAssistantTimestamp ? (
           <AssistantMessageMeta
             className="mt-1.5"
+            projectedItem={row.projectedItem}
             message={row.message}
             showCopyButton={false}
             copyStreaming={row.assistantCopyStreaming}
@@ -233,6 +243,9 @@ function AssistantMessageMeta({
         showCopyButton={showCopyButton}
         streaming={copyStreaming}
       />
+      {!alwaysVisible && projectedItem?.item.type === "assistant_message" ? (
+        <MessageStarButton messageId={message.id} />
+      ) : null}
       {projectedItem?.item.type === "assistant_message" ? (
         <AssistantForkButton projectedItem={projectedItem} />
       ) : null}

@@ -1132,8 +1132,25 @@ it.effect("force sends multiple queued messages and can force send a requeued me
         yield* worker.drain();
         assert.deepEqual(steered, ["one", "two"]);
 
+        const requeuedId = MessageId.make("message:one");
+        const unchangedId = MessageId.make("message:two");
+        for (const messageId of [requeuedId, unchangedId]) {
+          yield* orchestrator.dispatch({
+            type: "thread.message.star",
+            commandId: CommandId.make(`star:${messageId}`),
+            threadId,
+            messageId,
+            starred: true,
+          });
+        }
+
         // The completion-race fallback redispatches the same message into the queue.
-        yield* queue("one", "requeue-one");
+        const redispatch = yield* queue("one", "requeue-one");
+        assert.deepEqual(
+          redispatch.storedEvents.find(({ event }) => event.type === "thread.message-stars-updated")
+            ?.event.payload,
+          [unchangedId],
+        );
         const requeued = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(
           requeued.turnItems.find(
@@ -1141,6 +1158,7 @@ it.effect("force sends multiple queued messages and can force send a requeued me
           )?.status,
           "pending",
         );
+        assert.deepEqual(requeued.thread.starredMessageIds, [unchangedId]);
         yield* promote("one", "promote-one-again");
         yield* worker.drain();
         assert.deepEqual(steered, ["one", "two", "one"]);
