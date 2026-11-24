@@ -57,7 +57,7 @@ import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { checkNodeRuntime } from "../.github/scripts/check-node-runtime.cjs";
 import {
   erasedInterfaceEdit,
-  runtimeImportOffsets,
+  runtimeImportOffset,
   serverTypeScript,
 } from "./check-changed-imports.ts";
 import { vitePlusCommand } from "./check-changed-command.ts";
@@ -519,7 +519,6 @@ export const testsReaching = (input: {
         if (serverSources.has(source)) targets.add(source);
       }
     }
-    let runtimeOffsets: ReadonlySet<number> | undefined;
     for (const match of text.matchAll(RELATIVE_REFERENCE)) {
       const specifier = match[1]!;
       const base = NodePath.posix.join(NodePath.posix.dirname(file), specifier);
@@ -530,10 +529,8 @@ export const testsReaching = (input: {
         if (source && serverSources.has(source)) target = source;
       }
       if (!target) continue;
-      if (erased.has(target) && query < 0) {
-        runtimeOffsets ??= runtimeImportOffsets(file, text);
-        if (runtimeOffsets.has(match.index)) continue;
-      }
+      if (erased.has(target) && query < 0 && runtimeImportOffset(file, text) === match.index)
+        continue;
       targets.add(target);
     }
     for (const [, specifier] of text.matchAll(PACKAGE_IMPORT)) {

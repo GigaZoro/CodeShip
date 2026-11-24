@@ -435,6 +435,10 @@ describe("check:changed", () => {
       [edited.replace("1;", "2;"), original],
       [edited, undefined],
       [undefined, original],
+      [
+        edited + "\nexport const source = readSource();",
+        original + "\nexport const source = readSource();",
+      ],
       [edited + "@", original + "@"],
       [edited + "\n@dec class C {}", original + "\n@dec class C {}"],
       [edited.replace("string | null", "/* directive */ string | null"), original],
@@ -786,31 +790,79 @@ it("checks changed source paths through the Windows launcher", () => {
   expect(result.stdout).toContain("fixture stderr: lint");
 });
 
-it("keeps colocated tests and runtime changes beside an erased interface edit", () => {
+it("keeps source, type and forwarded readers beside an erased interface edit", () => {
   using project = launcherFixture();
   const root = "apps/server/src/";
   const model = root + "Model.ts";
   const other = root + "Service.ts";
-  const original = "export interface Input { value: number; }\nexport const run = 1;";
+  const original =
+    'export interface Input { value: string; }\nexport const make = (): Input => ({ value: "hello" });';
   project.write(model, original);
   project.write(other, "export const count = 0;");
   project.write(root + "Model.test.ts", "export {};");
-  project.write(root + "Unrelated.test.ts", 'import * as model from "./Model.ts"; model.run;');
+  project.write(root + "Ordinary.test.ts", 'import { make as build } from "./Model.ts"; build();');
+  project.write(
+    root + "Smoke.test.ts",
+    'import { it } from "vitest"; import { make } from "./Model.ts"; it("constructs", () => { make(); });',
+  );
   project.write(root + "Runtime.test.ts", 'import "./Service.ts"; import "./Model.ts";');
   project.write(root + "Source.test.ts", 'read("apps/server/src/Model.ts");');
+  project.write(root + "Unknown.test.ts", 'const model = await import("./Model.ts");');
+  project.write(
+    root + "Narrow.test.ts",
+    'import {make} from "./Model.ts"; make().value satisfies string;',
+  );
+  project.write(
+    root + "Alias.test.ts",
+    'import {make} from "./Model.ts"; const result = make(); const value: string = result.value;',
+  );
+  project.write(
+    root + "testing/reader.ts",
+    'import {make as build} from "../Model.ts"; export default build;',
+  );
+  project.write(
+    root + "Via.test.ts",
+    'import build from "./testing/reader.ts"; expectTypeOf(build().value).toEqualTypeOf<string>();',
+  );
+  const contract = root + "SourceContract.test.ts";
+  project.write(
+    contract,
+    [
+      'import assert from "node:assert/strict";',
+      'import {readFileSync as read} from "node:fs";',
+      'import {join} from "node:path";',
+      'import {make} from "./Model.ts";',
+      'assert.equal(make().value, "hello");',
+      'assert.match(read(join(import.meta.dirname, "Model.ts"), "utf8"), /value: string;/);',
+    ].join("\n"),
+  );
+  const runContract = () =>
+    NodeChildProcess.spawnSync(process.execPath, [contract], {
+      cwd: project.root,
+      encoding: "utf8",
+    });
   project.commit("add runtime modules and their readers");
-  project.write(model, original.replace("number;", "number | null;"));
+  const baseline = runContract();
+  expect(baseline.status, baseline.stderr).toBe(0);
+  project.write(model, original.replace("string;", "string | null;"));
+  const edited = runContract();
+  expect(edited.status).toBe(1);
+  expect(edited.stderr).toContain("ERR_ASSERTION");
   project.write(other, "export const count = 10;");
   const result = project.run();
   expect(result.status, result.stdout + result.stderr).toBe(0);
-  const selected = project
-    .calls()
+  const calls = project.calls();
+  expect(calls.some(({ args }) => args[0] === "run" && args.includes("typecheck"))).toBe(true);
+  const selected = calls
     .filter(({ args }) => args[0] === "test")
-    .flatMap(({ args }) => args.map((arg) => arg.replaceAll("\\", "/")));
-  for (const name of ["Model", "Runtime", "Source"]) {
-    expect(selected).toContain(root + name + ".test.ts");
-  }
-  expect(selected).not.toContain(root + "Unrelated.test.ts");
+    .flatMap(({ args }) =>
+      args.filter((arg) => arg.endsWith(".test.ts")).map((arg) => arg.replaceAll("\\", "/")),
+    );
+  expect(selected.sort()).toEqual(
+    ["Alias", "Model", "Narrow", "Runtime", "Source", "SourceContract", "Unknown", "Via"].map(
+      (name) => root + name + ".test.ts",
+    ),
+  );
 });
 
 it("routes a manifest-only change to the repository command guard through the launcher", () => {
