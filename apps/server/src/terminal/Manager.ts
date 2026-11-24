@@ -3111,7 +3111,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const openLocked = (input: TerminalOpenInput) =>
     withWorkspaceLease(
       path.resolve(input.worktreePath ?? input.cwd),
-      withWorkspaceProcessStart(openWithWorkspaceLease(input)),
+      withWorkspaceProcessStart(openWithWorkspaceLease(input), [
+        input.cwd,
+        input.worktreePath ?? input.cwd,
+      ]),
     );
 
   const open: TerminalManager["Service"]["open"] = (input) =>

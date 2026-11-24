@@ -27,9 +27,24 @@ export type ReleaseRequest = typeof ReleaseRequest.Type;
 const requestJson = Schema.fromJsonString(ReleaseRequest);
 const validateRequest = Schema.decodeEffect(ReleaseRequest);
 const encodeRequest = Schema.encodeEffect(requestJson);
-export const decodeReleaseRequest = Schema.decodeUnknownEffect(requestJson);
+export const decodeReleaseRequest = Schema.decodeUnknownEffect(requestJson, {
+  onExcessProperty: "error",
+});
+export const worktreeReleaseName = (cwd: string) =>
+  NodeCrypto.createHash("sha256").update(cwd).digest("hex") + ".json";
 const releaseFile = (directory: string, cwd: string) =>
-  NodePath.join(directory, NodeCrypto.createHash("sha256").update(cwd).digest("hex") + ".json");
+  NodePath.join(directory, worktreeReleaseName(cwd));
+
+// Use on-disk spelling for aliases, including Windows short names. A removed checkout still has a receipt.
+export const releasePath = (cwd: string) =>
+  Effect.tryPromise(() => NodeFSP.realpath(cwd)).pipe(
+    Effect.catchIf(
+      (error) =>
+        error.cause instanceof Error && "code" in error.cause && error.cause.code === "ENOENT",
+      () => Effect.succeed(cwd),
+    ),
+    Effect.timeout("5 seconds"),
+  );
 
 export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(function* (
   fs: FileSystem.FileSystem,
@@ -39,12 +54,7 @@ export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(functio
   branch: string,
 ) {
   if (!(yield* fs.exists(directory))) return null;
-  const parent = yield* fs.realPath(NodePath.dirname(cwd)).pipe(
-    Effect.catchIf(
-      (error) => error.reason._tag === "NotFound",
-      () => Effect.succeed(NodePath.dirname(cwd)),
-    ),
-  );
+  const parent = yield* releasePath(NodePath.dirname(cwd));
   const canonical = NodePath.join(parent, NodePath.basename(cwd));
   const file = releaseFile(directory, canonical);
   for (const suffix of [".releasing", ".released"]) {
@@ -197,7 +207,7 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const cwd = yield* fs.realPath(input.worktreePath);
+  const cwd = yield* releasePath(input.worktreePath);
   const identity = yield* gitFileIdentity(path.join(cwd, ".git"));
   yield* readGit(cwd, ["check-ref-format", input.durableRef]);
   const branchRef = (yield* readGit(cwd, ["symbolic-ref", "HEAD"])).trim();

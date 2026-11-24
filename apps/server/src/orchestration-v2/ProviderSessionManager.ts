@@ -2697,7 +2697,9 @@ export const layerWithOptions = (
                 );
               }),
             )
-            .pipe(trackOpeningSession(input), withWorkspaceProcessStart),
+            .pipe(trackOpeningSession(input), (opening) =>
+              withWorkspaceProcessStart(opening, [input.runtimePolicy.cwd]),
+            ),
         occupiedWorkspaces: Effect.sync(() => [...scopeWorkspaces.values()]),
         isLive: (providerSessionId) =>
           Ref.get(sessions).pipe(

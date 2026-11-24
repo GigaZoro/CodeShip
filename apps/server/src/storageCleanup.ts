@@ -57,14 +57,12 @@ import { isNonRepositoryGitStderr } from "./vcs/GitVcsDriverCore.ts";
 import { removeLinkedWorktree } from "./vcs/worktreeRemoval.ts";
 import {
   decodeReleaseRequest,
+  worktreeReleaseName,
+  releasePath,
   releaseHold,
   type ReleaseRequest,
 } from "./workspace/worktreeRelease.ts";
-import {
-  tryWithWorkspaceStartsPaused,
-  withWorkspaceLease,
-  workspaceAdmissionGeneration,
-} from "./workspace/workspaceLease.ts";
+import { observeWorkspaceStarts, withWorkspaceLease } from "./workspace/workspaceLease.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { isNetworkPath } from "@t3tools/shared/path";
@@ -306,12 +304,7 @@ const make = Effect.gen(function* () {
   ) {
     const cwd = path.resolve(candidate);
     if (pathKey(cwd) === pathKey(root) || inside(root, cwd)) return true;
-    const real = yield* fs.realPath(cwd).pipe(
-      Effect.catchIf(
-        (error) => error.reason._tag === "NotFound",
-        () => Effect.succeed(cwd),
-      ),
-    );
+    const real = yield* releasePath(cwd);
     return pathKey(real) === pathKey(root) || inside(root, real);
   });
   const hasTerminal = (worktreePath: string) =>
@@ -897,21 +890,29 @@ const make = Effect.gen(function* () {
     requestsOnly: boolean,
   ) {
     const releases = new Map<string, { file: string; contents: string; request: ReleaseRequest }>();
+    const invalidRequests = new Set<string>();
     // Read claimed requests first so a newer request for the same path wins.
     for (const name of (yield* pendingRequestFiles).toSorted().reverse()) {
+      const key = name.replace(/\.releasing$/, "");
       const file = path.join(releaseDirectory, name);
-      const contents = yield* fs.readFileString(file).pipe(
-        Effect.catchIf(
-          (error) => error.reason._tag === "NotFound",
-          () => Effect.succeed(null),
-        ),
+      const loaded = yield* Effect.gen(function* () {
+        const stat = yield* Effect.tryPromise(() => NodeFSP.lstat(file));
+        if (!stat.isFile() || stat.size > 1024 * 1024) return null;
+        const contents = yield* fs.readFileString(file);
+        const request = yield* decodeReleaseRequest(contents);
+        return worktreeReleaseName(request.worktreePath) === key
+          ? { file, contents, request }
+          : null;
+      }).pipe(
+        Effect.timeout("5 seconds"),
+        Effect.orElseSucceed(() => null),
       );
-      if (contents === null) continue;
-      const request = yield* decodeReleaseRequest(contents);
-      releases.set(request.worktreePath, { file, contents, request });
+      if (loaded === null) invalidRequests.add(key);
+      else releases.set(key, loaded);
     }
+    const hasRequests = releases.size > 0 || invalidRequests.size > 0;
     if (
-      !releases.size &&
+      !hasRequests &&
       (requestsOnly || !anyWorktreePolicy(serverSettings, worktreeCleanupEnabled))
     )
       return { waiting: false, kept: [] };
@@ -971,8 +972,17 @@ const make = Effect.gen(function* () {
     for (const thread of candidates) {
       const settings = resolveWorktreeCleanup(serverSettings, thread.projectId);
       const worktreePath = path.resolve(thread.worktreePath!);
-      const release = releases.get(worktreePath);
-      if (!release && (requestsOnly || !worktreeCleanupEnabled(settings))) continue;
+      if (!hasRequests && (requestsOnly || !worktreeCleanupEnabled(settings))) continue;
+      const canonical = hasRequests
+        ? yield* releasePath(worktreePath).pipe(Effect.orElseSucceed(() => null))
+        : worktreePath;
+      const key = hasRequests && canonical !== null ? worktreeReleaseName(canonical) : "";
+      const namedKey =
+        hasRequests && canonical !== worktreePath ? worktreeReleaseName(worktreePath) : key;
+      const invalid =
+        canonical === null || invalidRequests.has(key) || invalidRequests.has(namedKey);
+      const release = releases.get(key) ?? releases.get(namedKey);
+      if (!invalid && !release && (requestsOnly || !worktreeCleanupEnabled(settings))) continue;
       const group = groups.get(worktreePath) ?? [];
       const activityAt = Math.max(...group.map(storageCleanupActivityAt));
       const deleted = "workspaceRoot" in thread;
@@ -995,6 +1005,14 @@ const make = Effect.gen(function* () {
         if (deleted && settings.worktreeOnDelete) kept.push(worktreePath);
         entries.push({ ...entry, reason: sentence(reason) });
       };
+      if (invalid) {
+        keep(
+          canonical === null
+            ? "cannot resolve checkout for release request"
+            : "invalid worktree release request",
+        );
+        continue;
+      }
       // Reasons a provider session stop or finished deletion work can clear.
       const waitForStop = (reason: string) => {
         if (deleted && settings.worktreeOnDelete) waiting = true;
@@ -1211,12 +1229,7 @@ const make = Effect.gen(function* () {
             for (const other of paths) {
               if (other.threadId === thread.id) continue;
               const resolved = path.resolve(other.worktreePath);
-              const canonical = yield* fs.realPath(resolved).pipe(
-                Effect.catchIf(
-                  (error) => error.reason._tag === "NotFound",
-                  () => Effect.succeed(resolved),
-                ),
-              );
+              const canonical = yield* releasePath(resolved);
               if (
                 pathKey(canonical) === pathKey(realPath) ||
                 inside(realPath, canonical) ||
@@ -1297,7 +1310,9 @@ const make = Effect.gen(function* () {
           }
           return null;
         });
-        const admissionGeneration = release ? yield* workspaceAdmissionGeneration : null;
+        const beginRemoval = release
+          ? yield* observeWorkspaceStarts(realPath)
+          : Effect.succeed(null);
         const blocked = yield* blockedSinceCheck();
         if (blocked !== null) return keep(blocked);
         const inspection = yield* measureWorktree(worktreePath, true, release === undefined);
@@ -1350,40 +1365,37 @@ const make = Effect.gen(function* () {
         if (release) {
           const removed = yield* threadCommands.withLock(
             thread.id,
-            tryWithWorkspaceStartsPaused(
-              Effect.gen(function* () {
-                if ((yield* workspaceAdmissionGeneration) !== admissionGeneration)
-                  return "a workspace process started during inspection";
-                const lastHold = yield* blockedSinceCheck();
-                if (lastHold !== null) return lastHold;
-                const base = release.file.replace(/\.releasing$/, "");
-                const claimed = base + ".releasing";
-                const won =
-                  release.file === claimed ||
-                  (yield* fs.rename(release.file, claimed).pipe(
-                    Effect.as(true),
-                    Effect.catchIf(
-                      (error) => error.reason._tag === "NotFound",
-                      () => Effect.succeed(false),
-                    ),
-                  ));
-                if (!won || (yield* fs.readFileString(claimed)) !== release.contents)
-                  return "owner withdrew or replaced the release request";
-                yield* remove;
-                yield* fs.rename(claimed, base + ".released");
-                return null;
-              }),
-            ),
+            Effect.gen(function* () {
+              const admissionHold = yield* beginRemoval;
+              if (admissionHold !== null) return admissionHold;
+              const lastHold = yield* blockedSinceCheck();
+              if (lastHold !== null) return lastHold;
+              const base = release.file.replace(/\.releasing$/, "");
+              const claimed = base + ".releasing";
+              const won =
+                release.file === claimed ||
+                (yield* fs.rename(release.file, claimed).pipe(
+                  Effect.as(true),
+                  Effect.catchIf(
+                    (error) => error.reason._tag === "NotFound",
+                    () => Effect.succeed(false),
+                  ),
+                ));
+              if (!won || (yield* fs.readFileString(claimed)) !== release.contents)
+                return "owner withdrew or replaced the release request";
+              yield* remove;
+              yield* fs.rename(claimed, base + ".released");
+              return null;
+            }),
           );
-          if (Option.isNone(removed)) return keep("a workspace process is starting");
-          if (removed.value !== null) return keep(removed.value);
+          if (removed !== null) return keep(removed);
         } else yield* remove;
         entries.push({ ...entry, outcome: "removed", reason: sentence(removalReason), bytes });
         yield* gitManager.invalidateStatus(project.workspaceRoot);
         // Preserve branch/path so ProviderTurnStartService can recreate the checkout on resume.
         yield* Effect.logInfo("storage cleanup removed worktree", { threadId: thread.id });
       }).pipe(
-        (effect) => withWorkspaceLease(worktreePath, effect),
+        (effect) => withWorkspaceLease(worktreePath, Effect.scoped(effect)),
         Effect.catch((error) =>
           Effect.gen(function* () {
             entries.push({

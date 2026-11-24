@@ -2,6 +2,7 @@
 
 - Checkout owners can queue a release for one completed run, save its ignored files, and name the refs that preserve its history. The server waits for delivery and teardown, then releases the checkout. A follow-up opens a fresh checkout.
 - Worktree cleanup can finish a progressing inspection that takes longer than thirty seconds. A stalled or incomplete inspection keeps the checkout.
+- Commands, terminals and providers can start in other checkouts throughout a release. A damaged release request keeps its checkout and allows other releases to finish.
 
 ## 2026-11-23 — Relay executable validation
 

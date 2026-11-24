@@ -373,6 +373,7 @@ const cleanupFixture = (
     let storedWorktreePaths: string[] = [worktree];
     let projectRoots = [repo];
     let editBeforeRemoval = false;
+    let beforeRemoval: Effect.Effect<void> = Effect.void;
     let openSessionCwd: string | null = null;
     let sessionLive = true;
     let onLiveCheck: Effect.Effect<void> = Effect.void;
@@ -392,6 +393,8 @@ const cleanupFixture = (
           Effect.gen(function* () {
             // Before Git's own clean check: inside `git worktree remove`, or on
             // Windows the same status check the removal makes before deleting.
+            if (input.args.includes("remove") || input.args.includes("--porcelain"))
+              yield* beforeRemoval;
             if (
               editBeforeRemoval &&
               (input.args.includes("remove") || input.args.includes("--porcelain"))
@@ -527,6 +530,9 @@ const cleanupFixture = (
       repo,
       setTerminals: (terminals: TerminalSummary[]) =>
         terminalListener?.({ type: "snapshot", terminals }) ?? Effect.void,
+      setBeforeRemoval: (hook: Effect.Effect<void>) => {
+        beforeRemoval = hook;
+      },
       editBeforeRemoval: () => {
         editBeforeRemoval = true;
       },
@@ -724,10 +730,13 @@ it.live.each(["direct land", "no change"] as const)(
           "Gitlink contains local data",
         );
         yield* fixture.fs.remove(insideGitlink);
+        const alias = NodePath.join(fixture.repo, "alias");
+        yield* fixture.fs.symlink(NodePath.join(fixture.worktree, "vendor"), alias);
         const admitted = yield* Deferred.make<void>();
         const finishStart = yield* Deferred.make<void>();
         const admission = yield* withWorkspaceProcessStart(
           Deferred.succeed(admitted, undefined).pipe(Effect.andThen(Deferred.await(finishStart))),
+          [alias],
         ).pipe(Effect.forkChild);
         yield* Deferred.await(admitted);
         expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
@@ -738,7 +747,10 @@ it.live.each(["direct land", "no change"] as const)(
         fixture.setOpenSessionCwd(fixture.worktree);
         fixture.setSessionLive(false);
         fixture.setOnLiveCheck(
-          withWorkspaceProcessStart(Effect.sync(() => fixture.setOnLiveCheck(Effect.void))),
+          withWorkspaceProcessStart(
+            Effect.sync(() => fixture.setOnLiveCheck(Effect.void)),
+            [alias],
+          ),
         );
         expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
           "A workspace process started during inspection",
@@ -754,6 +766,136 @@ it.live.each(["direct land", "no change"] as const)(
         expect(yield* fixture.fs.exists(request + ".released")).toBe(true);
         for (const output of outputs)
           expect(yield* fixture.fs.readFileString(NodePath.join(savedFiles!, output))).toBe(output);
+      }),
+    ),
+);
+
+it.live(
+  "unrelated process starts proceed during inspection and removal of a different worktree",
+  () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture(undefined, true);
+        fixture.disable();
+        const sibling = fixture.worktree + "-sibling";
+        yield* fixture.command(fixture.repo, ["worktree", "add", "-b", "sibling", sibling]);
+        const alias = NodePath.join(fixture.repo, "directory-alias");
+        yield* fixture.fs.symlink(NodePath.join(fixture.worktree, "vendor"), alias);
+        const runId = RunId.make("delivered");
+        const owner = shell({
+          status: "completed",
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          latestRunId: runId,
+          latestRunCompletedAt: at(0),
+        });
+        fixture.setThreads([owner]);
+        yield* queueWorktreeRelease({
+          stateDir: fixture.config.stateDir,
+          threadId: owner.id,
+          runId,
+          worktreePath: fixture.worktree,
+          durableRef: "refs/heads/main",
+        });
+        fixture.setOpenSessionCwd(fixture.worktree);
+        fixture.setSessionLive(false);
+        fixture.setOnLiveCheck(
+          withWorkspaceProcessStart(
+            Effect.sync(() => fixture.setOnLiveCheck(Effect.void)),
+            [sibling],
+          ),
+        );
+        const removing = yield* Deferred.make<void>();
+        const finish = yield* Deferred.make<void>();
+        fixture.setBeforeRemoval(
+          Deferred.succeed(removing, undefined).pipe(Effect.andThen(Deferred.await(finish))),
+        );
+        const sweep = yield* fixture.service.runNow.pipe(Effect.forkChild);
+        expect(
+          yield* Effect.raceFirst(
+            Deferred.await(removing).pipe(Effect.as("removing")),
+            Fiber.join(sweep).pipe(Effect.map((r) => r.entries[0]?.reason)),
+          ),
+        ).toBe("removing");
+        const conflictingPath = (yield* HostProcess.isWindows)
+          ? NodePath.toNamespacedPath(alias.toUpperCase())
+          : alias;
+        const conflicting = yield* withWorkspaceProcessStart(fixture.fs.exists(fixture.worktree), [
+          conflictingPath,
+        ]).pipe(Effect.forkChild({ startImmediately: true }));
+        const unknown = yield* withWorkspaceProcessStart(fixture.fs.exists(fixture.worktree), [
+          null,
+        ]).pipe(Effect.forkChild({ startImmediately: true }));
+        for (const [caller, paths] of Object.entries({
+          command: [sibling, fixture.repo],
+          terminal: [sibling, NodePath.join(sibling, "vendor")],
+          provider: [sibling],
+        })) {
+          expect(
+            yield* withWorkspaceProcessStart(fixture.fs.exists(fixture.worktree), paths),
+            caller,
+          ).toBe(true);
+        }
+        yield* Deferred.succeed(finish, undefined);
+        expect((yield* Fiber.join(sweep)).entries[0]?.outcome).toBe("removed");
+        expect(yield* Fiber.join(conflicting)).toBe(false);
+        expect(yield* Fiber.join(unknown)).toBe(false);
+      }),
+    ),
+);
+
+it.live.each(["truncated", "incompatible", "mismatched"] as const)(
+  "isolates a %s release request from other worktrees and ordinary cleanup",
+  (kind) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture(undefined, true);
+        const sibling = fixture.worktree + "-other";
+        yield* fixture.command(fixture.repo, ["worktree", "add", "-b", "other", sibling]);
+        const runId = RunId.make("completed");
+        const owner = shell({
+          status: "completed",
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          latestRunId: runId,
+          latestRunCompletedAt: at(0),
+        });
+        const alias = NodePath.join(fixture.repo, "worktrees-alias");
+        yield* fixture.fs.symlink(NodePath.dirname(sibling), alias);
+        const other = shell({
+          id: ThreadId.make("other"),
+          branch: "other",
+          worktreePath: NodePath.join(alias, NodePath.basename(sibling)),
+        });
+        fixture.setThreads([other, owner]);
+        const queue = (thread: typeof owner) =>
+          queueWorktreeRelease({
+            stateDir: fixture.config.stateDir,
+            threadId: thread.id,
+            runId,
+            worktreePath: thread.worktreePath!,
+            durableRef: "refs/heads/main",
+          });
+        const valid = yield* queue(owner);
+        const damaged = yield* queue(other);
+        yield* fixture.fs.writeFileString(
+          damaged.file,
+          kind === "truncated"
+            ? "{"
+            : kind === "mismatched"
+              ? yield* fixture.fs.readFileString(valid.file)
+              : JSON.stringify({
+                  ...JSON.parse(yield* fixture.fs.readFileString(damaged.file)),
+                  version: 99,
+                }),
+        );
+        const report = yield* fixture.service.runNow;
+        expect(report.entries.find((e) => e.path === fixture.worktree)?.outcome).toBe("removed");
+        expect(report.entries.find((e) => e.path === other.worktreePath)?.reason).toMatch(
+          /release request/i,
+        );
+        expect(yield* fixture.fs.exists(sibling)).toBe(true);
+        expect(yield* fixture.fs.exists(damaged.file)).toBe(true);
       }),
     ),
 );

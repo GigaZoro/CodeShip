@@ -3,7 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 import { flow } from "effect/Function";
-import { withWorkspaceProcessStart } from "../workspace/workspaceLease.ts";
+import { admitWorkspaceProcess } from "../workspace/workspaceLease.ts";
 
 import {
   CommandId,
@@ -1598,8 +1598,11 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const run: CommandRunner["Service"]["run"] = Effect.fn("CommandRunner.run")(
-    function* (scope, input) {
+  const run: CommandRunner["Service"]["run"] = flow(
+    Effect.fn("CommandRunner.run")(function* (
+      scope: ThreadScope,
+      input: OrchestratorMcpRunCommandInput,
+    ) {
       yield* Deferred.await(adopted);
       const parent = yield* threads
         .getThreadRecords(scope.thread.threadId, ["runs", "subagents"])
@@ -1632,6 +1635,7 @@ const make = Effect.gen(function* () {
         );
       }
       const cwd = base === undefined ? input.cwd! : path.resolve(base, input.cwd ?? ".");
+      yield* admitWorkspaceProcess([base ?? cwd, cwd]);
       const isFolder = yield* fs.stat(cwd).pipe(
         Effect.map((info) => info.type === "Directory"),
         Effect.orElseSucceed(() => false),
@@ -1825,7 +1829,8 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
-    },
+    }),
+    Effect.scoped,
   );
 
   /**
@@ -2081,7 +2086,7 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.ignoreCause({ log: true })),
     );
 
-  return CommandRunner.of({ run: flow(run, withWorkspaceProcessStart), start });
+  return CommandRunner.of({ run, start });
 });
 
 export const layer = Layer.effect(CommandRunner, make);
