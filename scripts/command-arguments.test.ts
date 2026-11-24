@@ -548,7 +548,9 @@ describe("command-line scripts", () => {
     );
   });
 
-  const empty = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-command-arguments-"));
+  const empty = NodeFS.realpathSync(
+    NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-command-arguments-")),
+  );
   afterAll(() => NodeFS.rmSync(empty, { recursive: true, force: true }));
 
   it("runs the release notes command from a disposable copy", () => {

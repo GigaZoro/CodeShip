@@ -1,3 +1,7 @@
+## 2026-11-24 — A script test passes on macOS
+
+- The test that runs the release-notes command from a copy compared a path through macOS's `/private/var` link with one that did not, so it failed on every Mac. It now resolves its temporary folder first. No change to the app.
+
 ## 2026-11-24 — A landing waits through a Mac's sleep
 
 - A landing waiting in main's landing queue ends its wait when origin stays unreachable for 10 minutes. On macOS that limit counted the time the Mac slept, so a landing left waiting on a closed laptop gave up during a brief wake without a network. It now counts only the time the machine is awake. No change to the app.
