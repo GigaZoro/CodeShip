@@ -39,6 +39,10 @@
 - Storage cleanup kept a finished worktree with "Worktree has private reflogs" once Git had deleted a worktree-only ref and left its reflog's empty folders. Those worktrees are released; a reflog that still holds history keeps its worktree.
 - A delegated task on a linked machine whose last reply or plan was blank gave the chat that started it a blank result. Its result is now its last reply with text, as for a task on this machine.
 
+## 2026-11-24 — Shipping a branch with release checks pending
+
+- CodeShip’s shipping instructions keep the chat active until all requested work and checks are complete, including verification of a released package.
+
 ## 2026-11-24 — Codex metadata instructions
 
 - CodeShip’s metadata runtime uses fewer input tokens for titles and other generated text by skipping personal Codex instructions. It retains repository guidance and the selected account.

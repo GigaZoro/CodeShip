@@ -13,8 +13,8 @@ Invoking `/ship` is the developer's go-ahead to commit and push to the default b
 - `git status --short --untracked-files=all`, `git branch --show-current`, `git worktree list`, `git remote -v`.
 - Default branch: `git symbolic-ref --short refs/remotes/origin/HEAD`, falling back to `main`.
 - The first `git worktree list` entry is the main checkout. Note whether you are in a separate worktree.
-- Already on the default branch: do steps 2-5, push it, report, and skip cleanup.
-- Nothing to land: the tree is clean and, after `git fetch origin`, `git merge-base --is-ancestor HEAD origin/<default>` holds. The work is already on the default branch, so skip to step 7, then report and settle.
+- If you are already on the default branch, follow steps 2–6 and skip to step 8.
+- If the tree is clean and `git merge-base --is-ancestor HEAD origin/<default>` succeeds after fetching origin, the branch has already landed. Continue at step 7.
 
 ## 2. Stage deliberately
 
@@ -53,7 +53,7 @@ The command prints the landed commit. The rebase may have changed your commit's 
 
 ## 7. Clean up
 
-Touch only the branch and worktree you just landed. Never touch another session's.
+Touch only the branch and worktree you just landed. Retain the checkout and any artifacts still needed for requested verification.
 
 1. Stop the dev servers you started, by the PIDs you recorded. Never kill by pattern.
 2. Main checkout: if `git -C <main> status --short` is empty, run `git -C <main> merge --ff-only origin/<default>`. If it is dirty, leave it alone, because another agent may be working there.
@@ -68,4 +68,4 @@ Give the commit SHA and title, the checks you ran and their results, and what th
 
 ## 9. Settle the thread
 
-Only when the work is on the default branch, because step 6 confirmed the commit landed or step 1 found nothing to land: if the T3.CodeShip `t3_thread_organize` tool is available, call it with `action: "settle"` and no `threadId`. It settles this thread when the turn ends. Skip this step when you stopped early (checks failed, push rejected, or you are waiting on the developer).
+After confirming the landing, check the developer’s full request. Keep the thread active while any requested work or verification is pending or blocked, including checks on released packages. When every requested outcome is verified, settle this thread with `t3_thread_organize` using `action: "settle"` and no `threadId`, if the tool is available. Honor an explicit request to close the thread.
