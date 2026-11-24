@@ -28,7 +28,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
-import { HttpClient, HttpClientResponse } from "effect/http";
+import { HttpClient, HttpClientResponse, UrlParams } from "effect/http";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
@@ -163,7 +163,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
           executablePath: "/user/bin/codex",
           managedVersionDirectory: null,
           source: "local" as const,
-          version: "0.156.1",
+          version: "0.172.0",
         };
         const installation = yield* CodexInstallation.CodexInstallation;
         const serverConfig = yield* ServerConfig.ServerConfig;
@@ -305,17 +305,25 @@ it.layer(layerTest)("CodexDriver", (it) => {
         }
         const restored = yield* Fiber.join(refresh);
         if (replacementTiming === "during-probe") {
-          // Launch settings fetched Codex's catalog before the account changed; the listing never ran.
+          // The catalog fetched before the account changed must never appear under the new sign-in.
           expect(catalogTokens).toEqual(["launch:Bearer dummy-owned-access"]);
           expect(restored.models).toEqual([]);
           expect(restored.auth.email).toBe("replacement@example.test");
           expect(restored.auth.profileId).toBe("oaiapp_replacement");
           return;
         }
-        expect(catalogTokens).toEqual([
-          "launch:Bearer dummy-owned-access",
-          "listing:Bearer dummy-owned-access",
+        expect(
+          restored.models.map(({ slug, capabilities }) => [
+            slug,
+            capabilities?.optionDescriptors?.map((option) =>
+              option.type === "select" ? option.options.map(({ id }) => id) : [],
+            ),
+          ]),
+        ).toEqual([
+          ["gpt-6.2-sol", [["low", "medium", "high", "xhigh", "max", "ultra"]]],
+          ["gpt-6.2-astra", [["low", "medium", "high", "xhigh", "max", "ultra"]]],
         ]);
+        expect(catalogTokens).toEqual(["launch:Bearer dummy-owned-access"]);
         expect(restored.auth.email).toBe("account@example.test");
         expect(restored.runtimePaths?.homePath).toBe(sharedHome);
         expect(restored.runtimePaths?.shadowHomePath).toContain(
@@ -389,10 +397,37 @@ it.layer(layerTest)("CodexDriver", (it) => {
                 "https://api.openai.com/v1/models",
               ]).toContain(request.url);
               if (request.url.endsWith("/models")) {
-                // Only the launch catalog asks as Codex, with Codex's originator header.
-                const kind = request.headers.originator === undefined ? "listing" : "launch";
+                const kind =
+                  request.headers.originator === "T3 Code" &&
+                  UrlParams.toString(request.urlParams) === "client_version=0.172.0"
+                    ? "launch"
+                    : "listing";
                 catalogTokens.push(`${kind}:${request.headers.authorization}`);
-                return HttpClientResponse.fromWeb(request, Response.json({ models: [] }));
+                return HttpClientResponse.fromWeb(
+                  request,
+                  Response.json({
+                    models:
+                      kind === "listing"
+                        ? []
+                        : ["Sol", "Astra"].map((name) => ({
+                            slug: `gpt-6.2-${name.toLowerCase()}`,
+                            display_name: `GPT-6.2-${name}`,
+                            visibility: "list",
+                            default_reasoning_level: "low",
+                            supported_reasoning_levels: [
+                              "low",
+                              "medium",
+                              "high",
+                              "xhigh",
+                              "max",
+                              "ultra",
+                            ].map((effort) => ({ effort })),
+                            service_tiers: [{ id: "ultrafast", name: "Ultrafast" }],
+                            tool_mode: "code_mode_only",
+                            multi_agent_version: "v2",
+                          })),
+                  }),
+                );
               }
               return HttpClientResponse.fromWeb(
                 request,
@@ -717,6 +752,13 @@ it.layer(layerTest)("CodexDriver", (it) => {
   it.effect.each([
     { name: "own copy", onPath: false, ownCopy: true, explicit: false },
     { name: "codex on PATH", onPath: true, ownCopy: true, explicit: false },
+    {
+      name: "old managed symlink on PATH",
+      onPath: true,
+      ownCopy: true,
+      explicit: false,
+      stale: true,
+    },
     { name: "nothing installed", onPath: false, ownCopy: false, explicit: false },
     { name: "explicit path", onPath: true, ownCopy: true, explicit: true },
   ])(
@@ -729,15 +771,22 @@ it.layer(layerTest)("CodexDriver", (it) => {
           .pipe(Effect.flatMap((directory) => fs.realPath(directory)));
         const pathDir = NodePath.join(tempDir, "bin");
         yield* fs.makeDirectory(pathDir, { recursive: true });
+        const managedDirectory = NodePath.join(tempDir, "tools", "codex");
+        const pathBinary = NodePath.join(pathDir, "codex");
         if (fixture.onPath) {
-          yield* fs.writeFileString(NodePath.join(pathDir, "codex"), "#!/bin/sh\n");
-          yield* fs.chmod(NodePath.join(pathDir, "codex"), 0o755);
+          const binary = fixture.stale
+            ? NodePath.join(managedDirectory, "0.155.0", "bin", "codex")
+            : pathBinary;
+          yield* fs.makeDirectory(NodePath.dirname(binary), { recursive: true });
+          yield* fs.writeFileString(binary, "#!/bin/sh\n", { mode: 0o755 });
+          if (fixture.stale) yield* fs.symlink(binary, pathBinary);
         }
-        const ownCopyPath = NodePath.join(tempDir, "tools", "codex", "0.156.1", "bin", "codex");
+        const ownCopyPath = NodePath.join(managedDirectory, "0.156.1", "bin", "codex");
         const explicitPath = NodePath.join(tempDir, "missing", "codex");
-        const expected = fixture.explicit ? explicitPath : fixture.onPath ? "codex" : ownCopyPath;
+        const externalOnPath = fixture.onPath && !fixture.stale;
+        const expected = fixture.explicit ? explicitPath : externalOnPath ? "codex" : ownCopyPath;
         const ownCopy = () =>
-          fixture.explicit || fixture.onPath
+          fixture.explicit || externalOnPath
             ? Effect.die("A Codex on PATH or an explicit path must not use T3.CodeShip's copy")
             : fixture.ownCopy
               ? Effect.succeed({
@@ -781,6 +830,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
             CodexInstallation.CodexInstallation,
             CodexInstallation.CodexInstallation.of({
               ...(yield* CodexInstallation.CodexInstallation),
+              managedDirectory,
               resolve: ownCopy,
               acquire: ownCopy,
             }),

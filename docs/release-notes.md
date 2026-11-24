@@ -1,3 +1,7 @@
+## 2026-11-24 — GPT-6.2 in managed Codex
+
+- CodeShip upgrades its managed Codex CLI to 0.172.0 on macOS, Windows and Linux. Accounts with access to GPT-6.2 Astra or Sol can select those models for chats and delegated tasks.
+
 ## 2026-11-24 — Keep schedule edits made during a missed run
 
 - Editing a task while the scheduler skips a missed run now preserves the new schedule. Run history records the skip only when the scheduler advances that occurrence.

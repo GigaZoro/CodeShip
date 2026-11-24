@@ -13,7 +13,7 @@ import * as Schema from "effect/Schema";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-const UPSTREAM_REF = "687a119f0fcaace47e1f1abcc77cec6c813fd6da";
+const UPSTREAM_REF = "3d86e43b075adeba2193ec5c22ac92f55afd82e6";
 const USER_AGENT = "effect-codex-app-server-generator";
 const GITHUB_API_BASE =
   "https://api.github.com/repos/openai/codex/contents/codex-rs/app-server-protocol";
@@ -145,29 +145,6 @@ const ManualSchemas: Record<string, Schema.Json> = {
 // `account/read` decode and take the provider down with it.
 const DefinitionOverrides: Record<string, Schema.Json> = {
   PlanType: { type: "string" },
-  // Newer custom Codex binaries emit partial answers before additional tools or text.
-  MessagePhase: {
-    description:
-      'Classifies an assistant message as interim commentary or final answer text.\n\nProviders do not emit this consistently, so callers must treat `None` as "phase unknown" and keep compatibility behavior for legacy models.',
-    oneOf: [
-      {
-        type: "string",
-        enum: ["commentary"],
-        description:
-          "Mid-turn assistant text (for example preamble/progress narration).\n\nAdditional tool calls or assistant output may follow before turn completion.",
-      },
-      {
-        type: "string",
-        enum: ["partial_answer"],
-        description: "Stable answer text that may be followed by more assistant output or tools.",
-      },
-      {
-        type: "string",
-        enum: ["final_answer"],
-        description: "The assistant's terminal answer text for the current turn.",
-      },
-    ],
-  },
 };
 
 const getGeneratedPaths = Effect.fn("getGeneratedPaths")(function* () {
@@ -316,6 +293,13 @@ function isJsonSchemaNode(value: Schema.Json | undefined): value is JsonSchemaNo
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function isObjectAlternative(value: Schema.Json): value is JsonSchemaNode {
+  if (!isJsonSchemaNode(value)) return false;
+  if (value.type === "object") return true;
+  const alternatives = value.anyOf ?? value.oneOf;
+  return Array.isArray(alternatives) && alternatives.every(isObjectAlternative);
+}
+
 // Visit only schema positions so fields literally named properties stay untouched.
 // Close Codex structs that omit additionalProperties; Effect otherwise imports open records.
 // Fold shared fields into each object alternative because Effect cannot intersect them.
@@ -355,9 +339,7 @@ function adaptSchemaForEffect(value: Schema.Json): Schema.Json {
   if (
     !isJsonSchemaNode(properties) ||
     !Array.isArray(alternatives) ||
-    !alternatives.every(
-      (alternative) => isJsonSchemaNode(alternative) && alternative.type === "object",
-    )
+    !alternatives.every(isObjectAlternative)
   ) {
     return node;
   }
@@ -372,14 +354,15 @@ function adaptSchemaForEffect(value: Schema.Json): Schema.Json {
   return {
     ...rest,
     [alternativesKey]: alternatives.map((alternative) => {
-      const branch = alternative as JsonSchemaNode;
+      const branch = alternative;
       const branchProperties = isJsonSchemaNode(branch.properties) ? branch.properties : {};
       const branchRequired = Array.isArray(branch.required) ? branch.required : [];
-      return {
+      return adaptSchemaForEffect({
         ...branch,
+        type: "object",
         properties: { ...properties, ...branchProperties },
         required: [...new Set([...sharedRequired, ...branchRequired])],
-      };
+      });
     }),
   };
 }
@@ -454,6 +437,7 @@ function resolveResponseTypeName(
     "account/gatewayOAuth/read": "GatewayOAuthReadResponse",
     "account/logout": "LogoutAccountResponse",
     "account/rateLimits/read": "GetAccountRateLimitsResponse",
+    "account/securitySetup/read": "GetAccountSecuritySetupResponse",
     "account/usage/read": "GetAccountTokenUsageResponse",
     "account/workspaceMessages/read": "GetWorkspaceMessagesResponse",
     "config/batchWrite": "ConfigWriteResponse",
@@ -461,6 +445,7 @@ function resolveResponseTypeName(
     "config/value/write": "ConfigWriteResponse",
     "configRequirements/read": "ConfigRequirementsReadResponse",
     "externalAgentConfig/import/readHistories": "ExternalAgentConfigImportHistoriesReadResponse",
+    "modelProvider/default/set": "ConfigWriteResponse",
   };
 
   const override = overrides[method];

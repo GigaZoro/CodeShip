@@ -28,9 +28,10 @@ covers installation and custom configuration.
 
 With **Binary path** left empty, T3.CodeShip runs the `codex` on that machine's `PATH`.
 When there is none, it runs its own copy of Codex with the same login. If it has no
-copy yet, the provider's settings offer **Install Codex**. Signing in through those
-settings selects a private login for the app. Running chats can use the previous
-account until the new login is saved.
+copy yet, the provider's settings offer **Install Codex**. When T3.CodeShip uses its
+own copy, updating the app also updates that copy if the app ships a newer Codex
+version. Signing in through those settings selects a private login for the app.
+Running chats can use the previous account until the new login is saved.
 
 ## Use multiple accounts
 
