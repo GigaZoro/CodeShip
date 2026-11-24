@@ -223,9 +223,8 @@ test files that import a changed file directly or through test-support code (a `
 `testkit/`, `testing/`, `test/` or `fixtures/` folder), and the test files beside each production
 file that imports a changed file. The walk goes no further into production code, so a provider's
 replay suites and the service built on a changed module run, but not every test that loads the server.
-Vitest reads each test file it is given as part of a path, so a file on disk whose path holds a
-selected test's path, such as an ignored `x.test.tsx` beside `x.test.ts`, runs too.
-It also runs the checks that read other files: the agent context budget when the server is
+It runs exactly those files, and one that its package's config leaves out passes, as
+`vp test run --passWithNoTests` would. It also runs the checks that read other files: the agent context budget when the server is
 affected, and React Compiler coverage for only the changed web and mobile files. It maps
 files to packages with [ci-changes.cjs](../../.github/scripts/ci-changes.cjs), as CI does. It
 compares against the closest merge base with any remote's `main`, so a fork whose `main` lags
@@ -257,10 +256,8 @@ write permissions of checkout files, and files another process rewrites during t
 inputs, so a pass still replays after a program its tests run
 changes or goes away. A test whose coverage they decide, such as one that skips cases without a
 program or a cgroup it may join, or runs a program a variable names, or that writes a report another
-step needs, needs an uncached task. A group runs its files as CI runs the package's test script,
-under the projects it names. The script may add only `--passWithNoTests`, `--config`, `--dir` and
-`--project`, because a filter such as `-t` would let a group pass after running only some of their
-tests. A test that skips without a host capability, such as file symlinks or the IPv6 loopback,
+step needs, needs an uncached task. A group runs its files with the options of the test script of
+the nearest enclosing package that has one, as CI runs that package's suite. A test that skips without a host capability, such as file symlinks or the IPv6 loopback,
 reads it from `packages/shared/src/testing/hostCapabilities.ts`. The command probes those
 capabilities once, keys the cache on them and passes them to its tests; a probe of the test's own
 would replay the skip after the host gains the capability. With `T3CODE_TEST_KEEP_PROVIDER_ENV=1`,
