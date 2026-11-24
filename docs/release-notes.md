@@ -1,3 +1,7 @@
+## 2026-11-24 — Keep schedule edits made during a missed run
+
+- Editing a task while the scheduler skips a missed run now preserves the new schedule. Run history records the skip only when the scheduler advances that occurrence.
+
 ## 2026-11-24 — Preserve ignored symlinks during worktree release
 
 - On macOS, worktree owners can save ignored dependency trees containing relative or dangling symlinks. When a release request fails before publication, CodeShip removes redundant backup links where the checkout still has the original files.
