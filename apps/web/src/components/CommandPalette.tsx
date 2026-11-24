@@ -278,7 +278,11 @@ import { ThreadRenameDialogHost } from "./ThreadRenameDialog";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
 import { settingsForThisPlatform, SETTINGS_SECTION_LABELS } from "./settings/settingsSearch";
 import { primaryServerKeybindingsAtom } from "../state/server";
-import { resolveShortcutCommand, threadJumpIndexFromCommand } from "../keybindings";
+import {
+  formatShortcutLabel,
+  resolveShortcutCommand,
+  threadJumpIndexFromCommand,
+} from "../keybindings";
 import { CommandDialog, CommandDialogPopup, CommandFooterAction } from "./ui/command";
 import { Kbd } from "./ui/kbd";
 import { Button } from "./ui/button";
@@ -299,6 +303,14 @@ import { useSidebarFolderControls } from "./sidebar/sidebarFolderControls";
 import { threadRecentUse } from "@t3tools/shared/paletteSearch";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
+const OPEN_IN_SIDE_PANEL_SHORTCUT = {
+  key: "enter",
+  altKey: true,
+  ctrlKey: false,
+  metaKey: false,
+  shiftKey: false,
+  modKey: false,
+} as const;
 const ADD_PROJECT_ENTRY_GROUP = "add-project";
 const NEW_THREAD_IN_GROUP = "projects";
 // Its own view, so going Back and choosing "New thread in..." lists every machine again.
@@ -3301,6 +3313,7 @@ function OpenCommandPaletteDialog(props: {
           ? t("Select")
           : undefined;
 
+  const showThreadSearchPending = isThreadSearchPending && !isLinkedThreadSearch && !isBrowsing;
   const footerTrailing = canOpenProjectFromFileManager ? (
     <CommandFooterAction
       disabled={isPickingProjectFolder}
@@ -3310,14 +3323,19 @@ function OpenCommandPaletteDialog(props: {
     >
       {t("Open in {fileManager}", { fileManager: fileManagerName })}
     </CommandFooterAction>
-  ) : canOpenSelectedThreadInSidePanel ? (
-    <CommandFooterAction onClick={openPaletteThreadInSidePanel}>
-      {t("Open in side panel")} <Kbd>{"Alt+Enter"}</Kbd>
-    </CommandFooterAction>
-  ) : isThreadSearchPending && !isLinkedThreadSearch && !isBrowsing ? (
-    // In the footer, so the list keeps its height while message results may
-    // still arrive below it.
-    <span className="text-muted-foreground text-xs">{t("Searching messages…")}</span>
+  ) : canOpenSelectedThreadInSidePanel || showThreadSearchPending ? (
+    <div className="flex items-center gap-3">
+      {showThreadSearchPending ? (
+        // In the footer, so the list keeps its height while message results may
+        // still arrive below it.
+        <span className="text-muted-foreground text-xs">{t("Searching messages…")}</span>
+      ) : null}
+      {canOpenSelectedThreadInSidePanel ? (
+        <CommandFooterAction onClick={openPaletteThreadInSidePanel}>
+          {t("Open in side panel")} <Kbd>{formatShortcutLabel(OPEN_IN_SIDE_PANEL_SHORTCUT)}</Kbd>
+        </CommandFooterAction>
+      ) : null}
+    </div>
   ) : null;
 
   return (
