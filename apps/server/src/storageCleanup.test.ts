@@ -1142,6 +1142,15 @@ it.live("retains worktree-only history and rejects a release overtaken by a foll
         "Requested run has unfinished work or was superseded",
       );
       fixture.setThreads([owner]);
+      const privateRef = "refs/worktree/review";
+      yield* fixture.command(fixture.worktree, ["update-ref", privateRef, unique]);
+      expect((yield* fixture.service.runNow).entries[0]?.reason).toBe("Worktree has private refs");
+      yield* fixture.command(fixture.worktree, ["update-ref", "-d", privateRef]);
+      const admin = (yield* fixture.command(fixture.worktree, [
+        "rev-parse",
+        "--absolute-git-dir",
+      ])).stdout.trim();
+      yield* fixture.fs.makeDirectory(`${admin}/refs/worktree`, { recursive: true });
       expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("removed");
     }),
   ),

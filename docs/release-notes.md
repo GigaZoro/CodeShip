@@ -1,3 +1,7 @@
+## 2026-11-24 — Finished worktrees are released again
+
+- Storage cleanup kept every finished worktree whose Git metadata had a `refs` folder, which Git 2.56 creates for each worktree, with "Worktree metadata requires its owner". Those worktrees are released again unless they hold refs of their own, and the reason now names the metadata it found.
+
 ## 2026-11-24 — A delegated task in plan mode returns its plan
 
 - A delegated task that ran in plan mode and ended with a proposed plan reported "Child task completed without an assistant result" to the chat that started it. Its result is now the proposed plan, also when the task runs on a linked machine.

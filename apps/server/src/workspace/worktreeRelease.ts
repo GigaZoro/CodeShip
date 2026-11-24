@@ -403,12 +403,23 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   for (const name of yield* fs.readDirectory(admin)) {
     if (["HEAD", "index", "commondir", "gitdir"].includes(name)) continue;
     let file = path.join(admin, name);
+    if (name === "refs") {
+      // Git leaves refs/ folders here, empty or holding worktree-only refs (refs/worktree, refs/bisect).
+      if (
+        !(yield* Effect.tryPromise(() => NodeFSP.lstat(file))).isDirectory() ||
+        (yield* Effect.tryPromise(() =>
+          NodeFSP.readdir(file, { recursive: true, withFileTypes: true }),
+        )).some((entry) => !entry.isDirectory())
+      )
+        return "worktree has private refs";
+      continue;
+    }
     if (name === "logs") {
       const logs = yield* fs.readDirectory(file);
       if (logs.length !== 1 || logs[0] !== "HEAD") return "worktree has private reflogs";
       file = path.join(file, "HEAD");
     } else if (!["ORIG_HEAD", "FETCH_HEAD", "COMMIT_EDITMSG"].includes(name))
-      return "worktree metadata requires its owner";
+      return `worktree metadata ${name} requires its owner`;
     const stat = yield* Effect.tryPromise(() => NodeFSP.lstat(file));
     if (stat.size > 4 * 1024 * 1024 || !stat.isFile())
       return "worktree metadata exceeds inspection limit";
