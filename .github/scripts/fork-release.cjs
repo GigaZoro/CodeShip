@@ -209,7 +209,6 @@ function readPreflightLog(repository, job) {
 }
 
 function copiedPublishersBundle(preflight, publisher, repository, readLog) {
-  if (preflight?.conclusion !== "success") return false;
   const passed = (name) =>
     preflight.steps.some((step) => step.name === name && step.conclusion === "success");
   if (!passed("Upload JS bundle")) return false;
@@ -288,6 +287,11 @@ function recoverMacosRun(tag, sha, options) {
     throw new Error(`${tag} reached its ${maximum}-attempt limit across macOS runs.`);
   if (eventRunId && attempts >= immediateLimit) return { action: "wait" };
   const publisher = macosPublisherRun(tag, sha, { repository, defaultBranch, api });
+  // Legacy preflight logs can take 30 seconds each. Read one only for an available
+  // artifact being considered for a rerun, after cheaper checks have passed.
+  const canReuse = (id, name, preflight) =>
+    availableArtifact(repo, id, name, api, now) &&
+    copiedPublishersBundle(preflight, publisher, repository, readLog);
   const packagingRuns = [];
   for (const run of tagged) {
     const jobs = listPages(api, `${repo}/actions/runs/${run.id}/jobs?filter=all`, "jobs");
@@ -296,7 +300,8 @@ function recoverMacosRun(tag, sha, options) {
     for (const job of jobs) {
       if (!latest.has(job.name) || latest.get(job.name).id < job.id) latest.set(job.name, job);
     }
-    if (!copiedPublishersBundle(latest.get("Preflight"), publisher, repository, readLog)) continue;
+    const preflight = latest.get("Preflight");
+    if (preflight?.conclusion !== "success") continue;
     const failed = [...latest.values()].filter(
       (j) => !["success", "skipped", "neutral"].includes(j.conclusion),
     );
@@ -309,15 +314,15 @@ function recoverMacosRun(tag, sha, options) {
             (step) => step.name === "Upload build artifacts" && step.conclusion === "success",
           ),
       );
-      if (signedBuild && availableArtifact(repo, run.id, "desktop-mac-arm64", api, now))
+      if (signedBuild && canReuse(run.id, "desktop-mac-arm64", preflight))
         return { action: "rerun", id: run.id };
-    } else if (!failed.some((j) => j.name === "Preflight")) {
-      packagingRuns.push(run.id);
+    } else {
+      packagingRuns.push({ id: run.id, preflight });
     }
   }
   // Rerun packaging only after every candidate for attaching an existing signed build has been checked.
-  for (const id of packagingRuns) {
-    if (availableArtifact(repo, id, "js-bundle", api, now)) return { action: "rerun", id };
+  for (const { id, preflight } of packagingRuns) {
+    if (canReuse(id, "js-bundle", preflight)) return { action: "rerun", id };
   }
   if (!Number.isFinite(publishedAt)) throw new Error(`Release ${tag} has no publication time.`);
   if (now - publishedAt < 600_000) return { action: "wait" };

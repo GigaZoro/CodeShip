@@ -231,10 +231,17 @@ test("a legacy packaging failure reuses its bundle only when the actual download
     legacyLog(42, { step: "UNKNOWN STEP" }),
     legacyLog(42, { repo: "Other/Fork" }),
   ]) {
-    assert.deepEqual(recovery({ jobs, readLog: () => log, responses: ready(42, "js-bundle") }), {
-      action: "dispatch",
-      id: 42,
-    });
+    assert.deepEqual(
+      recovery({
+        jobs,
+        readLog: () => log,
+        responses: { ...ready(502, "js-bundle"), ...ready(42, "js-bundle") },
+      }),
+      {
+        action: "dispatch",
+        id: 42,
+      },
+    );
   }
   for (const bom of [true, false]) {
     assert.deepEqual(
@@ -255,7 +262,12 @@ test("an attach-only rerun requires the signed artifact and a verified preflight
     { action: "rerun", id: 502 },
   );
   assert.throws(
-    () => recovery({ jobs, readLog: () => legacyLog(41), responses: missing(42, "js-bundle") }),
+    () =>
+      recovery({
+        jobs,
+        readLog: () => legacyLog(41),
+        responses: { ...ready(502, "desktop-mac-arm64"), ...missing(42, "js-bundle") },
+      }),
     /No recoverable macOS artifact/,
   );
   assert.deepEqual(
@@ -307,6 +319,63 @@ test("the final scheduled attempt attaches a signed build before retrying packag
     }),
     { action: "rerun", id: 502 },
   );
+});
+
+test("recovery reads only the qualifying legacy log when 23 runs have finished", () => {
+  const runs = Array.from({ length: 23 }, (_, i) => ({ ...firstMac, id: firstMac.id - i }));
+  for (const signed of [false, true]) {
+    const chosen = signed ? runs.at(-1).id : firstMac.id;
+    const responses = {};
+    for (const { id } of runs) {
+      const jobs = [{ ...preflight(oldDownload), id }];
+      if (signed && id === chosen) {
+        jobs.push(
+          { ...failedBuild, conclusion: "success", steps: [ok("Upload build artifacts")] },
+          failedAttach,
+        );
+        Object.assign(responses, ready(id, "desktop-mac-arm64"));
+      } else {
+        jobs.push(failedBuild);
+        Object.assign(responses, ready(id, "js-bundle"));
+      }
+      responses[jobsPath(id) + "1"] = page("jobs", jobs);
+    }
+    const logs = [];
+    const decision = recovery({
+      runs,
+      responses,
+      immediate: false,
+      readLog: (_, job) => {
+        assert.equal(job.id, chosen, "read a legacy log for a run that cannot be selected");
+        logs.push(job.id);
+        return legacyLog(42);
+      },
+    });
+    assert.deepEqual(decision, { action: "rerun", id: chosen });
+    assert.deepEqual(logs, [chosen]);
+  }
+});
+
+test("an expired artifact never requires a legacy log download", () => {
+  for (const attach of [false, true]) {
+    const jobs = attach
+      ? [
+          preflight(oldDownload),
+          { ...failedBuild, conclusion: "success", steps: [ok("Upload build artifacts")] },
+          failedAttach,
+        ]
+      : [preflight(oldDownload), failedBuild];
+    const responses = {
+      ...missing(502, attach ? "desktop-mac-arm64" : "js-bundle"),
+      ...ready(42, "js-bundle"),
+    };
+    const result = recovery({
+      jobs,
+      responses,
+      readLog: () => assert.fail("read a log without an available artifact"),
+    });
+    assert.deepEqual(result, { action: "dispatch", id: 42 });
+  }
 });
 
 test("immediate and scheduled recovery count every attempt and replacement for the release at both limits", () => {
