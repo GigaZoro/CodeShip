@@ -1,7 +1,7 @@
-import type { Definition, Nodes, Parents, Root, RootContent } from "mdast";
+import type { Definition, Nodes, Parents, Root, RootContent, Table } from "mdast";
 import { gfmToMarkdown } from "mdast-util-gfm";
-import { mathToMarkdown } from "mdast-util-math";
-import { type Options, toMarkdown } from "mdast-util-to-markdown";
+import { type InlineMath, type Math as MathNode, mathToMarkdown } from "mdast-util-math";
+import { type Handle, type Options, toMarkdown } from "mdast-util-to-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkParse from "remark-parse";
@@ -19,23 +19,125 @@ const mathReader = gfmReader().use(remarkMath, { singleDollarTextMath: true }).f
 // The app's math syntax (`$`, `$$`, `\(`, `\[`) starts with one of these.
 const MATH_START = /[$\\]/u;
 
-/** The trees a viewer without math and one that reads math as the app does build. */
-function readBoth(text: string): readonly [Root, Root] {
-  const plain = gfmReader.parse(text);
-  return [plain, MATH_START.test(text) ? mathReader.parse(text) : plain];
+// The parser, the serializer and the comparisons here recurse once per level of nesting.
+const MAX_DEPTH = 100;
+
+function withinDepth(root: Root): boolean {
+  const pending: Array<readonly [Nodes, number]> = [[root, 0]];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const [node, depth] = next;
+    if (depth > MAX_DEPTH) return false;
+    if ("children" in node) for (const child of node.children) pending.push([child, depth + 1]);
+  }
+  return true;
 }
 
+/**
+ * The trees a viewer without math and one that reads math as the app does build, or null when
+ * the text nests too deep to read or compare.
+ */
+function readBoth(text: string): readonly [Root, Root] | null {
+  let trees: readonly [Root, Root];
+  try {
+    const plain = gfmReader.parse(text);
+    trees = [plain, MATH_START.test(text) ? mathReader.parse(text) : plain];
+  } catch (error) {
+    // The parser overflows the stack on deep enough nesting.
+    if (error instanceof RangeError) return null;
+    throw error;
+  }
+  return trees.every(withinDepth) ? trees : null;
+}
+
+const MATH_OPTIONS = { singleDollarTextMath: true };
 const WRITE_OPTIONS: Options = {
-  extensions: [gfmToMarkdown(), mathToMarkdown({ singleDollarTextMath: true })],
+  extensions: [gfmToMarkdown(), mathToMarkdown(MATH_OPTIONS)],
 };
-const REWRITE_OPTIONS: Options = {
-  bullet: "-",
-  // Aligned pipes would pad every row of a long table to its widest cell.
-  extensions: [
-    gfmToMarkdown({ tablePipeAlign: false }),
-    mathToMarkdown({ singleDollarTextMath: true }),
-  ],
+
+const DELIMITER_CELLS = { left: ":-", right: "-:", center: ":-:" } as const;
+
+/** A table with every row as long as written: the GFM writer pads each row to the widest. */
+const writeTable: Handle = (node: Table, _parent, state, info) => {
+  const exit = state.enter("table");
+  const rows = node.children.map((row) => {
+    const exitRow = state.enter("tableRow");
+    const cells = row.children.map((cell) => state.handle(cell, row, state, info));
+    exitRow();
+    return `| ${cells.join(" | ")} |`;
+  });
+  exit();
+  const delimiters = (node.children[0]?.children ?? []).map((_cell, index) => {
+    const align = node.align?.[index];
+    return align === null || align === undefined ? "-" : DELIMITER_CELLS[align];
+  });
+  rows.splice(1, 0, `| ${delimiters.join(" | ")} |`);
+  return rows.join("\n");
 };
+
+const CONTAINERS: ReadonlySet<Nodes["type"]> = new Set([
+  "blockquote",
+  "listItem",
+  "footnoteDefinition",
+]);
+
+const MATH_OPENING = /^(?:\\[([]|\$+)/u;
+const MATH_CLOSING = /(?:\\[)\]]|\$+)[ \t]*$/u;
+
+/**
+ * Math as authored: the writer's `$` form can read differently from `\(` or `\[` without math.
+ * A span that crosses lines inside a container also holds the container's markers, so that math
+ * keeps only its delimiters.
+ */
+function authoredSpan(node: MathNode | InlineMath, span: string, nested: boolean) {
+  if (!nested || !span.includes("\n")) return span;
+  const opening = MATH_OPENING.exec(span)?.[0];
+  const closing = MATH_CLOSING.exec(span)?.[0].trimEnd();
+  if (opening === undefined || closing === undefined) return undefined;
+  if (node.type === "math") {
+    const openingLine = span.slice(0, span.indexOf("\n"));
+    // Text after the opening delimiter is the formula's first line.
+    const opensWithText = openingLine.slice(opening.length).trim() !== "";
+    const body = node.value.split("\n").slice(opensWithText ? 1 : 0);
+    return [opensWithText ? openingLine : opening, ...body, closing].join("\n");
+  }
+  const inner = span.slice(opening.length, span.lastIndexOf(closing));
+  const padded = /^[ \n].*[ \n]$/su.test(inner) && /[^ \n]/u.test(inner);
+  return padded
+    ? `${opening}${inner[0]}${node.value}${inner.at(-1)}${closing}`
+    : `${opening}${node.value}${closing}`;
+}
+
+function authoredMath(root: Root, source: string): Options {
+  const spans = new Map<Nodes, string>();
+  const pending: Array<readonly [Nodes, boolean]> = [[root, false]];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const [node, nested] = next;
+    if (node.type === "math" || node.type === "inlineMath") {
+      const { start, end } = node.position!;
+      const span = authoredSpan(node, source.slice(start.offset, end.offset), nested);
+      if (span !== undefined) spans.set(node, span);
+    }
+    if ("children" in node) {
+      const inContainer = nested || CONTAINERS.has(node.type);
+      for (const child of node.children) pending.push([child, inContainer]);
+    }
+  }
+  const { math, inlineMath } = mathToMarkdown(MATH_OPTIONS).handlers!;
+  const authored = (written: Handle) => {
+    const handle: Handle = (node: MathNode | InlineMath, parent, state, info) =>
+      spans.get(node) ?? written(node, parent, state, info);
+    return Object.assign(handle, { peek: (node: Nodes) => spans.get(node)?.[0] ?? "$" });
+  };
+  return { handlers: { math: authored(math!), inlineMath: authored(inlineMath!) } };
+}
+
+function rewriteOptions(root: Root, source: string): Options {
+  return {
+    bullet: "-",
+    extensions: [gfmToMarkdown(), mathToMarkdown(MATH_OPTIONS), authoredMath(root, source)],
+    handlers: { table: writeTable },
+  };
+}
 
 type Shape = ReadonlyArray<string>;
 
@@ -72,13 +174,20 @@ const shapeBoth = (trees: readonly [Root, Root]): readonly [Shape, Shape] => {
 };
 const sameShape = (left: Shape, right: Shape) =>
   left.length === right.length && left.every((node, index) => node === right[index]);
+const sameShapes = (left: readonly [Shape, Shape], right: readonly [Shape, Shape]) =>
+  sameShape(left[0], right[0]) && sameShape(left[1], right[1]);
 
-const shapes = new WeakMap<MarkdownBlock, readonly [Shape, Shape]>();
+function readShapes(text: string): readonly [Shape, Shape] | null {
+  const trees = readBoth(text);
+  return trees === null ? null : shapeBoth(trees);
+}
 
-function shapesOf(block: MarkdownBlock): readonly [Shape, Shape] {
+const shapes = new WeakMap<MarkdownBlock, readonly [Shape, Shape] | null>();
+
+function shapesOf(block: MarkdownBlock): readonly [Shape, Shape] | null {
   let known = shapes.get(block);
   if (known === undefined) {
-    known = shapeBoth(readBoth(block.text));
+    known = readShapes(block.text);
     shapes.set(block, known);
   }
   return known;
@@ -159,13 +268,18 @@ const AFTER_BLANK_LINE = BARRIERS[0]!.separator;
 
 /** A block for `text` when it renders as `expected` and a comment after it stays separate. */
 function verified(text: string, expected: readonly [Shape, Shape]): MarkdownBlock | null {
-  const read = shapeBoth(readBoth(text));
-  if (!read.every((tree, index) => sameShape(tree, expected[index]!))) return null;
-  const barrier = BARRIERS.find(({ probe }) =>
-    shapeBoth(readBoth(text + probe)).every((tree, index) =>
-      sameShape(tree, [...read[index]!, COMMENT_SHAPE]),
-    ),
-  );
+  const read = readShapes(text);
+  if (read === null || !sameShapes(read, expected)) return null;
+  const barrier = BARRIERS.find(({ probe }) => {
+    const probed = readShapes(text + probe);
+    return (
+      probed !== null &&
+      sameShapes(probed, [
+        [...read[0], COMMENT_SHAPE],
+        [...read[1], COMMENT_SHAPE],
+      ])
+    );
+  });
   if (barrier === undefined) return null;
   const block = { text, barrier: barrier.separator };
   shapes.set(block, read);
@@ -183,9 +297,10 @@ function* candidates(source: string, trees: readonly [Root, Root], rewritten: Ro
     const fence = FENCE_OPENING.exec(source.slice(source.lastIndexOf("\n", start - 1) + 1));
     if (fence !== null) yield `${source}${source.endsWith("\n") ? "" : "\n"}${fence[1]}`;
   }
-  yield toMarkdown(rewritten, REWRITE_OPTIONS).replace(/\n$/u, "");
+  const options = rewriteOptions(rewritten, source);
+  yield toMarkdown(rewritten, options).replace(/\n$/u, "");
   // An autolink literal GFM accepts, such as `a@.5b`, can be one CommonMark's `<…>` form rejects.
-  yield toMarkdown(rewritten, { ...REWRITE_OPTIONS, resourceLink: true }).replace(/\n$/u, "");
+  yield toMarkdown(rewritten, { ...options, resourceLink: true }).replace(/\n$/u, "");
 }
 
 function longestRun(text: string, character: string): number {
@@ -224,6 +339,8 @@ export function standaloneMarkdown(
   const source = text.replace(/^\uFEFF+/u, "").replace(/\r\n?/gu, "\n");
   if (/^[ \t\n]*$/u.test(source)) return null;
   const trees = readBoth(source);
+  if (trees === null)
+    return { text: fencedSource(source), barrier: AFTER_BLANK_LINE, labelCount: 0 };
   const labels = new Map<string, string>();
   const footnoteLabel = (identifier: string) => {
     let label = labels.get(identifier);
@@ -270,10 +387,23 @@ export function markdownBlock(text: string): MarkdownBlock {
 export function markdownBlockSeparator(previous: MarkdownBlock, next: MarkdownBlock): string {
   const before = shapesOf(previous);
   const after = shapesOf(next);
-  const joined = shapeBoth(readBoth(`${previous.text}\n\n${next.text}`));
-  return joined.every((tree, index) => sameShape(tree, [...before[index]!, ...after[index]!]))
+  if (before === null || after === null) return previous.barrier;
+  const joined = readShapes(`${previous.text}\n\n${next.text}`);
+  return joined !== null &&
+    sameShapes(joined, [
+      [...before[0], ...after[0]],
+      [...before[1], ...after[1]],
+    ])
     ? "\n\n"
     : previous.barrier;
+}
+
+/** The line break a document can end with after its last block, when it keeps that block the same. */
+export function markdownDocumentEnding(last: MarkdownBlock): string {
+  if (last.text.endsWith("\n")) return "";
+  const alone = shapesOf(last);
+  const ended = readShapes(`${last.text}\n`);
+  return alone !== null && ended !== null && sameShapes(alone, ended) ? "\n" : "";
 }
 
 /** A code span whose delimiter is longer than any backtick run inside it. */

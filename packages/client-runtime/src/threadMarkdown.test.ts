@@ -188,6 +188,35 @@ describe("buildThreadMarkdown", () => {
     expect(await build([assistant(text)])).toContain(`## Assistant\n\n${text}\n`);
   });
 
+  it("ends the file without changing a message whose open fence runs to its end", async () => {
+    const text = "- ~~~\n  hi\n";
+    interface TreeNode {
+      readonly type: string;
+      readonly value?: string;
+      readonly children?: ReadonlyArray<TreeNode>;
+    }
+    const codeValues = (markdown: string) => {
+      const values: Array<string | undefined> = [];
+      const pending: TreeNode[] = [parseMarkdownWithMath(markdown)];
+      for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+        if (node.type === "code") values.push(node.value);
+        pending.push(...(node.children ?? []));
+      }
+      return values;
+    };
+
+    expect(codeValues(await build([assistant(text)]))).toEqual(codeValues(text));
+  });
+
+  it.each([
+    ["quote", `${">".repeat(2000)}x`],
+    ["list", `${"- ".repeat(2000)}x`],
+  ])("shows a %s nested too deep to read as its source", async (_name, text) => {
+    expect(await build([assistant(text)])).toContain(
+      `## Assistant\n\n\`\`\`markdown\n${text}\n\`\`\``,
+    );
+  });
+
   it("keeps a message's list and the tool lines after it apart", async () => {
     const markdown = await build([assistant("- one\n- two"), command("ls"), user("Next")]);
 

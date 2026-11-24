@@ -130,20 +130,43 @@ function showsSource(markdownBlock: MarkdownBlock, source: string): boolean {
   );
 }
 
-/** Exports the messages as one document and checks each renders there as it does alone. */
-function expectContained(messages: ReadonlyArray<string>) {
+/** What each viewer shows for a message alone, or null when no viewer shows anything. */
+function shownAlone(source: string, namespace: string): readonly [Nodes[], Nodes[]] | null {
+  const shown = [
+    rendered(source, viewer, namespace),
+    rendered(source, mathViewer, namespace),
+  ] as const;
+  return shown.some((nodes) => nodes.some((node) => node.type !== "footnoteDefinition"))
+    ? shown
+    : null;
+}
+
+/**
+ * Exports the messages as one document and checks each renders there as it does alone. Only the
+ * messages in `fenced` may show as code instead.
+ */
+function expectContained(
+  messages: ReadonlyArray<string>,
+  fenced: ReadonlyArray<string> | "any" = [],
+) {
+  const expected = messages.map((text, index) => shownAlone(normalized(text), `m${index}:`));
   let scope = 1;
-  const parts = messages.flatMap((text) => {
+  const parts = messages.flatMap((text, index) => {
     const result = standaloneMarkdown(text, { scope, prefix: "ref" });
+    const label = JSON.stringify(text);
+    expect(result === null, `${label} shows nothing`).toBe(expected[index] === null);
     if (result === null) return [];
     scope += result.labelCount;
-    return [{ block: result, source: normalized(text) }];
+    const source = normalized(text);
+    const asCode = showsSource(result, source);
+    if (asCode && fenced !== "any") expect(fenced, `${label} shows as code`).toContain(text);
+    return [{ block: result, source, asCode, shown: expected[index]! }];
   });
   if (parts.length === 0) return;
   const document = join(parts.map((part) => part.block));
-  for (const read of viewers) {
-    const alone = parts.flatMap(({ block: part, source }, index) =>
-      showsSource(part, source)
+  viewers.forEach((read, viewerIndex) => {
+    const alone = parts.flatMap(({ source, asCode, shown }) =>
+      asCode
         ? [
             {
               type: "code",
@@ -152,12 +175,12 @@ function expectContained(messages: ReadonlyArray<string>) {
               value: source.replace(/\n$/u, ""),
             } as Nodes,
           ]
-        : rendered(source, read, `m${index}:`),
+        : shown[viewerIndex]!,
     );
     expect(canonical(rendered(document, read, "")), JSON.stringify(messages)).toBe(
       canonical(alone),
     );
-  }
+  });
 }
 
 describe("standaloneMarkdown", () => {
@@ -191,6 +214,10 @@ describe("standaloneMarkdown", () => {
     ["\uFEFF\uFEFF[x]\n\n[x]: /a", "[x](/a)"],
     ["<details>open", "```html\n<details>open\n```"],
     ["Before <b>open", "Before \\<b>open"],
+    [String.raw`Inline \(x\) <b>`, String.raw`Inline \(x\) \<b>`],
+    ["> \\( a\n> b \\) <b>", "> \\( a\n> b \\) \\<b>"],
+    ["- \\[\n  x\n  \\]\n\n<div>", "- \\[\n  x\n  \\]\n\n```html\n<div>\n```"],
+    ["> - $$ m\n>   x\n>   $$\n\n<div>", "> - $$ m\n>   x\n>   $$\n\n```html\n<div>\n```"],
     ["at Array.<anonymous> (pkg@.5g)", "at Array.\\<anonymous> ([pkg@.5g](mailto:pkg@.5g))"],
     [
       `A[^a\\*] B[^a*] C[^${"a".repeat(997)}]\n\n[^a\\*]: escaped\n[^a*]: plain\n[^${"a".repeat(997)}]: long`,
@@ -211,7 +238,7 @@ describe("standaloneMarkdown", () => {
   it("shows the source as code when no Markdown renders the same inside the document", () => {
     const source = "&#10;<div>";
     expect(showsSource(block(source), source)).toBe(true);
-    expectContained([source, "Next"]);
+    expectContained([source, "Next"], [source]);
   });
 
   it("keeps a copied destination from defining a reference for a later message", () => {
@@ -264,12 +291,25 @@ describe("standaloneMarkdown", () => {
     footnotesToTheirBodies: "A[^a] B[^b]\n\n[^a]: one\n[^b]: two",
     doubleBom: "\uFEFF\uFEFF[x]\n\n[x]: /a",
     openDisplayMath: "$$a\n\n- b",
+    inlineMathBesideHtml: String.raw`Inline \(x\) <b>`,
+    displayMathBesideHtml: String.raw`Display \[x\] <b>`,
+    mathAcrossQuotedLines: "> \\( a\n> b \\) <b>",
+    mathInListBesideHtml: "- \\[\n  x\n  \\]\n\n<div>",
+    raggedTable: `| h |\n| - |\n|${" c |".repeat(100)}\n${"| r |\n".repeat(100)}<div>`,
   };
 
   it.each(Object.entries(messages))("keeps %s contained beside other messages", (_name, text) => {
     expectContained([text, "Next"]);
     expectContained(["- item", text]);
     expectContained([text, text]);
+  });
+
+  it("rewrites a ragged table with each row as long as written", () => {
+    const source = messages.raggedTable;
+    const result = block(source);
+
+    expect(showsSource(result, source)).toBe(false);
+    expect(result.text.length).toBeLessThan(2 * source.length);
   });
 
   const fragments = [
@@ -332,6 +372,7 @@ describe("standaloneMarkdown", () => {
     "\r\n",
   ];
 
+  // Random fragments often make Markdown no document can keep, so these may show as code.
   it("keeps generated messages contained", () => {
     let seed = 7;
     const random = () => {
@@ -344,7 +385,7 @@ describe("standaloneMarkdown", () => {
         () => fragments[Math.floor(random() * fragments.length)],
       ).join("");
     for (let index = 0; index < 150; index += 1) {
-      expectContained(Array.from({ length: 2 + Math.floor(random() * 3) }, message));
+      expectContained(Array.from({ length: 2 + Math.floor(random() * 3) }, message), "any");
     }
   });
 });

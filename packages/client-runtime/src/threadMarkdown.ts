@@ -13,6 +13,7 @@ import {
   markdownBlock,
   markdownBlockSeparator,
   markdownCodeSpan,
+  markdownDocumentEnding,
   standaloneMarkdown,
 } from "@t3tools/shared/markdownStandalone";
 
@@ -355,7 +356,7 @@ export async function buildThreadMarkdown(
     await yieldIfDue();
     markdown += `${markdownBlockSeparator(blocks[index - 1]!, blocks[index]!)}${blocks[index]!.text}`;
   }
-  return `${markdown}\n`;
+  return markdown + markdownDocumentEnding(blocks.at(-1)!);
 }
 
 export function threadMarkdownFileName(title: string): string {
