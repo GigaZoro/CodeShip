@@ -255,6 +255,7 @@ it.effect(
           getMessageCount: () => Effect.die("unused message count"),
           getMemoryAdmissionQueue: () => Effect.die("unused getMemoryAdmissionQueue"),
           getSubagentCount: () => Effect.die("unused subagent count"),
+          getLatestReviewRound: () => Effect.die("unused review round read"),
           getNextTurnItemOrdinal: () => Effect.die("unused ordinal read"),
           getTurnItem: () => Effect.die("unused turn item read"),
           getThreadRecords: () => Effect.die("unused record read"),

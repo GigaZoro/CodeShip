@@ -240,6 +240,7 @@ type DelegateTaskInput = {
   };
   title?: string;
   role?: "implementation" | "research" | "review" | "design" | "test" | "general";
+  newReviewPart?: string;
   auto?: boolean;
   mode?: "async" | "wait";
   timeoutMs?: number;
@@ -293,8 +294,26 @@ inherited mode steps down to the broadest mode the target offers.
 
 Each independent delegated review round uses a new `delegate_task` call with the
 original brief, prior findings, responses, and unresolved objections. Track each
-round by its own `taskId` and use a distinct `clientRequestId` per round, stable
-across retries of that round.
+reviewer by its own `taskId` and give each reviewer call its own
+`clientRequestId`, reused only to retry that call: parallel reviewers share a
+round, and a repeated key returns the first reviewer instead of starting another.
+The parent thread counts its `role: "review"` tasks in rounds, and the result's
+`reviewRound` reports the task's round. Reviewers started while the latest round
+is unanswered join that round, so parallel reviewers of one diff share it. A review that would be round 4 is refused with `review_round_limit`, quoting
+the review rule that a third round still finding blocking defects means re-plan
+or split the change. A call with `newReviewPart`, one line saying how the change
+was re-planned or split, starts round 1 of a new part instead. While that round
+is unanswered, more reviewers of the part join it by repeating the same line or
+leaving `newReviewPart` out; a different line starts another part.
+A round is answered once a run in one of its reviewers' threads completes, since
+its answer can be read there before the parent records it; a failed or cancelled
+reviewer leaves it open for a retry. Once the parent records completed work in a
+reviewer's thread, a rollback there does not reopen the round. A reviewer in
+another environment answers its round when this environment records its result.
+Follow-up work in a reviewer's thread is not a round of its own. The count and
+the reason live on each review task's record in the parent's projection, so
+compaction and restarts keep them, and a refusal records no receipt, so the same
+`clientRequestId` can retry with `newReviewPart`.
 A follow-up that needs the same child's conversation goes through `t3_thread_send`
 on its `childThreadId`. After the original task completes, that follow-up runs as a
 fresh task in the child thread; it does not reopen the completed task or change its
@@ -340,6 +359,7 @@ type DelegateTaskResult = {
     runId: string;
   } | null;
   waitTimedOut: boolean;
+  reviewRound?: string;
 };
 ```
 
