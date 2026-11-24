@@ -1,3 +1,7 @@
+## 2026-11-24 — Held schedules survive a time zone change
+
+- A fixed-time run delayed by an account limit keeps its original demand ID when the server restarts in another time zone. The next ordinary run follows the new local time.
+
 ## 2026-11-23 — Accounting for scheduled runs
 
 - Locally scheduled occurrences and manual starts carry their demand ID into new and existing chats. A run delayed by memory pressure or account limits retains its original occurrence when the saved schedule identifies it. Manual starts in the same millisecond have distinct history entries. Recreating a task gives its new local occurrences their own identity. Automatic one-machine shared runs remain unattributed when the scheduler cannot establish which occurrence a peer accepted.

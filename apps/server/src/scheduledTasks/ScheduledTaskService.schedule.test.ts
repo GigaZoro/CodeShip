@@ -24,6 +24,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
+import { vi } from "vite-plus/test";
+
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import { originalDemandId } from "../orchestration-v2/demandId.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -773,6 +775,9 @@ it.effect.each([
   { kind: "once", shortage: "memory" },
   { kind: "once", shortage: "usage" },
   { kind: "fixed_time", shortage: "usage" },
+  { kind: "fixed_time", shortage: "zone change" },
+  { kind: "fixed_time", shortage: "late zone change" },
+  { kind: "fixed_time", shortage: "legacy zone change" },
   { kind: "fixed_time", shortage: "legacy usage" },
   { kind: "fixed_time", shortage: "late wake usage" },
   { kind: "fixed_time", shortage: "equivalent schedule edit" },
@@ -782,6 +787,13 @@ it.effect.each([
   "$kind demand after two $shortage skips and a scheduler restart",
   ({ kind, shortage }) =>
     Effect.gen(function* () {
+      const changesZone = shortage.endsWith("zone change");
+      if (changesZone) {
+        yield* Effect.acquireRelease(
+          Effect.sync(() => vi.stubEnv("TZ", "Europe/Kyiv")),
+          () => Effect.sync(() => vi.unstubAllEnvs()),
+        );
+      }
       const first = DateTime.makeZonedUnsafe(
         { year: 2026, month: 11, day: 10, hour: 7, minute: 0, second: 0, millisecond: 0 },
         { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
@@ -866,7 +878,7 @@ it.effect.each([
           const current = (yield* service.list()).tasks.find((entry) => entry.id === task.id)!;
           expect(Date.parse(current.nextRunAt!)).toBeGreaterThan(Date.parse(due));
           expect(yield* Ref.get(demand)).toBeUndefined();
-          if (shortage === "legacy usage") {
+          if (shortage === "legacy usage" || shortage === "legacy zone change") {
             const sql = yield* SqlClient.SqlClient;
             // Remove the cursor evidence written by newer versions as well.
             const columns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_tasks)`;
@@ -880,6 +892,10 @@ it.effect.each([
         }).pipe(Effect.provide(layer));
       yield* TestClock.setTime(firstMs);
       const secondAt = yield* afterSkip(firstAt);
+      if (changesZone) {
+        expect(firstAt).toBe("2026-11-10T05:00:00.000Z");
+        vi.stubEnv("TZ", "Europe/London");
+      }
       // Waking after the grace period revisits 07:00. The 07:30 reset and original
       // occurrence must survive even though history already contains that 07:00 skip.
       const edit = shortage === "equivalent schedule edit" || shortage === "changed schedule edit";
@@ -887,7 +903,13 @@ it.effect.each([
       yield* Ref.set(resetAt, isoMs(late ? firstMs + 30 * 60_000 : Date.parse(secondAt) + 300_000));
       // Advance with the scheduler stopped. Advancing a running TestClock polls each intermediate deadline.
       yield* TestClock.setTime(late ? firstMs + 20 * 60_000 : Date.parse(secondAt));
+      if (shortage === "late zone change") {
+        yield* Ref.set(resetAt, isoMs(firstMs + 30 * 60_000));
+        yield* TestClock.setTime(firstMs + 20 * 60_000);
+      }
       const thirdAt = yield* afterSkip(secondAt);
+      if (changesZone)
+        expect(thirdAt).toBe(isoMs(firstMs + (shortage === "late zone change" ? 30 : 10) * 60_000));
       if (late) {
         expect(secondAt).toBe(isoMs(firstMs + 5 * 60_000));
         expect(thirdAt).toBe(isoMs(firstMs + 30 * 60_000));
@@ -953,20 +975,41 @@ it.effect.each([
       }).pipe(Effect.provide(layer));
       const incarnation = task.incarnationId ?? task.createdAt;
       expect(yield* Ref.get(demand)).toBe(
-        originalDemandId(
-          "scheduled-task",
-          HERE_ENVIRONMENT_ID,
-          task.id,
-          incarnation,
-          "scheduled",
-          kind === "interval"
-            ? thirdAt
-            : shortage === "changed schedule edit"
-              ? isoMs(firstMs + 60 * 60_000)
-              : firstAt,
-        ),
+        shortage === "legacy zone change"
+          ? null
+          : originalDemandId(
+              "scheduled-task",
+              HERE_ENVIRONMENT_ID,
+              task.id,
+              incarnation,
+              "scheduled",
+              kind === "interval"
+                ? thirdAt
+                : shortage === "changed schedule edit"
+                  ? isoMs(firstMs + 60 * 60_000)
+                  : firstAt,
+            ),
       );
-    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+      if (changesZone) {
+        const next = "2026-11-10T07:00:00.000Z";
+        yield* TestClock.setTime(Date.parse(next));
+        yield* Effect.gen(function* () {
+          const service = yield* ScheduledTaskService.ScheduledTaskService;
+          expect((yield* service.list()).tasks[0]?.nextRunAt).toBe(next);
+          yield* TestClock.adjust("6 seconds");
+          expect(yield* Ref.get(demand)).toBe(
+            originalDemandId(
+              "scheduled-task",
+              HERE_ENVIRONMENT_ID,
+              task.id,
+              incarnation,
+              "scheduled",
+              next,
+            ),
+          );
+        }).pipe(Effect.provide(layer));
+      }
+    }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect.each([

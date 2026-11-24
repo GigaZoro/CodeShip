@@ -387,7 +387,11 @@ const StoredUsageLimit = Schema.Struct({
   ...ScheduledTaskRunUsageLimit.fields,
   heldOccurrence: Schema.optionalKey(
     Schema.NullOr(
-      Schema.Struct({ at: Schema.NullOr(Schema.String), schedule: ScheduledTask.fields.schedule }),
+      Schema.Struct({
+        at: Schema.NullOr(Schema.String),
+        schedule: ScheduledTask.fields.schedule,
+        timeZone: Schema.optionalKey(Schema.String),
+      }),
     ),
   ),
 });
@@ -503,7 +507,7 @@ interface RunRecordRow {
 /** What a scheduled run is for: the time it serves, and whether it catches up a missed one. */
 interface ScheduledFire {
   /** This machine owns this occurrence independently of peer claims. */
-  readonly independentOccurrence?: string | null;
+  readonly independentOccurrence?: { readonly at: string; readonly timeZone?: string } | null;
   readonly scheduledFor: string | null;
   readonly catchUp: boolean;
   /** What the task's run condition answered for this occurrence. */
@@ -2606,7 +2610,7 @@ export const layer = Layer.effect(
                 active.shared?.runOn !== "one" &&
                 active.nextRunAt === task.nextRunAt &&
                 isSameSchedule(active.schedule, task.schedule)
-              ? fire.independentOccurrence
+              ? (fire.independentOccurrence?.at ?? null)
               : null;
         const demandId =
           admissionKey === null
@@ -3115,8 +3119,11 @@ export const layer = Layer.effect(
                     ? {
                         at:
                           taskIncarnation(current) === taskIncarnation(task)
-                            ? fire.independentOccurrence
+                            ? (fire.independentOccurrence?.at ?? null)
                             : null,
+                        ...(fire.independentOccurrence?.timeZone === undefined
+                          ? {}
+                          : { timeZone: fire.independentOccurrence.timeZone }),
                         schedule: task.schedule,
                       }
                     : null,
@@ -4182,24 +4189,49 @@ export const layer = Layer.effect(
       },
     );
 
+    function currentUsageOccurrence(
+      task: ScheduledTask,
+      json: string,
+      dueMs: number,
+      localZone: DateTime.TimeZone.Named,
+    ) {
+      const hold = Option.getOrNull(decodeStoredUsageLimit(json));
+      const held = hold?.heldOccurrence;
+      if (
+        hold === null ||
+        held?.at == null ||
+        scheduledTaskInstantMs(hold.until) !== dueMs ||
+        !isSameSchedule(task.schedule, held.schedule)
+      )
+        return null;
+      const zone =
+        held.timeZone === undefined
+          ? localZone
+          : Option.getOrNull(DateTime.zoneMakeNamed(held.timeZone));
+      if (zone === null) return null;
+      const due = DateTime.setZone(DateTime.makeUnsafe(dueMs), zone);
+      const slot = latestMissedFixedTimeRun(task.schedule, due)?.at;
+      return slot && scheduledTaskInstantMs(held.at) === DateTime.toEpochMillis(slot)
+        ? { at: iso(slot), timeZone: zone.id }
+        : null;
+    }
+
     const independentOccurrence = Effect.fnUntraced(function* (
       task: ScheduledTask,
       now: DateTime.DateTime,
     ) {
       const due = task.nextRunAt;
       if (task.schedule.type === "once") {
-        return Option.getOrNull(Option.map(DateTime.make(task.schedule.runAt), iso));
+        return Option.getOrNull(
+          Option.map(DateTime.make(task.schedule.runAt), (at) => ({ at: iso(at) })),
+        );
       }
-      if (task.schedule.type !== "fixed_time" || due === null) return due;
+      if (task.schedule.type !== "fixed_time" || due === null)
+        return due === null ? null : { at: due };
       const dueMs = scheduledTaskInstantMs(due);
       if (dueMs === null) return null;
       const localAt = (millis: number) =>
         DateTime.subtract(now, { milliseconds: DateTime.toEpochMillis(now) - millis });
-      const previous = latestMissedFixedTimeRun(task.schedule, localAt(dueMs));
-      if (previous === null) return null;
-      const candidate = iso(previous.at);
-      const candidateMs = DateTime.toEpochMillis(previous.at);
-
       const [cursor] = yield* sql<{
         usage_hold_json: string | null;
         updated_at: string;
@@ -4212,17 +4244,21 @@ export const layer = Layer.effect(
       if (cursor === undefined) return null;
       // A current hold proves its configured occurrence even if an edit subsequently stamped updated_at.
       if (cursor.usage_hold_json !== null) {
-        const hold = Option.getOrNull(decodeStoredUsageLimit(cursor.usage_hold_json));
-        return hold !== null &&
-          scheduledTaskInstantMs(hold.until) === dueMs &&
-          hold.heldOccurrence?.at != null &&
-          scheduledTaskInstantMs(hold.heldOccurrence.at) === candidateMs &&
-          isSameSchedule(task.schedule, hold.heldOccurrence.schedule)
-          ? candidate
-          : null;
+        return currentUsageOccurrence(
+          task,
+          cursor.usage_hold_json,
+          dueMs,
+          DateTime.zoneMakeLocal(),
+        );
       }
+      const previous = latestMissedFixedTimeRun(task.schedule, localAt(dueMs));
+      if (previous === null) return null;
+      const candidate = iso(previous.at);
+      const candidateMs = DateTime.toEpochMillis(previous.at);
+
+      const occurrence = { at: candidate, timeZone: DateTime.zoneMakeLocal().id };
       // A configured occurrence is due in its own right, even with an older usage skip.
-      if (candidateMs === dueMs) return candidate;
+      if (candidateMs === dueMs) return occurrence;
       const createdMs = scheduledTaskInstantMs(task.createdAt);
       const movedMs = scheduledTaskInstantMs(cursor.updated_at);
       if (createdMs === null || createdMs > candidateMs || movedMs === null || movedMs > dueMs)
@@ -4293,7 +4329,7 @@ export const layer = Layer.effect(
         if (scheduledMs !== deadline && !(row === history[0] && held?.at != null)) return null;
         deadline = resetMs;
       }
-      if (deadline === dueMs) return candidate;
+      if (deadline === dueMs) return occurrence;
 
       // A repeated hold can advance the cursor while keeping its first skip row.
       // An intervening settings edit makes the missing reset impossible to infer.
@@ -4306,7 +4342,7 @@ export const layer = Layer.effect(
       const moved = localAt(movedMs);
       if (!isMissedFixedTimeRun(task.schedule, localAt(deadline), moved)) return null;
       const revisited = latestMissedFixedTimeRun(task.schedule, moved);
-      return revisited?.catchUp && iso(revisited.at) === candidate ? candidate : null;
+      return revisited?.catchUp && iso(revisited.at) === candidate ? occurrence : null;
     });
 
     // Due rows come without sharing, so look it up only for tasks that are shared to run on one machine.
@@ -4354,9 +4390,13 @@ export const layer = Layer.effect(
       );
       const catchUp =
         stored === undefined ? defaultCatchUpMissedRun(task.schedule) : stored.enabled === 1;
-      const [held] = yield* sql<{ readonly held_at: string }>`
-        SELECT held_at FROM scheduled_task_drain_holds
-        WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
+      const [cursor] = yield* sql<{
+        readonly held_at: string | null;
+        readonly usage_hold_json: string | null;
+      }>`
+        SELECT h.held_at, t.usage_hold_json FROM scheduled_tasks t
+        LEFT JOIN scheduled_task_drain_holds h ON h.task_id = t.task_id AND h.next_run_at = t.next_run_at
+        WHERE t.task_id = ${task.id} AND t.next_run_at = ${task.nextRunAt} AND ${sameIncarnation(task)}
       `.pipe(
         NodeSqliteClient.readOnly,
         Effect.mapError((cause) =>
@@ -4364,15 +4404,37 @@ export const layer = Layer.effect(
         ),
       );
       const missed = latestMissedFixedTimeRun(task.schedule, now);
+      // Before the new zone's first slot, the held occurrence can be newer than its latest local slot.
+      if (catchUp && cursor?.usage_hold_json != null && task.nextRunAt !== null) {
+        const origin = currentUsageOccurrence(
+          task,
+          cursor.usage_hold_json,
+          Date.parse(task.nextRunAt),
+          DateTime.zoneMakeLocal(),
+        );
+        if (
+          origin &&
+          (missed === null || Date.parse(origin.at) > DateTime.toEpochMillis(missed.at))
+        ) {
+          const next = nextScheduledRunAt(task.schedule, now);
+          const nowMs = DateTime.toEpochMillis(now);
+          if (
+            next !== null &&
+            nowMs - Date.parse(origin.at) >= DateTime.toEpochMillis(next) - nowMs
+          )
+            return yield* rescheduleMissedRun(task, now, origin.at, "next_run_sooner");
+          return yield* runDueOccurrence(task, now, true);
+        }
+      }
       const missedAt = missed === null ? task.nextRunAt : iso(missed.at);
       // An update held it, not the app being off, so the task's catch-up choice does not apply. It
       // still gives way to a nearer next time, and to a later time that passed too, the next day's
       // time a one-machine turn carried the hold to included.
       const heldByUpdate =
-        held !== undefined &&
+        cursor?.held_at != null &&
         task.nextRunAt !== null &&
         missed !== null &&
-        DateTime.toEpochMillis(missed.at) <= Date.parse(held.held_at);
+        DateTime.toEpochMillis(missed.at) <= Date.parse(cursor.held_at);
       if (heldByUpdate) {
         if (!missed.catchUp) {
           return yield* rescheduleMissedRun(task, now, missedAt, "next_run_sooner");
