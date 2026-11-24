@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // GitHub archives avoid npm scanning delays; output <output-dir>/t3/ and publishable t3.tgz.
+import * as NodeModule from "node:module";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -86,9 +87,13 @@ export const buildNpmLauncher = Effect.fn("buildNpmLauncher")(function* (input: 
   );
   yield* fs.copyFile(path.join(sourceDir, "t3.mjs"), path.join(stageDir, "bin/t3.mjs"));
   const versionProbe = yield* path.fromFileUrl(
-    new URL("../packages/shared/src/cliVersionProbe.mjs", import.meta.url),
+    new URL("../packages/shared/src/cliVersionProbe.ts", import.meta.url),
   );
-  yield* fs.copyFile(versionProbe, path.join(stageDir, "bin/cliVersionProbe.mjs"));
+  // The published launcher supports Node 20, so remove the types at build time.
+  yield* fs.writeFileString(
+    path.join(stageDir, "bin/cliVersionProbe.mjs"),
+    NodeModule.stripTypeScriptTypes(yield* fs.readFileString(versionProbe)),
+  );
   yield* fs.chmod(path.join(stageDir, "bin/t3.mjs"), 0o755);
   yield* fs.writeFileString(
     path.join(stageDir, "bin/promote-runtime.sh"),
