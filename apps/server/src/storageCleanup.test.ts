@@ -1076,7 +1076,7 @@ describe("owned setup output", () => {
           const fixturePackageManager = yield* fs.makeTempDirectoryScoped({ prefix: "setup-vp-" });
           yield* fs.writeFileString(
             NodePath.join(fixturePackageManager, "install.mjs"),
-            `import * as fs from "node:fs";
+            String.raw`import * as fs from "node:fs";
 import * as path from "node:path";
 if (process.env.T3_TEST_REJECT_INSTALL) throw new Error("unexpected repeat install");
 const inWindowsStage = process.platform === "win32" && process.cwd().includes(path.sep + "setup-stage" + path.sep);
