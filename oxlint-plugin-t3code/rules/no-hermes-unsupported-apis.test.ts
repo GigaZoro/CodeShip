@@ -59,6 +59,18 @@ describe("t3code/no-hermes-unsupported-apis", () => {
   rule.valid("allows feature detection", `const supported = typeof Intl.Segmenter === "function";`);
   rule.valid("allows unrelated Segmenter constructors", `new custom.Segmenter();`);
   rule.valid("ignores dynamic computed names", `new Intl[Segmenter](); items[toSorted]();`);
+  rule.valid(
+    "ignores a class's own private method",
+    `class List { #toSorted() { return []; } sorted() { return this.#toSorted(); } }`,
+  );
+  rule.invalid(
+    "reports a method or constructor a const key names",
+    `const method = "toSorted"; items[method](compare); const name = "Segmenter"; new Intl[name]();`,
+    (output) => {
+      assert.match(output, /Array#toSorted/);
+      assert.match(output, /Hermes does not implement Intl\.Segmenter/);
+    },
+  );
 
   for (const expression of [
     "new Intl.Segmenter(undefined, { granularity: 'grapheme' })",

@@ -7,6 +7,18 @@ const rule = createOxlintRuleHarness("t3code/no-platform-early-return-in-tests",
 });
 
 describe("t3code/no-platform-early-return-in-tests", () => {
+  rule.invalid(
+    "reports an early return in a test whose private method is named like a hook",
+    `
+      class Suite {
+        #beforeEach(run) { run(); }
+        register() {
+          it("a", () => { this.#beforeEach(() => { if (process.platform === "win32") return; }); });
+        }
+      }
+    `,
+  );
+
   rule.valid(
     "allows skipIf/runIf and returns that do not compare the platform",
     `
@@ -21,6 +33,24 @@ describe("t3code/no-platform-early-return-in-tests", () => {
         if (platform === "win32") { setup(); return; }
         if (yield* unrelated) return;
       }));
+    `,
+  );
+
+  rule.valid(
+    "allows an early return in a lifecycle hook a const key names",
+    `
+      import * as vitest from "vitest";
+      const hook = "beforeEach";
+      vitest[hook](() => { if (process.platform !== "win32") return; setupWindowsFixture(); });
+    `,
+  );
+
+  rule.invalid(
+    "reports an early return in a test whose bracketed key is a variable named like a hook",
+    `
+      import * as vitest from "vitest";
+      const beforeEach = "it";
+      vitest[beforeEach]("a", () => { if (process.platform === "win32") return; });
     `,
   );
 

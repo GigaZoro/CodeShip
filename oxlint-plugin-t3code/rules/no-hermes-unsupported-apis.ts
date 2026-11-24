@@ -1,4 +1,7 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
+import * as Option from "effect/Option";
+
+import { resolvePropertyName } from "../utils.ts";
 
 const UNSUPPORTED_GLOBAL_APIS = new Map([
   [
@@ -22,20 +25,11 @@ const UNSUPPORTED_METHODS = new Map([
   ],
 ]);
 
-function memberName(node: ESTree.MemberExpression): string | null {
-  const { property } = node;
-  if (!node.computed && property.type === "Identifier") return property.name;
-  if (property.type === "Literal" && typeof property.value === "string") return property.value;
-  if (property.type === "TemplateLiteral" && property.expressions.length === 0)
-    return property.quasis[0]?.value.cooked ?? null;
-  return null;
-}
-
-function globalApiPath(node: ESTree.Node): string | null {
+function globalApiPath(sourceCode: SourceCode, node: ESTree.Node): string | null {
   if (node.type === "Identifier") return node.name;
   if (node.type !== "MemberExpression") return null;
-  const object = globalApiPath(node.object);
-  const property = memberName(node);
+  const object = globalApiPath(sourceCode, node.object);
+  const property = Option.getOrNull(resolvePropertyName(sourceCode, node.property));
   if (object === null || property === null) return null;
   return ["globalThis", "global", "window"].includes(object) ? property : `${object}.${property}`;
 }
@@ -49,7 +43,7 @@ export default defineRule({
   },
   create(context) {
     function checkApi(node: ESTree.CallExpression | ESTree.NewExpression) {
-      const path = globalApiPath(node.callee);
+      const path = globalApiPath(context.sourceCode, node.callee);
       const replacement = path === null ? undefined : UNSUPPORTED_GLOBAL_APIS.get(path);
       if (replacement !== undefined) {
         context.report({
@@ -59,7 +53,7 @@ export default defineRule({
         return;
       }
       if (node.type !== "CallExpression" || node.callee.type !== "MemberExpression") return;
-      const name = memberName(node.callee);
+      const name = Option.getOrNull(resolvePropertyName(context.sourceCode, node.callee.property));
       const message = name === null ? undefined : UNSUPPORTED_METHODS.get(name);
       if (message !== undefined) context.report({ node: node.callee.property, message });
     }

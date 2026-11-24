@@ -7,6 +7,20 @@ const rule = createOxlintRuleHarness("t3code/no-wildcard-listen-in-tests", {
 });
 
 describe("t3code/no-wildcard-listen-in-tests", () => {
+  rule.invalid(
+    "reports a host deleted in the statement that listens, and options whose host only a branch no run takes adds",
+    `
+      const loopback = { port: 0, host: "127.0.0.1" };
+      delete loopback.host, server.listen(loopback);
+      const extra = { port: 0 };
+      if (false) extra.host = "127.0.0.1";
+      const options = {};
+      Object.assign(options, extra);
+      server.listen(options);
+    `,
+    (output) => assert.equal(output.match(/no-wildcard-listen-in-tests/g)?.length, 2),
+  );
+
   rule.valid(
     "allows servers that name their host, socket paths and arguments it cannot tell apart",
     `
@@ -285,6 +299,22 @@ describe("t3code/no-wildcard-listen-in-tests", () => {
       const picked = {};
       (picked.host = "127.0.0.1") ? (picked.port = 0) : (picked.path = socketPath);
       server.listen(picked);
+    `,
+  );
+
+  rule.valid(
+    "allows a host only a branch no run takes would remove, inside a call or a called function",
+    `
+      const consume = (value) => value;
+      const inline = { port: 0, host: "127.0.0.1" };
+      consume(false && delete inline.host);
+      server.listen(inline);
+      const deferred = { port: 0, host: "127.0.0.1" };
+      const reset = () => {
+        if (false) delete deferred.host;
+      };
+      reset();
+      server.listen(deferred);
     `,
   );
 

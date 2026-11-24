@@ -1,15 +1,56 @@
-import { assert, describe } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
+import { RuleTester } from "vite-plus/lint/plugins-dev";
 
 import { createOxlintRuleHarness } from "../test/utils.ts";
+import { countWriteVisits } from "../utils.ts";
+import timeoutRule from "./no-test-timeout-or-unreasoned-skip.ts";
 
 const RULE = "t3code/no-test-timeout-or-unreasoned-skip";
 const rule = createOxlintRuleHarness(RULE, { filename: "fixture.test.ts" });
+
+/** One options object changed `count` times, then passed to `count` tests. */
+const largeFile = (count: number) =>
+  [
+    'import { it } from "vitest";',
+    "const options = { concurrent: true };",
+    ...Array.from({ length: count }, () => "options.concurrent = true;"),
+    ...Array.from({ length: count }, (_, index) => `it("case ${index}", options, () => {});`),
+  ].join("\n");
+
+/** How many changes the rule visits linting `source` in this process, where the count can be read. */
+const writeVisitsLinting = (source: string) => {
+  const cases: Array<() => unknown> = [];
+  RuleTester.describe = (_name, run) => run();
+  RuleTester.it = (_name, run) => cases.push(run);
+  new RuleTester().run(RULE, timeoutRule, {
+    valid: [{ code: source, filename: "fixture.test.ts" }],
+    invalid: [],
+  });
+  const before = countWriteVisits();
+  for (const run of cases) run();
+  return countWriteVisits() - before;
+};
 
 const assertTimeoutMessage = (output: string) =>
   assert.match(output, /project timeout is the ceiling/);
 const assertSkipMessage = (output: string) => assert.match(output, /quarantine: #1234/);
 
 describe(RULE, () => {
+  rule.invalid(
+    "reports a timeout set in the statement that registers the test",
+    `
+      import { it } from "vitest";
+      const options = { concurrent: true };
+      options.timeout = 5_000, it("slow", options, () => {});
+      const retried = { concurrent: true };
+      if ((retried.timeout = 5_000)) it("flaky", retried, () => {});
+    `,
+    (output) => {
+      assertTimeoutMessage(output);
+      assert.equal(output.match(/no-test-timeout-or-unreasoned-skip/g)?.length, 2);
+    },
+  );
+
   rule.valid(
     "allows tests without overrides, conditional skips, and waitFor timeouts",
     `
@@ -505,6 +546,61 @@ describe(RULE, () => {
       ...Array.from({ length: 2_000 }, () => "options.concurrent = true;"),
       ...Array.from({ length: 200 }, (_, index) => `it("case ${index}", options, () => {});`),
     ].join("\n"),
+  );
+
+  // Each test reads the options object's changes again: replayed in full for every use, twice the lines cost four
+  // times the visits, so the count must grow with the lines alone.
+  it("visits each change of one options object a bounded number of times across all its tests", () => {
+    const half = writeVisitsLinting(largeFile(100));
+    const visits = writeVisitsLinting(largeFile(200));
+    const counted = `${half} visits for 100 changes and 100 tests, ${visits} for 200 and 200`;
+    assert.isAtMost(visits, 10 * 400, counted);
+    assert.isAtMost(visits, 2.5 * half, counted);
+  });
+
+  rule.valid(
+    "ignores a change inside a call or a called function in a branch its test never takes",
+    `
+      import { it } from "vitest";
+      const consume = (value: unknown) => value;
+      const inline = { concurrent: true };
+      consume(false && (inline.timeout = 5_000));
+      it("inline", inline, () => {});
+      const deferred = { concurrent: true };
+      const setup = () => {
+        if (false) deferred.timeout = 5_000;
+      };
+      setup();
+      it("deferred", deferred, () => {});
+      const hoisted = { concurrent: true };
+      prepare();
+      function prepare() {
+        if (false) hoisted.retry = 3;
+      }
+      it("hoisted", hoisted, () => {});
+    `,
+  );
+
+  rule.invalid(
+    "reports a change inside a call or a called function in a branch its test may take",
+    `
+      import { it } from "vitest";
+      const slow = process.env.SLOW === "true";
+      const consume = (value: unknown) => value;
+      const inline = { concurrent: true };
+      consume(slow && (inline.timeout = 5_000));
+      it("inline", inline, () => {});
+      const deferred = { concurrent: true };
+      const setup = () => {
+        if (slow) deferred.timeout = 5_000;
+      };
+      setup();
+      it("deferred", deferred, () => {});
+    `,
+    (output) => {
+      assertTimeoutMessage(output);
+      assert.equal(output.match(/no-test-timeout-or-unreasoned-skip/g)?.length, 2);
+    },
   );
 
   rule.invalid(

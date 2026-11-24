@@ -1,14 +1,15 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
+import * as Option from "effect/Option";
+
+import { resolvePropertyName } from "../utils.ts";
 
 const GLOBAL_OBJECTS = new Set(["globalThis", "window", "self"]);
 
-function isResizeObserverConstructor(node: ESTree.Node): boolean {
+function isResizeObserverConstructor(sourceCode: SourceCode, node: ESTree.Node): boolean {
   if (node.type === "Identifier") return node.name === "ResizeObserver";
   if (node.type !== "MemberExpression" || node.object.type !== "Identifier") return false;
   if (!GLOBAL_OBJECTS.has(node.object.name)) return false;
-  const { property } = node;
-  if (!node.computed && property.type === "Identifier") return property.name === "ResizeObserver";
-  return property.type === "Literal" && property.value === "ResizeObserver";
+  return Option.contains(resolvePropertyName(sourceCode, node.property), "ResizeObserver");
 }
 
 export default defineRule({
@@ -21,7 +22,7 @@ export default defineRule({
   create(context) {
     return {
       NewExpression(node) {
-        if (!isResizeObserverConstructor(node.callee)) return;
+        if (!isResizeObserverConstructor(context.sourceCode, node.callee)) return;
         context.report({
           node: node.callee,
           message:

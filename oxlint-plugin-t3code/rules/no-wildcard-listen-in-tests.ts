@@ -3,13 +3,15 @@ import * as Option from "effect/Option";
 
 import {
   ANY_KIND,
-  applyWrites,
+  type ConstReading,
   type ConstWrite,
   findVariable,
   isIdentifier,
   NULLISH,
   operandsTaken,
   overwrittenKinds,
+  readConstValue,
+  resolveConstAliases,
   resolveConstValue,
   resolvePropertyName,
   TRUTHY,
@@ -43,12 +45,6 @@ const kindOf = (node: Option.Option<ESTree.Node>): ArgumentKind => {
     default:
       return "unknown";
   }
-};
-
-/** An argument's value, with the changes the program makes to it through the `const` names that hold it. */
-type ArgumentValue = {
-  readonly value: Option.Option<ESTree.Node>;
-  readonly writes: ReadonlyArray<ConstWrite>;
 };
 
 /**
@@ -92,7 +88,7 @@ const eitherReachable = (first: Reachable, second: Reachable): Reachable =>
 
 /** The primitive a literal shows, a signed number included, through `const` names; none for any other value. */
 const shownPrimitive = (sourceCode: SourceCode, node: unknown): Option.Option<unknown> => {
-  const shown = Option.getOrUndefined(resolveConstValue(sourceCode, node).value);
+  const shown = Option.getOrUndefined(resolveConstValue(sourceCode, node));
   if (shown?.type === "Literal") return Option.some(shown.value);
   if (shown?.type !== "UnaryExpression" || (shown.operator !== "-" && shown.operator !== "+")) {
     return Option.none();
@@ -179,14 +175,11 @@ const assignedKeys = (
   sources: ReadonlyArray<ESTree.Node>,
 ): Option.Option<ReadonlyArray<KeyValue>> =>
   Option.all(
-    sources.map((source) => {
-      const copied = resolveConstValue(sourceCode, source);
-      return Option.flatMap(copied.value, (object) =>
-        object.type === "ObjectExpression" && copied.writes.length === 0
-          ? literalKeys(sourceCode, object)
-          : Option.none(),
-      );
-    }),
+    sources.map((source) =>
+      Option.flatMap(resolveConstAliases(sourceCode, source), (object) =>
+        object.type === "ObjectExpression" ? literalKeys(sourceCode, object) : Option.none(),
+      ),
+    ),
   ).pipe(Option.map((keys) => keys.flat()));
 
 /**
@@ -225,34 +218,25 @@ const changeKeys = (sourceCode: SourceCode, keys: Keys, write: ConstWrite): Keys
 };
 
 /**
- * Port options that name no host on some run: `{ port }` without a host Node may use, in the keys the changes through
- * the options' name may leave, in the order a run makes them, and, where Node reads them, with no handle or descriptor
- * it may use. A spread or bracketed key the source cannot read may carry the host, and so may a change whose key it
- * cannot read.
+ * The runs an options object may leave, from the keys its literal gives in the order a run makes the changes through
+ * its name; none for options whose literal it cannot read, as a spread or bracketed key the source cannot read may
+ * carry the host. A change whose key the source cannot read may carry it too.
  */
-const isPortWithoutHost = (
-  sourceCode: SourceCode,
-  { value, writes }: ArgumentValue,
-  readsDescriptors: boolean,
-) =>
-  Option.exists(value, (expression) => {
-    if (expression.type !== "ObjectExpression") return false;
-    return Option.exists(literalKeys(sourceCode, expression), (own) => {
-      const runs = applyWrites<Reachable>(
-        sourceCode,
-        writes,
-        reachable([giveKeys(sourceCode, NO_KEYS, own)]),
-        (current, write) =>
-          reachable([...current.values()].map((keys) => changeKeys(sourceCode, keys, write))),
-        eitherReachable,
-      );
-      const listensOnPort = (keys: Keys) =>
-        mayBeUsed(keys.port) &&
-        !mayBeUsed(keys.host) &&
-        !(readsDescriptors && DESCRIPTOR_KEYS.some((key) => mayBeUsed(keys[key])));
-      return [...runs.values()].some(listensOnPort);
-    });
-  });
+const listenReading = (sourceCode: SourceCode): ConstReading<Reachable | undefined> => ({
+  initial: (value) =>
+    Option.getOrUndefined(
+      Option.flatMap(value, (expression) =>
+        expression.type === "ObjectExpression"
+          ? Option.map(literalKeys(sourceCode, expression), (own) =>
+              reachable([giveKeys(sourceCode, NO_KEYS, own)]),
+            )
+          : Option.none(),
+      ),
+    ),
+  change: (current, write) =>
+    current && reachable([...current.values()].map((keys) => changeKeys(sourceCode, keys, write))),
+  either: (first, second) => first && second && eitherReachable(first, second),
+});
 
 const memberName = (sourceCode: SourceCode, node: unknown) =>
   Option.flatMap(unwrapExpression(node), (callee) =>
@@ -298,25 +282,35 @@ export default defineRule({
   create(context) {
     if (!TEST_FILE_PATTERN.test(context.filename)) return {};
     const sourceCode = context.sourceCode;
+    // One reading for the whole file, so every listen that reads the same options shares what it finds.
+    const reading = listenReading(sourceCode);
+
+    /**
+     * Port options that name no host on some run: `{ port }` without a host Node may use, in the keys the runs
+     * `listenReading` finds may leave, and, where Node reads them, with no handle or descriptor it may use.
+     */
+    const isPortWithoutHost = (node: unknown, readsDescriptors: boolean) => {
+      const runs = readConstValue(sourceCode, node, reading);
+      const listensOnPort = (keys: Keys) =>
+        mayBeUsed(keys.port) &&
+        !mayBeUsed(keys.host) &&
+        !(readsDescriptors && DESCRIPTOR_KEYS.some((key) => mayBeUsed(keys[key])));
+      return runs !== undefined && [...runs.values()].some(listensOnPort);
+    };
 
     /**
      * The value an argument stands for: a `const` is followed to its initializer, a function
      * name to its declaration, and a `new Promise` executor's `resolve` or `reject` to the
      * executor, which is as much a function as they are.
      */
-    const valueOf = (node: unknown): ArgumentValue => {
-      const { value, writes } = resolveConstValue(sourceCode, node);
-      return {
-        value: Option.map(value, (expression) => {
-          if (expression.type !== "Identifier") return expression;
-          const defs = findVariable(sourceCode.getScope(expression), expression.name)?.defs ?? [];
-          const def = defs.length === 1 ? defs[0] : undefined;
-          if (def?.type === "Parameter" && isPromiseExecutor(def.node)) return def.node;
-          return expression;
-        }),
-        writes,
-      };
-    };
+    const valueOf = (node: unknown): Option.Option<ESTree.Node> =>
+      Option.map(resolveConstValue(sourceCode, node), (expression) => {
+        if (expression.type !== "Identifier") return expression;
+        const defs = findVariable(sourceCode.getScope(expression), expression.name)?.defs ?? [];
+        const def = defs.length === 1 ? defs[0] : undefined;
+        if (def?.type === "Parameter" && isPromiseExecutor(def.node)) return def.node;
+        return expression;
+      });
 
     /**
      * Whether some run may give `node` a nonempty string, which Node takes for the host: a value the source does not
@@ -324,7 +318,7 @@ export default defineRule({
      * `a && b` takes.
      */
     const mayBeHost = (node: unknown, depth = 0): boolean => {
-      const { value } = valueOf(node);
+      const value = valueOf(node);
       const expression = Option.getOrUndefined(value);
       if (
         expression?.type === "ConditionalExpression" ||
@@ -352,10 +346,9 @@ export default defineRule({
      * such as Vite's take their address when they are made. A first argument the source cannot tell from a socket path is too.
      */
     const listensOnEveryInterface = (args: ReadonlyArray<unknown>) => {
-      const first = valueOf(args[0]);
-      switch (kindOf(first.value)) {
+      switch (kindOf(valueOf(args[0]))) {
         case "options":
-          return isPortWithoutHost(sourceCode, first, true);
+          return isPortWithoutHost(args[0], true);
         case "port":
           return args.length === 1 || !mayBeHost(args[1]);
         default:
@@ -369,14 +362,14 @@ export default defineRule({
           (Option.contains(memberName(sourceCode, node.callee), "listen") &&
             listensOnEveryInterface(node.arguments)) ||
           (isNodeHttpServerLayer(sourceCode, node.callee) &&
-            isPortWithoutHost(sourceCode, valueOf(node.arguments[1]), true));
+            isPortWithoutHost(node.arguments[1], true));
         if (listens) context.report({ node, message: MESSAGE });
       },
       NewExpression(node) {
         // `ws` passes Node only the options' port and host, as `listen(port, host)`.
         if (
           isWebSocketServer(sourceCode, node.callee) &&
-          isPortWithoutHost(sourceCode, valueOf(node.arguments[0]), false)
+          isPortWithoutHost(node.arguments[0], false)
         ) {
           context.report({ node, message: MESSAGE });
         }

@@ -56,16 +56,13 @@ const stringLiteralValue = (node: AstNode): Option.Option<string> => {
 };
 
 /**
- * The property a key or member names: an identifier written as one, or a string, bracketed or not. A rule that can
- * read scopes resolves a bracketed variable with `resolvePropertyName`.
+ * The property a key or member names: an identifier written as one, or a string, bracketed or not. A private name,
+ * as in `this.#x`, names none. A rule that can read scopes resolves a bracketed variable with `resolvePropertyName`.
  */
 export function getPropertyName(node: unknown): Option.Option<string> {
   return Option.flatMap(asAstNode(node), (expression) => {
     if (expression.type === "Identifier" && typeof expression.name === "string") {
       return isBracketedKey(expression) ? Option.none() : Option.some(expression.name);
-    }
-    if (expression.type === "PrivateIdentifier" && typeof expression.name === "string") {
-      return Option.some(expression.name);
     }
     return stringLiteralValue(expression);
   });
@@ -120,16 +117,11 @@ type Change =
   | { readonly _tag: "Assign"; readonly sources: ReadonlyArray<AstNode> };
 
 /**
- * A change that may have been made by the time the program reads the object at one use of its name. `ordered`: in a
- * statement ahead of the use's with no function between, it runs in source order, and the nodes it is `within` tell
- * whether a run makes it. `anytime`: it may be made at any point before the use, or not at all, as a callback's is,
- * and so is one the source does not show the order of.
+ * A change that may have been made by the time the program reads the object at one use of its name, with the nodes it
+ * is `within`, outermost first, from the one that does not hold the use down to the change: they tell whether a run
+ * makes it. `readConstValue` says when it is made.
  */
-export type ConstWrite = Change & {
-  readonly made: "ordered" | "anytime";
-  /** Outermost first, the nodes from the statement ahead of the use's down to the change; none for one made `anytime`. */
-  readonly within: ReadonlyArray<AstNode>;
-};
+export type ConstWrite = Change & { readonly within: ReadonlyArray<AstNode> };
 
 /** A change and the expression that makes it; none for one the source cannot read. */
 type Write = { readonly change: Change; readonly node: Option.Option<AstNode> };
@@ -256,48 +248,6 @@ const runningFunction = (node: AstNode): AstNode => {
   return current.parent ?? current;
 };
 
-/**
- * When a run makes a change relative to one use of the object: `after`, no run before it, or as `ConstWrite` says.
- * Only a statement ahead of the use's in one list runs first, unless the use is in a hoisted function declaration;
- * one after the use's runs later when both run, outside any loop, in the function that makes the object afresh each
- * run: the program, or the one that declares `holder`.
- */
-const writeOrder = (
-  write: AstNode,
-  use: AstNode,
-  holder: Variable,
-): Pick<ConstWrite, "made" | "within"> | "after" => {
-  const anytime = { made: "anytime", within: [] } as const;
-  const useAncestors = new Set(enclosing(use, () => false));
-  const writePath = enclosing(write, (node) => useAncestors.has(node));
-  const writeStatement = writePath.at(-1);
-  const list = writeStatement?.parent;
-  const statements = list ? statementList(list) : undefined;
-  if (writeStatement === undefined || !list || statements === undefined) {
-    return anytime;
-  }
-  const usePath = enclosing(use, (node) => node === list);
-  const useStatement = usePath.at(-1);
-  const writeIndex = indexInList(statements, writeStatement);
-  const useIndex = useStatement === undefined ? -1 : indexInList(statements, useStatement);
-  if (writeIndex < 0 || useIndex < 0) return anytime;
-  if (writeIndex < useIndex) {
-    if (writePath.some(isDeferred) || usePath.some((node) => node.type === "FunctionDeclaration")) {
-      return anytime;
-    }
-    return { made: "ordered", within: [...writePath].reverse() };
-  }
-  const running = runningFunction(list);
-  const declared = holder.defs[0]?.node;
-  return runningFunction(use) === running &&
-    runningFunction(write) === running &&
-    !enclosing(list, (node) => node === running).some(isLoop) &&
-    (running.type === "Program" ||
-      (declared !== undefined && runningFunction(declared) === running))
-    ? "after"
-    : anytime;
-};
-
 /** `const name = value`, whose one name every use reads the same value through. */
 const isConstDeclarator = (node: AstNode | null | undefined): node is ESTree.VariableDeclarator =>
   node?.type === "VariableDeclarator" &&
@@ -416,6 +366,10 @@ function writesThrough(
   }
 }
 
+let writeVisits = 0;
+/** How many changes the reads of names have visited so far, which a test bounds to keep a file's reads linear. */
+export const countWriteVisits = () => writeVisits;
+
 const writesOfVariable = new WeakMap<
   Variable,
   { readonly writes: ReadonlyArray<Write>; readonly reads: number }
@@ -443,56 +397,250 @@ function cachedWritesThrough(sourceCode: SourceCode, variable: Variable): Readon
 }
 
 /**
- * What an expression stands for once `const` aliases are followed, with the changes the program makes to that object
- * through any of its names that may have been made by the time the expression is read, in source order. A const that
- * holds `Object.assign(name, ...sources)` holds the object of the const `name`, which the call changes. The name of a
- * function declaration nothing assigns over stands for that function, as a const's stands for its value.
+ * What an expression stands for once `const` aliases are followed, and the const that declares the object it names. A
+ * const that holds `Object.assign(name, ...sources)` holds the object of the const `name`, which the call changes. The
+ * name of a function declaration nothing assigns over stands for that function, as a const's stands for its value.
  */
-export function resolveConstValue(
+function followConsts(
   sourceCode: SourceCode,
   node: unknown,
-): { readonly value: Option.Option<AstNode>; readonly writes: ReadonlyArray<ConstWrite> } {
-  return sharingReadBudget(() => {
-    let current = unwrapExpression(node);
-    // The last const followed declares the object, and every name followed on the way is an alias of it.
-    let holder: Variable | undefined;
-    let aliases = 0;
-    for (;;) {
-      const declared = Option.flatMap(current, (expression) =>
-        declaredOnce(sourceCode, expression),
-      );
-      if (Option.isNone(declared)) break;
-      // Only const names count against the depth: a function's ends the chain, as its declaration names no other.
-      const { variable } = declared.value;
-      if (variable.defs[0]?.type === "Variable" && aliases++ === MAX_ALIAS_DEPTH) break;
-      holder = variable;
-      const value = unwrapExpression(declared.value.value);
-      current = Option.orElse(
-        Option.flatMap(value, (expression) => assignedConst(sourceCode, expression)),
-        () => value,
-      );
-    }
-    const use = asAstNode(node);
-    if (holder === undefined || Option.isNone(use)) return { value: current, writes: [] };
-    const object = holder;
-    // An alias's changes are read where it is declared, among the object's own: sorted, the changes made in source
-    // order are in the order they run in.
-    const writes = cachedWritesThrough(sourceCode, object)
-      .flatMap(({ change, node: write }) => {
-        const order = Option.match(write, {
-          onNone: () => ({ made: "anytime", within: [] }) as const,
-          onSome: (changed) => writeOrder(changed, use.value, object),
-        });
-        const at = Option.match(write, {
-          onNone: () => Infinity,
-          onSome: (changed) => changed.start,
-        });
-        return order === "after" ? [] : [{ write: { ...change, ...order }, at }];
-      })
-      .sort((first, second) => first.at - second.at)
-      .map(({ write }) => write);
-    return { value: current, writes };
+): { readonly value: Option.Option<AstNode>; readonly holder: Variable | undefined } {
+  let current = unwrapExpression(node);
+  // The last const followed declares the object, and every name followed on the way is an alias of it.
+  let holder: Variable | undefined;
+  let aliases = 0;
+  for (;;) {
+    const declared = Option.flatMap(current, (expression) => declaredOnce(sourceCode, expression));
+    if (Option.isNone(declared)) break;
+    // Only const names count against the depth: a function's ends the chain, as its declaration names no other.
+    const { variable } = declared.value;
+    if (variable.defs[0]?.type === "Variable" && aliases++ === MAX_ALIAS_DEPTH) break;
+    holder = variable;
+    const value = unwrapExpression(declared.value.value);
+    current = Option.orElse(
+      Option.flatMap(value, (expression) => assignedConst(sourceCode, expression)),
+      () => value,
+    );
+  }
+  return { value: current, holder };
+}
+
+/**
+ * What an expression stands for once `const` aliases are followed, as `followConsts` finds it, whatever the program
+ * changes on that object through its names: `readConstValue` reads those changes.
+ */
+export const resolveConstValue = (sourceCode: SourceCode, node: unknown): Option.Option<AstNode> =>
+  sharingReadBudget(() => followConsts(sourceCode, node).value);
+
+/**
+ * A change as one statement list it is in sees it: the statement it is in, -1 for a switch case's test, with `within`
+ * the nodes from that statement down to the change, its place among the object's changes in source order, and the
+ * next list down it is in.
+ */
+type Placed = {
+  readonly write: ConstWrite;
+  readonly node: AstNode;
+  readonly order: number;
+  readonly statement: number;
+  readonly below: AstNode | undefined;
+};
+
+/**
+ * The changes in one statement list's statements, each in source order, by what stands between them and the list:
+ * nothing deferred (`direct`, which run in turn, a statement's `runs` together), the value of an instance field, which
+ * runs later in the same function (`field`), or a function (`called`). `tested` are in a switch case's test, and
+ * `byStatement` holds each statement's by the next list down they are in.
+ */
+type ListChanges = {
+  readonly direct: Array<Placed>;
+  readonly field: Array<Placed>;
+  readonly called: Array<Placed>;
+  readonly tested: Array<Placed>;
+  readonly runs: Array<{ readonly statement: number; readonly writes: Array<ConstWrite> }>;
+  readonly byStatement: Map<number, Map<AstNode | undefined, Array<Placed>>>;
+};
+
+/**
+ * An object's changes placed in every statement list each is in, with those the source cannot read, which may be made
+ * at any time, and what each reading of the object has found of them so far.
+ */
+type ChangeIndex = {
+  readonly lists: Map<AstNode, ListChanges>;
+  readonly unread: ReadonlyArray<ConstWrite>;
+  readonly memos: WeakMap<object, unknown>;
+  readonly uses: WeakMap<AstNode, NamedUse>;
+};
+
+/** A use of an object's name: the statement lists it is in, and the changes that may be made by then at no set time. */
+type NamedUse = {
+  readonly levels: ReadonlyArray<UseLevel>;
+  readonly anytime: ReadonlyArray<ConstWrite>;
+};
+
+const changeIndexes = new WeakMap<ReadonlyArray<Write>, ChangeIndex>();
+
+/**
+ * `writes` placed once for each walk of them: a use of the name then finds the changes that run before it, after it
+ * and at no time the source shows by the statements it is in, without visiting each change again.
+ */
+function changeIndex(writes: ReadonlyArray<Write>): ChangeIndex {
+  const known = changeIndexes.get(writes);
+  if (known !== undefined) return known;
+  const lists = new Map<AstNode, ListChanges>();
+  const unread: Array<ConstWrite> = [];
+  // An alias's changes are read where it is declared, among the object's own: sorted, the changes made in source
+  // order are in the order they run in.
+  const read = writes.flatMap(({ change, node }) => {
+    if (Option.isSome(node)) return [{ change, node: node.value }];
+    unread.push({ ...change, within: [] });
+    return [];
   });
+  read.sort((first, second) => first.node.start - second.node.start);
+  read.forEach(({ change, node }, order) => {
+    const path: Array<AstNode> = [];
+    let deferred = false;
+    let called = false;
+    let below: AstNode | undefined;
+    for (let child = node, list = node.parent; list; child = list, list = list.parent) {
+      path.push(child);
+      if (isDeferred(child)) deferred = true;
+      if (isFunction(child)) called = true;
+      const statements = statementList(list);
+      if (statements === undefined) continue;
+      writeVisits++;
+      const statement = indexInList(statements, child);
+      const write = { ...change, within: [...path].reverse() };
+      const placed = { write, node, order, statement, below };
+      let changes = lists.get(list);
+      if (changes === undefined) {
+        changes = {
+          direct: [],
+          field: [],
+          called: [],
+          tested: [],
+          runs: [],
+          byStatement: new Map(),
+        };
+        lists.set(list, changes);
+      }
+      if (statement < 0) changes.tested.push(placed);
+      else if (called) changes.called.push(placed);
+      else if (deferred) changes.field.push(placed);
+      else {
+        changes.direct.push(placed);
+        const run = changes.runs.at(-1);
+        if (run?.statement === statement) run.writes.push(write);
+        else changes.runs.push({ statement, writes: [write] });
+      }
+      const inStatement = changes.byStatement.get(statement) ?? new Map();
+      changes.byStatement.set(statement, inStatement);
+      const alongside = inStatement.get(below);
+      if (alongside === undefined) inStatement.set(below, [placed]);
+      else alongside.push(placed);
+      below = list;
+    }
+  });
+  const index: ChangeIndex = {
+    lists,
+    unread,
+    memos: new WeakMap<object, unknown>(),
+    uses: new WeakMap<AstNode, NamedUse>(),
+  };
+  changeIndexes.set(writes, index);
+  return index;
+}
+
+/** How many of `placed`, in order of statement, are in a statement before `statement`. */
+const countBefore = (placed: ReadonlyArray<{ readonly statement: number }>, statement: number) => {
+  let low = 0;
+  let high = placed.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if ((placed[middle]?.statement ?? Infinity) < statement) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+};
+
+/**
+ * A statement list a use is in, innermost first: the statement that holds the use, -1 for a switch case's test, and
+ * the next list down it is in. A statement ahead of the use's runs first (`ordered`) unless the use is in a hoisted
+ * function declaration; one after it runs later when both run (`skipsAfter`), outside any loop, in the function that
+ * makes the object afresh each run: the program, or the one that declares the object.
+ */
+type UseLevel = {
+  readonly list: AstNode;
+  readonly statement: number;
+  readonly below: AstNode | undefined;
+  readonly ordered: boolean;
+  readonly skipsAfter: boolean;
+};
+
+function useLevels(use: AstNode, holder: Variable): ReadonlyArray<UseLevel> {
+  const levels: Array<UseLevel> = [];
+  const declared = holder.defs[0]?.node;
+  const declaring = declared === undefined ? undefined : runningFunction(declared);
+  let below: AstNode | undefined;
+  let hoisted = false;
+  let inFunction = false;
+  for (let child = use, list = use.parent; list; child = list, list = list.parent) {
+    if (child.type === "FunctionDeclaration") hoisted = true;
+    if (isFunction(child)) inFunction = true;
+    const statements = statementList(list);
+    if (statements === undefined) continue;
+    const running = runningFunction(list);
+    levels.push({
+      list,
+      statement: indexInList(statements, child),
+      below,
+      ordered: !hoisted,
+      skipsAfter:
+        !inFunction &&
+        !enclosing(list, (node) => node === running).some(isLoop) &&
+        (running.type === "Program" || declaring === running),
+    });
+    below = list;
+  }
+  return levels;
+}
+
+/**
+ * The changes that may be made before `use` at no time the source shows, in source order: all but those that run in
+ * turn before it and those that run after it. One in the use's own statement that no list below holds with it is in
+ * a node the use is in too, which it is `within` from there.
+ */
+function anytimeChanges(
+  index: ChangeIndex,
+  use: AstNode,
+  levels: ReadonlyArray<UseLevel>,
+): ReadonlyArray<ConstWrite> {
+  const found: Array<Placed> = [];
+  let useAncestors: ReadonlySet<AstNode> | undefined;
+  for (const { list, statement, below, ordered, skipsAfter } of levels) {
+    const changes = index.lists.get(list);
+    if (changes === undefined) continue;
+    for (const [next, placed] of changes.byStatement.get(statement) ?? []) {
+      if (below !== undefined && next === below) continue;
+      const ancestors = (useAncestors ??= new Set(enclosing(use, () => false)));
+      for (const each of placed) {
+        const within = enclosing(each.node, (node) => ancestors.has(node)).reverse();
+        found.push({ ...each, write: { ...each.write, within } });
+      }
+    }
+    if (statement < 0) {
+      found.push(...changes.direct, ...changes.field, ...changes.called);
+      continue;
+    }
+    const before = (placed: Array<Placed>) => placed.slice(0, countBefore(placed, statement));
+    const after = (placed: Array<Placed>) => placed.slice(countBefore(placed, statement + 1));
+    found.push(...changes.tested, ...before(changes.field), ...before(changes.called));
+    found.push(...after(changes.called));
+    if (!ordered) found.push(...before(changes.direct));
+    if (!skipsAfter) found.push(...after(changes.direct), ...after(changes.field));
+  }
+  writeVisits += found.length;
+  found.sort((first, second) => first.order - second.order);
+  return [...found.map(({ write }) => write), ...index.unread];
 }
 
 /** The kinds of value a run may give an expression, one bit each: falsy, `FALSY`, is the falsy value that is not nullish. */
@@ -546,7 +694,7 @@ export function valueKinds(sourceCode: SourceCode, node: unknown, depth = 0): nu
   if (depth > MAX_KIND_DEPTH) return ANY_KIND;
   const kinds = (child: unknown) => valueKinds(sourceCode, child, depth + 1);
   // A change through a name, as in `options.skip = false`, leaves an object an object.
-  const expression = Option.getOrUndefined(resolveConstValue(sourceCode, node).value);
+  const expression = Option.getOrUndefined(resolveConstValue(sourceCode, node));
   switch (expression?.type) {
     case "ArrayExpression":
     case "ArrowFunctionExpression":
@@ -608,19 +756,150 @@ const groupedWithin = (writes: ReadonlyArray<ConstWrite>, depth: number) =>
   }, []);
 
 /**
- * What `writes` leave of `initial`, `change` giving what one leaves of a state and `either` what holds of one of two:
- * those in source order in turn, then each `anytime` one after them all, as it may be the last. An `if` or `a ? b : c`
- * runs its test, then an arm the test's kinds may lead to, whose changes hold together, and a logical expression its
- * left side, then its right where the left's kinds may; a change in any other statement may be skipped or repeated.
+ * Whether some run may enter `node` from the node it is in: no run enters an arm of an `if` or `a ? b : c` its test's
+ * kinds never lead to, nor a right side its left's kinds never pass over for.
  */
-export function applyWrites<State>(
-  sourceCode: SourceCode,
-  writes: ReadonlyArray<ConstWrite>,
-  initial: State,
-  change: (state: State, write: ConstWrite) => State,
-  either: (first: State, second: State) => State,
-): State {
-  const maybe = (state: State, write: ConstWrite) => either(state, change(state, write));
+const mayEnter = (sourceCode: SourceCode, node: AstNode): boolean => {
+  const parent = node.parent;
+  switch (parent?.type) {
+    case "IfStatement":
+    case "ConditionalExpression": {
+      if (node === parent.test) return true;
+      const ways = waysTaken(valueKinds(sourceCode, parent.test), TRUTHY);
+      return node === parent.consequent ? ways.over : ways.other;
+    }
+    case "LogicalExpression":
+      return (
+        node !== parent.right ||
+        waysTaken(valueKinds(sourceCode, parent.left), overwrittenKinds(parent.operator)).over
+      );
+    default:
+      return true;
+  }
+};
+
+/** Whether a run may go on to make `write` from the node above `within[from]`, entering each node from there down. */
+const mayBeMade = (sourceCode: SourceCode, write: ConstWrite, from: number) =>
+  write.within.slice(from).every((node) => mayEnter(sourceCode, node));
+
+/**
+ * How a rule reads what an object holds: `initial` from the value its const gives it, `change` on a run that makes one
+ * change, and `either` for a run that may be either of two. A rule passes one reading for every use it reads alike, so
+ * the state each statement leaves is found once for all the uses after it.
+ */
+export type ConstReading<State> = {
+  readonly initial: (value: Option.Option<AstNode>) => State;
+  readonly change: (state: State, write: ConstWrite) => State;
+  readonly either: (first: State, second: State) => State;
+};
+
+/** A state, with whether it is the one a reading remembers, which the states after it are remembered from. */
+type Entered<State> = { readonly state: State; readonly remembered: boolean };
+
+/** The states one list's runs leave in turn from the state the list is entered with, and the reads each charged in all. */
+type Prefix<State> = { readonly states: Array<State>; readonly reads: Array<number> };
+
+/** What a reading has found of one object's changes: the state its value gives, and the states each list's runs leave. */
+type ReadingMemo<State> = {
+  initial: { readonly state: State; readonly reads: number } | undefined;
+  readonly entered: Map<State, Map<AstNode, Prefix<State>>>;
+};
+
+const memoOf = <State>(index: ChangeIndex, reading: ConstReading<State>): ReadingMemo<State> => {
+  // A reading's memo is stored under the reading, so it holds that reading's states only.
+  const known = index.memos.get(reading) as ReadingMemo<State> | undefined;
+  if (known !== undefined) return known;
+  const memo: ReadingMemo<State> = { initial: undefined, entered: new Map() };
+  index.memos.set(reading, memo);
+  return memo;
+};
+
+/**
+ * Whether a state computed with `reads` reads, none refused, is what computing it afresh now gives at the same charge:
+ * always where it read nothing, and otherwise where its reads fit the budget and no cycle can refuse one.
+ */
+const reusable = (reads: number) =>
+  reads === 0 || (readingWrites.size === 0 && writeReads + reads <= MAX_WRITE_READS);
+
+/** The state `reading` gives the value a const declares, remembered when no read was refused computing it. */
+function initialState<State>(
+  memo: ReadingMemo<State>,
+  reading: ConstReading<State>,
+  value: Option.Option<AstNode>,
+): Entered<State> {
+  const known = memo.initial;
+  if (known !== undefined && reusable(known.reads)) {
+    writeReads += known.reads;
+    return { state: known.state, remembered: true };
+  }
+  const reads = writeReads;
+  const refused = refusedReads;
+  const state = reading.initial(value);
+  const remembered = known === undefined && refusedReads === refused;
+  if (remembered) memo.initial = { state, reads: writeReads - reads };
+  return { state, remembered };
+}
+
+/**
+ * The state the first `count` of a list's `runs` leave of `entering`: from the furthest the reading remembers that is
+ * `reusable`, remembering each after it that no refused read made, as `entering` is.
+ */
+function runFrom<State>(
+  memo: ReadingMemo<State>,
+  run: (inside: ReadonlyArray<ConstWrite>, state: State, depth: number) => State,
+  list: AstNode,
+  runs: ListChanges["runs"],
+  count: number,
+  entering: Entered<State>,
+): Entered<State> {
+  if (count === 0) return entering;
+  let prefix: Prefix<State> | undefined;
+  if (entering.remembered) {
+    const lists = memo.entered.get(entering.state) ?? new Map<AstNode, Prefix<State>>();
+    memo.entered.set(entering.state, lists);
+    prefix = lists.get(list) ?? { states: [entering.state], reads: [0] };
+    lists.set(list, prefix);
+  }
+  let step = 0;
+  let state = entering.state;
+  if (prefix !== undefined) {
+    // The reads only grow along the runs, so halving finds the furthest state that is reusable.
+    let high = Math.min(count, prefix.states.length - 1);
+    while (step < high) {
+      const middle = (step + high + 1) >> 1;
+      if (reusable(prefix.reads[middle] ?? Infinity)) step = middle;
+      else high = middle - 1;
+    }
+    writeReads += prefix.reads[step] ?? 0;
+    if (step < prefix.states.length) state = prefix.states[step] as State;
+  }
+  let remembering = true;
+  for (; step < count; step++) {
+    const reads = writeReads;
+    const refused = refusedReads;
+    state = run(runs[step]?.writes ?? [], state, 0);
+    // A state is remembered only right after the one it was made from, which a change reading the object
+    // again with this reading could have moved on from meanwhile.
+    remembering &&= refusedReads === refused && prefix?.states.length === step + 1;
+    if (remembering && prefix !== undefined) {
+      prefix.reads.push((prefix.reads[step] ?? 0) + writeReads - reads);
+      prefix.states.push(state);
+    }
+  }
+  return {
+    state,
+    remembered:
+      prefix !== undefined && prefix.states.length > count && prefix.states[count] === state,
+  };
+}
+
+/** What changes leave of a state on a run, as `readConstValue` applies them, counting each change applied. */
+const runner = <State>(sourceCode: SourceCode, reading: ConstReading<State>) => {
+  const change = (state: State, write: ConstWrite) => {
+    writeVisits++;
+    return reading.change(state, write);
+  };
+  const maybe = (state: State, write: ConstWrite) => reading.either(state, change(state, write));
   // `inside` holds the changes made within one node, the one at `depth` of each change's `within`.
   const run = (inside: ReadonlyArray<ConstWrite>, state: State, depth: number): State => {
     const [first] = inside;
@@ -639,36 +918,98 @@ export function applyWrites<State>(
         const ways = waysTaken(valueKinds(sourceCode, node.test), TRUTHY);
         if (!ways.other) return made(node.consequent, tested);
         if (!ways.over) return made(node.alternate, tested);
-        return either(made(node.consequent, tested), made(node.alternate, tested));
+        return reading.either(made(node.consequent, tested), made(node.alternate, tested));
       }
       case "LogicalExpression": {
         const left = made(node.left, state);
         const ways = waysTaken(valueKinds(sourceCode, node.left), overwrittenKinds(node.operator));
         if (!ways.other) return made(node.right, left);
-        return ways.over ? either(left, made(node.right, left)) : left;
+        return ways.over ? reading.either(left, made(node.right, left)) : left;
       }
       default:
         return runsEveryPart(node)
           ? parts.reduce((current, group) => run(group, current, depth + 1), state)
-          : inside.reduce(maybe, state);
+          : inside.filter((write) => mayBeMade(sourceCode, write, depth + 1)).reduce(maybe, state);
     }
   };
-  const ordered = groupedWithin(
-    writes.filter((write) => write.made !== "anytime"),
-    0,
-  ).reduce((state, group) => run(group, state, 0), initial);
-  return writes.filter((write) => write.made === "anytime").reduce(maybe, ordered);
+  return { run, maybe };
+};
+
+/** The value an expression stands for and, when a const declares the object it names, its changes and the use's lists. */
+function namedObject(sourceCode: SourceCode, node: unknown) {
+  const { value, holder } = followConsts(sourceCode, node);
+  const use = asAstNode(node);
+  if (holder === undefined || Option.isNone(use)) return { value, named: undefined };
+  const index = changeIndex(cachedWritesThrough(sourceCode, holder));
+  let known = index.uses.get(use.value);
+  if (known === undefined) {
+    const levels = useLevels(use.value, holder);
+    known = { levels, anytime: anytimeChanges(index, use.value, levels) };
+    index.uses.set(use.value, known);
+  }
+  return { value, named: { index, ...known } };
 }
+
+/**
+ * What the object an expression stands for holds as `reading` reads it, after the changes made through its names by
+ * then: those ahead of the use in the order they run, then each made at no time the source shows, as it may be last.
+ * An `if`, `a ? b : c` or logical expression runs only the parts its test's or left side's kinds may lead to; a
+ * change in any other node may be skipped or repeated, but none in a part no run enters is made.
+ */
+export function readConstValue<State>(
+  sourceCode: SourceCode,
+  node: unknown,
+  reading: ConstReading<State>,
+): State {
+  return sharingReadBudget(() => {
+    const { value, named } = namedObject(sourceCode, node);
+    return named === undefined
+      ? reading.initial(value)
+      : readNamed(sourceCode, value, named, reading);
+  });
+}
+
+function readNamed<State>(
+  sourceCode: SourceCode,
+  value: Option.Option<AstNode>,
+  { index, levels, anytime }: NamedUse & { readonly index: ChangeIndex },
+  reading: ConstReading<State>,
+): State {
+  const memo = memoOf(index, reading);
+  const { run, maybe } = runner(sourceCode, reading);
+  let entered = initialState(memo, reading, value);
+  for (const { list, statement, ordered } of [...levels].reverse()) {
+    const runs = index.lists.get(list)?.runs ?? [];
+    if (ordered && statement >= 0) {
+      entered = runFrom(memo, run, list, runs, countBefore(runs, statement), entered);
+    }
+  }
+  return anytime.filter((write) => mayBeMade(sourceCode, write, 0)).reduce(maybe, entered.state);
+}
+
+/** Whether a run may have changed an object by a use, read as `readConstValue` reads its changes. */
+const CHANGED: ConstReading<boolean> = {
+  initial: () => false,
+  change: () => true,
+  either: (first, second) => first || second,
+};
 
 /**
  * What an expression stands for once `const` aliases are followed: `options` after
  * `const options = { timeout: 1 }` is the object. Anything else is the expression itself, and so is a name whose
- * object the program changes, as in `options.skip = false`: `resolveConstValue` gives such a value with its changes.
+ * object the program may have changed by then, as in `options.skip = false`: `readConstValue` reads such a value.
  */
 export function resolveConstAliases(sourceCode: SourceCode, node: unknown): Option.Option<AstNode> {
-  const { value, writes } = resolveConstValue(sourceCode, node);
-  return writes.length > 0 ? unwrapExpression(node) : value;
+  return sharingReadBudget(() => {
+    const { value, named } = namedObject(sourceCode, node);
+    if (named === undefined) return value;
+    return readNamed(sourceCode, value, named, CHANGED) ? unwrapExpression(node) : value;
+  });
 }
+
+/** The string an expression holds once `const` aliases are followed: `key` after `const key = "b"` holds `b`. */
+export const resolveStringValue = (sourceCode: SourceCode, node: unknown): Option.Option<string> =>
+  Option.flatMap(resolveConstAliases(sourceCode, node), stringLiteralValue);
 
 /**
  * The property a key or member names, with a bracketed key read through the `const` it holds: `a[key]` after
@@ -676,8 +1017,6 @@ export function resolveConstAliases(sourceCode: SourceCode, node: unknown): Opti
  */
 export function resolvePropertyName(sourceCode: SourceCode, node: unknown): Option.Option<string> {
   return Option.flatMap(asAstNode(node), (key) =>
-    isBracketedKey(key)
-      ? Option.flatMap(resolveConstAliases(sourceCode, key), stringLiteralValue)
-      : getPropertyName(key),
+    isBracketedKey(key) ? resolveStringValue(sourceCode, key) : getPropertyName(key),
   );
 }

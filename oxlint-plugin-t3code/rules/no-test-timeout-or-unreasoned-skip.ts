@@ -3,12 +3,13 @@ import * as Option from "effect/Option";
 
 import {
   ANY_KIND,
-  applyWrites,
+  type ConstReading,
   type ConstWrite,
   isGlobal,
   isObjectAssign,
   operandsTaken,
   overwrittenKinds,
+  readConstValue,
   resolveConstAliases,
   resolveConstValue,
   resolvePropertyName,
@@ -232,7 +233,7 @@ export default defineRule({
      */
     const isTestBody = (node: unknown, depth = 0): boolean =>
       depth <= MAX_DEPTH &&
-      Option.exists(resolveConstValue(context.sourceCode, node).value, (expression) => {
+      Option.exists(resolveConstValue(context.sourceCode, node), (expression) => {
         switch (expression.type) {
           case "CallExpression":
             return (
@@ -257,62 +258,70 @@ export default defineRule({
     const optionOf = (node: unknown, name: string, toTest: boolean, depth = 0): OptionState => {
       if (depth > MAX_DEPTH) return UNKNOWN;
       if (toTest && isTestBody(node)) return UNSET;
+      // A change made through the const's name, as in `options.skip = false`, replaces what the options held, in the
+      // order the changes run, on the runs that make it before the test registers.
+      return readConstValue(context.sourceCode, node, readingOf(name, toTest, depth));
+    };
+
+    // One reading for each way an object is read, so every test that reads the same options shares what it finds.
+    const readings = new Map<string, ConstReading<OptionState>>();
+
+    /** How `optionOf` reads the option `name` of an object `depth` copies down, as a test's argument (`toTest`) or not. */
+    const readingOf = (name: string, toTest: boolean, depth: number): ConstReading<OptionState> => {
+      const key = `${name} ${toTest} ${depth}`;
+      const known = readings.get(key);
+      if (known !== undefined) return known;
       const of = (child: unknown, asToTest = false) => optionOf(child, name, asToTest, depth + 1);
       // A spread or `Object.assign` source copies what its object holds after that object's own changes, which change
       // no other object; `Object.assign` sets each option, through a setter where the target has one.
       const copy = (into: OptionState, source: unknown) => copyOver(into, of(source));
       const assign = (into: OptionState, source: unknown) => setting(into, copy(into, source));
-      const { value, writes } = resolveConstValue(context.sourceCode, node);
-      const expression = Option.getOrUndefined(value);
-      let state: OptionState;
-      switch (expression?.type) {
-        case "ObjectExpression":
-          state = expression.properties.reduce((current, property) => {
-            if (property.type !== "Property") return copy(current, property.argument);
-            const key = resolvePropertyName(context.sourceCode, property.key);
-            if (Option.isNone(key)) return property.computed ? unknownChange(current) : current;
-            if (key.value !== name) return current;
-            return property.kind === "init"
-              ? holding(valueKinds(context.sourceCode, property.value))
-              : ACCESSOR;
-          }, UNSET);
-          break;
-        case "CallExpression": {
-          // `Object.assign(target, ...sources)` gives its target with each source's options assigned over in turn.
-          const [target, ...sources] = expression.arguments;
-          state = isObjectAssign(context.sourceCode, expression.callee)
-            ? sources.reduce(assign, of(target, toTest))
-            : UNKNOWN;
-          break;
+      const initial = (value: Option.Option<ESTree.Node>): OptionState => {
+        const expression = Option.getOrUndefined(value);
+        switch (expression?.type) {
+          case "ObjectExpression":
+            return expression.properties.reduce((current, property) => {
+              if (property.type !== "Property") return copy(current, property.argument);
+              const key = resolvePropertyName(context.sourceCode, property.key);
+              if (Option.isNone(key)) return property.computed ? unknownChange(current) : current;
+              if (key.value !== name) return current;
+              return property.kind === "init"
+                ? holding(valueKinds(context.sourceCode, property.value))
+                : ACCESSOR;
+            }, UNSET);
+          case "CallExpression": {
+            // `Object.assign(target, ...sources)` gives its target with each source's options assigned over in turn.
+            const [target, ...sources] = expression.arguments;
+            return isObjectAssign(context.sourceCode, expression.callee)
+              ? sources.reduce(assign, of(target, toTest))
+              : UNKNOWN;
+          }
+          case "ConditionalExpression":
+          case "LogicalExpression":
+            return operandsTaken(context.sourceCode, expression)
+              .map((operand) =>
+                // The `a` of `a && b` that is the value is falsy, which holds no option.
+                expression.type === "LogicalExpression" &&
+                expression.operator === "&&" &&
+                operand === expression.left
+                  ? UNSET
+                  : of(operand, toTest),
+              )
+              .reduce(either);
+          case "Literal":
+            return UNSET;
+          case "ArrowFunctionExpression":
+          case "FunctionDeclaration":
+          case "FunctionExpression":
+            // A function holds only the options changes through its name give it, which a spread of it copies.
+            return UNSET;
+          default:
+            // `undefined` holds no option, while a value the rule cannot see may hold any.
+            return Option.exists(value, (shown) => isGlobal(context.sourceCode, shown, "undefined"))
+              ? UNSET
+              : UNKNOWN;
         }
-        case "ConditionalExpression":
-        case "LogicalExpression":
-          state = operandsTaken(context.sourceCode, expression)
-            .map((operand) =>
-              // The `a` of `a && b` that is the value is falsy, which holds no option.
-              expression.type === "LogicalExpression" &&
-              expression.operator === "&&" &&
-              operand === expression.left
-                ? UNSET
-                : of(operand, toTest),
-            )
-            .reduce(either);
-          break;
-        case "Literal":
-          state = UNSET;
-          break;
-        case "ArrowFunctionExpression":
-        case "FunctionDeclaration":
-        case "FunctionExpression":
-          // A function holds only the options changes through its name give it, which a spread of it copies.
-          state = UNSET;
-          break;
-        default:
-          // `undefined` holds no option, while a value the rule cannot see may hold any.
-          state = Option.exists(value, (shown) => isGlobal(context.sourceCode, shown, "undefined"))
-            ? UNSET
-            : UNKNOWN;
-      }
+      };
       const change = (current: OptionState, write: ConstWrite): OptionState => {
         switch (write._tag) {
           case "Assign":
@@ -341,9 +350,9 @@ export default defineRule({
           }
         }
       };
-      // A change made through the const's name, as in `options.skip = false`, replaces what the options held, in the
-      // order the changes run, on the runs that make it before the test registers.
-      return applyWrites(context.sourceCode, writes, state, change, either);
+      const reading = { initial, change, either };
+      readings.set(key, reading);
+      return reading;
     };
 
     /**

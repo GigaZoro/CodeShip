@@ -1,4 +1,7 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
+import * as Option from "effect/Option";
+
+import { resolvePropertyName } from "../utils.ts";
 
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
 const PLATFORM_NAMES = new Set([
@@ -106,18 +109,18 @@ const isBareReturn = (node: ESTree.Node): boolean =>
   (node.type === "ReturnStatement" && node.argument === null) ||
   (node.type === "BlockStatement" && node.body.length === 1 && isBareReturn(node.body[0]!));
 
-const calleeName = (callee: ESTree.Node): string | undefined => {
+const calleeName = (sourceCode: SourceCode, callee: ESTree.Node): string | undefined => {
   if (callee.type === "Identifier") return callee.name;
-  if (callee.type === "MemberExpression" && callee.property.type === "Identifier") {
-    return callee.property.name;
+  if (callee.type === "MemberExpression") {
+    return Option.getOrUndefined(resolvePropertyName(sourceCode, callee.property));
   }
   return undefined;
 };
 
-const insideLifecycleHook = (node: ESTree.Node): boolean => {
+const insideLifecycleHook = (sourceCode: SourceCode, node: ESTree.Node): boolean => {
   for (let current = node.parent; current; current = current.parent) {
     if (current.type !== "CallExpression") continue;
-    const name = calleeName(current.callee);
+    const name = calleeName(sourceCode, current.callee);
     if (name !== undefined && LIFECYCLE_HOOKS.has(name)) return true;
   }
   return false;
@@ -144,7 +147,7 @@ export default defineRule({
         if (node.alternate) return;
         if (!isBareReturn(node.consequent)) return;
         if (!comparesPlatform(node.test, helpers)) return;
-        if (insideLifecycleHook(node)) return;
+        if (insideLifecycleHook(context.sourceCode, node)) return;
         context.report({ node, message: MESSAGE });
       },
     };

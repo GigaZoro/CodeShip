@@ -1,7 +1,7 @@
 import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { resolvePropertyName, unwrapExpression } from "../utils.ts";
+import { resolvePropertyName, resolveStringValue, unwrapExpression } from "../utils.ts";
 
 const BROWSER_TEST_FILE = /\.browser\.test\.[cm]?[jt]sx?$/u;
 const LIFECYCLE_HOOKS = new Set(["afterAll", "afterEach", "beforeAll", "beforeEach"]);
@@ -37,9 +37,6 @@ const MESSAGES = {
     "Browser tests acquire what they need with `using`/`await using` instead of lifecycle hooks, so nothing outlives the test that created it.",
 };
 
-const stringValue = (node: ESTree.Node | null | undefined) =>
-  node?.type === "Literal" && typeof node.value === "string" ? node.value : undefined;
-
 const importedName = (specifier: ESTree.ImportSpecifier) =>
   specifier.imported.type === "Identifier" ? specifier.imported.name : specifier.imported.value;
 
@@ -71,10 +68,7 @@ const namesActEnvironment = (sourceCode: SourceCode, node: unknown) => {
   if (Option.isNone(target)) return false;
   if (target.value.type === "Identifier") return target.value.name === ACT_ENVIRONMENT;
   if (target.value.type !== "MemberExpression") return false;
-  const property = target.value.computed
-    ? Option.fromNullishOr(stringValue(target.value.property))
-    : resolvePropertyName(sourceCode, target.value.property);
-  return Option.getOrUndefined(property) === ACT_ENVIRONMENT;
+  return Option.contains(resolvePropertyName(sourceCode, target.value.property), ACT_ENVIRONMENT);
 };
 
 export default defineRule({
@@ -211,8 +205,8 @@ export default defineRule({
             return;
           }
           if (
-            Option.getOrUndefined(method) === "stubGlobal" &&
-            stringValue(node.arguments[0] as ESTree.Node | undefined) === ACT_ENVIRONMENT
+            Option.contains(method, "stubGlobal") &&
+            Option.contains(resolveStringValue(sourceCode, node.arguments[0]), ACT_ENVIRONMENT)
           ) {
             context.report({ node, message: MESSAGES.actEnvironment });
           }

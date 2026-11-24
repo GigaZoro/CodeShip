@@ -45,6 +45,15 @@ describe("t3code/require-disposable-render", () => {
     'vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);',
   );
   browserTest.invalid(
+    "rejects setting or stubbing the act environment through a const that names it",
+    [
+      'const flag = "IS_REACT_ACT_ENVIRONMENT";',
+      "globalThis[flag] = true;",
+      "vi.stubGlobal(flag, true);",
+    ].join("\n"),
+    (output) => assert.equal(output.match(/require-disposable-render/g)?.length, 2),
+  );
+  browserTest.invalid(
     "rejects userEvent wrapped in act from react",
     [
       'import { act } from "react";',
