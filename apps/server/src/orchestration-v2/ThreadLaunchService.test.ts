@@ -326,6 +326,186 @@ function launchInput(input: {
   };
 }
 
+const replayScenarios = [
+  "restart replay",
+  "unknown",
+  "unknown catch-up rewrite",
+  "accepted unknown cursor",
+  "accepted late retry",
+  "failure before receipt",
+] as const;
+it.effect.each(
+  replayScenarios.flatMap((mode) =>
+    (["existing", "new"] as const).map((target) => ({ mode, target })),
+  ),
+)("one durable scheduled dispatch after $mode in $target threads", ({ mode, target }) => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const sql = yield* SqlClient.SqlClient;
+    const attempts: string[] = [];
+    const held = mode === "accepted late retry";
+    const old = mode.startsWith("accepted ");
+    const unknown = mode.includes("unknown");
+    const scheduler = ScheduledTasks.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          NodeCrypto.layer,
+          Scheduler.layer,
+          layerSharedTaskIdentities(),
+          ManagedPolicy.layerTest(),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.succeed(ThreadManagement.ThreadManagementService, {
+            ...threads,
+            sendToThread: (input) =>
+              Effect.suspend(() => {
+                attempts.push(input.commandId);
+                if (mode === "failure before receipt" && attempts.length === 1)
+                  return Effect.die("transient failure before receipt");
+                return threads.sendToThread(input);
+              }),
+          }),
+          Layer.succeed(ThreadLaunch.ThreadLaunchService, {
+            ...launches,
+            launch: (input) =>
+              Effect.suspend(() => {
+                attempts.push(input.commandId);
+                if (mode === "failure before receipt" && attempts.length === 1)
+                  return Effect.die("transient failure before receipt");
+                return launches.launch(input);
+              }),
+          }),
+        ),
+      ),
+    );
+    const due = DateTime.makeZonedUnsafe(
+      { year: 1970, month: 1, day: 2, hour: 7 },
+      { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+    );
+    const slot = DateTime.toEpochMillis(due);
+    const when = slot + (held ? 60 * 60_000 : unknown ? 25 * 60_000 : 0);
+    const scheduledFor = new Date(when).toISOString();
+    const id = ScheduledTaskId.make("daily-replay");
+    yield* TestClock.setTime(slot - 60_000);
+    const bound =
+      target === "existing"
+        ? (yield* launches.launch(launchInput({ command: "setup", thread: "thread:bound" })))
+            .threadId
+        : null;
+    yield* Effect.gen(function* () {
+      const tasks = yield* ScheduledTasks.ScheduledTaskService;
+      yield* tasks.upsert(
+        {
+          id,
+          title: "Daily",
+          prompt: "Daily check",
+          enabled: true,
+          maxLiveRuns: 4,
+          schedule: { type: "fixed_time", timeOfDay: "07:00" },
+          projectId,
+          threadId: bound,
+          workspaceStrategy: { type: "root" },
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy: "user",
+          creationSource: "web",
+        },
+        ScheduledTasks.CHANGED_IN_APP,
+      );
+    }).pipe(Effect.provide(scheduler));
+    const firstSlot = new Date(slot).toISOString();
+    const [row] = yield* sql<{
+      incarnation_id: string;
+    }>`SELECT incarnation_id FROM scheduled_tasks WHERE task_id = ${id}`;
+    const demand = held
+      ? originalDemandId(
+          "scheduled-task",
+          HERE_ENVIRONMENT_ID,
+          id,
+          row!.incarnation_id,
+          "scheduled",
+          firstSlot,
+        )
+      : null;
+    const zone = DateTime.zoneMakeLocal().id;
+    const evidence = held
+      ? { at: firstSlot, timeZone: zone, schedule: { type: "fixed_time", timeOfDay: "07:00" } }
+      : null;
+    const cursor = () =>
+      sql`UPDATE scheduled_tasks SET next_run_at = ${scheduledFor}, usage_hold_json = ${held || unknown ? JSON.stringify({ until: scheduledFor, heldOccurrence: evidence }) : null} WHERE task_id = ${id}`;
+    const poll = (time: number) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(time);
+        return yield* Effect.gen(function* () {
+          const tasks = yield* ScheduledTasks.ScheduledTaskService;
+          yield* TestClock.adjust("6 seconds");
+          return (yield* tasks.list()).tasks[0]!;
+        }).pipe(Effect.provide(scheduler));
+      });
+    yield* cursor();
+    if (old) {
+      const earlier = held ? slot + 25 * 60_000 : when;
+      const earlierFor = new Date(earlier).toISOString();
+      const key = `${id}:${earlier}:scheduled`;
+      const commandId = CommandId.make(`scheduled-task:${key}`);
+      const message = {
+        messageId: MessageId.make(`scheduled-task-message:${key}`),
+        demandId: demand,
+        scheduledTaskId: id,
+        text: "Daily check",
+        attachments: [],
+      };
+      const threadId =
+        bound ??
+        (yield* launches.launch({
+          ...launchInput({ command: commandId, thread: "thread:older" }),
+          initialMessage: message,
+        })).threadId;
+      if (bound !== null)
+        yield* threads.sendToThread({
+          ...message,
+          projectId,
+          threadId,
+          commandId,
+          mode: "queue",
+          createdBy: "user",
+          creationSource: "web",
+        });
+      yield* sql`INSERT INTO scheduled_task_runs (run_id,task_id,trigger,scheduled_for,started_at,thread_id,outcome)
+          VALUES (${key},${id},'scheduled',${earlierFor},${earlierFor},${threadId},'succeeded')`;
+    } else {
+      const first = yield* poll(when);
+      assert.equal(first.lastRunStatus, mode === "failure before receipt" ? "failed" : "succeeded");
+    }
+    yield* cursor();
+    const last = yield* poll(when + (mode === "unknown catch-up rewrite" ? 15 * 60_000 : 8000));
+    const history =
+      yield* sql`SELECT trigger,scheduled_for,outcome,thread_id FROM scheduled_task_runs WHERE task_id = ${id} ORDER BY rowid`;
+    const receipts =
+      yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id LIKE 'scheduled-task:%' AND command_type = 'message.dispatch' AND status = 'accepted'`;
+    const shells = yield* threads.listProjectThreads({ projectId, includeSubagents: false });
+    const projections = yield* Effect.forEach(shells, (shell) =>
+      threads.getThreadProjection(shell.id),
+    );
+    const messages = projections.flatMap((p) => p.messages);
+    assert.equal(last.lastRunStatus, "succeeded");
+    assert.lengthOf(receipts, 1);
+    assert.lengthOf(messages, 1);
+    assert.lengthOf(shells, 1);
+    assert.lengthOf(history, 1);
+    assert.equal(history[0]?.outcome, "succeeded");
+    assert.equal(history[0]?.thread_id, shells[0]!.id);
+    if (unknown)
+      assert.deepEqual(
+        projections.flatMap((p) => p.runs.map((r) => r.demandId)),
+        [null],
+      );
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect.each(["existing", "new"] as const)(
   "replays fixed-time receipts only within the same task incarnation in %s threads",
   (target) => {
