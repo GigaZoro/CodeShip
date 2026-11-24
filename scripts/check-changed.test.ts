@@ -1533,12 +1533,67 @@ describe("check:changed", () => {
     );
   });
 
-  it.each([
-    "packages/shared/src/testing/longTempDir.ts",
-    "packages/shared/src/testing/providerEnv.ts",
-  ])("tests every package when the shared test setup file %s changes", (file) => {
-    assert.strictEqual(decide([file], readWorkspace(), false).outputs.test_packages, "");
+  // Read from the test configs and from what those files import, so a setup file a config gains, or a module a
+  // setup file comes to import, that RUNS_EVERYTHING lacks fails here.
+  const repoRoot = NodePath.join(import.meta.dirname, "..");
+  const setupFilesIn = (config: string) =>
+    Array.from(
+      config.matchAll(/shared\/src\/testing\/([^"'`\s/]+\.ts)/g),
+      ([, name]) => `packages/shared/src/testing/${name}`,
+    );
+  const relativeImportsOf = (file: string) =>
+    Array.from(
+      NodeFS.readFileSync(NodePath.join(repoRoot, file), "utf8").matchAll(
+        /(?:from|import)\s+["'](\.{1,2}\/[^"']+\.ts)["']/g,
+      ),
+      ([, specifier]) => NodePath.posix.join(NodePath.posix.dirname(file), specifier!),
+    );
+  const sharedSetupFiles = new Set(
+    [".", ...readWorkspace().map((pkg) => pkg.dir)].flatMap((dir) => {
+      const config = NodePath.join(repoRoot, dir, "vite.config.ts");
+      return NodeFS.existsSync(config) ? setupFilesIn(NodeFS.readFileSync(config, "utf8")) : [];
+    }),
+  );
+  for (const file of sharedSetupFiles) {
+    for (const imported of relativeImportsOf(file)) sharedSetupFiles.add(imported);
+  }
+
+  it("reads whole setup file names from a test config", () => {
+    assert.deepStrictEqual(
+      setupFilesIn(
+        'setupFiles: ["../../packages/shared/src/testing/language-setup.ts", "../shared/src/testing/language.setup.ts"]',
+      ),
+      [
+        "packages/shared/src/testing/language-setup.ts",
+        "packages/shared/src/testing/language.setup.ts",
+      ],
+    );
   });
+
+  it("finds the shared test setup files and the modules they import", () => {
+    assert.includeMembers(
+      [...sharedSetupFiles],
+      [
+        "packages/shared/src/testing/locale.ts",
+        "packages/shared/src/i18n.ts",
+        "packages/shared/src/testing/longTempDir.ts",
+        "packages/shared/src/HostProcess.ts",
+        "packages/shared/src/testing/providerEnv.ts",
+      ],
+    );
+  });
+
+  it.each([...sharedSetupFiles].sort())(
+    "tests every package when the shared test setup file %s changes",
+    (file) => {
+      assert.deepInclude(decide([file], readWorkspace(), false).outputs, {
+        test: true,
+        test_packages: "",
+        test_web: true,
+        test_server: true,
+      });
+    },
+  );
 });
 
 // Hooks export GIT_DIR and GIT_INDEX_FILE, and user config or the default

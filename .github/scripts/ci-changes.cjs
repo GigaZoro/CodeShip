@@ -13,9 +13,9 @@ const INERT = [
   /^LICENSE$/,
 ];
 
-// Shared test setup and vendored mobile dependencies affect every package.
+// Shared test setup, the modules it imports, and vendored mobile dependencies affect every package.
 const RUNS_EVERYTHING = [
-  /^packages\/shared\/src\/(HostProcess|testing\/(longTempDir|providerEnv))\.ts$/,
+  /^packages\/shared\/src\/(HostProcess|i18n|testing\/(locale|longTempDir|providerEnv))\.ts$/,
   /^apps\/mobile\/deps\//,
 ];
 
