@@ -39,6 +39,19 @@
 - Storage cleanup kept a finished worktree with "Worktree has private reflogs" once Git had deleted a worktree-only ref and left its reflog's empty folders. Those worktrees are released; a reflog that still holds history keeps its worktree.
 - A delegated task on a linked machine whose last reply or plan was blank gave the chat that started it a blank result. Its result is now its last reply with text, as for a task on this machine.
 
+## 2026-11-24 — Requests stop waiting when a linked machine goes quiet
+
+- When a linked machine stops answering, CodeShip detects it sooner so delegated work can retry without waiting for the connection to give up.
+- Asking which providers a machine can run, or delegating to one there that was last seen unusable, now answers within a minute even when checking that provider takes longer, and even when a role's provider and its fallback, or several new chats' providers, all need a check. Asking again while a provider's check runs waits for that check instead of starting another. The slow check finishes in the background, and the answer says it is still running, so a slow check on a linked machine no longer looks like the machine stopped answering.
+
+## 2026-11-24 — A task delegated to a machine that was away finishes sooner
+
+- When a linked machine running a delegated task stops answering (asleep, shut down, or restarting for an update), CodeShip now waits at most 30 seconds after a failed try before trying again, instead of backing off to 5 minutes. A machine that comes back hands over the task's result that much sooner. Moving the finished task's chat there off that machine's active list is retried for up to 20 minutes after the result arrives.
+- A task that could not start on a linked machine now says why it could not start, also when recording that fails at first. Before, it then said only that its chat there was not found.
+- Delegating a task to a linked machine whose answer is lost on the way, as on a dropped connection, now returns the task, and CodeShip sends the start again until that machine answers, without starting it twice. Before, the call failed and the task was stopped there although it had started. A task stopped or cancelled before its start reaches that machine now has its chat there stopped once the start arrives, instead of left running.
+- Cancelling a delegated task again with the same request, or a cancel whose answer was lost on the way, no longer stops new work started in its chat on the other machine since the first cancel.
+- A delegated task whose start lost its answer keeps being sent while the linked machine cannot be reached for a while, instead of being stopped there although it may have started. A task delegated to a machine none of whose addresses answers fails at once with `unreachable`, as nothing reached it, and an error page from a gateway on the way counts as a lost answer, since the machine may have acted on it.
+
 ## 2026-11-24 — A landing's checks read only the commit it lands
 
 - The landing turn runs its checks in a private checkout of the commit it pushes, so an edit to the lander's worktree while they run can no longer slip past them.
@@ -302,19 +315,6 @@
 
 - A thread started in a new worktree from a pushed commit that none of the checkout's fetched branches reaches, such as one on a branch a single-branch clone does not fetch, now starts. The launch fetches the commit itself, from the primary remote first and then the project's other remotes. Before, it fetched only the primary remote's branches and refused the commit as missing.
 - `delegate_task` to a linked environment now fails with "Unable to read this thread's project." when your thread's project cannot be read, instead of asking for a `target.projectId` it does not need or starting a worktree helper from that project's default branch.
-
-## 2026-11-21 — Requests stop waiting when a linked machine goes quiet
-
-- When a linked machine stops answering, CodeShip detects it sooner so delegated work can retry without waiting for the connection to give up.
-- Asking which providers a machine can run, or delegating to one there that was last seen unusable, now answers within a minute even when checking that provider takes longer, and even when a role's provider and its fallback, or several new chats' providers, all need a check. Asking again while a provider's check runs waits for that check instead of starting another. The slow check finishes in the background, and the answer says it is still running, so a slow check on a linked machine no longer looks like the machine stopped answering.
-
-## 2026-11-21 — A task delegated to a machine that was away finishes sooner
-
-- When a linked machine running a delegated task stops answering (asleep, shut down, or restarting for an update), CodeShip now waits at most 30 seconds after a failed try before trying again, instead of backing off to 5 minutes. A machine that comes back hands over the task's result that much sooner. Moving the finished task's chat there off that machine's active list is retried for up to 20 minutes after the result arrives.
-- A task that could not start on a linked machine now says why it could not start, also when recording that fails at first. Before, it then said only that its chat there was not found.
-- Delegating a task to a linked machine whose answer is lost on the way, as on a dropped connection, now returns the task, and CodeShip sends the start again until that machine answers, without starting it twice. Before, the call failed and the task was stopped there although it had started. A task stopped or cancelled before its start reaches that machine now has its chat there stopped once the start arrives, instead of left running.
-- Cancelling a delegated task again with the same request, or a cancel whose answer was lost on the way, no longer stops new work started in its chat on the other machine since the first cancel.
-- A delegated task whose start lost its answer keeps being sent while the linked machine cannot be reached for a while, instead of being stopped there although it may have started. A task delegated to a machine none of whose addresses answers fails at once with `unreachable`, as nothing reached it, and an error page from a gateway on the way counts as a lost answer, since the machine may have acted on it.
 
 ## 2026-11-21 — Worktree helpers in another repository on a linked machine start from its default branch
 
