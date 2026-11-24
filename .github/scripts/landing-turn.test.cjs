@@ -1094,6 +1094,14 @@ test("a Mac's awake clock is read again when the Mac slept through a read, and a
     () => macAwakeMs(reads({ status: 1, stdout: "", stderr: "execution error: -2700" })),
     /systemUptime failed: execution error: -2700/,
   );
+  assert.throws(
+    () => macAwakeMs(reads({ status: 1, signal: null, stdout: "", stderr: "" })),
+    /systemUptime failed: exit status 1$/,
+  );
+  assert.throws(
+    () => macAwakeMs(reads({ status: null, signal: "SIGKILL", stdout: "", stderr: "" })),
+    /systemUptime failed: signal SIGKILL$/,
+  );
 });
 
 test("a waiting lander that cannot fetch the holder's lease leaves it in place", () => {

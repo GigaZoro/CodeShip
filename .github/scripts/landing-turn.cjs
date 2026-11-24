@@ -165,7 +165,7 @@ const UPTIME_SCRIPT = `ObjC.import("Foundation"); String(Math.floor($.NSProcessI
 
 /**
  * NSProcessInfo.systemUptime in milliseconds: the time a Mac has been awake since boot. The read's timeout counts sleep,
- * so a read the Mac slept through times out when it wakes; a second read tells that apart from a reader that hangs.
+ * so a read the Mac slept through times out when it wakes. One such read is read again; a second timeout ends the wait.
  */
 function macAwakeMs(spawn = spawnSync) {
   const read = () =>
@@ -177,9 +177,9 @@ function macAwakeMs(spawn = spawnSync) {
   if (result.error?.code === "ETIMEDOUT") result = read();
   const match = /^(\d+)\s*$/.exec(result.stdout ?? "");
   if (result.error || result.status !== 0 || !match) {
-    throw new Error(
-      `osascript NSProcessInfo.systemUptime failed: ${result.error?.message ?? (result.stderr.trim() || result.stdout.trim())}`,
-    );
+    const exit = result.signal ? `signal ${result.signal}` : `exit status ${result.status}`;
+    const detail = result.error?.message ?? (result.stderr.trim() || result.stdout.trim() || exit);
+    throw new Error(`osascript NSProcessInfo.systemUptime failed: ${detail}`);
   }
   return Number(match[1]);
 }
