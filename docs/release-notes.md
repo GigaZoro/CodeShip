@@ -327,6 +327,14 @@
 - Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
 - Codex usage and reset credits now follow the signed-in workspace, including when two workspaces share an email. A delayed update from a previous session can no longer replace the current workspace’s balance.
 
+## 2026-11-25 — Landers wait for their Windows check
+
+- Maintainers: after landing, the ship skill and the upstream sync run `node .github/scripts/windows-check.cjs <commit>`. It waits for that commit's `check:changed` run on Windows and exits 3 with its failing steps and test lines when it does not pass. It also exits 3, with an `unreadable` result and its reason, when GitHub does not show the run or the check cannot run: an unknown commit, a tree git cannot read, or an `origin` that pushes to several GitHub repositories. A Windows-only failure therefore reaches the chat that landed it.
+- The check waits out both of GitHub's rate limits, including a secondary limit that names no wait. It sends no request once its time limit has passed, for example after the machine sleeps.
+- The Windows check may run for 6 hours, so a large push that selects every test file finishes instead of failing at 1 hour with no failing test.
+- An attachment preview browser test no longer fails on Windows when it restores the source row in a million-line file. Its tolerance now allows for Chromium rounding the scroll position to whole pixels.
+- Web browser tests run with the en-US locale on every machine. They no longer fail where the system formats numbers differently, such as `1 000` for `1,000`.
+
 ## 2026-11-25 — Tests that link folders run on Windows without Developer Mode
 
 - Maintainers: server tests that link a folder make a junction on Windows, which needs no special rights, and the few that need a real file symlink skip where the machine cannot make one. Before, on a Windows machine without Developer Mode, about twenty storage cleanup, settings, review, session scanner and uninstall tests failed before checking anything. The `check:changed` worktree reuse test also links its packages again in each checkout, because Windows copies a junction as a folder.

@@ -88,6 +88,10 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
       "Usage: node .github/scripts/release-notes.cjs check|render",
     ],
   ],
+  "../.github/scripts/windows-check.cjs": [
+    [["HEAD", UNREAD], 2, "usage: windows-check.cjs <commit>"],
+    [[UNREAD], 2, "usage: windows-check.cjs <commit>"],
+  ],
   "../apps/mobile/scripts/upload-sourcemaps.mts": [
     [
       ["ota", "dist", UNREAD],

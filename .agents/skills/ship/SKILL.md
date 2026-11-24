@@ -55,6 +55,12 @@ A branch behind main is rebased onto it first, and the landing then starts again
 
 Use the SHA printed by the landing turn, or the previously confirmed SHA when resuming. Reconcile the developer's original request with the results for that commit. A request to verify a release or installed package stays open until the published artifact and its requested behavior have been checked. Retain the checkout and verifier until the check finishes. Record the SHA, hosted run and artifact identifiers. Preserve any unique local inputs in a durable location before a long idle wait so the verifier can resume even if storage cleanup runs.
 
+Main's push also runs `check:changed` on Windows on GitHub ([windows-check-fork.yml](../../../.github/workflows/windows-check-fork.yml)), the only check a change landed from macOS or Linux gets there. Wait for it with `t3_command_run` (`timeoutMinutes: 420`; a large push can take a few hours):
+
+`node .github/scripts/windows-check.cjs <landed commit>`
+
+Exit status 3 means the commit is on main but that check did not pass or could not be read: read `status`, `reason`, `failures` and the run at `url`. Fix a failure in code or tests your change touched, commit, and land again. Name any other failure, or a run that never started or finished, as a follow-up in your report with its `url`.
+
 - If a hosted run is active, start an awaited check, such as `gh run watch <run-id> --repo <owner/repo> --exit-status` in `t3_command_run`. Its completion wakes this thread. Resume the requested verification on that wake, including after a timeout.
 - If an external dependency prevents verification and there is no running check to await, call `t3_thread_organize` with `{"action":"unsettle"}` on the current thread, even when it already appears active. Without this override it can settle during an idle wait. Use an existing retry for this delivery or register a one-time `schedule_task` with `bindToCurrentThread: true` at the next useful retry time. Copy the landed commit SHA or release tag from the handoff into the retry prompt. Identify what to verify in that installed artifact and where the verifier or evidence lives. Read the saved task before yielding. Check its prompt for that same SHA or tag, its owning thread ID, its enabled state and its next run time. Correct the saved task if any of these is missing. Recheck on wake and renew the active state and retry while the dependency is pending. A turn start clears the earlier active override.
 - With every requested result verified, go to step 7 if there is an owned disposable checkout or topic branch to retire. Go straight to step 8 from a clean primary default checkout only when this shipment has no owned topic checkout or ref left to retire.
@@ -70,4 +76,4 @@ Preserve the full delivery ref and verify that it contains the delivered tip. Ke
 
 ## 8. Report and settle
 
-Report the landed SHA and title, the requested checks and their observed results, and the disposition of any checkout or topic branch. When the full request is complete, settle this thread with `t3_thread_organize` using action `settle` and no `threadId`, if available. Honor an explicit request to close the thread.
+Report the landed SHA and title, the requested checks and their observed results, the Windows check's result, and the disposition of any checkout or topic branch. When the full request is complete, settle this thread with `t3_thread_organize` using action `settle` and no `threadId`, if available. Honor an explicit request to close the thread.

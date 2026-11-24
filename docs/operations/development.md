@@ -319,6 +319,10 @@ CI runs the `apps/server` suite on Windows too, as eight duration-balanced `Test
 shards. To reproduce one locally on Windows, run `vp test run --shard N/8` from `apps/server`. In a
 fork, [windows-check-fork.yml](../../.github/workflows/windows-check-fork.yml) runs `check:changed`
 on Windows for every push to `main`, because the push gate runs it only on the machine that pushes.
+After landing, the ship skill and the upstream sync run
+`node .github/scripts/windows-check.cjs <commit>`, which waits for that commit's run and exits 3
+with its failures when it does not pass. Without a token GitHub shows no runs of a private fork, so
+there it exits 3 as `unreadable`.
 
 ### Unused code
 

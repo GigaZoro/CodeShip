@@ -143,7 +143,8 @@ const browserTestProject = {
     browser: {
       enabled: true,
       headless: true,
-      provider: playwright(),
+      // Chromium otherwise takes the machine's locale, so a count reads "1 000" where tests expect "1,000".
+      provider: playwright({ contextOptions: { locale: "en-US" } }),
       instances: [{ browser: "chromium" }],
       screenshotFailures: false,
       commands: {
