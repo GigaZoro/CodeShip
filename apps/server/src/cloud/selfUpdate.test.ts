@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { type ManagedPolicyDocument, ServerSelfUpdateError } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { linkDirectory } from "@t3tools/shared/testing/symlinks";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -394,7 +395,7 @@ it.layer(NodeServices.layer)("pruning runtimes on start", (it) => {
       yield* fs.writeFileString(sentinel, `${version}\n`);
       yield* fs.utimes(sentinel, 0, 0);
     }
-    if (input.symlinkedHome) yield* fs.symlink(realHome, baseDir);
+    if (input.symlinkedHome) yield* linkDirectory(realHome, baseDir);
     // Like `process.execPath`, the running runtime is reported by its real path.
     const executablePath =
       input.executable === "own runtime"

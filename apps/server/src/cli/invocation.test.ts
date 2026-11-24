@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -81,32 +82,30 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  const desktopLauncher = Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const home = yield* fs.makeTempDirectoryScoped();
+    const shim = path.join(home, ".local bin", "t3");
+    yield* fs.makeDirectory(path.dirname(shim), { recursive: true });
+    yield* fs.writeFileString(shim, "#!/bin/sh\n", { mode: 0o755 });
+    return {
+      node: "/tmp/.mount_T3abc/t3code",
+      entry: "/tmp/.mount_T3abc/resources/app.asar/apps/server/dist/bin.mjs",
+      env: { T3CODE_CLI_PATH: shim },
+    };
+  });
+
   it.effect("names this install's launcher when t3 is not on PATH", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const home = yield* fs.makeTempDirectoryScoped();
-      const shim = path.join(home, ".local bin", "t3");
-      yield* fs.makeDirectory(path.dirname(shim), { recursive: true });
-      yield* fs.writeFileString(shim, "#!/bin/sh\n", { mode: 0o755 });
-      const desktop = {
-        node: "/tmp/.mount_T3abc/t3code",
-        entry: "/tmp/.mount_T3abc/resources/app.asar/apps/server/dist/bin.mjs",
-        env: { T3CODE_CLI_PATH: shim },
-      };
+      const desktop = yield* desktopLauncher;
+      const shim = desktop.env.T3CODE_CLI_PATH;
 
       expect(yield* rootCommand(desktop)).toBe(`sudo '${shim}' browser setup`);
 
       // An unrelated `t3` on PATH, such as an older npm global, is another install's CLI.
       expect(yield* rootCommand({ ...desktop, path: yield* pathWithT3 })).toBe(
         `sudo '${shim}' browser setup`,
-      );
-
-      // The link the app installs onto PATH leads to its own launcher, so plain `t3` is right.
-      const linked = yield* makePathDirectory;
-      yield* fs.symlink(shim, path.join(linked, "t3"));
-      expect(yield* rootCommand({ ...desktop, path: linked })).toBe(
-        'sudo env "PATH=$PATH" t3 browser setup',
       );
 
       expect(
@@ -117,10 +116,25 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
         }),
       ).toBe("sudo /opt/t3/t3 browser setup");
 
-      expect(
-        yield* rootCommand({ ...desktop, env: { T3CODE_CLI_PATH: path.join(home, "gone") } }),
-      ).toBe('sudo env "PATH=$PATH" t3 browser setup');
+      expect(yield* rootCommand({ ...desktop, env: { T3CODE_CLI_PATH: `${shim}-missing` } })).toBe(
+        'sudo env "PATH=$PATH" t3 browser setup',
+      );
     }).pipe(Effect.scoped),
+  );
+
+  it.effect.skipIf(!symlinksSupported)(
+    "uses t3 on PATH when it links to the desktop launcher",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const desktop = yield* desktopLauncher;
+        const linked = yield* makePathDirectory;
+        yield* fs.symlink(desktop.env.T3CODE_CLI_PATH, path.join(linked, "t3"));
+        expect(yield* rootCommand({ ...desktop, path: linked })).toBe(
+          'sudo env "PATH=$PATH" t3 browser setup',
+        );
+      }).pipe(Effect.scoped),
   );
 });
 
