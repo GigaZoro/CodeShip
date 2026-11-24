@@ -572,7 +572,7 @@ function overlappingWorktrees({ cwd, base }) {
       .filter(Boolean);
   const mine = new Set(changed("HEAD"));
   if (mine.size === 0) return [];
-  const self = git(cwd, ["rev-parse", "--show-toplevel"]).stdout;
+  const self = path.resolve(git(cwd, ["rev-parse", "--show-toplevel"]).stdout);
   const overlaps = [];
   for (const block of git(cwd, ["worktree", "list", "--porcelain"]).stdout.split("\n\n")) {
     const fields = Object.fromEntries(
@@ -582,14 +582,16 @@ function overlappingWorktrees({ cwd, base }) {
       }),
     );
     if (!fields.worktree || fields.bare !== undefined || fields.prunable !== undefined) continue;
-    if (path.resolve(fields.worktree) === path.resolve(self)) continue;
+    // Git for Windows lists `C:/…`: the lander reads the path as this system writes it.
+    const worktree = path.resolve(fields.worktree);
+    if (worktree === self) continue;
     if (!fields.HEAD) continue;
     const shared = changed(fields.HEAD).filter((file) => mine.has(file));
     if (shared.length > 0) {
       overlaps.push({
         branch:
           fields.branch?.replace(/^refs\/heads\//, "") ?? `(detached ${fields.HEAD.slice(0, 10)})`,
-        worktree: fields.worktree,
+        worktree,
         files: shared,
       });
     }

@@ -238,6 +238,7 @@
 ## 2026-11-22 — A Windows command's folder is free as soon as it ends
 
 - On Windows, the hidden wrapper that runs a `t3_command_run` command now works in its own run folder and starts the command in its `cwd`. Before, the wrapper worked in the command's folder and outlived the command for a moment to record how it ended, so an agent that removed that folder, such as a worktree, as soon as the command's end reached it could be refused with "being used by another process".
+- Maintainers: a landing that warns about another worktree with unmerged work on the same files now names that worktree's path as the system writes it, as in `C:\Users\…`, where Git for Windows gives `C:/Users/…`.
 
 ## 2026-11-22 — Relay client installs keep each other's locks
 

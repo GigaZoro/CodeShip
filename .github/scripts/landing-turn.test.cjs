@@ -2154,7 +2154,8 @@ test("a landing lists other worktrees with unmerged work on the same files, and 
       found.map(({ branch, files }) => ({ branch, files })),
       [{ branch: "overlapping", files: ["shared.txt"] }],
     );
-    assert.equal(path.normalize(found[0].worktree), path.join(root, "overlapping"));
+    // Git for Windows lists `C:/…`; the landing names the path as the system writes it.
+    assert.equal(found[0].worktree, path.join(root, "overlapping"));
 
     // Main moved, so the landing rebases and lands from a relaunch, which does not list the overlaps again.
     const mover = clone("mover");
