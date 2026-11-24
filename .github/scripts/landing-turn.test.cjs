@@ -235,7 +235,7 @@ function stderrOf(run) {
   }
 }
 
-test("a second lander cannot push to main while the first holds the turn, and the first lands after one check", () => {
+test("a second lander cannot push to main while the first holds the turn, and the first checks under it only against a main that moved during its wait", () => {
   const { root, origin, git, clone, commit } = setup();
   try {
     const first = clone("first");
@@ -248,31 +248,81 @@ test("a second lander cannot push to main while the first holds the turn, and th
     git(mover, "push", "-q", "origin", "HEAD:main");
 
     // Main from the named remote, as the CLI fetches it, also updates origin/main. A fetch that fails on that leaves
-    // no turn ref behind and gives the turn back.
+    // no turn ref behind, before the wait and in the turn, which it gives back.
     const lock = path.join(first, ".git/refs/remotes/origin/main.lock");
     fs.mkdirSync(path.dirname(lock), { recursive: true });
+    const noTurnRefs = () =>
+      assert.deepEqual(
+        [
+          git(first, "for-each-ref", "refs/worktree"),
+          git(origin, "for-each-ref", "refs/heads/landing-lease"),
+        ],
+        ["", ""],
+      );
     fs.writeFileSync(lock, "");
     assert.throws(
       () => land({ cwd: first, remote: "origin", check: () => assert.fail("checked") }),
       /git fetch failed/,
     );
-    assert.deepEqual(
-      [
-        git(first, "for-each-ref", "refs/worktree"),
-        git(origin, "for-each-ref", "refs/heads/landing-lease"),
-      ],
-      ["", ""],
-    );
+    noTurnRefs();
     fs.rmSync(lock);
 
-    let checks = 0;
+    // The lander rebases before it waits, and lands again from the rebased tree.
+    const rebases = () => {
+      assert.deepEqual(
+        land({ cwd: first, remote: "origin", check: () => assert.fail("checked") }),
+        {
+          status: "rebased",
+          base: git(mover, "rev-parse", "HEAD"),
+          head: git(first, "rev-parse", "HEAD"),
+        },
+      );
+      noTurnRefs();
+      git(first, "merge-base", "--is-ancestor", git(mover, "rev-parse", "HEAD"), "HEAD");
+    };
+    rebases();
+
+    // Main moves while it waits behind the second lander's turn.
+    const held = tryAcquire({ cwd: second, remote: origin, runId: "second" });
+    assert.throws(
+      () =>
+        land({
+          cwd: first,
+          remote: "origin",
+          check: (turn) => turn === null || assert.fail("checked under the turn"),
+          sleep: () => {
+            commit(mover, "moved.txt");
+            git(mover, "push", "-q", "origin", "HEAD:main");
+            fs.writeFileSync(lock, "");
+            release({ cwd: second, remote: origin }, held);
+          },
+        }),
+      /git fetch failed/,
+    );
+    noTurnRefs();
+    fs.rmSync(lock);
+    rebases();
+
+    // Checked before the wait against the main it rebased onto, and under the turn against the one main moved to.
+    const rebasedOnto = git(mover, "rev-parse", "HEAD");
+    const now = () => Date.UTC(2026, 0, 1);
+    const again = tryAcquire({ cwd: second, remote: origin, runId: "second", now });
+    const ticks = [1_000, 1_000 + 10 * 60 * 1000];
+    const checks = [];
     const result = land({
       cwd: first,
       remote: "origin",
-      check: (turn, base) => {
-        checks += 1;
-        assert.equal(base, git(mover, "rev-parse", "HEAD"));
-        assert.equal(tryAcquire({ cwd: second, remote: origin, runId: "second" }), null);
+      now,
+      turnClock: () => ticks.shift(),
+      sleep: () => {
+        commit(mover, "during.txt");
+        git(mover, "push", "-q", "origin", "HEAD:main");
+        release({ cwd: second, remote: origin }, again);
+      },
+      check: (turn, base, seconds) => {
+        checks.push([base, seconds]);
+        if (turn === null) return true;
+        assert.equal(tryAcquire({ cwd: second, remote: origin, runId: "second", now }), null);
         assert.throws(
           () => verifyPush({ cwd: second, remote: origin, env: {}, refs: ["refs/heads/main"] }),
           /landing turn/,
@@ -298,7 +348,10 @@ test("a second lander cannot push to main while the first holds the turn, and th
     });
 
     assert.equal(result.status, "landed");
-    assert.equal(checks, 1);
+    assert.deepEqual(checks, [
+      [rebasedOnto, undefined],
+      [git(mover, "rev-parse", "HEAD"), checkBudgetSeconds(LEASE_TTL_MS, 10 * 60 * 1000)],
+    ]);
     assert.equal(git(origin, "rev-parse", "main"), git(first, "rev-parse", "HEAD"));
     assert.equal(git(first, "merge-base", "--is-ancestor", "origin/main", "HEAD") === "", true);
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
@@ -359,7 +412,10 @@ test("a lander's release notes go among the ones main gained meanwhile by date, 
     fs.rmSync(local);
 
     // From a subdirectory too: the attribute is the notes' own, not one of a path below it.
-    const result = land({ cwd: path.join(lander, "docs"), remote: origin, check: () => true });
+    const landFromDocs = () =>
+      land({ cwd: path.join(lander, "docs"), remote: origin, check: () => true });
+    assert.equal(landFromDocs().status, "rebased");
+    const result = landFromDocs();
 
     assert.equal(result.status, "landed");
     assert.equal(
@@ -371,7 +427,7 @@ test("a lander's release notes go among the ones main gained meanwhile by date, 
   }
 });
 
-test("a lander with uncommitted files or failing checks does not push and holds no turn afterwards", () => {
+test("a lander with uncommitted files, failing checks or a conflict with main does not push and holds no turn afterwards", () => {
   const { root, origin, git, clone, commit } = setup();
   try {
     const dir = clone("lander");
@@ -388,11 +444,111 @@ test("a lander with uncommitted files or failing checks does not push and holds 
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
     fs.rmSync(path.join(dir, "scratch.txt"));
 
-    const result = land({ cwd: dir, remote: origin, check: () => false });
+    // Before it waits behind another lander's turn.
+    const holder = clone("holder");
+    const holding = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    const result = land({
+      cwd: dir,
+      remote: origin,
+      check: () => false,
+      sleep: () => assert.fail("waited for the turn"),
+    });
 
     assert.equal(result.status, "check-failed");
     assert.equal(git(origin, "rev-parse", "main"), before);
+    release({ cwd: holder, remote: origin }, holding);
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+
+    // A branch that moves during the wait is not what the checks passed for.
+    const waiting = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    const moved = land({
+      cwd: dir,
+      remote: origin,
+      check: () => true,
+      sleep: () => {
+        commit(dir, "later.txt");
+        release({ cwd: holder, remote: origin }, waiting);
+      },
+    });
+    assert.equal(moved.status, "head-moved");
+    assert.equal(git(origin, "rev-parse", "main"), before);
+    assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+    git(dir, "reset", "-q", "--hard", "HEAD~1");
+
+    // Before it waits behind another lander's turn.
+    const mover = clone("mover");
+    fs.writeFileSync(path.join(mover, "change.txt"), "main's change\n");
+    git(mover, "add", ".");
+    git(mover, "commit", "-qm", "main's change");
+    git(mover, "push", "-q", "origin", "HEAD:main");
+    const held = tryAcquire({ cwd: mover, remote: origin, runId: "mover" });
+    assert.throws(
+      () =>
+        land({
+          cwd: dir,
+          remote: origin,
+          check: () => assert.fail("checked"),
+          sleep: () => assert.fail("waited for the turn"),
+        }),
+      /git rebase failed/,
+    );
+    assert.equal(git(origin, "rev-parse", "landing-lease/main"), held);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the CLI continues with main's copy of the script after it rebases before the wait, and refuses an earlier copy's relaunch", () => {
+  const { root, git, clone, commit } = setup();
+  try {
+    const seed = path.join(root, "seed");
+    const scripts = path.join(seed, ".github/scripts");
+    fs.mkdirSync(scripts, { recursive: true });
+    for (const file of [
+      "landing-turn.cjs",
+      "lease-queue.cjs",
+      "git-history.cjs",
+      "release-notes.cjs",
+    ]) {
+      fs.copyFileSync(path.join(__dirname, file), path.join(scripts, file));
+    }
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "scripts");
+    git(seed, "push", "-q", "origin", "HEAD:main");
+    const lander = clone("lander");
+    commit(lander, "change.txt");
+    fs.writeFileSync(
+      path.join(scripts, "landing-turn.cjs"),
+      'console.log(`main\'s copy: ${process.argv.slice(2).join(" ")}`);\n',
+    );
+    git(seed, "commit", "-qam", "main's script");
+    git(seed, "push", "-q", "origin", "HEAD:main");
+
+    const cli = (...args) =>
+      spawnSync(
+        process.execPath,
+        [path.join(lander, ".github/scripts/landing-turn.cjs"), ...args],
+        {
+          cwd: lander,
+          encoding: "utf8",
+        },
+      );
+    // An earlier copy relaunched with `land --base --head`, before it listed the overlaps: refused, not continued.
+    const before = git(lander, "rev-parse", "HEAD");
+    const earlier = cli("land", "--base", git(seed, "rev-parse", "HEAD"), "--head", before);
+    assert.deepEqual([earlier.status, earlier.stdout], [2, ""], earlier.stderr);
+    assert.equal(git(lander, "rev-parse", "HEAD"), before);
+
+    const run = cli("land");
+
+    assert.deepEqual(
+      [run.status, run.stdout],
+      [
+        0,
+        `main's copy: land-rebased --base ${git(seed, "rev-parse", "HEAD")} --head ${git(lander, "rev-parse", "HEAD")}\n`,
+      ],
+      run.stderr,
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1051,18 +1207,37 @@ test("a take whose push fails or times out is the lander's when origin took it, 
       () => acquire({ cwd: lander, remote: origin, runId, maxWaitMs: 0 }),
       /still holds/,
     );
-    release({ cwd: lander, remote: path.join(root, "missing.git") }, turn);
-    release({ cwd: lander, remote: origin }, turn);
-
-    // Origin stops answering and never takes the lease: the push runs out of time, which is a failed poll. The
-    // stalled receive-pack outlives the push it answers, so it waits outside this folder, which Windows would not
-    // delete while a process works in it.
-    git(lander, "config", "remote.origin.receivepack", "cd / && sleep 6 #");
-    assert.throws(
-      () => acquire({ cwd: lander, remote: "origin", maxWaitMs: 0, callMs: 2000 }),
-      /git push failed: did not finish within 2 seconds/,
+    // A release tries a passing failure of origin again, and logs one that goes on instead of throwing it.
+    git(lander, "config", "remote.origin.pushurl", path.join(root, "missing.git"));
+    release({ cwd: lander, remote: "origin", failingMs: 0 }, turn);
+    assert.equal(git(origin, "rev-parse", "landing-lease/main"), turn);
+    release(
+      {
+        cwd: lander,
+        remote: "origin",
+        sleep: () => git(lander, "config", "--unset", "remote.origin.pushurl"),
+      },
+      turn,
     );
-    git(lander, "config", "--unset", "remote.origin.receivepack");
+    assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+
+    const stall = path.join(origin, "stall");
+    fs.writeFileSync(stall, "");
+    git(
+      lander,
+      "config",
+      "remote.origin.receivepack",
+      'stall() { cd / && while [ -f "$1/stall" ]; do sleep 0.1; done; exit 1; }; stall',
+    );
+    try {
+      assert.throws(
+        () => acquire({ cwd: lander, remote: "origin", maxWaitMs: 0, callMs: 10_000 }),
+        /git push failed: did not finish within 10 seconds/,
+      );
+    } finally {
+      fs.rmSync(stall);
+      git(lander, "config", "--unset", "remote.origin.receivepack");
+    }
 
     git(lander, "config", "remote.origin.pushurl", path.join(root, "missing.git"));
     assert.throws(
@@ -1218,9 +1393,10 @@ test("a landing hands its check what the lease leaves, less the reserve for the 
 });
 
 test("land passes the budget the lease has left, measured from the turn's start", () => {
-  const { root, origin, clone, commit } = setup();
+  const { root, origin, clone, commit, git } = setup();
   try {
     const dir = clone("lander");
+    const mover = clone("mover");
     commit(dir, "budget.txt");
     const epoch = Date.parse("2026-01-01T00:00:00Z");
     let wall = epoch;
@@ -1235,10 +1411,194 @@ test("land passes the budget the lease has left, measured from the turn's start"
         wall = epoch + 60 * 60 * 1000;
         return ticks.shift();
       },
-      check: (_turn, _base, seconds) => ((budget = seconds), true),
+      check: (turn, _base, seconds) => {
+        if (turn) budget = seconds;
+        else {
+          assert.equal(seconds, undefined);
+          commit(mover, "new-main.txt");
+          git(mover, "push", "-q", "origin", "HEAD:main");
+        }
+        return true;
+      },
     });
     assert.equal(result.status, "landed");
     assert.equal(budget, (LEASE_TTL_MS - LEASE_RESERVE_MS) / 1000 - 3600 - 600);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a lander whose main stays still checks once, before its wait, and holds the turn for the push alone", () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const dir = clone("lander");
+    commit(dir, "still.txt");
+    const holder = clone("holder");
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    const checks = [];
+    const result = land({
+      cwd: dir,
+      remote: origin,
+      check: (turn, base) => (checks.push([turn, base]), true),
+      sleep: () => {
+        assert.equal(checks.length, 1);
+        release({ cwd: holder, remote: origin }, held);
+      },
+    });
+    assert.equal(result.status, "landed");
+    assert.deepEqual(checks, [[null, git(holder, "rev-parse", "HEAD")]]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a landing continued after its rebase checks against the main it rebased onto, and stops if its branch left it", () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const lander = clone("lander");
+    commit(lander, "mine.txt");
+    const mover = clone("mover");
+    commit(mover, "first.txt");
+    git(mover, "push", "-q", "origin", "HEAD:main");
+    const first = git(mover, "rev-parse", "HEAD");
+    const rebased = land({ cwd: lander, remote: origin, check: () => assert.fail("checked") });
+    assert.deepEqual(rebased, {
+      status: "rebased",
+      base: first,
+      head: git(lander, "rev-parse", "HEAD"),
+    });
+    commit(mover, "second.txt");
+    git(mover, "push", "-q", "origin", "HEAD:main");
+    // A checkout switched to another branch after the rebase holds the base, but is not what was rebased.
+    git(lander, "switch", "-q", "-c", "other", first);
+    const switched = land({
+      cwd: lander,
+      remote: origin,
+      rebased,
+      check: () => assert.fail("checked"),
+    });
+    assert.equal(switched.status, "head-moved");
+    git(lander, "switch", "-q", "-");
+
+    const checks = [];
+    const result = land({
+      cwd: lander,
+      remote: origin,
+      rebased,
+      check: (turn, base) => (checks.push([turn !== null, base]), true),
+    });
+
+    assert.equal(result.status, "landed");
+    assert.deepEqual(checks, [
+      [false, first],
+      [true, git(mover, "rev-parse", "HEAD")],
+    ]);
+    // The mover's branch is behind the commit that landed, as a rebased branch that was reset would be.
+    git(mover, "fetch", "-q", "origin");
+    const left = land({
+      cwd: mover,
+      remote: origin,
+      rebased: { base: result.commit, head: git(mover, "rev-parse", "HEAD") },
+      check: () => assert.fail("checked"),
+    });
+    assert.equal(left.status, "head-moved");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a lander stops when its checkout is switched while it fetches main before the wait", () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const lander = clone("lander");
+    commit(lander, "mine.txt");
+    // The fetch runs this transport, which moves the checkout as another process could, then serves main.
+    const transport = path.join(root, "switching-transport.sh");
+    fs.writeFileSync(
+      transport,
+      `git -C "${lander}" switch -q -c elsewhere HEAD~1\nexec git upload-pack "${origin}"\n`,
+    );
+    git(lander, "config", "protocol.ext.allow", "always");
+    // ext:: splits its command at spaces; `% ` and `%%` keep the path whole.
+    const quoted = transport.replaceAll("%", "%%").replaceAll(" ", "% ");
+    git(lander, "remote", "add", "switching", `ext::sh ${quoted}`);
+    const result = land({ cwd: lander, remote: "switching", check: () => assert.fail("checked") });
+    assert.equal(result.status, "head-moved");
+    assert.equal(git(lander, "branch", "--show-current"), "elsewhere");
+    assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a lander stops when its checkout is switched while it inspects the working tree", () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const lander = clone("lander");
+    commit(lander, "mine.txt");
+    // Another commit with the same tree, so the working tree stays clean after the switch.
+    const other = git(lander, "commit-tree", "HEAD^{tree}", "-p", "HEAD~1", "-m", "other");
+    git(lander, "branch", "elsewhere", other);
+    // `git status` runs this fsmonitor hook from the worktree, so no path of the fixture goes through a shell.
+    const script = "#!/bin/sh\ngit symbolic-ref HEAD refs/heads/elsewhere\nexit 1\n";
+    fs.writeFileSync(path.join(lander, ".git", "switching-fsmonitor.sh"), script, { mode: 0o755 });
+    git(lander, "config", "core.fsmonitor", ".git/switching-fsmonitor.sh");
+    const result = land({ cwd: lander, remote: origin, check: () => assert.fail("checked") });
+    assert.equal(result.status, "head-moved");
+    assert.equal(git(lander, "branch", "--show-current"), "elsewhere");
+    assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a lander stops when its checkout is switched while it fetches a main that moved under the turn", () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const lander = clone("lander");
+    commit(lander, "mine.txt");
+    const racer = clone("racer");
+    let started = false;
+    const result = land({
+      cwd: lander,
+      remote: origin,
+      check: () => true,
+      turnClock: () => {
+        if (!started) {
+          started = true;
+          git(lander, "switch", "-q", "-c", "elsewhere", "HEAD~1");
+          commit(racer, "raced.txt");
+          git(racer, "push", "-q", "origin", "HEAD:main");
+        }
+        return 0;
+      },
+    });
+    assert.equal(result.status, "head-moved");
+    assert.equal(git(origin, "rev-parse", "main"), git(racer, "rev-parse", "HEAD"));
+    assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a lander gives up on a fetch of main that stops answering", () => {
+  const { root, git, clone, commit } = setup();
+  try {
+    const lander = clone("lander");
+    commit(lander, "mine.txt");
+    // A remote that never answers: git waits for the transport's first line.
+    git(lander, "config", "protocol.ext.allow", "always");
+    git(lander, "remote", "add", "stalled", "ext::sleep 5");
+    assert.throws(
+      () =>
+        land({
+          cwd: lander,
+          remote: "stalled",
+          mainCallMs: 100,
+          check: () => assert.fail("checked"),
+        }),
+      /git fetch failed: did not finish within 0\.1 seconds/,
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1259,7 +1619,9 @@ test("a replace ref cannot make main look contained in a commit that does not ho
     git(lander, "replace", "HEAD", fake);
     assert.equal(git(lander, "merge-base", "--is-ancestor", newer, "HEAD"), "");
 
-    const result = land({ cwd: lander, remote: origin, check: () => true });
+    const rebased = land({ cwd: lander, remote: origin, check: () => true });
+    assert.equal(rebased.status, "rebased");
+    const result = land({ cwd: lander, remote: origin, rebased, check: () => true });
 
     assert.equal(result.status, "landed");
     assert.equal(git(origin, "merge-base", "--is-ancestor", newer, "main") ?? "", "");
@@ -1284,7 +1646,9 @@ test("a command given an argument it does not take is refused before it takes th
     }
     assert.deepEqual(
       errors,
-      Array(6).fill("usage: landing-turn.cjs land | push | verify <remote>"),
+      Array(6).fill(
+        "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push | verify <remote>",
+      ),
     );
     assert.equal(git(origin, "rev-parse", "main"), main_);
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
@@ -1314,18 +1678,26 @@ test("a lander refuses files marked assume-unchanged or skip-worktree, whose edi
   }
 });
 
-test("a rebase that conflicts is aborted, and a worktree in a stopped rebase is refused before the wait", () => {
-  const { root, origin, git, clone } = setup();
+test("a rebase that conflicts is aborted after the overlap listing, and a worktree in a stopped rebase is refused before the wait", () => {
+  const { root, origin, git, clone, commit } = setup();
   try {
     const lander = clone("lander");
     fs.writeFileSync(path.join(lander, "base.txt"), "mine\n");
     git(lander, "commit", "-qam", "mine");
+    const overlapping = path.join(root, "overlapping");
+    git(lander, "worktree", "add", "-q", "-b", "overlapping", overlapping, "origin/main");
+    commit(overlapping, "base.txt");
     const mover = clone("mover");
     fs.writeFileSync(path.join(mover, "base.txt"), "theirs\n");
     git(mover, "commit", "-qam", "theirs");
     git(mover, "push", "-q", "origin", "HEAD:main");
 
-    assert.throws(() => land({ cwd: lander, remote: origin, check: () => true }), /rebase/);
+    // A conflict is when the listing helps most: it names the work to reconcile with.
+    const reports = [];
+    const report = (text) => reports.push(text);
+    assert.throws(() => land({ cwd: lander, remote: origin, check: () => true, report }), /rebase/);
+    assert.equal(reports.length, 1);
+    assert.match(reports[0], /overlapping[\s\S]*base\.txt/);
     assert.equal(git(lander, "status", "--porcelain"), "");
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
 
@@ -1375,16 +1747,23 @@ test("a landing lists other worktrees with unmerged work on the same files, and 
     );
     assert.equal(path.normalize(found[0].worktree), path.join(root, "overlapping"));
 
+    // Main moved, so the landing rebases and lands from a relaunch, which does not list the overlaps again.
+    const mover = clone("mover");
+    commit(mover, "newer.txt");
+    git(mover, "push", "-q", "origin", "HEAD:main");
     const reports = [];
-    const result = land({
+    const options = {
       cwd: mine,
       remote: "origin",
       check: () => true,
       report: (text) => reports.push(text),
-    });
-    assert.equal(result.status, "landed");
-    assert.match(reports.join("\n"), /overlapping[\s\S]*shared\.txt/);
-    assert.doesNotMatch(reports.join("\n"), /unrelated/);
+    };
+    const rebased = land(options);
+    assert.equal(rebased.status, "rebased");
+    assert.equal(land({ ...options, rebased }).status, "landed");
+    assert.equal(reports.length, 1);
+    assert.match(reports[0], /overlapping[\s\S]*shared\.txt/);
+    assert.doesNotMatch(reports[0], /unrelated/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

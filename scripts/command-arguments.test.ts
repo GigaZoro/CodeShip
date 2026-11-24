@@ -18,6 +18,8 @@ const UNREAD = "--no-such-argument";
 type Refusal = readonly [argv: ReadonlyArray<string>, status: number, diagnostic: string];
 
 const unknownOption = (name: string) => "Unknown option '" + name + "'";
+const landingUsage =
+  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push | verify <remote>";
 const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
   "./lib/run-cached-test-group.ts": [
     [[], 1, "A cached test group requires at least one test file"],
@@ -46,9 +48,10 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
     ],
   ],
   "../.github/scripts/landing-turn.cjs": [
-    [["land", UNREAD], 2, "usage: landing-turn.cjs land | push | verify <remote>"],
-    [["push", UNREAD], 2, "usage: landing-turn.cjs land | push | verify <remote>"],
-    [["verify", "origin", UNREAD], 2, "usage: landing-turn.cjs land | push | verify <remote>"],
+    [["land", UNREAD], 2, landingUsage],
+    [["land-rebased", "--base", "0".repeat(40), "--head", UNREAD], 2, landingUsage],
+    [["push", UNREAD], 2, landingUsage],
+    [["verify", "origin", UNREAD], 2, landingUsage],
   ],
   "../.github/scripts/release-notes.cjs": [
     [["configure", UNREAD], 1, "Usage: node .github/scripts/release-notes.cjs check|render"],

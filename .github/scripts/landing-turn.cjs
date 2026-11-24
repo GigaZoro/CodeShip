@@ -1,7 +1,4 @@
-// The landing turn for origin's main. `node .github/scripts/landing-turn.cjs land` takes a lease on the remote
-// (refs/heads/landing-lease/main), rebases onto main, runs the checks once and pushes while it holds the lease.
-// Other landers wait in a first-come, first-served queue. The pre-push hook (`verify`) requires the lease for pushes
-// to main, so main cannot move under the checked tree and one verification covers the landed tree.
+// Landers check before joining the queue and recheck under the lease if main moved.
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
@@ -14,6 +11,7 @@ const LEASE_REF = "refs/heads/landing-lease/main";
 const TURN_ENV = "T3_LANDING_TURN";
 const TEST_STEP_MAX_ENV = "CHECK_CHANGED_TEST_STEP_MAX";
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 // A check:changed run took 2 hours on a busy day. A holder that dies is replaced once its lease has expired.
 const LEASE_TTL_MS = 3 * 60 * 60 * 1000;
 // What a landing keeps back from its lease for the checks that are not the test step, and for the push.
@@ -25,6 +23,8 @@ const MAX_WAIT_MS = 6 * 60 * 60 * 1000;
 const FAILING_MS = 10 * 60 * 1000;
 // One lease or queue call; a remote that stops answering must not hold a wait past its limits.
 const LEASE_CALL_MS = 60 * 1000;
+// One fetch or push of main; a remote that stops answering must not hold a lander, or its turn, until the lease expires.
+const MAIN_CALL_MS = 10 * 60 * 1000;
 
 function git(cwd, args, { env, config = [], allowFailure = false, timeoutMs } = {}) {
   const flags = config.flatMap(([key, value]) => ["-c", `${key}=${value}`]);
@@ -146,14 +146,33 @@ function landingCommit(cwd, data, parent) {
   }).stdout;
 }
 
-function release(lease, sha) {
-  try {
-    moveLease(lease, sha, null);
-  } catch (error) {
-    // Thrown from withTurn's finally block, it would replace the landing's own result.
-    process.stderr.write(
-      `landing turn: the turn may stay held until its lease expires: ${error.message}\n`,
-    );
+/** Gives the lease back. A passing failure of origin is tried again as `acquire` does: a turn left held stalls every lander. */
+function release(
+  {
+    failingMs = FAILING_MS,
+    pollMs = POLL_MS,
+    sleep = sleepSync,
+    clock = () => performance.now(),
+    ...lease
+  },
+  sha,
+) {
+  const started = clock();
+  for (let first = true; ; first = false) {
+    try {
+      moveLease(lease, sha, null);
+      return;
+    } catch (error) {
+      if (!(error instanceof RemoteFailure) || clock() - started >= failingMs) {
+        // Thrown from withTurn's finally block, it would replace the landing's own result.
+        process.stderr.write(
+          `landing turn: the turn may stay held until its lease expires: ${error.message}\n`,
+        );
+        return;
+      }
+      if (first) process.stderr.write(`landing turn: ${error.message}\nTrying again.\n`);
+      sleep(pollMs);
+    }
   }
 }
 
@@ -303,9 +322,43 @@ function stoppedRebase(cwd) {
   );
 }
 
-/** A conflict must not leave the worktree in the middle of the rebase: the next landing would refuse it. */
+/**
+ * Main's commit. Into a ref of this landing's own: any other fetch in this checkout can rewrite FETCH_HEAD before it is
+ * read. Atomic, because a named remote's fetch also updates its tracking ref, and a failure there must not leave this
+ * one behind.
+ */
+function fetchMain(cwd, remote, branch, name, callMs) {
+  const fetched = `refs/worktree/landing-turn/${name}`;
+  git(
+    cwd,
+    [
+      "fetch",
+      "--quiet",
+      "--no-tags",
+      "--no-write-fetch-head",
+      "--atomic",
+      remote,
+      `+refs/heads/${branch}:${fetched}`,
+    ],
+    { timeoutMs: callMs },
+  );
+  const base = git(cwd, ["rev-parse", fetched]).stdout;
+  git(cwd, ["update-ref", "-d", fetched]);
+  return base;
+}
+
+function holds(cwd, base) {
+  return git(cwd, ["merge-base", "--is-ancestor", base, "HEAD"], { allowFailure: true }).ok;
+}
+
+/**
+ * Rebases HEAD onto `base` unless HEAD holds it already. A conflict must not leave the worktree in the middle of the
+ * rebase: the next landing would refuse it.
+ */
 function rebaseOnto(cwd, base) {
+  if (holds(cwd, base)) return;
   try {
+    // Main gains release notes while a lander waits; the driver merges them on machines whose git config predates it.
     git(cwd, ["rebase", base], { config: MERGE_DRIVER_CONFIG });
   } catch (error) {
     if (stoppedRebase(cwd)) git(cwd, ["rebase", "--abort"], { allowFailure: true });
@@ -350,7 +403,7 @@ function overlappingWorktrees({ cwd, base }) {
   return overlaps;
 }
 
-/** The overlap listing a lander reads before the rebase and checks, so it can reconcile first. */
+/** The overlap listing a lander reads before its rebase, checks and wait, so it can reconcile first. */
 function formatOverlaps(overlaps) {
   if (overlaps.length === 0) return "";
   const lines = [
@@ -363,20 +416,26 @@ function formatOverlaps(overlaps) {
 }
 
 /**
- * Lands HEAD on main under the turn: rebases onto main, runs `check` once and pushes the checked tree.
- * `check(turn, base, budgetSeconds)` returns true when the checks passed against `base`, the commit main is at, which
- * the push gate requires as their base; `budgetSeconds` is what the lease leaves its longest step.
+ * Lands HEAD on main: rebases and runs `check` before the wait, then pushes under the turn, checking again only
+ * when main moved during the wait. `check(turn, base, budgetSeconds)` is true when the checks passed against `base`,
+ * main's commit, which the push gate requires; `turn` is null before the wait, and `budgetSeconds` is what the lease
+ * leaves the longest step. `rebased` continues a landing that returned `rebased`, without fetching main again.
  */
 function land({
   cwd,
   remote,
   check,
+  rebased,
   branch = "main",
+  mainCallMs = MAIN_CALL_MS,
   turnClock = () => performance.now(),
   now = Date.now,
   report = (text) => console.error(text),
   ...rest
 }) {
+  // Read first, so the checks below, these on the working tree included, are for this commit.
+  let tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
+  if (rebased && tip !== rebased.head) return { status: "head-moved" };
   // check:changed passes for the working tree, untracked files included, but the push carries HEAD alone,
   // so the pre-push hook would refuse it only after the whole check.
   if (stoppedRebase(cwd)) return { status: "rebase-in-progress" };
@@ -388,63 +447,91 @@ function land({
   // Found before the wait, not after a rebase that breaks the notes and checks that fail on them.
   const problem = notesMergeProblem(cwd);
   if (problem) throw new Error(problem);
+  // Before the wait, so a conflict stops the landing with no turn held. The CLI then lands the rebased commit again
+  // from its tree, so the wait runs that tree's copy of this script, checking against the base it rebased onto.
+  const checked = rebased?.base ?? fetchMain(cwd, remote, branch, randomUUID(), mainCallMs);
+  // Before the rebase, so a conflict still shows it; the relaunch after a rebase listed it already.
+  if (!rebased) {
+    const overlap = formatOverlaps(overlappingWorktrees({ cwd, base: checked }));
+    if (overlap) report(overlap);
+  }
+  // Another process can move the checkout at any moment; each check below covers what it is now.
+  if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
+  if (!holds(cwd, checked)) {
+    if (rebased) return { status: "head-moved" };
+    rebaseOnto(cwd, checked);
+    return { status: "rebased", base: checked, head: git(cwd, ["rev-parse", "HEAD"]).stdout };
+  }
+  // Before the wait too, so a failure holds no turn and the turn lasts for the push alone while main stays still.
+  if (!check(null, checked)) return { status: "check-failed" };
   return withTurn({ cwd, remote, now, ...rest }, (turn) => {
     const turnStarted = turnClock();
     const leftMs = leaseLeftMs(cwd, turn, now);
-    // Into this turn's own ref: any other fetch in this checkout can rewrite FETCH_HEAD before it is read. Atomic,
-    // because a named remote's fetch also updates its tracking ref, and a failure there must not leave this one behind.
-    const fetched = `refs/worktree/landing-turn/${turn}`;
-    git(cwd, [
-      "fetch",
-      "--quiet",
-      "--no-tags",
-      "--no-write-fetch-head",
-      "--atomic",
-      remote,
-      `+refs/heads/${branch}:${fetched}`,
-    ]);
-    const base = git(cwd, ["rev-parse", fetched]).stdout;
-    git(cwd, ["update-ref", "-d", fetched]);
-    const overlap = formatOverlaps(overlappingWorktrees({ cwd, base }));
-    if (overlap) report(overlap);
-    const contained = git(cwd, ["merge-base", "--is-ancestor", base, "HEAD"], {
-      allowFailure: true,
-    }).ok;
-    // Main gains release notes while a lander waits; the driver merges them on machines whose git config predates it.
-    if (!contained) rebaseOnto(cwd, base);
-    if (!check(turn, base, checkBudgetSeconds(leftMs, turnClock() - turnStarted)))
-      return { status: "check-failed" };
-    git(cwd, ["push", "--quiet", remote, `HEAD:refs/heads/${branch}`], {
+    const base = fetchMain(cwd, remote, branch, turn, mainCallMs);
+    // The checks passed for this commit, not for one checked out during the wait or this fetch.
+    if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
+    if (base !== checked) {
+      rebaseOnto(cwd, base);
+      tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
+      if (!check(turn, base, checkBudgetSeconds(leftMs, turnClock() - turnStarted))) {
+        return { status: "check-failed" };
+      }
+    }
+    git(cwd, ["push", "--quiet", remote, `${tip}:refs/heads/${branch}`], {
       env: { [TURN_ENV]: turn },
+      timeoutMs: mainCallMs,
     });
-    return { status: "landed", commit: git(cwd, ["rev-parse", "HEAD"]).stdout };
+    return { status: "landed", commit: tip };
   });
 }
 
 // How many arguments each command takes: an argument `land` does not take, such as a mistyped flag, must not start
 // a real landing.
-const ARGUMENTS = { land: 0, push: 0, verify: 1 };
+const USAGE =
+  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push | verify <remote>";
+const ARGUMENTS = { land: 0, "land-rebased": 4, push: 0, verify: 1 };
 
 function main(argv, { cwd = process.cwd() } = {}) {
   const [command, ...rest] = argv;
   if (!Object.hasOwn(ARGUMENTS, command) || rest.length !== ARGUMENTS[command]) {
-    console.error("usage: landing-turn.cjs land | push | verify <remote>");
+    console.error(USAGE);
     return 2;
   }
   if (command === "verify") {
     // The pre-push hook passes the remote's URL, then git writes one `<local ref> <sha> <remote ref> <sha>` line per ref.
+    // Git gives the local ref as it was typed, which may hold spaces; a ref name and an object name cannot.
     const refs = require("node:fs")
       .readFileSync(0, "utf8")
       .split("\n")
       .filter(Boolean)
-      .map((line) => line.split(" ")[2]);
+      .map((line) => {
+        const [localSha, remoteRef, remoteSha] = line.split(" ").slice(-3);
+        if (!OBJECT_ID.test(localSha ?? "") || !OBJECT_ID.test(remoteSha ?? "") || !remoteRef) {
+          throw new Error(`landing turn: cannot read the pushed ref in "${line}"`);
+        }
+        return remoteRef;
+      });
     verifyPush({ cwd, remote: rest[0], refs });
     return 0;
   }
-  if (command === "land") {
+  // `land-rebased` is the run a `land` relaunches from its rebased tree, after it fetched main and listed the overlaps.
+  // A command of its own, so a copy of this script that cannot continue such a landing refuses it.
+  if (command === "land" || command === "land-rebased") {
+    const [baseFlag, base, headFlag, head] = rest;
+    if (
+      command === "land-rebased" &&
+      (baseFlag !== "--base" ||
+        headFlag !== "--head" ||
+        !OBJECT_ID.test(base) ||
+        !OBJECT_ID.test(head))
+    ) {
+      console.error(USAGE);
+      return 2;
+    }
     const result = land({
       cwd,
       remote: "origin",
+      rebased: command === "land-rebased" ? { base, head } : undefined,
       check: (turn, base, budgetSeconds) =>
         spawnSync(`vp run check:changed ${base}`, {
           cwd,
@@ -452,11 +539,24 @@ function main(argv, { cwd = process.cwd() } = {}) {
           stdio: "inherit",
           env: {
             ...process.env,
-            [TURN_ENV]: turn,
-            [TEST_STEP_MAX_ENV]: String(budgetSeconds),
+            // Unset before the wait: only the holder's checks take slots ahead of other runs.
+            [TURN_ENV]: turn ?? undefined,
+            [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
           },
         }).status === 0,
     });
+    if (result.status === "rebased") {
+      return (
+        spawnSync(
+          process.execPath,
+          [__filename, "land-rebased", "--base", result.base, "--head", result.head],
+          {
+            cwd,
+            stdio: "inherit",
+          },
+        ).status ?? 1
+      );
+    }
     console.log(JSON.stringify(result));
     return result.status === "landed" ? 0 : 1;
   }
@@ -465,6 +565,7 @@ function main(argv, { cwd = process.cwd() } = {}) {
   withTurn({ cwd, remote: "origin" }, (turn) => {
     git(cwd, ["push", "--quiet", "origin", "HEAD:refs/heads/main"], {
       env: { [TURN_ENV]: turn },
+      timeoutMs: MAIN_CALL_MS,
     });
   });
   return 0;

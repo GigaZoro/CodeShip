@@ -60,12 +60,12 @@ const fixture = (root) => {
   git("push", "origin", "main");
   git("config", "core.hooksPath", ".vite-hooks");
   const turn = tryAcquire({ cwd: work, remote: "origin", runId: "fixture" });
-  const push = () =>
-    spawnSync("git", ["push", "origin", "main"], {
+  const push = (refspec = "main", env = { [TURN_ENV]: turn }) =>
+    spawnSync("git", ["push", "origin", refspec], {
       cwd: work,
       encoding: "utf8",
       stdio: "pipe",
-      env: { ...process.env, [TURN_ENV]: turn },
+      env: { ...process.env, ...env },
     });
   return { work, git, write, commit, push, base };
 };
@@ -90,12 +90,20 @@ test("main refuses a push until check:changed passed for the exact tree it pushe
     const unchecked = push();
     assert.notEqual(unchecked.status, 0);
     assert.match(unchecked.stderr, /check:changed` has not passed/);
+    // Git gives the hook a source revision as it was typed, spaces included.
+    const spelled = push("HEAD^{/fixtur[e ]}:refs/heads/main");
+    assert.notEqual(spelled.status, 0);
+    assert.match(spelled.stderr, /check:changed` has not passed/);
 
     // The pass covered helper.txt while it was untracked, so it does not describe a commit without it.
     recordPass(work, workingTree(work), base);
     assert.notEqual(push().status, 0);
 
     commit("helper.txt");
+    // With the pass recorded, only the landing turn refuses the spelled source.
+    const unturned = push("HEAD^{/fixtur[e ]}:refs/heads/main", { [TURN_ENV]: undefined });
+    assert.notEqual(unturned.status, 0);
+    assert.match(unturned.stderr, /needs the landing turn/);
     const checked = push();
     assert.equal(checked.status, 0, checked.stderr);
   }));
@@ -143,4 +151,22 @@ test("a pass is never recorded for a tree computed while files are marked assume
       git("update-index", flag.replace("--", "--no-"), "app.txt");
       git("checkout", "--", "app.txt");
     }
+  }));
+
+test("a push that moves only the landing lease or a topic passes the hook from a working tree whose scripts do not load", () =>
+  withRoot((root) => {
+    const { git, write, commit, push } = fixture(root);
+    write(".github/scripts/landing-turn.cjs", "<<<<<<< a rebase stopped here\n");
+    // Only the pushed ref decides, not a source revision that names main.
+    git("-c", "core.hooksPath=", "commit", "--allow-empty", "-m", "names refs/heads/main once");
+    const topic = push("HEAD^{/ refs/heads/main }:refs/heads/topic", {});
+    assert.equal(topic.status, 0, topic.stderr);
+    write("app.txt", "two\n");
+    commit("app.txt");
+    const toMain = push();
+    assert.notEqual(toMain.status, 0);
+    assert.match(toMain.stderr, /SyntaxError/);
+
+    git("push", "origin", ":refs/heads/landing-lease/main");
+    assert.equal(git("ls-remote", "origin", "refs/heads/landing-lease/main"), "");
   }));

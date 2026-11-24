@@ -1,3 +1,11 @@
+## 2026-11-24 — A landing checks before it waits and gives the turn back reliably
+
+- Maintainers: `node .github/scripts/landing-turn.cjs land` rebases a branch that is behind main and runs `check:changed` before it waits for the landing turn, so a conflict or a failing check stops it at once and holds no turn. It first lists, once, the other local worktrees with unmerged work on the same files, so a conflict comes with the work to reconcile it with. When main stays still during the wait, the turn lasts for the push alone; when main moved, the lander rebases and checks again under the turn. A landing whose checkout moved to another commit while it ran stops instead of landing a commit its checks did not cover, and a fetch or push of main that stops answering ends the landing after ten minutes instead of holding the turn until it expires.
+- A branch that was behind main starts the landing again from the rebased tree, so the wait and the turn run the rebased copy of the landing script, with main's changes to it, instead of the copy the branch started from. It continues through a command of its own, so a copy that cannot continue such a landing refuses it instead of starting another.
+- A landing tries again when a passing network failure stops it from giving the turn back, instead of leaving the turn held for up to three hours.
+- The pre-push hook lets a push that only gives the landing turn back through without loading the checkout's scripts, so a checkout whose landing script does not load can no longer leave the turn held. It also reads each pushed ref from the right, so a push to main whose source is a revision with a space in it, such as `HEAD^{/fix it}`, no longer skips the landing turn and the `check:changed` pass.
+- The landing turn's timeout test holds its stalled push until it releases it and gives the git reads around that push ten seconds instead of two. The testing guide says how to test a timeout that way.
+
 ## 2026-11-24 — Faster replay fixture cleanup checks
 
 - Replay fixture cleanup tests now load only the configuration they exercise, shortening local test runs.
