@@ -9,7 +9,11 @@ import { parseE2eArguments } from "./mobile-e2e.ts";
 import { parseShowcaseCliArgs } from "./mobile-showcase.ts";
 import { parseRenderMetricsArguments } from "./render-metrics.ts";
 import { parseCachedTestArguments } from "./test-cached.ts";
-import { isRepositoryCommandSource } from "./lib/repository-command-source.ts";
+import { isChangedTestScript } from "./lib/cached-tests.ts";
+import {
+  isRepositoryCommandManifest,
+  isRepositoryCommandSource,
+} from "./lib/repository-command-source.ts";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 
 import { GIT_OUTPUT_MAX_BYTES } from "../.github/scripts/git-history.cjs";
@@ -188,8 +192,10 @@ const EXEMPT: Readonly<Record<string, string>> = {
 
 const toRepositoryPath = (file: string) => NodePath.posix.normalize("scripts/" + file);
 
-/** Tracked scripts outside vendored repositories, app sources and tests, with their text. */
-function trackedScripts(): ReadonlyArray<{ readonly file: string; readonly text: string }> {
+/** Tracked files that `keep` takes, with their text. */
+function trackedFiles(
+  keep: (file: string) => boolean,
+): ReadonlyArray<{ readonly file: string; readonly text: string }> {
   const listed = NodeChildProcess.execFileSync(
     "git",
     ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
@@ -201,7 +207,7 @@ function trackedScripts(): ReadonlyArray<{ readonly file: string; readonly text:
   );
   return listed
     .split("\0")
-    .filter(isRepositoryCommandSource)
+    .filter(keep)
     .flatMap((file) => {
       const full = NodePath.join(root, file);
       // A sparse checkout leaves some tracked files out of the tree.
@@ -372,7 +378,7 @@ function expectRefusal(
 }
 
 describe("command-line scripts", () => {
-  const scripts = trackedScripts();
+  const scripts = trackedFiles(isRepositoryCommandSource);
 
   it("lists every argv reader and no file that is gone", () => {
     const readers = scripts.filter(({ text }) => readsArgv(text)).map(({ file }) => file);
@@ -440,6 +446,19 @@ describe("command-line scripts", () => {
       .filter(({ text }) => text.includes("parseArgs(") && /\bstrict:\s*false\b/.test(text))
       .map(({ file }) => file);
     expect(loose).toEqual([]);
+  });
+
+  // check:changed runs this test when a manifest changes, so the change that adds such a script
+  // fails, not the next one that changes a test in that package.
+  it("gives every package a test script check:changed can run", () => {
+    const unsupported = trackedFiles(
+      (file) => file !== "package.json" && isRepositoryCommandManifest(file),
+    ).flatMap(({ file, text }) => {
+      const manifest: { readonly scripts?: { readonly test?: unknown } } = JSON.parse(text);
+      const test = manifest.scripts?.test;
+      return typeof test === "string" && !isChangedTestScript(test) ? [`${file}: ${test}`] : [];
+    });
+    expect(unsupported).toEqual([]);
   });
 
   it("checks cached-runner help before starting any test work", () => {

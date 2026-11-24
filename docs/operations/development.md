@@ -260,7 +260,9 @@ step needs, needs an uncached task. A group runs its files with the options of t
 the nearest enclosing package that has one, as CI runs that package's suite. `check:changed` passes a
 test that package's config leaves out, so it refuses a script that adds anything but
 `--passWithNoTests`, `--config`, `--dir` and `--project` with literal values: a filter such as a file
-name or `-t` would pass a test it never ran, and `|| true` would hide a failure. A test that skips without a host capability, such as file symlinks or the IPv6 loopback,
+name or `-t` would pass a test it never ran, and `|| true` would hide a failure. The repository
+command guard checks every package's test script when a manifest changes, so the change that adds
+such a script fails, not the next one that changes a test in that package. A test that skips without a host capability, such as file symlinks or the IPv6 loopback,
 reads it from `packages/shared/src/testing/hostCapabilities.ts`. The command probes those
 capabilities once, keys the cache on them and passes them to its tests; a probe of the test's own
 would replay the skip after the host gains the capability. With `T3CODE_TEST_KEEP_PROVIDER_ENV=1`,

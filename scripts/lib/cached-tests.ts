@@ -104,6 +104,8 @@ const requestFile = "T3_CHECK_CHANGED_TEST_REQUEST";
 // -t would pass a test it never ran, and shell syntax such as `||` would hide a failure.
 const CHANGED_TEST_SCRIPT =
   /^vp test run(?: --passWithNoTests| --(?:config|dir|project) (?!-)[\w.@/:+=,-]+)*$/;
+/** Whether check:changed can run a package's tests under this `test` script. */
+export const isChangedTestScript = (command: string) => CHANGED_TEST_SCRIPT.test(command);
 const changedTestEnv = "T3_CHECK_CHANGED_TEST_RUNTIME";
 const testInstallEnv = "T3_CHECK_CHANGED_TEST_INSTALL";
 const testWorkersEnv = "T3CODE_TEST_MAX_WORKERS";
@@ -494,7 +496,7 @@ export function cachedTestTasks(
   for (const [directory, entries] of packages) {
     const command = directory === root ? "vp test run" : testScript(directory)!;
     if (
-      (changed && !CHANGED_TEST_SCRIPT.test(command)) ||
+      (changed && !isChangedTestScript(command)) ||
       (command !== "vp test run" && !command.startsWith("vp test run "))
     ) {
       throw new Error(`Unsupported test command in ${directory}: ${command}`);
