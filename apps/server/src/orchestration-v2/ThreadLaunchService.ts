@@ -281,17 +281,15 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Fetches the primary remote when the checkout lacks `sha`, and says whether it has it now. A
-   * fetch that succeeds proves nothing: the remote only has the commit if some branch holds it.
+   * Fetches `sha` itself from the project's remotes, the primary first, when the checkout lacks
+   * it, and says whether it has it now: a fetched SHA may name a tree or blob, not a commit.
    */
-  const fetchCommitFromOrigin = Effect.fn("ThreadLaunchService.fetchCommitFromOrigin")(function* (
+  const fetchCommitFromRemotes = Effect.fn("ThreadLaunchService.fetchCommitFromRemotes")(function* (
     cwd: string,
     sha: string,
   ) {
     if (yield* git.hasCommit({ cwd, refName: sha })) return true;
-    const remote = yield* git.resolveWorktreeBaseRemote({ cwd, refName: sha });
-    if (remote === null) return false;
-    yield* git.fetchRemote({ cwd, remoteName: remote.remoteName });
+    if (!(yield* git.fetchCommit({ cwd, commitSha: sha }))) return false;
     return yield* git.hasCommit({ cwd, refName: sha });
   });
 
@@ -312,7 +310,7 @@ const make = Effect.gen(function* () {
       // A commit names no remote branch, so the remote lookup below would find `origin` for any
       // hash and call a commit the remote does not hold resolved.
       if (strategy.startFromOrigin === true && isCommitSha(baseRef))
-        return (yield* fetchCommitFromOrigin(cwd, baseRef)) ? undefined : project;
+        return (yield* fetchCommitFromRemotes(cwd, baseRef)) ? undefined : project;
       if (
         strategy.startFromOrigin === true &&
         (yield* git.resolveWorktreeBaseRemote({ cwd, refName: baseRef })) !== null
@@ -321,7 +319,17 @@ const make = Effect.gen(function* () {
       // git worktree add accepts remote-tracking branches; let Git decide when any matching ref exists.
       if (yield* git.hasRefNamed({ cwd, refName: baseRef })) return undefined;
       return (yield* git.hasCommit({ cwd, refName: "HEAD" })) ? project : undefined;
-    }).pipe(Effect.orElseSucceed(() => undefined));
+    }).pipe(
+      // The launch reads the base again and reports inside the thread what fails then.
+      Effect.tapError((cause) =>
+        Effect.logWarning("Thread worktree base check failed", {
+          projectId: input.projectId,
+          baseRef,
+          cause,
+        }),
+      ),
+      Effect.orElseSucceed(() => undefined),
+    );
     if (unresolved !== undefined)
       return yield* new ThreadLaunchBaseRefError({
         projectId: unresolved.id,
@@ -436,12 +444,12 @@ const make = Effect.gen(function* () {
         }
         let startRef = input.workspaceStrategy.baseRef;
         let baseRefName = input.workspaceStrategy.baseRef;
-        // A commit SHA names no branch to fetch; a pushed one is brought in whole.
+        // A commit SHA names no branch to fetch, so the commit itself is fetched.
         if (
           input.workspaceStrategy.startFromOrigin === true &&
           isCommitSha(input.workspaceStrategy.baseRef)
         ) {
-          const present = yield* fetchCommitFromOrigin(
+          const present = yield* fetchCommitFromRemotes(
             project.workspaceRoot,
             input.workspaceStrategy.baseRef,
           ).pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));

@@ -165,12 +165,23 @@ const make = Effect.gen(function* () {
       .getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [taskId] })
       .pipe(Effect.map(({ thread, subagents }) => ({ thread, task: subagents[0] })));
 
+  // A failed read says nothing about the repository, so it fails the call: taken for no repository,
+  // it would ask for a target the thread does not need, or start from the default branch instead.
   const parentIdentity = (projectId: ProjectId) =>
     projects.getWithRepositoryIdentity(projectId).pipe(
       Effect.map((project) =>
         Option.isNone(project) ? null : (project.value.repositoryIdentity ?? null),
       ),
-      Effect.orElseSucceed(() => null),
+      Effect.tapError((cause) =>
+        Effect.logWarning("remote-delegation.project-read-failed", { projectId, cause }),
+      ),
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "Unable to read this thread's project.",
+          }),
+      ),
     );
 
   /**

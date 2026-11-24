@@ -119,6 +119,9 @@ export const NON_INTERACTIVE_GIT_ENV = Object.freeze({
 } satisfies NodeJS.ProcessEnv);
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
 
+/** What `git fetch <remote> <sha>` prints when the remote does not give that object. */
+const REMOTE_LACKS_OBJECT =
+  /upload-pack: not our ref [0-9a-f]+|Server does not allow request for unadvertised object/;
 const pickPrimaryRemoteName = (remoteNames: ReadonlyArray<string>): string | null =>
   remoteNames.includes("origin") ? "origin" : (remoteNames[0] ?? null);
 const GIT_LIST_BRANCHES_DEFAULT_LIMIT = 100;
@@ -4761,6 +4764,29 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return yield* resolveCommit({ cwd: input.cwd, revision: "FETCH_HEAD" });
   });
 
+  const fetchCommit: GitVcsDriver.GitVcsDriver["Service"]["fetchCommit"] = Effect.fn(
+    "GitVcsDriver.fetchCommit",
+  )(function* (input) {
+    const remoteNames = yield* listRemoteNames(input.cwd);
+    const primary = pickPrimaryRemoteName(remoteNames);
+    const ordered =
+      primary === null ? [] : [primary, ...remoteNames.filter((name) => name !== primary)];
+    for (const remoteName of ordered) {
+      const fetchInput = {
+        operation: "GitVcsDriver.fetchCommit",
+        cwd: input.cwd,
+        args: ["fetch", "--quiet", "--no-tags", "--", remoteName, input.commitSha],
+        fallbackErrorDetail: `git fetch ${remoteName} ${input.commitSha} failed`,
+      };
+      const result = yield* runRemote(fetchInput);
+      if (result.exitCode === 0) return true;
+      // A remote without the commit says so; one that will not give an object no ref names (protocol
+      // v0 without uploadpack.allowReachableSHA1InWant) cannot give it either.
+      if (!REMOTE_LACKS_OBJECT.test(result.stderr)) return yield* remoteFailure(fetchInput, result);
+    }
+    return false;
+  });
+
   const refreshCheckedOutBranch: GitVcsDriver.GitVcsDriver["Service"]["refreshCheckedOutBranch"] =
     Effect.fn("refreshCheckedOutBranch")(function* (input) {
       const { commitSha: headCommit } = yield* resolveCommit({ cwd: input.cwd, revision: "HEAD" });
@@ -5378,6 +5404,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return yield* withListRefsInvalidation(input.cwd, fetchRefIntoBranch(input));
     }),
     fetchRefCommit,
+    fetchCommit,
     resolveCommit,
     countUnmergedCommits,
     refreshCheckedOutBranch: Effect.fnUntraced(function* (input) {

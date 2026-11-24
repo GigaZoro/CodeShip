@@ -405,6 +405,15 @@ export class GitVcsDriver extends Context.Service<
     readonly fetchRefCommit: (
       input: GitFetchRefInput,
     ) => Effect.Effect<GitResolveCommitResult, GitCommandError>;
+    /**
+     * Fetches the commit itself from each remote in turn, the primary first, until one has it: the
+     * branches a checkout fetches, as in a single-branch clone, need not reach it. False when none
+     * has it.
+     */
+    readonly fetchCommit: (input: {
+      readonly cwd: string;
+      readonly commitSha: string;
+    }) => Effect.Effect<boolean, GitCommandError>;
     readonly resolveCommit: (
       input: GitResolveCommitInput,
     ) => Effect.Effect<GitResolveCommitResult, GitCommandError>;

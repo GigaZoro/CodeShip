@@ -157,9 +157,9 @@ and a refused settle is left to auto-settlement there.
 A task with `isolation: "worktree"` branches its child's worktree there from the
 parent checkout's HEAD commit, passed as a SHA `baseRef` with `startFromOrigin`.
 The other machine can only fetch a pushed commit, so `RemoteDelegation` refuses an
-unpushed one by name, and `ThreadLaunchService` fetches a SHA base from the primary
-remote when the checkout lacks it and refuses the launch when the commit is still
-missing. A project of another repository cannot fetch it at all, so when
+unpushed one by name, and `ThreadLaunchService` fetches a SHA base by itself from the
+project's remotes, the primary first, when the checkout lacks it and refuses the launch
+when no remote gives it. A project of another repository cannot fetch it at all, so when
 `target.projectId` names one (compared by the identity `t3_project_read` resolves),
 the worktree starts from that project's default branch instead. This is how a
 Windows-only test run happens at an exact commit.

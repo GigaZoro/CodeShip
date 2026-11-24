@@ -755,7 +755,10 @@ const makeLaptop = (
   >,
   /** The laptop's links from before a restart, which keep their sessions there. */
   kept?: Context.Context<Layer.Success<ReturnType<typeof layerLinkingEnvironment>>>,
-  identity = { canonicalKey: "github.com/acme/app" } as RepositoryIdentity,
+  /** The parent project's repository, or why reading the project fails. */
+  identity: RepositoryIdentity | ProjectService.ProjectOperationError = {
+    canonicalKey: "github.com/acme/app",
+  } as RepositoryIdentity,
   /** Whether the parent checkout's commit is on a remote. */
   pushed = true,
 ) =>
@@ -799,10 +802,12 @@ const makeLaptop = (
                   repositoryIdentity: null,
                 } as never),
               getWithRepositoryIdentity: () =>
-                Effect.succeedSome({
-                  workspaceRoot: "/home/me/app",
-                  repositoryIdentity: identity,
-                } as never),
+                identity instanceof ProjectService.ProjectOperationError
+                  ? Effect.fail(identity)
+                  : Effect.succeedSome({
+                      workspaceRoot: "/home/me/app",
+                      repositoryIdentity: identity,
+                    } as never),
             }),
           ),
           Layer.provide(
@@ -1877,6 +1882,45 @@ it.effect.each([
           baseRef,
           startFromOrigin: true,
         });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+// Taken for a project with no repository, a failed read asked for a target the thread did not need,
+// or started a named project's worktree from its default branch instead of this thread's commit.
+it.effect.each([
+  { named: "without a project", projectId: undefined },
+  { named: "naming a project of this repository", projectId: boxProject },
+])(
+  "fails a worktree task $named when this thread's project cannot be read, starting nothing",
+  ({ projectId }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const unreadable = new ProjectService.ProjectOperationError({
+          operation: "read-project",
+          cause: new Error("database is locked"),
+        });
+        const a = yield* makeLaptop(database, offers, undefined, unreadable);
+        yield* linkTo(a.links, b, "auto");
+        yield* seedParent(a);
+
+        const result = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          target: {
+            environmentId: box.environmentId,
+            ...(projectId === undefined ? {} : { projectId }),
+          },
+          isolation: "worktree",
+        });
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result.content)).toContain("Unable to read this thread's project.");
+        expect(yield* Ref.get(thread.launched)).toBeNull();
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

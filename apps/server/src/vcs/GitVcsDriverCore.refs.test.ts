@@ -575,6 +575,44 @@ it.layer(layerTest)("Git references and remote configuration", (it) => {
 });
 
 it.layer(layerTest)("Git remote worktree bases", (it) => {
+  // A single-branch clone fetches its one branch, so a commit pushed on another one arrives only
+  // when asked for by its SHA; a remote without it leaves the next one to be asked.
+  it.effect("fetches a commit its branches do not reach from the first remote that has it", () =>
+    Effect.gen(function* () {
+      const source = yield* makeTmpDir("git-source-");
+      const fork = yield* makeTmpDir("git-fork-");
+      const cwd = yield* makeTmpDir();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const { initialBranch } = yield* initRepoWithCommit(source);
+      yield* git(fork, ["init", "--bare"]);
+      yield* git(source, ["push", fork, `HEAD:refs/heads/${initialBranch}`]);
+      yield* git(source, ["checkout", "-b", "feature"]);
+      yield* git(source, ["commit", "--allow-empty", "-m", "on feature"]);
+      const sha = yield* git(source, ["rev-parse", "HEAD"]);
+      // --no-local copies objects as a remote clone does: only what its one branch reaches.
+      yield* git(cwd, ["clone", "--no-local", "--single-branch", "-b", initialBranch, source, "."]);
+      yield* git(cwd, ["remote", "rename", "origin", "upstream"]);
+      yield* git(cwd, ["remote", "add", "origin", fork]);
+      const hasCommit = driver
+        .execute({
+          operation: "GitVcsDriver.test.hasCommit",
+          cwd,
+          args: ["cat-file", "-e", `${sha}^{commit}`],
+          allowNonZeroExit: true,
+        })
+        .pipe(Effect.map((result) => result.exitCode === 0));
+      yield* driver.fetchRemote({ cwd, remoteName: "origin" });
+      yield* driver.fetchRemote({ cwd, remoteName: "upstream" });
+      assert.isFalse(yield* hasCommit);
+
+      assert.isTrue(yield* driver.fetchCommit({ cwd, commitSha: sha }));
+      assert.isTrue(yield* hasCommit);
+      assert.isFalse(
+        yield* driver.fetchCommit({ cwd, commitSha: "1234567890abcdef1234567890abcdef12345678" }),
+      );
+    }),
+  );
+
   it.effect("creates a worktree from the latest fetched remote commit", () =>
     Effect.gen(function* () {
       const cwd = yield* makeTmpDir();

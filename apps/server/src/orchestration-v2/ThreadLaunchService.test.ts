@@ -2679,12 +2679,19 @@ it.effect.each([
     startFromOrigin: false,
     origin: true,
   },
-  // The fetch succeeds, yet no branch of the remote holds a commit that was never pushed.
   {
-    name: "is a commit the remote still lacks after a fetch",
+    name: "is a commit none of its remotes has",
     baseRef: "0123456789abcdef0123456789abcdef01234567",
     startFromOrigin: true,
     origin: true,
+  },
+  // The fetch succeeds, yet the SHA names a tree or blob, which no worktree can start from.
+  {
+    name: "is an object a remote gives that is no commit",
+    baseRef: "89abcdef0123456789abcdef0123456789abcdef",
+    startFromOrigin: true,
+    origin: true,
+    fetched: true,
   },
 ])("refuses a new worktree whose base ref $name", (testCase) =>
   Effect.gen(function* () {
@@ -2694,7 +2701,7 @@ it.effect.each([
         resolveWorktreeBaseRemote: () =>
           Effect.succeed(testCase.origin ? { remoteName: "origin", branchName: "main" } : null),
         hasRefNamed: () => Effect.succeed(false),
-        fetchRemote: () => Effect.void,
+        fetchCommit: () => Effect.succeed(testCase.fetched === true),
       },
     });
     yield* Effect.gen(function* () {
@@ -2730,9 +2737,9 @@ it.effect("fetches a pushed commit SHA that the checkout does not have yet", () 
       hasCommit: ({ refName }) =>
         Ref.get(fetched).pipe(Effect.map((names) => refName === "HEAD" || names.length > 0)),
       git: {
-        resolveWorktreeBaseRemote: () => Effect.succeed({ remoteName: "origin", branchName: sha }),
         hasRefNamed: () => Effect.succeed(false),
-        fetchRemote: ({ remoteName }) => Ref.update(fetched, (names) => [...names, remoteName]),
+        fetchCommit: ({ commitSha }) =>
+          Ref.update(fetched, (shas) => [...shas, commitSha]).pipe(Effect.as(true)),
       },
     });
     yield* Effect.gen(function* () {
@@ -2741,19 +2748,16 @@ it.effect("fetches a pushed commit SHA that the checkout does not have yet", () 
         projectId,
         workspaceStrategy: { type: "worktree", baseRef: sha, startFromOrigin: true },
       });
-      assert.deepEqual(yield* Ref.get(fetched), ["origin"]);
+      assert.deepEqual(yield* Ref.get(fetched), [sha]);
     }).pipe(Effect.provide(harness.layer));
   }),
 );
 
-it.effect("fails preparing a worktree from a commit the remote lacks, naming the commit", () => {
+it.effect("fails preparing a worktree from a commit no remote has, naming the commit", () => {
   const sha = "0123456789abcdef0123456789abcdef01234567";
   const harness = makeHarness({
     hasCommit: ({ refName }) => Effect.succeed(refName === "HEAD"),
-    git: {
-      resolveWorktreeBaseRemote: () => Effect.succeed({ remoteName: "origin", branchName: sha }),
-      fetchRemote: () => Effect.void,
-    },
+    git: { fetchCommit: () => Effect.succeed(false) },
   });
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
