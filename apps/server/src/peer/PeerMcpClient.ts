@@ -470,12 +470,13 @@ const make = Effect.gen(function* () {
         links.recordOutcome(input.environmentId, { error: error.message }),
       ),
       Effect.tap(() => links.recordOutcome(input.environmentId, { error: null })),
-      // Recorded above with the transport's own message; the agent hears it plainly.
+      // Recorded above with the transport's own message; the agent hears it plainly. The request
+      // may have reached there, so it is no answer, not a refusal.
       Effect.catchTags({
         HttpClientError: () =>
           Effect.fail(
             new OrchestratorMcpFailure({
-              code: "orchestration_error",
+              code: "no_answer",
               message: "The linked environment stopped answering.",
             }),
           ),

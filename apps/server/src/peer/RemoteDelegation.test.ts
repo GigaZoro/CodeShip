@@ -1820,6 +1820,58 @@ it.effect(
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect("a launch whose answer is lost on the way is sent again and followed to its result", () =>
+  Effect.gen(function* () {
+    const nativeFetch = yield* FetchHttpClient.Fetch;
+    let launches = 0;
+    // The box records each launch whole, and the first two answers never arrive here.
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const body = init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : null;
+      const rpc: { params?: { name?: string } } = body?.startsWith("{") ? JSON.parse(body) : {};
+      const response = await nativeFetch(input, init);
+      if (rpc.params?.name !== "t3_thread_launch") return response;
+      launches += 1;
+      if (launches > 2) return response;
+      await response.arrayBuffer();
+      throw new TypeError("fetch failed");
+    };
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const retries = yield* steppedRetries;
+        const a = yield* makeLaptop(database, offers).pipe(
+          Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
+        );
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        // The caller gets its task, and the launch is sent again with the same key.
+        const delegated = yield* delegateToBox(a);
+        // That answer is lost too, so it backs off before the next.
+        yield* Queue.take(retries.failed);
+        yield* Queue.offer(retries.retry, undefined);
+        yield* Ref.set(thread.reply, "Done on the box.");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+          status: "completed",
+          result: "Done on the box.",
+        });
+        // The thread there was answered as launched, not stopped as a refusal.
+        expect(yield* Ref.get(thread.stops)).toEqual([]);
+        expect(launches).toBe(3);
+      }),
+    ).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.provideService(FetchHttpClient.Fetch, fetch),
+    );
+  }),
+);
+
 it.effect("a task named only by driver runs on the box's own instance of it", () =>
   Effect.scoped(
     Effect.gen(function* () {

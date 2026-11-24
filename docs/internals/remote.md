@@ -156,8 +156,11 @@ and a refused settle is left to auto-settlement there. A Stop or cancel here of 
 task that already holds its result owes its thread there a stop
 (`delegated_task.remote.stop`), which the follower sends, so it reaches there after
 any settle request already sent; a settle still reading or backing off is cut short.
-A launch that fails is stopped there, and the task fails here once nothing is left
-there, a write that fails being retried until it is recorded.
+A launch whose answer was lost (`no_answer`) hands the caller its task and is sent
+again in the background with the same key, which the other side records once; the
+follower starts once a launch answers, so a task cancelled meanwhile is stopped
+there then. A launch refused there is stopped there, and the task fails here once
+nothing is left there, a write that fails being retried until it is recorded.
 
 A task with `isolation: "worktree"` branches its child's worktree there from the
 parent checkout's HEAD commit, passed as a SHA `baseRef` with `startFromOrigin`.

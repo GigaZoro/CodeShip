@@ -10,7 +10,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
-import { HttpClient, HttpClientResponse } from "effect/http";
+import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
@@ -329,6 +329,7 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
   let live = new Set<string>();
   let started = 0;
   let listError: string | undefined;
+  let dropCall = false;
   let heldList:
     | { readonly received: Deferred.Deferred<void>; readonly release: Deferred.Deferred<void> }
     | undefined;
@@ -371,6 +372,15 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
         return answer(200, { result: { tools } });
       }
       ran.push(body.params?.arguments);
+      if (dropCall) {
+        dropCall = false;
+        return yield* new HttpClientError.HttpClientError({
+          reason: new HttpClientError.TransportError({
+            request,
+            cause: new TypeError("fetch failed"),
+          }),
+        });
+      }
       return answer(200, { result: { content: [{ type: "text", text: '{"modes":"ran"}' }] } });
     }),
   );
@@ -423,6 +433,10 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
     failList: (message: string) => {
       listError = message;
     },
+    /** The next call runs there, and its answer never arrives. */
+    dropNextCall: () => {
+      dropCall = true;
+    },
     /** Holds the next tools/list answer, as listed when it arrived, until `release`. */
     holdNextList: Effect.gen(function* () {
       const held = {
@@ -460,6 +474,18 @@ it.effect("renews a session the peer lost once, checks the call again in it, and
       "tools/list session-2",
       "tools/call session-2",
     ]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("a call whose answer never arrives fails as no answer, not as a refusal", () =>
+  Effect.gen(function* () {
+    const peer = yield* fakePeerClient({});
+    peer.dropNextCall();
+    expect(yield* Effect.flip(peer.call({}))).toMatchObject({
+      code: "no_answer",
+      message: "The linked environment stopped answering.",
+    });
+    expect(peer.ran).toEqual([{}]);
   }).pipe(Effect.scoped),
 );
 

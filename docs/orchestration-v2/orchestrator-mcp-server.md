@@ -674,8 +674,13 @@ thread_credential_required
 target_required
 memory_short
 auto_mode_unavailable
+no_answer
 version_mismatch
 ```
+
+`no_answer` means a linked environment's answer did not arrive, so whether it
+acted is unknown; the same call sent again with its `clientRequestId` is
+recorded there once.
 
 ## Code Ownership
 

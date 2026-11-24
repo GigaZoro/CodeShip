@@ -1406,6 +1406,11 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "memory_short",
       /** Auto mode is off where the thread would start, or its provider has no enabled account there. */
       "auto_mode_unavailable",
+      /**
+       * A linked environment's answer did not arrive, so whether it acted is unknown. The same
+       * call sent again with its clientRequestId is recorded there once.
+       */
+      "no_answer",
       /** A linked environment answered, but its version answers in a way this one cannot read. */
       "version_mismatch",
     ]),

@@ -29,6 +29,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -469,9 +470,13 @@ const make = Effect.gen(function* () {
               }),
           ),
         );
-      // A failure here that could not be recorded is retried before the follower starts, so the
-      // task does not stay open and no other result is recorded ahead of it.
-      const unrecorded = yield* Ref.make<Effect.Effect<void, unknown>>(Effect.void);
+      // Before it follows, the follower's fiber sends again a launch whose answer was lost, then
+      // retries a failure here that could not be recorded: it looks there only once the launch
+      // answered, and no other result is recorded ahead of that failure.
+      const relaunch = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+      const unrecorded = yield* Ref.make<
+        Effect.Effect<void, Effect.Error<ReturnType<typeof complete>>>
+      >(Effect.void);
       // The first committed command alone sends the launch. Overlapping calls can both finish preflight.
       return yield* Effect.acquireUseRelease(
         record,
@@ -496,7 +501,7 @@ const make = Effect.gen(function* () {
               });
             }
             const clientRequestId = yield* composedKey("delegate", scope.thread.threadId, key);
-            const launch = (
+            const launchWith = (
               selection:
                 | { readonly auto: true }
                 | {
@@ -528,17 +533,17 @@ const make = Effect.gen(function* () {
                 // A peer that predates it checks no option, so it runs them all as before.
                 ["inheritedOptionIds"],
               );
-            const launched = yield* (
+            const launch = (
               staysAuto
-                ? launch({ auto: true }).pipe(
+                ? launchWith({ auto: true }).pipe(
                     // Auto mode off there refuses before it makes the thread, so the same key
                     // then starts it on the parent's model.
                     Effect.catchIf(
                       (error) => error.code === "auto_mode_unavailable",
-                      () => launch({ modelSelection, inheritedOptionIds }),
+                      () => launchWith({ modelSelection, inheritedOptionIds }),
                     ),
                   )
-                : launch({ modelSelection, inheritedOptionIds })
+                : launchWith({ modelSelection, inheritedOptionIds })
             ).pipe(
               Effect.filterOrElse(
                 (result) => result.threadId === remoteThreadId,
@@ -559,56 +564,78 @@ const make = Effect.gen(function* () {
                   );
                 },
               ),
-              Effect.tapError((error) =>
-                // The task stays on record so a launch whose reply was lost is followed. It is
-                // failed here only once nothing is left to stop there.
-                stopThere(followScope(scope.thread, remoteChild), remoteChild, "stop").pipe(
-                  Effect.as(true),
-                  Effect.catch((stopError) =>
-                    Effect.succeed(stopError.code === "thread_not_found"),
-                  ),
-                  Effect.flatMap((nothingThere) => {
-                    if (!nothingThere) return Effect.void;
-                    const failHere = complete(
-                      scope.thread.threadId,
-                      taskId,
-                      "failed",
-                      `The task could not be started in ${remoteChild.label}: ${error.message}`,
-                      "stopped",
-                    );
-                    return failHere.pipe(Effect.tapError(() => Ref.set(unrecorded, failHere)));
-                  }),
-                  Effect.ignoreCause({ log: true }),
-                ),
-              ),
             );
             // The follower waits on this run once it knows it; a failure here leaves it on the
             // thread's latest run, which is the run it launched.
-            if (launched.runId !== null) {
-              yield* threads
-                .dispatch({
-                  type: "delegated_task.remote.attach-run",
-                  commandId: CommandId.make(`${commandId}:attach-run`),
-                  parentThreadId: scope.thread.threadId,
-                  taskId,
-                  runId: launched.runId,
-                })
-                .pipe(
-                  Effect.tapError((cause) =>
-                    Effect.logWarning("remote-delegation.attach-run-failed", { taskId, cause }),
-                  ),
-                  Effect.ignore,
-                );
+            const started = (
+              launched: Tool.Success<typeof ProjectToolkit.tools.t3_thread_launch>,
+            ) =>
+              launched.runId === null
+                ? Effect.void
+                : threads
+                    .dispatch({
+                      type: "delegated_task.remote.attach-run",
+                      commandId: CommandId.make(`${commandId}:attach-run`),
+                      parentThreadId: scope.thread.threadId,
+                      taskId,
+                      runId: launched.runId,
+                    })
+                    .pipe(
+                      Effect.tapError((cause) =>
+                        Effect.logWarning("remote-delegation.attach-run-failed", { taskId, cause }),
+                      ),
+                      Effect.ignore,
+                    );
+            // A launch refused there may still have left its thread, so the task stays on record
+            // and is followed while something is there, and is failed here only once nothing is.
+            const notStarted = (error: OrchestratorMcpFailure) =>
+              stopThere(followScope(scope.thread, remoteChild), remoteChild, "stop").pipe(
+                Effect.as(true),
+                Effect.catch((stopError) => Effect.succeed(stopError.code === "thread_not_found")),
+                Effect.flatMap((nothingThere) => {
+                  if (!nothingThere) return Effect.void;
+                  const failHere = complete(
+                    scope.thread.threadId,
+                    taskId,
+                    "failed",
+                    `The task could not be started in ${remoteChild.label}: ${error.message}`,
+                    "stopped",
+                  );
+                  return failHere.pipe(Effect.tapError(() => Ref.set(unrecorded, failHere)));
+                }),
+                Effect.ignoreCause({ log: true }),
+              );
+            const first = yield* Effect.result(launch);
+            if (Result.isSuccess(first)) {
+              yield* started(first.success);
+              return { taskId };
             }
+            if (first.failure.code !== "no_answer") {
+              yield* notStarted(first.failure);
+              return yield* first.failure;
+            }
+            // The launch may have started there or not. Sent again with the same key, it is answered
+            // as recorded there, or starts then, so the task runs once. A task cancelled meanwhile
+            // is stopped there by its follower once the launch answers.
+            yield* Ref.set(
+              relaunch,
+              launch.pipe(
+                Effect.retry({
+                  schedule: followRetry,
+                  while: (error) => error.code === "no_answer",
+                }),
+                Effect.matchEffect({ onSuccess: started, onFailure: notStarted }),
+              ),
+            );
             return { taskId };
           }),
         (recorded) =>
           recorded.replayed
             ? Effect.void
             : // A disconnect can interrupt the first sender after acceptance. Its recorded task still needs its follower.
-              Ref.get(unrecorded).pipe(
+              Ref.get(relaunch).pipe(
                 Effect.flatten,
-                Effect.retry(followRetry),
+                Effect.andThen(Ref.get(unrecorded).pipe(Effect.flatten, Effect.retry(followRetry))),
                 Effect.ignoreCause({ log: true }),
                 Effect.andThen(followOne(scope.thread.threadId, taskId)),
                 Effect.forkIn(followers),
