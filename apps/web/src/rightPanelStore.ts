@@ -18,7 +18,9 @@ import { resolveStorage } from "./lib/storage";
 import type { ThreadPanelPresentation } from "./rightPanelLayout";
 import {
   isThreadPanelSurface,
+  sharesThreadWorkspace,
   threadPanelSurface,
+  type RightPanelThreadWorkspace,
   type ThreadPanelSurface,
 } from "./rightPanelThreadSurface";
 import type { ChatFileAttachment } from "./types";
@@ -72,7 +74,6 @@ export type RightPanelSurface =
       revealLine: number | null;
       revealRequestId: number;
       attachment?: ChatFileAttachment;
-      attachmentEnvironmentId?: EnvironmentId;
       /** Deepest workspace path retained for navigating back down after moving up. */
       folderTrail?: string;
     }
@@ -121,6 +122,9 @@ interface RightPanelStoreState {
   pendingMaximizeThreadKey: string | null;
   requestMaximize: (ref: ScopedThreadRef) => void;
   consumeMaximizeRequest: (ref: ScopedThreadRef) => boolean;
+  /** Set when a thread embedded in `hostKey`'s tab opened a panel surface of its own. */
+  pendingThreadReveal: { readonly hostKey: string; readonly threadKey: string } | null;
+  consumeThreadRevealRequest: (host: ScopedThreadRef, thread: ScopedThreadRef) => boolean;
   threadPanelVisibilityByThreadKey: Record<string, ThreadPanelVisibility>;
   userActionRevisionByThreadKey: Record<string, number>;
   closeRevisionByThreadKey: Record<string, number>;
@@ -157,11 +161,7 @@ interface RightPanelStoreState {
     folderTrail: string,
     keepSource?: boolean,
   ) => void;
-  openAttachment: (
-    ref: ScopedThreadRef,
-    attachment: ChatFileAttachment,
-    sourceEnvironmentId?: EnvironmentId,
-  ) => void;
+  openAttachment: (ref: ScopedThreadRef, attachment: ChatFileAttachment) => void;
   openPullRequest: (
     ref: ScopedThreadRef,
     target: {
@@ -265,20 +265,13 @@ const fileSurface = (
   revealRequestId,
 });
 
-const attachmentSurface = (
-  attachment: ChatFileAttachment,
-  attachmentEnvironmentId: EnvironmentId | undefined,
-): RightPanelSurface => ({
-  id:
-    attachmentEnvironmentId === undefined
-      ? `attachment:${attachment.id}`
-      : `attachment:${attachmentEnvironmentId}:${attachment.id}`,
+const attachmentSurface = (attachment: ChatFileAttachment): RightPanelSurface => ({
+  id: `attachment:${attachment.id}`,
   kind: "file",
   relativePath: attachment.name,
   revealLine: null,
   revealRequestId: 0,
   attachment,
-  ...(attachmentEnvironmentId === undefined ? {} : { attachmentEnvironmentId }),
 });
 
 const terminalSurface = (terminalId: string): RightPanelSurface => ({
@@ -420,21 +413,44 @@ const automaticUpdate = (
   ...updateThread(state, threadKey, updater),
 });
 
-// Embedded chats use the containing panel for their panel actions.
-const panelHosts = new Map<string, ScopedThreadRef>();
+// The host renders panel surfaces in its own workspace, so only a guest sharing it may use its panel.
+interface PanelHost {
+  readonly host: ScopedThreadRef;
+  readonly sharesWorkspace: boolean;
+}
+const panelHosts = new Map<string, PanelHost>();
+
+function registerPanelHost(guest: ScopedThreadRef, entry: PanelHost): () => void {
+  const guestKey = scopedThreadKey(guest);
+  panelHosts.set(guestKey, entry);
+  return () => {
+    if (panelHosts.get(guestKey) === entry) panelHosts.delete(guestKey);
+  };
+}
 
 /** Routes `guest`'s panel actions to `host`'s panel until the returned cleanup runs. */
 export function hostRightPanel(guest: ScopedThreadRef, host: ScopedThreadRef): () => void {
-  const guestKey = scopedThreadKey(guest);
-  panelHosts.set(guestKey, host);
-  return () => {
-    if (panelHosts.get(guestKey) === host) panelHosts.delete(guestKey);
-  };
+  return registerPanelHost(guest, { host, sharesWorkspace: true });
+}
+
+/**
+ * Embeds `guest` in `host`'s thread tab. Its panel actions use `host`'s panel only when both
+ * threads share a workspace; otherwise they stay on `guest`'s panel and request a reveal.
+ */
+export function embedRightPanelThread(
+  guest: RightPanelThreadWorkspace,
+  host: RightPanelThreadWorkspace,
+): () => void {
+  return registerPanelHost(guest.ref, {
+    host: host.ref,
+    sharesWorkspace: sharesThreadWorkspace(guest, host),
+  });
 }
 
 /** The thread whose panel shows `ref`'s panel actions, so it also owns their browser tabs. */
 export function rightPanelHostRef(ref: ScopedThreadRef): ScopedThreadRef {
-  return panelHosts.get(scopedThreadKey(ref)) ?? ref;
+  const entry = panelHosts.get(scopedThreadKey(ref));
+  return entry?.sharesWorkspace ? entry.host : ref;
 }
 
 const userAction = (
@@ -443,9 +459,16 @@ const userAction = (
   updater: (current: ThreadRightPanelState) => ThreadRightPanelState,
   closesView = false,
 ): Partial<RightPanelStoreState> => {
-  const host = panelHosts.get(guestKey);
-  const threadKey = host === undefined ? guestKey : scopedThreadKey(host);
-  return userActionOnThread(state, threadKey, updater, closesView);
+  const entry = panelHosts.get(guestKey);
+  if (entry?.sharesWorkspace) {
+    return userActionOnThread(state, scopedThreadKey(entry.host), updater, closesView);
+  }
+  const next = userActionOnThread(state, guestKey, updater, closesView);
+  if (entry === undefined || closesView) return next;
+  return {
+    ...next,
+    pendingThreadReveal: { hostKey: scopedThreadKey(entry.host), threadKey: guestKey },
+  };
 };
 
 const userActionOnThread = (
@@ -682,6 +705,18 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         set({ pendingMaximizeThreadKey: null });
         return true;
       },
+      pendingThreadReveal: null,
+      consumeThreadRevealRequest: (host, thread) => {
+        const pending = get().pendingThreadReveal;
+        if (
+          pending?.hostKey !== scopedThreadKey(host) ||
+          pending.threadKey !== scopedThreadKey(thread)
+        ) {
+          return false;
+        }
+        set({ pendingThreadReveal: null });
+        return true;
+      },
       threadPanelVisibilityByThreadKey: {},
       userActionRevisionByThreadKey: {},
       closeRevisionByThreadKey: {},
@@ -914,7 +949,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             return { ...current, isOpen: true, activeSurfaceId: target.id, surfaces };
           }),
         ),
-      openAttachment: (ref, attachment, sourceEnvironmentId = ref.environmentId) =>
+      openAttachment: (ref, attachment) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) => {
             const withoutStandaloneExplorer = current.surfaces.filter(
@@ -922,12 +957,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             );
             return upsertSurface(
               { ...current, surfaces: withoutStandaloneExplorer },
-              attachmentSurface(
-                attachment,
-                sourceEnvironmentId === rightPanelHostRef(ref).environmentId
-                  ? undefined
-                  : sourceEnvironmentId,
-              ),
+              attachmentSurface(attachment),
             );
           }),
         ),

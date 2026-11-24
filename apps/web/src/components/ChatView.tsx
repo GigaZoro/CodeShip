@@ -202,7 +202,7 @@ import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { toastManager } from "./ui/toast";
 import { projectScriptIdFromCommand } from "@t3tools/shared/projectScripts";
 import { newMessageId } from "~/lib/utils";
-import { isInSideChatPane, type SideChatParentPanel } from "~/lib/sideChatPane";
+import { isInSideChatPane, type EmbeddedChatHost } from "~/lib/sideChatPane";
 import {
   NO_PROVIDER_MODEL_SELECTION,
   providerInstanceEntriesFor,
@@ -408,8 +408,8 @@ type ChatViewProps =
       onDiffPanelOpen?: () => void;
       reserveTitleBarControlInset?: boolean;
       forceExpandedMobileComposer?: boolean;
-      /** A side chat in its parent's right panel; the parent keeps the keyboard and workspace UI. */
-      embedded?: SideChatParentPanel;
+      /** A chat in another thread's right panel; that thread keeps the keyboard and workspace UI. */
+      embedded?: EmbeddedChatHost;
       routeKind: "server";
       draftId?: never;
     }
@@ -905,8 +905,10 @@ export default function ChatView(props: ChatViewProps) {
   const parentThreadLink = (() => {
     if (sideChatParentRef !== null) {
       const title = sideChatParent?.title ?? t("Parent thread");
-      // Embedded, the parent is the view around it.
-      if (embedded) return { title, sideChat: true };
+      // Embedded in its parent's panel, the parent is the view around it.
+      if (embedded && scopedThreadKey(parentPanel.hostRef) === scopedThreadKey(sideChatParentRef)) {
+        return { title, sideChat: true };
+      }
       return {
         title,
         sideChat: true,

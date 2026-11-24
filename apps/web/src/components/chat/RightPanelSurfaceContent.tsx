@@ -224,18 +224,14 @@ export function RightPanelSurfaceContent(props: {
     case "file": {
       const files = props.files;
       const attachment = surface.kind === "file" ? surface.attachment : undefined;
-      const environmentId =
-        surface.kind === "file" && attachment
-          ? (surface.attachmentEnvironmentId ?? props.environmentId)
-          : props.environmentId;
       if (!attachment && (files.projectName === null || !files.workspaceRoot)) return null;
       return (
         <Suspense fallback={null}>
           <FilePreviewPanel
-            key={`${environmentId}:${
+            key={`${props.environmentId}:${
               attachment ? `attachment:${attachment.id}` : files.workspaceRoot
             }`}
-            environmentId={environmentId}
+            environmentId={props.environmentId}
             cwd={files.workspaceRoot ?? ""}
             projectName={files.projectName ?? ""}
             threadRef={threadRef}

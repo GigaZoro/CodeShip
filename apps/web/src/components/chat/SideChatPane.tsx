@@ -13,12 +13,12 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { Trash2Icon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useClientSettings } from "../../hooks/useSettings";
 import type { SideChatParentPanel } from "../../lib/sideChatPane";
 import { readLocalApi } from "../../localApi";
-import { useRightPanelStore } from "../../rightPanelStore";
+import { hostRightPanel, useRightPanelStore } from "../../rightPanelStore";
 import { useQuietThreadProjection, useQuietThreadShell } from "../../state/entities";
 import { useEnvironmentScope } from "../../state/session";
 import { useEnvironmentShellHasSnapshot } from "../../state/shell";
@@ -38,6 +38,11 @@ export default function SideChatPane(props: {
 }) {
   const { parentRef, threadId } = props;
   const threadRef = scopeThreadRef(parentRef.environmentId, threadId);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a side chat shares its parent's workspace, so its panel actions open in the parent's panel
+  useEffect(
+    () => hostRightPanel(scopeThreadRef(parentRef.environmentId, threadId), parentRef),
+    [parentRef, threadId],
+  );
   const shell = useQuietThreadShell(threadRef);
   const parent = useQuietThreadShell(parentRef);
   const snapshotLoaded = useEnvironmentShellHasSnapshot(parentRef.environmentId);

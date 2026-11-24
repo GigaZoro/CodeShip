@@ -18,6 +18,11 @@ export interface SideChatParentPanel {
   readonly runShellCommand?: (command: string) => void;
 }
 
+/** An embedded chat's containing panel and the thread whose panel it is. */
+export interface EmbeddedChatHost extends SideChatParentPanel {
+  readonly hostRef: ScopedThreadRef;
+}
+
 /** Opens `thread` in its tab when it is a side chat of `parentRef`; false for any other thread. */
 export function openSideChatTab(
   parentRef: ScopedThreadRef,

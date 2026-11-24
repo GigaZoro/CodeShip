@@ -1,10 +1,9 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { XIcon } from "lucide-react";
-import { type ReactNode, useEffect } from "react";
+import type { ReactNode } from "react";
 
 import { ComposerHandleContext } from "../../composerHandleContext";
 import type { SideChatParentPanel } from "../../lib/sideChatPane";
-import { hostRightPanel } from "../../rightPanelStore";
 import ChatView from "../ChatView";
 import { Button } from "../ui/button";
 import { BackgroundThreadContext } from "./backgroundThread";
@@ -35,20 +34,15 @@ export function EmbeddedThreadPane(props: {
   );
 }
 
-const NO_WORKSPACE_ACTIONS: SideChatParentPanel = {};
-
+/** The caller registers where the chat's panel actions go (`hostRightPanel` or `embedRightPanelThread`). */
 export function EmbeddedThreadChat(props: {
   readonly threadRef: ScopedThreadRef;
   readonly hostRef: ScopedThreadRef;
   readonly parentPanel?: SideChatParentPanel;
 }) {
-  const { threadRef, hostRef, parentPanel = NO_WORKSPACE_ACTIONS } = props;
+  const { threadRef, hostRef, parentPanel } = props;
   const { environmentId, threadId } = threadRef;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers the owning panel until the embedded chat unmounts
-  useEffect(
-    () => hostRightPanel({ environmentId, threadId }, hostRef),
-    [environmentId, threadId, hostRef],
-  );
+  const embedded = { ...parentPanel, hostRef };
   return (
     <BackgroundThreadContext value>
       <ComposerHandleContext value={null}>
@@ -56,7 +50,7 @@ export function EmbeddedThreadChat(props: {
           environmentId={environmentId}
           threadId={threadId}
           routeKind="server"
-          embedded={parentPanel}
+          embedded={embedded}
         />
       </ComposerHandleContext>
     </BackgroundThreadContext>

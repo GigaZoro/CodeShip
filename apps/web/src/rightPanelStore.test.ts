@@ -1,14 +1,22 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { type EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  ProjectId,
+  RunId,
+  type ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { useClosedViewStore } from "./closedViewStore";
 import { reopenClosedView } from "./reopenClosedView";
 import {
+  embedRightPanelThread,
   hostRightPanel,
   migratePersistedRightPanelState,
   pullRequestSurface,
   pullRequestSurfaceId,
+  rightPanelHostRef,
   selectActiveRightPanel,
   selectActiveRightPanelSurface,
   selectThreadPanelVisibility,
@@ -20,6 +28,15 @@ const refA = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-A"))
 const refB = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-B"));
 const remoteRef = scopeThreadRef("env-2" as EnvironmentId, refB.threadId);
 const remoteSurface = { id: "thread:env-2:thread-B", kind: "thread", threadRef: remoteRef };
+const workspace = (
+  ref: ScopedThreadRef,
+  projectId = "project-1",
+  worktreePath: string | null = null,
+) => ({
+  ref,
+  projectId: ProjectId.make(projectId),
+  worktreePath,
+});
 
 beforeEach(() => {
   useClosedViewStore.setState({ entries: [] });
@@ -28,6 +45,7 @@ beforeEach(() => {
     threadPanelVisibilityByThreadKey: {},
     userActionRevisionByThreadKey: {},
     closeRevisionByThreadKey: {},
+    pendingThreadReveal: null,
   });
 });
 
@@ -58,6 +76,41 @@ describe("rightPanelStore", () => {
       "file:src/app.ts",
     );
   });
+
+  it("opens an embedded thread's panel actions in the host's panel when it shares the workspace", () => {
+    const unembed = embedRightPanelThread(
+      workspace(refB, "project-1", "/worktrees/a"),
+      workspace(refA, "project-1", "/worktrees/a"),
+    );
+    useRightPanelStore.getState().openFile(refB, "src/app.ts");
+    unembed();
+
+    const state = useRightPanelStore.getState();
+    expect(selectActiveRightPanelSurface(state.byThreadKey, refA)?.id).toBe("file:src/app.ts");
+    expect(selectThreadRightPanelState(state.byThreadKey, refB).surfaces).toEqual([]);
+    expect(state.pendingThreadReveal).toBeNull();
+  });
+
+  it.each([
+    ["another project", workspace(refB, "project-2")],
+    ["another worktree", workspace(refB, "project-1", "/worktrees/b")],
+    ["another environment", workspace(remoteRef)],
+  ])(
+    "keeps panel actions of an embedded thread from %s on its own panel and asks once to reveal it",
+    (_label, guest) => {
+      const unembed = embedRightPanelThread(guest, workspace(refA));
+      const store = useRightPanelStore.getState();
+      store.openFile(guest.ref, "src/app.ts");
+      expect(rightPanelHostRef(guest.ref)).toBe(guest.ref);
+      unembed();
+
+      const { byThreadKey } = useRightPanelStore.getState();
+      expect(selectActiveRightPanelSurface(byThreadKey, guest.ref)?.id).toBe("file:src/app.ts");
+      expect(selectThreadRightPanelState(byThreadKey, refA).surfaces).toEqual([]);
+      expect(store.consumeThreadRevealRequest(refA, guest.ref)).toBe(true);
+      expect(store.consumeThreadRevealRequest(refA, guest.ref)).toBe(false);
+    },
+  );
 
   it("does not open the current thread or change its panel selection", () => {
     const store = useRightPanelStore.getState();
@@ -992,35 +1045,21 @@ describe("rightPanelStore", () => {
     ]);
   });
 
-  it("keeps workspace files and attachments from different environments disjoint", () => {
-    const store = useRightPanelStore.getState();
-    const attachment = {
-      type: "file" as const,
+  it("keeps attachment and workspace file ids disjoint", () => {
+    useRightPanelStore.getState().openFile(refA, "attachment:shared-id");
+    useRightPanelStore.getState().openAttachment(refA, {
+      type: "file",
       id: "shared-id",
       name: "report.pdf",
       mimeType: "application/pdf",
       sizeBytes: 42,
-    };
-    store.openFile(refA, "attachment:shared-id");
-    store.openAttachment(refA, attachment);
-    const unhost = hostRightPanel(remoteRef, refA);
-    store.openAttachment(remoteRef, attachment);
-    unhost();
+    });
 
     expect(
-      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA),
-    ).toMatchObject({
-      activeSurfaceId: "attachment:env-2:shared-id",
-      surfaces: [
-        { id: "file:attachment:shared-id" },
-        { id: "attachment:shared-id", attachment },
-        {
-          id: "attachment:env-2:shared-id",
-          attachment,
-          attachmentEnvironmentId: remoteRef.environmentId,
-        },
-      ],
-    });
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces.map(
+        (surface) => surface.id,
+      ),
+    ).toEqual(["file:attachment:shared-id", "attachment:shared-id"]);
   });
 
   it("updates line reveal requests when reopening a file surface", () => {
