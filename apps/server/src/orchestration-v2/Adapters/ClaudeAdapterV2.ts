@@ -10980,7 +10980,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 queryOptions.env ?? adapterOptions.environment,
                 queryOptions.cwd,
               )
-            : Effect.succeed(undefined);
+            : Effect.void;
           const querySession = yield* prepareHome.pipe(
             Effect.andThen(resolveExecutable),
             Effect.flatMap((pathToClaudeCodeExecutable) =>
