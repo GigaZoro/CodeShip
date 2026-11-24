@@ -23,6 +23,7 @@ import {
   resolveAntigravityInstanceDirectories,
 } from "../antigravityAuthSupport.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ModelManifest from "../ModelManifest.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -52,7 +53,11 @@ function shellQuote(value: string): string {
 }
 
 const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
-  options: { readonly config?: Partial<AntigravitySettings>; readonly enabled?: boolean } = {},
+  options: {
+    readonly config?: Partial<AntigravitySettings>;
+    readonly enabled?: boolean;
+    readonly source?: AntigravityInstallation.AntigravityExecutable["source"];
+  } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -106,7 +111,12 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
   const first = yield* makeExecutable("runtime 'one");
   const second = yield* makeExecutable("runtime two");
   const signedOut = yield* makeExecutable("runtime signed-out", true);
-  const controls = { selected: first, failResolution: false, beforeAcquire: Effect.void };
+  const controls = {
+    selected: first,
+    failResolution: false,
+    beforeAcquire: Effect.void,
+  };
+  const installedUpdates: string[] = [];
   const acquisitions: Array<{ binaryPath: string | undefined; path: string | undefined }> = [];
   const releases: Array<string | null> = [];
   const launches: Array<{
@@ -125,6 +135,8 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
 
   const layerInstallation = Layer.mock(AntigravityInstallation.AntigravityInstallation)({
     managedDirectory: root,
+    latestVersion: Effect.succeed("1.5.3"),
+    upgrade: (version) => Effect.sync(() => void installedUpdates.push(version)),
     resolve: () =>
       Effect.gen(function* () {
         if (controls.failResolution) {
@@ -133,7 +145,10 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
             detail: "Fixture resolution failed.",
           });
         }
-        return controls.selected;
+        return {
+          ...controls.selected,
+          source: options.source ?? controls.selected.source,
+        };
       }),
     acquire: (binaryPath, environment) =>
       Effect.gen(function* () {
@@ -234,6 +249,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
     launches,
     readRequests,
     assertClosed,
+    installedUpdates,
   };
 });
 
@@ -260,6 +276,7 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
     ),
   ),
   Layer.provideMerge(ModelManifest.layerTest),
+  Layer.provideMerge(ProviderLatestVersions.layer),
   Layer.provideMerge(IdAllocator.layer),
   Layer.provideMerge(McpProviderSessions.layer),
 );
@@ -269,6 +286,27 @@ const layerTest = ProviderHostLive.layer.pipe(
 );
 
 it.layer(layerTest)("AntigravityDriver", (it) => {
+  it.effect.each(["managed", "path", "override"] as const)(
+    "only updates an existing managed runtime when the executable source is %s",
+    (source) =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness({
+          source,
+          ...(source === "override" ? { config: { binaryPath: "custom-antigravity" } } : {}),
+        });
+        const maintenance = yield* h.instance.snapshot.resolveMaintenance();
+        if (source === "managed") {
+          expect(maintenance.lookupLatestVersion).toBeDefined();
+          expect(maintenance.builtInUpdate).toBeDefined();
+          yield* maintenance.builtInUpdate!.run("1.5.3");
+          expect(h.installedUpdates).toEqual(["1.5.3"]);
+        } else {
+          expect(maintenance.builtInUpdate).toBeUndefined();
+          expect(h.installedUpdates).toEqual([]);
+        }
+      }),
+  );
+
   it.effect.skipIf(windowsHost)(
     "refreshes through the selected executable and personal Google ACP",
     () =>

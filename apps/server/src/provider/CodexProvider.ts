@@ -29,10 +29,13 @@ import type {
   ServerProviderSkill,
 } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import type { ProviderMaintenanceCapabilities } from "@t3tools/provider-core/server/maintenance";
 import {
   PREFERRED_DEFAULT_CODEX_MODELS,
+  ProviderDriverKind,
   ProviderSkillError,
   ServerSettingsError,
+  ServerProviderUpdateError,
 } from "@t3tools/contracts";
 
 import {
@@ -43,6 +46,7 @@ import {
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 import { isCodexLoginRejected } from "./CodexLoginRejected.ts";
+import type { CodexInstallation } from "./CodexInstallation.ts";
 import {
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
@@ -88,6 +92,33 @@ const CODEX_PRESENTATION = {
   showInteractionModeToggle: true,
   reportsContextWindow: true,
 } as const;
+
+export const resolveOwnedCodexMaintenance = Effect.fn("CodexProvider.resolveOwnedMaintenance")(
+  function* (
+    installation: CodexInstallation["Service"],
+  ): Effect.fn.Return<ProviderMaintenanceCapabilities> {
+    const provider = ProviderDriverKind.make("codex");
+    const capabilities = { provider, packageName: null, update: null };
+    if (!(yield* installation.installedManagedVersion)) return capabilities;
+    return {
+      ...capabilities,
+      lookupLatestVersion: installation.checkForUpdate.pipe(
+        Effect.map((release) => release?.latestVersion ?? null),
+      ),
+      builtInUpdate: {
+        lockKey: "managed-codex",
+        run: Effect.fn("CodexProvider.updateOwnedInstallation")((version) =>
+          installation.startUpdate(version).pipe(
+            Effect.asVoid,
+            Effect.mapError(
+              (cause) => new ServerProviderUpdateError({ provider, reason: cause.detail }),
+            ),
+          ),
+        ),
+      },
+    };
+  },
+);
 
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
@@ -791,10 +822,14 @@ const makePendingCodexProvider = Effect.fn("CodexProvider.makePendingCodexProvid
 
 export const CODEX_NOT_FOUND_MESSAGE =
   "Codex CLI (`codex`) is not on the server's PATH. Install Codex in Settings → Providers & models → Codex, or set its Binary path there. Installing ChatGPT or Codex desktop may not add codex to PATH.";
+export const CODEX_MANAGED_UPDATE_REQUIRED_MESSAGE =
+  "Update the managed Codex installation to continue.";
 
-/** The default binary path found no `codex` on PATH and no copy installed by T3.CodeShip. */
-export const makeMissingCodexProvider = Effect.fn("CodexProvider.makeMissingCodexProvider")(
-  function* (codexSettings: CodexSettings): Effect.fn.Return<ServerProviderDraft> {
+export const makeUnavailableCodexProvider = Effect.fn("CodexProvider.makeUnavailableCodexProvider")(
+  function* (
+    codexSettings: CodexSettings,
+    installedVersion: string | null,
+  ): Effect.fn.Return<ServerProviderDraft> {
     return buildServerProvider({
       presentation: CODEX_PRESENTATION,
       enabled: codexSettings.enabled,
@@ -802,11 +837,14 @@ export const makeMissingCodexProvider = Effect.fn("CodexProvider.makeMissingCode
       models: emptyCodexModelsFromSettings(codexSettings),
       skills: [],
       probe: {
-        installed: false,
-        version: null,
+        installed: installedVersion !== null,
+        version: installedVersion,
         status: "error",
         auth: { status: "unknown" },
-        message: CODEX_NOT_FOUND_MESSAGE,
+        message:
+          installedVersion === null
+            ? CODEX_NOT_FOUND_MESSAGE
+            : CODEX_MANAGED_UPDATE_REQUIRED_MESSAGE,
       },
     });
   },

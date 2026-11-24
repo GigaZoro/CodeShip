@@ -280,6 +280,50 @@ function layerFailingLatestLookupAfterFirst() {
 }
 
 describe("providerMaintenanceRunner", () => {
+  it.effect(
+    "runs a built-in update and refreshes provider versions without spawning a command",
+    () =>
+      Effect.gen(function* () {
+        const version = "0.172.0";
+        const { registry } = yield* makeRegistry(baseProvider, {
+          installedVersionAfterUpdate: version,
+        });
+        const installed: Array<string> = [];
+        const updater = yield* makeTestRunner({
+          ...registry,
+          getProviderMaintenanceCapabilitiesForInstance: () =>
+            Effect.succeed({
+              provider: CODEX_DRIVER,
+              packageName: null,
+              update: null,
+              lookupLatestVersion: Effect.succeed(version),
+              builtInUpdate: {
+                lockKey: "managed-codex",
+                run: (target: string) => Effect.sync(() => void installed.push(target)),
+              },
+            }),
+        });
+
+        const result = yield* updater.updateProvider(CODEX_DRIVER);
+        assert.deepStrictEqual(installed, [version]);
+        assert.strictEqual(result.providers[0]?.version, version);
+        assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            layerNonWindowsPlatform,
+            Layer.succeed(
+              HttpClient.HttpClient,
+              HttpClient.make(() => Effect.die("Unneeded HTTP")),
+            ),
+            layerMockSpawner(() => {
+              throw new Error("Built-in updates must not spawn commands");
+            }),
+          ),
+        ),
+      ),
+  );
+
   it.effect("runs the allowlisted provider update command and records success", () => {
     const calls: Array<{ command: string; args: ReadonlyArray<string> }> = [];
     return Effect.gen(function* () {

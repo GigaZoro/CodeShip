@@ -3195,8 +3195,8 @@ const catalog: MessageCatalog = {
   "Check out feature branch & continue": "Перейти на гілку функції та продовжити",
   "Check out files": "Перемкнути файли",
   "Check out this {term}": "Перейти до цього {term}",
-  "Check provider CLIs and model catalogs for updates. Install automatically also enables checks and updates provider CLIs when the server starts.":
-    "Перевіряти оновлення CLI провайдерів і каталогів моделей. Автоматичне встановлення також вмикає перевірки й оновлює CLI провайдерів під час запуску сервера.",
+  "Check provider CLIs and model catalogs for updates. Install automatically checks at startup and hourly, and installs supported CLI updates.":
+    "Перевіряти наявність оновлень CLI провайдерів і каталогів моделей. У режимі «Встановлювати автоматично» перевірка відбувається під час запуску й щогодини, а підтримувані оновлення CLI встановлюються автоматично.",
   "Check simulator support": "Перевірити підтримку симуляторів",
   "Check T3.CodeShip SnapShots in GNOME Extensions, then try again.":
     "Перевірте T3.CodeShip SnapShots у «Розширеннях GNOME» і спробуйте ще раз.",

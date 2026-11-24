@@ -23,7 +23,6 @@ export type ProviderUpdateCandidate = ServerProvider & {
 export type ProviderSettingsUpdateCandidate = ServerProvider & {
   readonly versionAdvisory: NonNullable<ServerProvider["versionAdvisory"]> & {
     readonly canUpdate: true;
-    readonly updateCommand: string;
   };
 };
 
@@ -139,7 +138,8 @@ export function isProviderSettingsUpdateCandidate(
     provider.compatibilityAdvisory?.latestVersionStatus !== "unsupported" &&
     provider.versionAdvisory?.status === "behind_latest" &&
     provider.versionAdvisory.canUpdate === true &&
-    provider.versionAdvisory.updateCommand !== null
+    (provider.versionAdvisory.updateKey !== undefined ||
+      provider.versionAdvisory.updateCommand !== null)
   );
 }
 
@@ -147,10 +147,9 @@ export function hasOneClickUpdateProviderCandidate(
   candidate: ProviderUpdateCandidate,
   providers: ReadonlyArray<ServerProvider>,
 ): boolean {
-  if (
-    candidate.versionAdvisory.canUpdate !== true ||
-    candidate.versionAdvisory.updateCommand === null
-  ) {
+  const candidateKey =
+    candidate.versionAdvisory.updateKey ?? candidate.versionAdvisory.updateCommand;
+  if (candidate.versionAdvisory.canUpdate !== true || !candidateKey) {
     return false;
   }
 
@@ -159,19 +158,20 @@ export function hasOneClickUpdateProviderCandidate(
     return false;
   }
 
-  const updateCommands = new Set<string>();
+  const updateKeys = new Set([candidateKey]);
   for (const provider of driverProviders) {
     if (!isProviderUpdateCandidate(provider)) {
       continue;
     }
     const advisory = provider.versionAdvisory;
-    if (!advisory || advisory.canUpdate !== true || advisory.updateCommand === null) {
+    const updateKey = advisory?.updateKey ?? advisory?.updateCommand;
+    if (advisory?.canUpdate !== true || !updateKey) {
       return false;
     }
-    updateCommands.add(advisory.updateCommand);
+    updateKeys.add(updateKey);
   }
 
-  return updateCommands.size === 1;
+  return updateKeys.size === 1;
 }
 
 export function canOneClickUpdateProviderCandidate(

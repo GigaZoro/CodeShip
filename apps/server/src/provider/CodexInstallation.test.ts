@@ -13,6 +13,7 @@ import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -31,6 +32,7 @@ const asset = {
   url: "https://github.com/openai/codex/releases/download/test/package.tar.gz",
   archiveBytes: archive.length,
 };
+const latestReleaseUrl = "https://api.github.com/repos/openai/codex/releases/latest";
 // A host-runnable stand-in: the file is data the fake spawner below reads, because a shell script
 // cannot be executed on Windows and a compiled binary cannot be built on every host.
 // A "#!" header makes it a script launcher; an ELF header stands for a native binary, which runs only
@@ -50,6 +52,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     manifestCurrent?: Effect.Effect<ModelManifest.ModelManifestData>;
     body?: Stream.Stream<Uint8Array, HttpClientError.HttpClientError>;
     downloadStatus?: number;
+    latestRelease?: (checks: number, sha256: string) => Effect.Effect<Response>;
     baseDir?: string;
     local?: LocalCodex;
     platform?: NodeJS.Platform;
@@ -77,6 +80,8 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
       );
   }
   let downloads = 0;
+  let releaseChecks = 0;
+  const downloadUrls: Array<string> = [];
   const crypto = yield* Crypto.Crypto;
   const sha256 = Hex.encode(yield* crypto.digest("SHA-256", archive).pipe(Effect.orDie));
   let runtimeRenameFailures = input.runtimeRenameFailures ?? 0;
@@ -162,8 +167,17 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     Effect.provideService(
       HttpClient.HttpClient,
       HttpClient.make((request) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
+          if (request.url === latestReleaseUrl) {
+            releaseChecks++;
+            const response = yield* (
+              input.latestRelease?.(releaseChecks, sha256) ??
+                Effect.succeed(new Response(null, { status: 404 }))
+            );
+            return HttpClientResponse.fromWeb(request, response);
+          }
           downloads++;
+          downloadUrls.push(request.url);
           return Object.defineProperty(
             HttpClientResponse.fromWeb(
               request,
@@ -186,6 +200,8 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     probeLog,
     failedRenames,
     downloads: () => downloads,
+    releaseChecks: () => releaseChecks,
+    downloadUrls,
   };
 });
 const terminalState = (installation: CodexInstallation.CodexInstallation["Service"]) =>
@@ -194,6 +210,45 @@ const terminalState = (installation: CodexInstallation.CodexInstallation["Servic
     Stream.runHead,
     Effect.map(Option.getOrThrow),
   );
+
+const seedOlderRelease = Effect.fn("test.seedOlderCodexRelease")(function* () {
+  const first = yield* makeHarness();
+  yield* first.installation.start;
+  yield* terminalState(first.installation);
+  const executable = yield* first.installation.resolve();
+  const oldVersion = "0.156.0";
+  const oldDirectory = `${first.installation.managedDirectory}/${oldVersion}`;
+  yield* first.fs.rename(executable.managedVersionDirectory!, oldDirectory);
+  for (const name of ["codex-package.json", ".install-complete.json"]) {
+    const file = `${oldDirectory}/${name}`;
+    yield* first.fs.writeFileString(
+      file,
+      (yield* first.fs.readFileString(file)).replaceAll(asset.version, oldVersion),
+    );
+  }
+  yield* first.fs.writeFileString(
+    `${first.installation.managedDirectory}/active.json`,
+    JSON.stringify({ version: oldVersion }),
+  );
+  return { baseDir: first.baseDir, oldVersion, fs: first.fs };
+});
+
+function githubRelease(sha256: string, version = asset.version) {
+  return {
+    tag_name: `rust-v${version}`,
+    draft: false,
+    prerelease: false,
+    assets: [
+      {
+        name: `codex-package-${asset.target}.tar.gz`,
+        state: "uploaded",
+        size: archive.length,
+        digest: `sha256:${sha256}`,
+        browser_download_url: "https://untrusted.example/runtime.tar.gz",
+      },
+    ],
+  };
+}
 
 // These tests emulate POSIX hosts; a Windows filesystem reports no executable mode bits.
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallation", () => {
@@ -222,6 +277,8 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
           version,
         });
         yield* h.installation.acquire().pipe(Effect.scoped);
+        expect(yield* h.installation.checkForUpdate).toBeNull();
+        expect(h.releaseChecks()).toBe(0);
         expect(h.downloads()).toBe(0);
         expect(yield* h.fs.exists(h.installation.managedDirectory)).toBe(false);
         expect((yield* h.fs.readFileString(h.probeLog)).trim().split("\n")).toEqual([
@@ -369,22 +426,8 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
     "upgrades an older managed installation when CodeShip starts: %s",
     (scenario) =>
       Effect.gen(function* () {
-        const first = yield* makeHarness();
-        yield* first.installation.start;
-        yield* terminalState(first.installation);
-        const executable = yield* first.installation.resolve();
-        const oldVersion = "0.156.0";
-        const oldDirectory = `${first.installation.managedDirectory}/${oldVersion}`;
-        const activePath = `${first.installation.managedDirectory}/active.json`;
-        yield* first.fs.rename(executable.managedVersionDirectory!, oldDirectory);
-        for (const name of ["codex-package.json", ".install-complete.json"]) {
-          const file = `${oldDirectory}/${name}`;
-          yield* first.fs.writeFileString(
-            file,
-            (yield* first.fs.readFileString(file)).replaceAll(asset.version, oldVersion),
-          );
-        }
-        yield* first.fs.writeFileString(activePath, JSON.stringify({ version: oldVersion }));
+        const first = yield* seedOlderRelease();
+        const { oldVersion } = first;
         const finishDownload = yield* Deferred.make<void>();
         const corrupt = scenario === "corrupt download";
         const restarted = yield* makeHarness({
@@ -417,11 +460,155 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
           });
           expect(yield* reopened.installation.state).toMatchObject({
             phase: "idle",
+            version: activeVersion,
             installedVersion: activeVersion,
           });
           expect(reopened.downloads()).toBe(0);
         }
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect.each(["verified", "corrupt"] as const)(
+    "updates a managed runtime through the verified latest stable asset: %s",
+    (packageResult) =>
+      Effect.gen(function* () {
+        const { baseDir, oldVersion } = yield* seedOlderRelease();
+        const corrupt = packageResult === "corrupt";
+        const { installation, downloads, releaseChecks, downloadUrls } = yield* makeHarness({
+          baseDir,
+          options: { releaseAsset: { ...asset, version: oldVersion, sha256: "0".repeat(64) } },
+          latestRelease: (_, sha256) => Effect.sync(() => Response.json(githubRelease(sha256))),
+          ...(corrupt ? { body: Stream.succeed(Uint8Array.from(archive).fill(0, 0, 1)) } : {}),
+        });
+        const expected = { installedVersion: oldVersion, latestVersion: asset.version };
+        expect(releaseChecks()).toBe(0);
+        expect(
+          yield* Effect.all([installation.checkForUpdate, installation.checkForUpdate], {
+            concurrency: "unbounded",
+          }),
+        ).toEqual([expected, expected]);
+        expect(releaseChecks()).toBe(1);
+        expect(downloads()).toBe(0);
+        const results = yield* Effect.forEach(
+          [asset.version, asset.version],
+          (version) => Effect.exit(installation.startUpdate(version)),
+          { concurrency: "unbounded" },
+        );
+        expect(results.every(corrupt ? Exit.isFailure : Exit.isSuccess)).toBe(true);
+        expect(yield* installation.state).toMatchObject({
+          phase: corrupt ? "failed" : "succeeded",
+          installedVersion: corrupt ? oldVersion : asset.version,
+        });
+        expect((yield* installation.resolve()).version).toBe(corrupt ? oldVersion : asset.version);
+        expect(downloadUrls).toEqual([
+          `https://github.com/openai/codex/releases/download/rust-v${asset.version}/codex-package-${asset.target}.tar.gz`,
+        ]);
+        if (!corrupt)
+          expect(yield* installation.start).toMatchObject({
+            phase: "succeeded",
+            installedVersion: asset.version,
+          });
+        expect(downloads()).toBe(1);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect.each([
+    { name: "draft", override: { draft: true } },
+    { name: "prerelease flag", override: { prerelease: true } },
+    { name: "prerelease tag", override: { tag_name: `rust-v${asset.version}-alpha.1` } },
+    { name: "unsafe tag", override: { tag_name: `rust-v${asset.version}/../other` } },
+    { name: "older than the bundled pin", override: { tag_name: "rust-v0.155.0" } },
+    { name: "missing target asset", override: { assets: [] } },
+    {
+      name: "bad checksum",
+      override: { assets: [{ ...githubRelease("").assets[0], digest: "unknown" }] },
+    },
+    {
+      name: "invalid size",
+      override: { assets: [{ ...githubRelease("0".repeat(64)).assets[0], size: 0 }] },
+    },
+  ])("ignores unusable Codex release metadata: $name", ({ override }) =>
+    Effect.gen(function* () {
+      const { baseDir, oldVersion } = yield* seedOlderRelease();
+      const { installation, downloads } = yield* makeHarness({
+        baseDir,
+        options: { releaseAsset: { ...asset, version: oldVersion, sha256: "0".repeat(64) } },
+        latestRelease: (_, sha256) =>
+          Effect.sync(() => Response.json({ ...githubRelease(sha256), ...override })),
+      });
+      expect(yield* installation.checkForUpdate).toEqual({
+        installedVersion: oldVersion,
+        latestVersion: null,
+      });
+      expect(yield* Effect.flip(installation.startUpdate(asset.version))).toMatchObject({
+        operation: "update",
+      });
+      expect((yield* installation.resolve()).version).toBe(oldVersion);
+      expect(downloads()).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("recovers from a rate-limited release metadata check", () =>
+    Effect.gen(function* () {
+      const { baseDir, oldVersion } = yield* seedOlderRelease();
+      const { installation, releaseChecks, downloads } = yield* makeHarness({
+        baseDir,
+        options: { releaseAsset: { ...asset, version: oldVersion, sha256: "0".repeat(64) } },
+        latestRelease: (checks, sha256) =>
+          Effect.sync(() =>
+            checks === 1
+              ? new Response(null, { status: 429 })
+              : Response.json(githubRelease(sha256)),
+          ),
+      });
+      expect((yield* installation.checkForUpdate)?.latestVersion).toBeNull();
+      expect((yield* installation.checkForUpdate)?.latestVersion).toBeNull();
+      expect(releaseChecks()).toBe(1);
+      yield* TestClock.adjust("1 minute");
+      expect((yield* installation.checkForUpdate)?.latestVersion).toBe(asset.version);
+      expect(releaseChecks()).toBe(2);
+      expect(downloads()).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("applies a changed compatibility policy to cached release metadata", () =>
+    Effect.gen(function* () {
+      const { baseDir, oldVersion } = yield* seedOlderRelease();
+      const manifest = yield* Ref.make(ModelManifest.BUNDLED_MODEL_MANIFEST);
+      const { installation, releaseChecks, downloads } = yield* makeHarness({
+        baseDir,
+        options: { releaseAsset: { ...asset, version: oldVersion, sha256: "0".repeat(64) } },
+        latestRelease: (_, sha256) => Effect.sync(() => Response.json(githubRelease(sha256))),
+        manifestCurrent: Ref.get(manifest),
+      });
+      expect((yield* installation.checkForUpdate)?.latestVersion).toBe(asset.version);
+      const blockVersion = (version: string) =>
+        Ref.set(manifest, {
+          ...ModelManifest.BUNDLED_MODEL_MANIFEST,
+          compatibility: (ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility ?? []).map((policy) =>
+            policy.driver === "codex"
+              ? {
+                  ...policy,
+                  ranges: [{ range: version, status: "broken" as const }, ...policy.ranges],
+                }
+              : policy,
+          ),
+        });
+      yield* blockVersion(asset.version);
+      expect((yield* installation.checkForUpdate)?.latestVersion).toBeNull();
+      expect(yield* Effect.flip(installation.startUpdate(asset.version))).toMatchObject({
+        operation: "update",
+      });
+      expect(releaseChecks()).toBe(1);
+      expect(downloads()).toBe(0);
+      yield* blockVersion(oldVersion);
+      expect(yield* Effect.flip(installation.resolve())).toMatchObject({ operation: "resolve" });
+      expect(yield* installation.installedManagedVersion).toBe(oldVersion);
+      expect(yield* installation.startUpdate(asset.version)).toMatchObject({
+        phase: "succeeded",
+        installedVersion: asset.version,
+      });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("rejects corrupted downloads without publishing a runtime", () =>

@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as HttpClient from "effect/http/HttpClient";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import type * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
@@ -25,7 +26,12 @@ import {
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { discoverFxSkills } from "./skills.ts";
-import { makeManualOnlyProviderMaintenanceCapabilities } from "@t3tools/provider-core/server/maintenanceResolver";
+import {
+  enrichProviderSnapshotWithVersionAdvisory,
+  makeCachedProviderMaintenanceResolution,
+  resolveProviderMaintenanceCapabilitiesEffect,
+} from "@t3tools/provider-core/server/maintenanceResolver";
+import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import {
   haveProviderSnapshotSettingsChanged,
   makeProviderSnapshotSettingsSource,
@@ -33,14 +39,9 @@ import {
 } from "@t3tools/provider-core/server/snapshotSettings";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { FX_DRIVER_KIND } from "./acpSupport.ts";
+import { makeFxMaintenanceResolver, manualFxMaintenance } from "./maintenance.ts";
 
 const decodeFxSettings = Schema.decodeSync(FxSettings);
-// fx installs from its own setup script and updates with `fx upgrade`; there
-// is no npm package to read a latest version from.
-const MAINTENANCE = makeManualOnlyProviderMaintenanceCapabilities({
-  provider: FX_DRIVER_KIND,
-  packageName: null,
-});
 
 // See `supportsTextGeneration` in status.ts.
 const unsupportedTextGeneration: ProviderTextGeneration = (() => {
@@ -66,8 +67,10 @@ export type FxDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
+  | HttpClient.HttpClient
   | Path.Path
-  | ProviderHost.ProviderHost;
+  | ProviderHost.ProviderHost
+  | ProviderLatestVersions.ProviderLatestVersions;
 
 export const FxDriver: ProviderDriver<FxSettings, FxDriverEnv> = {
   driverKind: FX_DRIVER_KIND,
@@ -87,7 +90,9 @@ export const FxDriver: ProviderDriver<FxSettings, FxDriverEnv> = {
   }) {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const fileSystem = yield* FileSystem.FileSystem;
+    const http = yield* HttpClient.HttpClient;
     const path = yield* Path.Path;
+    const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const processEnv = yield* mergeProviderInstanceEnvironment(
       environment,
       yield* HostProcess.Environment,
@@ -104,9 +109,21 @@ export const FxDriver: ProviderDriver<FxSettings, FxDriverEnv> = {
       continuationGroupKey: continuationIdentity.continuationKey,
     });
     const effectiveConfig = { ...config, enabled } satisfies FxSettings;
+    const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
+      enabled
+        ? resolveProviderMaintenanceCapabilitiesEffect(makeFxMaintenanceResolver(http), {
+            binaryPath: effectiveConfig.binaryPath || "fx",
+            env: processEnv,
+          }).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          )
+        : Effect.succeed(manualFxMaintenance),
+    );
     const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
     const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<FxSettings>>({
-      resolveMaintenance: () => Effect.succeed(MAINTENANCE),
+      resolveMaintenance,
       getSettings: snapshotSettings.getSettings,
       streamSettings: snapshotSettings.streamSettings,
       haveSettingsChanged: haveProviderSnapshotSettingsChanged,
@@ -116,6 +133,17 @@ export const FxDriver: ProviderDriver<FxSettings, FxDriverEnv> = {
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       ),
+      enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
+        resolveMaintenance().pipe(
+          Effect.flatMap((capabilities) =>
+            enrichProviderSnapshotWithVersionAdvisory(snapshot, capabilities, {
+              enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+            }),
+          ),
+          Effect.provideService(ProviderLatestVersions.ProviderLatestVersions, latestVersions),
+          Effect.provideService(HttpClient.HttpClient, http),
+          Effect.flatMap(publishSnapshot),
+        ),
     }).pipe(
       Effect.mapError(
         (cause) =>

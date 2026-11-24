@@ -3,15 +3,18 @@ import { assert, describe, it } from "@effect/vitest";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as TestClock from "effect/testing/TestClock";
+import { HttpClient, HttpClientResponse } from "effect/http";
 
 import { FxSettings } from "../settings.ts";
 import { checkFxProviderStatus } from "./status.ts";
+import { makeFxMaintenanceResolver } from "./maintenance.ts";
 
 const encoder = new TextEncoder();
 const settings = Schema.decodeSync(FxSettings)({ enabled: true });
@@ -72,6 +75,42 @@ const check = (statusJson: string, versionDelay: Duration.Input = 0) =>
     );
     return { draft, invoked };
   }).pipe(Effect.provide(NodeServices.layer));
+
+it.effect.each([
+  { name: "native stable", updateChannel: "stable", owned: true, canUpdate: true },
+  { name: "native dev", updateChannel: "dev", owned: true, canUpdate: false },
+  { name: "externally owned", updateChannel: "stable", owned: false, canUpdate: false },
+])("uses the fx updater only for $name installations", ({ updateChannel, owned, canUpdate }) =>
+  Effect.gen(function* () {
+    const spawner = ChildProcessSpawner.make(() =>
+      Effect.succeed(processHandle(JSON.stringify({ update_channel: updateChannel }), 0)),
+    );
+    const client = HttpClient.make((request) =>
+      Effect.succeed(HttpClientResponse.fromWeb(request, new Response("v0.0.17\n"))),
+    );
+    const path = yield* Path.Path;
+    const home = path.resolve("test-fx-home");
+    const executable = owned
+      ? path.join(home, ".local", "bin", "fx")
+      : path.join(home, "mise", "installs", "fx", "0.0.16", "fx");
+    const capabilities = yield* makeFxMaintenanceResolver(client)
+      .resolve({
+        binaryPath: "fx",
+        resolvedCommandPath: executable,
+        realCommandPath: executable,
+        env: { HOME: home },
+        platform: "darwin",
+      })
+      .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+    if (canUpdate) {
+      assert.deepEqual(capabilities.update?.args, ["upgrade"]);
+      assert.equal(capabilities.update?.executable, executable);
+      assert.equal(yield* capabilities.lookupLatestVersion!, "0.0.17");
+    } else {
+      assert.isNull(capabilities.update);
+    }
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
 
 describe("checkFxProviderStatus", () => {
   it.effect.each([

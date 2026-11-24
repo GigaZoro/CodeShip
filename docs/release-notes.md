@@ -1,6 +1,8 @@
-## 2026-11-24 — GPT-6.2 in managed Codex
+## 2026-11-24 — GPT-6.2 in managed Codex and automatic provider updates
 
 - CodeShip upgrades its managed Codex CLI to 0.172.0 on macOS, Windows and Linux. Accounts with access to GPT-6.2 Astra or Sol can select those models for chats and delegated tasks.
+- Automatic provider updates now check hourly while CodeShip runs. Managed Codex and Antigravity can install stable releases between app updates.
+- CodeShip can now update native stable-channel fx installations on macOS and Linux.
 
 ## 2026-11-24 — Keep schedule edits made during a missed run
 
