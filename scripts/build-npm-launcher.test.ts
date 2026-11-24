@@ -304,7 +304,7 @@ function rejectPeer(file) {
   if (checked || file !== ${JSON.stringify(entry)}) return;
   checked = true;
   const peer = spawnSync("sh", ["peer.sh", ${JSON.stringify(dir)}, ${JSON.stringify(VERSION)}], {
-    env: { ...process.env, PROBE_OWNER: "shared" }, timeout: 5000,
+    env: { ...process.env, PROBE_OWNER: "shared" },
   });
   if (peer.error || peer.status !== 1) throw new Error("unexpected shared verification result: " + peer.status);
 }
