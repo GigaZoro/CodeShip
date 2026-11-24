@@ -717,14 +717,17 @@ it.effect(
         { instanceId: "claudeAgent", model: "claude-sonnet", autoAccount: true },
       ]);
 
-      for (const refused of [
-        yield* launchWith(undefined, { auto: true }),
-        yield* launchWith(claude, {
-          auto: true,
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-settings" },
-        }),
-      ]) {
-        expect(refused.result).toMatchObject({ code: "invalid_request" });
+      for (const [refused, code] of [
+        [yield* launchWith(undefined, { auto: true }), "auto_mode_unavailable"],
+        [
+          yield* launchWith(claude, {
+            auto: true,
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-settings" },
+          }),
+          "invalid_request",
+        ],
+      ] as const) {
+        expect(refused.result).toMatchObject({ code });
         expect(refused.selections).toEqual([]);
       }
 

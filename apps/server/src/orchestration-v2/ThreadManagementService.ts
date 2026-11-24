@@ -820,7 +820,8 @@ const make = Effect.gen(function* () {
         return orchestrator.getThreadRecords(command.parentThreadId, []).pipe(
           Effect.flatMap((parent) =>
             assertProviderInstanceEnabled({
-              projectId: parent.thread.projectId,
+              // A task in another project's worktree runs on that project's accounts.
+              projectId: command.projectId ?? parent.thread.projectId,
               commandId: command.commandId,
               instanceId: command.modelSelection.instanceId,
             }),
@@ -864,6 +865,8 @@ const make = Effect.gen(function* () {
       readonly selection: ModelSelection | undefined;
       /** A delegated task's thread does not exist yet, so it starts like a new thread. */
       readonly newThread: boolean;
+      /** Where the turn runs when not in `threadId`'s project: a task in another project's worktree. */
+      readonly projectId?: ProjectId | undefined;
       readonly scheduled: boolean;
     }) {
       if (input.newThread && input.selection?.autoAccount !== true) return command;
@@ -877,6 +880,7 @@ const make = Effect.gen(function* () {
         thread.latestRunId === null &&
         thread.activeProviderThreadId === null;
       if (!fresh && selection.autoAccount !== true) return command;
+      const projectId = input.projectId ?? thread.projectId;
       // A retried command keeps the account its first attempt chose.
       const receipt = yield* receipts
         .getByCommandId(command.commandId)
@@ -885,7 +889,7 @@ const make = Effect.gen(function* () {
       if (fresh) {
         const launch = yield* routing.failoverLaunch({
           selection,
-          projectId: thread.projectId,
+          projectId,
           scheduled: input.scheduled,
           discoverMcpSignIns: false,
         });
@@ -908,7 +912,7 @@ const make = Effect.gen(function* () {
       if (selection.autoAccount !== true) return command;
       const routed = yield* routing.route({
         selection,
-        projectId: thread.projectId,
+        projectId,
         // A thread that never ran starts on the highest account in the order.
         currentInstanceId:
           input.newThread || thread.activeProviderThreadId === null
@@ -937,6 +941,7 @@ const make = Effect.gen(function* () {
           threadId: command.parentThreadId,
           selection: command.modelSelection,
           newThread: true,
+          projectId: command.projectId,
           scheduled: false,
         });
     }

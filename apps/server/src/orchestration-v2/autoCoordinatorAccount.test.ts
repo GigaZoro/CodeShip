@@ -28,6 +28,18 @@ const provider = (
   ...overrides,
 });
 
+// Settings that turn each account on, its driver read from its id's prefix.
+const enabledInstances = (ids: ReadonlyArray<ProviderInstanceId>) =>
+  Object.fromEntries(
+    ids.map((id) => [
+      id,
+      {
+        driver: ProviderDriverKind.make(id.startsWith("claude") ? "claudeAgent" : "codex"),
+        enabled: true,
+      },
+    ]),
+  );
+
 describe("autoCoordinatorAccounts", () => {
   it.each([
     {
@@ -265,15 +277,7 @@ it.each([false, true])(
           [ProviderDriverKind.make("claudeAgent")]: primary,
           [ProviderDriverKind.make("codex")]: otherPrimary,
         },
-        providerInstances: Object.fromEntries(
-          [ownId, ownOtherId, first, second].map((id) => [
-            id,
-            {
-              driver: ProviderDriverKind.make(id.startsWith("claude") ? "claudeAgent" : "codex"),
-              enabled: true,
-            },
-          ]),
-        ),
+        providerInstances: enabledInstances([ownId, ownOtherId, first, second]),
         providerInstanceFailoverOrder: [first, second],
       },
       nowMs: Date.parse("2026-11-08T12:00:00Z"),
@@ -321,7 +325,7 @@ it.each([false, true])(
     expect(result.primary).toEqual(primary);
     expect(result.model).toBe(primary.model);
     expect(result.models.map((model) => model.slug)).toEqual([primary.model]);
-    expect(result.otherPrimary).toEqual(
+    expect(result.otherReviewer).toEqual(
       reviewerLimited
         ? undefined
         : {
@@ -476,15 +480,7 @@ it("names the reviewer on the account whose login can run the model", () => {
         [ProviderDriverKind.make("claudeAgent")]: { model: "claude-opus-5-5" },
         [ProviderDriverKind.make("codex")]: { model: slug },
       },
-      providerInstances: Object.fromEntries(
-        [ownId, first, second].map((id) => [
-          id,
-          {
-            driver: ProviderDriverKind.make(id.startsWith("claude") ? "claudeAgent" : "codex"),
-            enabled: true,
-          },
-        ]),
-      ),
+      providerInstances: enabledInstances([ownId, first, second]),
       providerInstanceFailoverOrder: [first, second],
     },
     nowMs: Date.parse("2026-11-08T12:00:00Z"),
@@ -502,8 +498,73 @@ it("names the reviewer on the account whose login can run the model", () => {
       provider(second, { models: codexModels }),
     ],
   });
-  expect(result.otherPrimary?.providerInstanceId).toBe(second);
+  expect(result.otherReviewer?.providerInstanceId).toBe(second);
   expect(
     result.otherProviders?.map((account) => [account.providerInstanceId, account.models.length]),
   ).toEqual([[second, 1]]);
 });
+
+it.each([false, true])(
+  "names a reviewer on the coordinator's provider for when the other cannot run (other limited: %s)",
+  (otherLimited) => {
+    const ownId = ProviderInstanceId.make("claude_own");
+    const spareId = ProviderInstanceId.make("claude_spare");
+    const claude = ProviderDriverKind.make("claudeAgent");
+    const refused = [{ resetAt: null, refusedAt: "2026-11-08T11:00:00Z" }];
+    const opus = {
+      slug: "claude-opus-5-5",
+      name: "Opus",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "effort",
+            label: "Effort",
+            type: "select" as const,
+            options: [{ id: "xhigh", label: "xhigh" }],
+          },
+        ],
+      },
+    };
+    const result = autoCoordinatorBriefInput({
+      driver: claude,
+      selection: { instanceId: ownId, model: opus.slug },
+      projectId: ProjectId.make("project:auto"),
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        autoModeModels: {
+          // Saved by its display name, which the target turns into the account's own id.
+          [claude]: {
+            model: opus.name,
+            options: [
+              { id: "effort", value: "xhigh" },
+              { id: "fastMode", value: true },
+            ],
+          },
+          [ProviderDriverKind.make("codex")]: { model: "gpt-6-astra" },
+        },
+        providerInstances: enabledInstances([ownId, spareId, first]),
+        providerInstanceFailoverOrder: [ownId, spareId, first],
+      },
+      nowMs: Date.parse("2026-11-08T12:00:00Z"),
+      // The coordinator's own account is out of room, so the next one in failover order reviews.
+      recordedLimits: new Map([
+        [ownId, refused],
+        ...(otherLimited ? [[first, refused] as const] : []),
+      ]),
+      orchestrationCapableInstanceIds: new Set([ownId, spareId, first]),
+      providers: [
+        provider(ownId, { driver: claude, models: [opus] }),
+        // The user chose this primary, so a catalog that now marks it legacy still runs it.
+        provider(spareId, { driver: claude, models: [{ ...opus, isLegacy: true }] }),
+        provider(first),
+      ],
+    });
+    expect(result.ownReviewer).toEqual({
+      model: opus.slug,
+      options: [{ id: "effort", value: "xhigh" }],
+      providerInstanceId: spareId,
+    });
+    expect(result.otherReviewer?.providerInstanceId).toBe(otherLimited ? undefined : first);
+  },
+);

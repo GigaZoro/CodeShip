@@ -3,6 +3,7 @@ import {
   CommandId,
   EnvironmentId,
   MessageId,
+  NodeId,
   type OrchestrationV2Command,
   type OrchestrationV2Run,
   type OrchestrationV2ServerCommand,
@@ -159,6 +160,84 @@ it.effect(
       );
       expect(error).toMatchObject({ projectId, instanceId });
       expect(dispatched).toEqual([]);
+    }).pipe(Effect.provide(layerTest));
+  },
+);
+
+it.effect.each([
+  { account: "the destination project enables", offIn: "parent", refused: false },
+  { account: "the destination project turns off", offIn: "destination", refused: true },
+] as const)(
+  "a delegated task in another project's worktree is checked and routed on $account",
+  ({ offIn, refused }) => {
+    const parentProject = ProjectId.make("project:thread-management:chokepoint");
+    const destination = ProjectId.make("project:thread-management:destination");
+    const instanceId = ProviderInstanceId.make("codex_work");
+    const dispatched: Array<OrchestrationV2ServerCommand> = [];
+    const routedIn: Array<ProjectId> = [];
+    const layerTest = layerDispatchChokepointTest(
+      ServerSettings.layerTest({
+        providerInstances: { [instanceId]: { driver: "codex", enabled: true } },
+        projectSettingsOverrides: {
+          [offIn === "parent" ? parentProject : destination]: {
+            providerInstances: { [instanceId]: { enabled: false } },
+          },
+        },
+      }),
+      {
+        accountRouting: Layer.succeed(AccountRouting.AccountRouting, {
+          accountsWithRoom: () => Effect.succeed([]),
+          scheduledRunBlock: () => Effect.succeed(null),
+          releaseAllowedHolds: Effect.succeed(false),
+          route: (input) =>
+            Effect.sync(() => {
+              routedIn.push(input.projectId);
+              return input.selection;
+            }),
+          limits: Effect.succeed({
+            accounts: new Map(),
+            estimated: new Set<never>(),
+            models: new Map(),
+          }),
+          retryAccount: () => Effect.void,
+          holds: Effect.succeed([]),
+          launchLimit: () => Effect.succeed(null),
+          failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
+        }),
+      },
+    )(dispatched);
+
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const outcome = yield* Effect.result(
+        threads.dispatch({
+          type: "delegated_task.request",
+          createdBy: "agent",
+          creationSource: "mcp",
+          commandId: CommandId.make(`command:thread-management:foreign-delegate-${offIn}`),
+          parentThreadId: ThreadId.make("thread:thread-management:chokepoint"),
+          parentRunId: RunId.make("run:thread-management:chokepoint"),
+          parentNodeId: NodeId.make("node:thread-management:chokepoint"),
+          task: "Fix the bug there.",
+          modelSelection: { instanceId, model: "test", autoAccount: true },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          projectId: destination,
+        }),
+      );
+
+      expect(routedIn).toEqual([destination]);
+      if (refused) {
+        expect(outcome._tag).toBe("Failure");
+        expect(outcome._tag === "Failure" ? outcome.failure : undefined).toMatchObject({
+          projectId: destination,
+          instanceId,
+        });
+        expect(dispatched).toEqual([]);
+      } else {
+        expect(outcome._tag).toBe("Success");
+        expect(dispatched).toHaveLength(1);
+      }
     }).pipe(Effect.provide(layerTest));
   },
 );
