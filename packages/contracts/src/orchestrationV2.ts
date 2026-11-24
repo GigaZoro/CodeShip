@@ -1121,6 +1121,9 @@ export const OrchestrationV2Subagent = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
   completionDelivery: Schema.optional(OrchestrationV2DelegatedCompletionTaskDelivery),
+  terminalResultObservation: Schema.optional(
+    Schema.Struct({ runId: RunId, at: Schema.DateTimeUtc }),
+  ),
   status: Schema.Literals([
     "idle",
     "pending",
@@ -1391,6 +1394,7 @@ export const OrchestrationV2ContextHandoff = Schema.Struct({
 export type OrchestrationV2ContextHandoff = typeof OrchestrationV2ContextHandoff.Type;
 
 export const OrchestrationV2ProviderTurn = Schema.Struct({
+  nativeWakeStarted: Schema.optional(Schema.Boolean),
   id: ProviderTurnId,
   providerThreadId: ProviderThreadId,
   nodeId: NodeId,
@@ -1499,6 +1503,8 @@ export const OrchestrationV2NotificationSource = kindUnionWithFallback(
 export type OrchestrationV2NotificationSource = typeof OrchestrationV2NotificationSource.Type;
 
 export const OrchestrationV2Notification = Schema.Struct({
+  wakeEventIds: Schema.optional(Schema.Array(Schema.String)),
+  previouslyHandledWakeEventIds: Schema.optional(Schema.Array(Schema.String)),
   source: OrchestrationV2NotificationSource,
   outcome: Schema.Literals(["completed", "failed", "cancelled", "updated", "unknown"]),
   summary: TrimmedNonEmptyString,
@@ -2624,6 +2630,9 @@ export type OrchestrationV2ExecutionNodeJson = typeof OrchestrationV2ExecutionNo
 
 export const OrchestrationV2SubagentJson = OrchestrationV2Subagent.mapFields((fields) => ({
   ...fields,
+  terminalResultObservation: Schema.optional(
+    Schema.Struct({ runId: RunId, at: Schema.DateTimeUtcFromString }),
+  ),
   startedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   completedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   updatedAt: Schema.DateTimeUtcFromString,

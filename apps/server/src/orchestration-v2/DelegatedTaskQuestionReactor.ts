@@ -50,6 +50,7 @@ const make = Effect.gen(function* () {
       messageId: MessageId.make(`message:delegated-task-question:${key}`),
       text: `${situation} Read it with t3_pending_request action read, threadId ${task.childThreadId}, and requestId ${request.id}. Answer it with action respond when the answer follows from the task or the user's instructions; otherwise ask the user, then answer it. If it is no longer pending, it was answered or dismissed.`,
       notification: {
+        wakeEventIds: [JSON.stringify(["delegated-question", task.childThreadId, request.id])],
         source: { kind: "delegated_task", taskIds: [task.id], childThreadId: task.childThreadId },
         outcome: "updated",
         summary: `Delegated task${label === undefined ? "" : ` "${label}"`} has a question`,

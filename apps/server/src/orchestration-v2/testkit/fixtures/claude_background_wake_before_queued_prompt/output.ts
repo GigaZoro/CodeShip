@@ -74,6 +74,12 @@ export function assertClaudeBackgroundWakeBeforeQueuedPromptOutput(
     [CLAUDE_BACKGROUND_SUBAGENT_LIFECYCLE_RESUME_PROMPT, ["RESUMED"]],
     [CLAUDE_BACKGROUND_SUBAGENT_LIFECYCLE_FINAL_PROMPT, ["ALL_DONE"]],
   ]);
+  const wakeSizes = projection.messages.flatMap((message) =>
+    message.notification?.wakeEventIds === undefined
+      ? []
+      : [new Set(message.notification.wakeEventIds).size],
+  );
+  assert.sameMembers(wakeSizes, [1, 2]);
   const continuationReplies = runs.filter((run) => !run.fromUser).flatMap((run) => run.replies);
   assert.sameMembers(continuationReplies, ["A_REPORTED", STOP_WAKE_REPLY]);
   assert.isTrue(projection.runs.every((run) => run.status === "completed"));

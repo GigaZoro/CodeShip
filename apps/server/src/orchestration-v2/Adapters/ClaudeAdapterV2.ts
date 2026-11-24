@@ -5939,6 +5939,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             nativeId: input.context.nativeMessageCursor ?? input.context.nativeTurnId,
             strength: "weak",
           },
+          ...(isClaudeProviderContinuationTurn(input.context.input) &&
+          (input.context.nativeWakeStarted || input.completedAt !== null)
+            ? { nativeWakeStarted: input.context.nativeWakeStarted }
+            : {}),
           ordinal: input.context.providerTurnOrdinal,
           status: input.status,
           startedAt: input.context.startedAt,
@@ -7786,6 +7790,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           /** The process ends with this turn, so the tasks it still runs are reported as lost. */
           readonly lostTasks?: ClaudeProcessLoss;
         }) {
+          if (input.context.promptUuid === null && (input.result?.usage?.output_tokens ?? 0) > 0) {
+            input.context.nativeWakeStarted = true;
+          }
+
           // Taken before this turn's own cleanup settles any of them.
           const lostSubagents =
             input.lostTasks === undefined
@@ -8470,7 +8478,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(sourceRunId === undefined ? {} : { demandSourceRunId: sourceRunId }),
             driver: CLAUDE_PROVIDER,
             detail,
-            ...(notification === null ? {} : { notification }),
+            ...(notification === null
+              ? {}
+              : {
+                  notification: {
+                    ...notification,
+                    wakeEventIds: Array.from(reports?.keys() ?? [], (taskId) =>
+                      JSON.stringify([CLAUDE_PROVIDER, wakeInput.nativeThreadId, "task", taskId]),
+                    ),
+                  },
+                }),
           });
         });
 

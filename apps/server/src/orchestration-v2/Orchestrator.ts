@@ -2969,6 +2969,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const updatedTask: OrchestrationV2Subagent = {
       ...task,
+      ...(task.terminalResultObservation === undefined &&
+      command.type === "delegated_task.completion-delivery.acknowledge" &&
+      command.observedByRunId !== null
+        ? { terminalResultObservation: { runId: command.observedByRunId, at: now } }
+        : {}),
       completionDelivery: {
         state,
         observedByRunId:
@@ -8868,6 +8873,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const task: OrchestrationV2Subagent = {
       ...original,
       demandId: run.demandId ?? null,
+      terminalResultObservation: undefined,
       createdBy: command.createdBy,
       driver: adapter.driver,
       id: taskId,

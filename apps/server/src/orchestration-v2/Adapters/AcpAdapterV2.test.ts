@@ -8548,7 +8548,7 @@ describe("AcpAdapterV2", () => {
     wake.start("current", b, "new-registration");
     wake.terminal("current");
     wake.terminal("task-83", { kind: "command", label: "stale detail", outcome: "completed" });
-    assert.deepEqual(wake.offer(), [{ sourceRunId: b }]);
+    assert.deepEqual(wake.offer(), [{ sourceRunId: b, eventKey: "current" }]);
     wake.consume();
     wake.start("next", b, "next-registration");
     wake.terminal("next");
@@ -8576,7 +8576,10 @@ describe("AcpAdapterV2", () => {
     wake.terminal("shared", { kind: "command", label: "ambiguous", outcome: "completed" });
     wake.start("separate", later, "producer-c");
     wake.terminal("separate");
-    assert.deepEqual(wake.offer(), [{ sourceRunId: null }, { sourceRunId: later }]);
+    assert.deepEqual(wake.offer(), [
+      { sourceRunId: null },
+      { sourceRunId: later, eventKey: "separate" },
+    ]);
   });
 
   const wakeRuntime = Effect.fnUntraced(function* () {

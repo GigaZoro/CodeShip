@@ -1366,7 +1366,7 @@ function acpIsProviderContinuationMessage(message: {
 const sessionScopedId = (sessionId: string, nativeId: string): string =>
   JSON.stringify([sessionId, nativeId]);
 
-type WakeEvidence = { sourceRunId: RunId | null; report?: BackgroundWorkReport };
+type WakeEvidence = { eventKey?: string; sourceRunId: RunId | null; report?: BackgroundWorkReport };
 type WakeTask = WakeEvidence & {
   phase: "running" | "pending";
   hasSource: boolean;
@@ -1435,6 +1435,7 @@ export class AcpWakeEvidence {
 
   private detachTerminal(key: string, task: WakeTask) {
     this.pending.push({
+      ...(task.reused ? {} : { eventKey: key }),
       sourceRunId: task.sourceRunId,
       ...(task.report && { report: task.report }),
     });
@@ -4505,6 +4506,30 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               )
             : null;
           const source = commonSource(reports.map((item) => item.sourceRunId));
+
+          const wakeEventIds = new Set(
+            reports.flatMap(({ eventKey }) =>
+              eventKey === undefined ? [] : [JSON.stringify([driver, sessionId, "task", eventKey])],
+            ),
+          );
+          for (const entry of yield* Ref.get(wakeBuffer)) {
+            if (
+              entry.sessionId === sessionId &&
+              flavor.isProviderWakeNotification?.(entry) &&
+              typeof entry._meta?.promptId === "string" &&
+              entry._meta.promptId.trim().length > 0
+            ) {
+              wakeEventIds.add(JSON.stringify([driver, sessionId, "prompt", entry._meta.promptId]));
+            }
+          }
+          const handledTasks = yield* Ref.get(handledBackgroundTaskIdsInActiveTurn);
+          const previouslyHandledWakeEventIds = Array.from(handledTasks, (key) =>
+            JSON.stringify([driver, sessionId, "task", toolWakeKey(sessionId, key)]),
+          ).filter((key) => wakeEventIds.has(key));
+          const eventIdentity = {
+            wakeEventIds: [...wakeEventIds],
+            ...(previouslyHandledWakeEventIds.length ? { previouslyHandledWakeEventIds } : {}),
+          };
           yield* Effect.logInfo("orchestration-v2.acp-wake-turn-detected", {
             driver,
             providerSessionId: input.providerSessionId,
@@ -4518,7 +4543,18 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             driver,
             detail: null,
             ...(source === undefined ? {} : { demandSourceRunId: source }),
-            ...(notification === null ? {} : { notification }),
+            ...(notification !== null
+              ? { notification: { ...notification, ...eventIdentity } }
+              : wakeEventIds.size > 0
+                ? {
+                    notification: {
+                      source: { kind: "background_task" },
+                      outcome: "updated",
+                      summary: "Background activity updated",
+                      ...eventIdentity,
+                    },
+                  }
+                : {}),
             clearIfCurrent: () =>
               continuationPermit.withPermit(
                 Effect.gen(function* () {
