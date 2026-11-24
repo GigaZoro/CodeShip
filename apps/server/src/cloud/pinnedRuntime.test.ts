@@ -30,6 +30,7 @@ import {
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
 const version = "1.2.3";
+const verifiedExecutable = `#!/bin/sh\necho "t3 v${version}"\n`;
 const installPlatform = isWindowsHost ? "win32" : "linux";
 const archiveName = cliArchiveFileName(version, isWindowsHost ? "win32-x64" : "linux-x64");
 const entryName = isWindowsHost ? "t3.exe" : "t3";
@@ -94,7 +95,7 @@ it.live.skipIf(isWindowsHost)(
       const versions = path.dirname(paths.versionDir);
       yield* fs.makeDirectory(versions, { recursive: true });
       const staged = yield* fs.makeTempDirectory({ directory: versions, prefix: ".staging-" });
-      yield* fs.writeFileString(path.join(staged, "t3"), "#!/bin/sh\nexit 0\n");
+      yield* fs.writeFileString(path.join(staged, "t3"), verifiedExecutable);
       yield* fs.chmod(path.join(staged, "t3"), 0o755);
       yield* fs.writeFileString(path.join(staged, ".install-complete"), version);
       const allowRename = yield* Deferred.make<void>();
@@ -166,7 +167,7 @@ t3_promote_runtime "$3"`,
       ]);
       assert.isTrue(waited);
       assert.isTrue(checkedWinner);
-      assert.equal(yield* fs.readFileString(paths.entryPath), "#!/bin/sh\nexit 0\n");
+      assert.equal(yield* fs.readFileString(paths.entryPath), verifiedExecutable);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
@@ -178,7 +179,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       const baseDir = yield* fs.makeTempDirectoryScoped();
       const paths = pinnedRuntimePaths(path, baseDir, version, "linux");
       const npmStaging = yield* fs.makeTempDirectory({ directory: baseDir });
-      yield* fs.writeFileString(path.join(npmStaging, "t3"), "#!/bin/sh\nexit 0\n");
+      yield* fs.writeFileString(path.join(npmStaging, "t3"), verifiedExecutable);
       yield* fs.chmod(path.join(npmStaging, "t3"), 0o755);
       yield* fs.writeFileString(path.join(npmStaging, ".install-complete"), version);
       const mv = path.join(baseDir, "mv");
@@ -232,7 +233,7 @@ exec /bin/mv "$@"
         "t3",
       ]);
       assert.equal(validated.at(-1), paths.versionDir);
-      assert.equal(yield* fs.readFileString(paths.entryPath), "#!/bin/sh\nexit 0\n");
+      assert.equal(yield* fs.readFileString(paths.entryPath), verifiedExecutable);
     }),
   );
 

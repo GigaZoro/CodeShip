@@ -91,6 +91,8 @@ async function install(dir, key) {
     });
     if (extract.status !== 0) throw new Error(`could not extract ${archive}`);
     fs.rmSync(file);
+    if (!verifiesVersion(staging))
+      throw new Error(`the downloaded t3 ${version} runtime failed verification`);
     fs.writeFileSync(path.join(staging, ".install-complete"), `${version}\n`);
     publish(staging, dir);
   } finally {
@@ -120,18 +122,23 @@ function promotePosixRuntime(dir, staging) {
   if (result.status !== 0) throw new Error(`could not install the local t3 ${version} runtime`);
 }
 
-/** Preserve concurrently published complete installs; replace only incomplete folders without the completion marker. */
+function verifiedPeer(dir) {
+  if (!isComplete(dir)) return false;
+  if (!verifiesVersion(dir))
+    throw new Error(`the concurrently installed t3 ${version} runtime failed verification`);
+  return true;
+}
+
+/** Preserve a verified concurrent publication and repair an incomplete installation. */
 function publish(staging, dir) {
   try {
     fs.renameSync(staging, dir);
     return;
   } catch (error) {
-    if (isComplete(dir)) return;
+    if (verifiedPeer(dir)) return;
     if (!fs.existsSync(dir)) throw error;
   }
   if (process.platform !== "win32") {
-    if (!verifiesVersion(staging))
-      throw new Error(`the downloaded t3 ${version} runtime failed verification`);
     promotePosixRuntime(dir, staging);
     if (!verifiesVersion(dir))
       throw new Error(`the installed t3 ${version} runtime failed verification`);
@@ -150,18 +157,22 @@ function publish(staging, dir) {
   const stale = `${staging}.stale`;
   try {
     // A peer may have published between our marker check and taking the lock.
-    if (isComplete(dir)) return;
+    if (verifiedPeer(dir)) return;
     // Move it aside rather than deleting in place: once the folder is empty, a
     // peer's first rename can land in it.
     fs.renameSync(dir, stale);
     try {
       fs.renameSync(staging, dir);
     } catch (error) {
-      if (!isComplete(dir)) throw error;
+      if (!fs.existsSync(dir)) {
+        fs.renameSync(stale, dir);
+        throw error;
+      }
+      if (!verifiedPeer(dir)) throw error;
     }
+    fs.rmSync(stale, { recursive: true, force: true });
   } finally {
     fs.rmSync(lock, { recursive: true, force: true });
-    fs.rmSync(stale, { recursive: true, force: true });
   }
 }
 

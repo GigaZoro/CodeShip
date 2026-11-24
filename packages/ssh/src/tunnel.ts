@@ -494,8 +494,8 @@ if ! t3_runtime_ready "$T3_RUNTIME_DIR" "$T3_ARCHIVE_VERSION"; then
   rm -f "$T3_STAGING/$T3_ARCHIVE" "$T3_STAGING/SHA256SUMS"
   # Prove the binary runs here (libc, arch) before marking it ready, or every
   # later launch would exec a broken install instead of retrying.
-  if ! T3CODE_VERIFY_INSTALL=1 "$T3_STAGING/t3" --version >/dev/null; then
-    printf 'The t3 %s executable does not run on this host.\\n' "$T3_ARCHIVE_VERSION" >&2; exit 1
+  if ! t3_verify_version "$T3_STAGING" "$T3_ARCHIVE_VERSION"; then
+    printf 'The t3 %s runtime failed verification on this host.\\n' "$T3_ARCHIVE_VERSION" >&2; exit 1
   fi
   printf '%s\\n' "$T3_ARCHIVE_VERSION" > "$T3_STAGING/.install-complete"
   t3_promote_runtime "$T3_STAGING" || exit 1

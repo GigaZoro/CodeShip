@@ -92,9 +92,14 @@ t3_acquire_lock() {
   if [ ! -e "$t3_root" ] && [ -d "$t3_previous" ]; then t3_restore_runtime "$t3_previous" || return 1; fi
 }
 
+t3_verify_version() {
+  t3_reported=$(T3CODE_VERIFY_INSTALL=1 "$1/t3" --version) || return 1
+  printf '%s\\n' "$t3_reported" | awk -v expected="v$2" 'NF { last = $NF } END { exit (last != expected) }'
+}
+
 t3_runtime_ready() {
   [ -x "$1/t3" ] && [ -f "$1/.install-complete" ] && [ "$(cat "$1/.install-complete" 2>/dev/null)" = "$2" ] &&
-    T3CODE_VERIFY_INSTALL=1 "$1/t3" --version >/dev/null
+    t3_verify_version "$1" "$2"
 }
 
 t3_promote_runtime() {

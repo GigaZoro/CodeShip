@@ -18,17 +18,18 @@ it("ships the same promotion protocol as SSH and service installation", async ()
 
 describe.runIf(isDarwinHost || isLinuxHost)("a competing npm publisher", () => {
   it.each([
-    { phase: "first publication", valid: true, exit: 10 },
-    { phase: "repair", valid: true, exit: 10 },
-    { phase: "repair with a rollback", valid: true, exit: 10 },
-    { phase: "repair with a rollback", valid: false, exit: 1 },
-    { phase: "startup", valid: true, exit: 0 },
-    { phase: "startup", valid: false, exit: 1 },
-    { phase: "TERM", valid: true, exit: 143 },
-    { phase: "TERM", valid: false, exit: 143 },
+    { phase: "first publication", probe: "ok", exit: 10 },
+    { phase: "repair", probe: "ok", exit: 10 },
+    { phase: "repair with a rollback", probe: "ok", exit: 10 },
+    { phase: "repair with a rollback", probe: "exit 78", exit: 1 },
+    { phase: "repair with a rollback", probe: "wrong version", exit: 1 },
+    { phase: "startup", probe: "ok", exit: 0 },
+    { phase: "startup", probe: "exit 78", exit: 1 },
+    { phase: "TERM", probe: "ok", exit: 143 },
+    { phase: "TERM", probe: "exit 78", exit: 143 },
   ])(
-    "keeps the winner at its published path during $phase (valid=$valid)",
-    async ({ phase, valid, exit }) => {
+    "keeps the winner at its published path during $phase (probe=$probe)",
+    async ({ phase, probe, exit }) => {
       const parent = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-npm-winner-"));
       const version = "1.2.3";
       const root = NodePath.join(parent, version);
@@ -36,18 +37,28 @@ describe.runIf(isDarwinHost || isLinuxHost)("a competing npm publisher", () => {
       const staged = NodePath.join(parent, ".staging");
       const peer = NodePath.join(parent, ".npm");
       const probes = NodePath.join(parent, "probes");
-      const install = async (directory: string, owner: string, healthy: boolean) => {
+      const install = async (
+        directory: string,
+        owner: string,
+        healthy: boolean,
+        reported = version,
+      ) => {
         await NodeFSP.mkdir(directory);
         await NodeFSP.writeFile(NodePath.join(directory, "owner"), owner);
         await NodeFSP.writeFile(NodePath.join(directory, ".install-complete"), version);
         await NodeFSP.writeFile(
           NodePath.join(directory, "t3"),
-          `#!/bin/sh\necho ${owner} >> "$PROBES"\nexit ${healthy ? 0 : 78}\n`,
+          `#!/bin/sh\necho ${owner} >> "$PROBES"\necho "t3 v${reported}"\nexit ${healthy ? 0 : 78}\n`,
           { mode: 0o755 },
         );
       };
       try {
-        await install(peer, "npm", valid);
+        await install(
+          peer,
+          "npm",
+          probe !== "exit 78",
+          probe === "wrong version" ? "2.0.0" : version,
+        );
         await install(staged, "download", true);
         if (phase === "startup" || phase === "repair with a rollback") {
           await install(prior, "original", true);
@@ -132,7 +143,7 @@ fi`,
           expect(await NodeFSP.readFile(NodePath.join(prior, "owner"), "utf8")).toBe("original");
         }
         if (phase === "repair with a rollback") {
-          if (valid) {
+          if (probe === "ok") {
             await expect(NodeFSP.stat(staged + ".previous")).rejects.toMatchObject({
               code: "ENOENT",
             });
@@ -184,7 +195,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chan
         // An existing completed install isolates release resolution from archive downloads.
         await NodeFSP.mkdir(target, { recursive: true });
         await NodeFSP.writeFile(NodePath.join(target, ".install-complete"), `${version}\n`);
-        await NodeFSP.writeFile(NodePath.join(target, "t3"), "#!/bin/sh\nexit 0\n", {
+        await NodeFSP.writeFile(NodePath.join(target, "t3"), `#!/bin/sh\necho "t3 v${version}"\n`, {
           mode: 0o755,
         });
         await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -262,6 +273,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chec
             "tar",
             "gzip",
             "cut",
+            "awk",
             "curl",
             "grep",
             "mkdir",

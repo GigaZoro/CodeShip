@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Serves a fake GitHub Release over real HTTP to the published launcher.
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -60,7 +60,10 @@ const serveFakeRelease = Effect.fn("test.serveFakeRelease")(function* (root: str
     path.join(root, "release", stem, "t3"),
     `#!/bin/sh
 if [ "$T3CODE_VERIFY_INSTALL" = 1 ]; then
-  if [ -n "$FIXTURE_INSTALLED_DIR" ]; then cat "$FIXTURE_INSTALLED_DIR/sidecar" > "$FIXTURE_PROBE_RECEIPT"; fi
+  if [ -n "$FIXTURE_PROBE_RECEIPT" ]; then
+    if [ -e "\${0%/*}/.install-complete" ]; then echo marked; else echo unmarked; fi > "$FIXTURE_PROBE_RECEIPT"
+    if [ -n "$FIXTURE_INSTALLED_DIR" ]; then cat "$FIXTURE_INSTALLED_DIR/sidecar" >> "$FIXTURE_PROBE_RECEIPT"; fi
+  fi
   echo "t3 v\${FIXTURE_PROBE_VERSION:-${VERSION}}"
   exit "\${FIXTURE_PROBE_STATUS:-0}"
 fi
@@ -222,58 +225,75 @@ syncBuiltinESMExports();
     }),
   );
 
-  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
-    "keeps the installed runtime when the downloaded repair fails its version or integrity probe",
-    () =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
-        const { packageDir } = yield* buildNpmLauncher({
-          version: VERSION,
-          outputDir: path.join(root, "out"),
-        });
-        const release = yield* serveFakeRelease(root);
-        const home = path.join(root, "home");
-        const installed = path.join(home, "runtime/versions", VERSION);
-        yield* fs.makeDirectory(installed, { recursive: true });
-        const original = "#!/bin/sh\nprintf 'original runtime\\n'\n";
-        yield* fs.writeFileString(path.join(installed, "t3"), original);
-        yield* fs.chmod(path.join(installed, "t3"), 0o755);
-        yield* fs.writeFileString(path.join(installed, "sidecar"), "original helper");
-        for (const [probeVersion, probeStatus] of [
-          ["2.0.0", "0"],
-          [VERSION, "78"],
-        ] as const) {
-          const receipt = path.join(root, `previous-helper-during-probe-${probeStatus}`);
-          const result = yield* run(
-            process.execPath,
-            [path.join(packageDir, "bin/t3.mjs"), "--version"],
-            {
-              cwd: root,
-              env: {
-                PATH: process.env.PATH,
-                T3CODE_HOME: home,
-                T3CODE_RELEASE_BASE_URL: release.baseUrl,
-                FIXTURE_PROBE_VERSION: probeVersion,
-                FIXTURE_PROBE_STATUS: probeStatus,
-                FIXTURE_INSTALLED_DIR: installed,
-                FIXTURE_PROBE_RECEIPT: receipt,
+  describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("download verification", () => {
+    it.effect.each(["missing", "empty", "damaged"] as const)(
+      "preserves the %s destination when the downloaded runtime fails verification",
+      (destination) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+          const { packageDir } = yield* buildNpmLauncher({
+            version: VERSION,
+            outputDir: path.join(root, "out"),
+          });
+          const release = yield* serveFakeRelease(root);
+          const home = path.join(root, "home");
+          const installed = path.join(home, "runtime/versions", VERSION);
+          const original = "#!/bin/sh\nprintf 'original runtime\\n'\n";
+          if (destination !== "missing") yield* fs.makeDirectory(installed, { recursive: true });
+          if (destination === "damaged") {
+            yield* fs.writeFileString(path.join(installed, "t3"), original);
+            yield* fs.chmod(path.join(installed, "t3"), 0o755);
+            yield* fs.writeFileString(path.join(installed, "sidecar"), "original helper");
+          }
+          for (const [probeVersion, probeStatus] of [
+            ["2.0.0", "0"],
+            [VERSION, "78"],
+          ] as const) {
+            const receipt = path.join(root, `previous-helper-during-probe-${probeStatus}`);
+            const result = yield* run(
+              process.execPath,
+              [path.join(packageDir, "bin/t3.mjs"), "--version"],
+              {
+                cwd: root,
+                env: {
+                  PATH: process.env.PATH,
+                  T3CODE_HOME: home,
+                  T3CODE_RELEASE_BASE_URL: release.baseUrl,
+                  FIXTURE_PROBE_VERSION: probeVersion,
+                  FIXTURE_PROBE_STATUS: probeStatus,
+                  FIXTURE_INSTALLED_DIR: destination === "damaged" ? installed : undefined,
+                  FIXTURE_PROBE_RECEIPT: receipt,
+                },
               },
-            },
-          );
-          assert.equal(result.exitCode, 1, result.stderr);
-          assert.include(result.stderr, `the downloaded t3 ${VERSION} runtime failed verification`);
-          assert.equal(yield* fs.readFileString(receipt), "original helper");
-          assert.equal(yield* fs.readFileString(path.join(installed, "t3")), original);
-          assert.equal(
-            yield* fs.readFileString(path.join(installed, "sidecar")),
-            "original helper",
-          );
-          assert.deepStrictEqual(yield* fs.readDirectory(path.dirname(installed)), [VERSION]);
-        }
-      }),
-  );
+            );
+            assert.equal(result.exitCode, 1, result.stderr);
+            assert.include(
+              result.stderr,
+              `the downloaded t3 ${VERSION} runtime failed verification`,
+            );
+            assert.equal(
+              yield* fs.readFileString(receipt),
+              destination === "damaged" ? "unmarked\noriginal helper" : "unmarked\n",
+            );
+            assert.deepStrictEqual(
+              yield* fs.readDirectory(path.dirname(installed)),
+              destination === "missing" ? [] : [VERSION],
+            );
+            if (destination === "damaged") {
+              assert.equal(yield* fs.readFileString(path.join(installed, "t3")), original);
+              assert.equal(
+                yield* fs.readFileString(path.join(installed, "sidecar")),
+                "original helper",
+              );
+            }
+            if (destination === "empty")
+              assert.deepStrictEqual(yield* fs.readDirectory(installed), []);
+          }
+        }),
+    );
+  });
 
   it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     "publishes a launcher that downloads, verifies, caches, and runs the release executable",

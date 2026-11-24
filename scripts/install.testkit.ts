@@ -32,7 +32,7 @@ export async function verifyBundledRuntimeRepair(
         'if [ "${T3CODE_VERIFY_INSTALL:-}" = 1 ]; then',
         '  [ -f "$dir/codex-metadata.files" ] && [ "$(cat "$dir/codex-metadata/bin/helper")" = valid ] || exit 78',
         "fi",
-        'echo "t3 v1.2.3"',
+        'echo "t3 v${T3_TEST_PROBE_VERSION:-1.2.3}"',
       ].join("\n"),
       { mode: 0o755 },
     );
@@ -131,6 +131,8 @@ export async function verifyBundledRuntimeRepair(
     const helper = NodePath.join(root, "codex-metadata/bin/helper");
     await NodeFSP.writeFile(helper, "wrong");
     const originalEntries = await NodeFSP.readdir(root);
+    await NodeAssert.rejects(run({ T3_TEST_PROBE_VERSION: "2.0.0" }));
+    NodeAssert.equal(await NodeFSP.readFile(helper, "utf8"), "wrong");
     await NodeAssert.rejects(
       run({ PATH: mvShim + NodePath.delimiter + process.env.PATH, T3_TEST_INSTALLED_ROOT: root }),
     );
