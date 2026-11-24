@@ -16,6 +16,7 @@ import {
 } from "@electron/asar";
 
 import { fromYaml } from "@t3tools/shared/schemaYaml";
+import { codexMetadataInventory } from "@t3tools/shared/codexMetadataInventory";
 import { CODEX_METADATA_INVENTORY } from "@t3tools/shared/cliRelease";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
@@ -1542,18 +1543,9 @@ export const stageCodexMetadata = Effect.fn("stageCodexMetadata")(function* (res
     const path = yield* Path.Path;
     const root = path.join(resourcesDir, "codex-metadata");
     yield* fs.copy(source.value, root);
-    const files: Array<string> = [];
-    for (const member of yield* fs.readDirectory(root, { recursive: true })) {
-      const info = yield* fs.stat(path.join(root, member));
-      if (info.type === "File") {
-        const kind = info.mode & 0o111 ? "x" : "f";
-        files.push(`${kind} ${String(info.size)} ${member.split(path.sep).join("/")}`);
-      }
-    }
-    yield* fs.writeFileString(
-      path.join(resourcesDir, CODEX_METADATA_INVENTORY),
-      files.sort().join("\n") + "\n",
-    );
+    const inventory = yield* Effect.tryPromise(() => codexMetadataInventory(root));
+    yield* fs.writeFileString(path.join(resourcesDir, CODEX_METADATA_INVENTORY), inventory);
+    return inventory;
   }
 });
 
@@ -3683,6 +3675,7 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
   readonly stageRoot: string;
   readonly repoRoot: string;
   readonly serverDistDir: string;
+  readonly metadataInventory: string | undefined;
   readonly arch: typeof BuildArch.Type;
   readonly appVersion: string;
   readonly runtimeExternalDependencies: Record<string, string>;
@@ -3696,7 +3689,14 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
 
   const serverStageDir = path.join(input.stageRoot, "server");
   yield* fs.makeDirectory(path.join(serverStageDir, "apps/server"), { recursive: true });
-  yield* fs.copy(input.serverDistDir, path.join(serverStageDir, "apps/server/dist"));
+  const serverDist = path.join(serverStageDir, "apps/server/dist");
+  yield* fs.copy(input.serverDistDir, serverDist);
+  if (input.metadataInventory) {
+    yield* fs.writeFileString(
+      path.join(serverDist, CODEX_METADATA_INVENTORY),
+      input.metadataInventory,
+    );
+  }
 
   const sidecarDependencies = {
     ...input.runtimeExternalDependencies,
@@ -4394,7 +4394,13 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   const stageProdResourcesDir = path.join(stageAppDir, "apps/desktop/prod-resources");
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
-  yield* stageCodexMetadata(stageProdResourcesDir);
+  const metadataInventory = yield* stageCodexMetadata(stageProdResourcesDir);
+  if (metadataInventory && options.platform !== "win") {
+    yield* fs.writeFileString(
+      path.join(stageAppDir, "apps/server/dist", CODEX_METADATA_INVENTORY),
+      metadataInventory,
+    );
+  }
 
   const stageDependencies =
     options.platform === "win"
@@ -4457,6 +4463,7 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
       stageRoot,
       repoRoot,
       serverDistDir: distDirs.serverDist,
+      metadataInventory,
       arch: options.arch,
       appVersion,
       runtimeExternalDependencies: resolvedServerRuntimeExternalDependencies,

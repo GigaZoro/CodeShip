@@ -5,6 +5,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
@@ -47,6 +48,13 @@ const extractingRunner = (fs: FileSystem.FileSystem, path: Path.Path, commands: 
     run: (input) =>
       Effect.gen(function* () {
         commands.push(input.command);
+        if (input.command === "sh") {
+          return yield* ProcessRunner.ProcessRunner.pipe(
+            Effect.flatMap((runner) => runner.run(input)),
+            Effect.provide(ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
+            Effect.orDie,
+          );
+        }
         const targetIndex = input.args.indexOf("-C");
         const stagingDir = input.args[targetIndex + 1];
         if (input.command !== "tar" || stagingDir === undefined) {
@@ -264,6 +272,76 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
 
       assert.isFalse(yield* fs.exists(path.join(finalPaths.versionDir, "partial")));
       assert.isTrue(yield* fs.exists(finalPaths.entryPath));
+    }),
+  );
+
+  it.effect("restores an interrupted promotion before checking the cache or network", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped();
+      const paths = pinnedRuntimePaths(path, baseDir, version, "linux");
+      const versions = path.dirname(paths.versionDir);
+      const previous = path.join(versions, `.${version}.previous`);
+      yield* fs.makeDirectory(previous, { recursive: true });
+      yield* fs.writeFileString(path.join(previous, "t3"), "runnable");
+      yield* fs.writeFileString(path.join(previous, ".install-complete"), version);
+      yield* fs.writeFileString(path.join(versions, `.${version}.install.lock`), "999999999");
+      const requests: string[] = [];
+      yield* ensurePinnedRuntimeInstalled({
+        baseDir,
+        version,
+        fs,
+        path,
+        platform: "linux",
+        arch: "x64",
+        runner: extractingRunner(fs, path),
+        httpClient: releaseHttpClient("", requests),
+        validate: (candidate) =>
+          fs.readFileString(candidate.entryPath).pipe(
+            Effect.tap((text) => Effect.sync(() => assert.equal(text, "runnable"))),
+            Effect.asVoid,
+            Effect.orDie,
+          ),
+      });
+      assert.deepEqual(requests, []);
+      assert.equal(yield* fs.readFileString(paths.entryPath), "runnable");
+    }),
+  );
+  it.effect("repairs a missing release component only after validating its replacement", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped();
+      const paths = pinnedRuntimePaths(path, baseDir, version, "linux");
+      yield* fs.makeDirectory(paths.versionDir, { recursive: true });
+      yield* fs.writeFileString(paths.entryPath, "old");
+      yield* fs.writeFileString(paths.sentinelPath, version);
+      let corruptReplacement = true;
+      const install = ensurePinnedRuntimeInstalled({
+        baseDir,
+        version,
+        fs,
+        path,
+        platform: "linux",
+        arch: "x64",
+        runner: extractingRunner(fs, path),
+        httpClient: releaseHttpClient(yield* validChecksums),
+        validate: (candidate) =>
+          Effect.gen(function* () {
+            assert.equal(yield* fs.readFileString(paths.entryPath).pipe(Effect.orDie), "old");
+            if (candidate.versionDir === paths.versionDir || corruptReplacement)
+              return yield* new PinnedRuntimeInstallError({
+                step: "checking release inventory",
+                exitCode: 78,
+              });
+          }),
+      });
+      yield* install.pipe(Effect.flip);
+      assert.equal(yield* fs.readFileString(paths.entryPath), "old");
+      corruptReplacement = false;
+      yield* install;
+      assert.notEqual(yield* fs.readFileString(paths.entryPath), "old");
     }),
   );
 

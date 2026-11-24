@@ -332,6 +332,26 @@ jobs:
           (cd "$dir" && grep " $name.zip\$" SHASUMS256.txt | sha256sum -c -)
           unzip -p "$dir/$name.zip" "$name/node.exe" > "$dest/node.exe"
 
+      - name: Restore fork Codex metadata
+        if: inputs.codex_metadata_key != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: codex-metadata.tar.gz
+          enableCrossOsArchive: true
+          key: ${{ inputs.codex_metadata_key }}
+          fail-on-cache-miss: true
+
+      - name: Unpack native metadata for staging
+        if: inputs.codex_metadata_key != ''
+        shell: bash
+        env:
+          TARGET: ${{ inputs.platform == 'linux' && 'x86_64-unknown-linux-musl' || inputs.rust_target }}
+        run: |
+          set -euo pipefail
+          tar -xzf codex-metadata.tar.gz -C "$RUNNER_TEMP"
+          node docs/operations/codex-metadata/package.mjs verify "$RUNNER_TEMP/codex-metadata" "$TARGET"
+          echo "T3CODE_BUILD_CODEX_METADATA_DIR=$RUNNER_TEMP/codex-metadata" >> "$GITHUB_ENV"
+
       # Setup Vite+ selects the exact engines.node version from package.json.
       # Native builds embed that executable; cross-target builds download the
       # same version for their target.
@@ -400,26 +420,6 @@ jobs:
       # can read them. The package steps below sign only what the stages built
       # (scripts/lib/stage-dir.ts); scripts/release-desktop-workflow.test.ts
       # keeps that order.
-      - name: Restore fork Codex metadata
-        if: inputs.codex_metadata_key != ''
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: codex-metadata.tar.gz
-          enableCrossOsArchive: true
-          key: ${{ inputs.codex_metadata_key }}
-          fail-on-cache-miss: true
-
-      - name: Unpack native metadata for staging
-        if: inputs.codex_metadata_key != ''
-        shell: bash
-        env:
-          TARGET: ${{ inputs.platform == 'linux' && 'x86_64-unknown-linux-musl' || inputs.rust_target }}
-        run: |
-          set -euo pipefail
-          tar -xzf codex-metadata.tar.gz -C "$RUNNER_TEMP"
-          node docs/operations/codex-metadata/package.mjs verify "$RUNNER_TEMP/codex-metadata" "$TARGET"
-          echo "T3CODE_BUILD_CODEX_METADATA_DIR=$RUNNER_TEMP/codex-metadata" >> "$GITHUB_ENV"
-
       - name: Stage CLI archive
         if: inputs.cli_archive
         shell: bash

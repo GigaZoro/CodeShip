@@ -20,6 +20,7 @@ import {
   parseChecksums,
 } from "@t3tools/shared/cliRelease";
 
+import { runtimePromotion } from "@t3tools/shared/runtimePromotion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ProcessRunner from "../processRunner.ts";
@@ -253,11 +254,99 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
   yield* fs.remove(archivePath, { force: true }).pipe(Effect.ignore);
 });
 
+const pinnedRuntimeTransaction = Effect.fn("cloud.pinned_runtime.promote")(function* (
+  input: PinnedRuntimeInstallInput,
+  paths: PinnedRuntimePaths,
+  staging?: string,
+) {
+  const parent = input.path.dirname(paths.versionDir);
+  const previous = input.path.join(parent, `.${input.version}.previous`);
+  if (input.platform === "win32") {
+    const { fs } = input;
+    return yield* Effect.uninterruptible(
+      Effect.gen(function* () {
+        if (!(yield* fs.exists(paths.versionDir)) && (yield* fs.exists(previous)))
+          yield* fs.rename(previous, paths.versionDir);
+        if (!staging) return;
+        const displaced = (yield* fs.exists(previous)) ? staging + ".previous" : previous;
+        if (yield* fs.exists(paths.versionDir)) yield* fs.rename(paths.versionDir, displaced);
+        yield* fs
+          .rename(staging, paths.versionDir)
+          .pipe(
+            Effect.tapError(() =>
+              fs
+                .exists(displaced)
+                .pipe(
+                  Effect.flatMap((exists) =>
+                    exists ? fs.rename(displaced, paths.versionDir) : Effect.void,
+                  ),
+                ),
+            ),
+          );
+        yield* fs.remove(displaced, { recursive: true, force: true }).pipe(Effect.ignore);
+        if (displaced !== previous)
+          yield* fs.remove(previous, { recursive: true, force: true }).pipe(Effect.ignore);
+      }),
+    ).pipe(
+      Effect.mapError(
+        (cause) => new PinnedRuntimeInstallError({ step: "restoring the pinned runtime", cause }),
+      ),
+    );
+  }
+  const result = yield* input.runner
+    .run({
+      command: "sh",
+      args: [
+        "-c",
+        `set -eu
+${runtimePromotion}
+t3_claim_dir=
+t3_contender=
+trap t3_release_lock EXIT
+trap 'exit 143' HUP INT TERM
+t3_acquire_lock "$1" "$2" 360 || exit 1
+if [ -n "$3" ]; then t3_promote_runtime "$3"; fi`,
+        "sh",
+        parent,
+        input.version,
+        staging ?? "",
+      ],
+      timeout: PINNED_RUNTIME_INSTALL_TIMEOUT,
+    })
+    .pipe(
+      Effect.mapError(
+        (cause) => new PinnedRuntimeInstallError({ step: "restoring the pinned runtime", cause }),
+      ),
+    );
+  if (result.code !== 0)
+    return yield* new PinnedRuntimeInstallError({
+      step: "restoring the pinned runtime",
+      exitCode: Number(result.code),
+    });
+});
+
 const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(function* (
   input: PinnedRuntimeInstallInput,
 ) {
   const { fs } = input;
   const paths = pinnedRuntimePaths(input.path, input.baseDir, input.version, input.platform);
+  const previous = input.path.join(
+    input.path.dirname(paths.versionDir),
+    `.${input.version}.previous`,
+  );
+  if (
+    yield* fs.exists(previous).pipe(
+      Effect.mapError(
+        (cause) =>
+          new PinnedRuntimeInstallError({
+            step: "checking for interrupted runtime promotion",
+            cause,
+          }),
+      ),
+    )
+  ) {
+    yield* pinnedRuntimeTransaction(input, paths);
+  }
   const [versionDirExists, entryExists, sentinel] = yield* Effect.all([
     fs.exists(paths.versionDir),
     fs.exists(paths.entryPath),
@@ -271,21 +360,15 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
     entryExists && Option.isSome(sentinel) && sentinel.value.trim() === input.version;
   if (alreadyPinned) {
     input.onProgress?.({ stage: "cached" });
-    yield* input.validate(paths);
-    return paths;
-  }
-  if (versionDirExists) {
-    yield* fs.remove(paths.versionDir, { recursive: true, force: true }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new PinnedRuntimeInstallError({
-            step: "removing an incomplete pinned runtime",
-            cause,
-          }),
+    const verified = yield* input.validate(paths).pipe(
+      Effect.as(true),
+      Effect.catchIf(
+        (error) => error._tag === "PinnedRuntimeInstallError" && error.exitCode === 78,
+        () => Effect.succeed(false),
       ),
     );
+    if (verified) return paths;
   }
-
   const versionsDir = input.path.dirname(paths.versionDir);
   yield* fs.makeDirectory(versionsDir, { recursive: true }).pipe(
     Effect.mapError(
@@ -329,6 +412,10 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
             new PinnedRuntimeInstallError({ step: "recording the completed install", cause }),
         ),
       );
+    if (versionDirExists) {
+      yield* pinnedRuntimeTransaction(input, paths, stagingDir);
+      return paths;
+    }
     const published = yield* fs.rename(stagingDir, paths.versionDir).pipe(
       Effect.as(true),
       Effect.catch((cause) =>

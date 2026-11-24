@@ -752,6 +752,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         runner
           .run({
             command: pinnedRuntimeCommand(runtime).command,
+            env: { T3CODE_VERIFY_INSTALL: "1" },
             args: [...pinnedRuntimeCommand(runtime).args, "--version"],
             timeout: Duration.seconds(30),
           })

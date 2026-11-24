@@ -120,7 +120,21 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
               'mkdir -p "$stage/codex-metadata/bin"',
               'printf champ > "$stage/codex-metadata/bin/codex"',
               'chmod +x "$stage/codex-metadata/bin/codex"',
-              "printf 'x 5 bin/codex\\n' > \"$stage/codex-metadata.files\"",
+              `digest=$(sha256sum "$stage/codex-metadata/bin/codex" | cut -d ' ' -f 1)`,
+              `printf 'x %s bin/codex\\n' "$digest" > "$stage/codex-metadata.files"`,
+              // The fixture server models the integrity check embedded in required release executables.
+              `cat >> "$stage/t3" <<'VERIFY_INSTALL'`,
+              'if [ "${T3CODE_VERIFY_INSTALL:-}" = 1 ]; then',
+              '  cd "${0%/*}" || exit 1',
+              `  digest=$(printf champ | sha256sum | cut -d ' ' -f 1)`,
+              '  if [ "$(cat codex-metadata.files)" != "x $digest bin/codex" ] ||',
+              "     [ ! -x codex-metadata/bin/codex ] ||",
+              `     ! printf '%s  %s\\n' "$digest" codex-metadata/bin/codex | sha256sum --status -c -; then`,
+              "    echo 'Invalid required metadata package' >&2",
+              "    exit 1",
+              "  fi",
+              "fi",
+              "VERIFY_INSTALL",
             ]
           : []),
         `printf '%s' 'pty-native-payload' > "$stage/node_modules/node-pty/build/Release/pty.node"`,
@@ -241,6 +255,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     "rm -rf codex-metadata codex-metadata.files",
     "chmod -x codex-metadata/bin/codex",
     ": > codex-metadata/bin/codex",
+    "printf chump > codex-metadata/bin/codex",
   ])("restores required metadata from the verified archive after %s", (damage) => {
     const fixture = createFixture(SERVER_ENTRY_SOURCE, true);
     expect(fixture.install().status).toBe(0);
@@ -262,8 +277,54 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
       ].join("\n"),
     );
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("did not restore its Codex metadata inventory");
+    expect(result.stderr).toContain("Invalid required metadata package");
     expect(parseWslRuntimeRoot(result.stdout)).toBeNull();
+  });
+
+  it.each([
+    ["extraction", "tar() { return 1; }"],
+    ["verification", 'tar() { command tar "$@" && rm "$runtime_tmp/codex-metadata.files"; }'],
+    ["promotion", 'mv() { if [ "$3" = "$runtime_tmp" ]; then return 1; fi; command mv "$@"; }'],
+  ])("keeps the installed backend at its path after failed %s", (_, injectFailure) => {
+    const fixture = createFixture(SERVER_ENTRY_SOURCE, true);
+    expect(fixture.install().status).toBe(0);
+    const damage = runShell(
+      `cd ${sh(fixture.runtimeRoot)} && rm codex-metadata/bin/codex && touch original-install`,
+    );
+    expect(damage.status, damage.stderr).toBe(0);
+
+    const failed = runShell(
+      [holdRuntimeBusy(sh(fixture.serverEntry)), injectFailure, fixture.installScript()].join("\n"),
+    );
+
+    expect(failed.status).not.toBe(0);
+    expect(parseWslRuntimeRoot(failed.stdout)).toBeNull();
+    const original = runShell(
+      `test -f ${sh(`${fixture.runtimeRoot}/original-install`)} && ${sh(fixture.serverEntry)} --version`,
+    );
+    expect(original.status, original.stderr).toBe(0);
+    const retried = fixture.install();
+    expect(retried.status, retried.stderr).toBe(0);
+    expect(parseWslRuntimeRoot(retried.stdout)).toBe(fixture.runtimeRoot);
+    expect(runShell(`test ! -e ${sh(`${fixture.runtimeRoot}/original-install`)}`).status).toBe(0);
+  });
+
+  it("recovers the installed path after interruption between promotion renames", () => {
+    const fixture = createFixture();
+    expect(fixture.install().status).toBe(0);
+    const interrupted = runShell(
+      [
+        "set -eu",
+        `mv -T ${sh(fixture.runtimeRoot)} ${sh(`${fixture.runtimeParent}/.${fixture.runtimeId}.rollback`)}`,
+        `rm ${sh(fixture.archivePath)}`,
+      ].join("\n"),
+    );
+    expect(interrupted.status, interrupted.stderr).toBe(0);
+
+    const recovered = fixture.install();
+    expect(recovered.status, recovered.stderr).toBe(0);
+    expect(parseWslRuntimeRoot(recovered.stdout)).toBe(fixture.runtimeRoot);
+    expect(runShell(`${sh(fixture.serverEntry)} --version`).status).toBe(0);
   });
 
   it("reinstalls a cache whose executable was truncated", () => {

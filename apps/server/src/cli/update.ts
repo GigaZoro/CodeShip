@@ -393,6 +393,7 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
       runner
         .run({
           command: pinnedRuntimeCommand(paths).command,
+          env: { T3CODE_VERIFY_INSTALL: "1" },
           args: [...pinnedRuntimeCommand(paths).args, "--version"],
           timeout: Duration.seconds(30),
         })

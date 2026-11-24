@@ -22,7 +22,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { CODEX_METADATA_INVENTORY } from "@t3tools/shared/cliRelease";
+import { SeaRequiresCodexMetadata } from "./packagedCodexMetadata.ts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
@@ -286,7 +286,6 @@ function withFakeCodexEnv<A, E, R>(
         })
       : undefined;
     if (input.packaged === "missing-directory") {
-      yield* fs.writeFileString(path.join(tempDir, CODEX_METADATA_INVENTORY), "x 1 bin/codex\n");
       yield* fs.remove(packageDir, { recursive: true });
     }
     let metadataPath = metadataBinary;
@@ -358,6 +357,7 @@ function withFakeCodexEnv<A, E, R>(
         : undefined,
       Effect.succeed(codexPath),
     ).pipe(
+      Effect.provideService(SeaRequiresCodexMetadata, Boolean(input.packaged)),
       Effect.provideService(HostProcess.IsExecutable, Boolean(input.packaged)),
       Effect.provideService(HostProcess.ExecutablePath, path.join(tempDir, "t3")),
       Effect.provideService(HostProcess.Environment, {

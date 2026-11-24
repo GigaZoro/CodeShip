@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Drives the real shell installer against a local GitHub fixture.
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isDarwinHost, isLinuxHost } from "@t3tools/shared/testing/hostPlatform";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
@@ -7,6 +8,13 @@ import * as NodeHttp from "node:http";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
+import { runtimePromotion } from "@t3tools/shared/runtimePromotion";
+import { verifyBundledRuntimeRepair } from "./install.testkit.ts";
+
+it("ships the same promotion protocol as SSH and service installation", async () => {
+  const source = await NodeFSP.readFile(NodePath.join(import.meta.dirname, "install.sh"), "utf8");
+  expect(source).toContain(runtimePromotion);
+});
 
 const nightlies = Array.from({ length: 100 }, (_, index) => ({
   tag_name: `v1.2.4-nightly.20261020.${200 - index}`,
@@ -42,6 +50,9 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chan
         // An existing completed install isolates release resolution from archive downloads.
         await NodeFSP.mkdir(target, { recursive: true });
         await NodeFSP.writeFile(NodePath.join(target, ".install-complete"), `${version}\n`);
+        await NodeFSP.writeFile(NodePath.join(target, "t3"), "#!/bin/sh\nexit 0\n", {
+          mode: 0o755,
+        });
         await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
         const address = server.address();
         if (!address || typeof address === "string") throw new Error("Expected a TCP listener");
@@ -121,6 +132,8 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chec
             "grep",
             "mkdir",
             "mktemp",
+            "rmdir",
+            "cat",
             "rm",
             "mv",
             "ln",
@@ -203,3 +216,8 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chec
     },
   );
 });
+
+it.runIf(isDarwinHost || isLinuxHost)(
+  "restores a damaged same-version install from the verified archive",
+  () => verifyBundledRuntimeRepair(),
+);

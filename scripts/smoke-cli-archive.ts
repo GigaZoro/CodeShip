@@ -42,13 +42,21 @@ const runExecutable = Effect.fn("runExecutable")(function* (
   executable: string,
   args: ReadonlyArray<string>,
   cwd: string,
+  verifyInstall = false,
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const child = yield* spawner.spawn(
     ChildProcess.make(executable, args, {
       cwd,
       // Isolate system Node and inherited launcher context from the archive smoke check.
-      env: { PATH: "", HOME: cwd, USERPROFILE: cwd, TMPDIR: cwd, TEMP: cwd },
+      env: {
+        PATH: "",
+        HOME: cwd,
+        USERPROFILE: cwd,
+        TMPDIR: cwd,
+        TEMP: cwd,
+        ...(verifyInstall ? { T3CODE_VERIFY_INSTALL: "1" } : {}),
+      },
       extendEnv: false,
     }),
   );
@@ -146,7 +154,24 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
     }
   }
 
-  const version = yield* runExecutable(executable, ["--version"], contentDir);
+  if (input.expectCodexMetadata) {
+    // A required SEA must still reject the install when both external indicators disappear.
+    const packagePath = path.join(contentDir, "codex-metadata");
+    const inventory = path.join(contentDir, CODEX_METADATA_INVENTORY);
+    yield* fs.rename(packagePath, packagePath + ".test");
+    yield* fs.rename(inventory, inventory + ".test");
+    const damaged = yield* runExecutable(executable, ["--version"], contentDir, true);
+    if (damaged.exitCode !== 78) {
+      return yield* new CliArchiveSmokeError({
+        step: "rejecting a missing required Codex package",
+        detail: `unexpected exit ${damaged.exitCode}`,
+      });
+    }
+    yield* fs.rename(inventory + ".test", inventory);
+    yield* fs.rename(packagePath + ".test", packagePath);
+  }
+
+  const version = yield* runExecutable(executable, ["--version"], contentDir, true);
   if (version.exitCode !== 0 || !version.stdout.includes(input.expectVersion)) {
     return yield* new CliArchiveSmokeError({
       step: "running --version",

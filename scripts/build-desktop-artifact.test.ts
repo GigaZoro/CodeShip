@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node's glob matcher to verify electron-builder exclusions.
+import { verifyCodexMetadataInstallation } from "@t3tools/shared/codexMetadataInventory";
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
 
@@ -2165,8 +2166,17 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const inventoryText = yield* fs.readFileString(inventory);
       const kind =
         (yield* fs.stat(path.join(stage, "codex-metadata/bin/codex"))).mode & 0o111 ? "x" : "f";
-      assert.include(inventoryText, `${kind} 5 bin/codex\n`);
-      assert.include(inventoryText, "2 codex-package.json\n");
+      assert.include(inventoryText, `${kind} ${NodeCrypto.hash("sha256", "codex")} bin/codex\n`);
+      assert.include(inventoryText, `${NodeCrypto.hash("sha256", "{}")} codex-package.json\n`);
+      const expected = NodeCrypto.hash("sha256", inventoryText);
+      const verify = () =>
+        Effect.tryPromise(() => verifyCodexMetadataInstallation(stage, expected));
+      yield* verify();
+      yield* fs.writeFileString(path.join(stage, "codex-metadata/bin/codex"), "bad!!");
+      assert.isTrue(yield* verify().pipe(Effect.isFailure));
+      yield* fs.remove(path.join(stage, "codex-metadata"), { recursive: true });
+      yield* fs.remove(inventory);
+      assert.isTrue(yield* verify().pipe(Effect.isFailure));
     }).pipe(Effect.scoped),
   );
 

@@ -483,6 +483,14 @@
       "types": "./src/hostClassification.ts",
       "import": "./src/hostClassification.ts"
     },
+    "./codexMetadataInventory": {
+      "types": "./src/codexMetadataInventory.ts",
+      "import": "./src/codexMetadataInventory.ts"
+    },
+    "./runtimePromotion": {
+      "types": "./src/runtimePromotion.ts",
+      "import": "./src/runtimePromotion.ts"
+    },
     "./cliRelease": {
       "types": "./src/cliRelease.ts",
       "import": "./src/cliRelease.ts"

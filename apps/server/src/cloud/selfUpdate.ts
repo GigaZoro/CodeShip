@@ -248,6 +248,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
           runner
             .run({
               command: pinnedRuntimeCommand(runtime).command,
+              env: { T3CODE_VERIFY_INSTALL: "1" },
               args: [
                 ...pinnedRuntimeCommand(runtime).args,
                 "__service-preflight",

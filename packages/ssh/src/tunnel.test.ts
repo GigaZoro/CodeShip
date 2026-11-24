@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isDarwinHost, isLinuxHost } from "@t3tools/shared/testing/hostPlatform";
 import * as NetService from "@t3tools/shared/Net";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -17,6 +18,7 @@ import { TestClock } from "effect/testing";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { verifyBundledRuntimeRepair } from "../../../scripts/install.testkit.ts";
 import * as SshAuth from "./auth.ts";
 import { SshCommandError, SshPasswordPromptError } from "./errors.ts";
 import * as SshTunnel from "./tunnel.ts";
@@ -85,6 +87,13 @@ function commandArgs(command: ChildProcess.Command): ReadonlyArray<string> {
 const ARCHIVE = { archiveVersion: "1.2.3-preview.20260911.4" } as const;
 
 describe("ssh tunnel scripts", () => {
+  it.runIf(isDarwinHost || isLinuxHost)(
+    "repairs a damaged same-version SSH runtime from the verified archive",
+    () =>
+      verifyBundledRuntimeRepair((archiveVersion, releaseBaseUrl) =>
+        SshTunnel.buildRemoteT3RunnerScript({ archiveVersion, releaseBaseUrl }),
+      ),
+  );
   it("rejects archive versions that are not a single exact version segment", () => {
     for (const archiveVersion of [
       "../other",
