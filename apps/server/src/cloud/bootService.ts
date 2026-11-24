@@ -12,7 +12,7 @@ import * as Path from "effect/Path";
 import { HttpClient } from "effect/http";
 import * as Schema from "effect/Schema";
 
-import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
+import { CLI_RELEASE_BASE_URL_ENV, matchesCliVersion } from "@t3tools/shared/cliRelease";
 
 import * as ProcessRunner from "../processRunner.ts";
 import {
@@ -765,9 +765,8 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
                   cause,
                 }),
             ),
-            Effect.flatMap((result) => {
-              const reportedVersion = /\bv(\S+)\s*$/.exec(result.stdout)?.[1];
-              return result.code === 0 && reportedVersion === input.cliVersion
+            Effect.flatMap((result) =>
+              matchesCliVersion(result.code, result.stdout, input.cliVersion)
                 ? Effect.void
                 : Effect.fail(
                     new PinnedRuntimeInstallError({
@@ -776,8 +775,8 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
                       stdoutLength: result.stdout.length,
                       stderrLength: result.stderr.length,
                     }),
-                  );
-            }),
+                  ),
+            ),
           ),
     }).pipe(
       Effect.mapError((error) =>

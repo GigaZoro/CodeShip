@@ -58,7 +58,15 @@ const serveFakeRelease = Effect.fn("test.serveFakeRelease")(function* (root: str
   });
   yield* fs.writeFileString(
     path.join(root, "release", stem, "t3"),
-    '#!/bin/sh\necho "stub $* launcher=$T3CODE_NPM_LAUNCHER_PATH"\nexit 7\n',
+    `#!/bin/sh
+if [ "$T3CODE_VERIFY_INSTALL" = 1 ]; then
+  if [ -n "$FIXTURE_INSTALLED_DIR" ]; then cat "$FIXTURE_INSTALLED_DIR/sidecar" > "$FIXTURE_PROBE_RECEIPT"; fi
+  echo "t3 v\${FIXTURE_PROBE_VERSION:-${VERSION}}"
+  exit "\${FIXTURE_PROBE_STATUS:-0}"
+fi
+echo "stub $* launcher=$T3CODE_NPM_LAUNCHER_PATH"
+exit 7
+`,
   );
   yield* fs.chmod(path.join(root, "release", stem, "t3"), 0o755);
   const tar = yield* run("tar", ["-czf", archiveName, stem], {
@@ -101,9 +109,23 @@ const serveFakeRelease = Effect.fn("test.serveFakeRelease")(function* (root: str
 
 it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
   it.effect.each([
-    { matches: true, outcome: "restores the matching rollback offline" },
-    { matches: false, outcome: "preserves the wrong-version rollback and requests the release" },
-  ])("the npm entry point $outcome", ({ matches }) =>
+    { matches: true, peerAt: null, outcome: "restores the matching rollback offline" },
+    {
+      matches: false,
+      peerAt: null,
+      outcome: "preserves the wrong-version rollback and requests the release",
+    },
+    {
+      matches: true,
+      peerAt: "marker",
+      outcome: "reuses a peer restore before reading the rollback marker",
+    },
+    {
+      matches: true,
+      peerAt: "probe",
+      outcome: "reuses a peer restore before probing the rollback executable",
+    },
+  ])("the npm entry point $outcome", ({ matches, peerAt }) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -131,20 +153,49 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
       const offline = path.join(root, "offline.mjs");
       yield* fs.writeFileString(
         offline,
-        'globalThis.fetch = (url) => { throw new Error("offline fixture refused " + url); };',
+        `import fs from "node:fs";
+globalThis.fetch = (url) => {
+  fs.appendFileSync("requests", url + "\\n");
+  throw new Error("offline fixture refused " + url);
+};`,
       );
-      const result = yield* run(
-        process.execPath,
-        ["--import", "./offline.mjs", launcher, "update", version],
-        {
-          cwd: root,
-          env: {
-            ...process.env,
-            T3CODE_HOME: home,
-            T3CODE_RELEASE_BASE_URL: "https://release.invalid",
-          },
+      const preloads = ["--import", "./offline.mjs"];
+      if (peerAt !== null) {
+        yield* fs.writeFileString(
+          path.join(root, "peer.mjs"),
+          `import fs from "node:fs";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+const { openSync } = fs;
+const { spawnSync } = childProcess;
+const restore = () => {
+  const peer = spawnSync(process.execPath, ["--import", "./offline.mjs", ${JSON.stringify(launcher)}, "update", ${JSON.stringify(version)}], { encoding: "utf8", timeout: 30_000 });
+  if (peer.status !== 0) throw new Error("peer restore failed: " + peer.stderr);
+  fs.appendFileSync("restore-events", "peer finished\\n");
+};
+fs.openSync = (file, ...args) => {
+  if (${JSON.stringify(peerAt)} === "marker" && file === ${JSON.stringify(path.join(previous, ".install-complete"))}) restore();
+  return openSync(file, ...args);
+};
+childProcess.spawnSync = (file, args, options) => {
+  if (${JSON.stringify(peerAt)} === "probe" && file === ${JSON.stringify(path.join(previous, entry))}) restore();
+  if (file === ${JSON.stringify(path.join(versions, version, entry))} && args?.[0] === "--version" && options?.env?.T3CODE_VERIFY_INSTALL === "1")
+    fs.appendFileSync("restore-events", "canonical probe\\n");
+  return spawnSync(file, args, options);
+};
+syncBuiltinESMExports();
+`,
+        );
+        preloads.push("--import", "./peer.mjs");
+      }
+      const result = yield* run(process.execPath, [...preloads, launcher, "update", version], {
+        cwd: root,
+        env: {
+          ...process.env,
+          T3CODE_HOME: home,
+          T3CODE_RELEASE_BASE_URL: "https://release.invalid",
         },
-      );
+      });
       if (matches) {
         assert.equal(result.exitCode, 0, result.stderr);
         assert.equal(
@@ -152,6 +203,13 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
           JSON.stringify([path.join(versions, version, entry), version]),
         );
         assert.isFalse(yield* fs.exists(previous));
+        assert.isFalse(yield* fs.exists(path.join(root, "requests")));
+        if (peerAt !== null) {
+          assert.equal(
+            yield* fs.readFileString(path.join(root, "restore-events")),
+            "peer finished\ncanonical probe\n",
+          );
+        }
       } else {
         assert.equal(result.exitCode, 1);
         assert.include(
@@ -162,6 +220,59 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
         assert.isFalse(yield* fs.exists(path.join(versions, version)));
       }
     }),
+  );
+
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "keeps the installed runtime when the downloaded repair fails its version or integrity probe",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+        const { packageDir } = yield* buildNpmLauncher({
+          version: VERSION,
+          outputDir: path.join(root, "out"),
+        });
+        const release = yield* serveFakeRelease(root);
+        const home = path.join(root, "home");
+        const installed = path.join(home, "runtime/versions", VERSION);
+        yield* fs.makeDirectory(installed, { recursive: true });
+        const original = "#!/bin/sh\nprintf 'original runtime\\n'\n";
+        yield* fs.writeFileString(path.join(installed, "t3"), original);
+        yield* fs.chmod(path.join(installed, "t3"), 0o755);
+        yield* fs.writeFileString(path.join(installed, "sidecar"), "original helper");
+        for (const [probeVersion, probeStatus] of [
+          ["2.0.0", "0"],
+          [VERSION, "78"],
+        ] as const) {
+          const receipt = path.join(root, `previous-helper-during-probe-${probeStatus}`);
+          const result = yield* run(
+            process.execPath,
+            [path.join(packageDir, "bin/t3.mjs"), "--version"],
+            {
+              cwd: root,
+              env: {
+                PATH: process.env.PATH,
+                T3CODE_HOME: home,
+                T3CODE_RELEASE_BASE_URL: release.baseUrl,
+                FIXTURE_PROBE_VERSION: probeVersion,
+                FIXTURE_PROBE_STATUS: probeStatus,
+                FIXTURE_INSTALLED_DIR: installed,
+                FIXTURE_PROBE_RECEIPT: receipt,
+              },
+            },
+          );
+          assert.equal(result.exitCode, 1, result.stderr);
+          assert.include(result.stderr, `the downloaded t3 ${VERSION} runtime failed verification`);
+          assert.equal(yield* fs.readFileString(receipt), "original helper");
+          assert.equal(yield* fs.readFileString(path.join(installed, "t3")), original);
+          assert.equal(
+            yield* fs.readFileString(path.join(installed, "sidecar")),
+            "original helper",
+          );
+          assert.deepStrictEqual(yield* fs.readDirectory(path.dirname(installed)), [VERSION]);
+        }
+      }),
   );
 
   it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
@@ -275,7 +386,10 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
         });
         assert.equal(fifo.exitCode, 0, fifo.stderr);
         yield* fs.makeDirectory(peerDir);
-        yield* fs.writeFileString(path.join(peerDir, "t3"), '#!/bin/sh\necho "peer $*"\nexit 7\n');
+        yield* fs.writeFileString(
+          path.join(peerDir, "t3"),
+          `#!/bin/sh\nif [ "$T3CODE_VERIFY_INSTALL" = 1 ]; then echo "t3 v${VERSION}"; exit 0; fi\necho "peer $*"\nexit 7\n`,
+        );
         yield* fs.chmod(path.join(peerDir, "t3"), 0o755);
         yield* fs.writeFileString(path.join(peerDir, ".install-complete"), `${VERSION}\n`);
         yield* fs.writeFileString(path.join(peerDir, "sidecar"), "peer sidecar");
@@ -380,8 +494,15 @@ fs.closeSync = (fd, ...rest) => {
         assert.include(locked.stderr, `delete ${staleOnlyDir}.lock`);
         assert.equal(yield* fs.readFileString(path.join(staleOnlyDir, "t3")), "incomplete");
 
-        // Without a peer, the stale folder is replaced by our own download.
+        // A shell installer that died while repairing the version left one owner inode at all three names.
         yield* fs.remove(`${staleOnlyDir}.lock`, { recursive: true });
+        const versionsDir = path.dirname(staleOnlyDir);
+        const claim = path.join(versionsDir, `.${VERSION}.install.claim`);
+        const deadOwner = path.join(claim, "999999999");
+        yield* fs.makeDirectory(claim);
+        yield* fs.writeFileString(deadOwner, "999999999\n");
+        yield* fs.link(deadOwner, path.join(versionsDir, `.${VERSION}.install.lock`));
+        yield* fs.link(deadOwner, `${staleOnlyDir}.lock`);
         const replaced = yield* run(process.execPath, [launcher, "--version"], {
           cwd: root,
           env: { ...env, T3CODE_HOME: staleOnlyHome },

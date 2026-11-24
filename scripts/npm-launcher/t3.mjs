@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { matchesCliVersion } from "./cliVersionProbe.mjs";
 
 const { version } = JSON.parse(
   fs.readFileSync(path.join(import.meta.dirname, "../package.json"), "utf8"),
@@ -110,6 +111,15 @@ const isComplete = (dir) => {
   }
 };
 
+// POSIX repairs and recovery share the shell, SSH and service installers' claim.
+function promotePosixRuntime(dir, staging) {
+  const args = [path.join(import.meta.dirname, "promote-runtime.sh"), path.dirname(dir), version];
+  if (staging !== undefined) args.push(staging);
+  const result = spawnSync("/bin/sh", args, { stdio: ["ignore", "ignore", "inherit"] });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`could not install the local t3 ${version} runtime`);
+}
+
 /** Preserve concurrently published complete installs; replace only incomplete folders without the completion marker. */
 function publish(staging, dir) {
   try {
@@ -118,6 +128,14 @@ function publish(staging, dir) {
   } catch (error) {
     if (isComplete(dir)) return;
     if (!fs.existsSync(dir)) throw error;
+  }
+  if (process.platform !== "win32") {
+    if (!verifiesVersion(staging))
+      throw new Error(`the downloaded t3 ${version} runtime failed verification`);
+    promotePosixRuntime(dir, staging);
+    if (!verifiesVersion(dir))
+      throw new Error(`the installed t3 ${version} runtime failed verification`);
+    return;
   }
   const lock = `${dir}.lock`;
   try {
@@ -156,13 +174,13 @@ function verifiesVersion(dir) {
     encoding: "utf8",
     timeout: 30_000,
   });
-  return probe.status === 0 && /\bv(\S+)\s*$/.exec(probe.stdout)?.[1] === version;
+  return matchesCliVersion(probe.status, probe.stdout, version);
 }
 
 function recoverPrevious(dir) {
   const parent = path.dirname(dir);
   const previous = path.join(parent, `.${version}.previous`);
-  if (!isComplete(previous) || !verifiesVersion(previous)) return false;
+  if (!isComplete(previous) || !verifiesVersion(previous)) return;
   if (process.platform === "win32") {
     try {
       fs.renameSync(previous, dir);
@@ -170,22 +188,8 @@ function recoverPrevious(dir) {
       if (!fs.existsSync(dir)) throw error;
     }
   } else {
-    // The shell, SSH and service installers share this claim and rollback directory.
-    const recovery = spawnSync(
-      "/bin/sh",
-      [path.join(import.meta.dirname, "recover-runtime.sh"), parent, version],
-      {
-        stdio: ["ignore", "ignore", "inherit"],
-      },
-    );
-    if (recovery.error) throw recovery.error;
-    if (recovery.status !== 0)
-      throw new Error(`could not recover the local t3 ${version} installation`);
+    promotePosixRuntime(dir);
   }
-  if (!isComplete(dir)) return false;
-  if (!verifiesVersion(dir))
-    throw new Error(`the recovered t3 ${version} installation failed verification`);
-  return true;
 }
 
 async function main() {
@@ -197,7 +201,13 @@ async function main() {
     );
   }
   const dir = path.join(t3Home(), "runtime", "versions", version);
-  if (!isComplete(dir) && !recoverPrevious(dir)) await install(dir, key);
+  if (!isComplete(dir)) {
+    recoverPrevious(dir);
+    // A peer may have restored the rollback before we could read its marker or probe its executable.
+    if (!isComplete(dir)) await install(dir, key);
+    else if (!verifiesVersion(dir))
+      throw new Error(`the recovered t3 ${version} installation failed verification`);
+  }
 
   // Service IPC and signals must reach the child; terminal Ctrl-C already does, so do not forward SIGINT twice.
   const ipc = process.send !== undefined;

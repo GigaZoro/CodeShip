@@ -85,9 +85,13 @@ export const buildNpmLauncher = Effect.fn("buildNpmLauncher")(function* (input: 
     )}\n`,
   );
   yield* fs.copyFile(path.join(sourceDir, "t3.mjs"), path.join(stageDir, "bin/t3.mjs"));
+  const versionProbe = yield* path.fromFileUrl(
+    new URL("../packages/shared/src/cliVersionProbe.mjs", import.meta.url),
+  );
+  yield* fs.copyFile(versionProbe, path.join(stageDir, "bin/cliVersionProbe.mjs"));
   yield* fs.chmod(path.join(stageDir, "bin/t3.mjs"), 0o755);
   yield* fs.writeFileString(
-    path.join(stageDir, "bin/recover-runtime.sh"),
+    path.join(stageDir, "bin/promote-runtime.sh"),
     `set -eu
 ${runtimePromotion}
 t3_claim_dir=
@@ -95,6 +99,7 @@ t3_contender=
 trap t3_release_lock EXIT
 trap 'exit 143' HUP INT TERM
 t3_acquire_lock "$1" "$2" 360
+if [ "$#" -eq 3 ]; then t3_promote_runtime "$3" 0; fi
 `,
   );
   yield* fs.copyFile(path.join(sourceDir, "bin.mjs"), path.join(stageDir, "dist/bin.mjs"));

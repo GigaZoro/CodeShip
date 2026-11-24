@@ -212,10 +212,15 @@ t3_release_lock() {
     if [ -n "${t3_displaced:-}" ]; then
       if [ ! -e "$t3_staged" ] && [ -d "$t3_root" ]; then
         rm -rf "$t3_displaced" "$t3_previous" || return 1
-      elif [ "$t3_reused" != 1 ] && [ -d "$t3_displaced" ]; then
-        t3_restore_runtime "$t3_displaced" || printf 'Could not restore runtime; kept %s\n' "$t3_displaced" >&2
+      elif [ -d "$t3_displaced" ]; then
+        if [ "$t3_reused" = 1 ] || t3_restore_runtime "$t3_displaced"; then
+          if [ "$t3_displaced" != "$t3_previous" ]; then rm -rf "$t3_displaced" || return 1; fi
+        else
+          printf 'Could not restore runtime; kept %s\n' "$t3_displaced" >&2
+        fi
       fi
     fi
+    if [ "$t3_root.lock" -ef "$t3_claim_dir/$$" ]; then rm -f "$t3_root.lock" || return 1; fi
     if [ "$t3_legacy_lock" -ef "$t3_claim_dir/$$" ]; then rm -f "$t3_legacy_lock" || return 1; fi
     rm -f "$t3_claim_dir/$$" || return 1
     rmdir "$t3_claim_dir" 2>/dev/null || :
@@ -272,6 +277,15 @@ t3_acquire_lock() {
     sleep 1 || return 1
     t3_waited=$((t3_waited + 1))
   done
+  # npm uses a directory. A regular PID file here belongs to a shell publisher;
+  # the shared claim serializes shell cleanup, including after a hard kill.
+  if [ -f "$t3_root.lock" ] && [ ! -L "$t3_root.lock" ]; then
+    t3_pid=$(cat "$t3_root.lock") || return 1
+    case "$t3_pid" in
+      ''|*[!0-9]*) ;;
+      *) if ! kill -0 "$t3_pid" 2>/dev/null; then rm -f "$t3_root.lock" || return 1; fi ;;
+    esac
+  fi
   if [ ! -e "$t3_root" ] && [ -d "$t3_previous" ]; then t3_restore_runtime "$t3_previous" || return 1; fi
 }
 
@@ -290,7 +304,25 @@ t3_promote_runtime() {
   mv "$1" "$t3_staged" || return 1
   if mv "$t3_staged" "$t3_parent/" 2>/dev/null; then return 0; fi
   if t3_runtime_ready "$t3_root" "$t3_version"; then t3_reused=1; return 0; fi
-  [ "$t3_had_root" = 1 ] && [ -e "$t3_root" ] || return 1
+  [ "$t3_had_root" = 1 ] || return 1
+  # Older npm launchers use mkdir on <version>.lock before displacing a runtime.
+  # Link into the parent by basename so a peer's directory cannot become the target.
+  t3_npm_claim="$t3_contender/$t3_version.lock"
+  ln "$t3_claim_dir/$$" "$t3_npm_claim" || return 1
+  while ! ln "$t3_npm_claim" "$t3_parent/" 2>/dev/null; do
+    if [ ! -d "$t3_root.lock" ]; then
+      ln "$t3_npm_claim" "$t3_parent/" 2>/dev/null && break
+      [ -d "$t3_root.lock" ] || return 1
+    fi
+    if [ "$t3_waited" -ge "${2:-$t3_limit}" ]; then
+      printf 'another t3 is installing %s. If none is running, delete %s.lock and try again.\n' "$t3_version" "$t3_root" >&2
+      return 1
+    fi
+    sleep 1 || return 1
+    t3_waited=$((t3_waited + 1))
+  done
+  if t3_runtime_ready "$t3_root" "$t3_version"; then t3_reused=1; return 0; fi
+  [ -e "$t3_root" ] || return 1
   t3_backup="$t3_previous"
   # Another interrupted promotion can leave both copies. Keep the earlier
   # recoverable one until the new, verified tree is on its canonical path.

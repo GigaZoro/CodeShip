@@ -19,6 +19,9 @@ it("ships the same promotion protocol as SSH and service installation", async ()
 describe.runIf(isDarwinHost || isLinuxHost)("a competing npm publisher", () => {
   it.each([
     { phase: "first publication", valid: true, exit: 10 },
+    { phase: "repair", valid: true, exit: 10 },
+    { phase: "repair with a rollback", valid: true, exit: 10 },
+    { phase: "repair with a rollback", valid: false, exit: 1 },
     { phase: "startup", valid: true, exit: 0 },
     { phase: "startup", valid: false, exit: 1 },
     { phase: "TERM", valid: true, exit: 143 },
@@ -46,7 +49,13 @@ describe.runIf(isDarwinHost || isLinuxHost)("a competing npm publisher", () => {
       try {
         await install(peer, "npm", valid);
         await install(staged, "download", true);
-        if (phase === "startup") await install(prior, "original", true);
+        if (phase === "startup" || phase === "repair with a rollback") {
+          await install(prior, "original", true);
+        }
+        if (phase.startsWith("repair")) {
+          await install(root, "incomplete", false);
+          await NodeFSP.writeFile(NodePath.join(root, ".install-complete"), "incomplete");
+        }
         if (phase === "TERM") await install(root, "original", false);
         const child = NodeChildProcess.spawnSync(
           "sh",
@@ -59,14 +68,34 @@ perform() {
   from=; to=
   for arg do from=$to; to=$arg; done
   if { [ "$PHASE" = 'first publication' ] && [ "$from" = "$STAGED" ] && [ "$to" != "$ROOT" ]; } ||
-     { [ "$PHASE" != 'first publication' ] && [ "$from" = "$PRIOR" ] && [ "$to" = "$ROOT" ]; }; then
+     { [ "$from" = "$PRIOR" ] && [ "$to" = "$ROOT" ]; }; then
     "$NODE" -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' "$PEER" "$ROOT" || return 1
   fi
   command "$cmd" "$@" || return $?
   if [ "$PHASE" = TERM ] && [ "$from" = "$ROOT" ] && [ "$to" = "$PRIOR" ]; then kill -TERM "$$"; fi
+  if [ "$PHASE" = 'repair with a rollback' ] && [ "$from" = "$ROOT" ] && [ "$to" = "$STAGED.previous" ]; then
+    "$NODE" -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' "$PEER" "$ROOT"
+  fi
 }
 mv() { perform mv "$@"; }
 perl() { perform perl "$@"; }
+cat() {
+  command cat "$@" || return $?
+  if [ "$PHASE" = repair ] && [ "$1" = "$ROOT/.install-complete" ] && [ -d "$PEER" ]; then
+    mkdir "$ROOT.lock"
+  fi
+}
+sleep() {
+  # The old npm publisher takes its lock after the shell reads the stale marker.
+  # Finish its two renames only when the other installer waits for that lock.
+  if [ "$PHASE" = repair ] && [ -d "$ROOT.lock" ] && [ -d "$PEER" ]; then
+    "$NODE" -e 'const fs = require("node:fs"); const [root, peer] = process.argv.slice(1);
+      fs.renameSync(root, root + ".stale"); fs.renameSync(peer, root);
+      fs.rmSync(root + ".stale", {recursive: true}); fs.rmdirSync(root + ".lock");' "$ROOT" "$PEER"
+  else
+    command sleep "$@"
+  fi
+}
 trap t3_release_lock EXIT
 trap 'exit 143' TERM
 t3_acquire_lock "$PARENT" "$VERSION" 2 || exit 1
@@ -99,9 +128,21 @@ fi`,
           "t3",
         ]);
         expect((await NodeFSP.readFile(probes, "utf8")).split("\n")).toContain("npm");
-        if (phase !== "first publication") {
+        if (phase === "startup" || phase === "TERM" || phase === "repair with a rollback") {
           expect(await NodeFSP.readFile(NodePath.join(prior, "owner"), "utf8")).toBe("original");
         }
+        if (phase === "repair with a rollback") {
+          if (valid) {
+            await expect(NodeFSP.stat(staged + ".previous")).rejects.toMatchObject({
+              code: "ENOENT",
+            });
+          } else {
+            expect(
+              await NodeFSP.readFile(NodePath.join(staged + ".previous", "owner"), "utf8"),
+            ).toBe("incomplete");
+          }
+        }
+        await expect(NodeFSP.stat(root + ".lock")).rejects.toMatchObject({ code: "ENOENT" });
       } finally {
         await NodeFSP.rm(parent, { recursive: true, force: true });
       }

@@ -3,6 +3,7 @@ import {
   CLI_RELEASE_BASE_URL_ENV,
   CLI_RELEASE_CHANNELS,
   cliReleaseChannelOf,
+  matchesCliVersion,
   type CliReleaseChannel,
 } from "@t3tools/shared/cliRelease";
 import * as Console from "effect/Console";
@@ -351,7 +352,7 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
               new PinnedRuntimeInstallError({ step: "verifying the downloaded t3", cause }),
           ),
           Effect.flatMap((result) =>
-            result.code === 0 && /\bv(\S+)\s*$/.exec(result.stdout)?.[1] === targetVersion
+            matchesCliVersion(result.code, result.stdout, targetVersion)
               ? Effect.void
               : Effect.fail(
                   new PinnedRuntimeInstallError({

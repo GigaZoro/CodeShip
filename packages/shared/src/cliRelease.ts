@@ -3,6 +3,8 @@ import * as Schema from "effect/Schema";
 
 import { compareSemverVersions } from "./semver.ts";
 
+export { matchesCliVersion } from "./cliVersionProbe.mjs";
+
 // Builds define it from the repository that runs the release, so a fork's server and desktop
 // look up and download the fork's own releases. Unbundled code and local builds get upstream.
 declare const __T3CODE_BUILD_UPDATE_REPOSITORY__: string | undefined;
