@@ -1773,7 +1773,9 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
 // Creates (including replays) use the caller's defaults. Updates by ID keep the stored choices.
 const scheduledWriteDestination = (
   save: OrchestratorMcpSaveScheduledTaskInput,
-  stored: OrchestratorMcpScheduleTaskResult | undefined,
+  stored:
+    | Pick<OrchestratorMcpScheduleTaskResult, "projectId" | "shared" | "boundThreadId" | "enabled">
+    | undefined,
   hasOwner: boolean,
 ) => {
   const update = save.scheduledTaskId === undefined ? undefined : stored;
@@ -1786,11 +1788,17 @@ const scheduledWriteDestination = (
     (update
       ? update.boundThreadId !== null
       : !requestShared && projectId === EVAL_PROJECT_ID && hasOwner);
+  let bindingProblem: string | undefined;
+  if (bound && (projectId !== EVAL_PROJECT_ID || !hasOwner || shared))
+    bindingProblem = "The requested task cannot bind to this thread in this environment.";
+  else if (save.modelSelection && (bound || save.followsDefaultModel === true))
+    bindingProblem = "Choose an explicit model only on an unbound task with its own model.";
   return {
     projectId,
     requestShared,
     shared,
     bound,
+    bindingProblem,
     enabled: save.enabled ?? update?.enabled ?? true,
   };
 };
@@ -1918,11 +1926,8 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     const prompt = typeof fileText === "string" ? fileText : (save.prompt ?? stored?.prompt);
     if (!prompt?.trim()) return failed("A scheduled task needs a prompt or a prompt file.");
 
-    const { projectId, requestShared, shared, bound, enabled } = scheduledWriteDestination(
-      save,
-      stored,
-      typeof owner === "string",
-    );
+    const { projectId, requestShared, shared, bound, enabled, bindingProblem } =
+      scheduledWriteDestination(save, stored, typeof owner === "string");
     const requestOneMachine = save.oneMachine ?? update?.oneMachine;
     if ((save.oneMachine === true || save.excludedMachines !== undefined) && !requestShared)
       return failed("oneMachine and excludedMachines require a shared task.");
@@ -1930,11 +1935,7 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
       return failed("machineOrder requires a one-machine shared task.");
     if (save.catchUpMissedRun !== undefined && schedule.type !== "fixed_time")
       return failed("catchUpMissedRun applies only to a fixed_time schedule.");
-    if (bound && (projectId !== EVAL_PROJECT_ID || typeof owner !== "string" || shared))
-      return failed("The requested task cannot bind to this thread in this environment.");
-
-    if (save.modelSelection && (bound || save.followsDefaultModel === true))
-      return failed("Choose an explicit model only on an unbound task with its own model.");
+    if (bindingProblem) return failed(bindingProblem);
     let runCondition = stored?.runCondition;
     if (save.runCondition === null) runCondition = undefined;
     else if (save.runCondition !== undefined) {
@@ -2124,6 +2125,7 @@ const gradePendingRelease = (
   // Recorded samples from older fixtures can assign two IDs to one idempotent create.
   const idByCreateKey = new Map<string, string>();
   const conflictingIds = new Set<string>();
+  const refusedCreates = new Set<string>();
   const retries = new Map<
     string,
     {
@@ -2166,8 +2168,9 @@ const gradePendingRelease = (
           : task.projectId === (input.projectId ?? EVAL_PROJECT_ID);
       const listed = reply.value.tasks.filter(inScope);
       const visible = new Set<string>(listed.map((task) => task.scheduledTaskId));
-      for (const [id, { task }] of retries) {
-        if (inScope(task) && !visible.has(id)) retries.delete(id);
+      for (const [id, known] of retries) {
+        if (inScope(known.task) && !visible.has(id))
+          retries.set(id, { ...known, readPrompt: undefined });
       }
       const full = input.includePrompt === true || input.scheduledTaskId !== undefined;
       for (const task of listed) {
@@ -2209,12 +2212,31 @@ const gradePendingRelease = (
       }
       const previous = retries.get(task.scheduledTaskId);
       // A trace can start with an update to a task created before this sample.
-      const stored = previous?.task ?? (scheduledTaskId === undefined ? undefined : task);
-      const { projectId, shared, bound, enabled } = scheduledWriteDestination(
+      const observed = previous?.task ?? (scheduledTaskId === undefined ? undefined : task);
+      const prior = previous?.requested;
+      // Once the sample has written a field, a stale readback cannot change its value.
+      const stored = observed && {
+        projectId: prior?.projectId ?? observed.projectId,
+        shared: prior?.shared ?? observed.shared,
+        enabled: prior?.enabled ?? observed.enabled,
+        boundThreadId:
+          prior?.bindToCurrentThread === undefined
+            ? observed.boundThreadId
+            : prior.bindToCurrentThread
+              ? ThreadId.make(release.threadId)
+              : null,
+      };
+      const { projectId, shared, bound, enabled, bindingProblem } = scheduledWriteDestination(
         edit.value,
         stored,
         true,
       );
+      // A refused binding leaves the existing task in place. It cannot create a task for a later rename.
+      if (bindingProblem) {
+        if (scheduledTaskId === undefined && !previous) refusedCreates.add(task.scheduledTaskId);
+        continue;
+      }
+      if (scheduledTaskId === undefined) refusedCreates.delete(task.scheduledTaskId);
       const requested = {
         ...edit.value,
         projectId,
@@ -2222,14 +2244,14 @@ const gradePendingRelease = (
         bindToCurrentThread: bound,
         enabled,
         // The scheduler retains these fields when omitted. Model validation is per write.
-        prompt: prompt ?? previous?.requested.prompt,
-        promptFile: promptFile === undefined ? previous?.requested.promptFile : promptFile,
-        schedule: schedule ?? stored?.schedule,
+        prompt: prompt ?? prior?.prompt,
+        promptFile: promptFile === undefined ? prior?.promptFile : promptFile,
+        schedule: schedule ?? prior?.schedule ?? observed?.schedule,
         runCondition:
           edit.value.runCondition === undefined
-            ? previous?.requested.runCondition === undefined
-              ? stored?.runCondition
-              : previous.requested.runCondition
+            ? prior?.runCondition === undefined
+              ? observed?.runCondition
+              : prior.runCondition
             : edit.value.runCondition,
       };
       // Even a partial update requires a fresh read of the saved task.
@@ -2244,6 +2266,7 @@ const gradePendingRelease = (
   const hasRetry = [...retries.values()].some(({ task, saved, requested, readPrompt }) => {
     if (
       conflictingIds.has(task.scheduledTaskId) ||
+      refusedCreates.has(task.scheduledTaskId) ||
       typeof readPrompt !== "string" ||
       (saved !== undefined && saved !== retryState(task))
     )

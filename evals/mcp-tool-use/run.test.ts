@@ -919,11 +919,78 @@ it.each([
       output: JSON.stringify({ tasks: [{ ...retryResult, ...result, prompt: releasePrompt }] }),
     },
   ];
+  const passes = (trace: SampleRun["calls"]) =>
+    failed(pendingReleaseCase().expect, { calls: trace, text: "", stopReason: "end_turn" })
+      .length === 0;
+  assert.equal(passes(calls), valid);
+  const renamed = { ...retryResult, ...result, title: "Verify after signing" };
   assert.equal(
-    failed(pendingReleaseCase().expect, { calls, text: "", stopReason: "end_turn" }).length === 0,
+    passes([
+      ...calls,
+      {
+        step: 3,
+        tool: "schedule_task",
+        input: { scheduledTaskId: renamed.scheduledTaskId, title: renamed.title },
+        failed: false,
+        output: JSON.stringify(renamed),
+      },
+      {
+        step: 4,
+        tool: "list_scheduled_tasks",
+        input: { scheduledTaskId: renamed.scheduledTaskId },
+        failed: false,
+        output: JSON.stringify({ tasks: [{ ...renamed, prompt: releasePrompt }] }),
+      },
+    ]),
     valid,
+    "a rename must preserve the handoff verdict",
   );
 });
+
+it.each(["disabled", "shared"] as const)(
+  "preserves the %s retry verdict through a rename and a fresh lookup",
+  (state) => {
+    const calls: Array<SampleRun["calls"][number]> = [];
+    const record = (tool: string, input: Record<string, unknown>, reply: unknown) =>
+      calls.push({ step: calls.length, tool, input, output: JSON.stringify(reply), failed: false });
+    const create = { clientRequestId: "handoff", prompt: releasePrompt, schedule: releaseRetry };
+    const { scheduledTaskId } = retryResult;
+    const check = (title: string, runnable: boolean) => {
+      record(
+        "list_scheduled_tasks",
+        { scheduledTaskId },
+        {
+          tasks: [{ ...retryResult, title, prompt: releasePrompt }],
+        },
+      );
+      assert.equal(
+        failed(pendingReleaseCase().expect, { calls, text: "", stopReason: "end_turn" }).length ===
+          0,
+        runnable,
+      );
+    };
+
+    record("t3_thread_organize", { action: "unsettle" }, { sequence: 1 });
+    if (state === "shared") {
+      record(
+        "schedule_task",
+        { ...create, shared: true },
+        { ...retryResult, shared: true, boundThreadId: null },
+      );
+      record("schedule_task", { ...create, shared: false, bindToCurrentThread: true }, retryResult);
+    } else {
+      record("schedule_task", { ...create, enabled: false }, retryResult);
+    }
+    check(retryResult.title, false);
+    const title = "Retry the installed check";
+    record("schedule_task", { scheduledTaskId, title }, { ...retryResult, title });
+    check(title, false);
+    const repair =
+      state === "disabled" ? { enabled: true } : { shared: false, bindToCurrentThread: true };
+    record("schedule_task", { scheduledTaskId, ...repair }, { ...retryResult, title });
+    check(title, true);
+  },
+);
 
 it.each(["no read", "summary read", "write after full read"])(
   "requires a full prompt read after the latest write (%s)",
