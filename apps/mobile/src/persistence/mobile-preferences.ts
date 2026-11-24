@@ -6,10 +6,9 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import {
-  ACCENT_COLOR_HUES,
-  type AccentColor,
+  AccentColor,
   EnvironmentId,
-  type InterfaceDensity,
+  InterfaceDensity,
   PullRequestInvolvement,
   PullRequestListFilters,
   PullRequestListState,
@@ -91,6 +90,8 @@ const isThreadListFilters = Schema.is(ThreadListFilters);
 const isFolderExpanded = Schema.is(Schema.Record(Schema.String, Schema.Boolean));
 const isWorkspaceSelections = Schema.is(WorkspaceSelections);
 const isPullRequestListPreferences = Schema.is(PullRequestListPreferences);
+const isInterfaceDensity = Schema.is(InterfaceDensity);
+const isAccentColor = Schema.is(AccentColor);
 const ThreadProject = Schema.Struct({
   environmentId: Schema.NonEmptyString,
   projectId: Schema.NonEmptyString,
@@ -325,15 +326,10 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (typeof parsed.codeWordBreak === "boolean") preferences.codeWordBreak = parsed.codeWordBreak;
   if (typeof parsed.mathRenderingEnabled === "boolean")
     preferences.mathRenderingEnabled = parsed.mathRenderingEnabled;
-  if (parsed.interfaceDensity === "comfortable" || parsed.interfaceDensity === "compact") {
+  if (isInterfaceDensity(parsed.interfaceDensity)) {
     preferences.interfaceDensity = parsed.interfaceDensity;
   }
-  if (
-    parsed.accentColor === "theme" ||
-    (ACCENT_COLOR_HUES as readonly unknown[]).includes(parsed.accentColor)
-  ) {
-    preferences.accentColor = parsed.accentColor as AccentColor;
-  }
+  if (isAccentColor(parsed.accentColor)) preferences.accentColor = parsed.accentColor;
   if (typeof parsed.crashReportsEnabled === "boolean") {
     preferences.crashReportsEnabled = parsed.crashReportsEnabled;
   }

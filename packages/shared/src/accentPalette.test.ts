@@ -1,7 +1,7 @@
 import { ACCENT_COLOR_HUES } from "@t3tools/contracts/settings";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ACCENT_BASE_BACKGROUND, ACCENT_PALETTE, type AccentAppearance } from "./accentPalette.ts";
+import { ACCENT_PALETTE, ACCENT_RING_SURFACES, type AccentAppearance } from "./accentPalette.ts";
 
 function luminance(hex: string): number {
   const [r, g, b] = [1, 3, 5].map((start) => {
@@ -32,8 +32,11 @@ describe("accent palette", () => {
       expect(contrastRatio(colors.primaryForeground, colors.primary)).toBeGreaterThanOrEqual(4.5);
     });
 
-    it("keeps the focus ring at 3:1 against the background (WCAG 1.4.11)", () => {
-      expect(contrastRatio(colors.ring, ACCENT_BASE_BACKGROUND[mode])).toBeGreaterThanOrEqual(3);
-    });
+    it.each(ACCENT_RING_SURFACES[mode])(
+      "keeps the focus ring at 3:1 against %s (WCAG 1.4.11)",
+      (surface) => {
+        expect(contrastRatio(colors.ring, surface)).toBeGreaterThanOrEqual(3);
+      },
+    );
   });
 });

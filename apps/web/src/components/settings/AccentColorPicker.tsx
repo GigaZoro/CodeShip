@@ -1,7 +1,8 @@
 import { Radio } from "@base-ui/react/radio";
 import { RadioGroup } from "@base-ui/react/radio-group";
-import { ACCENT_COLOR_HUES, type AccentColor } from "@t3tools/contracts/settings";
+import { ACCENT_COLOR_HUES, AccentColor } from "@t3tools/contracts/settings";
 import { ACCENT_PALETTE } from "@t3tools/shared/accentPalette";
+import * as Schema from "effect/Schema";
 import { CheckIcon, PaletteIcon } from "lucide-react";
 import type { CSSProperties } from "react";
 
@@ -20,6 +21,8 @@ const ACCENT_COLOR_LABELS: Record<AccentColor, Message> = {
   teal: msg("Teal"),
 };
 
+const isAccentColor = Schema.is(AccentColor);
+
 const SWATCH_CLASS_NAME =
   "relative inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full border border-border outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring data-checked:border-foreground data-checked:ring-2 data-checked:ring-inset data-checked:ring-background";
 
@@ -33,7 +36,9 @@ export function AccentColorPicker(props: {
       aria-label={t("Accent color")}
       className="flex flex-wrap items-center gap-2"
       value={props.value}
-      onValueChange={(value) => props.onValueChange(value as AccentColor)}
+      onValueChange={(value) => {
+        if (isAccentColor(value)) props.onValueChange(value);
+      }}
     >
       <Radio.Root
         value="theme"
