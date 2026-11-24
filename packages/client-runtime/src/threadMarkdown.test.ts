@@ -448,6 +448,10 @@ describe("threadMarkdownFileName", () => {
     expect(threadMarkdownFileName(title)).toBe(fileName);
   });
 
+  it("keeps an emoji at the length limit whole", () => {
+    expect(threadMarkdownFileName(`${"a".repeat(79)}😀`)).toBe(`${"a".repeat(79)}.md`);
+  });
+
   it("falls back when nothing usable remains", () => {
     expect(threadMarkdownFileName(" ../ ")).toBe("thread.md");
   });

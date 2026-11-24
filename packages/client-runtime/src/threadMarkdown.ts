@@ -365,6 +365,8 @@ export function threadMarkdownFileName(title: string): string {
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, FILE_NAME_MAX_LENGTH)
+    // A cut between the halves of a surrogate pair would leave half a character.
+    .replace(/[\uD800-\uDBFF]$/u, "")
     .replace(/^\.+|[. ]+$/gu, "")
     .replace(WINDOWS_RESERVED_NAME_PATTERN, "$1_");
   return `${base === "" ? "thread" : base}.md`;

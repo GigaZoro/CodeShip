@@ -212,19 +212,39 @@ describe("standaloneMarkdown", () => {
     ],
     ["> [x]: /first\n\n[x]: /second\n\n[read][x]", ">\n\n[read](/first)"],
     ["\uFEFF\uFEFF[x]\n\n[x]: /a", "[x](/a)"],
-    ["<details>open", "```html\n<details>open\n```"],
-    ["Before <b>open", "Before \\<b>open"],
-    [String.raw`Inline \(x\) <b>`, String.raw`Inline \(x\) \<b>`],
-    ["> \\( a\n> b \\) <b>", "> \\( a\n> b \\) \\<b>"],
-    ["> \\(\n> a\n> \\) <b>", "> \\(\n> a\n> \\) \\<b>"],
-    ["- \\[\n  x\n  \\]\n\n<div>", "- \\[\n  x\n  \\]\n\n```html\n<div>\n```"],
-    ["> - $$ m\n>   x\n>   $$\n\n<div>", "> - $$ m\n>   x\n>   $$\n\n```html\n<div>\n```"],
-    ["at Array.<anonymous> (pkg@.5g)", "at Array.\\<anonymous> ([pkg@.5g](mailto:pkg@.5g))"],
+    ["> \\( a\n> b \\) [a]\n\n[a]: /u", "> \\( a\n> b \\) [a](/u)"],
+    ["> \\(\n> a\n> \\) [a]\n\n[a]: /u", "> \\(\n> a\n> \\) [a](/u)"],
+    ["> \\( x\n>  \\) [a]\n\n[a]: /u", "> \\( x\n>  \\) [a](/u)"],
+    ["> $$\n> x $$\n\n[a]\n\n[a]: /u", "> $$\n> x $$\n\n[a](/u)"],
+    ["> \\[\n> x \\]\n\n[a]\n\n[a]: /u", "> \\[\n> x \\]\n\n[a](/u)"],
+    [
+      `> \\( a${"$".repeat(50)}b\n> c \\) [a]\n\n[a]: /u`,
+      `> \\( a${"$".repeat(50)}b\n> c \\) [a](/u)`,
+    ],
+    ["- \\[\n  x\n  \\]\n\n[a]\n\n[a]: /u", "- \\[\n  x\n  \\]\n\n[a](/u)"],
+    ["> - $$ m\n>   x\n>   $$\n\n[a]\n\n[a]: /u", "> - $$ m\n>   x\n>   $$\n\n[a](/u)"],
+    [
+      "at Array.<anonymous> (pkg@.5g) [x]\n\n[x]: /u",
+      "at Array.\\<anonymous> ([pkg@.5g](mailto:pkg@.5g)) [x](/u)",
+    ],
     [
       `A[^a\\*] B[^a*] C[^${"a".repeat(997)}]\n\n[^a\\*]: escaped\n[^a*]: plain\n[^${"a".repeat(997)}]: long`,
       "A[^ref1] B[^ref2] C[^ref3]\n\n[^ref1]: escaped\n\n[^ref2]: plain\n\n[^ref3]: long",
     ],
   ])("writes %j from its tree", (source, text) => {
+    expect(block(source).text).toBe(text);
+  });
+
+  it.each([
+    ["<details>open", "```html\n<details>open\n```"],
+    ["Before <b>open", "Before \\<b>open"],
+    [String.raw`Inline \(x\) <b>`, String.raw`Inline \(x\) \<b>`],
+    ["&#10;<div>", "&#10;\\<div>"],
+    ["> \\( x\n>  \\) <b>", "> \\( x\n>  \\) \\<b>"],
+    ["> $$\n> x $$\n\n<div>", "> $$\n> x $$\n\n```html\n<div>\n```"],
+    ["- \\[\n  x\n  \\]\n\n<div>", "- \\[\n  x\n  \\]\n\n```html\n<div>\n```"],
+    ["at Array.<anonymous> (pkg@.5g)", "at Array.\\<anonymous> (pkg@.5g)"],
+  ])("changes only the raw HTML in %j", (source, text) => {
     expect(block(source).text).toBe(text);
   });
 
@@ -236,8 +256,8 @@ describe("standaloneMarkdown", () => {
     expectContained([source, "Next"]);
   });
 
-  it("shows the source as code when no Markdown renders the same inside the document", () => {
-    const source = "&#10;<div>";
+  it("shows the source as code when its references would expand it too far", () => {
+    const source = `${"[x] ".repeat(400)}\n\n[x]: /${"a".repeat(400)}`;
     expect(showsSource(block(source), source)).toBe(true);
     expectContained([source, "Next"], [source]);
   });
@@ -294,10 +314,14 @@ describe("standaloneMarkdown", () => {
     openDisplayMath: "$$a\n\n- b",
     inlineMathBesideHtml: String.raw`Inline \(x\) <b>`,
     displayMathBesideHtml: String.raw`Display \[x\] <b>`,
-    mathAcrossQuotedLines: "> \\( a\n> b \\) <b>",
-    mathClosingOnItsOwnQuotedLine: "> \\(\n> a\n> \\) <b>",
-    displayMathClosingOnItsOwnQuotedLine: "> \\[ a\n> b\n> \\]\n\n<div>",
-    mathInListBesideHtml: "- \\[\n  x\n  \\]\n\n<div>",
+    entityBeforeHtml: "&#10;<div>",
+    mathAcrossQuotedLines: "> \\( a\n> b \\) [a]\n\n[a]: /u",
+    paddedMathAcrossQuotedLines: "> \\( x\n>  \\) [a]\n\n[a]: /u",
+    mathClosingOnItsOwnQuotedLine: "> \\(\n> a\n> \\) [a]\n\n[a]: /u",
+    displayMathClosingOnItsOwnQuotedLine: "> \\[ a\n> b\n> \\]\n\n[a]\n\n[a]: /u",
+    displayMathClosingOnItsQuotedBodyLine: "> $$\n> x $$\n\n[a]\n\n[a]: /u",
+    bracketMathClosingOnItsQuotedBodyLine: "> \\[\n> x \\]\n\n[a]\n\n[a]: /u",
+    mathInListBesideReference: "- \\[\n  x\n  \\]\n\n[a]\n\n[a]: /u",
     raggedTable: `| h |\n| - |\n|${" c |".repeat(100)}\n${"| r |\n".repeat(100)}<div>`,
   };
 
