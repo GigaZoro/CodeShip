@@ -1,3 +1,7 @@
+## 2026-11-24 — Faster replay fixture cleanup checks
+
+- Replay fixture cleanup tests now load only the configuration they exercise, shortening local test runs.
+
 ## 2026-11-24 — Resume chats promptly after a restart
 
 - A chat ready to resume while the server checks its memory queue now starts as soon as memory permits, including during startup.
