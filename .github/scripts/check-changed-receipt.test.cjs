@@ -130,6 +130,21 @@ test("computing the working tree writes no objects to the repository", () =>
     assert.equal(git("write-tree"), racy);
   }));
 
+test("computing the working tree keeps a tracked file an ignore rule matches, whatever the index's time", () =>
+  withRoot((root) => {
+    const { work, git, write } = fixture(root);
+    write(".gitignore", "ignored.txt\n");
+    write("ignored.txt", "tracked\n");
+    git("add", ".gitignore");
+    git("add", "--force", "ignored.txt");
+    write("ignored.txt", "edited\n");
+    // At the epoch git's own check for edits made as it wrote the index is off, so the copy keeps that time too.
+    fs.utimesSync(git("rev-parse", "--path-format=absolute", "--git-path", "index"), 0, 0);
+    const tree = workingTree(work);
+    git("add", "--all");
+    assert.equal(git("write-tree"), tree);
+  }));
+
 test("computing the working tree leaves a split index and its shared index readable", () =>
   withRoot((root) => {
     const { work, git, write } = fixture(root);

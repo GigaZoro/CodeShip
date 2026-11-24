@@ -43,15 +43,12 @@ function workingTree(cwd) {
     const real = git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
     if (fs.existsSync(real)) {
       // Git rereads a file whose cached stat matches only when the file is no older than the index, and a copy is new,
-      // so the copy takes the index's time, floored to whole seconds, from the open file it copies. At or before the
-      // epoch that floor fails (git ignores a zero time; division rounds a negative one up), so every file is hashed.
+      // so the copy takes the index's time, floored to whole seconds, from the open file it copies.
       const source = fs.openSync(real, "r");
       try {
         const second = Number(fs.fstatSync(source, { bigint: true }).mtimeNs / 1_000_000_000n);
-        if (second > 0) {
-          fs.writeFileSync(index, fs.readFileSync(source));
-          fs.utimesSync(index, second, second);
-        }
+        fs.writeFileSync(index, fs.readFileSync(source));
+        fs.utimesSync(index, second, second);
       } finally {
         fs.closeSync(source);
       }
