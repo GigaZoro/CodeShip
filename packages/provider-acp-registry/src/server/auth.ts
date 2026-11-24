@@ -7,7 +7,8 @@ import type { AcpRegistrySettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Hex from "effect/encoding/Hex";
-import * as FileSystem from "effect/FileSystem";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Callback realpath collapses linked parent components before traversal.
+import * as NodeFSP from "node:fs/promises";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -64,8 +65,9 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
     const executable =
       resolveExecutable(options.settings.commandPath, platform, options.environment, options.cwd) ??
       options.settings.commandPath;
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* fs.realPath(executable).pipe(Effect.orElseSucceed(() => executable));
+    const path = yield* Effect.tryPromise(() => NodeFSP.realpath(executable)).pipe(
+      Effect.orElseSucceed(() => executable),
+    );
     // Local launcher arguments can identify different agents and can contain secrets.
     const command = encodeCommand([
       platform === "win32" ? path.toLowerCase() : path,

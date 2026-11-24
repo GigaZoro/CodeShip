@@ -1362,9 +1362,11 @@ describe("ClaudeAdapterV2 MCP elicitation acceptance", () => {
 const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(function* (
   binaryPath: string,
   environment: ResolvedProviderInstanceEnvironment = [],
+  workspaces: ReadonlyArray<string | null> = [CLAUDE_TEST_RUNTIME_POLICY.cwd],
 ) {
   const executablePaths: Array<string | undefined> = [];
   const taskToolEnvironment: Array<string | undefined> = [];
+  let nextSession = 0;
   const adapter = yield* ClaudeAdapterV2.createClaudeAdapterV2(
     {
       instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
@@ -1381,7 +1383,7 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
       }),
     ),
     Effect.provideService(ClaudeAdapterV2.ClaudeAgentSdkQueryRunner, {
-      allocateSessionId: Effect.succeed("native-thread-claude-binary-path"),
+      allocateSessionId: Effect.sync(() => `native-thread-claude-binary-path-${++nextSession}`),
       open: (input) =>
         Effect.sync(() => {
           executablePaths.push(input.options.pathToClaudeCodeExecutable);
@@ -1403,28 +1405,32 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
       assertComplete: Effect.void,
     }),
   );
-  const threadId = ThreadId.make("thread-claude-binary-path");
-  const runtime = yield* adapter.openSession({
-    threadId,
-    providerSessionId: ProviderSessionId.make("provider-session-claude-binary-path"),
-    modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-    runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
-  });
-  const providerThread = yield* runtime.ensureThread({
-    threadId,
-    modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-    runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
-  });
-  yield* runtime.startTurn(
-    makeClaudeTestTurnInput({
+  for (const [index, cwd] of workspaces.entries()) {
+    const runtimePolicy = { ...CLAUDE_TEST_RUNTIME_POLICY, cwd };
+    const threadId = ThreadId.make(`thread-claude-binary-path-${index}`);
+    const runtime = yield* adapter.openSession({
       threadId,
-      providerThread,
-      now: yield* DateTime.now,
-      attemptId: RunAttemptId.make("attempt-claude-binary-path"),
-      text: "hello",
-      attachments: [],
-    }),
-  );
+      providerSessionId: ProviderSessionId.make(`provider-session-claude-binary-path-${index}`),
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      runtimePolicy,
+    });
+    const providerThread = yield* runtime.ensureThread({
+      threadId,
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      runtimePolicy,
+    });
+    yield* runtime.startTurn(
+      makeClaudeTestTurnInput({
+        threadId,
+        providerThread,
+        runtimePolicy,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make(`attempt-claude-binary-path-${index}`),
+        text: "hello",
+        attachments: [],
+      }),
+    );
+  }
   return { executablePaths, taskToolEnvironment };
 });
 
@@ -1441,6 +1447,34 @@ describe("ClaudeAdapterV2 executable path", () => {
         );
 
         assert.deepEqual(executablePaths, [packageExe]);
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+  it.effect("resolves a custom Windows launcher in each query workspace", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const workspaces = ["C:\\work\\first", "C:\\work\\second"];
+        const { executablePaths } = yield* captureSdkExecutablePaths(
+          "claude-custom",
+          [{ name: "PATH", value: ".\\launchers", sensitive: false }],
+          workspaces,
+        ).pipe(
+          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(SpawnExecutableResolution, (command, platform, environment, cwd) =>
+            platform === "win32" && environment.PATH === ".\\launchers" && cwd !== undefined
+              ? `${cwd}\\launchers\\${command}.exe`
+              : undefined,
+          ),
+        );
+
+        assert.deepEqual(
+          executablePaths,
+          workspaces.map((cwd) => `${cwd}\\launchers\\claude-custom.exe`),
+        );
       }),
     ).pipe(
       Effect.provide(

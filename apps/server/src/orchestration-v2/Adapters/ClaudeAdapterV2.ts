@@ -10973,12 +10973,24 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }),
             ),
           );
+          const configuredExecutable = queryOptions.pathToClaudeCodeExecutable;
+          const resolveExecutable = configuredExecutable
+            ? resolveClaudeSdkExecutablePath(
+                configuredExecutable,
+                queryOptions.env ?? adapterOptions.environment,
+                queryOptions.cwd,
+              )
+            : Effect.succeed(undefined);
           const querySession = yield* prepareHome.pipe(
-            Effect.andThen(() =>
+            Effect.andThen(resolveExecutable),
+            Effect.flatMap((pathToClaudeCodeExecutable) =>
               queryRunner.open({
                 threadId: turnInput.threadId,
                 providerSessionId: input.providerSessionId,
-                options: queryOptions,
+                options:
+                  pathToClaudeCodeExecutable === undefined
+                    ? queryOptions
+                    : { ...queryOptions, pathToClaudeCodeExecutable },
               }),
             ),
             Effect.catchTags({
@@ -12337,10 +12349,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     const claudeEnvironment = yield* makeClaudeEnvironment(config, baseEnvironment);
     const path = yield* Path.Path;
     const crypto = yield* Crypto.Crypto;
-    const binaryPath = yield* resolveClaudeSdkExecutablePath(
-      expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
-      claudeEnvironment,
-    );
+    const binaryPath = expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory);
     return yield* makeClaudeAdapterV2({
       instanceId,
       settings: { ...config, enabled, binaryPath },

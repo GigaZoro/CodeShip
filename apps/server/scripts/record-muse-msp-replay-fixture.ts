@@ -62,8 +62,6 @@ if (fixture === undefined || variant === undefined) {
 }
 
 const museBinary = recorderEnvironmentValue("T3_MUSE_BIN") ?? "muse";
-// Match T3's launch so Windows needs no T3_MUSE_BIN for `muse.cmd`.
-const museStart = Effect.runSync(museLaunch(museBinary));
 const home = process.env.HOME ?? "";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -135,9 +133,12 @@ function makeRecordingCreateHost(
       entries.push({ type, ...(label === undefined ? {} : { label }), frame });
     };
     record("expect_outbound", { type: "host_start", args });
-    const child = NodeChildProcess.spawn(museStart.command, [...museStart.args, ...args], {
+    const environment = options.environment ?? makeMuseEnvironment();
+    // Match production's Windows launcher resolution in the recording workspace.
+    const launch = Effect.runSync(museLaunch(museBinary, environment, options.cwd));
+    const child = NodeChildProcess.spawn(launch.command, [...launch.args, ...args], {
       cwd: options.cwd,
-      env: options.environment ?? makeMuseEnvironment(),
+      env: environment,
       stdio: ["pipe", "pipe", "inherit"],
     });
     const exited = new Promise<{ code: number | null; signal: null }>((resolve) =>
@@ -194,19 +195,22 @@ function makeRecordingCreateHost(
   };
 }
 
-const readMuseVersion = Effect.sync(() => {
-  const output = NodeChildProcess.execFileSync(
-    museStart.command,
-    [...museStart.args, "--version"],
-    { encoding: "utf8" },
-  );
+const readMuseVersion = Effect.fn("readMuseVersion")(function* (
+  cwd: string,
+  environment: NodeJS.ProcessEnv,
+) {
+  const launch = yield* museLaunch(museBinary, environment, cwd);
+  const output = NodeChildProcess.execFileSync(launch.command, [...launch.args, "--version"], {
+    cwd,
+    env: environment,
+    encoding: "utf8",
+  });
   return parseMuseVersion(output) ?? output.trim();
 });
 
 const record = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const museVersion = yield* readMuseVersion;
   const outputPath = options.out ?? (yield* path.fromFileUrl(variant.transcriptFile));
   const fixtureInput = fixture.buildInput();
   const workspace = yield* Effect.promise(() =>
@@ -216,6 +220,8 @@ const record = Effect.gen(function* () {
     fs.remove(workspace, { recursive: true, force: true }).pipe(Effect.ignore),
   );
   const canonicalWorkspace = yield* fs.realPath(workspace);
+  const environment = makeMuseEnvironment();
+  const museVersion = yield* readMuseVersion(workspace, environment);
 
   const entries: Array<ProviderReplayEntry> = [];
   const commandIds: Array<Array<string>> = [];
@@ -254,7 +260,7 @@ const record = Effect.gen(function* () {
           museReplayLayer({
             scenario: fixture.name,
             createHost: makeRecordingCreateHost(entries, commandIds),
-            environment: makeMuseEnvironment(),
+            environment,
           }),
       },
       continuationOptions,

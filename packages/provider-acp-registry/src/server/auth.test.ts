@@ -1,4 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import { assert, it } from "@effect/vitest";
 import { ProviderInstanceId, type ProviderAuthState } from "@t3tools/contracts";
 import { AcpRegistrySettings } from "../settings.ts";
@@ -287,6 +290,30 @@ it.effect("keeps local credentials separate from a matching registry agent ID", 
     assert.deepEqual(local.controller.credentialBinding, alias.controller.credentialBinding);
     assert.notDeepEqual(local.controller.credentialBinding, registry.controller.credentialBinding);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect.skipIf(isWindowsHost)(
+  "shares local sign-in across paths that traverse the same executable",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const repo = path.join(root, "repo");
+      yield* fs.makeDirectory(path.join(repo, "sub"), { recursive: true });
+      yield* fs.symlink("repo/sub", path.join(root, "link"));
+      for (const dir of [root, repo]) {
+        yield* fs.writeFileString(path.join(dir, "agent"), "#!/bin/sh\n");
+        yield* fs.chmod(path.join(dir, "agent"), 0o755);
+      }
+      const binding = (commandPath: string) =>
+        makeHarness(browserMethod, false, decodeSettings({ source: "local", commandPath })).pipe(
+          Effect.map(({ controller }) => controller.credentialBinding),
+        );
+      const alias = yield* binding(path.join(root, "link") + "/../agent");
+      assert.deepEqual(alias, yield* binding(path.join(repo, "agent")));
+      assert.notDeepEqual(alias, yield* binding(path.join(root, "agent")));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect(

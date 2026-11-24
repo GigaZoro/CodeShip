@@ -1309,11 +1309,22 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       ),
     );
 
+  // The Effect spawner normalizes cwd lexically. Resolve parent components with
+  // the kernel first so lookup and spawn traverse directory links the same way.
+  const requestedCwd = options.spawn.cwd;
+  const spawnCwd =
+    hostPlatform !== "win32" && requestedCwd?.split("/").includes("..")
+      ? yield* Effect.tryPromise({
+          try: () => NodeFS.promises.realpath(requestedCwd),
+          catch: (cause) =>
+            new EffectAcpErrors.AcpSpawnError({ command: options.spawn.command, cause }),
+        })
+      : requestedCwd;
   const spawnCommand =
     options.spawn.shell === false
       ? { command: options.spawn.command, args: options.spawn.args, shell: false }
       : yield* resolveSpawnCommand(options.spawn.command, options.spawn.args, {
-          cwd: options.spawn.cwd,
+          cwd: spawnCwd,
           ...(options.spawn.env ? { env: options.spawn.env } : {}),
           extendEnv: options.spawn.extendEnv ?? true,
         });
@@ -1348,7 +1359,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       : yield* Effect.gen(function* () {
           const resolved = resolveLinuxCgroupTargetCommand(
             spawnCommand.command,
-            options.spawn.cwd ?? (yield* HostProcess.WorkingDirectory),
+            spawnCwd ?? (yield* HostProcess.WorkingDirectory),
             targetEnvironment,
           );
           if (resolved !== undefined) return resolved;
@@ -1365,7 +1376,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           command: spawnCommand.command,
           args: spawnCommand.args,
           name: "acp",
-          cwd: options.spawn.cwd,
+          cwd: spawnCwd,
           threadId: yield* AgentScopeThreadId,
           env: targetEnvironment,
         });
@@ -1394,7 +1405,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   const { handle: child, stopTree: stopWindowsTree } = yield* spawner
     .spawn(
       ChildProcess.make(containedSpawnCommand.command, containedSpawnCommand.args, {
-        ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
+        ...(spawnCwd ? { cwd: spawnCwd } : {}),
         ...(spawnEnvironment ? { env: spawnEnvironment } : {}),
         extendEnv: options.spawn.extendEnv ?? true,
         // A detached Windows child starts without a console, and a .cmd launcher then never
