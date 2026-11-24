@@ -792,10 +792,16 @@ it.live.each(["redundant", "unique", "published"] as const)(
           "accepted",
         );
         const dir = NodePath.dirname(accepted.file);
-        const other = (yield* fixture.fs.readDirectory(dir)).filter(
-          (n) => n.startsWith("saved-") && n !== NodePath.basename(accepted.savedFiles!),
+        const names = yield* fixture.fs.readDirectory(dir);
+        const acceptedName = NodePath.basename(accepted.savedFiles!);
+        const backups = names.filter(
+          (name) => name.startsWith("saved-") && !name.endsWith(".json"),
         );
+        const other = backups.filter((name) => name !== acceptedName);
         expect(other).toHaveLength(kind === "redundant" ? 0 : 1);
+        expect(
+          names.filter((name) => name.startsWith("saved-") && name.endsWith(".json")).sort(),
+        ).toEqual(backups.map((name) => name + ".json").sort());
         if (other.length)
           expect(yield* fixture.fs.readFileString(NodePath.join(dir, other[0]!, ".env"))).toBe(
             "second",

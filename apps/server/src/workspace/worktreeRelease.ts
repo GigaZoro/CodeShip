@@ -67,7 +67,7 @@ export const rememberWorktreeBackup = Effect.fn("WorktreeRelease.rememberBackup"
   request: ReleaseRequest,
 ) {
   const saved = request.savedFiles;
-  if (saved === undefined) return;
+  if (saved === undefined) return false;
   const root = yield* fs.realPath(directory);
   if (
     NodePath.dirname(saved) !== root ||
@@ -76,7 +76,7 @@ export const rememberWorktreeBackup = Effect.fn("WorktreeRelease.rememberBackup"
     (yield* fs.realPath(saved)) !== saved ||
     (yield* fs.stat(saved)).type !== "Directory"
   )
-    return;
+    return false;
   const index = saved + ".json";
   const known = yield* readReleaseFile(fs, index);
   if (
@@ -84,12 +84,13 @@ export const rememberWorktreeBackup = Effect.fn("WorktreeRelease.rememberBackup"
     known.threadId === request.threadId &&
     known.runId === request.runId
   )
-    return;
+    return false;
   const staging = yield* fs.makeTempDirectoryScoped({ directory: root, prefix: ".backup-" });
   const file = NodePath.join(staging, "receipt");
   yield* fs.writeFileString(file, yield* encodeRequest(request), { mode: 0o600 });
   // Publish without overwriting an existing association.
   yield* fs.link(file, index);
+  return true;
 }, Effect.scoped);
 
 export const listWorktreeBackups = Effect.fn("WorktreeRelease.listBackups")(function* (
@@ -536,6 +537,7 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
     allocatedBytes: 0,
   };
   let unpublished = true;
+  let indexed = false;
   const savedFiles =
     input.saveIgnored || extras
       ? yield* Effect.acquireRelease(
@@ -551,6 +553,7 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
               ? Effect.promise(() => capture.pending).pipe(
                   Effect.timeout("30 seconds"),
                   Effect.andThen(Effect.tryPromise(() => discardUnpublished(cwd, saved))),
+                  Effect.andThen(() => (indexed ? fs.remove(saved + ".json") : Effect.void)),
                   Effect.catch(() =>
                     Effect.logWarning("Retained unpublished worktree backup", { saved }),
                   ),
@@ -579,12 +582,18 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
   const staging = yield* fs.makeTempDirectoryScoped({ directory, prefix: ".release-" });
   const temp = path.join(staging, "request");
   yield* fs.writeFileString(temp, body);
-  // Once the backup index is published, it remains recoverable even if queuing the release fails.
+  // A worker can consume the accepted request before rename reports its result.
   yield* Effect.uninterruptible(
     Effect.gen(function* () {
-      yield* rememberWorktreeBackup(fs, directory, savedRequest);
+      indexed = yield* rememberWorktreeBackup(fs, directory, savedRequest);
       unpublished = false;
-      yield* fs.rename(temp, destination);
+      yield* fs.rename(temp, destination).pipe(
+        Effect.tapError(() =>
+          Effect.gen(function* () {
+            unpublished = yield* fs.exists(temp).pipe(Effect.orElseSucceed(() => false));
+          }),
+        ),
+      );
     }),
   );
   return { file: destination, savedFiles, savedAllocatedBytes: capture.allocatedBytes };
