@@ -362,6 +362,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
   it.each([
     {
       operation: "repair",
+      heldRoot: "$root",
       setup: 'touch "$root/original"; rm "$root/.t3code-wsl-runtime-ready"',
       whileMounted: 'test -f "$root/original" && test ! -e "$root/.t3code-wsl-runtime-ready"',
       afterExit: 'test ! -e "$root/original" && test -f "$root/.t3code-wsl-runtime-ready"',
@@ -369,6 +370,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     },
     {
       operation: "restore a rollback",
+      heldRoot: "$rollback",
       setup: 'touch "$root/original"; mv -T "$root" "$rollback"; rm "$archive"',
       whileMounted: 'test ! -e "$root" && test -f "$rollback/original"',
       afterExit: 'test -f "$root/original" && test ! -e "$rollback"',
@@ -376,6 +378,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     },
     {
       operation: "reuse a warm runtime with a pending rollback",
+      heldRoot: "$root",
       setup: 'mkdir "$rollback"; touch "$rollback/original"; rm "$archive"',
       whileMounted: 'test -f "$rollback/original" && test -f "$root/.t3code-wsl-runtime-ready"',
       afterExit: 'test ! -e "$rollback" && test -f "$root/.t3code-wsl-runtime-ready"',
@@ -383,7 +386,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     },
   ])(
     "respects the mounted sidecar lease during $operation",
-    ({ setup, whileMounted, afterExit, warm }) => {
+    ({ setup, heldRoot, whileMounted, afterExit, warm }) => {
       const fixture = createFixture(SERVER_ENTRY_SOURCE, true);
       expect(fixture.install().status).toBe(0);
       const result = runShell(
@@ -394,9 +397,10 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
           `rollback=${sh(`${fixture.runtimeParent}/.${fixture.runtimeId}.rollback`)}`,
           `archive=${sh(fixture.archivePath)}`,
           `cd ${sh(fixture.work)}`,
-          setup,
           'helper="$root/codex-metadata/bin/codex"',
-          'if [ -e "$helper" ]; then before=$(stat -c %i "$helper"); fi',
+          'before=$(stat -c %i "$helper")',
+          setup,
+          `held_helper="${heldRoot}/codex-metadata/bin/codex"`,
           "cat > install.sh <<'INSTALL'",
           fixture.installScript(),
           "INSTALL",
@@ -408,16 +412,14 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
           warm ? 'grep -Fxq "runtimeRoot:$root" held.out' : 'grep -q "repair deferred" held.err',
           'kill -0 "$holder"',
           `${whileMounted} || { echo "changed the leased installation"; exit 1; }`,
-          'if [ -n "${before:-}" ]; then',
-          '  test "$before" = "$(stat -c %i "$helper")" || { echo "leased helper inode changed"; exit 1; }',
-          '  test "$(cat "$helper")" = champ || { echo "leased helper contents changed"; exit 1; }',
-          "fi",
+          'test "$before" = "$(stat -c %i "$held_helper")" || { echo "leased helper inode changed"; exit 1; }',
+          'printf %s champ | cmp -s - "$held_helper" || { echo "leased helper contents changed"; exit 1; }',
           stopMountedBackend,
           "sh install.sh > retried.out",
           'grep -Fxq "runtimeRoot:$root" retried.out',
           `${afterExit} || { echo "repair did not finish after release"; exit 1; }`,
           'test -x "$helper"',
-          'test "$(cat "$helper")" = champ',
+          'printf %s champ | cmp -s - "$helper" || { echo "retry changed helper contents"; exit 1; }',
         ].join("\n"),
       );
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
