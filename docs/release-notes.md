@@ -1,3 +1,7 @@
+## 2026-11-24 — Scheduler test coverage
+
+- Scheduler changes run the notebook cleanup test and skip 29 unrelated attachment cases. Changes to attachment handling or document extraction still run all 30.
+
 ## 2026-11-24 — Resume chats promptly after a restart
 
 - A chat ready to resume while the server checks its memory queue now starts as soon as memory permits, including during startup.
