@@ -24,6 +24,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as AcpRegistrySupport from "./AcpRegistrySupport.ts";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 
+const nativePlatform = HostProcess.Platform.defaultValue();
 const registryUrl = "https://registry.test/registry.json";
 const archiveUrl = "https://registry.test/example-agent.bin";
 const decodeAcpRegistrySettings = Schema.decodeSync(AcpRegistrySettings);
@@ -227,15 +228,22 @@ describe("AcpRegistrySupport", () => {
     const requests: Array<string> = [];
     return Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const cacheDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-acp-local-" });
-      const commandPath = `${cacheDir}/dsh`;
+      const workspace = path.join(cacheDir, "workspace");
+      yield* fileSystem.makeDirectory(workspace);
+      const commandPath = path.join(cacheDir, nativePlatform === "win32" ? "dsh.EXE" : "dsh");
       yield* fileSystem.writeFileString(commandPath, "#!/bin/sh\n");
       yield* fileSystem.chmod(commandPath, 0o755);
-      const hostEnvironment = { PATH: "/missing-host-bin", INHERITED: "host", OVERRIDE: "host" };
+      const hostEnvironment = {
+        PATH: path.join(cacheDir, "missing-host-bin"),
+        INHERITED: "host",
+        OVERRIDE: "host",
+      };
       const environment = { ...hostEnvironment, PATH: cacheDir, OVERRIDE: "provider" };
       const resolver = yield* AcpRegistrySupport.makeAcpRegistryCatalog({
         cacheDir,
-        toolsDir: `${cacheDir}/tools`,
+        toolsDir: path.join(cacheDir, "tools"),
         registryUrl,
       }).pipe(Effect.provideService(HostProcess.Environment, hostEnvironment));
       const localSettings = decodeAcpRegistrySettings({
@@ -251,13 +259,13 @@ describe("AcpRegistrySupport", () => {
         version: null,
         distribution: "local",
       });
-      const resolved = yield* resolver.resolve(localSettings, "/workspace", environment);
+      const resolved = yield* resolver.resolve(localSettings, workspace, environment);
       expect(resolved).toEqual({
         distribution: "local",
         spawn: {
           command: commandPath,
           args: ["--profile", "acp", "", " spaced ", "$(touch injected); $VALUE"],
-          cwd: "/workspace",
+          cwd: workspace,
           env: environment,
           shell: false,
         },
@@ -271,9 +279,10 @@ describe("AcpRegistrySupport", () => {
         yield* fileSystem.realPath(commandPath),
       );
       expect(requests).toEqual([]);
-      expect(yield* fileSystem.exists(`${cacheDir}/tools`)).toBe(false);
+      expect(yield* fileSystem.exists(path.join(cacheDir, "tools"))).toBe(false);
     }).pipe(
       Effect.scoped,
+      Effect.provideService(HostProcess.Platform, nativePlatform),
       Effect.provide(
         layerResolver((request) => {
           requests.push(request.url);
@@ -382,7 +391,7 @@ describe("AcpRegistrySupport", () => {
   it.effect("resolves command overrides while preserving registry args and environment", () => {
     const agent = makeAgent({
       binary: {
-        "linux-x86_64": {
+        [`${nativePlatform === "win32" ? "windows" : nativePlatform}-x86_64`]: {
           archive: archiveUrl,
           cmd: "./bin/example-agent",
           args: ["acp", "--stdio"],
@@ -393,18 +402,24 @@ describe("AcpRegistrySupport", () => {
     const requests: Array<string> = [];
     return Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const cacheDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-acp-registry-override-",
       });
-      const commandPath = `${cacheDir}/example-agent`;
+      const workspace = path.join(cacheDir, "workspace");
+      yield* fileSystem.makeDirectory(workspace);
+      const commandPath = path.join(
+        cacheDir,
+        nativePlatform === "win32" ? "example-agent.EXE" : "example-agent",
+      );
       yield* fileSystem.writeFileString(commandPath, "#!/bin/sh\n");
       yield* fileSystem.chmod(commandPath, 0o755);
       const resolver = yield* AcpRegistrySupport.makeAcpRegistryCatalog({
         cacheDir,
-        toolsDir: `${cacheDir}/tools`,
+        toolsDir: path.join(cacheDir, "tools"),
         registryUrl,
       });
-      const resolved = yield* resolver.resolve(settings({ commandPath }), "/workspace", {
+      const resolved = yield* resolver.resolve(settings({ commandPath }), workspace, {
         HOST_VALUE: "host",
         OVERRIDE_ME: "host",
       });
@@ -422,7 +437,7 @@ describe("AcpRegistrySupport", () => {
       expect(resolved.spawn).toEqual({
         command: commandPath,
         args: ["acp", "--stdio"],
-        cwd: "/workspace",
+        cwd: workspace,
         env: {
           HOST_VALUE: "host",
           OVERRIDE_ME: "registry",
@@ -432,6 +447,7 @@ describe("AcpRegistrySupport", () => {
       expect(requests).toEqual([registryUrl]);
     }).pipe(
       Effect.scoped,
+      Effect.provideService(HostProcess.Platform, nativePlatform),
       Effect.provide(
         layerResolver((request) => {
           requests.push(request.url);
