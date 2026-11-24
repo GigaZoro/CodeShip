@@ -202,6 +202,10 @@ it.layer(layerTest)("CodexDriver", (it) => {
           environment: [{ name: "OPENAI_API_KEY", value: "ambient-key", sensitive: true }],
           config: { ...CodexDriver.defaultConfig(), setupMode: "managed", homePath: sharedHome },
         }).pipe(
+          Effect.provideService(HostProcess.Environment, {
+            ...process.env,
+            T3CODE_CODEX_METADATA_BINARY_PATH: NodePath.join(sharedHome, "metadata-only", "codex"),
+          }),
           Effect.provideService(
             CodexAdapterV2.CodexAppServerClientFactory,
             CodexAdapterV2.CodexAppServerClientFactory.of({
@@ -768,6 +772,10 @@ it.layer(layerTest)("CodexDriver", (it) => {
             ...(fixture.explicit ? { binaryPath: explicitPath } : {}),
           },
         }).pipe(
+          Effect.provideService(HostProcess.Environment, {
+            ...process.env,
+            T3CODE_CODEX_METADATA_BINARY_PATH: NodePath.join(tempDir, "metadata-only", "codex"),
+          }),
           Effect.provideService(
             CodexAdapterV2.CodexAppServerClientFactory,
             CodexAdapterV2.CodexAppServerClientFactory.of({

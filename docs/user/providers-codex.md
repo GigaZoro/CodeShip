@@ -32,6 +32,15 @@ copy yet, the provider's settings offer **Install Codex**. Signing in through th
 settings selects a private login for the app. Running chats can use the previous
 account until the new login is saved.
 
+## Omit personal instructions from generated metadata
+
+An environment operator can opt in to a Codex executable that skips automatic
+loading of the Codex home's personal `AGENTS.md` for generated titles, branch names,
+commit messages, pull request text, review guides, and manual step reviews. These
+requests still use the selected account, repository instructions and applicable policy.
+Interactive chats use their normal instructions. See the
+[host provisioning guide](../operations/codex-metadata/README.md).
+
 ## Use multiple accounts
 
 Add another ChatGPT account in **Settings → Providers & models**, then select the account

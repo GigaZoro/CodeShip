@@ -39,6 +39,10 @@
 - Storage cleanup kept a finished worktree with "Worktree has private reflogs" once Git had deleted a worktree-only ref and left its reflog's empty folders. Those worktrees are released; a reflog that still holds history keeps its worktree.
 - A delegated task on a linked machine whose last reply or plan was blank gave the chat that started it a blank result. Its result is now its last reply with text, as for a task on this machine.
 
+## 2026-11-24 — Codex metadata instructions
+
+- CodeShip hosts can opt in to a separate Codex executable that omits personal Codex instructions from generated metadata while keeping repository instructions and the selected account.
+
 ## 2026-11-24 — Requests stop waiting when a linked machine goes quiet
 
 - When a linked machine stops answering, CodeShip detects it sooner so delegated work can retry without waiting for the connection to give up.

@@ -1,0 +1,370 @@
+diff --git a/codex-rs/exec/src/cli.rs b/codex-rs/exec/src/cli.rs
+--- a/codex-rs/exec/src/cli.rs
++++ b/codex-rs/exec/src/cli.rs
+@@ -63,6 +63,10 @@
+     /// Run without persisting session files to disk.
+     #[arg(long = "ephemeral", global = true, default_value_t = false)]
+     pub ephemeral: bool,
++
++    /// Generate CodeShip metadata in a new local, ephemeral, read-only session with no personal AGENTS.md.
++    #[arg(long, global = true, requires = "ephemeral")]
++    pub codeship_metadata: bool,
+ 
+     /// Do not load `$CODEX_HOME/config.toml`; auth still uses `CODEX_HOME`.
+     #[arg(long = "ignore-user-config", global = true, default_value_t = false)]
+diff --git a/codex-rs/exec/src/lib.rs b/codex-rs/exec/src/lib.rs
+--- a/codex-rs/exec/src/lib.rs
++++ b/codex-rs/exec/src/lib.rs
+@@ -228,6 +228,7 @@
+ 
+ struct ExecRunArgs {
+     in_process_start_args: InProcessClientStartArgs,
++    codeship_metadata: bool,
+     state_db: Option<StateDbHandle>,
+     command: Option<ExecCommand>,
+     config: Config,
+@@ -273,6 +274,26 @@
+ }
+ 
+ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
++    if cli.codeship_metadata {
++        if cli.remote.is_some() || cli.remote_auth_token_env.is_some() || cli.command.is_some() {
++            anyhow::bail!("--codeship-metadata requires a new local `codex exec` session");
++        }
++        if cli.trust
++            || cli.ignore_user_config
++            || cli.ignore_rules
++            || cli.shared.worktree
++            || cli.shared.auto_review
++            || cli.shared.dangerously_bypass_approvals_and_sandbox
++            || cli.shared.bypass_hook_trust
++            || !cli.shared.add_dir.is_empty()
++            || cli.last_message_file.is_some()
++            || cli.cyber_access_program.is_some()
++        {
++            anyhow::bail!(
++                "--codeship-metadata cannot be combined with trust, configuration or policy bypass, writable-path, file-output, or cyber access options"
++            );
++        }
++    }
+     if let Some(endpoint) = codex_app_server_client::resolve_remote_endpoint(
+         cli.remote.clone(),
+         cli.remote_auth_token_env.clone(),
+@@ -299,6 +320,7 @@
+         skip_git_repo_check,
+         trust,
+         ephemeral,
++        codeship_metadata,
+         ignore_user_config,
+         ignore_rules,
+         color,
+@@ -410,12 +432,19 @@
+         ignore_user_and_project_exec_policy_rules: ignore_rules,
+         ..Default::default()
+     };
+-    if worktree
++    if (worktree || codeship_metadata)
+         && EnvironmentManager::prepare_from_codex_home(&codex_home)
+             .await?
+             .default_environment_is_remote()
+     {
+-        anyhow::bail!("--worktree requires local execution");
++        anyhow::bail!(
++            "{} requires local execution",
++            if codeship_metadata {
++                "--codeship-metadata"
++            } else {
++                "--worktree"
++            }
++        );
+     }
+ 
+     let managed_worktree = if worktree {
+@@ -827,6 +856,7 @@
+     };
+     run_exec_session(ExecRunArgs {
+         in_process_start_args,
++        codeship_metadata,
+         state_db,
+         command,
+         config,
+@@ -929,6 +959,7 @@
+ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
+     let ExecRunArgs {
+         in_process_start_args,
++        codeship_metadata,
+         state_db,
+         command,
+         config,
+@@ -1104,13 +1135,14 @@
+         .transpose()?;
+ 
+     let mut request_ids = RequestIdSequencer::new();
+-    let client = AppServerClient::InProcess(
+-        InProcessAppServerClient::start(in_process_start_args)
+-            .await
+-            .map_err(|err| {
+-                anyhow::anyhow!("failed to initialize in-process app-server client: {err}")
+-            })?,
+-    );
++    let client = if codeship_metadata {
++        InProcessAppServerClient::start_codeship_metadata(in_process_start_args).await
++    } else {
++        InProcessAppServerClient::start(in_process_start_args).await
++    };
++    let client = AppServerClient::InProcess(client.map_err(|err| {
++        anyhow::anyhow!("failed to initialize in-process app-server client: {err}")
++    })?);
+ 
+     let mut daybreak_enabled = config.daybreak_enabled;
+     // Resolve resume and fork through existing app-server thread lifecycle APIs.
+diff --git a/codex-rs/app-server-client/src/lib.rs b/codex-rs/app-server-client/src/lib.rs
+--- a/codex-rs/app-server-client/src/lib.rs
++++ b/codex-rs/app-server-client/src/lib.rs
+@@ -390,9 +390,25 @@
+     /// The returned client is ready for requests and ordered event consumption.
+     /// Request queues remain bounded without blocking on unread notifications.
+     pub async fn start(args: InProcessClientStartArgs) -> IoResult<Self> {
++        Self::start_with_mode(args, /*codeship_metadata*/ false).await
++    }
++
++    /// Starts the local server for a single CodeShip metadata request.
++    pub async fn start_codeship_metadata(args: InProcessClientStartArgs) -> IoResult<Self> {
++        Self::start_with_mode(args, /*codeship_metadata*/ true).await
++    }
++
++    async fn start_with_mode(
++        args: InProcessClientStartArgs,
++        codeship_metadata: bool,
++    ) -> IoResult<Self> {
+         let channel_capacity = args.channel_capacity.max(1);
+-        let mut handle =
+-            codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
++        let runtime_args = args.into_runtime_start_args();
++        let mut handle = if codeship_metadata {
++            codex_app_server::in_process::start_codeship_metadata(runtime_args).await?
++        } else {
++            codex_app_server::in_process::start(runtime_args).await?
++        };
+         let request_sender = handle.sender();
+         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
+         // e9996ec62a preserved transcript events by awaiting a bounded queue, but that can
+diff --git a/codex-rs/app-server/src/in_process.rs b/codex-rs/app-server/src/in_process.rs
+--- a/codex-rs/app-server/src/in_process.rs
++++ b/codex-rs/app-server/src/in_process.rs
+@@ -390,7 +390,19 @@
+ /// returning the handle, so callers receive a ready-to-use runtime. Rejected
+ /// initialization shuts down the runtime and returns an `InvalidData` error.
+ /// Transport failures while processing `initialized` also shut down the runtime.
+-pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
++pub async fn start(args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
++    start_with_mode(args, /*codeship_metadata*/ false).await
++}
++
++/// Starts the embedded server for CodeShip metadata with an empty personal instruction snapshot.
++pub async fn start_codeship_metadata(args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
++    start_with_mode(args, /*codeship_metadata*/ true).await
++}
++
++async fn start_with_mode(
++    mut args: InProcessStartArgs,
++    codeship_metadata: bool,
++) -> IoResult<InProcessClientHandle> {
+     if let Ok(Some(err)) = check_execpolicy_for_warnings(&args.config.config_layer_stack).await {
+         let (path, range) = crate::exec_policy_warning_location(&err);
+         args.config_warnings.push(ConfigWarningNotification {
+@@ -402,7 +414,7 @@
+     }
+     let initialize = args.initialize.clone();
+     // Keep embedded startup state off callers' stacks, which are smaller on Windows.
+-    let client = Box::pin(start_uninitialized(args)).await?;
++    let client = Box::pin(start_uninitialized(args, codeship_metadata)).await?;
+ 
+     let initialize_response = client
+         .request(ClientRequest::Initialize {
+@@ -460,7 +472,10 @@
+     }
+ }
+ 
+-async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
++async fn start_uninitialized(
++    mut args: InProcessStartArgs,
++    codeship_metadata: bool,
++) -> IoResult<InProcessClientHandle> {
+     let config_manager = ConfigManager::new(
+         args.config.codex_home.to_path_buf(),
+         args.cli_overrides,
+@@ -544,32 +559,35 @@
+         let (processor_tx, mut processor_rx) = mpsc::channel::<ProcessorCommand>(channel_capacity);
+         let mut processor_handle = tokio::spawn(async move {
+             let (startup_warnings_tx, mut startup_warnings_rx) = mpsc::unbounded_channel();
+-            let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
+-                cloud_skill_provider: None,
+-                outgoing: Arc::clone(&processor_outgoing),
+-                analytics_events_client,
+-                arg0_paths: args.arg0_paths,
+-                config: args.config,
+-                startup_cwd,
+-                config_manager,
+-                environment_manager: args.environment_manager,
+-                feedback: args.feedback,
+-                log_db: args.log_db,
+-                state_db: args.state_db,
+-                config_warnings: args.config_warnings,
+-                startup_warnings_tx,
+-                session_source: args.session_source,
+-                user_verification: Arc::new(crate::user_verification::Service::new(Arc::clone(
+-                    &auth_manager,
+-                ))),
+-                auth_manager,
+-                runtime_auth_slot,
+-                installation_id,
+-                code_mode_session_provider: None,
+-                rpc_transport: AppServerRpcTransport::InProcess,
+-                remote_control_handle: None,
+-                plugin_startup_tasks: Some(PluginStartupConfig::Current),
+-            }));
++            let processor = Arc::new(MessageProcessor::new_with_mode(
++                MessageProcessorArgs {
++                    cloud_skill_provider: None,
++                    outgoing: Arc::clone(&processor_outgoing),
++                    analytics_events_client,
++                    arg0_paths: args.arg0_paths,
++                    config: args.config,
++                    startup_cwd,
++                    config_manager,
++                    environment_manager: args.environment_manager,
++                    feedback: args.feedback,
++                    log_db: args.log_db,
++                    state_db: args.state_db,
++                    config_warnings: args.config_warnings,
++                    startup_warnings_tx,
++                    session_source: args.session_source,
++                    user_verification: Arc::new(crate::user_verification::Service::new(
++                        Arc::clone(&auth_manager),
++                    )),
++                    auth_manager,
++                    runtime_auth_slot,
++                    installation_id,
++                    code_mode_session_provider: None,
++                    rpc_transport: AppServerRpcTransport::InProcess,
++                    remote_control_handle: None,
++                    plugin_startup_tasks: Some(PluginStartupConfig::Current),
++                },
++                codeship_metadata,
++            ));
+             let mut thread_created_rx = processor.thread_created_receiver();
+             let session = Arc::new(ConnectionSessionState::new(
+                 crate::transport::ConnectionOrigin::InProcess,
+diff --git a/codex-rs/app-server/src/message_processor.rs b/codex-rs/app-server/src/message_processor.rs
+--- a/codex-rs/app-server/src/message_processor.rs
++++ b/codex-rs/app-server/src/message_processor.rs
+@@ -292,6 +292,10 @@
+     /// Create a new `MessageProcessor`, retaining a handle to the outgoing
+     /// `Sender` so handlers can enqueue messages to be written to stdout.
+     pub(crate) fn new(args: MessageProcessorArgs) -> Self {
++        Self::new_with_mode(args, /*codeship_metadata*/ false)
++    }
++
++    pub(crate) fn new_with_mode(args: MessageProcessorArgs, codeship_metadata: bool) -> Self {
+         let MessageProcessorArgs {
+             cloud_skill_provider,
+             outgoing,
+@@ -556,7 +560,7 @@
+             outgoing.clone(),
+             Arc::clone(&thread_list_state_permit),
+         );
+-        let thread_processor = ThreadRequestProcessor::new(
++        let mut thread_processor = ThreadRequestProcessor::new(
+             auth_manager,
+             Arc::clone(&thread_manager),
+             outgoing.clone(),
+@@ -576,6 +580,7 @@
+             config_warnings.clone(),
+             sample_responses,
+         );
++        thread_processor.codeship_metadata = codeship_metadata;
+         let turn_processor = TurnRequestProcessor::new(
+             Arc::clone(&thread_manager),
+             outgoing.clone(),
+diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
+--- a/codex-rs/app-server/src/request_processors/thread_processor.rs
++++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
+@@ -48,6 +48,7 @@
+ use codex_app_server_protocol::ThreadSectionMoveResponse;
+ use codex_config::types::WindowsSandboxModeToml;
+ use codex_extension_api::ExtensionDataInit;
++use codex_extension_api::LoadedUserInstructions;
+ use codex_extension_api::ThreadIdleCause;
+ use codex_protocol::SanitizedGitUrl;
+ use codex_protocol::config_types::MultiAgentMode;
+@@ -553,6 +554,7 @@
+     pub(super) skills_watcher: Arc<SkillsWatcher>,
+     pub(super) turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
+     pub(super) initial_config_warnings: Arc<Vec<ConfigWarningNotification>>,
++    pub(crate) codeship_metadata: bool,
+ }
+ 
+ /// Whether resume attaches a client or restores a cold runtime during daemon startup.
+@@ -616,6 +618,7 @@
+             skills_watcher,
+             turn_cost_worker,
+             initial_config_warnings: Arc::new(initial_config_warnings),
++            codeship_metadata: false,
+         }
+     }
+ 
+@@ -1393,6 +1396,7 @@
+         let initial_config_warnings = Arc::clone(&self.initial_config_warnings);
+         let outgoing = Arc::clone(&listener_task_context.outgoing);
+         let error_request_id = request_id.clone();
++        let codeship_metadata = self.codeship_metadata;
+         let thread_start_task = async move {
+             if let Err(error) = Self::thread_start_task(
+                 listener_task_context,
+@@ -1417,6 +1421,7 @@
+                 experimental_raw_events,
+                 request_trace,
+                 initial_config_warnings,
++                codeship_metadata,
+             )
+             .await
+             {
+@@ -1499,6 +1504,7 @@
+         experimental_raw_events: bool,
+         request_trace: Option<W3cTraceContext>,
+         initial_config_warnings: Arc<Vec<ConfigWarningNotification>>,
++        codeship_metadata: bool,
+     ) -> Result<(), JSONRPCErrorError> {
+         let thread_start_started_at = std::time::Instant::now();
+         let requested_cwd = typesafe_overrides.cwd.clone();
+@@ -1632,6 +1638,29 @@
+             thread_extension_init.insert(selected_capability_roots);
+         }
+         let mut start_options = StartThreadOptions::new(config);
++        if codeship_metadata {
++            // Validate the thread's final configuration after the normal policy and trust reloads.
++            let permissions = start_options
++                .config
++                .permissions
++                .effective_permission_profile();
++            if !start_options.config.ephemeral
++                || permissions.intersect_with_read_only().as_ref() != Some(&permissions)
++            {
++                return Err(invalid_request(
++                    "--codeship-metadata requires an ephemeral thread with managed read-only permissions and restricted network access",
++                ));
++            }
++            if start_options.config.permissions.approval_policy.value()
++                != codex_protocol::protocol::AskForApproval::Never
++                || start_options.config.bypass_hook_trust
++            {
++                return Err(invalid_request(
++                    "--codeship-metadata requires approvals set to never and normal hook trust checks",
++                ));
++            }
++            start_options.user_instructions = Some(LoadedUserInstructions::default());
++        }
+         let reserved_thread_id = if start_options.config.ephemeral {
+             None
+         } else {

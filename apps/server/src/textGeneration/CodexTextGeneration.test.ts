@@ -22,6 +22,7 @@ import * as Scope from "effect/Scope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { createModelSelection } from "@t3tools/shared/model";
 import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { ChildProcessSpawner } from "effect/process";
 import { expect } from "vite-plus/test";
 
@@ -56,6 +57,10 @@ const layerCodexTextGenerationTest = ServerConfig.ServerConfig.layerTest(process
 
 interface FakeCodexInput {
   output: string;
+  metadata?: "supported" | "stock";
+  expectedHome?: string;
+  expectedManaged?: boolean;
+  metadataReplies?: Readonly<Record<string, unknown>>;
   lifecycle?: { port: number; command: "exec" | "mcp list" };
   exitCode?: number;
   stderr?: string;
@@ -83,17 +88,34 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
     mcpServers: input.mcpServers ?? [],
     stderr: input.stderr ?? null,
     output: input.output,
+    metadata: input.metadata ?? null,
+    expectedHome: input.expectedHome ?? null,
+    expectedManaged: input.expectedManaged ?? false,
+    metadataReplies: input.metadataReplies ?? {},
     exitCode: input.exitCode ?? 0,
   });
   return Effect.gen(function* () {
     const path = yield* Path.Path;
-    return writeFakeCli({
+    const fs = yield* FileSystem.FileSystem;
+    const binary = writeFakeCli({
       directory: path.join(dir, "bin"),
       name: "codex",
       source: [
         'import * as NodeFS from "node:fs";',
         `const check = ${check};`,
         "const args = process.argv.slice(2);",
+        'if (args.join(" ") === "exec --help") {',
+        "  if (process.env.CODEX_HOME || process.env.OPENAI_API_KEY || process.env.ACCESS_TOKEN) process.exit(20);",
+        '  if (process.cwd() !== NodeFS.realpathSync(new URL(".", import.meta.url))) process.exit(29);',
+        '  if (check.metadata === "supported") process.stdout.write("      --codeship-metadata\\n");',
+        "  process.exit(0);",
+        "}",
+        "if (check.expectedHome && process.env.CODEX_HOME !== check.expectedHome) process.exit(21);",
+        "if (check.metadata) {",
+        '  const expectedKey = check.expectedManaged ? undefined : "synthetic-test-key";',
+        "  if (process.env.OPENAI_API_KEY !== expectedKey) process.exit(23);",
+        '  if (args.includes("model_provider=synthetic-managed") !== check.expectedManaged) process.exit(24);',
+        "}",
         'const isMcpList = args.includes("mcp") && args.includes("list");',
         ...(input.lifecycle === undefined
           ? []
@@ -106,6 +128,7 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
             ]),
         "if (isMcpList) {",
         '  if (typeof check.mcpServers === "number") process.exit(check.mcpServers);',
+        '  if (check.metadata && args.includes("--strict-config")) process.exit(30);',
         "  process.stdout.write(JSON.stringify(check.mcpServers));",
         "  process.exit(0);",
         "}",
@@ -164,11 +187,33 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         '  fail("stdin contained forbidden content", 4);',
         "}",
         'if (check.stderr !== null) process.stderr.write(check.stderr + "\\n");',
-        'if (outputPath !== null) NodeFS.writeFileSync(outputPath, check.output + "\\n");',
+        "if (check.metadata) {",
+        '  if (!args.includes("--codeship-metadata") || outputPath !== null) fail("wrong metadata argv", 22);',
+        '  if (!originalArgs.includes(" --ephemeral --skip-git-repo-check -s read-only --model gpt-5.4-mini ")) fail("wrong policy or model", 25);',
+        '  const schemaArg = args.indexOf("--output-schema");',
+        '  if (schemaArg < 0 || args.at(-1) !== "-") fail("missing schema or stdin prompt", 26);',
+        '  const schema = JSON.parse(NodeFS.readFileSync(args[schemaArg + 1], "utf8"));',
+        '  if (schema.additionalProperties !== false) fail("schema must be strict", 27);',
+        '  const reply = check.metadataReplies[Object.keys(schema.properties).sort().join(",")];',
+        '  if (reply !== undefined && schema.properties.branch && !seenImage) fail("missing metadata image", 31);',
+        '  process.stdout.write((reply === undefined ? check.output : JSON.stringify(reply)) + "\\n");',
+        "} else {",
+        '  if (args.includes("--codeship-metadata")) fail("stock exec received metadata flag", 32);',
+        '  if (outputPath !== null) NodeFS.writeFileSync(outputPath, check.output + "\\n");',
+        "}",
         "process.exitCode = check.exitCode;",
         "",
       ].join("\n"),
     });
+    if (input.metadata) {
+      const script = path.join(dir, "bin", "codex-stub.mjs");
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+      yield* fs.writeFileString(
+        binary,
+        `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(script)} "$@"\n`,
+      );
+    }
+    return binary;
   });
 }
 
@@ -178,17 +223,58 @@ function withFakeCodexEnv<A, E, R>(
     environment?: NodeJS.ProcessEnv;
     models?: ReadonlyArray<string>;
     managedRuntime?: boolean;
+    metadataPath?: "configured" | "relative" | "missing";
+    customBinary?: "same" | "different";
   },
   effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-codex-text-" });
-    const codexPath = yield* makeFakeCodexBinary(tempDir, input);
-    const config = decodeCodexSettings({ binaryPath: codexPath, launchArgs: input.launchArgs });
+    const codexPath = yield* makeFakeCodexBinary(
+      tempDir,
+      input.metadata ? { output: "", exitCode: 28, stderr: "Unexpected stock exec" } : input,
+    );
+    const path = yield* Path.Path;
+    const home = path.join(tempDir, "selected-home");
+    const metadataPath = input.metadata
+      ? yield* makeFakeCodexBinary(path.join(tempDir, "host"), {
+          ...input,
+          expectedHome: home,
+          expectedManaged: input.managedRuntime === true,
+        })
+      : undefined;
+    const configuredPath = {
+      configured: metadataPath,
+      relative: "bin/codex",
+      missing: path.join(tempDir, "missing"),
+    }[input.metadataPath ?? "configured"];
+    const config = decodeCodexSettings({
+      binaryPath:
+        input.customBinary === "same"
+          ? metadataPath
+          : input.metadata && !input.customBinary
+            ? "codex"
+            : codexPath,
+      launchArgs:
+        input.managedRuntime && input.metadata
+          ? [input.launchArgs, "--config model_provider=synthetic-managed"]
+              .filter(Boolean)
+              .join(" ")
+          : input.launchArgs,
+      homePath: input.metadata ? home : undefined,
+    });
+    const environment = {
+      ...process.env,
+      T3CODE_CODEX_METADATA_BINARY_PATH: codexPath,
+      ...(input.metadata
+        ? { OPENAI_API_KEY: input.managedRuntime ? undefined : "synthetic-test-key" }
+        : {}),
+      ...input.environment,
+    };
     const textGeneration = yield* makeCodexTextGeneration(
       config,
-      input.environment === undefined ? undefined : { ...process.env, ...input.environment },
+      environment,
       Effect.succeed(
         (input.models ?? []).map((slug) => ({
           slug,
@@ -199,18 +285,170 @@ function withFakeCodexEnv<A, E, R>(
       ),
       input.managedRuntime
         ? Effect.succeed({
-            config,
-            environment: input.environment ?? process.env,
+            config: { ...config, binaryPath: codexPath },
+            environment,
             revision: "test",
             privateMcpSignIns: false,
           })
         : undefined,
+      Effect.succeed(codexPath),
+    ).pipe(
+      Effect.provideService(HostProcess.Environment, {
+        ...process.env,
+        T3CODE_CODEX_METADATA_BINARY_PATH: configuredPath,
+      }),
     );
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
 }
 
 it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
+  for (const managedRuntime of [false, true]) {
+    it.effect.skipIf(isWindowsHost)(
+      `uses the host metadata binary with the selected home (managed=${managedRuntime})`,
+      () =>
+        withFakeCodexEnv(
+          {
+            metadata: "supported",
+            managedRuntime,
+            ...(managedRuntime ? {} : { customBinary: "same" }),
+            output: "",
+            metadataReplies: {
+              "needsRefinement,title": { title: "Read-only metadata" },
+              branch: { branch: "metadata" },
+              "body,subject": { subject: "Add metadata", body: "" },
+              "body,title": { title: "Add metadata", body: "Summary" },
+              stops: { stops: [] },
+              "needsPerson,solutions,summary,translation": {
+                summary: "Review the step",
+                needsPerson: false,
+                solutions: [
+                  { title: "Run checks", detail: "Verify metadata", command: "", agentCanDo: true },
+                ],
+                translation: { title: "Run checks", step: "Verify metadata" },
+              },
+            },
+            launchArgs: "--strict-config --listen off --config features.plugins=true",
+            mcpServers: [{ name: "server.with.dots", enabled: true }],
+            requireArg:
+              '--config features.plugins=false --config features.apps=false --config mcp_servers={"server.with.dots"={enabled=false}} --codeship-metadata',
+            forbidArg: "--listen",
+          },
+          (textGeneration) =>
+            Effect.gen(function* () {
+              const fs = yield* FileSystem.FileSystem;
+              const path = yield* Path.Path;
+              const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+              const imageId = `metadata-image-${managedRuntime}`;
+              const imagePath = path.join(attachmentsDir, `${imageId}.png`);
+              yield* fs.makeDirectory(attachmentsDir, { recursive: true });
+              yield* Effect.acquireRelease(fs.writeFile(imagePath, Buffer.from("image")), () =>
+                fs.remove(imagePath).pipe(Effect.ignore),
+              );
+              const common = { cwd: process.cwd(), modelSelection: DEFAULT_TEST_MODEL_SELECTION };
+              const message = "Name this synthetic thread";
+              const result = yield* Effect.all(
+                {
+                  title: textGeneration.generateThreadTitle({ ...common, message }),
+                  branch: textGeneration.generateBranchName({
+                    ...common,
+                    message,
+                    attachments: [
+                      {
+                        type: "image",
+                        id: imageId,
+                        name: "metadata.png",
+                        mimeType: "image/png",
+                        sizeBytes: 5,
+                      },
+                    ],
+                  }),
+                  commit: textGeneration.generateCommitMessage({
+                    ...common,
+                    branch: "example",
+                    stagedSummary: "M README.md",
+                    stagedPatch: "diff --git a/README.md b/README.md",
+                  }),
+                  pr: textGeneration.generatePrContent({
+                    ...common,
+                    baseBranch: "main",
+                    headBranch: "example",
+                    commitSummary: "Add metadata",
+                    diffSummary: "M README.md",
+                    diffPatch: "diff --git a/README.md b/README.md",
+                  }),
+                  guide: textGeneration.generateReviewGuide({
+                    ...common,
+                    number: 1,
+                    title: "Add metadata",
+                    description: "Local fixture",
+                    baseBranch: "main",
+                    baseCommit: "abc123",
+                    settledReview: "",
+                    language: "en",
+                  }),
+                  step: textGeneration.generateManualStepReview({
+                    ...common,
+                    step: {
+                      title: "Check metadata",
+                      step: "Run checks",
+                      kind: "hands-on",
+                      machine: "Test host",
+                    },
+                    notes: [],
+                    language: "en",
+                  }),
+                },
+                { concurrency: "unbounded" },
+              );
+              expect(result).toEqual({
+                title: { title: "Read-only metadata" },
+                branch: { branch: "metadata" },
+                commit: { subject: "Add metadata", body: "" },
+                pr: { title: "Add metadata", body: "Summary" },
+                guide: { stops: [] },
+                step: {
+                  summary: "Review the step",
+                  needsPerson: false,
+                  solutions: [{ title: "Run checks", detail: "Verify metadata", agentCanDo: true }],
+                  translation: { title: "Run checks", step: "Verify metadata" },
+                },
+              });
+            }),
+        ),
+    );
+  }
+
+  for (const [fixture, detail] of [
+    [{ metadataPath: "relative" }, "absolute path of an executable patched Codex"],
+    [{ metadataPath: "missing" }, "absolute path of an executable patched Codex"],
+    [{ metadata: "stock" }, "supports --codeship-metadata"],
+    [{ customBinary: "different" }, "different custom launcher"],
+    [{ mcpServers: 2 }, "could not list MCP servers"],
+    [{ output: '{"title":"Title","extra":true}' }, "invalid structured output"],
+    [{ output: 'progress\n{"title":"Title"}' }, "invalid structured output"],
+    [{ exitCode: 3, stderr: "Synthetic policy denial" }, "Synthetic policy denial"],
+  ] as const) {
+    it.effect.skipIf(isWindowsHost)(
+      `reports a metadata failure for ${JSON.stringify(fixture)}`,
+      () =>
+        withFakeCodexEnv(
+          { metadata: "supported", output: '{"title":"Title"}', ...fixture },
+          (textGeneration) =>
+            Effect.gen(function* () {
+              const error = yield* Effect.flip(
+                textGeneration.generateThreadTitle({
+                  cwd: process.cwd(),
+                  message: "Name this thread",
+                  modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+                }),
+              );
+              expect(error.detail).toContain(detail);
+            }),
+        ),
+    );
+  }
+
   it.effect.each(["exec", "mcp list"] as const)(
     "kills a stalled %s CLI when its request is interrupted",
     (command) =>

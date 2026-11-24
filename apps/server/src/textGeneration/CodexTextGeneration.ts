@@ -8,7 +8,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import {
-  type CodexSettings,
+  CodexSettings,
   DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
   type ServerProviderModel,
   TextGenerationError,
@@ -30,6 +30,10 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 
 const CODEX_TIMEOUT_MS = 180_000;
 const CODEX_MCP_LIST_TIMEOUT_MS = 10_000;
+const CODEX_METADATA_PROBE_TIMEOUT_MS = 5_000;
+const CODEX_METADATA_BINARY_ENV = "T3CODE_CODEX_METADATA_BINARY_PATH";
+const CODEX_METADATA_FLAG = "--codeship-metadata";
+const { binaryPath: defaultCodexBinary } = Schema.decodeSync(CodexSettings)({});
 // Plugins/apps add MCP servers; use trailing config overrides because --disable loses to user -c flags.
 const CODEX_NO_PLUGIN_ARGS = [
   "--config",
@@ -65,6 +69,72 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serverConfig = yield* Effect.service(ServerConfig.ServerConfig);
   const resolvedEnvironment = environment ?? process.env;
+  const hostEnvironment = yield* HostProcess.Environment;
+  const metadataBinaryPath = hostEnvironment[CODEX_METADATA_BINARY_ENV];
+  const windows = yield* HostProcess.isWindows;
+
+  const resolveMetadataBinary = Effect.fn("CodexTextGeneration.resolveMetadataBinary")(function* (
+    operation: TextGenerationOperations.Operation,
+    configuredPath: string,
+  ) {
+    const unusableBinary = new TextGenerationError({
+      operation,
+      detail: `Set ${CODEX_METADATA_BINARY_ENV} on the CodeShip host to the absolute path of an executable patched Codex that supports ${CODEX_METADATA_FLAG}, then restart CodeShip.`,
+    });
+    if (
+      !path.isAbsolute(configuredPath) ||
+      (windows &&
+        (!/^[a-z]:[/\\]/i.test(configuredPath) ||
+          path.extname(configuredPath).toLowerCase() !== ".exe"))
+    ) {
+      return yield* unusableBinary;
+    }
+    const binary = yield* fileSystem
+      .realPath(configuredPath)
+      .pipe(Effect.mapError(() => unusableBinary));
+    // A provider's explicit launcher can own account setup, or be required by host policy.
+    if (
+      codexConfig.binaryPath &&
+      codexConfig.binaryPath !== defaultCodexBinary &&
+      path.normalize(codexConfig.binaryPath) !== path.normalize(configuredPath) &&
+      path.normalize(codexConfig.binaryPath) !== binary
+    ) {
+      return yield* new TextGenerationError({
+        operation,
+        detail: `This Codex instance uses a different custom launcher. Provision that launcher for metadata and point ${CODEX_METADATA_BINARY_ENV} at it, or unset the host opt-in to use ordinary Codex text generation.`,
+      });
+    }
+    const [help, , exitCode] = yield* Effect.gen(function* () {
+      const child = yield* commandSpawner.spawn(
+        ChildProcess.make(binary, ["exec", "--help"], {
+          cwd: path.dirname(binary),
+          env: {},
+          extendEnv: false,
+          stdin: "ignore",
+          forceKillAfter: "1 second",
+        }),
+      );
+      return yield* Effect.all(
+        [
+          child.stdout.pipe(Stream.decodeText(), Stream.mkString),
+          child.stderr.pipe(Stream.runDrain),
+          child.exitCode,
+        ],
+        { concurrency: "unbounded" },
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.timeout(CODEX_METADATA_PROBE_TIMEOUT_MS),
+      Effect.mapError(() => unusableBinary),
+    );
+    if (
+      exitCode !== 0 ||
+      !help.split("\n").some((line) => line.trim().split(/\s/, 1)[0] === CODEX_METADATA_FLAG)
+    ) {
+      return yield* unusableBinary;
+    }
+    return binary;
+  });
 
   const readStreamAsString = <E>(
     operation: string,
@@ -160,15 +230,16 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       readonly cwd: string;
       readonly env: NodeJS.ProcessEnv;
       readonly launchArgs: ReadonlyArray<string>;
+      readonly metadata: boolean;
     }) {
-      const spawnCommand = yield* resolveSpawnCommand(
-        input.binary,
-        [...input.launchArgs, ...CODEX_NO_PLUGIN_ARGS, "mcp", "list", "--json"],
-        { env: input.env },
-      );
+      const args = [...input.launchArgs, ...CODEX_NO_PLUGIN_ARGS, "mcp", "list", "--json"];
+      const spawnCommand = input.metadata
+        ? { command: input.binary, args, shell: false }
+        : yield* resolveSpawnCommand(input.binary, args, { env: input.env });
       const child = yield* commandSpawner.spawn(
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           env: input.env,
+          ...(input.metadata ? { extendEnv: false } : {}),
           cwd: input.cwd,
           shell: spawnCommand.shell,
           forceKillAfter: "1 second",
@@ -183,15 +254,15 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         { concurrency: "unbounded" },
       );
       if (exitCode !== 0) {
-        yield* Effect.logWarning("codex mcp list failed; text generation keeps its MCP servers", {
+        yield* Effect.logWarning("codex mcp list failed", {
           reason: "exit",
           exitCode,
         });
-        return [];
+        return null;
       }
       const servers = yield* decodeCodexMcpServers(stdout).pipe(
         Effect.tapError(() =>
-          Effect.logWarning("codex mcp list failed; text generation keeps its MCP servers", {
+          Effect.logWarning("codex mcp list failed", {
             reason: "decode",
           }),
         ),
@@ -203,13 +274,13 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     Effect.flatMap(
       Option.match({
         onNone: () =>
-          Effect.logWarning("codex mcp list failed; text generation keeps its MCP servers", {
+          Effect.logWarning("codex mcp list failed", {
             reason: "timeout",
-          }).pipe(Effect.as<ReadonlyArray<string>>([])),
+          }).pipe(Effect.as(null)),
         onSome: (names) => Effect.succeed(names),
       }),
     ),
-    Effect.orElseSucceed((): ReadonlyArray<string> => []),
+    Effect.orElseSucceed(() => null),
   );
 
   const runCodexJson = Effect.fn("runCodexJson")(function* <S extends Schema.Top>({
@@ -231,11 +302,18 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       toJsonSchemaObject(outputSchemaJson),
     );
     const schemaPath = yield* writeTempFile(operation, "codex-schema", schemaJson);
-    const outputPath = yield* writeTempFile(operation, "codex-output", "").pipe(
-      Effect.onError(() => removeTempFileDir(schemaPath)),
-    );
+    const outputPath =
+      metadataBinaryPath === undefined
+        ? yield* writeTempFile(operation, "codex-output", "").pipe(
+            Effect.onError(() => removeTempFileDir(schemaPath)),
+          )
+        : undefined;
 
     const runCodexCommand = Effect.fn("runCodexJson.runCodexCommand")(function* () {
+      const metadataBinary =
+        metadataBinaryPath === undefined
+          ? undefined
+          : yield* resolveMetadataBinary(operation, metadataBinaryPath);
       const resolved = resolveRuntime
         ? yield* resolveRuntime.pipe(
             Effect.mapError(
@@ -259,14 +337,16 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         DEFAULT_TEXT_GENERATION_REASONING_EFFORT;
       const serviceTier = resolved ? undefined : getCodexServiceTierOptionValue(modelSelection);
       const binary =
-        (resolved || !resolveBinaryPath
+        metadataBinary ??
+        ((resolved || !resolveBinaryPath
           ? effectiveConfig.binaryPath
           : yield* resolveBinaryPath.pipe(
               Effect.mapError(
                 (cause) => new TextGenerationError({ operation, detail: cause.detail }),
               ),
-            )) || "codex";
-      const env = {
+            )) ||
+          defaultCodexBinary);
+      const env: NodeJS.ProcessEnv = {
         ...effectiveEnvironment,
         ...(effectiveConfig.homePath
           ? {
@@ -277,42 +357,58 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             }
           : {}),
       };
+      if (metadataBinary !== undefined) {
+        // Provider environment overrides must not inject a loader into the host executable.
+        for (const name of Object.keys(env)) {
+          if (name.startsWith("LD_") || name.startsWith("DYLD_")) {
+            delete env[name];
+          }
+        }
+      }
       const execLaunchArgs = codexExecLaunchArgs(launchArgs);
-      const mcpServersOff = yield* listEnabledMcpServers({
+      const mcpServers = yield* listEnabledMcpServers({
         binary,
         cwd,
         env,
+        metadata: metadataBinary !== undefined,
         // `codex mcp` rejects --strict-config; the overrides still apply.
         launchArgs: execLaunchArgs.filter((arg) => arg !== "--strict-config"),
-      }).pipe(Effect.map(codexMcpServersOff));
-      const spawnCommand = yield* resolveSpawnCommand(
-        binary,
-        [
-          "exec",
-          ...execLaunchArgs,
-          // A user's MCP server could act on the text-generation prompt.
-          ...CODEX_NO_PLUGIN_ARGS,
-          ...(mcpServersOff ? ["--config", mcpServersOff] : []),
-          "--ephemeral",
-          "--skip-git-repo-check",
-          "-s",
-          "read-only",
-          "--model",
-          model,
-          "--config",
-          `model_reasoning_effort="${reasoningEffort}"`,
-          ...(serviceTier ? ["--config", `service_tier="${serviceTier}"`] : []),
-          "--output-schema",
-          schemaPath,
-          "--output-last-message",
-          outputPath,
-          ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
-          "-",
-        ],
-        { env: effectiveEnvironment },
-      );
+      });
+      if (metadataBinary !== undefined && mcpServers === null) {
+        return yield* new TextGenerationError({
+          operation,
+          detail: `Codex metadata could not list MCP servers. Check that the executable in ${CODEX_METADATA_BINARY_ENV} supports \`codex mcp list --json\` with this account's configuration.`,
+        });
+      }
+      const mcpServersOff = codexMcpServersOff(mcpServers ?? []);
+      const args = [
+        "exec",
+        ...execLaunchArgs,
+        // A user's MCP server could act on the text-generation prompt.
+        ...CODEX_NO_PLUGIN_ARGS,
+        ...(mcpServersOff ? ["--config", mcpServersOff] : []),
+        ...(metadataBinary !== undefined ? [CODEX_METADATA_FLAG] : []),
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "-s",
+        "read-only",
+        "--model",
+        model,
+        "--config",
+        `model_reasoning_effort="${reasoningEffort}"`,
+        ...(serviceTier ? ["--config", `service_tier="${serviceTier}"`] : []),
+        "--output-schema",
+        schemaPath,
+        ...(outputPath ? ["--output-last-message", outputPath] : []),
+        ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
+        "-",
+      ];
+      const spawnCommand = metadataBinary
+        ? { command: metadataBinary, args, shell: false }
+        : yield* resolveSpawnCommand(binary, args, { env: effectiveEnvironment });
       const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         env,
+        ...(metadataBinary ? { extendEnv: false } : {}),
         cwd,
         shell: spawnCommand.shell,
         stdin: {
@@ -354,14 +450,18 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
               : `Codex CLI command failed with code ${exitCode}.`,
         });
       }
+      return stdout;
     });
 
-    const cleanup = Effect.all([removeTempFileDir(schemaPath), removeTempFileDir(outputPath)], {
-      concurrency: "unbounded",
-    }).pipe(Effect.asVoid);
+    const cleanup = Effect.all(
+      [removeTempFileDir(schemaPath), ...(outputPath ? [removeTempFileDir(outputPath)] : [])],
+      {
+        concurrency: "unbounded",
+      },
+    ).pipe(Effect.asVoid);
 
     return yield* Effect.gen(function* () {
-      yield* runCodexCommand().pipe(
+      const stdout = yield* runCodexCommand().pipe(
         Effect.scoped,
         Effect.timeoutOption(investigate?.timeoutMs ?? CODEX_TIMEOUT_MS),
         Effect.flatMap(
@@ -370,23 +470,29 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
               Effect.fail(
                 new TextGenerationError({ operation, detail: "Codex CLI request timed out." }),
               ),
-            onSome: () => Effect.void,
+            onSome: Effect.succeed,
           }),
         ),
       );
 
       const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(outputSchemaJson));
 
-      return yield* fileSystem.readFileString(outputPath).pipe(
-        Effect.mapError(
-          (cause) =>
-            new TextGenerationError({
-              operation,
-              detail: "Failed to read Codex output file.",
-              cause,
-            }),
+      const output = outputPath
+        ? fileSystem.readFileString(outputPath).pipe(
+            Effect.mapError(
+              (cause) =>
+                new TextGenerationError({
+                  operation,
+                  detail: "Failed to read Codex output file.",
+                  cause,
+                }),
+            ),
+          )
+        : Effect.succeed(stdout);
+      return yield* output.pipe(
+        Effect.flatMap((value) =>
+          decodeOutput(value, outputPath ? undefined : { onExcessProperty: "error" }),
         ),
-        Effect.flatMap(decodeOutput),
         Effect.catchTags({
           SchemaError: (cause) =>
             Effect.fail(
