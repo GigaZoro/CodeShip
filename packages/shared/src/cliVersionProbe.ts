@@ -1,3 +1,5 @@
+export const NPM_RUNTIME_VERIFICATION_MARKER = ".npm-verified";
+
 export function matchesCliVersion(
   exitCode: number | null,
   stdout: string,

@@ -14,6 +14,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import {
   CLI_RELEASE_CHECKSUMS_FILE,
+  NPM_RUNTIME_VERIFICATION_MARKER,
   cliArchiveFileName,
   cliArchivePlatformKey,
   cliArchiveTarCommand,
@@ -262,6 +263,27 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
 export const readRuntimeSentinel = (sentinel: string) =>
   Effect.tryPromise(() => readRegularFileUtf8(sentinel)).pipe(Effect.option);
 
+const validateInstalledRuntime = Effect.fn("cloud.pinned_runtime.validate_installed")(function* (
+  input: PinnedRuntimeInstallInput,
+  paths: PinnedRuntimePaths,
+) {
+  const receipt = input.path.join(paths.versionDir, NPM_RUNTIME_VERIFICATION_MARKER);
+  return yield* input
+    .validate(paths)
+    .pipe(
+      Effect.tapErrorTag("PinnedRuntimeInstallError", () =>
+        input.fs
+          .remove(receipt, { force: true })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new PinnedRuntimeInstallError({ step: "revoking npm runtime verification", cause }),
+            ),
+          ),
+      ),
+    );
+});
+
 const pinnedRuntimeTransaction = Effect.fn("cloud.pinned_runtime.promote")(function* (
   input: PinnedRuntimeInstallInput,
   paths: PinnedRuntimePaths,
@@ -330,7 +352,7 @@ fi`,
       ),
     );
   // Another installer published a complete runtime while this one was downloading.
-  if (result.code === 10) return yield* input.validate(paths);
+  if (result.code === 10) return yield* validateInstalledRuntime(input, paths);
   if (result.code !== 0)
     return yield* new PinnedRuntimeInstallError({
       step: "restoring the pinned runtime",
@@ -370,7 +392,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
     entryExists && Option.isSome(sentinel) && sentinel.value.trim() === input.version;
   if (alreadyPinned) {
     input.onProgress?.({ stage: "cached" });
-    const verified = yield* input.validate(paths).pipe(
+    const verified = yield* validateInstalledRuntime(input, paths).pipe(
       Effect.as(true),
       Effect.catchIf(
         (error) => error._tag === "PinnedRuntimeInstallError" && error.exitCode === 78,
@@ -452,7 +474,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
         ),
       ),
     );
-    if (!published) yield* input.validate(paths);
+    if (!published) yield* validateInstalledRuntime(input, paths);
     return paths;
   }).pipe(
     Effect.ensuring(fs.remove(stagingDir, { recursive: true, force: true }).pipe(Effect.ignore)),

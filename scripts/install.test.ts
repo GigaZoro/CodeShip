@@ -59,6 +59,7 @@ describe.runIf(isDarwinHost || isLinuxHost)("a competing npm publisher", () => {
           probe !== "exit 78",
           probe === "wrong version" ? "2.0.0" : version,
         );
+        await NodeFSP.writeFile(NodePath.join(peer, ".npm-verified"), version);
         await install(staged, "download", true);
         if (phase === "startup" || phase === "repair with a rollback") {
           await install(prior, "original", true);
@@ -92,7 +93,7 @@ mv() { perform mv "$@"; }
 perl() { perform perl "$@"; }
 cat() {
   command cat "$@" || return $?
-  if [ "$PHASE" = repair ] && [ "$1" = "$ROOT/.install-complete" ] && [ -d "$PEER" ]; then
+  if [ "$PHASE" = repair ] && [ "$PWD" -ef "$ROOT" ] && [ "$1" = .install-complete ] && [ -d "$PEER" ]; then
     mkdir "$ROOT.lock"
   fi
 }
@@ -135,6 +136,7 @@ fi`,
         expect(await NodeFSP.readFile(NodePath.join(root, "owner"), "utf8")).toBe("npm");
         expect((await NodeFSP.readdir(root)).toSorted()).toEqual([
           ".install-complete",
+          ...(probe === "ok" ? [".npm-verified"] : []),
           "owner",
           "t3",
         ]);
@@ -160,6 +162,60 @@ fi`,
     },
   );
 });
+
+it.runIf(isDarwinHost || isLinuxHost)(
+  "repairs a runtime whose version probe exceeds its deadline",
+  async () => {
+    const tmp = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-probe-deadline-"));
+    try {
+      const result = NodeChildProcess.spawnSync(
+        "sh",
+        [
+          "-c",
+          `set -eu
+${runtimePromotion}
+cd "$FIXTURE"
+mkdir versions versions/1.2.3 staging
+printf '1.2.3\\n' > versions/1.2.3/.install-complete
+printf '1.2.3\\n' > staging/.install-complete
+cat > versions/1.2.3/t3 <<'SCRIPT'
+#!/bin/sh
+# The process exits but a worker that ignores TERM retains stdout.
+if [ -f "$FIXTURE/probe-started" ]; then exit 78; fi
+: > "$FIXTURE/probe-started"
+(sh -c 'trap "" TERM; /bin/sleep 4; echo late > "$FIXTURE/finished"') &
+echo 't3 v1.2.3'
+SCRIPT
+printf '%s\\n' '#!/bin/sh' 'echo "t3 v1.2.3"' > staging/t3
+touch staging/replacement
+chmod +x versions/1.2.3/t3 staging/t3
+# Exercise the production deadline with a shorter clock for this fixture.
+production_timeout=\${t3_probe_timeout:-}
+t3_probe_timeout=1
+trap t3_release_lock EXIT
+t3_acquire_lock "$FIXTURE/versions" 1.2.3 2
+t3_promote_runtime "$FIXTURE/staging"
+printf '%s' "$production_timeout"
+`,
+        ],
+        { encoding: "utf8", env: { ...process.env, FIXTURE: tmp }, timeout: 10_000 },
+      );
+      expect(result.error).toBe(undefined);
+      expect(result.status, result.stderr).toBe(0);
+      expect(await NodeFSP.readdir(NodePath.join(tmp, "versions"))).toEqual(["1.2.3"]);
+      expect(
+        await NodeFSP.readdir(NodePath.join(tmp, "versions/1.2.3")),
+        "the stalled runtime was reused",
+      ).toContain("replacement");
+      expect(result.stdout).toBe("30");
+      await expect(NodeFSP.stat(NodePath.join(tmp, "finished"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await NodeFSP.rm(tmp, { recursive: true, force: true });
+    }
+  },
+);
 
 const nightlies = Array.from({ length: 100 }, (_, index) => ({
   tag_name: `v1.2.4-nightly.20261020.${200 - index}`,
@@ -269,6 +325,8 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chec
           await NodeFSP.mkdir(tools);
           for (const command of [
             "sh",
+            "timeout",
+            "setsid",
             "uname",
             "tar",
             "gzip",

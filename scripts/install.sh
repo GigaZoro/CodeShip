@@ -289,15 +289,34 @@ t3_acquire_lock() {
   if [ ! -e "$t3_root" ] && [ -d "$t3_previous" ]; then t3_restore_runtime "$t3_previous" || return 1; fi
 }
 
+t3_probe_timeout=30
 t3_verify_version() {
-  t3_reported=$(T3CODE_VERIFY_INSTALL=1 "$1/t3" --version) || return 1
+  t3_reported=$(
+    t3_exe="$1/t3"
+    # Arm the deadline outside the verifier and give it a private process group.
+    if command -v timeout >/dev/null && command -v setsid >/dev/null; then
+      set -- timeout -s ALRM "$t3_probe_timeout" setsid
+    else
+      set -- perl -MPOSIX -e 'defined(POSIX::setsid()) or exit 1; alarm shift; exec @ARGV; exit 1' -- "$t3_probe_timeout"
+    fi
+    T3CODE_VERIFY_INSTALL=1 "$@" sh -c '
+      trap "kill -KILL -$$" ALRM
+      # Keep the deadline live while a child still holds the output pipe.
+      (reported=$("$1" --version) || exit 1; printf "%s\n" "$reported") &
+      wait "$!"
+    ' t3-verify "$t3_exe"
+  ) || return 1
   printf '%s\n' "$t3_reported" | awk -v expected="v$2" 'NF { last = $NF } END { exit (last != expected) }'
 }
 
-t3_runtime_ready() {
-  [ -x "$1/t3" ] && [ -f "$1/.install-complete" ] && [ "$(cat "$1/.install-complete" 2>/dev/null)" = "$2" ] &&
-    t3_verify_version "$1" "$2"
-}
+t3_runtime_ready() (
+  # Keep verification and receipt removal in the selected tree if its directory is renamed.
+  CDPATH= cd -P -- "$1" 2>/dev/null || return 1
+  if [ -x ./t3 ] && [ -f .install-complete ] && [ "$(cat .install-complete 2>/dev/null)" = "$2" ] &&
+     t3_verify_version . "$2"; then return 0; fi
+  rm -f "./.npm-verified" || return 1
+  return 1
+)
 
 t3_promote_runtime() {
   t3_reused=0

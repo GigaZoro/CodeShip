@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { matchesCliVersion } from "./cliVersionProbe.mjs";
+import { matchesCliVersion, NPM_RUNTIME_VERIFICATION_MARKER } from "./cliVersionProbe.mjs";
 
 const { version } = JSON.parse(
   fs.readFileSync(path.join(import.meta.dirname, "../package.json"), "utf8"),
@@ -62,8 +62,6 @@ async function download(url, file) {
   return hash.digest("hex");
 }
 
-const npmVerification = ".npm-verified";
-
 async function install(dir, key, repairMarkedRuntime) {
   const archive = `t3-${version}-${key}.${process.platform === "win32" ? "zip" : "tar.gz"}`;
   const base = (
@@ -97,7 +95,9 @@ async function install(dir, key, repairMarkedRuntime) {
       throw new Error(`the downloaded t3 ${version} runtime failed verification`);
     fs.writeFileSync(path.join(staging, ".install-complete"), `${version}\n`);
     // Only this verified staging tree can carry npm's receipt into the cache.
-    fs.writeFileSync(path.join(staging, npmVerification), `${version}\n`, { flag: "wx" });
+    fs.writeFileSync(path.join(staging, NPM_RUNTIME_VERIFICATION_MARKER), `${version}\n`, {
+      flag: "wx",
+    });
     publish(staging, dir, repairMarkedRuntime);
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
@@ -126,19 +126,14 @@ function promotePosixRuntime(dir, staging) {
     encoding: "utf8",
   });
   if (result.error) throw result.error;
-  if (result.status !== 0) {
-    // The shell can discover a different peer while holding the promotion lock.
-    fs.rmSync(path.join(dir, npmVerification), { force: true });
-    throw new Error(`could not install the local t3 ${version} runtime`);
-  }
+  if (result.status !== 0) throw new Error(`could not install the local t3 ${version} runtime`);
   return result.stdout.trim() === "0";
 }
 
 function recheckRuntime(dir) {
-  // Withdraw cached approval before probing a tree another publisher selected.
-  // Only a newly verified staging tree can publish the receipt again.
-  fs.rmSync(path.join(dir, npmVerification), { force: true });
-  return verifiesVersion(dir);
+  if (verifiesVersion(dir)) return true;
+  fs.rmSync(path.join(dir, NPM_RUNTIME_VERIFICATION_MARKER), { force: true });
+  return false;
 }
 
 function verifiedPeer(dir, repairMarkedRuntime = false) {
@@ -203,6 +198,7 @@ function verifiesVersion(dir) {
     stdio: ["ignore", "pipe", "ignore"],
     encoding: "utf8",
     timeout: 30_000,
+    killSignal: "SIGKILL",
   });
   return matchesCliVersion(probe.status, probe.stdout, version);
 }
@@ -237,7 +233,10 @@ async function main() {
   const marked = cached || hasVersionMarker(dir);
   if (!marked) {
     await install(dir, key, false);
-  } else if (!(cached && hasVersionMarker(dir, npmVerification)) && !recheckRuntime(dir)) {
+  } else if (
+    !(cached && hasVersionMarker(dir, NPM_RUNTIME_VERIFICATION_MARKER)) &&
+    !recheckRuntime(dir)
+  ) {
     await install(dir, key, true);
   }
 

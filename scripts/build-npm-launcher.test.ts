@@ -2,6 +2,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { runtimePromotion } from "@t3tools/shared/runtimePromotion";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -233,11 +234,12 @@ syncBuiltinESMExports();
 
   describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("download verification", () => {
     it.effect.each([
-      { reported: "2.0.0", status: 0 },
-      { reported: VERSION, status: 78 },
+      { reported: "2.0.0", status: 0, publisher: "npm" },
+      { reported: VERSION, status: 78, publisher: "npm" },
+      { reported: "2.0.0", status: 0, publisher: "shared installer" },
     ])(
-      "never launches a rejected peer on retry (reported $reported, exit $status)",
-      ({ reported, status }) =>
+      "never launches a peer rejected by $publisher on retry (reported $reported, exit $status)",
+      ({ reported, status, publisher }) =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -252,7 +254,8 @@ syncBuiltinESMExports();
           const peer = path.join(versions, "peer");
           yield* fs.makeDirectory(peer, { recursive: true });
           yield* fs.writeFileString(path.join(peer, ".install-complete"), VERSION);
-          if (status === 78) yield* fs.writeFileString(path.join(peer, ".npm-verified"), VERSION);
+          if (status === 78 || publisher === "shared installer")
+            yield* fs.writeFileString(path.join(peer, ".npm-verified"), VERSION);
           yield* fs.writeFileString(
             path.join(peer, "t3"),
             `#!/bin/sh
@@ -278,9 +281,19 @@ printf 'ordinary launch\\n' >> "$TRACE"
               TRACE: trace,
             },
           });
-          const first = yield* invoke;
-          assert.equal(first.exitCode, 1, first.stderr);
-          assert.include(first.stderr, "verification");
+          if (publisher === "shared installer") {
+            yield* fs.rename(peer, installed);
+            const refused = yield* run(
+              "sh",
+              ["-c", runtimePromotion + '\nt3_runtime_ready "$1" "$2"', "sh", installed, VERSION],
+              { cwd: root, env: { PATH: process.env.PATH, TRACE: trace } },
+            );
+            assert.equal(refused.exitCode, 1, refused.stderr);
+          } else {
+            const first = yield* invoke;
+            assert.equal(first.exitCode, 1, first.stderr);
+            assert.include(first.stderr, "verification");
+          }
           assert.equal(yield* fs.readFileString(trace), "probe\n");
           release.setChecksumValid(false);
           const retry = yield* invoke;
@@ -484,6 +497,15 @@ printf 'ordinary launch\\n' >> "$TRACE"
         assert.deepStrictEqual(yield* fs.readDirectory(path.join(raceHome, "runtime/versions")), [
           VERSION,
         ]);
+
+        const requestsAfterRace = release.requests.length;
+        const afterRace = yield* run(process.execPath, [launcher, "--version"], {
+          cwd: root,
+          env: { ...env, T3CODE_HOME: raceHome, FIXTURE_PROBE_RECEIPT: warmProbe },
+        });
+        assert.equal(afterRace.exitCode, 7, afterRace.stderr);
+        assert.isFalse(yield* fs.exists(warmProbe), "a verified npm winner stays warm");
+        assert.equal(release.requests.length, requestsAfterRace);
 
         // A peer's executable and sidecar stay available after every later rename or removal,
         // even when it publishes after our missing-marker read.
