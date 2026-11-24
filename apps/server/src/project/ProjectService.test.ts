@@ -252,6 +252,7 @@ it.layer(layerTest)("ProjectService", (it) => {
         ],
       });
       assert.equal(created.workspaceRoot, "/work/project");
+      assert.deepEqual(created.defaultModelSelection, modelSelection);
       assert.isNull(created.repositoryIdentity);
       assert.isNull(created.faviconPath);
 

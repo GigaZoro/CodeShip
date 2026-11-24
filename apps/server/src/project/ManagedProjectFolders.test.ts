@@ -1,6 +1,12 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { CommandId, ProjectId, ThreadId, VcsProcessSpawnError } from "@t3tools/contracts";
+import {
+  CommandId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  VcsProcessSpawnError,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -352,7 +358,14 @@ it.effect("starts a named project as a committed repository, and suffixes a take
         const root = path.resolve(baseDir, "projects");
         assert.equal(folders.namedProjectsRoot, root);
 
-        const first = yield* folders.createNamedProject({ name: "Pinball Stats" });
+        const defaultModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const first = yield* folders.createNamedProject({
+          name: "Pinball Stats",
+          defaultModelSelection,
+        });
         const second = yield* folders.createNamedProject({ name: "pinball stats" });
 
         assert.equal(first.workspaceRoot, path.join(root, "pinball-stats"));
@@ -361,6 +374,7 @@ it.effect("starts a named project as a committed repository, and suffixes a take
         const project = Option.getOrThrow(yield* projects.getById(first.projectId));
         assert.equal(project.title, "Pinball Stats");
         assert.equal(project.workspaceRoot, first.workspaceRoot);
+        assert.deepEqual(project.defaultModelSelection, defaultModelSelection);
 
         const readme = yield* fileSystem.readFileString(
           path.join(first.workspaceRoot, "README.md"),

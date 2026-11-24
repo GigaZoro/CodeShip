@@ -1,3 +1,8 @@
+## 2026-11-24 — New projects keep the default model they are given
+
+- A project created with a default model, by an agent's `t3_project_create` or through the server's project API, now starts with that model instead of with none.
+- `t3_project_create` with only a title, which makes a new repository, now takes a default model too.
+
 ## 2026-11-24 — Chats queued during a sleep start after the computer wakes
 
 - A queued chat that fails to start in the first two minutes after the computer wakes, while the network and sign-ins come back, now starts again on its own, as it does after a network error (**Retry threads after network errors**, on by default), instead of failing with "The provider could not start this turn". The same applies when the computer sleeps or the server stalls while a provider starts the turn, when that start loses its connection, and when Claude's MCP tools do not finish registering right after a wake. This covers every provider while its session opens; once the message is on its way, only a start that CodeShip knows failed before the message was sent starts again, because otherwise it cannot tell whether the message arrived and will not risk sending it twice. Failures the provider explains, such as a needed sign-in, an account the provider turns away, a usage limit or a setup error, still stop the chat, even right after a wake.

@@ -264,7 +264,16 @@ const clientLaunchHarness = (input: {
     Layer.mock(ProjectionStore.ProjectionStoreV2)({
       getUsageLimitedProviderInstances: () => Effect.succeed(input.limited ?? new Map()),
     }),
-    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
+    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+      namedProjectsRoot: "/projects",
+      createNamedProject: (named) => {
+        input.savedDefaults?.push(named.defaultModelSelection);
+        return Effect.succeed({
+          projectId: ProjectId.make("named"),
+          workspaceRoot: "/projects/named",
+        });
+      },
+    }),
     DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer)),
   ).pipe(
     Layer.provideMerge(GitVcsDriver.layer),
@@ -533,6 +542,18 @@ it.effect("a launch with a model or option its provider does not advertise creat
           .handle("t3_project_create", {
             title: "New",
             workspaceRoot: "/projects/new",
+            defaultModelSelection: defaultModel(options),
+          })
+          .pipe(
+            Stream.unwrap,
+            Stream.runCollect,
+            Effect.map((result) => result.at(-1)?.result),
+            Effect.provide(dependencies),
+          ),
+      (options: ModelSelection["options"]) =>
+        toolkit
+          .handle("t3_project_create", {
+            title: "Named",
             defaultModelSelection: defaultModel(options),
           })
           .pipe(
