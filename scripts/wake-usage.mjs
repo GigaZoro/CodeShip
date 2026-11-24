@@ -54,7 +54,7 @@ export function wakeReport(db, day) {
       OR json_extract(${alias}.payload_json,'$.turnTokenUsage.outputTokens')>0 THEN 2
     WHEN json_extract(${alias}.payload_json,'$.nativeWakeStarted')=0 THEN 0 ELSE 1 END`;
   const wakes = db.prepare(`
-    SELECT p.thread_id, p.started_at, p.rowid AS turnRow,
+    SELECT r.run_id, p.thread_id, p.started_at, p.rowid AS turnRow,
       ${startEvidence("p")} AS evidence, json_extract(m.payload_json,'$.delegatedCompletion.taskIds') AS tasks, json_extract(m.payload_json,'$.notification.wakeEventIds') AS identities, json_extract(m.payload_json,'$.notification.previouslyHandledWakeEventIds') AS handledIds
     FROM orchestration_v2_projection_provider_turns p
     JOIN orchestration_v2_projection_run_attempts a ON a.attempt_id=p.run_attempt_id AND a.thread_id=p.thread_id
@@ -72,7 +72,7 @@ export function wakeReport(db, day) {
   const observed = db.prepare(`
     SELECT 1 FROM orchestration_v2_projection_subagents s JOIN orchestration_v2_projection_runs r
       ON r.thread_id=s.thread_id AND r.run_id=coalesce(json_extract(s.payload_json,'$.terminalResultObservation.runId'),json_extract(s.payload_json,'$.completionDelivery.observedByRunId'))
-    WHERE s.subagent_id=? AND s.thread_id=? AND coalesce(json_extract(s.payload_json,'$.terminalResultObservation.at'),s.updated_at) < ?
+    WHERE s.subagent_id=? AND s.thread_id=? AND r.run_id != ? AND coalesce(json_extract(s.payload_json,'$.terminalResultObservation.at'),s.updated_at) < ?
       AND (json_type(s.payload_json,'$.terminalResultObservation.at')='text' OR json_extract(s.payload_json,'$.completionDelivery.state')='acknowledged')
   `);
   // A terminal result arriving while the chat had no other active provider turn could not have been handled by that chat.
@@ -101,7 +101,7 @@ export function wakeReport(db, day) {
     if (tasks?.length || eventIds.length) wakesWithEventIdentity++;
     if (tasks?.length) {
       const members = tasks.map((id) => {
-        if (observed.get(id, row.thread_id, row.started_at)) return "repeated";
+        if (observed.get(id, row.thread_id, row.run_id, row.started_at)) return "repeated";
         if (fresh.get(id, row.thread_id, row.started_at, row.turnRow, row.started_at))
           return "fresh";
         return "unknown";

@@ -2,16 +2,20 @@ import * as NodeSqlite from "node:sqlite";
 import { expect, it } from "vitest";
 import { decision, wakeReport } from "./wake-usage.mjs";
 
-it("measures provider starts and uses only prior same-chat observations of every member", () => {
-  const db = new NodeSqlite.DatabaseSync(":memory:");
-  try {
-    db.exec(`
+function createProjectionTables(db) {
+  db.exec(`
       CREATE TABLE orchestration_v2_projection_runs(run_id,thread_id,payload_json);
       CREATE TABLE orchestration_v2_projection_messages(message_id,run_id,thread_id,role,created_at,payload_json);
       CREATE TABLE orchestration_v2_projection_run_attempts(attempt_id,thread_id,run_id);
       CREATE TABLE orchestration_v2_projection_provider_turns(thread_id,run_attempt_id,started_at,payload_json);
       CREATE TABLE orchestration_v2_projection_subagents(subagent_id,thread_id,updated_at,payload_json);
     `);
+}
+
+it("measures provider starts and uses only prior same-chat observations of every member", () => {
+  const db = new NodeSqlite.DatabaseSync(":memory:");
+  try {
+    createProjectionTables(db);
     const before = "2026-11-21T23:59:59.000Z";
     const start = "2026-11-22T00:00:00.000Z";
     const end = "2026-11-23T00:00:00.000Z";
@@ -156,4 +160,51 @@ it.each([
   "evaluates the 10 percent threshold for %i wakes, %i repeats, %i unknown",
   (wakes, repeated, unknown, expected) =>
     expect(decision({ wakes, repeated, unknown }).decision).toBe(expected),
+);
+
+it.each(["completionDelivery", "terminalResultObservation"])(
+  "excludes the wake run's own %s observation before a confirmed retry",
+  (source) => {
+    const db = new NodeSqlite.DatabaseSync(":memory:");
+    try {
+      createProjectionTables(db);
+      const day = "2026-11-22";
+      const completedAt = day + "T00:00:00.000Z";
+      const first = day + "T01:00:00.000Z";
+      const observedAt = day + "T01:10:00.000Z";
+      const retry = day + "T02:00:00.000Z";
+      db.exec(`
+        INSERT INTO orchestration_v2_projection_runs VALUES ('wake','chat','{"userMessageId":"msg"}');
+        INSERT INTO orchestration_v2_projection_run_attempts VALUES ('first','chat','wake'), ('retry','chat','wake');
+      `);
+      db.prepare(
+        "INSERT INTO orchestration_v2_projection_messages VALUES ('msg','wake','chat','user',?,?)",
+      ).run(
+        first,
+        JSON.stringify({ createdBy: "agent", delegatedCompletion: { taskIds: ["task"] } }),
+      );
+      const turn = db.prepare(
+        "INSERT INTO orchestration_v2_projection_provider_turns VALUES ('chat',?,?,?)",
+      );
+      turn.run("first", first, JSON.stringify({ completedAt: observedAt }));
+      turn.run(
+        "retry",
+        retry,
+        JSON.stringify({ turnTokenUsage: { inputTokens: 9, outputTokens: 4 } }),
+      );
+      const observation =
+        source === "completionDelivery"
+          ? { state: "acknowledged", observedByRunId: "wake" }
+          : { at: observedAt, runId: "wake" };
+      db.prepare(
+        "INSERT INTO orchestration_v2_projection_subagents VALUES ('task','chat',?,?)",
+      ).run(
+        observedAt,
+        JSON.stringify({ completedAt, status: "completed", [source]: observation }),
+      );
+      expect(wakeReport(db, day).all).toMatchObject({ wakes: 1, repeated: 0, unknown: 1 });
+    } finally {
+      db.close();
+    }
+  },
 );
