@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Finish a T3.CodeShip branch end to end without a PR. Commit the work, land it on main under the landing turn (`vp run check:changed` runs before the wait), confirm it landed, then delete the branch locally and on the remote and remove its worktree. Use for "commit, push, merge to main", "ship it", "land this", "merge and delete the branch", "finish this branch" or "/ship", and when a task in this repository is done (AGENTS.md, "Ship finished work"). Not for when the developer asked for a PR or review first, or asked only to commit.
+description: Finish a T3.CodeShip branch end to end without a PR. Commit the work, land it on main under the landing turn (`vp run check:changed` runs before the wait), confirm it landed, verify the requested delivery, then release its disposable worktree and retire its topic branch. Use for "commit, push, merge to main", "ship it", "land this", "merge and delete the branch", "finish this branch" or "/ship", and when a task in this repository is done (AGENTS.md, "Ship finished work"). Not for when the developer asked for a PR or review first, or asked only to commit.
 ---
 
 # Ship
@@ -8,13 +8,15 @@ description: Finish a T3.CodeShip branch end to end without a PR. Commit the wor
 Invoking `/ship` is the developer's go-ahead to commit and push to the default branch, and so is finishing a task in this repository ([AGENTS.md, "Ship finished work"](../../../AGENTS.md#ship-finished-work)). Do not ask again.
 `$ARGUMENTS` may carry a commit title or a branch to land on. Default to the remote's default branch.
 
+On a resumed handoff with a confirmed landing SHA, start at step 6. Use the recorded results to identify the next outstanding check. For a completed handoff from the primary checkout, call `t3_thread_organize` with `{"action":"settle"}` before the final report.
+
 ## 1. Orient
 
 - `git status --short --untracked-files=all`, `git branch --show-current`, `git worktree list`, `git remote -v`.
 - Default branch: `git symbolic-ref --short refs/remotes/origin/HEAD`, falling back to `main`.
 - The first `git worktree list` entry is the main checkout. Note whether you are in a separate worktree.
-- If you are already on the default branch, follow steps 2–6 and skip to step 8.
-- If the tree is clean and `git merge-base --is-ancestor HEAD origin/<default>` succeeds after fetching origin, the branch has already landed. Continue at step 7.
+- Fetch origin. If the tree is clean and `git merge-base --is-ancestor HEAD origin/<default>` succeeds, go directly to step 6 with the delivered SHA. This also covers a clean default branch at its remote tip.
+- Otherwise, stage and land the outstanding work in steps 2–5. Identify any disposable topic branch owned by this shipment separately from the primary checkout and default branch.
 
 ## 2. Stage deliberately
 
@@ -47,25 +49,22 @@ A branch behind main is rebased onto it first, and the landing then starts again
 - Branch protection that refuses the push: stop and offer a PR instead.
 - Confirm with `git fetch origin && git merge-base --is-ancestor HEAD origin/<default>`.
 
-## 6. Verify the landing
+## 6. Verify the requested delivery
 
-The command prints the landed commit. The rebase may have changed your commit's id, so use the printed one in your report.
+Use the SHA printed by the landing turn, or the previously confirmed SHA when resuming. Reconcile the developer's original request with the results for that commit. A request to verify a release or installed package stays open until the published artifact and its requested behavior have been checked. Retain the checkout and verifier until the check finishes. Record the SHA, hosted run and artifact identifiers. Preserve any unique local inputs in a durable location before a long idle wait so the verifier can resume even if storage cleanup runs.
 
-## 7. Clean up
+- If a hosted run is active, start an awaited check, such as `gh run watch <run-id> --repo <owner/repo> --exit-status` in `t3_command_run`. Its completion wakes this thread. Resume the requested verification on that wake, including after a timeout.
+- If an external dependency prevents verification and there is no running check to await, call `t3_thread_organize` with `{"action":"unsettle"}` on the current thread, even when it already appears active. Without this override it can settle during an idle wait. Register a one-time `schedule_task` with `bindToCurrentThread: true` at the next useful retry time. Include the exact delivery, outstanding check and evidence location in the task. Reuse an existing retry for this delivery. Check that the saved task is enabled, has the owning thread ID and has a next run time before yielding. Recheck on wake and renew the active state and retry while the dependency is pending. A turn start clears the earlier active override.
+- With every requested result verified, go to step 7 if there is an owned disposable checkout or topic branch to retire. A completed shipment from the clean primary default checkout goes straight to step 8.
 
-Touch only the branch and worktree you just landed. Retain the checkout and any artifacts still needed for requested verification.
+## 7. Release the topic checkout
 
-1. Stop the dev servers you started, by the PIDs you recorded. Never kill by pattern.
-2. Main checkout: if `git -C <main> status --short` is empty, run `git -C <main> merge --ff-only origin/<default>`. If it is dirty, leave it alone, because another agent may be working there.
-3. Remote branch: only if `git ls-remote --exit-code --heads origin <branch>` finds it, run `git push origin --delete <branch>`.
-4. Local branch: `git switch --detach`, then `git branch --delete <branch>`. Never use `-D`.
-5. Delete the scratch files you created: temp dirs, database copies, logs.
-6. Worktree, last, because it is usually your cwd: `git -C <main> worktree remove <path>`. Run it in the foreground with a 600000 ms timeout, never in the background: deleting `node_modules` takes minutes, a background command's completion notice starts another turn on this thread, and a turn start rebuilds the thread's missing worktree. Ignored files such as `node_modules` and `.t3` do not block it. If it refuses because of modified or untracked files, stop and report them. Never use `--force`.
+Preserve the full delivery ref and verify that it contains the delivered tip. Keep primary, reusable and shared checkouts. Stop only the processes this task started and remove its disposable scratch data once all verification has finished.
 
-## 8. Report
+- For a CodeShip-managed checkout, the owning thread reads its exact registered worktree path and finishing run ID. From a stable directory, use the matching released CLI and server to queue `t3 thread release-worktree <thread-id> --run <run-id> --worktree <registered-path> --durable-ref refs/remotes/origin/<default>`. Record the request and report it as **queued** at handoff. If release is unavailable or unconfirmed, retain the checkout and identify its owner and blocker. After handoff, confirm directory absence and Git deregistration from outside the owning thread.
+- For another disposable checkout, establish exclusive ownership, preserve local data, and run the worktree handoff preflight. From the primary checkout, remove the verified worktree and confirm both directory absence and deregistration. Preserve any checkout with other owners, pending writes or an unresolved preflight.
+- After confirmed release, retire only the delivered local and remote topic refs this task owned. Preserve the default branch and the durable ref. Use a fast-forward-only update if the primary checkout is clean, on the expected branch and needs the delivered commit.
 
-Give the commit SHA and title, the checks you ran and their results, and what the push triggers (CI, releases). Then list what you cleaned up and anything you skipped, with the reason.
+## 8. Report and settle
 
-## 9. Settle the thread
-
-After confirming the landing, check the developer’s full request. Keep the thread active while any requested work or verification is pending or blocked, including checks on released packages. When every requested outcome is verified, settle this thread with `t3_thread_organize` using `action: "settle"` and no `threadId`, if the tool is available. Honor an explicit request to close the thread.
+Report the landed SHA and title, the requested checks and their observed results, and the disposition of any checkout or topic branch. When the full request is complete, settle this thread with `t3_thread_organize` using action `settle` and no `threadId`, if available. Honor an explicit request to close the thread.

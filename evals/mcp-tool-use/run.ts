@@ -326,6 +326,8 @@ export const McpToolUseCase = Schema.Struct({
   }),
   prompt: Schema.String,
   promptSkills: Schema.optional(Schema.Array(SharedSkillInstructions)),
+  /** Read the invoked project skill from .agents/skills in the checkout being evaluated. */
+  projectSkill: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-z0-9-]+$/))),
   /** Records for the context chips `prompt` links, projected as T3 sends them. */
   promptContext: Schema.optional(Schema.Struct({ records: Schema.Array(ComposerContextRecord) })),
   expect: McpToolUseExpect,
@@ -1451,6 +1453,9 @@ export const shellRequest = (sample: Sample, call: Omit<ShellEntry, "output">, m
     `Working directory: ${cwd} on ${platform}, a git checkout of github.com/${repo}.${date ? ` Today is ${date}.` : ""}`,
     gitStatus(testCase),
     `World: ${valueText(world ?? {})}`,
+    ...(testCase.promptSkills ?? []).map(
+      (skill) => `File ${skill.path} contains exactly:\n${skill.instructions}`,
+    ),
     ...(shellMocks.length > 0
       ? [`Commands that match these regexes print exactly this output: ${valueText(shellMocks)}`]
       : []),
@@ -2325,12 +2330,27 @@ const main = Effect.gen(function* () {
   const wanted = flags.case?.flatMap((ids) => ids.split(","));
   const codex = isCodex(flags.model);
   const harness = codex ? "codex" : "claude";
-  const selected = cases.filter(
+  const matching = cases.filter(
     ({ id, setup }) =>
       (wanted === undefined || wanted.includes(id)) &&
       (setup.harness === undefined || setup.harness === harness),
   );
-  if (selected.length === 0) return yield* Effect.die(new Error("No case matches --case."));
+  if (matching.length === 0) return yield* Effect.die(new Error("No case matches --case."));
+  const selected = yield* Effect.forEach(matching, (testCase) => {
+    const name = testCase.projectSkill;
+    if (name === undefined) return Effect.succeed(testCase);
+    const baseDirectory = `.agents/skills/${name}`;
+    const skillPath = `${baseDirectory}/SKILL.md`;
+    return fs.readFileString(path.resolve(import.meta.dirname, "../..", skillPath)).pipe(
+      Effect.map((instructions) => ({
+        ...testCase,
+        promptSkills: [
+          ...(testCase.promptSkills ?? []),
+          { name, path: skillPath, baseDirectory, instructions },
+        ],
+      })),
+    );
+  });
   // Trimmed captures without user data ship beside the cases. `--template` also takes a raw
   // CLIProxyAPI capture.
   const templatePath =

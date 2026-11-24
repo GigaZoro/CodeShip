@@ -29,6 +29,7 @@ Cases are JSON lines in `cases/`, one file per area. The case schema in `run.ts`
 
 - `kind`: `bad` reproduces a mistake, `guard` protects correct behavior, `control` is ordinary work.
 - `experience`: the real mistake, in a sentence. `source`: where it happened.
+- `projectSkill`: the invoked skill under `.agents/skills`. Its `SKILL.md` from this checkout is included in the model prompt.
 - `setup`: the fake thread, its `world` (repo, branch, files, PRs, pages), `priorTurns`, and `mocks` for tool results. The templates are Linux captures; `"platform": "win32"` moves the case's machine to Windows, with Codex in PowerShell and Claude Code's Bash tool in Git Bash.
 - `expect`: the checks, such as `calls`, `callsMustNot`, `maxCalls`, `order`, `textMust`, and `linked`. An `args` value `"/regex/"` matches a string argument by regex, and `null` matches an argument the call left out. A `calls` entry with `"succeeded": true` counts only a call T3 answered without an error, such as one that passed input validation. Device cases also use `device` to check every child brief, forbid raw UI commands, bound failed device actions per user turn, and require artifact paths in completed final answers.
 

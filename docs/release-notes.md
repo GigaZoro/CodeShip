@@ -41,7 +41,7 @@
 
 ## 2026-11-24 — Shipping a branch with release checks pending
 
-- CodeShip’s shipping instructions keep the chat active until all requested work and checks are complete, including verification of a released package.
+- Shipping chats wait for requested checks on installed releases. If a release is delayed, the chat arranges a retry and keeps the checkout needed for verification.
 
 ## 2026-11-24 — Codex metadata instructions
 
