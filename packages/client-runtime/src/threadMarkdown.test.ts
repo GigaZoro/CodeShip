@@ -240,7 +240,7 @@ describe("buildThreadMarkdown", () => {
     ]);
 
     expect(markdown).toContain(
-      ">\n\n[read](/first) and a note[^ref21]\n\n[^ref21]: First.\n\n[x] and literal [^REF1]\n\n[next](/third) and another[^ref22]\n\n[^ref22]: Second.",
+      "> \n\n[read](/first) and a note[^ref21]\n\n[^ref21]: First.\n\n[x] and literal [^REF1]\n\n[next](/third) and another[^ref22]\n\n[^ref22]: Second.",
     );
   });
 
@@ -248,6 +248,12 @@ describe("buildThreadMarkdown", () => {
     const markdown = await build([command("echo `date`")]);
 
     expect(markdown).toContain("- Ran `` echo `date` ``");
+  });
+
+  it("clips a long command before an emoji instead of through it", async () => {
+    const markdown = await build([command(`${"a".repeat(98)}😀z`)]);
+
+    expect(markdown).toContain(`- Ran \`${"a".repeat(98)}…\``);
   });
 
   it("keeps a search without a query and marks a T3 tool whose result is an error", async () => {

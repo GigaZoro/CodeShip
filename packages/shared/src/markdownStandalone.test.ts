@@ -208,14 +208,18 @@ describe("standaloneMarkdown", () => {
   it.each([
     [
       "[x] and ![x][] and [t][x] and [raw]\n\n[x]: <u> 'title'",
-      '[x](u "title") and ![x](u "title") and [t](u "title") and \\[raw]',
+      '[x](u "title") and ![x](u "title") and [t](u "title") and [raw]',
     ],
-    ["> [x]: /first\n\n[x]: /second\n\n[read][x]", ">\n\n[read](/first)"],
+    ["> [x]: /first\n\n[x]: /second\n\n[read][x]", "> \n\n[read](/first)"],
     ["\uFEFF\uFEFF[x]\n\n[x]: /a", "[x](/a)"],
+    ["api_key_name [doc]\n\n[doc]: /url", "api_key_name [doc](/url)"],
     ["> \\( a\n> b \\) [a]\n\n[a]: /u", "> \\( a\n> b \\) [a](/u)"],
     ["> \\(\n> a\n> \\) [a]\n\n[a]: /u", "> \\(\n> a\n> \\) [a](/u)"],
     ["> \\( x\n>  \\) [a]\n\n[a]: /u", "> \\( x\n>  \\) [a](/u)"],
     ["> $$\n> x $$\n\n[a]\n\n[a]: /u", "> $$\n> x $$\n\n[a](/u)"],
+    ["> $$  \n> x $$\n\n[a]\n\n[a]: /u", "> $$  \n> x $$\n\n[a](/u)"],
+    ["> \\( x\n>\t\\)\n\n[a]\n\n[a]: /u", "> \\( x\n>\t\\)\n\n[a](/u)"],
+    ["> $$\n> x\\$$$\n\n[a]\n\n[a]: /u", "> $$\n> x\\$$$\n\n[a](/u)"],
     ["> \\[\n> x \\]\n\n[a]\n\n[a]: /u", "> \\[\n> x \\]\n\n[a](/u)"],
     [
       `> \\( a${"$".repeat(50)}b\n> c \\) [a]\n\n[a]: /u`,
@@ -223,14 +227,20 @@ describe("standaloneMarkdown", () => {
     ],
     ["- \\[\n  x\n  \\]\n\n[a]\n\n[a]: /u", "- \\[\n  x\n  \\]\n\n[a](/u)"],
     ["> - $$ m\n>   x\n>   $$\n\n[a]\n\n[a]: /u", "> - $$ m\n>   x\n>   $$\n\n[a](/u)"],
-    [
-      "at Array.<anonymous> (pkg@.5g) [x]\n\n[x]: /u",
-      "at Array.\\<anonymous> ([pkg@.5g](mailto:pkg@.5g)) [x](/u)",
-    ],
+    ["at Array.<anonymous> (pkg@.5g) [x]\n\n[x]: /u", "at Array.\\<anonymous> (pkg@.5g) [x](/u)"],
     [
       `A[^a\\*] B[^a*] C[^${"a".repeat(997)}]\n\n[^a\\*]: escaped\n[^a*]: plain\n[^${"a".repeat(997)}]: long`,
-      "A[^ref1] B[^ref2] C[^ref3]\n\n[^ref1]: escaped\n\n[^ref2]: plain\n\n[^ref3]: long",
+      "A[^ref1] B[^ref2] C[^ref3]\n\n[^ref1]: escaped\n[^ref2]: plain\n[^ref3]: long",
     ],
+  ])("resolves the references in %j where they are written", (source, text) => {
+    expect(block(source).text).toBe(text);
+  });
+
+  // HTML inside a container rules out edits in place.
+  it.each([
+    ["> $$  \n> x $$\n>\n> <div>", "> $$  \n> x $$\n>\n> ```html\n> <div>\n> ```"],
+    ["> $$\n> x\\$$$\n>\n> <div>", "> $$\n> x\\$$$\n>\n> ```html\n> <div>\n> ```"],
+    ["[text][a|b]\n|-|\n\n[a|b]: /url", "[text](/url)\n\\|-|"],
   ])("writes %j from its tree", (source, text) => {
     expect(block(source).text).toBe(text);
   });
@@ -249,10 +259,11 @@ describe("standaloneMarkdown", () => {
   });
 
   it.each([
-    ["````ts\ncode\n```", "\n````"],
-    ["~~~js\ncode\n    ~~~\n", "~~~"],
-  ])("closes a top-level open fence in %j", (source, closing) => {
-    expect(block(source).text).toBe(source + closing);
+    ["````ts\ncode\n```", "````ts\ncode\n```\n````"],
+    ["~~~js\ncode\n    ~~~\n", "~~~js\ncode\n    ~~~\n~~~"],
+    ["&#10;<div>\n\n```js\nx", "&#10;\\<div>\n\n```js\nx\n```"],
+  ])("closes a top-level open fence in %j", (source, text) => {
+    expect(block(source).text).toBe(text);
     expectContained([source, "Next"]);
   });
 
@@ -266,12 +277,16 @@ describe("standaloneMarkdown", () => {
     expectContained(["[a|b]\n\n[a|b]: <a&#10;&#10;[other]:&#32;/x&#10;&#10;z>", "[other]"]);
   });
 
-  it.each([" \n\t\n", "\uFEFF\uFEFF", "[a]: /x\n", "[^unused]: hello", "[^unused]: [^unused]"])(
-    "returns null for %j",
-    (source) => {
-      expect(standaloneMarkdown(source, { scope: 1, prefix: "ref" })).toBeNull();
-    },
-  );
+  it.each([
+    " \n\t\n",
+    "\uFEFF\uFEFF",
+    "[a]: /x\n",
+    "[^unused]: hello",
+    "[^unused]: [^unused]",
+    `[^unused]: ${"[x] ".repeat(400)}\n\n[x]: /${"a".repeat(400)}`,
+  ])("returns null for %j", (source) => {
+    expect(standaloneMarkdown(source, { scope: 1, prefix: "ref" })).toBeNull();
+  });
 
   const messages = {
     markdownInHtml: "<pre>\n# x\n- y\n</pre>",
@@ -322,7 +337,11 @@ describe("standaloneMarkdown", () => {
     displayMathClosingOnItsQuotedBodyLine: "> $$\n> x $$\n\n[a]\n\n[a]: /u",
     bracketMathClosingOnItsQuotedBodyLine: "> \\[\n> x \\]\n\n[a]\n\n[a]: /u",
     mathInListBesideReference: "- \\[\n  x\n  \\]\n\n[a]\n\n[a]: /u",
-    raggedTable: `| h |\n| - |\n|${" c |".repeat(100)}\n${"| r |\n".repeat(100)}<div>`,
+    hardBreakAfterQuotedMathOpening: "> $$  \n> x $$\n\n[a]\n\n[a]: /u",
+    tabBeforeQuotedMathClosing: "> \\( x\n>\t\\)\n\n[a]\n\n[a]: /u",
+    escapedDollarBeforeQuotedMathClosing: "> $$\n> x\\$$$\n\n[a]\n\n[a]: /u",
+    escapedHtmlBeforeOpenFence: "&#10;<div>\n\n```js\nx",
+    raggedTable: `| h |\n| - |\n|${" c |".repeat(100)}\n${"| r |\n".repeat(100)}\n> <div>`,
   };
 
   it.each(Object.entries(messages))("keeps %s contained beside other messages", (_name, text) => {

@@ -46,12 +46,18 @@ const FILE_NAME_FORBIDDEN_PATTERN = /[\\/:*?"<>|\u0000-\u001f]/gu;
 // Windows reserves these names before the first dot, whatever the extension.
 const WINDOWS_RESERVED_NAME_PATTERN = /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?= *(?:\.|$))/iu;
 
+/** At most `maxLength` code units of `text`, never ending on half of a surrogate pair. */
+function clip(text: string, maxLength: number): string {
+  const cut = text.slice(0, maxLength);
+  return /[\uD800-\uDBFF]$/u.test(cut) ? cut.slice(0, -1) : cut;
+}
+
 /** The first line of the value in a code span, clipped. */
 function inlineCode(value: string, maxLength = TOOL_LINE_MAX_LENGTH): string {
   const trimmed = value.trim();
   const lineEnd = trimmed.search(/\r|\n/u);
   const flat = (lineEnd === -1 ? trimmed : trimmed.slice(0, lineEnd)).replace(/\s+/gu, " ");
-  return markdownCodeSpan(flat.length > maxLength ? `${flat.slice(0, maxLength - 1)}…` : flat);
+  return markdownCodeSpan(flat.length > maxLength ? `${clip(flat, maxLength - 1)}…` : flat);
 }
 
 /** Whether the work log marks the tool failed. */
@@ -360,13 +366,10 @@ export async function buildThreadMarkdown(
 }
 
 export function threadMarkdownFileName(title: string): string {
-  const base = title
-    .replace(FILE_NAME_FORBIDDEN_PATTERN, " ")
-    .replace(/\s+/gu, " ")
-    .trim()
-    .slice(0, FILE_NAME_MAX_LENGTH)
-    // A cut between the halves of a surrogate pair would leave half a character.
-    .replace(/[\uD800-\uDBFF]$/u, "")
+  const base = clip(
+    title.replace(FILE_NAME_FORBIDDEN_PATTERN, " ").replace(/\s+/gu, " ").trim(),
+    FILE_NAME_MAX_LENGTH,
+  )
     .replace(/^\.+|[. ]+$/gu, "")
     .replace(WINDOWS_RESERVED_NAME_PATTERN, "$1_");
   return `${base === "" ? "thread" : base}.md`;

@@ -82,6 +82,13 @@ const CONTAINERS: ReadonlySet<Nodes["type"]> = new Set([
 
 const MATH_OPENING = /^(?:\\[([]|\$+)/u;
 
+/** Whether an odd run of backslashes comes right before `offset`. */
+const isEscaped = (source: string, offset: number) => {
+  let slashes = 0;
+  while (source[offset - 1 - slashes] === "\\") slashes += 1;
+  return slashes % 2 === 1;
+};
+
 /** Where the delimiter that closes `span` starts, before any trailing spaces and tabs. */
 function closingStart(span: string, opening: string): number | undefined {
   let end = span.length;
@@ -91,6 +98,8 @@ function closingStart(span: string, opening: string): number | undefined {
     if (span.endsWith(opening === "\\(" ? "\\)" : "\\]", end)) start = end - 2;
   } else {
     while (span[start - 1] === "$") start -= 1;
+    // As the tokenizer reads it, an escaped dollar is the formula's own.
+    if (isEscaped(span, start)) start += 1;
   }
   return start < end && start >= opening.length ? start : undefined;
 }
@@ -110,13 +119,11 @@ function authoredSpan(node: MathNode | InlineMath, span: string, nested: boolean
   const closing = span.slice(start).trimEnd();
   const valueLines = node.value.split("\n");
   if (node.type === "math") {
+    // The opening line stays as written: its text is the formula's first line, and trailing
+    // spaces end it with a hard break when math is not read.
     const openingLine = span.slice(0, span.indexOf("\n"));
-    // Text after the opening delimiter is the formula's first line.
     const opensWithText = openingLine.slice(opening.length).trim() !== "";
-    const lines = [
-      opensWithText ? openingLine : opening,
-      ...valueLines.slice(opensWithText ? 1 : 0),
-    ];
+    const lines = [openingLine, ...valueLines.slice(opensWithText ? 1 : 0)];
     if (lineCount(span) > lines.length) lines.push(closing);
     else lines[lines.length - 1] += closing;
     return lines.join("\n");
@@ -234,6 +241,19 @@ const FLOW_PARENTS: ReadonlySet<Nodes["type"]> = new Set([
 const REFERENCE_GROWTH = 4;
 const REFERENCE_FLOOR = 65_536;
 
+/** The definition each reference uses: the first with its identifier. */
+function firstDefinitions(root: Root): ReadonlyMap<string, Definition> {
+  const definitions = new Map<string, Definition>();
+  const collect = (node: Nodes) => {
+    if (node.type === "definition" && !definitions.has(node.identifier)) {
+      definitions.set(node.identifier, node);
+    }
+    if ("children" in node) node.children.forEach(collect);
+  };
+  collect(root);
+  return definitions;
+}
+
 /**
  * The tree the message must render as inside other messages: references become the links their
  * first definition makes, definitions go, footnotes get labels of their own, and raw HTML reads
@@ -245,14 +265,7 @@ function contained(
   budget: number,
 ): Root | null {
   let copied = 0;
-  const definitions = new Map<string, Definition>();
-  const collect = (node: Nodes) => {
-    if (node.type === "definition" && !definitions.has(node.identifier)) {
-      definitions.set(node.identifier, node);
-    }
-    if ("children" in node) node.children.forEach(collect);
-  };
-  collect(root);
+  const definitions = firstDefinitions(root);
 
   const map = (node: Nodes, inFlow: boolean): Nodes | null => {
     switch (node.type) {
@@ -331,30 +344,130 @@ const FENCE_OPENING = /^ {0,3}(`{3,}|~{3,})/u;
 
 const lineStart = (source: string, offset: number) => source.lastIndexOf("\n", offset - 1) + 1;
 
+/** Where the label that ends a full reference at `end` opens: a label holds no bare bracket. */
+function labelOpening(source: string, end: number): number {
+  let index = source.lastIndexOf("[", end - 2);
+  while (index > 0 && isEscaped(source, index)) index = source.lastIndexOf("[", index - 1);
+  return index;
+}
+
+/** Where the label of a footnote definition starting at `start` closes. */
+function footnoteLabelClosing(source: string, start: number): number {
+  let index = source.indexOf("]", start + 2);
+  while (index !== -1 && isEscaped(source, index)) index = source.indexOf("]", index + 1);
+  return index;
+}
+
+/** `(destination "title")` as the writer escapes them. */
+function writtenDestination({ url, title }: Definition): string {
+  const link = toMarkdown({ type: "link", url, title: title ?? null, children: [] }, WRITE_OPTIONS);
+  return link.replace(/\n$/u, "").slice("[]".length);
+}
+
+type Edit = readonly [from: number, end: number, text: string];
+
+const EDITED: ReadonlySet<Nodes["type"]> = new Set([
+  "html",
+  "definition",
+  "linkReference",
+  "imageReference",
+  "footnoteReference",
+  "footnoteDefinition",
+]);
+
+/** The edit that makes `node` read inside a document as alone, or null when it needs none. */
+function sourceEdit(
+  source: string,
+  node: Nodes,
+  parent: Parents["type"],
+  definitions: ReadonlyMap<string, Definition>,
+  destinations: Map<Definition, string>,
+  footnoteLabel: (identifier: string) => string,
+): Edit | null | undefined {
+  // Nodes the GFM autolink step splits out have no position; none of them needs an edit.
+  if (!EDITED.has(node.type)) return null;
+  const start = node.position!.start.offset!;
+  const end = node.position!.end.offset!;
+  switch (node.type) {
+    case "html":
+      if (parent === "root") return [lineStart(source, start), end, fencedCode("html", node.value)];
+      return FLOW_PARENTS.has(parent) ? undefined : [start, start, "\\"];
+    case "definition": {
+      // A definition on lines of its own goes with its line ending, and between blank lines with one.
+      const from = lineStart(source, start);
+      if (!/^[ \t]*$/u.test(source.slice(from, start)) || source[end] !== "\n") {
+        return [start, end, ""];
+      }
+      const afterBlank =
+        from === 0 || /^[ \t]*$/u.test(source.slice(lineStart(source, from - 1), from - 1));
+      return [from, end + (afterBlank && source[end + 1] === "\n" ? 2 : 1), ""];
+    }
+    case "linkReference":
+    case "imageReference": {
+      const definition = definitions.get(node.identifier)!;
+      let destination = destinations.get(definition);
+      if (destination === undefined) {
+        destination = writtenDestination(definition);
+        destinations.set(definition, destination);
+      }
+      if (node.referenceType === "shortcut") {
+        return source[end - 1] === "]" ? [end - 1, end, `]${destination}`] : undefined;
+      }
+      if (node.referenceType === "collapsed") {
+        return source.endsWith("[]", end) ? [end - 2, end, destination] : undefined;
+      }
+      const opening = labelOpening(source, end);
+      return opening === -1 ? undefined : [opening, end, destination];
+    }
+    case "footnoteReference":
+      return [start, end, `[^${footnoteLabel(node.identifier)}]`];
+    case "footnoteDefinition": {
+      const closing = footnoteLabelClosing(source, start);
+      return closing === -1
+        ? undefined
+        : [start, closing + 1, `[^${footnoteLabel(node.identifier)}]`];
+    }
+  }
+}
+
+/** Where the run of spaces, tabs and line endings that ends `text` starts. */
+function trailingSpace(text: string): number {
+  let start = text.length;
+  while (
+    start > 0 &&
+    (text[start - 1] === " " || text[start - 1] === "\t" || text[start - 1] === "\n")
+  ) {
+    start -= 1;
+  }
+  return start;
+}
+
 /**
- * The source with only its raw HTML changed: inline HTML escaped and a top-level block written as
- * `html` code. Undefined when it has no raw HTML, or HTML inside a container.
+ * The source with only what reads differently inside a document changed where it is written:
+ * inline HTML escaped, a top-level HTML block as `html` code, references as the links their first
+ * definition makes, definitions removed and footnotes relabeled. Undefined when nothing needs it,
+ * or for HTML inside a container.
  */
-function withHtmlAsText(source: string, trees: readonly [Root, Root]): string | undefined {
+function withSourceEdits(
+  source: string,
+  trees: readonly [Root, Root],
+  footnoteLabel: (identifier: string) => string,
+): string | undefined {
   const edits = new Map<number, readonly [end: number, text: string]>();
+  const destinations = new Map<Definition, string>();
   for (const tree of new Set(trees)) {
+    const definitions = firstDefinitions(tree);
     const pending: Array<readonly [Nodes, Parents["type"]]> = [[tree, "root"]];
     for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
       const [node, parent] = next;
       if ("children" in node) for (const child of node.children) pending.push([child, node.type]);
-      if (node.type !== "html") continue;
-      if (parent !== "root" && FLOW_PARENTS.has(parent)) return undefined;
-      const { start, end } = node.position!;
-      const [from, edit] =
-        parent === "root"
-          ? [
-              lineStart(source, start.offset!),
-              [end.offset!, fencedCode("html", node.value)] as const,
-            ]
-          : [start.offset!, [start.offset!, "\\"] as const];
+      const edit = sourceEdit(source, node, parent, definitions, destinations, footnoteLabel);
+      if (edit === undefined) return undefined;
+      if (edit === null) continue;
+      const [from, end, text] = edit;
       const known = edits.get(from);
-      if (known !== undefined && (known[0] !== edit[0] || known[1] !== edit[1])) return undefined;
-      edits.set(from, edit);
+      if (known !== undefined && (known[0] !== end || known[1] !== text)) return undefined;
+      edits.set(from, [end, text]);
     }
   }
   if (edits.size === 0) return undefined;
@@ -365,20 +478,38 @@ function withHtmlAsText(source: string, trees: readonly [Root, Root]): string | 
     text += source.slice(copied, from) + edit;
     copied = end;
   }
-  return text + source.slice(copied);
+  text += source.slice(copied);
+  // Removed definitions leave blank lines at either end; keep the source's own.
+  const leading = /^\n*/u.exec(source)![0];
+  return (
+    leading +
+    text.slice(/^\n*/u.exec(text)![0].length, trailingSpace(text)) +
+    source.slice(trailingSpace(source))
+  );
 }
 
-function* candidates(source: string, trees: readonly [Root, Root], rewritten: Root) {
-  yield source;
+function* candidates(
+  source: string,
+  trees: readonly [Root, Root],
+  rewritten: Root,
+  footnoteLabel: (identifier: string) => string,
+) {
+  const fences = new Set<string>();
   for (const tree of new Set(trees)) {
     const last = tree.children.at(-1);
     if (last?.type !== "code") continue;
-    const start = last.position!.start.offset!;
-    const fence = FENCE_OPENING.exec(source.slice(lineStart(source, start)));
-    if (fence !== null) yield `${source}${source.endsWith("\n") ? "" : "\n"}${fence[1]}`;
+    const fence = FENCE_OPENING.exec(source.slice(lineStart(source, last.position!.start.offset!)));
+    if (fence !== null) fences.add(fence[1]!);
   }
-  const escaped = withHtmlAsText(source, trees);
-  if (escaped !== undefined) yield escaped;
+  const closed = (text: string) =>
+    [...fences].map((fence) => `${text}${text.endsWith("\n") ? "" : "\n"}${fence}`);
+  yield source;
+  yield* closed(source);
+  const edited = withSourceEdits(source, trees, footnoteLabel);
+  if (edited !== undefined) {
+    yield edited;
+    yield* closed(edited);
+  }
   const options = rewriteOptions(rewritten, source);
   yield toMarkdown(rewritten, options).replace(/\n$/u, "");
   // An autolink literal GFM accepts, such as `a@.5b`, can be one CommonMark's `<…>` form rejects.
@@ -412,9 +543,8 @@ interface LabelOptions {
 
 /**
  * A message as Markdown that renders inside a document as it does alone, under GFM with or without
- * math, or null when it renders nothing. The first candidate that verifiably reads the same wins:
- * the normalized source, the source with its open fence closed, the source with its raw HTML as
- * text, then the tree written out; the source shown as code is the last resort.
+ * math, or null when it renders nothing. The first verified candidate wins: the source, then the
+ * source edited where its HTML, references and footnotes are, then the tree written out.
  */
 export function standaloneMarkdown(
   text: string,
@@ -434,18 +564,19 @@ export function standaloneMarkdown(
     }
     return label;
   };
+  // Definitions show nothing, and a footnote only where something else refers to it.
+  const invisible = trees.every((tree) =>
+    tree.children.every(({ type }) => type === "definition" || type === "footnoteDefinition"),
+  );
+  if (invisible) return null;
   const budget = Math.max(REFERENCE_GROWTH * source.length, REFERENCE_FLOOR);
   const plain = contained(trees[0], footnoteLabel, budget);
   const math = trees[1] === trees[0] ? plain : contained(trees[1], footnoteLabel, budget);
   if (plain === null || math === null) {
     return { text: fencedSource(source), barrier: AFTER_BLANK_LINE, labelCount: labels.size };
   }
-  const expected = [plain, math] as const;
-  if (expected.every((tree) => tree.children.every(({ type }) => type === "footnoteDefinition"))) {
-    return null;
-  }
-  const expectedShapes = shapeBoth(expected);
-  for (const candidate of candidates(source, trees, expected[1])) {
+  const expectedShapes = shapeBoth([plain, math]);
+  for (const candidate of candidates(source, trees, math, footnoteLabel)) {
     const block = verified(candidate, expectedShapes);
     if (block !== null) return Object.assign(block, { labelCount: labels.size });
   }
