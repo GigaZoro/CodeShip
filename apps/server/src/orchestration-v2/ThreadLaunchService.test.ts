@@ -386,7 +386,7 @@ it.effect.each(
     );
     const slot = DateTime.toEpochMillis(due);
     const when = slot + (held ? 60 * 60_000 : unknown ? 25 * 60_000 : 0);
-    const scheduledFor = new Date(when).toISOString();
+    const scheduledFor = DateTime.formatIso(DateTime.makeUnsafe(when));
     const id = ScheduledTaskId.make("daily-replay");
     yield* TestClock.setTime(slot - 60_000);
     const bound =
@@ -416,7 +416,7 @@ it.effect.each(
         ScheduledTasks.CHANGED_IN_APP,
       );
     }).pipe(Effect.provide(scheduler));
-    const firstSlot = new Date(slot).toISOString();
+    const firstSlot = DateTime.formatIso(DateTime.makeUnsafe(slot));
     const [row] = yield* sql<{
       incarnation_id: string;
     }>`SELECT incarnation_id FROM scheduled_tasks WHERE task_id = ${id}`;
@@ -448,7 +448,7 @@ it.effect.each(
     yield* cursor();
     if (old) {
       const earlier = held ? slot + 25 * 60_000 : when;
-      const earlierFor = new Date(earlier).toISOString();
+      const earlierFor = DateTime.formatIso(DateTime.makeUnsafe(earlier));
       const key = `${id}:${earlier}:scheduled`;
       const commandId = CommandId.make(`scheduled-task:${key}`);
       const message = {
