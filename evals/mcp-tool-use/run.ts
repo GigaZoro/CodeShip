@@ -23,6 +23,7 @@ import { formatSharedSkillPrompt, SharedSkillInstructions } from "@t3tools/share
 import {
   AutoModeModel,
   ComposerContextRecord,
+  DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS,
   DeviceOperationError,
   DeviceSummary,
   OrchestrationV2DispatchCommandResult,
@@ -53,6 +54,7 @@ import * as McpSchema from "effect/ai/McpSchema";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 import { GIT_OUTPUT_MAX_BYTES } from "../../.github/scripts/git-history.cjs";
+import { runConditionCommandProblem } from "../../apps/server/src/scheduledTasks/RunConditionCheck.ts";
 import { nextScheduledRunAt } from "../../apps/server/src/scheduledTasks/Schedule.ts";
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
@@ -1708,9 +1710,10 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
       const fixtures = fixtureReader.test(program) ? operands.map(findSkill) : [];
       const fixture = fixtures.find((skill) => skill !== undefined);
       let stdout = "";
-      if (program === "exit" && i < lastRead) {
-        if (args.length === 1 && /^\d+$/.test(args[0]!)) status = Number(args[0]) % 256;
-        else if (args.length !== 0)
+      // Passing bare exit to a fresh simulator would discard the last executed command's status.
+      if (executable === "exit" && (operands.length === 0 || i < lastRead)) {
+        if (operands.length === 1 && /^\d+$/.test(operands[0]!)) status = Number(operands[0]) % 256;
+        else if (operands.length !== 0)
           return yield* Effect.die(
             new Error("Cannot resolve exit status before the fixture read."),
           );
@@ -1826,7 +1829,15 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     if (input.environmentId !== undefined && input.environmentId !== EVAL_ENVIRONMENT_ID)
       return failed("The scheduling fixture does not contain that environment.");
     const id = typeof input.scheduledTaskId === "string" ? input.scheduledTaskId : undefined;
-    const stored = id === undefined ? undefined : sample.scheduledTasks.get(id);
+    // Each sample has its own scheduler session. Replayed creates address the same row.
+    const replayId =
+      name === "schedule_task" && id === undefined && typeof input.clientRequestId === "string"
+        ? ScheduledTaskId.make(
+            `scheduled-task:command:mcp:fixture:schedule-task:${encodeURIComponent(input.clientRequestId)}`,
+          )
+        : undefined;
+    const lookupId = id ?? replayId;
+    const stored = lookupId === undefined ? undefined : sample.scheduledTasks.get(lookupId);
     if (name === "list_scheduled_tasks") {
       const tasks =
         id === undefined
@@ -1855,6 +1866,11 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     const edit = scheduledEdit(input);
     if (Option.isNone(edit)) return failed("Invalid scheduled task arguments.");
     const save = edit.value;
+    if (
+      id === undefined &&
+      (!save.schedule || (save.prompt === undefined && save.promptFile == null))
+    )
+      return failed("Creating a scheduled task requires a schedule and a prompt or prompt file.");
     const schedule = save.schedule ?? stored?.schedule;
     if (!schedule || schedule.type === "webhook")
       return failed("This fixture needs a scheduled time.");
@@ -1888,7 +1904,19 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     if (bound && (!sameProject || typeof owner !== "string" || shared))
       return failed("The requested task cannot bind to this thread in this environment.");
 
-    const enabled = save.enabled ?? stored?.enabled ?? true;
+    if (save.modelSelection && (bound || save.followsDefaultModel === true))
+      return failed("Choose an explicit model only on an unbound task with its own model.");
+    let runCondition = stored?.runCondition;
+    if (save.runCondition === null) runCondition = undefined;
+    else if (save.runCondition !== undefined) {
+      const problem = runConditionCommandProblem(save.runCondition.command);
+      if (problem) return failed(problem);
+      runCondition = {
+        command: save.runCondition.command,
+        timeoutSeconds: save.runCondition.timeoutSeconds ?? DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS,
+      };
+    }
+    const enabled = save.enabled ?? (id === undefined ? true : (stored?.enabled ?? true));
     const now = DateTime.makeUnsafe(`${base.environment.date ?? "2026-01-01"}T12:00:00Z`);
     const next = enabled ? nextScheduledRunAt(schedule, now) : null;
     if (enabled && schedule.type === "once" && next === null)
@@ -1900,7 +1928,8 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
       typeof commit === "string" ? { at: DateTime.formatIso(now), ref, commit } : null;
     const preview = prompt.replace(/\s+/g, " ").trim();
     const task: OrchestratorMcpScheduleTaskResult = {
-      scheduledTaskId: stored?.scheduledTaskId ?? ScheduledTaskId.make(uuid(sample.nextTask++)),
+      scheduledTaskId:
+        stored?.scheduledTaskId ?? replayId ?? ScheduledTaskId.make(uuid(sample.nextTask++)),
       projectId,
       boundThreadId: bound && typeof owner === "string" ? ThreadId.make(owner) : null,
       title:
@@ -1935,6 +1964,7 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
           : schedule,
       nextRunAt: next ? DateTime.formatIso(next) : null,
       lastRunStatus: "never",
+      ...(runCondition ? { runCondition } : {}),
     };
     sample.scheduledTasks.set(task.scheduledTaskId, task);
     const { prompt: _prompt, ...summary } = task;
@@ -2042,26 +2072,33 @@ const gradePendingRelease = (
 ) => {
   let pinned = false;
   let unsettled = false;
+  // Run counts and the prompt file's last-read time can change between a save and its readback.
+  const retryState = (task: OrchestratorMcpScheduleTaskResult) =>
+    JSON.stringify([
+      task.scheduledTaskId,
+      task.projectId,
+      task.boundThreadId,
+      task.title,
+      task.enabled,
+      task.shared ?? false,
+      task.oneMachine ?? false,
+      task.schedule.type,
+      task.schedule.type === "once" ? Date.parse(task.schedule.runAt) : null,
+      task.nextRunAt && Date.parse(task.nextRunAt),
+      task.blockedByPolicy,
+      task.runCondition?.command,
+      task.promptFile?.path,
+      task.promptHash,
+    ]);
   const retries = new Map<
     string,
     {
       task: OrchestratorMcpScheduleTaskResult;
+      saved?: string;
       requested: OrchestratorMcpSaveScheduledTaskInput;
-      prompt: unknown;
+      readPrompt: string | undefined;
     }
   >();
-  // Write summaries omit the full prompt. Merge partial edits and prefer the prompt a later list actually reads.
-  const observe = (
-    task: OrchestratorMcpScheduleTaskResult,
-    edits: OrchestratorMcpSaveScheduledTaskInput = {},
-  ) => {
-    const previous = retries.get(task.scheduledTaskId);
-    const requested = { ...previous?.requested, ...edits };
-    const prompt = task.promptFile
-      ? isRecord(files) && Object.hasOwn(files, task.promptFile.path) && files[task.promptFile.path]
-      : (edits.prompt ?? task.prompt ?? previous?.prompt);
-    retries.set(task.scheduledTaskId, { task, requested, prompt });
-  };
   for (const { tool, input, failed, output } of calls) {
     if (
       failed !== false ||
@@ -2098,7 +2135,21 @@ const gradePendingRelease = (
       for (const [id, { task }] of retries) {
         if (inScope(task) && !visible.has(id)) retries.delete(id);
       }
-      for (const task of listed) observe(task);
+      const full = input.includePrompt === true || input.scheduledTaskId !== undefined;
+      for (const task of listed) {
+        const previous = retries.get(task.scheduledTaskId);
+        const readPrompt = full
+          ? task.prompt
+          : previous && retryState(previous.task) === retryState(task)
+            ? previous.readPrompt
+            : undefined;
+        retries.set(task.scheduledTaskId, {
+          ...previous,
+          requested: previous?.requested ?? {},
+          task,
+          readPrompt,
+        });
+      }
     }
     if (tool === "schedule_task") {
       const edit = scheduledEdit(input);
@@ -2112,10 +2163,20 @@ const gradePendingRelease = (
         continue;
       if (scheduledTaskId !== undefined && scheduledTaskId !== reply.value.scheduledTaskId)
         continue;
-      observe(reply.value, edit.value);
+      const task = reply.value;
+      const requested = { ...retries.get(task.scheduledTaskId)?.requested, ...edit.value };
+      // Even a partial update requires a fresh read of the saved task.
+      retries.set(task.scheduledTaskId, {
+        task,
+        saved: retryState(task),
+        requested,
+        readPrompt: undefined,
+      });
     }
   }
-  const hasRetry = [...retries.values()].some(({ task, requested, prompt }) => {
+  const hasRetry = [...retries.values()].some(({ task, saved, requested, readPrompt }) => {
+    if (typeof readPrompt !== "string" || (saved !== undefined && saved !== retryState(task)))
+      return false;
     const next = Date.parse(task.nextRunAt ?? "");
     const schedule = requested.schedule ?? task.schedule;
     const due =
@@ -2127,6 +2188,7 @@ const gradePendingRelease = (
     const ownerBound =
       task.boundThreadId === release.threadId &&
       requested.bindToCurrentThread !== false &&
+      requested.modelSelection === undefined &&
       task.projectId === EVAL_PROJECT_ID &&
       (requested.projectId === undefined || requested.projectId === task.projectId) &&
       !task.shared &&
@@ -2136,20 +2198,26 @@ const gradePendingRelease = (
       task.enabled &&
       requested.enabled !== false &&
       task.blockedByPolicy === undefined &&
+      // A condition can skip the only occurrence. The fixture can guarantee an unconditional wake.
+      task.runCondition === undefined &&
+      requested.runCondition == null &&
       requested.catchUpMissedRun === undefined;
+    const expectedPrompt = task.promptFile
+      ? isRecord(files) && Object.hasOwn(files, task.promptFile.path) && files[task.promptFile.path]
+      : (requested.prompt ?? readPrompt);
     const promptMatches =
       (requested.promptFile === undefined ||
         (requested.promptFile ?? undefined) === task.promptFile?.path) &&
-      typeof prompt === "string" &&
-      (task.promptHash === undefined || scheduledPromptHash(prompt) === task.promptHash) &&
-      release.promptMust.every((pattern) => new RegExp(pattern, "i").test(prompt));
+      expectedPrompt === readPrompt &&
+      (task.promptHash === undefined || scheduledPromptHash(readPrompt) === task.promptHash) &&
+      release.promptMust.every((pattern) => new RegExp(pattern, "i").test(readPrompt));
     return due && ownerBound && runnable && promptMatches;
   });
   return [
     { check: "keeps the owning thread active", pass: pinned || unsettled },
     {
       check:
-        "saves a runnable owner-bound retry identifying the delivery, installed check and evidence",
+        "reads back a runnable owner-bound retry identifying the delivery, installed check and evidence",
       pass: hasRetry,
     },
   ];

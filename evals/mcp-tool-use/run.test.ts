@@ -554,6 +554,19 @@ it.effect.each([{}, { projectSkill: "ship" }])(
         "Exit code 3",
       );
       reply = "(Bash completed with no output)";
+      const callsBeforeExit = requests.length;
+      const failedExit = yield* invoke(`false && ${read}; exit`);
+      assert.isTrue(failedExit.is_error);
+      assert.equal(failedExit.content, "Exit code 1");
+      const successfulExit = yield* invoke(`true && ${read}; exit`);
+      assert.isUndefined(successfulExit.is_error);
+      assert.equal(successfulExit.content, skill.instructions);
+      assert.equal(requests.length, callsBeforeExit);
+      reply = "Exit code 7\nbranch failed\n";
+      const exitWithOutput = yield* invoke(`git branch --show-current && ${read}; exit --`);
+      assert.isTrue(exitWithOutput.is_error);
+      assert.equal(exitWithOutput.content, reply);
+      reply = "(Bash completed with no output)";
       assert.equal(
         (yield* invoke(`cd '${skill.baseDirectory}' && cat "SKILL.md"`)).content,
         skill.instructions,
@@ -845,10 +858,31 @@ it.each([
     valid: false,
   },
   {
+    name: "a model override refused on a thread-bound task",
+    action: { action: "unsettle" },
+    request: { modelSelection: { instanceId: "codex", model: "gpt-6-luna" } },
+    result: {},
+    valid: false,
+  },
+  {
     name: "retry blocked by policy",
     action: { action: "unsettle" },
     request: {},
     result: { blockedByPolicy: "Blocked by policy." },
+    valid: false,
+  },
+  {
+    name: "a run condition that can skip the saved retry",
+    action: { action: "unsettle" },
+    request: { runCondition: { command: "node -e process.exit(10)" } },
+    result: { runCondition: { command: "node -e process.exit(10)", timeoutSeconds: 60 } },
+    valid: false,
+  },
+  {
+    name: "a skipping condition omitted from a stale reply",
+    action: { action: "unsettle" },
+    request: { runCondition: { command: "node -e process.exit(10)" } },
+    result: {},
     valid: false,
   },
   {
@@ -877,12 +911,65 @@ it.each([
       failed: false,
       output: JSON.stringify({ ...retryResult, ...result }),
     },
+    {
+      step: 2,
+      tool: "list_scheduled_tasks",
+      input: { scheduledTaskId: retryResult.scheduledTaskId },
+      failed: false,
+      output: JSON.stringify({ tasks: [{ ...retryResult, ...result, prompt: releasePrompt }] }),
+    },
   ];
   assert.equal(
     failed(pendingReleaseCase().expect, { calls, text: "", stopReason: "end_turn" }).length === 0,
     valid,
   );
 });
+
+it.each(["no read", "summary read", "write after full read"])(
+  "requires a full prompt read after the latest write (%s)",
+  (scenario) => {
+    const { scheduledTaskId } = retryResult;
+    const calls: Array<SampleRun["calls"][number]> = [
+      {
+        step: 0,
+        tool: "t3_thread_organize",
+        input: { action: "unsettle" },
+        failed: false,
+        output: '{"sequence":1}',
+      },
+      {
+        step: 1,
+        tool: "schedule_task",
+        input: { prompt: releasePrompt, schedule: releaseRetry },
+        failed: false,
+        output: JSON.stringify(retryResult),
+      },
+    ];
+    if (scenario !== "no read")
+      calls.push({
+        step: 2,
+        tool: "list_scheduled_tasks",
+        input: scenario === "summary read" ? {} : { scheduledTaskId },
+        failed: false,
+        output: JSON.stringify({
+          tasks: [
+            scenario === "summary read" ? retryResult : { ...retryResult, prompt: releasePrompt },
+          ],
+        }),
+      });
+    if (scenario === "write after full read")
+      calls.push({
+        step: 3,
+        tool: "schedule_task",
+        input: { scheduledTaskId, title: "Check again" },
+        failed: false,
+        output: JSON.stringify({ ...retryResult, title: "Check again" }),
+      });
+    assert.isNotEmpty(
+      failed(pendingReleaseCase().expect, { calls, text: "", stopReason: "end_turn" }),
+    );
+  },
+);
 
 it("grades the saved verification task after partial updates, lookups and deletion", () => {
   const run = { calls: [] as Array<SampleRun["calls"][number]>, text: "", stopReason: "end_turn" };
@@ -898,16 +985,44 @@ it("grades the saved verification task after partial updates, lookups and deleti
   const { scheduledTaskId } = retryResult;
   const update = (input: Record<string, unknown>, fields: Partial<typeof retryResult> = {}) =>
     record("schedule_task", { scheduledTaskId, ...input }, { ...retryResult, ...fields });
+  const read = (fields: Partial<typeof retryResult> = {}, prompt = releasePrompt) =>
+    record(
+      "list_scheduled_tasks",
+      { scheduledTaskId },
+      { tasks: [{ ...retryResult, ...fields, prompt }] },
+    );
   const passed = () => failed(pendingReleaseCase().expect, run).length === 0;
   record("t3_thread_organize", { action: "unsettle" }, { sequence: 1 });
   record("schedule_task", { prompt: releasePrompt, schedule: releaseRetry }, retryResult);
+  assert.isFalse(passed(), "the save response alone cannot confirm the stored retry");
+  record(
+    "list_scheduled_tasks",
+    { scheduledTaskId, includePrompt: false },
+    {
+      tasks: [{ ...retryResult, prompt: releasePrompt }],
+    },
+  );
+  assert.isTrue(passed(), "a lookup by ID always returns the full prompt");
+  read();
+  assert.isTrue(passed());
+  record("list_scheduled_tasks", {}, { tasks: [retryResult] });
+  assert.isTrue(passed(), "an unchanged summary preserves a prior full read");
   update({ title: "Later verification" }, { title: "Later verification" });
-  assert.isTrue(passed(), "a title-only update must preserve the runnable verification");
+  assert.isFalse(passed(), "a new write needs a new read");
+  read();
+  assert.isFalse(passed(), "a stale read did not confirm the new title");
+  read({ title: "Later verification" });
+  assert.isTrue(passed(), "the saved title and prompt were read together");
   update({ enabled: false }, { enabled: false });
+  read({ enabled: false });
   assert.isFalse(passed());
   update({ enabled: true });
+  read();
   assert.isTrue(passed());
   update({ prompt: "Reply OK and finish." });
+  read();
+  assert.isFalse(passed(), "the requested and returned prompt disagree");
+  read({}, "Reply OK and finish.");
   assert.isFalse(passed(), "a saved prompt that abandons the check must fail");
   update({ prompt: releasePrompt });
   record("list_scheduled_tasks", { scheduledTaskId }, { tasks: [] });
@@ -965,6 +1080,15 @@ it.each([
       failed: false,
       output: JSON.stringify({ ...retryResult, promptFile: { path, lastRead: null } }),
     },
+    {
+      step: 4,
+      tool: "list_scheduled_tasks",
+      input: { includePrompt: true },
+      failed: false,
+      output: JSON.stringify({
+        tasks: [{ ...retryResult, prompt, promptFile: { path, lastRead: null } }],
+      }),
+    },
   ];
   const checks = gradeSample(
     pendingReleaseCase().expect,
@@ -1012,6 +1136,35 @@ const releaseSchedulerFixture = () => {
     );
   return { invoke, success };
 };
+
+it.effect(
+  "replaying a scheduled retry updates the same task and preserves or clears its run condition",
+  () =>
+    Effect.gen(function* () {
+      const { success } = releaseSchedulerFixture();
+      const create = {
+        clientRequestId: "signing-retry",
+        prompt: "Verify the signed app",
+        schedule: releaseRetry,
+      };
+      const condition = { command: "node check-signing.mjs", timeoutSeconds: 60 };
+      const first = yield* success("schedule_task", {
+        ...create,
+        runCondition: { command: condition.command },
+      });
+      const paused = yield* success("schedule_task", { ...create, enabled: false });
+      assert.equal(paused.scheduledTaskId, first.scheduledTaskId);
+      const all = yield* success("list_scheduled_tasks", {});
+      assert.lengthOf(all.tasks, 1);
+      assert.isFalse(all.tasks[0].enabled);
+      assert.isNull(all.tasks[0].nextRunAt);
+      assert.deepEqual(all.tasks[0].runCondition, condition);
+      const resumed = yield* success("schedule_task", { ...create, runCondition: null });
+      assert.equal(resumed.scheduledTaskId, first.scheduledTaskId);
+      assert.isTrue(resumed.enabled);
+      assert.isUndefined(resumed.runCondition);
+    }),
+);
 
 it.effect("lists, updates and deletes the same saved retry inside one sample", () =>
   Effect.gen(function* () {
@@ -1071,6 +1224,10 @@ it.effect(
 );
 
 it.effect.each([
+  {
+    reason: "a model override on an owner-bound task",
+    fields: { modelSelection: { instanceId: "codex", model: "gpt-6-luna" } },
+  },
   { reason: "oneMachine on a local task", fields: { oneMachine: true } },
   { reason: "catch-up on a one-time task", fields: { catchUpMissedRun: false } },
   {
