@@ -1,11 +1,22 @@
 export const runtimePromotion = `# Runtime promotion, also embedded in the SSH bootstrap and service installer.
+t3_restore_runtime() {
+  # The rollback name differs from the version. BSD mv would nest it inside a
+  # concurrent install; macOS ships Perl's rename(2), and Linux mv has -T.
+  case "$(uname -s)" in
+    Darwin) if perl -e 'exit(rename($ARGV[0], $ARGV[1]) ? 0 : 1)' -- "$1" "$t3_root"; then return 0; fi ;;
+    *) if mv -T -- "$1" "$t3_root"; then return 0; fi ;;
+  esac
+  # An independent publisher may have won the rename. Keep the backup intact.
+  t3_runtime_ready "$t3_root" "$t3_version"
+}
+
 t3_release_lock() {
   if [ -n "$t3_claim_dir" ] && [ -f "$t3_claim_dir/$$" ]; then
     if [ -n "\${t3_displaced:-}" ]; then
-      if [ ! -e "$t3_root" ] && [ ! -L "$t3_root" ] && [ -d "$t3_displaced" ]; then
-        mv "$t3_displaced" "$t3_root" || return 1
-      elif [ -d "$t3_root" ] && { [ ! -e "$t3_staged" ] || [ "$t3_reused" = 1 ]; }; then
+      if [ ! -e "$t3_staged" ] && [ -d "$t3_root" ]; then
         rm -rf "$t3_displaced" "$t3_previous" || return 1
+      elif [ "$t3_reused" != 1 ] && [ -d "$t3_displaced" ]; then
+        t3_restore_runtime "$t3_displaced" || printf 'Could not restore runtime; kept %s\\n' "$t3_displaced" >&2
       fi
     fi
     if [ "$t3_legacy_lock" -ef "$t3_claim_dir/$$" ]; then rm -f "$t3_legacy_lock" || return 1; fi
@@ -64,7 +75,7 @@ t3_acquire_lock() {
     sleep 1 || return 1
     t3_waited=$((t3_waited + 1))
   done
-  if [ ! -e "$t3_root" ] && [ -d "$t3_previous" ]; then mv "$t3_previous" "$t3_root" || return 1; fi
+  if [ ! -e "$t3_root" ] && [ -d "$t3_previous" ]; then t3_restore_runtime "$t3_previous" || return 1; fi
 }
 
 t3_runtime_ready() {
@@ -74,19 +85,22 @@ t3_runtime_ready() {
 
 t3_promote_runtime() {
   t3_reused=0
-  if t3_runtime_ready "$t3_root" "$t3_version"; then t3_reused=1; return 0; fi
+  t3_had_root=0
+  if [ -e "$t3_root" ]; then t3_had_root=1; fi
   # Moving a source named for the version into its parent makes mv fail on a
   # populated destination, even when an older npm launcher races outside the claim.
   t3_staged="$t3_contender/$t3_version"
   mv "$1" "$t3_staged" || return 1
-  t3_displaced="$t3_previous"
+  if mv "$t3_staged" "$t3_parent/" 2>/dev/null; then return 0; fi
+  if t3_runtime_ready "$t3_root" "$t3_version"; then t3_reused=1; return 0; fi
+  [ "$t3_had_root" = 1 ] && [ -e "$t3_root" ] || return 1
+  t3_backup="$t3_previous"
   # Another interrupted promotion can leave both copies. Keep the earlier
   # recoverable one until the new, verified tree is on its canonical path.
-  if [ -e "$t3_previous" ]; then t3_displaced="$t3_staged.previous"; fi
-  if [ -e "$t3_root" ]; then
-    [ ! -e "$t3_displaced" ] && [ ! -L "$t3_displaced" ] || return 1
-    mv "$t3_root" "$t3_displaced" || return 1
-  fi
+  if [ -e "$t3_previous" ]; then t3_backup="$1.previous"; fi
+  [ ! -e "$t3_backup" ] && [ ! -L "$t3_backup" ] || return 1
+  t3_displaced="$t3_backup"
+  mv "$t3_root" "$t3_displaced" || return 1
   if ! mv "$t3_staged" "$t3_parent/"; then
     t3_runtime_ready "$t3_root" "$t3_version" || return 1
     t3_reused=1

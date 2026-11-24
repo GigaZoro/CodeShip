@@ -16,6 +16,99 @@ it("ships the same promotion protocol as SSH and service installation", async ()
   expect(source).toContain(runtimePromotion);
 });
 
+describe.runIf(isDarwinHost || isLinuxHost)("a competing npm publisher", () => {
+  it.each([
+    { phase: "first publication", valid: true, exit: 10 },
+    { phase: "startup", valid: true, exit: 0 },
+    { phase: "startup", valid: false, exit: 1 },
+    { phase: "TERM", valid: true, exit: 143 },
+    { phase: "TERM", valid: false, exit: 143 },
+  ])(
+    "keeps the winner at its published path during $phase (valid=$valid)",
+    async ({ phase, valid, exit }) => {
+      const parent = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-npm-winner-"));
+      const version = "1.2.3";
+      const root = NodePath.join(parent, version);
+      const prior = NodePath.join(parent, `.${version}.previous`);
+      const staged = NodePath.join(parent, ".staging");
+      const peer = NodePath.join(parent, ".npm");
+      const probes = NodePath.join(parent, "probes");
+      const install = async (directory: string, owner: string, healthy: boolean) => {
+        await NodeFSP.mkdir(directory);
+        await NodeFSP.writeFile(NodePath.join(directory, "owner"), owner);
+        await NodeFSP.writeFile(NodePath.join(directory, ".install-complete"), version);
+        await NodeFSP.writeFile(
+          NodePath.join(directory, "t3"),
+          `#!/bin/sh\necho ${owner} >> "$PROBES"\nexit ${healthy ? 0 : 78}\n`,
+          { mode: 0o755 },
+        );
+      };
+      try {
+        await install(peer, "npm", valid);
+        await install(staged, "download", true);
+        if (phase === "startup") await install(prior, "original", true);
+        if (phase === "TERM") await install(root, "original", false);
+        const child = NodeChildProcess.spawnSync(
+          "sh",
+          [
+            "-c",
+            `set -eu
+${runtimePromotion}
+perform() {
+  cmd=$1; shift
+  from=; to=
+  for arg do from=$to; to=$arg; done
+  if { [ "$PHASE" = 'first publication' ] && [ "$from" = "$STAGED" ] && [ "$to" != "$ROOT" ]; } ||
+     { [ "$PHASE" != 'first publication' ] && [ "$from" = "$PRIOR" ] && [ "$to" = "$ROOT" ]; }; then
+    "$NODE" -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' "$PEER" "$ROOT" || return 1
+  fi
+  command "$cmd" "$@" || return $?
+  if [ "$PHASE" = TERM ] && [ "$from" = "$ROOT" ] && [ "$to" = "$PRIOR" ]; then kill -TERM "$$"; fi
+}
+mv() { perform mv "$@"; }
+perl() { perform perl "$@"; }
+trap t3_release_lock EXIT
+trap 'exit 143' TERM
+t3_acquire_lock "$PARENT" "$VERSION" 2 || exit 1
+if [ "$PHASE" != startup ]; then
+  t3_promote_runtime "$STAGED" || exit 1
+  if [ "$t3_reused" = 1 ]; then exit 10; fi
+fi`,
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              NODE: HostProcess.ExecutablePath.defaultValue(),
+              PARENT: parent,
+              VERSION: version,
+              PHASE: phase,
+              PROBES: probes,
+              PRIOR: prior,
+              PEER: peer,
+              ROOT: root,
+              STAGED: staged,
+            },
+          },
+        );
+        expect(child.status, child.stderr).toBe(exit);
+        expect(await NodeFSP.readFile(NodePath.join(root, "owner"), "utf8")).toBe("npm");
+        expect((await NodeFSP.readdir(root)).toSorted()).toEqual([
+          ".install-complete",
+          "owner",
+          "t3",
+        ]);
+        expect((await NodeFSP.readFile(probes, "utf8")).split("\n")).toContain("npm");
+        if (phase !== "first publication") {
+          expect(await NodeFSP.readFile(NodePath.join(prior, "owner"), "utf8")).toBe("original");
+        }
+      } finally {
+        await NodeFSP.rm(parent, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
 const nightlies = Array.from({ length: 100 }, (_, index) => ({
   tag_name: `v1.2.4-nightly.20261020.${200 - index}`,
 }));
