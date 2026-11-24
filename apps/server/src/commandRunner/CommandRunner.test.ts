@@ -2309,13 +2309,19 @@ describe.runIf(isWindowsHost)("Windows only", () => {
     it.effect("can be removed as soon as the command's end is delivered", () =>
       Effect.gen(function* () {
         const chat = yield* liveChat("command-win-folder-freed");
-        const folder = NodePath.join(chat.workspace, "sub");
+        // The wrapper names the folder, which Windows PowerShell must not read in the ANSI code page.
+        const name = "sub-café-日本";
+        const folder = NodePath.join(chat.workspace, name);
         NodeFS.mkdirSync(folder);
         yield* withServer((runner) =>
           runner
-            .run(callerOf(chat.threadId), { command: "exit 0", cwd: "sub" })
+            .run(callerOf(chat.threadId), {
+              command: "Set-Content -LiteralPath ran -Value ok",
+              cwd: name,
+            })
             .pipe(Effect.tap(() => nextWake(chat.threadId))),
         );
+        assert.strictEqual(NodeFS.readFileSync(NodePath.join(folder, "ran"), "utf8").trim(), "ok");
         NodeFS.rmSync(folder, { recursive: true });
       }),
     );

@@ -111,6 +111,9 @@ const CREATE_UNICODE_ENVIRONMENT = 0x400;
 // Win32_ProcessStartup's ShowWindow as SW_HIDE: the wrapper's console, which only it uses, opens
 // no window. Windows PowerShell started with no console at all (Detached_Process) exits at once.
 const SW_HIDE = 0;
+// Without it, Windows PowerShell reads a script in the ANSI code page, which changes what the script
+// holds outside that page, such as a command's text or folder.
+const UTF8_BOM = "\uFEFF";
 
 // Runs command.ps1 in a new console with no window, shared by the command and what it starts, so no
 // console event they get (Ctrl+C, Ctrl+Break, its closing) reaches the wrapper, which outlives them to
@@ -118,7 +121,7 @@ const SW_HIDE = 0;
 // since Windows will not remove a folder a process works in: the command's is free once it ends.
 const windowsWrapper = (cwd: string) =>
   [
-    "$ErrorActionPreference = 'Stop'",
+    `${UTF8_BOM}$ErrorActionPreference = 'Stop'`,
     "$code = 1",
     "function Write-T3File($name, $value) {",
     "  $file = Join-Path $PSScriptRoot $name",
@@ -1230,7 +1233,7 @@ const make = Effect.gen(function* () {
     yield* fs.writeFileString(
       scriptPath,
       [
-        "\uFEFF$ErrorActionPreference = 'Continue'",
+        `${UTF8_BOM}$ErrorActionPreference = 'Continue'`,
         ...(shell === "bash"
           ? runInGitBash(bashScriptPath)
           : [
