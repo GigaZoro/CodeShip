@@ -1267,6 +1267,95 @@ if (fs.existsSync(".pnpmfile.cjs")) {
   );
 });
 
+it.live.each([
+  "HEAD tree",
+  "different tree",
+  "commit",
+  "symbolic ref",
+  "newline-less tree",
+  "symlink",
+  "oversized",
+  "active merge",
+] as const)("inspects a worktree with AUTO_MERGE metadata (%s)", (kind) =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fixture = yield* cleanupFixture(undefined, true);
+      fixture.disable();
+      const { fs, repo, worktree, command } = fixture;
+      const marker = (yield* command(worktree, [
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "AUTO_MERGE",
+      ])).stdout.trim();
+      const head = (yield* command(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+      const tree = (yield* command(worktree, ["rev-parse", "HEAD^{tree}"])).stdout.trim();
+      if (kind === "active merge") {
+        yield* fs.writeFileString(NodePath.join(repo, "merge.txt"), "incoming");
+        yield* command(repo, ["add", "merge.txt"]);
+        yield* command(repo, ["commit", "-m", "Incoming commit"]);
+        yield* command(worktree, ["merge", "--no-ff", "--no-commit", "main"]);
+      }
+      switch (kind) {
+        case "newline-less tree":
+          yield* fs.writeFileString(marker, tree);
+          break;
+        case "symbolic ref":
+          yield* fs.writeFileString(marker, "ref: refs/heads/main\n");
+          break;
+        case "symlink": {
+          const target = NodePath.join(repo, ".git", "auto-merge-target");
+          yield* fs.writeFileString(target, tree + "\n");
+          yield* fs.symlink(target, marker);
+          break;
+        }
+        case "oversized":
+          yield* fs.writeFileString(marker, tree.padEnd(66, " "));
+          break;
+        case "different tree": {
+          const other = (yield* command(repo, ["rev-parse", "HEAD~1^{tree}"])).stdout.trim();
+          expect(other).not.toBe(tree);
+          yield* command(worktree, ["update-ref", "AUTO_MERGE", other]);
+          break;
+        }
+        default:
+          yield* command(worktree, ["update-ref", "AUTO_MERGE", kind === "commit" ? head : tree]);
+      }
+      const runId = RunId.make("finished-integration");
+      const owner = shell({
+        branch: "feature",
+        worktreePath: worktree,
+        status: "completed",
+        latestRunId: runId,
+        latestRunCompletedAt: at(0),
+      });
+      fixture.setThreads([owner]);
+      yield* queueWorktreeRelease({
+        stateDir: fixture.config.stateDir,
+        threadId: owner.id,
+        runId,
+        worktreePath: worktree,
+        durableRef: "refs/heads/main",
+      });
+      const result = (yield* fixture.service.runNow).entries[0];
+      if (kind === "HEAD tree") {
+        expect(result).toMatchObject({ outcome: "removed" });
+        expect(yield* fs.exists(worktree)).toBe(false);
+        return;
+      }
+      expect(result).toMatchObject({
+        outcome: "kept",
+        reason:
+          kind === "active merge" || kind === "symlink" || kind === "oversized"
+            ? "Worktree metadata requires its owner"
+            : "Worktree has an unpreserved auto-merge tree",
+      });
+      expect(yield* fs.exists(marker)).toBe(true);
+      expect(yield* fs.exists(worktree)).toBe(true);
+    }),
+  ),
+);
+
 it.live(
   "unrelated process starts proceed during inspection and removal of a different worktree",
   () =>

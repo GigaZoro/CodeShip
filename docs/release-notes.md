@@ -1,3 +1,7 @@
+## 2026-11-24 — Release worktrees after completed merges
+
+- A completed integration can release its worktree when Git’s leftover auto-merge tree is identical to the committed tree. Active merges and unpreserved trees still keep the checkout.
+
 ## 2026-11-24 — Release worktrees with standard CodeShip setup
 
 - A completed run on macOS or Linux can release its worktree when the ignored files match the dependencies and environment links created by standard CodeShip setup. Local additions and edits keep the checkout. Follow-ups run setup in the recreated checkout.

@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
@@ -357,6 +358,34 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
   return { file: destination, savedFiles };
 }, Effect.scoped);
 
+const readAutoMergeMarker = Effect.fn("WorktreeRelease.readAutoMergeMarker")(function* (
+  file: string,
+) {
+  return yield* Effect.tryPromise(async () => {
+    const before = await NodeFSP.lstat(file, { bigint: true });
+    if (!before.isFile() || before.size > 65n || before.ino === 0n) return null;
+    const handle = await NodeFSP.open(
+      file,
+      NodeFS.constants.O_RDONLY | (NodeFS.constants.O_NOFOLLOW ?? 0),
+    );
+    try {
+      const buffer = Buffer.alloc(66);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      if (
+        BigInt(bytesRead) !== before.size ||
+        setupFileStamp(await handle.stat({ bigint: true })) !== setupFileStamp(before)
+      )
+        return null;
+      return buffer.subarray(0, bytesRead).toString("utf8");
+    } finally {
+      await handle.close();
+    }
+  }).pipe(
+    Effect.timeout("5 seconds"),
+    Effect.orElseSucceed(() => null),
+  );
+});
+
 export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   request: ReleaseRequest,
   projectRoot: string,
@@ -405,7 +434,9 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
       return "durable ref is unavailable";
     anchors.push(anchor[1]!);
   }
-  const tips = new Set([request.head]);
+  const currentHead = (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
+  if (!oid.test(currentHead)) return "worktree history could not be inspected";
+  const tips = new Set([request.head, currentHead]);
   let setupProof: Awaited<ReturnType<typeof readSetupProof>> = null;
   for (const name of yield* fs.readDirectory(admin)) {
     if (["HEAD", "index", "commondir", "gitdir"].includes(name)) continue;
@@ -425,6 +456,14 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
       continue;
     }
     let file = path.join(admin, name);
+    if (name === "AUTO_MERGE") {
+      const marker = yield* readAutoMergeMarker(file);
+      if (marker === null) return "worktree metadata requires its owner";
+      const tree = (yield* readGit(cwd, ["rev-parse", "--verify", currentHead + "^{tree}"])).trim();
+      if (!oid.test(tree) || marker !== tree + "\n")
+        return "worktree has an unpreserved auto-merge tree";
+      continue;
+    }
     if (name === "logs") {
       const logs = yield* fs.readDirectory(file);
       if (logs.length !== 1 || logs[0] !== "HEAD") return "worktree has private reflogs";
