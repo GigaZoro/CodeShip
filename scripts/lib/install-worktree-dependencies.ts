@@ -2,6 +2,7 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import { checkWindowsWorktreeFiles, windowsSetupHost } from "./windows-worktree-files.ts";
 import { missingSetupPath, setupTreeDigests } from "./worktree-setup-proof.ts";
 
 const git = (cwd: string, ...args: string[]) =>
@@ -139,6 +140,7 @@ const relocatePnpmState = async (staged: string, worktree: string) => {
       ? worktree + value.slice(staged.length)
       : value;
   const modulesPath = NodePath.join(modules, ".modules.yaml");
+  if (windowsSetupHost && !(await NodeFSP.lstat(modulesPath)).isFile()) return false;
   const rawLayout = await NodeFSP.readFile(modulesPath, "utf8");
   const layout = JSON.parse(rawLayout) as { virtualStoreDir?: string; nodeLinker?: string };
   if (
@@ -180,6 +182,43 @@ const relocatePnpmState = async (staged: string, worktree: string) => {
   return true;
 };
 
+const relocateWindowsDependencyLinks = async (
+  staged: string,
+  worktree: string,
+  modules: readonly string[],
+) => {
+  const within = (target: string) => {
+    const relative = NodePath.relative(staged, target);
+    return !NodePath.isAbsolute(relative) && relative !== ".." && !relative.startsWith("..\\");
+  };
+  // Resolve every target before replacing any link. pnpm can point one junction at another.
+  const links: Array<{ file: string; target: string; kind: "junction" | "file" }> = [];
+  const pending = modules.map((name) => NodePath.join(staged, name));
+  while (pending.length) {
+    const file = pending.pop()!;
+    const stat = await NodeFSP.lstat(file);
+    if (stat.isDirectory()) {
+      for (const child of await NodeFSP.readdir(file)) pending.push(NodePath.join(file, child));
+    } else if (stat.isSymbolicLink()) {
+      const target = await NodeFSP.readlink(file);
+      const absolute = NodePath.resolve(NodePath.dirname(file), target);
+      if (!within(absolute) || !within(await NodeFSP.realpath(file))) return false;
+      if (NodePath.isAbsolute(target)) {
+        links.push({
+          file,
+          target: NodePath.join(worktree, NodePath.relative(staged, absolute)),
+          kind: (await NodeFSP.stat(file)).isDirectory() ? "junction" : "file",
+        });
+      }
+    }
+  }
+  for (const { file, target, kind } of links) {
+    await NodeFSP.unlink(file);
+    await NodeFSP.symlink(target, file, kind);
+  }
+  return true;
+};
+
 export const installWorktreeDependencies = async (
   worktree: string,
   head: string,
@@ -207,14 +246,32 @@ export const installWorktreeDependencies = async (
 
   // A dead setup leaves at most one private copy, inside its worktree. It may still have an installer.
   await NodeFSP.mkdir(staging, { mode: 0o700 });
+  const inspectWindowsStage = () =>
+    checkWindowsWorktreeFiles(staging, { privateStage: true }).then(
+      () => true,
+      () => {
+        process.stderr.write(
+          "Preserving private setup stage because its contents could not be verified.\n",
+        );
+        return false;
+      },
+    );
+  let stageInspected = windowsSetupHost ? undefined : true;
   try {
     const cwd = NodePath.join(staging, "repo");
     git(staging, "clone", "--quiet", "--shared", "--no-checkout", "--", worktree, cwd);
     git(cwd, "-c", "core.hooksPath=", "checkout", "--quiet", "--detach", head);
     await install(cwd);
+    if (windowsSetupHost) {
+      stageInspected = await inspectWindowsStage();
+      if (!stageInspected) return null;
+    }
     const modules: string[] = [];
     for (const name of expectedRoots) {
-      if (await hasSetupEntry(NodePath.join(cwd, name))) modules.push(name);
+      const entry = await NodeFSP.lstat(NodePath.join(cwd, name)).catch(missingSetupPath);
+      if (!entry) continue;
+      if (windowsSetupHost && !entry.isDirectory()) return null;
+      modules.push(name);
     }
     if (!modules.includes("node_modules"))
       throw new Error("Setup did not install root dependencies");
@@ -226,6 +283,8 @@ export const installWorktreeDependencies = async (
     )
       return null;
     if (!(await relocatePnpmState(cwd, worktree))) return null;
+    if (windowsSetupHost && !(await relocateWindowsDependencyLinks(cwd, worktree, modules)))
+      return null;
     // pnpm hardlinks local file dependencies to their sources. Retire the private source checkout
     // before sealing so unlinking those aliases cannot change the published files' ctimes.
     const payload = NodePath.join(staging, "payload");
@@ -269,7 +328,8 @@ export const installWorktreeDependencies = async (
     }
     return digests;
   } finally {
-    await NodeFSP.rm(staging, { recursive: true, force: true });
+    if (stageInspected ?? (await inspectWindowsStage()))
+      await NodeFSP.rm(staging, { recursive: true, force: true });
   }
 };
 

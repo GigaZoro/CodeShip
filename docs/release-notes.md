@@ -1,3 +1,7 @@
+## 2026-11-24 — Release worktrees after standard Windows setup
+
+- Completed Windows worktrees can release after CodeShip verifies their installed dependencies and checks for private NTFS data. Follow-ups install dependencies in the fresh checkout.
+
 ## 2026-11-24 — Release worktrees after completed merges
 
 - A completed integration can release its worktree when Git’s leftover auto-merge tree is identical to the committed tree. Active merges and unpreserved trees still keep the checkout.

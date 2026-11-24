@@ -3,7 +3,6 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
-import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { isProcessAlive } from "../packages/shared/src/processProbe.ts";
 import {
@@ -13,6 +12,10 @@ import {
   setupCheckout,
   setupStatus,
 } from "./lib/install-worktree-dependencies.ts";
+import {
+  checkWindowsWorktreeFiles,
+  windowsSetupHost as isWindows,
+} from "./lib/windows-worktree-files.ts";
 import {
   hasSetupDone,
   hasSetupOnlyStatus,
@@ -25,8 +28,6 @@ import {
   writeSetupProof,
 } from "./lib/worktree-setup-proof.ts";
 
-// oxlint-disable-next-line t3code/no-global-process-runtime -- Setup runs before workspace dependencies are available.
-const isWindows = NodeOS.platform() === "win32";
 const worktree = NodeFS.realpathSync(NodePath.dirname(import.meta.dirname));
 const markerDir = NodePath.join(worktree, ".t3");
 const runningMarker = NodePath.join(markerDir, "setup-running");
@@ -193,6 +194,7 @@ const setup = async () => {
   NodeFS.mkdirSync(markerDir, { recursive: true });
   if (!NodeFS.lstatSync(markerDir).isDirectory())
     throw new Error("Setup marker directory is redirected");
+  if (isWindows) await checkWindowsWorktreeFiles(markerDir);
   // Register before checking peers. A simultaneous contender either sees us or makes both back off.
   NodeFS.mkdirSync(claim, { mode: 0o700 });
   let running = false;
@@ -212,7 +214,18 @@ const setup = async () => {
         "An interrupted in-place install may still be writing. Verify it has stopped before clearing its marker.",
       );
 
-    const context = isWindows ? null : await setupCheckout(worktree, projectRoot);
+    let context = await setupCheckout(worktree, projectRoot);
+    if (isWindows && context) {
+      try {
+        await checkWindowsWorktreeFiles(context.admin);
+      } catch (error) {
+        if (await hasSetupEntry(NodePath.join(context.admin, setupProofName))) throw error;
+        process.stderr.write(
+          "Windows setup metadata could not be verified. Installing in place.\n",
+        );
+        context = null;
+      }
+    }
     const checkout = setupFileStamp(
       await NodeFSP.lstat(NodePath.join(worktree, ".git"), { bigint: true }),
     );
@@ -229,11 +242,16 @@ const setup = async () => {
     NodeFS.writeFileSync(runningMarker, `${process.pid}\n`, { flag: "wx" });
     running = true;
     if (context && priorProof) {
-      const sameFiles = await matchesSetupFiles(
-        priorProof,
-        worktree,
-        AbortSignal.timeout(600_000),
-      ).catch(() => false);
+      const signal = AbortSignal.timeout(600_000);
+      const sameFiles = await (async () => {
+        if (isWindows)
+          await checkWindowsWorktreeFiles(worktree, {
+            links: priorProof.links.map((link) => link.name),
+            modules: Object.keys(priorProof.modules),
+            signal,
+          });
+        return matchesSetupFiles(priorProof, worktree, signal);
+      })().catch(() => false);
       if (
         sameFiles &&
         context.head === priorProof.head &&

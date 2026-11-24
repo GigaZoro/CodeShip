@@ -19,6 +19,10 @@ import {
   setupFileStamp,
   setupProofName,
 } from "../../../../scripts/lib/worktree-setup-proof.ts";
+import {
+  checkWindowsWorktreeFiles,
+  windowsSetupHost,
+} from "../../../../scripts/lib/windows-worktree-files.ts";
 
 const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const durableRef = Schema.String.check(Schema.isPattern(/^refs\/(?:heads|remotes|archive)\//));
@@ -436,12 +440,21 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   }
   const currentHead = (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
   if (!oid.test(currentHead)) return "worktree history could not be inspected";
+  if (windowsSetupHost) {
+    const safeAdmin = yield* Effect.tryPromise((signal) =>
+      checkWindowsWorktreeFiles(admin, { signal }),
+    ).pipe(
+      Effect.as(true),
+      Effect.timeout("15 seconds"),
+      Effect.orElseSucceed(() => false),
+    );
+    if (!safeAdmin) return "worktree metadata requires its owner";
+  }
   const tips = new Set([request.head, currentHead]);
   let setupProof: Awaited<ReturnType<typeof readSetupProof>> = null;
   for (const name of yield* fs.readDirectory(admin)) {
     if (["HEAD", "index", "commondir", "gitdir"].includes(name)) continue;
     if (name === setupProofName) {
-      if (yield* HostProcess.isWindows) return "worktree setup metadata requires its owner";
       setupProof = yield* Effect.tryPromise(async () =>
         readSetupProof(
           admin,
@@ -496,9 +509,11 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
     return "worktree has commits outside the durable ref";
   const index = yield* readGit(cwd, ["ls-files", "-v", "--stage", "-z"], 64 * 1024 * 1024);
   if (index && !index.endsWith("\0")) return "incomplete worktree index";
+  const trackedLinks: string[] = [];
   for (const item of index.split("\0").filter(Boolean)) {
     const entry = /^H (100644|100755|120000|160000) [a-f0-9]+ 0\t/.exec(item);
     if (!entry) return "worktree index contains hidden changes";
+    if (windowsSetupHost && entry[1] === "120000") trackedLinks.push(item.slice(entry[0].length));
     if (entry[1] !== "160000") continue;
     // Git status can omit arbitrary files inside an uninitialized gitlink.
     const name = item.slice(entry[0].length);
@@ -519,6 +534,21 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   const status = yield* worktreeStatus(cwd);
   if (status.split("\0").some((record) => record && !record.startsWith("!! ")))
     return "worktree contains tracked, untracked or ignored local data";
+  if (windowsSetupHost && (!status || request.savedFiles || setupProof)) {
+    const safeWorktree = yield* Effect.tryPromise((signal) =>
+      checkWindowsWorktreeFiles(cwd, {
+        links: [...trackedLinks, ...(setupProof?.links.map((link) => link.name) ?? [])],
+        modules: request.savedFiles ? [] : Object.keys(setupProof?.modules ?? {}),
+        signal,
+      }),
+    ).pipe(
+      Effect.as(true),
+      Effect.timeout("10 minutes"),
+      Effect.orElseSucceed(() => false),
+    );
+    if (!safeWorktree)
+      return "Windows worktree contains data or filesystem entries that could not be verified";
+  }
   if (status && request.savedFiles) {
     if (
       !(yield* inspectIgnored(cwd, request.savedFiles, status).pipe(

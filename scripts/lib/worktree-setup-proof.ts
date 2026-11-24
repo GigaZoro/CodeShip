@@ -3,6 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeWorkerThreads from "node:worker_threads";
+import { windowsSetupHost } from "./windows-worktree-files.ts";
 
 export const setupProofName = "t3-setup-proof-v1";
 export const setupEnvFiles = [".env", "infra/relay/.env"] as const;
@@ -24,6 +25,7 @@ const scan = function (
   path: typeof NodePath,
   crypto: typeof import("node:crypto"),
   stagingPath: string | undefined,
+  windows: boolean,
 ) {
   const validPath = (name: string) =>
     name.length > 0 &&
@@ -36,6 +38,7 @@ const scan = function (
         (part) => part !== "" && part !== "." && part !== ".." && part.toLowerCase() !== ".git",
       );
 
+  const buffer = Buffer.allocUnsafe(windows ? 64 * 1024 : 0);
   let count = 0;
   const results: Record<string, string> = {};
   for (const name of modules) {
@@ -56,18 +59,10 @@ const scan = function (
       const stat = fs.lstatSync(file, { bigint: true });
       if (stat.ino === 0n || stat.ctimeNs <= 0n)
         throw new Error("Setup entry has no filesystem change stamp");
-      const stamp = [
-        stat.dev,
-        stat.ino,
-        stat.mode,
-        stat.uid,
-        stat.gid,
-        stat.birthtimeNs,
-        stat.mtimeNs,
-        stat.size,
-      ];
+      const stamp = [stat.dev, stat.ino, stat.birthtimeNs, stat.mtimeNs, stat.size];
+      if (!windows) stamp.splice(2, 0, stat.mode, stat.uid, stat.gid);
       // Renaming each pre-sealed root changes its ctime. The entries inside retain theirs.
-      if (relative !== "") stamp.push(stat.ctimeNs);
+      if (relative !== "" && !windows) stamp.push(stat.ctimeNs);
       let link = "";
       if (stat.isDirectory()) {
         const children = fs.readdirSync(file).sort();
@@ -90,6 +85,32 @@ const scan = function (
         link = target.toString("base64");
       } else if (!stat.isFile()) {
         throw new Error("Setup output contains a special file");
+      } else if (windows) {
+        // NTFS hardlink changes can change the shared file's ctime without changing its bytes.
+        const fd = fs.openSync(file, "r");
+        try {
+          const hash = crypto.createHash("sha256");
+          let size = 0n;
+          while (true) {
+            const bytes = fs.readSync(fd, buffer);
+            if (bytes === 0) break;
+            size += BigInt(bytes);
+            if (size > stat.size) throw new Error("Setup file grew while reading");
+            hash.update(buffer.subarray(0, bytes));
+          }
+          const after = fs.fstatSync(fd, { bigint: true });
+          if (
+            size !== stat.size ||
+            after.dev !== stat.dev ||
+            after.ino !== stat.ino ||
+            after.mtimeNs !== stat.mtimeNs ||
+            after.ctimeNs !== stat.ctimeNs
+          )
+            throw new Error("Setup file changed while reading");
+          link = hash.digest("hex");
+        } finally {
+          fs.closeSync(fd);
+        }
       }
       tree.update(JSON.stringify([relative, stamp.join("/"), link]));
       count++;
@@ -113,9 +134,13 @@ export const setupTreeDigests = (
       `
         const { parentPort, workerData } = require("node:worker_threads");
         const scan = (${scan.toString()});
-        parentPort.postMessage(scan(workerData.root, workerData.modules, require("node:fs"), require("node:path"), require("node:crypto"), workerData.stagingPath));
+        parentPort.postMessage(scan(workerData.root, workerData.modules, require("node:fs"), require("node:path"), require("node:crypto"), workerData.stagingPath, workerData.windows));
       `,
-      { eval: true, execArgv: [], workerData: { root, modules, stagingPath } },
+      {
+        eval: true,
+        execArgv: [],
+        workerData: { root, modules, stagingPath, windows: windowsSetupHost },
+      },
     );
     const abort = () => {
       void worker.terminate();
@@ -162,11 +187,15 @@ export const readSetupProof = async (admin: string, projectRoot: string, checkou
     stat.ino === 0n ||
     stat.nlink !== 1n ||
     stat.size > maxProofBytes ||
-    (stat.mode & 0o077n) !== 0n ||
-    stat.uid !== (await NodeFSP.lstat(admin, { bigint: true })).uid
+    (!windowsSetupHost &&
+      ((stat.mode & 0o077n) !== 0n ||
+        stat.uid !== (await NodeFSP.lstat(admin, { bigint: true })).uid))
   )
     throw new Error("Unrecognized setup proof");
-  const handle = await NodeFSP.open(file, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+  const handle = await NodeFSP.open(
+    file,
+    NodeFS.constants.O_RDONLY | (NodeFS.constants.O_NOFOLLOW ?? 0),
+  );
   let proof: SetupProof;
   try {
     const buffer = Buffer.alloc(Number(stat.size) + 1);

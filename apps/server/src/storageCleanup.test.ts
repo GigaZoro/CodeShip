@@ -915,8 +915,8 @@ it.live.each(["direct land", "no change"] as const)(
     ),
 );
 
-describe.skipIf(isWindowsHost)("owned setup output on POSIX", () => {
-  it.live.each([
+describe("owned setup output", () => {
+  const scenarios = [
     "standard setup only",
     "an added dependency file",
     "an edited dependency file",
@@ -932,7 +932,35 @@ describe.skipIf(isWindowsHost)("owned setup output on POSIX", () => {
     "an unpublished success marker",
     "a prior proof without dependencies",
     "an unknown proof directory with saved ignored files",
-  ] as const)(
+    "an external junction",
+    "a private file stream",
+    "a private directory stream",
+  ] as const;
+  const checkSetups = (
+    title: string,
+    run: (scenario: (typeof scenarios)[number]) => Effect.Effect<void, unknown>,
+  ) => {
+    const windowsOnly = [
+      "an external junction",
+      "a private file stream",
+      "a private directory stream",
+    ];
+    const windowsWithPosix = [
+      "standard setup only",
+      "an edited dependency file",
+      "a dirty install input",
+    ];
+    describe.skipIf(isWindowsHost)("POSIX", () => {
+      it.live.each(scenarios.filter((name) => !windowsOnly.includes(name)))(title, run);
+    });
+    describe.runIf(isWindowsHost)("Windows", () => {
+      it.live.each(
+        scenarios.filter((name) => windowsOnly.includes(name) || windowsWithPosix.includes(name)),
+      )(title, run);
+    });
+  };
+
+  checkSetups(
     "releases an ordinary completed worktree only with unchanged setup output (%s)",
     (scenario) =>
       runCleanupTest(
@@ -961,6 +989,7 @@ describe.skipIf(isWindowsHost)("owned setup output on POSIX", () => {
             "scripts/setup-worktree.ts",
             "scripts/lib/install-worktree-dependencies.ts",
             "scripts/lib/worktree-setup-proof.ts",
+            "scripts/lib/windows-worktree-files.ts",
             "packages/shared/src/processProbe.ts",
           ]) {
             yield* fs.copyFile(
@@ -973,7 +1002,7 @@ describe.skipIf(isWindowsHost)("owned setup output on POSIX", () => {
           yield* command(worktree, ["merge", "--ff-only", "main"]);
           const mainEnv = NodePath.join(repo, ".env");
           const worktreeEnv = NodePath.join(worktree, ".env");
-          yield* fs.writeFileString(mainEnv, "example-main-value");
+          if (!isWindowsHost) yield* fs.writeFileString(mainEnv, "example-main-value");
           if (scenario === "a real dotenv file")
             yield* fs.writeFileString(worktreeEnv, "local-value");
           if (scenario === "a dirty install input")
@@ -1002,7 +1031,12 @@ if (process.env.T3_TEST_CONCURRENT_WORKTREE) {
 fs.writeFileSync("node_modules/.pnpm/example/node_modules/example/index.js", "module");
 
 if (!fs.existsSync("node_modules/example")) {
-  fs.symlinkSync(".pnpm/example/node_modules/example", "node_modules/example", "dir");
+  const target = ".pnpm/example/node_modules/example";
+  fs.symlinkSync(process.platform === "win32" ? path.resolve("node_modules", target) : target,
+    "node_modules/example", process.platform === "win32" ? "junction" : "dir");
+}
+if (process.env.T3_TEST_STORE) {
+  fs.linkSync(path.join(process.env.T3_TEST_STORE, "shared.js"), "node_modules/shared.js");
 }
 fs.writeFileSync("node_modules/.modules.yaml", JSON.stringify({ storeDir: process.env.T3_TEST_VP }));
 const cwd = process.cwd();
@@ -1023,11 +1057,13 @@ if (fs.existsSync(".pnpmfile.cjs")) {
               mode: 0o755,
             });
           }
+          yield* fs.writeFileString(NodePath.join(fixturePackageManager, "shared.js"), "shared");
           const race = scenario === "a dependency added during setup";
           const env = {
             ...process.env,
             T3_TEST_CONCURRENT_WORKTREE: race ? worktree : "",
             T3_TEST_VP: fixturePackageManager,
+            T3_TEST_STORE: isWindowsHost ? fixturePackageManager : "",
             T3CODE_PROJECT_ROOT: repo,
             PATH: fixturePackageManager + NodePath.delimiter + process.env.PATH,
           };
@@ -1035,14 +1071,14 @@ if (fs.existsSync(".pnpmfile.cjs")) {
             yield* fs.readFileString(NodePath.join(worktree, "t3.json")),
           ).scripts[0].command;
           expect(setupCommand).toBe("node scripts/setup-worktree.ts");
-          const runSetup = (repeat = false) =>
+          const runSetup = (repeat = false, cwd = worktree) =>
             Effect.promise(
               () =>
                 new Promise<{ success: boolean; output: string }>((resolve) => {
                   NodeChildProcess.execFile(
                     process.execPath,
                     setupCommand.split(" ").slice(1),
-                    { cwd: worktree, env: { ...env, T3_TEST_REJECT_INSTALL: repeat ? "1" : "" } },
+                    { cwd, env: { ...env, T3_TEST_REJECT_INSTALL: repeat ? "1" : "" } },
                     (error, stdout, stderr) =>
                       resolve({ success: !error, output: stdout + stderr }),
                   );
@@ -1058,13 +1094,13 @@ if (fs.existsSync(".pnpmfile.cjs")) {
                       [
                         "-e",
                         `
-                const fs = require("node:fs");
-                fs.mkdirSync(".t3", { recursive: true });
-                fs.mkdirSync(".t3/setup-owner-" + process.pid, { mode: 0o700 });
-                fs.writeFileSync(".t3/setup-running", process.pid + "\\n");
-                console.log("ready");
-                process.stdin.resume();
-              `,
+                  const fs = require("node:fs");
+                  fs.mkdirSync(".t3", { recursive: true });
+                  fs.mkdirSync(".t3/setup-owner-" + process.pid, { mode: 0o700 });
+                  fs.writeFileSync(".t3/setup-running", process.pid + "\\n");
+                  console.log("ready");
+                  process.stdin.resume();
+                `,
                       ],
                       { cwd: worktree, stdio: ["pipe", "pipe", "inherit"] },
                     );
@@ -1120,7 +1156,7 @@ if (fs.existsSync(".pnpmfile.cjs")) {
             expect(
               yield* fs.readFileString(NodePath.join(worktree, "node_modules/seen-input.cjs")),
             ).toBe("use live checkout");
-          if (!race)
+          if (!race && !isWindowsHost)
             expect(yield* fs.readFileString(worktreeEnv)).toBe(
               scenario === "a real dotenv file" ? "local-value" : "example-main-value",
             );
@@ -1128,9 +1164,43 @@ if (fs.existsSync(".pnpmfile.cjs")) {
             worktree,
             "node_modules/.pnpm/example/node_modules/example",
           );
+          const sibling = NodePath.join(NodePath.dirname(worktree), "other");
+          const sentinel = NodePath.join(repo, "sentinel.txt");
+          const privateStream = NodePath.join(
+            worktree,
+            scenario === "a private directory stream"
+              ? "node_modules:private"
+              : "tracked.txt:private",
+          );
           switch (scenario) {
+            case "an external junction":
+              yield* fs.writeFileString(sentinel, "keep");
+              yield* Effect.promise(() =>
+                NodeFSP.symlink(
+                  repo,
+                  NodePath.join(worktree, "node_modules", "external"),
+                  "junction",
+                ),
+              );
+              break;
+            case "a private file stream":
+            case "a private directory stream":
+              yield* Effect.promise(() => NodeFSP.writeFile(privateStream, "keep"));
+              break;
             case "standard setup only":
             case "an unpublished success marker": {
+              if (isWindowsHost && scenario === "standard setup only") {
+                yield* command(repo, ["worktree", "add", "-b", "other", sibling]);
+                const second = yield* runSetup(false, sibling);
+                expect(second.success, second.output).toBe(true);
+                const shared = (checkout: string) =>
+                  Effect.promise(() =>
+                    NodeFSP.stat(NodePath.join(checkout, "node_modules/shared.js")),
+                  );
+                const firstFile = yield* shared(worktree);
+                expect(firstFile.nlink).toBeGreaterThanOrEqual(3);
+                expect((yield* shared(sibling)).ino).toBe(firstFile.ino);
+              }
               if (scenario === "an unpublished success marker") yield* fs.remove(done);
               const repeated = yield* runSetup(true);
               expect(repeated.success, repeated.output).toBe(true);
@@ -1232,22 +1302,37 @@ if (fs.existsSync(".pnpmfile.cjs")) {
                       : scenario === "a changed proof" ||
                           scenario === "an unknown proof directory with saved ignored files"
                         ? "Worktree setup metadata requires its owner"
-                        : "Standard setup output changed or could not be verified",
+                        : scenario === "a private file stream" ||
+                            scenario === "a private directory stream"
+                          ? "Windows worktree contains data or filesystem entries that could not be verified"
+                          : "Standard setup output changed or could not be verified",
                 },
           );
           expect(yield* fs.exists(worktree)).toBe(!released);
           expect(yield* fs.exists(file + ".released")).toBe(released);
           const registrations = (yield* command(repo, ["worktree", "list", "--porcelain"])).stdout;
           expect(registrations.includes(worktree.split(NodePath.sep).join("/"))).toBe(!released);
-          if (scenario !== "a missing dotenv source") {
+          if (!isWindowsHost && scenario !== "a missing dotenv source") {
             expect(yield* fs.readFileString(mainEnv)).toBe("example-main-value");
           }
           if (scenario === "standard setup only") {
             yield* command(repo, ["worktree", "add", worktree, "feature"]);
             const followUp = yield* runSetup();
             expect(followUp.success, followUp.output).toBe(true);
-            expect(yield* fs.readFileString(NodePath.join(dependency, "index.js"))).toBe("module");
+            expect(
+              yield* fs.readFileString(NodePath.join(worktree, "node_modules/example/index.js")),
+            ).toBe("module");
+            if (isWindowsHost)
+              expect(
+                yield* fs.readFileString(NodePath.join(sibling, "node_modules/example/index.js")),
+              ).toBe("module");
           }
+          if (scenario === "an external junction")
+            expect(yield* fs.readFileString(sentinel)).toBe("keep");
+          if (scenario === "a private file stream" || scenario === "a private directory stream")
+            expect(yield* Effect.promise(() => NodeFSP.readFile(privateStream, "utf8"))).toBe(
+              "keep",
+            );
           if (scenario === "an unknown proof directory with saved ignored files")
             expect(yield* fs.readFileString(NodePath.join(proof, "owner.txt"))).toBe(
               "preserve this",
