@@ -96,6 +96,10 @@
 - Storage cleanup kept a finished worktree with "Worktree has private reflogs" once Git had deleted a worktree-only ref and left its reflog's empty folders. Those worktrees are released; a reflog that still holds history keeps its worktree.
 - A delegated task on a linked machine whose last reply or plan was blank gave the chat that started it a blank result. Its result is now its last reply with text, as for a task on this machine.
 
+## 2026-11-24 — Fixed-time retries and recreated tasks
+
+- A delayed task keeps its occurrence when the host moves past a local slot. Editing its schedule starts a new occurrence, and recreating the task can send a fresh prompt even in the same clock tick.
+
 ## 2026-11-24 — Fixed-time task usage accounting
 
 - A local task delayed by an account usage limit keeps its original scheduled occurrence across retries, restarts, and time-zone changes. Older retries with insufficient timing information count as unknown.

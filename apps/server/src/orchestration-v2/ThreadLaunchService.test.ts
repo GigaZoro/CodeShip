@@ -53,7 +53,11 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
-import { layerSharedTaskIdentities } from "../scheduledTasks/sharedTaskTestLayers.ts";
+import { originalDemandId } from "./demandId.ts";
+import {
+  HERE_ENVIRONMENT_ID,
+  layerSharedTaskIdentities,
+} from "../scheduledTasks/sharedTaskTestLayers.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -322,6 +326,131 @@ function launchInput(input: {
     creationSource: "web" as const,
   };
 }
+
+it.effect.each(["existing", "new"] as const)(
+  "replays fixed-time receipts only within the same task incarnation in %s threads",
+  (target) => {
+    const harness = makeHarness();
+    const scheduler = ScheduledTasks.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          NodeCrypto.layer,
+          Scheduler.layer,
+          layerSharedTaskIdentities(),
+          ManagedPolicy.layerTest(),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const sql = yield* SqlClient.SqlClient;
+      const due = DateTime.makeZonedUnsafe(
+        { year: 1970, month: 1, day: 2, hour: 7 },
+        { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+      );
+      const at = DateTime.toEpochMillis(due);
+      yield* TestClock.setTime(at - 1_000);
+      const bound =
+        target === "existing"
+          ? (yield* launches.launch(
+              launchInput({ command: "command:setup", thread: "thread:bound" }),
+            )).threadId
+          : null;
+      const scheduledFor = DateTime.formatIso(DateTime.toUtc(due));
+      const id = ScheduledTaskId.make("recreated");
+      const expected: string[] = [];
+      for (const replace of [false, true]) {
+        yield* TestClock.setTime(at - 1_000);
+        yield* Effect.gen(function* () {
+          const tasks = yield* ScheduledTasks.ScheduledTaskService;
+          if (replace) yield* tasks.delete({ id });
+          yield* tasks.upsert(
+            {
+              id,
+              title: "Daily",
+              prompt: "Daily check",
+              enabled: true,
+              maxLiveRuns: 2,
+              schedule: { type: "fixed_time", timeOfDay: "07:00" },
+              projectId,
+              threadId: bound,
+              workspaceStrategy: { type: "root" },
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              createdBy: "user",
+              creationSource: "web",
+            },
+            ScheduledTasks.CHANGED_IN_APP,
+          );
+          const [row] = yield* sql<{
+            incarnation_id: string;
+          }>`SELECT incarnation_id FROM scheduled_tasks WHERE task_id = ${id}`;
+          const demandId = originalDemandId(
+            "scheduled-task",
+            HERE_ENVIRONMENT_ID,
+            id,
+            row!.incarnation_id,
+            "scheduled",
+            scheduledFor,
+          );
+          expected.push(demandId);
+          if (!replace) {
+            const oldRun = `${id}:${at}:scheduled`;
+            const commandId = CommandId.make(`scheduled-task:${oldRun}`);
+            const message = {
+              messageId: MessageId.make(`scheduled-task-message:${oldRun}`),
+              demandId,
+              scheduledTaskId: id,
+              text: "Daily check",
+              attachments: [],
+            };
+            const threadId =
+              bound ??
+              (yield* launches.launch({
+                ...launchInput({ command: commandId, thread: "thread:legacy" }),
+                initialMessage: message,
+              })).threadId;
+            if (bound !== null)
+              yield* threads.sendToThread({
+                projectId,
+                threadId,
+                commandId,
+                ...message,
+                mode: "queue",
+                createdBy: "user",
+                creationSource: "web",
+              });
+            yield* sql`INSERT INTO scheduled_task_runs (run_id,task_id,trigger,scheduled_for,started_at,thread_id,outcome)
+              VALUES (${oldRun}, ${id}, 'scheduled', ${scheduledFor}, ${scheduledFor}, ${threadId}, 'succeeded')`;
+          }
+          yield* TestClock.adjust("6 seconds");
+          assert.equal((yield* tasks.list()).tasks[0]?.runCount, 1);
+          // Replay the same occurrence at a different dispatch time, including after recreation.
+          yield* sql`UPDATE scheduled_tasks SET next_run_at = ${scheduledFor} WHERE task_id = ${id}`;
+          yield* TestClock.adjust("6 seconds");
+          assert.equal((yield* tasks.list()).tasks[0]?.lastRunStatus, "succeeded");
+          const [run] = (yield* tasks.listRuns({ id })).runs;
+          assert.equal(run?.outcome, "succeeded");
+          const shells = yield* threads.listProjectThreads({ projectId, includeSubagents: false });
+          const projections = yield* Effect.forEach(shells, (shell) =>
+            threads.getThreadProjection(shell.id),
+          );
+          assert.sameMembers(
+            projections.flatMap((p) => p.runs.map((r) => r.demandId)),
+            expected,
+          );
+          assert.equal(projections.flatMap((p) => p.messages).length, expected.length);
+          assert.equal(shells.length, bound === null ? expected.length : 1);
+        }).pipe(Effect.provide(scheduler));
+      }
+      assert.notEqual(expected[0], expected[1]);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
 
 it.effect.each(
   (["new", "existing"] as const).flatMap((target) =>
