@@ -186,7 +186,8 @@ export async function verifyBundledRuntimeRepair(
 
     await NodeFSP.rename(root, prior);
     await NodeFSP.mkdir(claim);
-    await NodeFSP.writeFile(NodePath.join(claim, String(process.pid)), String(process.pid));
+    const ownerFile = NodePath.join(claim, String(process.pid));
+    await NodeFSP.writeFile(ownerFile, String(process.pid));
     await NodeFSP.writeFile(legacy, String(process.pid));
     const waiting = run();
     try {
@@ -200,9 +201,11 @@ export async function verifyBundledRuntimeRepair(
       await NodeAssert.rejects(NodeFSP.stat(root), { code: "ENOENT" });
     } finally {
       await NodeFSP.rm(legacy);
-      await NodeFSP.rm(claim, { recursive: true });
+      // The waiting installer can acquire the directory as soon as our PID file is gone.
+      await NodeFSP.unlink(ownerFile);
       await waiting;
     }
+    await NodeAssert.rejects(NodeFSP.stat(claim), { code: "ENOENT" });
     NodeAssert.equal(offlineRequests, 0);
     await NodeFSP.rename(root, prior);
     await NodeFSP.rm(NodePath.join(prior, "codex-metadata.files"));
