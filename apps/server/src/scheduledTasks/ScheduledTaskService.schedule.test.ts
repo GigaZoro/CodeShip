@@ -1055,6 +1055,16 @@ it.effect.each([
 );
 
 it.effect.each([
+  {
+    from: "Europe/Kyiv",
+    to: "Europe/London",
+    first: "2026-11-10T05:00Z",
+    retry: "2026-11-10T07:00Z",
+    last: "2026-11-10T07:30Z",
+    next: "2026-11-11T07:00Z",
+    legacy: "",
+    late: true,
+  },
   ...[false, true].map((late) => ({
     from: "Europe/Kyiv",
     to: "Europe/London",
