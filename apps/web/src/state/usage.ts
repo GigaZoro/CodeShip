@@ -3,13 +3,11 @@ import { t } from "~/i18n";
 import {
   AuthDiagnosticsReadScope,
   type EnvironmentId,
-  type UsageSummary,
   type UsageProviderKind,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
 import {
   resolveCursorUsageAccess,
-  createLegacyCursorReaders,
   refreshUsage,
   usageRefreshingEnvironmentIdsAtom,
   usageSummaryInput,
@@ -35,12 +33,6 @@ import { initialUsageViewState, settleUsageView } from "@t3tools/client-runtime/
 export type { EnvironmentUsageStatus } from "@t3tools/client-runtime/state/usage-progress";
 export { mergeAnsweredUsage } from "@t3tools/client-runtime/state/usage-progress";
 
-const legacyReader = createLegacyCursorReaders(
-  environmentPresentations,
-  environmentSession,
-  serverEnvironment,
-);
-
 const usageByWindowAtom = Atom.family((windowKey: string | null) =>
   Atom.make((get): readonly EnvironmentUsageStatus[] => {
     const input = windowKey === null ? null : (JSON.parse(windowKey) as UsageSummaryInput);
@@ -58,19 +50,11 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
       });
       const modelFilter =
         input === null ? undefined : get(serverEnvironment.usageModelFilterAtom(environmentId));
-      const cursor = get(serverEnvironment.cursorUsageAccessAtom(environmentId));
-      const cursorAccess = (summary: UsageSummary | null, fresh = false) =>
-        resolveCursorUsageAccess({
-          access: cursor,
-          legacyReadsAccount:
-            access.canReadDiagnostics &&
-            presentation.connection.phase === "connected" &&
-            cursor.history === undefined &&
-            legacyReader(get, environmentId, fresh ? summary : null),
-          summary,
-          session: sessionResult._tag === "Failure" ? null : session,
-          isConnected: presentation.connection.phase === "connected",
-        });
+      const cursorAccess = resolveCursorUsageAccess({
+        access: get(serverEnvironment.cursorUsageAccessAtom(environmentId)),
+        session: sessionResult._tag === "Failure" ? null : session,
+        isConnected: presentation.connection.phase === "connected",
+      });
       if (input === null || !access.canReadDiagnostics) {
         statuses.push({
           environmentId,
@@ -79,7 +63,7 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
           ...access,
           modelFilter,
           summary: null,
-          ...cursorAccess(null),
+          ...cursorAccess,
         });
         continue;
       }
@@ -104,7 +88,7 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
               })
             : null,
         summary,
-        ...cursorAccess(summary, result._tag === "Success"),
+        ...cursorAccess,
       });
     }
     return statuses;

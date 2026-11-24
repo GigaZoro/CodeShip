@@ -1376,9 +1376,7 @@ export function createServerEnvironmentAtoms<R, E>(
   );
   const cursorUsageAccessAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) => cursorUsageAccess(get(configValueAtom(environmentId)))).pipe(
-      Atom.withEquality<ReturnType<typeof cursorUsageAccess>>(
-        (a, b) => a.history === b.history && a.legacyCanEnable === b.legacyCanEnable,
-      ),
+      Atom.withEquality<ReturnType<typeof cursorUsageAccess>>((a, b) => a.history === b.history),
       Atom.withLabel(`environment-data:server:cursor-usage-access:${environmentId}`),
     ),
   );

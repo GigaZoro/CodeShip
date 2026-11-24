@@ -5,7 +5,6 @@ import {
   AuthDiagnosticsReadScope,
   AuthOrchestrationReadScope,
   AuthSettingsWriteScope,
-  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -19,6 +18,7 @@ import {
   type UsageViewState,
 } from "@t3tools/client-runtime/state/usage-view";
 import { makeWindow, usageWindowLabel } from "@t3tools/shared/usageFormat";
+import { collectLimitAccounts, type LimitPresentations } from "@t3tools/shared/usageLimits";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
@@ -28,10 +28,11 @@ const { Contents, state } = vi.hoisted(() => ({
   Contents: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   state: {
     cursorSetup: null as null | {
-      readonly reader: "reading" | "unavailable" | "legacy";
+      readonly reader: "reading" | "unavailable" | "none";
       readonly canEnable: boolean;
     },
     usageCalls: new Set<EnvironmentId>(),
+    limitPresentations: null as LimitPresentations | null,
     tab: "usage" as string | undefined,
     live: [] as readonly EnvironmentUsageStatus[],
     view: null as UsageViewState | null,
@@ -208,15 +209,7 @@ vi.mock("../../state/server", async () => {
         input: UsageSummaryInput;
       }) => {
         state.usageCalls.add(environmentId);
-        return Atom.make(
-          AsyncResult.success({
-            ...observedSummary(),
-            ...input,
-            ...(state.cursorSetup?.reader === "legacy" && environmentId === "laptop"
-              ? { sources: [legacyHistorySource] }
-              : {}),
-          }),
-        );
+        return Atom.make(AsyncResult.success({ ...observedSummary(), ...input }));
       },
     },
   };
@@ -227,16 +220,18 @@ vi.mock("../../state/presentation", async () => {
   return {
     environmentPresentations: {
       presentationsWithProvidersAtom: Atom.make(
-        new Map([
-          [
-            EnvironmentId.make("desk"),
-            {
-              entry: { target: { label: "Desk" } },
-              serverConfig: null,
-              connection: { phase: "connected", error: null },
-            },
-          ],
-        ]),
+        () =>
+          state.limitPresentations ??
+          new Map([
+            [
+              EnvironmentId.make("desk"),
+              {
+                entry: { target: { label: "Desk" } },
+                serverConfig: null,
+                connection: { phase: "connected", error: null },
+              },
+            ],
+          ]),
       ),
       presentationsAtom: Atom.make(
         new Map([
@@ -277,6 +272,7 @@ vi.mock("../../state/session", async () => {
         ),
     },
     readEnvironmentScope: () => false,
+    useEnvironmentScope: () => false,
   };
 });
 vi.mock("../../lib/appState", () => ({
@@ -295,11 +291,15 @@ vi.mock("./ProviderHolds", () => ({ ProviderHolds: () => null }));
 vi.mock("../../lib/i18n", () => ({
   t: (message: string, values?: Record<string, string>) =>
     message.replace(/\{([^}]+)\}/g, (key, name: string) => values?.[name] ?? key),
+  tn: (count: number, one: string, other: string) =>
+    (count === 1 ? one : other).replace("{count}", String(count)),
   msg: (message: string) => message,
+  getFormattingLocale: () => "en-US",
 }));
 vi.mock("./ChatGptUsageSummary", () => ({ ChatGptUsageSummary: () => null }));
 vi.mock("./UsageDailyChart", () => ({ UsageDailyChart: () => null }));
-vi.mock("./UsageLimitsSection", () => ({
+vi.mock("./UsageLimitsSection", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./UsageLimitsSection")>()),
   useRefreshLimits: () => ({
     failedLabels: [],
     failedIds: state.failedLimits,
@@ -324,6 +324,7 @@ function setup(tab: string | undefined = "usage") {
   state.tab = tab;
   state.cursorSetup = null;
   state.usageCalls.clear();
+  state.limitPresentations = null;
   state.live = [];
   state.view = null;
   state.grantProbe = null;
@@ -511,25 +512,12 @@ function observedSummary(contractVersion: number = USAGE_CONTRACT_VERSION) {
   };
 }
 
-const legacyHistorySource = {
-  fingerprint: {
-    hostId: "cursor.com",
-    provider: "cursor" as const,
-    resolvedHomePath: "cursor-account:test",
-    volumeId: "test",
-  },
-  status: "ok" as const,
-  scannedFiles: 1,
-  skippedFiles: 0,
-  malformedRecords: 0,
-  distinctSessions: 0,
-  message: null,
-};
 function cursorConfig(id: EnvironmentId) {
   const desk = id === "desk";
   const reader = state.cursorSetup?.reader ?? "unavailable";
+  const history = desk ? ("keychainOff" as const) : reader;
+  if (history === "none") return { providers: [] };
   return {
-    settings: DEFAULT_SERVER_SETTINGS,
     providers: [
       {
         instanceId: ProviderInstanceId.make("cursor"),
@@ -543,11 +531,7 @@ function cursorConfig(id: EnvironmentId) {
         models: [],
         slashCommands: [],
         skills: [],
-        ...(desk
-          ? { cursorAccountHistory: "keychainOff" as const }
-          : reader === "legacy"
-            ? {}
-            : { cursorAccountHistory: reader }),
+        cursorAccountHistory: history,
         ...(desk || !state.cursorSetup?.canEnable
           ? {}
           : {
@@ -575,6 +559,7 @@ function cursorConfig(id: EnvironmentId) {
 }
 
 it.each([
+  ["shows the action for a lone Mac with Cursor usage off", "none", true, true],
   ["keeps the action with token-only Linux quota", "unavailable", true, true],
   ["hides the action for a Linux history reader whose quota failed", "reading", true, false],
   ["hides the action on a read-only connection", "unavailable", false, false],
@@ -774,26 +759,23 @@ it("shows no scheduled-task access notices on mobile Usage", async () => {
   expect(screen.container.textContent).not.toContain("scheduled task runs");
 });
 
-it.each(["legacy", "reading"] as const)(
-  "remembers the %s reader when moving to Limits and deselecting Laptop on mobile",
-  async (reader) => {
-    await using screen = setup("usage");
-    state.cursorSetup = { reader, canEnable: true };
-    const action = () =>
-      screen.container.querySelector('button[aria-label="Enable Cursor usage from Desk"]');
-    await screen.render();
-    expect(state.usageCalls.has(EnvironmentId.make("laptop"))).toBe(true);
-    expect(action()).toBeNull();
-    state.usageCalls.clear();
-    state.tab = "limits";
-    await screen.render();
-    expect(screen.container.textContent).toContain("Limits overview");
-    expect(action()).toBeNull();
-    await act(() => menuEnvironment(screen.container, "laptop").click());
-    expect(action()).toBeNull();
-    expect(state.usageCalls.size).toBe(0);
-  },
-);
+it("remembers the reader when moving to Limits and deselecting Laptop on mobile", async () => {
+  await using screen = setup("usage");
+  state.cursorSetup = { reader: "reading", canEnable: true };
+  const action = () =>
+    screen.container.querySelector('button[aria-label="Enable Cursor usage from Desk"]');
+  await screen.render();
+  expect(state.usageCalls.has(EnvironmentId.make("laptop"))).toBe(true);
+  expect(action()).toBeNull();
+  state.usageCalls.clear();
+  state.tab = "limits";
+  await screen.render();
+  expect(screen.container.textContent).toContain("Limits overview");
+  expect(action()).toBeNull();
+  await act(() => menuEnvironment(screen.container, "laptop").click());
+  expect(action()).toBeNull();
+  expect(state.usageCalls.size).toBe(0);
+});
 
 it("an empty mobile Limits section displays its message without a minute subscription", async () => {
   const { UsageLimitsSection } =
@@ -803,4 +785,63 @@ it("an empty mobile Limits section displays its message without a minute subscri
   await screen.render(<UsageLimitsSection selectedEnvironmentIds={null} failedLabels={[]} />);
   expect(screen.container.textContent).toContain("No provider on the selected environments");
   expect(minute).not.toHaveBeenCalled();
+});
+
+it("counts a reset credit's expiry down on the mobile account screen with no reset ahead", async () => {
+  const { UsageLimitAccountScreen } =
+    await vi.importActual<typeof import("./UsageLimitsPooled")>("./UsageLimitsPooled");
+  await using screen = setup("limits");
+  const now = Date.parse("2026-11-22T12:00:00Z");
+  vi.useFakeTimers({ now });
+  using _timers = { [Symbol.dispose]: () => vi.useRealTimers() };
+  state.limitPresentations = new Map([
+    [
+      EnvironmentId.make("desk"),
+      {
+        entry: { target: { label: "Desk" } },
+        connection: { phase: "connected" },
+        serverConfig: {
+          providers: [
+            {
+              instanceId: ProviderInstanceId.make("codex"),
+              driver: ProviderDriverKind.make("codex"),
+              enabled: true,
+              installed: true,
+              status: "ready",
+              version: null,
+              auth: { status: "authenticated" },
+              checkedAt: "2026-11-22T11:59:00Z",
+              models: [],
+              slashCommands: [],
+              skills: [],
+              usageLimits: {
+                checkedAt: "2026-11-22T11:59:00Z",
+                windows: [{ id: "session", kind: "session", label: "Session", usedPercent: 40 }],
+                resetCredits: {
+                  availableCount: 1,
+                  nextExpiresAt: new Date(now + 10 * 60_000).toISOString(),
+                },
+              },
+            },
+          ],
+        },
+      },
+    ],
+  ]);
+  const [account] = collectLimitAccounts(state.limitPresentations);
+  await screen.render(
+    <UsageLimitAccountScreen
+      route={{
+        params: {
+          accountKey: account!.key,
+          windowId: "session",
+          windowKind: "session",
+          environmentIds: null,
+        },
+      }}
+    />,
+  );
+  expect(screen.container.textContent).toContain("next expires in 10m");
+  await act(() => vi.advanceTimersByTime(60_000));
+  expect(screen.container.textContent).toContain("next expires in 9m");
 });

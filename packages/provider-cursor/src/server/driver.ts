@@ -107,30 +107,26 @@ export const CursorDriver: ProviderDriver<
     const platform = yield* HostProcess.Platform;
     const hostEnvironment = yield* HostProcess.Environment;
     const home = yield* HostProcess.HomeDirectory;
-    const historyCredentials = CursorUsageAccounts.cursorHistoryCredentials(
-      platform,
-      hostEnvironment,
+    const readHistoryState = Effect.fn("CursorDriver.readHistoryState")(
+      function* (keychainEnabled: boolean) {
+        if (!enabled) return "unavailable" as const;
+        const source = yield* CursorUsageAccounts.resolveCursorHistorySource({
+          platform,
+          environment: hostEnvironment,
+          home,
+          keychainUsageEnabled: keychainEnabled,
+        });
+        if (source.state === "keychainOff") return "keychainOff" as const;
+        if (source.state !== "source") return "unavailable" as const;
+        const accepted = yield* checkCursorHistoryAccess(
+          typeof source.credential === "string" ? source.credential : keychain,
+        );
+        return accepted ? ("reading" as const) : ("unavailable" as const);
+      },
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+      Effect.provideService(HttpClient.HttpClient, httpClient),
     );
-    const historyAuthPath = CursorUsageAccounts.cursorHistoryAuthPath(
-      path,
-      platform,
-      hostEnvironment,
-      home,
-    );
-    const readHistoryState = (
-      keychainEnabled: boolean,
-    ): Effect.Effect<NonNullable<ServerProvider["cursorAccountHistory"]>> => {
-      if (!enabled || historyCredentials === "unavailable") return Effect.succeed("unavailable");
-      if (historyCredentials === "keychain" && !keychainEnabled)
-        return Effect.succeed("keychainOff");
-      return checkCursorHistoryAccess(
-        historyCredentials === "file" ? historyAuthPath : keychain,
-      ).pipe(
-        Effect.map((accepted) => (accepted ? ("reading" as const) : ("unavailable" as const))),
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(HttpClient.HttpClient, httpClient),
-      );
-    };
     const continuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,
       instanceId,

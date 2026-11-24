@@ -597,8 +597,8 @@ describe("pools", () => {
     const [pool] = collectLimitPools(accounts, now);
     expect(pool?.windows.flatMap(({ resets }) => resets).some(({ at }) => at > now)).toBe(false);
     expect(limitsFreshness(pool!.accounts).checkedAt).toBe("2026-09-03T11:00:00.000Z");
-    expect(showsRelativeLimitTimes(accounts, now)).toBe(true);
-    expect(showsRelativeLimitTimes([], now)).toBe(false);
+    expect(showsRelativeLimitTimes(accounts)).toBe(true);
+    expect(showsRelativeLimitTimes([])).toBe(false);
   });
 
   it("uses the freshest reported plan even when the newest quota has no plan", () => {

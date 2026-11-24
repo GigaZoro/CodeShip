@@ -60,11 +60,7 @@ vi.mock("./server", async () => {
   const { AsyncResult, Atom } = await import("effect/reactivity");
   return {
     serverEnvironment: {
-      cursorUsageAccessAtom: () =>
-        Atom.make({
-          history: undefined,
-          legacyCanEnable: false,
-        }),
+      cursorUsageAccessAtom: () => Atom.make({ history: "unavailable" }),
       usageSummary: vi.fn(() => Atom.make(AsyncResult.initial())),
       usageModelFilterAtom: () => Atom.make(undefined),
     },

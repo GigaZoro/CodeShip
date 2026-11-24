@@ -6,12 +6,10 @@ import {
   type ServerConfig,
   type SessionGrantInput,
   type UsageModelFilter,
-  type UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { Atom, type AsyncResult, type AtomRegistry } from "effect/reactivity";
+import { Atom, type AtomRegistry } from "effect/reactivity";
 
 import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
 import type { createEnvironmentPresentationAtoms } from "./presentation.ts";
@@ -20,94 +18,37 @@ import type { createServerEnvironmentAtoms } from "./server.ts";
 
 const isEnvironmentRpcUnavailable = Schema.is(EnvironmentRpcUnavailableError);
 
-export function cursorUsageAccess(config: Pick<ServerConfig, "providers" | "settings"> | null) {
+export function cursorUsageAccess(config: Pick<ServerConfig, "providers"> | null) {
   const cursor =
     config?.providers.filter((provider) => provider.driver === "cursor" && provider.enabled) ?? [];
-  const ready = cursor.filter((provider) => provider.status === "ready");
   const history = cursor.some(({ cursorAccountHistory }) => cursorAccountHistory === "reading")
     ? ("reading" as const)
     : cursor.some(({ cursorAccountHistory }) => cursorAccountHistory === "keychainOff")
       ? ("keychainOff" as const)
-      : cursor.some(({ cursorAccountHistory }) => cursorAccountHistory !== undefined)
-        ? ("unavailable" as const)
-        : undefined;
-  return {
-    history,
-    legacyCanEnable:
-      history === undefined &&
-      ready.length > 0 &&
-      config?.settings.cursorKeychainUsageEnabled === false,
-  };
-}
-
-function hasCursorHistorySource(summary: UsageSummary | null) {
-  return (
-    summary?.sources.some(
-      ({ fingerprint }) => fingerprint.provider === "cursor" && fingerprint.hostId === "cursor.com",
-    ) === true
-  );
-}
-
-export function createLegacyCursorReaders(
-  presentations: Pick<ReturnType<typeof createEnvironmentPresentationAtoms>, "presentationsAtom">,
-  sessions: {
-    sessionStateAtom: (
-      id: EnvironmentId,
-    ) => Atom.Atom<AsyncResult.AsyncResult<SessionGrantInput, unknown>>;
-  },
-  server: Pick<ReturnType<typeof createServerEnvironmentAtoms>, "cursorUsageAccessAtom">,
-) {
-  const readerAtom = Atom.family((id: EnvironmentId) =>
-    Atom.writable(
-      (get): boolean => {
-        if (get(presentations.presentationsAtom).get(id)?.connection.phase !== "connected")
-          return false;
-        const grant = get(sessions.sessionStateAtom(id));
-        return (
-          grant._tag === "Success" &&
-          sessionGrantsScope(grant.value, AuthDiagnosticsReadScope) &&
-          get(server.cursorUsageAccessAtom(id)).history === undefined &&
-          Option.getOrElse(get.self<boolean>(), () => false)
-        );
-      },
-      (ctx, reads: boolean) => ctx.setSelf(reads),
-    ).pipe(Atom.keepAlive, Atom.setLazy(false)),
-  );
-  return (get: Atom.AtomContext, id: EnvironmentId, summary: UsageSummary | null) => {
-    const reader = readerAtom(id);
-    if (summary === null) return get(reader);
-    const reads = hasCursorHistorySource(summary);
-    if (get.once(reader) !== reads) get.set(reader, reads);
-    return reads;
-  };
+      : ("unavailable" as const);
+  return { history };
 }
 
 export function resolveCursorUsageAccess({
   access,
-  summary,
   session,
   isConnected,
-  legacyReadsAccount = hasCursorHistorySource(summary),
 }: {
   readonly access: ReturnType<typeof cursorUsageAccess>;
-  readonly summary: UsageSummary | null;
   readonly session: SessionGrantInput | null;
   readonly isConnected: boolean;
-  readonly legacyReadsAccount?: boolean;
 }) {
   return {
     readsCursorAccount:
       isConnected &&
       session !== null &&
       sessionGrantsScope(session, AuthDiagnosticsReadScope) &&
-      (access.history === "reading" || (access.history === undefined && legacyReadsAccount)),
+      access.history === "reading",
     needsCursorKeychainAccess:
       isConnected &&
       session !== null &&
       sessionGrantsScope(session, AuthSettingsWriteScope) &&
-      (access.history === "keychainOff" ||
-        (access.legacyCanEnable &&
-          summary?.sources.some(({ action }) => action === "enableCursorKeychain") === true)),
+      access.history === "keychainOff",
   };
 }
 

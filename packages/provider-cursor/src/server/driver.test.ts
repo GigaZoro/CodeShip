@@ -84,13 +84,15 @@ it.layer(layerTest)("CursorDriver", (it) => {
         const directory = yield* fs.makeTempDirectoryScoped();
         const token = "header.eyJzdWIiOiJjdXJzb3J8Zml4dHVyZSJ9.signature";
         yield* fs.makeDirectory(path.join(directory, "cursor"));
+        yield* fs.makeDirectory(path.join(directory, ".cursor"));
         yield* fs.writeFileString(
           path.join(directory, "cursor", "auth.json"),
           JSON.stringify({ accessToken: token }),
         );
         for (const [platform, environment, keychainEnabled, expected] of [
-          ["darwin", {}, false, "keychainOff"],
-          ["darwin", {}, true, "reading"],
+          ["darwin", { HOME: directory }, false, "keychainOff"],
+          ["darwin", { HOME: directory }, true, "reading"],
+          ["darwin", { HOME: path.join(directory, "missing") }, true, "unavailable"],
           ["linux", { XDG_CONFIG_HOME: directory }, false, "reading"],
           ["linux", { XDG_CONFIG_HOME: path.join(directory, "missing") }, false, "unavailable"],
           ["darwin", { AGENT_CLI_CREDENTIAL_STORE: "memory" }, false, "unavailable"],

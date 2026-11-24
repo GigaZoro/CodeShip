@@ -666,7 +666,7 @@ export function UsageLimitsSection({
       : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
   const workspaces = useAtomValue(accountWorkspacesAtom);
   const accounts = collectLimitAccounts(selected, workspaces);
-  const now = useUsageLimitNow((at) => showsRelativeLimitTimes(accounts, at));
+  const now = useUsageLimitNow(() => showsRelativeLimitTimes(accounts));
   const pools = collectLimitPools(accounts, now);
   const failover = collectAccountFailover(selected, now);
   const notices = collectLimitNotices(selected);
@@ -821,7 +821,12 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
       windowId,
       windowKind,
     );
-    return (reading?.reset?.at ?? -Infinity) > at;
+    const expires = reading?.account.redeem
+      ? reading.account.limits.resetCredits?.nextExpiresAt
+      : undefined;
+    return (
+      (reading?.reset?.at ?? -Infinity) > at || (expires !== undefined && Date.parse(expires) > at)
+    );
   });
   const detail = findLimitAccountWindow(
     collectLimitPools(accounts, now),

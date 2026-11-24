@@ -40,15 +40,11 @@ export function useUsageNow(active: boolean): number {
 
 export function useUsageLimitNow(
   presentations: Atom.Atom<LimitPresentations> = environmentPresentations.presentationsWithProvidersAtom,
-  includeMinutes: boolean | ((now: number) => boolean) = true,
+  includeMinutes = true,
 ): number {
   const clocks = useAtomValue(usageLimitClockAtom(presentations));
   const visible = useUsageDocumentVisible();
-  const countdownVisible =
-    typeof includeMinutes === "boolean"
-      ? includeMinutes
-      : includeMinutes(clocks.resets.getSnapshot());
-  const clock = countdownVisible && visible ? clocks.countdown : clocks.resets;
+  const clock = includeMinutes && visible ? clocks.countdown : clocks.resets;
   const subscribe = (listener: () => void) => {
     const unsubscribe = clock.subscribe(listener);
     const unsubscribeResume = subscribeDocumentReturn(clock.refresh);

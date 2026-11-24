@@ -455,7 +455,7 @@ export function UsageLimitsSection({
     }),
   );
   const accounts = collectLimitAccounts(selected, workspaces);
-  const now = useUsageLimitNow(undefined, (at) => showsRelativeLimitTimes(accounts, at));
+  const now = useUsageLimitNow(undefined, showsRelativeLimitTimes(accounts));
   // Limits arrive with the server config, so a machine still connecting has none to show yet.
   const connecting = [...selected.values()].filter(
     (presentation) =>

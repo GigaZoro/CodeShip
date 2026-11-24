@@ -2,7 +2,6 @@ import {
   AuthSettingsWriteScope,
   AuthDiagnosticsReadScope,
   EnvironmentId,
-  DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
   ProviderInstanceId,
   UsageDay,
@@ -18,7 +17,6 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { EnvironmentPresentation } from "../connection/presentation.ts";
 import {
-  createLegacyCursorReaders,
   cursorKeychainAccessEnvironments,
   cursorUsageAccess,
   resolveCursorUsageAccess,
@@ -246,27 +244,10 @@ describe("limits refresh cooldown", () => {
 });
 
 describe("Cursor account usage access", () => {
-  const cursorPrompt: UsageSummary = {
-    ...summary,
-    sources: [
-      {
-        fingerprint: {
-          hostId: "host",
-          provider: "cursor",
-          resolvedHomePath: "/Users/me/.cursor/auth.json",
-          volumeId: "volume",
-        },
-        status: "ok",
-        scannedFiles: 0,
-        skippedFiles: 0,
-        malformedRecords: 0,
-        distinctSessions: 0,
-        message: "Cursor account usage is off on this environment.",
-        action: "enableCursorKeychain",
-      },
-    ],
-  };
-  const cursor = (status: ServerProvider["status"]): ServerProvider => ({
+  const cursor = (
+    status: ServerProvider["status"],
+    cursorAccountHistory?: ServerProvider["cursorAccountHistory"],
+  ): ServerProvider => ({
     instanceId: ProviderInstanceId.make("cursor"),
     driver: ProviderDriverKind.make("cursor"),
     enabled: status !== "disabled",
@@ -278,111 +259,43 @@ describe("Cursor account usage access", () => {
     models: [],
     slashCommands: [],
     skills: [],
+    ...(cursorAccountHistory === undefined ? {} : { cursorAccountHistory }),
   });
 
-  const access = (provider: ServerProvider, summary: UsageSummary | null) =>
+  const access = (...providers: ServerProvider[]) =>
     resolveCursorUsageAccess({
-      access: cursorUsageAccess({ settings: DEFAULT_SERVER_SETTINGS, providers: [provider] }),
-      summary,
+      access: cursorUsageAccess({ providers }),
       isConnected: true,
       session: { authenticated: true, scopes: [AuthDiagnosticsReadScope, AuthSettingsWriteScope] },
     });
 
   it("uses explicit keychainOff even if the enabled Cursor provider is in error", () => {
-    expect(
-      access({ ...cursor("error"), cursorAccountHistory: "keychainOff" }, null)
-        .needsCursorKeychainAccess,
-    ).toBe(true);
+    expect(access(cursor("error", "keychainOff")).needsCursorKeychainAccess).toBe(true);
   });
 
-  it.each(["revoke", "disconnect", "upgrade"] as const)(
-    "forgets a legacy reader on %s while Usage is unmounted",
-    (change) => {
-      const id = EnvironmentId.make("desk");
-      const { registry, environments } = harness(["desk"]);
-      const connected = registry.get(environments[0]!.presentation)!;
-      const presentationsAtom = Atom.make<ReadonlyMap<EnvironmentId, EnvironmentPresentation>>(
-        new Map([[id, connected]]),
-      );
-      const grant = (authorized: boolean) =>
-        AsyncResult.success({
-          authenticated: true,
-          scopes: authorized ? [AuthDiagnosticsReadScope] : [],
-        });
-      const session = Atom.make(grant(true));
-      const config = Atom.make<ReturnType<typeof cursorUsageAccess>>({
-        history: undefined,
-        legacyCanEnable: true,
-      });
-      const read = createLegacyCursorReaders(
-        { presentationsAtom },
-        { sessionStateAtom: () => session },
-        { cursorUsageAccessAtom: () => config },
-      );
-      const usage = Atom.make((get) =>
-        read(get, id, {
-          ...summary,
-          sources: cursorPrompt.sources.map((source) => ({
-            ...source,
-            fingerprint: { ...source.fingerprint, hostId: "cursor.com" },
-          })),
-        }),
-      );
-      const limits = Atom.make((get) => read(get, id, null));
-      const unmount = registry.mount(usage);
-      expect(registry.get(usage)).toBe(true);
-      unmount();
-      expect(registry.get(limits)).toBe(true);
-      if (change === "revoke") {
-        registry.set(session, grant(false));
-        registry.set(session, grant(true));
-      } else if (change === "disconnect") {
-        registry.set(presentationsAtom, new Map());
-        registry.set(presentationsAtom, new Map([[id, connected]]));
-      } else {
-        registry.set(config, { history: "unavailable", legacyCanEnable: false });
-        registry.set(config, { history: undefined, legacyCanEnable: true });
-      }
-      expect(registry.get(limits)).toBe(false);
-    },
-  );
+  it("gives no reader and no action for a server that reports no history status", () => {
+    expect(cursorUsageAccess({ providers: [cursor("ready")] })).toEqual({ history: "unavailable" });
+    expect(access(cursor("ready"))).toEqual({
+      readsCursorAccount: false,
+      needsCursorKeychainAccess: false,
+    });
+  });
 
-  it("uses legacy summary hints only for a server without a history status", () => {
-    const ready = cursor("ready");
-    expect(access(ready, cursorPrompt).needsCursorKeychainAccess).toBe(true);
-    expect(access(ready, null).needsCursorKeychainAccess).toBe(false);
-    expect(
-      access({ ...ready, cursorAccountHistory: "unavailable" }, cursorPrompt)
-        .needsCursorKeychainAccess,
-    ).toBe(false);
-    const account: UsageSummary = {
-      ...summary,
-      sources: [
-        {
-          fingerprint: {
-            hostId: "cursor.com",
-            provider: "cursor",
-            resolvedHomePath: "cursor-account:abc",
-            volumeId: "abc",
-          },
-          status: "ok",
-          scannedFiles: 1,
-          skippedFiles: 0,
-          malformedRecords: 0,
-          distinctSessions: 1,
-          message: null,
-        },
-      ],
-    };
+  it("keeps a Mac's action beside an environment whose only Cursor instance is disabled", () => {
+    const disabled = cursor("disabled", "unavailable");
+    expect(cursorUsageAccess({ providers: [disabled] })).toEqual({ history: "unavailable" });
+    const other = access(disabled);
+    const mac = access(cursor("ready", "keychainOff"));
+    expect(other.readsCursorAccount).toBe(false);
+    expect(cursorKeychainAccessEnvironments([other, mac])).toEqual([mac]);
+  });
 
-    const off = access({ ...ready, cursorAccountHistory: "keychainOff" }, null);
-    expect(cursorKeychainAccessEnvironments([off, access(ready, account)])).toEqual([]);
-    expect(
-      cursorKeychainAccessEnvironments([
-        off,
-        access({ ...ready, cursorAccountHistory: "unavailable" }, account),
-      ]),
-    ).toEqual([off]);
+  it("hides the action only while another environment reads the account", () => {
+    const off = access(cursor("ready", "keychainOff"));
+    expect(cursorKeychainAccessEnvironments([off, access(cursor("ready", "reading"))])).toEqual([]);
+    expect(cursorKeychainAccessEnvironments([off, access(cursor("ready", "unavailable"))])).toEqual(
+      [off],
+    );
   });
 });
 
