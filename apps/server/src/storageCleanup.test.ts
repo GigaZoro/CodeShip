@@ -937,6 +937,9 @@ describe("owned setup output", () => {
     "a private directory stream",
     "unverifiable staged setup output",
     "a custom dependency ACL",
+    "an existing stage junction",
+    "a tracked stream on repeat",
+    "a crashed setup publication",
   ] as const;
   const checkSetups = (
     title: string,
@@ -948,6 +951,9 @@ describe("owned setup output", () => {
       "a private directory stream",
       "unverifiable staged setup output",
       "a custom dependency ACL",
+      "an existing stage junction",
+      "a tracked stream on repeat",
+      "a crashed setup publication",
     ];
     const windowsWithPosix = [
       "standard setup only",
@@ -1007,6 +1013,15 @@ describe("owned setup output", () => {
           yield* command(worktree, ["merge", "--ff-only", "main"]);
           const mainEnv = NodePath.join(repo, ".env");
           const worktreeEnv = NodePath.join(worktree, ".env");
+          const sentinel = NodePath.join(repo, "sentinel.txt");
+          const existingStage = scenario === "an existing stage junction";
+          if (existingStage) {
+            yield* fs.writeFileString(sentinel, "keep");
+            yield* fs.makeDirectory(NodePath.join(worktree, ".t3"));
+            yield* Effect.promise(() =>
+              NodeFSP.symlink(repo, NodePath.join(worktree, ".t3/setup-stage"), "junction"),
+            );
+          }
           if (!isWindowsHost) yield* fs.writeFileString(mainEnv, "example-main-value");
           if (scenario === "a real dotenv file")
             yield* fs.writeFileString(worktreeEnv, "local-value");
@@ -1021,6 +1036,9 @@ describe("owned setup output", () => {
             `import * as fs from "node:fs";
 import * as path from "node:path";
 if (process.env.T3_TEST_REJECT_INSTALL) throw new Error("unexpected repeat install");
+const inWindowsStage = process.platform === "win32" && process.cwd().includes(path.sep + "setup-stage" + path.sep);
+const withWindowsAliases = (value) =>
+  inWindowsStage ? value[0].toLowerCase() + value.slice(1).split(path.sep).join("/") : value;
 fs.mkdirSync("node_modules/.pnpm/example/node_modules/example", { recursive: true });
 fs.mkdirSync("apps/server/node_modules", { recursive: true });
 fs.writeFileSync("apps/server/node_modules/helper.js", "module");
@@ -1037,20 +1055,20 @@ fs.writeFileSync("node_modules/.pnpm/example/node_modules/example/index.js", "mo
 
 if (!fs.existsSync("node_modules/example")) {
   const target = ".pnpm/example/node_modules/example";
-  fs.symlinkSync(process.platform === "win32" ? path.resolve("node_modules", target) : target,
+  fs.symlinkSync(process.platform === "win32" ? withWindowsAliases(path.resolve("node_modules", target)) : target,
     "node_modules/example", process.platform === "win32" ? "junction" : "dir");
 }
 if (process.env.T3_TEST_STORE) {
   fs.linkSync(path.join(process.env.T3_TEST_STORE, "shared.js"), "node_modules/shared.js");
 }
-if (process.env.T3_TEST_STAGE_STREAM && process.cwd().includes(path.sep + "setup-stage" + path.sep)) {
+if (process.env.T3_TEST_STAGE_STREAM && inWindowsStage) {
   fs.writeFileSync("node_modules/.pnpm/example/node_modules/example/index.js:private", "keep");
 }
 fs.writeFileSync("node_modules/.modules.yaml", JSON.stringify({ storeDir: process.env.T3_TEST_VP }));
 const cwd = process.cwd();
 fs.writeFileSync("node_modules/.pnpm-workspace-state-v1.json", JSON.stringify({
-  projects: { [cwd]: {}, [path.join(cwd, "apps/server")]: {} },
-  pnpmfiles: [path.join(cwd, ".pnpmfile.cjs")],
+  projects: { [withWindowsAliases(cwd)]: {}, [withWindowsAliases(path.join(cwd, "apps/server"))]: {} },
+  pnpmfiles: [withWindowsAliases(path.join(cwd, ".pnpmfile.cjs"))],
 }));
 if (fs.existsSync(".pnpmfile.cjs")) {
   fs.copyFileSync(".pnpmfile.cjs", "node_modules/seen-input.cjs");
@@ -1156,6 +1174,7 @@ if (fs.existsSync(".pnpmfile.cjs")) {
           ])).stdout.trim();
           expect(yield* fs.exists(done)).toBe(!race);
           const inPlace =
+            existingStage ||
             stageStream ||
             scenario === "a real dotenv file" ||
             scenario === "a dirty install input";
@@ -1185,12 +1204,14 @@ if (fs.existsSync(".pnpmfile.cjs")) {
             "node_modules/.pnpm/example/node_modules/example",
           );
           const sibling = NodePath.join(NodePath.dirname(worktree), "other");
-          const sentinel = NodePath.join(repo, "sentinel.txt");
+          const abandonedClaim = NodePath.join(worktree, ".t3/setup-owner-2147483647");
           const privateStream = NodePath.join(
             worktree,
             scenario === "a private directory stream"
               ? "node_modules:private"
-              : "tracked.txt:private",
+              : scenario === "a tracked stream on repeat"
+                ? "tracked.txt:Zone.Identifier"
+                : "tracked.txt:private",
           );
           const dependencyAcl = (...args: string[]) =>
             Effect.tryPromise(
@@ -1209,6 +1230,25 @@ if (fs.existsSync(".pnpmfile.cjs")) {
             );
           let customAcl: string | undefined;
           switch (scenario) {
+            case "a tracked stream on repeat": {
+              yield* Effect.promise(() => NodeFSP.writeFile(privateStream, "keep"));
+              const repeated = yield* runSetup(true);
+              expect(repeated.success, repeated.output).toBe(true);
+              break;
+            }
+            case "a crashed setup publication": {
+              yield* fs.makeDirectory(abandonedClaim);
+              yield* fs.writeFileString(
+                NodePath.join(abandonedClaim, "proof"),
+                "unrecognized data",
+              );
+              yield* Effect.promise(() =>
+                NodeFSP.link(done, NodePath.join(abandonedClaim, "done")),
+              );
+              const repeated = yield* runSetup(true);
+              expect(repeated.success, repeated.output).toBe(true);
+              break;
+            }
             case "a custom dependency ACL": {
               const inheritedAcl = yield* dependencyAcl();
               yield* dependencyAcl("/grant", "*S-1-1-0:(RX)");
@@ -1346,7 +1386,8 @@ if (fs.existsSync(".pnpmfile.cjs")) {
                           scenario === "an unknown proof directory with saved ignored files"
                         ? "Worktree setup metadata requires its owner"
                         : scenario === "a private file stream" ||
-                            scenario === "a private directory stream"
+                            scenario === "a private directory stream" ||
+                            scenario === "a tracked stream on repeat"
                           ? "Windows worktree contains data or filesystem entries that could not be verified (private-stream)"
                           : scenario === "a custom dependency ACL"
                             ? "Windows worktree contains data or filesystem entries that could not be verified (explicit-ace)"
@@ -1372,8 +1413,18 @@ if (fs.existsSync(".pnpmfile.cjs")) {
                 yield* fs.readFileString(NodePath.join(sibling, "node_modules/example/index.js")),
               ).toBe("module");
           }
-          if (scenario === "an external junction")
+          if (scenario === "an external junction" || existingStage)
             expect(yield* fs.readFileString(sentinel)).toBe("keep");
+          if (existingStage)
+            expect(yield* fs.realPath(NodePath.join(worktree, ".t3/setup-stage"))).toBe(repo);
+          if (scenario === "a crashed setup publication") {
+            expect(yield* fs.readFileString(NodePath.join(abandonedClaim, "proof"))).toBe(
+              "unrecognized data",
+            );
+            expect(yield* fs.readFileString(NodePath.join(abandonedClaim, "done"))).toBe(
+              yield* fs.readFileString(done),
+            );
+          }
           if (customAcl !== undefined) {
             expect((yield* dependencyAcl()) === customAcl).toBe(true);
             expect(yield* fs.readFileString(NodePath.join(dependency, "index.js"))).toBe("module");
@@ -1390,7 +1441,11 @@ if (fs.existsSync(".pnpmfile.cjs")) {
                 ),
               ),
             ).toBe("keep");
-          if (scenario === "a private file stream" || scenario === "a private directory stream")
+          if (
+            scenario === "a private file stream" ||
+            scenario === "a private directory stream" ||
+            scenario === "a tracked stream on repeat"
+          )
             expect(yield* Effect.promise(() => NodeFSP.readFile(privateStream, "utf8"))).toBe(
               "keep",
             );

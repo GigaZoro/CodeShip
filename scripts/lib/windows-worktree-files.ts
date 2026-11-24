@@ -77,12 +77,12 @@ public static class WorktreeFiles {
     if (!ok) throw new Refusal(check, code);
   }
 
-  public static string Check(string root, string[] links, string[] modules, bool privateStage) {
+  public static string Check(string root, string[] links, string[] modules, bool privateStage, string[] targets) {
     try {
       var drive = new DriveInfo(Path.GetPathRoot(root));
       Require(drive.DriveType == DriveType.Fixed && drive.DriveFormat == "NTFS", "volume");
       using (var user = WindowsIdentity.GetCurrent()) {
-        var scan = new Scan(links, modules, privateStage, user);
+        var scan = new Scan(links, modules, privateStage, targets, user);
         try { scan.Root(root); }
         finally { Marshal.FreeHGlobal(scan.Status); }
       }
@@ -96,6 +96,7 @@ public static class WorktreeFiles {
 
   sealed class Scan {
     readonly HashSet<string> Links, Modules;
+    readonly HashSet<string> Targets, Ancestors;
     readonly bool PrivateStage;
     readonly SecurityIdentifier Owner;
     readonly IntPtr Token;
@@ -103,10 +104,18 @@ public static class WorktreeFiles {
     public readonly IntPtr Status = Marshal.AllocHGlobal(2 * IntPtr.Size);
     int Count;
 
-    public Scan(string[] links, string[] modules, bool privateStage, WindowsIdentity user) {
+    public Scan(string[] links, string[] modules, bool privateStage, string[] targets, WindowsIdentity user) {
       Links = new HashSet<string>(links, StringComparer.Ordinal);
       Modules = new HashSet<string>(modules, StringComparer.Ordinal);
       PrivateStage = privateStage;
+      if (targets != null) {
+        Targets = new HashSet<string>(targets, StringComparer.OrdinalIgnoreCase);
+        Ancestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var target in targets) {
+          for (int slash = target.LastIndexOf('/'); slash >= 0; slash = target.LastIndexOf('/', slash - 1))
+            Ancestors.Add(target.Substring(0, slash));
+        }
+      }
       Owner = user.Owner;
       Token = user.Token;
     }
@@ -142,7 +151,7 @@ public static class WorktreeFiles {
         uint tag;
         Require((ReadAttributesAndTag(parent, out tag) & (Directory | Reparse)) == Directory,
           "reparse-parent");
-        Entry(extended + root, "", false, 0, ReadSecurity(parent));
+        Entry(extended + root, "", false, Targets == null, 0, ReadSecurity(parent));
       }
     }
 
@@ -180,13 +189,14 @@ public static class WorktreeFiles {
       } finally { DestroyPrivateObjectSecurity(ref expected); }
     }
 
-    void Entry(string path, string relative, bool insideModules, int depth, RawSecurityDescriptor parent) {
+    void Entry(string path, string relative, bool insideModules, bool selected, int depth, RawSecurityDescriptor parent) {
       Require(depth < 128 && ++Count <= 2000000, "inspection-limit");
       using (var handle = Open(path, ReadControl | ReadAttributes | ReadEa)) {
         uint tag;
         uint attrs = ReadAttributesAndTag(handle, out tag);
-        Require((attrs & ~SafeAttributes) == 0, "unsupported-attributes");
         bool directory = (attrs & Directory) != 0, reparse = (attrs & Reparse) != 0;
+        Require(!reparse || depth > 0, "reparse-root");
+        Require((attrs & ~SafeAttributes) == 0, "unsupported-attributes");
         if (reparse)
           Require(depth > 0 && (tag == Junction && directory || tag == Symlink) &&
             (PrivateStage || insideModules || Links.Contains(relative)), "reparse-point");
@@ -206,11 +216,12 @@ public static class WorktreeFiles {
         Require(eaSize == 0, "private-extended-attributes");
         var security = ReadSecurity(handle);
         CheckSecurity(security, parent, directory);
-        if (directory && !reparse) Children(path, relative, insideModules, depth, security);
+        if (directory && !reparse)
+          Children(path, relative, insideModules, selected || Targets.Contains(relative), depth, security);
       }
     }
 
-    void Children(string path, string relative, bool insideModules, int depth, RawSecurityDescriptor parent) {
+    void Children(string path, string relative, bool insideModules, bool selected, int depth, RawSecurityDescriptor parent) {
       FindData data;
       var find = FindFirstFileW(path + @"\*", out data);
       if (find == new IntPtr(-1)) {
@@ -223,10 +234,11 @@ public static class WorktreeFiles {
         do {
           string name = data.Name;
           if (name == "." || name == "..") continue;
+          string child = relative.Length == 0 ? name : relative + "/" + name;
+          if (!selected && !Targets.Contains(child) && !Ancestors.Contains(child)) continue;
           Require(names.Add(name) && !name.EndsWith(".") && !name.EndsWith(" ") && !name.Contains("\ufffd"),
             "ambiguous-entry-name");
-          Entry(path + @"\" + name, relative.Length == 0 ? name : relative + "/" + name,
-            insideModules, depth + 1, parent);
+          Entry(path + @"\" + name, child, insideModules, selected, depth + 1, parent);
         } while (FindNextFileW(find, out data));
         int error = Marshal.GetLastWin32Error();
         Require(error == 18, "enumerate-directory", error); // ERROR_NO_MORE_FILES
@@ -236,7 +248,8 @@ public static class WorktreeFiles {
 }
 '@
 $inputData = [Console]::In.ReadToEnd() | ConvertFrom-Json
-[Console]::Write([WorktreeFiles]::Check($inputData.root, [string[]]$inputData.links, [string[]]$inputData.modules, $inputData.privateStage))
+$targets = if ($null -eq $inputData.targets) { $null } else { ,([string[]]$inputData.targets) }
+[Console]::Write([WorktreeFiles]::Check($inputData.root, [string[]]$inputData.links, [string[]]$inputData.modules, $inputData.privateStage, $targets))
 } catch {
   [Console]::Write('powershell-bootstrap')
 }
@@ -254,6 +267,7 @@ export const checkWindowsWorktreeFiles = (
     links?: readonly string[];
     modules?: readonly string[];
     privateStage?: boolean;
+    targets?: readonly string[];
     signal?: AbortSignal;
   } = {},
 ) =>
@@ -284,9 +298,9 @@ export const checkWindowsWorktreeFiles = (
         else resolve();
       },
     );
-    const { links = [], modules = [], privateStage = false } = options;
+    const { links = [], modules = [], privateStage = false, targets } = options;
     // PowerShell 5.1 can read redirected stdin in the console codepage.
-    const payload = JSON.stringify({ root, links, modules, privateStage }).replace(
+    const payload = JSON.stringify({ root, links, modules, privateStage, targets }).replace(
       /[^\x20-\x7e]/g,
       (character) => "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"),
     );

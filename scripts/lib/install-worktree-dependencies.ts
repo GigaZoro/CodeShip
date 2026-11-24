@@ -71,12 +71,12 @@ const cleanSetupInputs = (status: string) =>
         /^!! \.t3\/setup-(?:running|done|stage\/|owner-[1-9]\d*)$/.test(record),
     );
 
-const onlyAttemptMarkers = async (staging: string, ownStage: boolean) => {
+const onlyAttemptMarkers = async (staging: string, owner: string, ownStage: boolean) => {
   const paths = await NodeFSP.readdir(NodePath.dirname(staging));
   return paths.every(
     (name) =>
       name === "setup-running" ||
-      /^setup-owner-[1-9]\d*$/.test(name) ||
+      (windowsSetupHost ? name === owner : /^setup-owner-[1-9]\d*$/.test(name)) ||
       (ownStage && name === NodePath.basename(staging)),
   );
 };
@@ -91,6 +91,31 @@ const stillAbsent = async (cwd: string, name: string) => {
 
 const readJson = async (file: string): Promise<unknown> =>
   JSON.parse(await NodeFSP.readFile(file, "utf8"));
+
+const relativeInside = (root: string, target: string) => {
+  const relative = NodePath.relative(root, target);
+  return relative === ".." ||
+    relative.startsWith(".." + NodePath.sep) ||
+    NodePath.isAbsolute(relative)
+    ? undefined
+    : relative;
+};
+
+const windowsLocalPath = (value: string) => value.replace(/^\\\\\?\\(?=[a-z]:\\)/i, "");
+
+const windowsStagedPath = async (staged: string, value: string) => {
+  const absolute = windowsLocalPath(value);
+  if (!NodePath.isAbsolute(absolute)) return undefined;
+  const normalized = NodePath.normalize(absolute);
+  const resolved = await NodeFSP.realpath(normalized).catch(missingSetupPath);
+  if (resolved !== undefined) return relativeInside(staged, resolved);
+  const parent = NodePath.dirname(normalized);
+  if (parent === normalized) return undefined;
+  const resolvedParent = await NodeFSP.realpath(parent).catch(missingSetupPath);
+  return resolvedParent === undefined
+    ? relativeInside(staged, normalized)
+    : relativeInside(staged, NodePath.join(resolvedParent, NodePath.basename(normalized)));
+};
 
 const workspaceManifests = async (cwd: string, tracked: readonly string[]) => {
   const source = await NodeFSP.readFile(NodePath.join(cwd, "pnpm-workspace.yaml"), "utf8").catch(
@@ -116,6 +141,30 @@ const workspaceManifests = async (cwd: string, tracked: readonly string[]) => {
   });
 };
 
+const workspaceModuleRoots = (manifests: readonly string[]) =>
+  new Set([
+    "node_modules",
+    ...manifests
+      .filter((name) => name !== "package.json")
+      .map((name) => name.slice(0, -"package.json".length) + "node_modules"),
+  ]);
+
+export const windowsInstallTargetsAbsent = async (cwd: string) => {
+  const files = git(cwd, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    .split("\0")
+    .filter(Boolean);
+  const manifests = await workspaceManifests(cwd, files);
+  if (!manifests) return false;
+  for (const name of workspaceModuleRoots(manifests)) {
+    const target = NodePath.join(cwd, name);
+    const parent = NodePath.dirname(target);
+    const realParent = await NodeFSP.realpath(parent).catch(missingSetupPath);
+    if (realParent === undefined) continue;
+    if (realParent !== parent || (await hasSetupEntry(target))) return false;
+  }
+  return true;
+};
+
 const canRunPreparePrivately = async (cwd: string, manifests: readonly string[]) => {
   for (const manifest of manifests) {
     const data = (await readJson(NodePath.join(cwd, manifest))) as {
@@ -139,10 +188,23 @@ const canRunPreparePrivately = async (cwd: string, manifests: readonly string[])
 
 const relocatePnpmState = async (staged: string, worktree: string) => {
   const modules = NodePath.join(staged, "node_modules");
-  const movePath = (value: string) =>
-    value === staged || value.startsWith(staged + NodePath.sep)
+  const movePath = async (value: string) => {
+    if (windowsSetupHost) {
+      const relative = await windowsStagedPath(staged, value);
+      return relative === undefined ? value : NodePath.join(worktree, relative);
+    }
+    return value === staged || value.startsWith(staged + NodePath.sep)
       ? worktree + value.slice(staged.length)
       : value;
+  };
+  const includesStage = (value: string) =>
+    windowsSetupHost
+      ? value
+          .replaceAll("\\\\", "\\")
+          .replaceAll("\\", "/")
+          .toLowerCase()
+          .includes(staged.replaceAll("\\", "/").toLowerCase())
+      : value.includes(staged);
   const modulesPath = NodePath.join(modules, ".modules.yaml");
   if (windowsSetupHost && !(await NodeFSP.lstat(modulesPath)).isFile()) return false;
   const rawLayout = await NodeFSP.readFile(modulesPath, "utf8");
@@ -150,7 +212,7 @@ const relocatePnpmState = async (staged: string, worktree: string) => {
   if (
     (layout.virtualStoreDir !== undefined && layout.virtualStoreDir !== ".pnpm") ||
     (layout.nodeLinker !== undefined && layout.nodeLinker !== "isolated") ||
-    rawLayout.includes(staged)
+    includesStage(rawLayout)
   )
     return false;
 
@@ -160,7 +222,7 @@ const relocatePnpmState = async (staged: string, worktree: string) => {
     lock &&
     (!lock.isFile() ||
       lock.size > 8 * 1024 * 1024 ||
-      (await NodeFSP.readFile(lockPath, "utf8")).includes(staged))
+      includesStage(await NodeFSP.readFile(lockPath, "utf8")))
   )
     return false;
 
@@ -176,11 +238,16 @@ const relocatePnpmState = async (staged: string, worktree: string) => {
     const relocated = JSON.stringify({
       ...state,
       projects: Object.fromEntries(
-        Object.entries(state.projects).map(([name, entry]) => [movePath(name), entry]),
+        await Promise.all(
+          Object.entries(state.projects).map(async ([name, entry]) => [
+            await movePath(name),
+            entry,
+          ]),
+        ),
       ),
-      pnpmfiles: state.pnpmfiles.map(movePath),
+      pnpmfiles: await Promise.all(state.pnpmfiles.map(movePath)),
     });
-    if (relocated.includes(staged)) return false;
+    if (includesStage(relocated)) return false;
     await NodeFSP.writeFile(statePath, relocated);
   }
   return true;
@@ -191,10 +258,6 @@ const relocateWindowsDependencyLinks = async (
   worktree: string,
   modules: readonly string[],
 ) => {
-  const within = (target: string) => {
-    const relative = NodePath.relative(staged, target);
-    return !NodePath.isAbsolute(relative) && relative !== ".." && !relative.startsWith("..\\");
-  };
   // Resolve every target before replacing any link. pnpm can point one junction at another.
   const links: Array<{ file: string; target: string; kind: "junction" | "file" }> = [];
   const pending = modules.map((name) => NodePath.join(staged, name));
@@ -204,13 +267,18 @@ const relocateWindowsDependencyLinks = async (
     if (stat.isDirectory()) {
       for (const child of await NodeFSP.readdir(file)) pending.push(NodePath.join(file, child));
     } else if (stat.isSymbolicLink()) {
-      const target = await NodeFSP.readlink(file);
-      const absolute = NodePath.resolve(NodePath.dirname(file), target);
-      if (!within(absolute) || !within(await NodeFSP.realpath(file))) return false;
+      const target = windowsLocalPath(await NodeFSP.readlink(file));
+      const relative = await windowsStagedPath(
+        staged,
+        NodePath.resolve(NodePath.dirname(file), target),
+      );
+      const resolved = await NodeFSP.realpath(file).catch(missingSetupPath);
+      if (relative === undefined || !resolved || relativeInside(staged, resolved) === undefined)
+        return false;
       if (NodePath.isAbsolute(target)) {
         links.push({
           file,
-          target: NodePath.join(worktree, NodePath.relative(staged, absolute)),
+          target: NodePath.join(worktree, relative),
           kind: (await NodeFSP.stat(file)).isDirectory() ? "junction" : "file",
         });
       }
@@ -227,9 +295,13 @@ export const installWorktreeDependencies = async (
   worktree: string,
   head: string,
   staging: string,
+  owner: string,
   install: (cwd: string) => Promise<void>,
 ) => {
-  if (!cleanSetupInputs(setupStatus(worktree)) || !(await onlyAttemptMarkers(staging, false)))
+  if (
+    !cleanSetupInputs(setupStatus(worktree)) ||
+    !(await onlyAttemptMarkers(staging, owner, false))
+  )
     return null;
   const manifests = git(worktree, "ls-files", "-v", "-z").split("\0").filter(Boolean);
   if (manifests.some((entry) => !entry.startsWith("H "))) return null;
@@ -238,14 +310,7 @@ export const installWorktreeDependencies = async (
     manifests.map((entry) => entry.slice(2)),
   );
   if (!packages) return null;
-  const expectedRoots = [
-    ...new Set([
-      "node_modules",
-      ...packages
-        .filter((name) => name !== "package.json")
-        .map((name) => name.slice(0, -"package.json".length) + "node_modules"),
-    ]),
-  ];
+  const expectedRoots = workspaceModuleRoots(packages);
   if (!(await canRunPreparePrivately(worktree, packages))) return null;
 
   // A dead setup leaves at most one private copy, inside its worktree. It may still have an installer.
@@ -321,7 +386,7 @@ export const installWorktreeDependencies = async (
     if (
       git(worktree, "rev-parse", "--verify", "HEAD") !== head ||
       !cleanSetupInputs(setupStatus(worktree)) ||
-      !(await onlyAttemptMarkers(staging, true))
+      !(await onlyAttemptMarkers(staging, owner, true))
     )
       throw new Error("Worktree inputs or setup destinations changed during setup");
     for (const name of modules) {

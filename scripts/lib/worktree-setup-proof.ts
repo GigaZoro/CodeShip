@@ -86,28 +86,52 @@ const scan = function (
       } else if (!stat.isFile()) {
         throw new Error("Setup output contains a special file");
       } else if (windows) {
-        // NTFS hardlink changes can change the shared file's ctime without changing its bytes.
         const fd = fs.openSync(file, "r");
         try {
-          const hash = crypto.createHash("sha256");
-          let size = 0n;
-          while (true) {
-            const bytes = fs.readSync(fd, buffer);
-            if (bytes === 0) break;
-            size += BigInt(bytes);
-            if (size > stat.size) throw new Error("Setup file grew while reading");
-            hash.update(buffer.subarray(0, bytes));
+          const snapshot = () => {
+            const current = fs.fstatSync(fd, { bigint: true });
+            if (
+              !current.isFile() ||
+              current.dev !== stat.dev ||
+              current.ino !== stat.ino ||
+              current.birthtimeNs !== stat.birthtimeNs ||
+              current.mtimeNs !== stat.mtimeNs ||
+              current.size !== stat.size
+            )
+              throw new Error("Setup file changed while reading");
+            return current.ctimeNs;
+          };
+          const readBytes = () => {
+            const hash = crypto.createHash("sha256");
+            let position = 0;
+            while (true) {
+              const bytes = fs.readSync(fd, buffer, { position });
+              if (bytes === 0) break;
+              position += bytes;
+              if (BigInt(position) > stat.size) throw new Error("Setup file grew while reading");
+              hash.update(buffer.subarray(0, bytes));
+            }
+            if (BigInt(position) !== stat.size) throw new Error("Setup file shrank while reading");
+            return hash.digest("hex");
+          };
+          const before = snapshot();
+          link = readBytes();
+          const after = snapshot();
+          // A second stable read can distinguish shared hardlink churn from a concurrent byte edit.
+          if (stat.ctimeNs !== before || before !== after) {
+            if (readBytes() !== link || snapshot() !== after)
+              throw new Error("Setup file changed while reading");
           }
-          const after = fs.fstatSync(fd, { bigint: true });
+          const present = fs.lstatSync(file, { bigint: true });
           if (
-            size !== stat.size ||
-            after.dev !== stat.dev ||
-            after.ino !== stat.ino ||
-            after.mtimeNs !== stat.mtimeNs ||
-            after.ctimeNs !== stat.ctimeNs
+            !present.isFile() ||
+            present.dev !== stat.dev ||
+            present.ino !== stat.ino ||
+            present.birthtimeNs !== stat.birthtimeNs ||
+            present.mtimeNs !== stat.mtimeNs ||
+            present.size !== stat.size
           )
-            throw new Error("Setup file changed while reading");
-          link = hash.digest("hex");
+            throw new Error("Setup file was replaced while reading");
         } finally {
           fs.closeSync(fd);
         }
