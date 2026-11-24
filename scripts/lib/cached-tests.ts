@@ -14,6 +14,16 @@ const vitePlusTestDefaults = {
   NODE_PACKAGE_MANAGER: "vite-plus",
 };
 
+// On macOS file tracking replaces Bash and resolves PATH before applying a child's
+// working directory. These suites rely on native shells, job control, or exec lookup.
+const darwinNativeProcessTests = [
+  "apps/server/src/cli/triage.test.ts",
+  "apps/server/src/preview/PortScanner.test.ts",
+  "apps/server/src/process/WorkerProcessSpawner.test.ts",
+  "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+  "scripts/release-desktop-workflow.test.ts",
+];
+
 export function missingVitePlusTestEnv() {
   return Object.entries(vitePlusTestDefaults).filter(([name]) => process.env[name] === undefined);
 }
@@ -409,6 +419,8 @@ export const isReferenceRepoPath = (file: string) => nameKey(file).startsWith(".
 export function cachedTestTasks(
   raw: string | undefined,
   root = workspaceRoot,
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Vite loads this before dependency installation; tests supply the platform directly.
+  platform: NodeJS.Platform = process.platform,
 ): Record<string, CachedTestTask> {
   const file = process.env[requestFile];
   const changed = !raw && !!file;
@@ -453,7 +465,8 @@ export function cachedTestTasks(
   // test, and each uncached test, goes by that spelling. A deleted test keeps its own.
   const resolve = testPathResolver(root);
   const onDisk = (file: string) => resolve(file) ?? file;
-  const uncachedFiles = new Set(uncached.map(onDisk));
+  const hostUncached = platform === "darwin" ? darwinNativeProcessTests : [];
+  const uncachedFiles = new Set([...hostUncached, ...uncached].map(onDisk));
   const tasks: Record<string, CachedTestTask> = {};
   const nodeCommand = [
     ...missingVitePlusTestEnv().map(([name, value]) => `${name}=${quoteArgument(value)}`),

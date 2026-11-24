@@ -22,6 +22,33 @@ import {
 } from "./cached-tests.ts";
 
 describe("cachedTestTasks", () => {
+  it.each(["darwin", "linux", "win32"] as const)(
+    "runs native process fixtures separately only when required on %s",
+    (platform) => {
+      const files = [
+        "apps/server/src/cli/triage.test.ts",
+        "apps/server/src/cli/update.test.ts",
+        "apps/server/src/preview/PortScanner.test.ts",
+        "apps/server/src/process/WorkerProcessSpawner.test.ts",
+        "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+        "scripts/release-desktop-workflow.test.ts",
+      ];
+      const tasks = cachedTestTasks(JSON.stringify({ files, groupSize: 16 }), undefined, platform);
+      const runs = tasks["test-cache"]!.dependsOn!.map((key) => tasks[key]!);
+
+      expect(runs.filter(({ cache }) => cache === false)).toHaveLength(
+        platform === "darwin" ? 5 : 0,
+      );
+      for (const file of files) {
+        const run = runs.find(({ command }) => command.includes(NodePath.basename(file)));
+        expect(run, file).toBeDefined();
+        expect(run?.cache === false).toBe(
+          platform === "darwin" && !file.endsWith("update.test.ts"),
+        );
+      }
+    },
+  );
+
   it("matches Git and shard selections to the same package, file and cache exception", () => {
     const root = NodePath.resolve(import.meta.dirname, "../..");
     const project = NodePath.join(root, "apps", "server");
