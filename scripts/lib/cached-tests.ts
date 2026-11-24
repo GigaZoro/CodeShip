@@ -5,6 +5,8 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import { GIT_OUTPUT_MAX_BYTES } from "../../.github/scripts/git-history.cjs";
+
 // vp test supplies these defaults before Node loads Vitest, preserving even empty overrides.
 const vitePlusTestDefaults = {
   JS_RUNTIME_NAME: process.release.name,
@@ -195,8 +197,6 @@ export function changedTestRuntime(
 }
 
 const GIT_PROBE_TIMEOUT_MS = 30_000;
-// Past spawnSync's 1 MiB default, which a large system config would overflow.
-const GIT_PROBE_MAX_BYTES = 64 * 1024 * 1024;
 const sha256 = (data: string | Buffer) =>
   NodeCrypto.createHash("sha256").update(data).digest("hex");
 
@@ -218,7 +218,7 @@ export function gitEnvironment(env: NodeJS.ProcessEnv = process.env) {
       cwd: NodeOS.tmpdir(),
       env: gitEnv,
       timeout: GIT_PROBE_TIMEOUT_MS,
-      maxBuffer: GIT_PROBE_MAX_BYTES,
+      maxBuffer: GIT_OUTPUT_MAX_BYTES,
     });
     if (result.error) {
       if ("code" in result.error && result.error.code === "ENOENT") return undefined;

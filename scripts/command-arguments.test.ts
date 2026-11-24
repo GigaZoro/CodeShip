@@ -12,6 +12,8 @@ import { parseCachedTestArguments } from "./test-cached.ts";
 import { isRepositoryCommandSource } from "./lib/repository-command-source.ts";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 
+import { GIT_OUTPUT_MAX_BYTES } from "../.github/scripts/git-history.cjs";
+
 const root = NodePath.resolve(import.meta.dirname, "..");
 const UNREAD = "--no-such-argument";
 
@@ -194,7 +196,7 @@ function trackedScripts(): ReadonlyArray<{ readonly file: string; readonly text:
     {
       cwd: root,
       encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
+      maxBuffer: GIT_OUTPUT_MAX_BYTES,
     },
   );
   return listed
