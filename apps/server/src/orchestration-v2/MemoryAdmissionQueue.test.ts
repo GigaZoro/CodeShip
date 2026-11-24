@@ -11,20 +11,25 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
+import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventStore from "./EventStore.ts";
-import { make as makeMemoryAdmissionQueue } from "./MemoryAdmissionQueue.ts";
+import * as MemoryAdmissionQueue from "./MemoryAdmissionQueue.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -68,7 +73,7 @@ const short: MemoryShortage = {
 
 /** The queue, reading memory from `memory`, which the test changes. */
 const queueReading = (memory: Ref.Ref<MemoryShortage | null>) =>
-  makeMemoryAdmissionQueue.pipe(
+  MemoryAdmissionQueue.make.pipe(
     Effect.provideService(
       MemoryAdmission.MemoryAdmission,
       MemoryAdmission.MemoryAdmission.of({
@@ -261,6 +266,61 @@ it.effect(
       );
       assert.deepEqual(notices, [1, 1, 1], "each waiting run says once that it waits for memory");
     }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("admits a restarted run queued during the initial empty sweep", () =>
+  Effect.gen(function* () {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const read = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const memory = yield* Ref.make<MemoryShortage | null>(null);
+    const queue = yield* queueReading(memory).pipe(
+      Effect.provideService(ProjectionStore.ProjectionStoreV2, {
+        ...projections,
+        getMemoryAdmissionQueue: () =>
+          projections.getMemoryAdmissionQueue().pipe(
+            Effect.tap(() => Deferred.succeed(read, undefined)),
+            Effect.tap(() => Deferred.await(release)),
+          ),
+      }),
+    );
+    const cut = yield* cutThread("during-sweep");
+    const initial = yield* Effect.forkChild(queue.sweep);
+    yield* Deferred.await(read);
+    const runId = yield* continueCutRun(cut);
+    const changed = yield* queue.queueChanged.pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(initial);
+    yield* Fiber.join(changed);
+    assert.deepEqual(yield* started([{ runId, name: cut.name }]), [cut.name]);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("admits a restarted run queued between the initial sweep and subscription", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const cut = yield* cutThread("after-sweep");
+    const restart = continueCutRun(cut).pipe(
+      Effect.provideService(Orchestrator.OrchestratorV2, orchestrator),
+      Effect.orDie,
+    );
+    yield* Layer.build(MemoryAdmissionQueue.layer).pipe(
+      Effect.provide(MemoryAdmission.layerTest()),
+      Effect.provideService(Scheduler.Scheduler, {
+        register: (_, sweep) => sweep.pipe(Effect.orDie, Effect.andThen(restart), Effect.asVoid),
+      }),
+    );
+    const admitted = yield* orchestrator
+      .streamStoredEventsFrom({ threadId: cut.threadId, eventType: "run.updated" })
+      .pipe(
+        Stream.filter(
+          ({ event }) =>
+            event.type === "run.updated" && event.payload.memoryAdmission?.admittedAt !== undefined,
+        ),
+        Stream.runHead,
+      );
+    assert.isTrue(Option.isSome(admitted));
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("a person's start is never held, and starts their chat's waiting run at once", () =>

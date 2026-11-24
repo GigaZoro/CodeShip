@@ -442,7 +442,7 @@ export const layerProduction = Layer.mergeAll(
     ),
   ),
   MemoryAdmissionQueue.layer.pipe(
-    Layer.provide(Layer.merge(ProjectionStore.layer, layerOrchestratorProvided)),
+    Layer.provide(Layer.mergeAll(ProjectionStore.layer, layerOrchestratorProvided, layerEventSink)),
   ),
   FinalReview.layer.pipe(
     Layer.provide(Layer.mergeAll(layerThreadManagementProvided, layerOrchestratorProvided)),

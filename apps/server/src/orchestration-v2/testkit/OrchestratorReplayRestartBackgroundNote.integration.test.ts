@@ -5,6 +5,7 @@ import {
   EventId,
   isOrchestrationV2WorkActive,
   type OrchestrationV2RestartCancelledBackgroundWork,
+  type OrchestrationV2Run,
   ProviderDriverKind,
   type ProviderReplayEntry,
 } from "@t3tools/contracts";
@@ -21,6 +22,7 @@ import {
   makeClaudeRestartReplayHarness,
 } from "../Adapters/ClaudeAdapterV2.testkit.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as EffectOutbox from "../EffectOutbox.ts";
 import * as EffectWorker from "../EffectWorker.ts";
 import * as EventSink from "../EventSink.ts";
 import * as Orchestrator from "../Orchestrator.ts";
@@ -36,9 +38,8 @@ import {
   materializeFixtureInput,
   projectionFor,
 } from "./fixtures/shared.ts";
-import { runOrchestratorV2ProviderReplayScenario } from "./ProviderReplayHarness.ts";
 import * as ProviderReplayHarness from "./ProviderReplayHarness.ts";
-import { runOrchestratorV2Scenario } from "./OrchestratorScenario.ts";
+import { type OrchestratorV2Scenario, runOrchestratorV2Scenario } from "./OrchestratorScenario.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import { readProviderReplayTranscript } from "@t3tools/provider-testing/replayTranscript";
 
@@ -157,6 +158,22 @@ const readRestartTranscript = Effect.fn("readRestartTranscript")(function* (
   });
 });
 
+// Recovery and the next message share one server so its daemon can settle the effects it claimed.
+const replayAfterRestart = Effect.fn("replayAfterRestart")(function* (
+  sourceRun: OrchestrationV2Run,
+  next: OrchestratorV2Scenario,
+) {
+  const outbox = yield* EffectOutbox.EffectOutboxV2;
+  yield* outbox.awaitSettled(EffectOutbox.restartContinuationEffectId(sourceRun.id));
+  const restarted = yield* runOrchestratorV2Scenario({
+    ...next,
+    commands: [],
+    steps: [{ type: "await_thread_idle", threadId: sourceRun.threadId }],
+  });
+  const after = yield* runOrchestratorV2Scenario(next);
+  return { recovered: projectionFor(restarted, next.name), after: projectionFor(after, next.name) };
+});
+
 const runRestart = Effect.fn("runRestart")(function* (input: {
   readonly resumedPrompts: ReadonlyArray<string>;
   readonly userMessagesAfterRestart: ReadonlyArray<string>;
@@ -252,23 +269,16 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
   assert.equal(settled.runs[0]?.status, "completed");
   assert.equal(settled.subagents[0]?.status, "running");
 
-  const restartScenario = scenario("restarted", []);
-  const restarted = yield* Effect.scoped(
-    Effect.gen(function* () {
-      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-      yield* worker.drain();
-      return yield* runOrchestratorV2Scenario(restartScenario);
-    }).pipe(
-      Effect.provide(
-        ProviderReplayHarness.layerProviderReplay(restartScenario, harness, {
-          databaseLayer: snapshotDatabase,
-          recoverOnStartup: true,
-          continueThreadsAfterServerUpdate: input.continueThreadsAfterServerUpdate,
-        }),
-      ),
+  const next = scenario("after-restart", phase2Steps);
+  const { recovered, after } = yield* replayAfterRestart(settled.runs[0]!, next).pipe(
+    Effect.provide(
+      ProviderReplayHarness.layerProviderReplay(next, harness, {
+        databaseLayer: snapshotDatabase,
+        recoverOnStartup: true,
+        continueThreadsAfterServerUpdate: input.continueThreadsAfterServerUpdate,
+      }),
     ),
   );
-  const recovered = projectionFor(restarted, SCENARIO);
   assert.deepEqual(
     recovered.runs.map((run) => run.status),
     ["completed"],
@@ -276,17 +286,9 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
   assert.equal(recovered.subagents[0]?.status, "cancelled");
   assert.equal(recovered.runs[0]?.restartCancelledBackgroundWork?.[0]?.kind, "subagent");
 
-  const after = yield* Effect.scoped(
-    runOrchestratorV2ProviderReplayScenario(scenario("after-restart", phase2Steps), harness, {
-      databaseLayer: snapshotDatabase,
-      continueThreadsAfterServerUpdate: input.continueThreadsAfterServerUpdate,
-    }),
-  );
-
   yield* assertComplete;
-  const projection = projectionFor(after, SCENARIO);
-  assert.equal(projection.subagents[0]?.status, "cancelled");
-  return projection;
+  assert.equal(after.subagents[0]?.status, "cancelled");
+  return after;
 });
 
 const userTexts = (projection: ReturnType<typeof projectionFor>) =>
@@ -642,32 +644,18 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
   const snapshotDatabase = SqlitePersistence.layerFromPath(snapshotPath).pipe(
     Layer.provide(NodeServices.layer),
   );
-  const restartScenario = scenario("restarted", [{ type: "await_thread_idle", threadId }]);
-  const restarted = yield* Effect.scoped(
-    Effect.gen(function* () {
-      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-      yield* worker.drain();
-      return yield* runOrchestratorV2Scenario(restartScenario);
-    }).pipe(
-      Effect.provide(
-        ProviderReplayHarness.layerProviderReplay(restartScenario, harness, {
-          databaseLayer: snapshotDatabase,
-          recoverOnStartup: true,
-          continueThreadsAfterServerUpdate: input.continueThreadsAfterServerUpdate,
-        }),
-      ),
+  const next = scenario("after-restart", phase3Steps);
+  const result = yield* replayAfterRestart(lostRun, next).pipe(
+    Effect.provide(
+      ProviderReplayHarness.layerProviderReplay(next, harness, {
+        databaseLayer: snapshotDatabase,
+        recoverOnStartup: true,
+        continueThreadsAfterServerUpdate: input.continueThreadsAfterServerUpdate,
+      }),
     ),
   );
-  const recovered = projectionFor(restarted, scenarioName);
-
-  const after = yield* Effect.scoped(
-    runOrchestratorV2ProviderReplayScenario(scenario("after-restart", phase3Steps), harness, {
-      databaseLayer: snapshotDatabase,
-      continueThreadsAfterServerUpdate: input.continueThreadsAfterServerUpdate,
-    }),
-  );
   yield* assertComplete;
-  return { recovered, after: projectionFor(after, scenarioName) };
+  return result;
 });
 
 /**

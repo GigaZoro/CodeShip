@@ -15,6 +15,7 @@ import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { forkParked } from "../serverActivation.ts";
+import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -95,8 +96,8 @@ export const make = Effect.gen(function* () {
     }
     yield* due.record(readVersion, shortage.readAtMs + MemoryAdmission.SHORTAGE_RECHECK_MS, nowMs);
   });
-  // The scheduler's tick and the queue's own changes share one sweep at a time.
-  const sweep = sweepDue().pipe(permit.withPermitsIfAvailable(1), Effect.asVoid);
+  // A change during an older read must get its own sweep, even before the next scheduler tick.
+  const sweep = permit.withPermit(sweepDue());
   return {
     /** Sweeps when the last sweep left something to recheck by now. */
     sweep,
@@ -108,24 +109,26 @@ export const make = Effect.gen(function* () {
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const queue = yield* make;
-    const orchestrator = yield* Orchestrator.OrchestratorV2;
     const scheduler = yield* Scheduler.Scheduler;
-    const scope = yield* Effect.scope;
+    const sink = yield* EventSink.EventSinkV2;
+    // The first sweep can finish before the subscription opens. Replay changes from before that read.
+    const afterSequence = yield* sink.latestSequence().pipe(Effect.orDie);
     yield* scheduler.register("memory-admission", queue.sweep);
-    // A queue change sweeps at once, so a start does not wait for the next tick.
     yield* forkParked(
-      Stream.runForEach(orchestrator.streamDomainEvents, (event) =>
-        affectsQueue(event)
-          ? queue.queueChanged.pipe(
-              Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
-                  ? Effect.void
-                  : Effect.logWarning("orchestration-v2.memory-admission.sweep-failed", { cause }),
-              ),
-              Effect.forkIn(scope),
-              Effect.asVoid,
-            )
-          : Effect.void,
+      sink.stream({ afterSequence }).pipe(
+        Stream.runForEachArray((events) =>
+          events.some(({ event }) => affectsQueue(event))
+            ? queue.queueChanged.pipe(
+                Effect.catchCause((cause) =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.void
+                    : Effect.logWarning("orchestration-v2.memory-admission.sweep-failed", {
+                        cause,
+                      }),
+                ),
+              )
+            : Effect.void,
+        ),
       ),
     );
   }),
