@@ -2665,43 +2665,81 @@ it.effect.each([0, 1])("releases an async setup before its completion with exit 
   }),
 );
 
-it.effect.each([
-  { name: "is missing", baseRef: "t3/renamed", startFromOrigin: false, origin: true },
+const missingSha = "0123456789abcdef0123456789abcdef01234567";
+it.effect.each<{
+  readonly name: string;
+  readonly baseRef: string;
+  readonly startFromOrigin: boolean;
+  readonly remoteNames: ReadonlyArray<string>;
+  readonly fetchedFrom?: string;
+  readonly lookup: ThreadLaunch.ThreadLaunchBaseRefLookup;
+  readonly message: string;
+}>([
   {
-    name: "has no origin to come from",
+    name: "is missing",
+    baseRef: "t3/renamed",
+    startFromOrigin: false,
+    remoteNames: ["origin"],
+    lookup: "checkout",
+    message: `Base ref "t3/renamed" does not resolve to a commit in project "Project" (/repo).`,
+  },
+  {
+    name: "has no remote to come from",
     baseRef: "t3/renamed",
     startFromOrigin: true,
-    origin: false,
+    remoteNames: [],
+    lookup: "no-remote",
+    message: `Base ref "t3/renamed" is not in project "Project" (/repo), which has no Git remote to fetch it from.`,
   },
   {
     name: "is a previous checkout there never was",
     baseRef: "-",
     startFromOrigin: false,
-    origin: true,
+    remoteNames: ["origin"],
+    lookup: "checkout",
+    message: `Base ref "-" does not resolve to a commit in project "Project" (/repo).`,
   },
   {
     name: "is a commit none of its remotes has",
-    baseRef: "0123456789abcdef0123456789abcdef01234567",
+    baseRef: missingSha,
     startFromOrigin: true,
-    origin: true,
+    remoteNames: ["origin", "upstream"],
+    lookup: "remotes-lack-commit",
+    message: `Base ref "${missingSha}" is not in project "Project" (/repo), and none of its remotes (origin, upstream) has that commit.`,
+  },
+  {
+    name: "is a commit in a checkout with no remote",
+    baseRef: missingSha,
+    startFromOrigin: true,
+    remoteNames: [],
+    lookup: "no-remote",
+    message: `Base ref "${missingSha}" is not in project "Project" (/repo), which has no Git remote to fetch it from.`,
   },
   // The fetch succeeds, yet the SHA names a tree or blob, which no worktree can start from.
   {
     name: "is an object a remote gives that is no commit",
     baseRef: "89abcdef0123456789abcdef0123456789abcdef",
     startFromOrigin: true,
-    origin: true,
-    fetched: true,
+    remoteNames: ["origin"],
+    fetchedFrom: "origin",
+    lookup: "not-a-commit",
+    message: `Base ref "89abcdef0123456789abcdef0123456789abcdef" names an object from remote origin that is not a commit, in project "Project" (/repo).`,
   },
-])("refuses a new worktree whose base ref $name", (testCase) =>
+])("refuses a new worktree whose base ref $name, saying which lookup failed", (testCase) =>
   Effect.gen(function* () {
     const harness = makeHarness({
       hasCommit: ({ refName }) => Effect.succeed(refName === "HEAD"),
       git: {
         resolveWorktreeBaseRemote: () =>
-          Effect.succeed(testCase.origin ? { remoteName: "origin", branchName: "main" } : null),
+          Effect.succeed(
+            testCase.remoteNames.length > 0 ? { remoteName: "origin", branchName: "main" } : null,
+          ),
         hasRefNamed: () => Effect.succeed(false),
-        fetchCommit: () => Effect.succeed(testCase.fetched === true),
+        fetchCommit: () =>
+          Effect.succeed({
+            fetchedFrom: testCase.fetchedFrom ?? null,
+            remoteNames: testCase.remoteNames,
+          }),
       },
     });
     yield* Effect.gen(function* () {
@@ -2720,11 +2758,9 @@ it.effect.each([
         _tag: "ThreadLaunchBaseRefError",
         projectId,
         baseRef: testCase.baseRef,
+        lookup: testCase.lookup,
       });
-      assert.equal(
-        error.message,
-        `Base ref "${testCase.baseRef}" does not resolve to a commit in project "Project" (/repo).`,
-      );
+      assert.equal(error.message, testCase.message);
     }).pipe(Effect.provide(harness.layer));
   }),
 );
@@ -2739,7 +2775,9 @@ it.effect("fetches a pushed commit SHA that the checkout does not have yet", () 
       git: {
         hasRefNamed: () => Effect.succeed(false),
         fetchCommit: ({ commitSha }) =>
-          Ref.update(fetched, (shas) => [...shas, commitSha]).pipe(Effect.as(true)),
+          Ref.update(fetched, (shas) => [...shas, commitSha]).pipe(
+            Effect.as({ fetchedFrom: "origin", remoteNames: ["origin"] }),
+          ),
       },
     });
     yield* Effect.gen(function* () {
@@ -2753,11 +2791,53 @@ it.effect("fetches a pushed commit SHA that the checkout does not have yet", () 
   }),
 );
 
+// Preparation fetches the commit itself, and the setup panel shows that transfer as its fetch.
+it.effect("marks the fetch stage done once preparation has fetched a commit SHA", () => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const fetched = { done: false };
+  const harness = makeHarness({
+    hasCommit: ({ refName }) => Effect.succeed(refName === "HEAD" || fetched.done),
+    git: {
+      fetchCommit: () =>
+        Effect.sync(() => {
+          fetched.done = true;
+          return { fetchedFrom: "origin", remoteNames: ["origin"] };
+        }),
+    },
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+    const launched = yield* launches.launch(
+      launchInput({
+        command: "command:launch:fetched-commit",
+        thread: "thread:launch:fetched-commit",
+        message: "Start from a fetched commit",
+        workspace: { type: "worktree", baseRef: sha, startFromOrigin: true },
+      }),
+    );
+    const settled = yield* tracker.stream(launched.threadId).pipe(
+      Stream.filter(
+        (snapshot) =>
+          snapshot?.stages.some(
+            (stage) => stage.id === "checkout" && stage.status !== "pending",
+          ) === true,
+      ),
+      Stream.runHead,
+    );
+    assert.equal(
+      Option.getOrUndefined(settled)?.stages.find((stage) => stage.id === "fetch")?.status,
+      "done",
+    );
+    assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, sha);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("fails preparing a worktree from a commit no remote has, naming the commit", () => {
   const sha = "0123456789abcdef0123456789abcdef01234567";
   const harness = makeHarness({
     hasCommit: ({ refName }) => Effect.succeed(refName === "HEAD"),
-    git: { fetchCommit: () => Effect.succeed(false) },
+    git: { fetchCommit: () => Effect.succeed({ fetchedFrom: null, remoteNames: ["origin"] }) },
   });
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -2778,7 +2858,10 @@ it.effect("fails preparing a worktree from a commit no remote has, naming the co
     );
     const projection = yield* threads.getThreadProjection(launched.threadId);
     const failure = projection.turnItems.find((item) => item.type === "error")?.failure;
-    assert.include(failure?.message ?? "", `Base ref "${sha}" does not resolve to a commit`);
+    assert.include(
+      failure?.message ?? "",
+      `Base ref "${sha}" is not in project "Project" (/repo), and none of its remotes (origin) has that commit.`,
+    );
     assert.equal(harness.createWorktree.mock.calls.length, 0);
   }).pipe(Effect.provide(harness.layer));
 });

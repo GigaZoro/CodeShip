@@ -1392,6 +1392,15 @@ export const layerWsRpc = (
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      // A refresh only drops a stale identity: a failed lookup is not kept, so the next read asks
+      // Git again, and the clone or publish it follows still stands.
+      const refreshRepositoryIdentity = (cwd: string) =>
+        repositoryIdentityResolver.resolve(cwd, { refresh: true }).pipe(
+          Effect.asVoid,
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not refresh a repository identity", { cwd, cause }),
+          ),
+        );
       const projectEnrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
       const agentSessionImporter = yield* AgentSessionImporter.AgentSessionImporter;
@@ -2888,7 +2897,7 @@ export const layerWsRpc = (
                   ),
                 ),
             onCloned: (project) =>
-              repositoryIdentityResolver.resolve(project.workspaceRoot, { refresh: true }).pipe(
+              refreshRepositoryIdentity(project.workspaceRoot).pipe(
                 Effect.andThen(
                   projectService.update({
                     commandId: CommandId.make(`project-clone-done:${project.projectId}`),
@@ -2932,7 +2941,7 @@ export const layerWsRpc = (
         [WS_METHODS.subscribeProjectClones]: () => projectCloneTracker.stream,
         [WS_METHODS.sourceControlPublishRepository]: (input) =>
           sourceControlRepositories.publishRepository(input).pipe(
-            Effect.tap(() => repositoryIdentityResolver.resolve(input.cwd, { refresh: true })),
+            Effect.tap(() => refreshRepositoryIdentity(input.cwd)),
             Effect.tap(() => refreshGitStatus(input.cwd)),
           ),
         [WS_METHODS.projectsSearchEntries]: (input) =>

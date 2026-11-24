@@ -223,6 +223,12 @@ export interface GitFetchRefInput {
   ref: string;
 }
 
+/** Which remote gave a commit, and which remotes were asked: the primary first, none without one. */
+export interface GitFetchCommitResult {
+  readonly fetchedFrom: string | null;
+  readonly remoteNames: ReadonlyArray<string>;
+}
+
 export interface GitResolveCommitInput {
   cwd: string;
   revision: string;
@@ -406,14 +412,14 @@ export class GitVcsDriver extends Context.Service<
       input: GitFetchRefInput,
     ) => Effect.Effect<GitResolveCommitResult, GitCommandError>;
     /**
-     * Fetches the commit itself from each remote in turn, the primary first, until one has it: the
-     * branches a checkout fetches, as in a single-branch clone, need not reach it. False when none
-     * has it.
+     * Fetches the commit from each remote in turn, the primary first, until one gives it: the
+     * branches a checkout fetches, as in a single-branch clone, need not reach it. A remote that
+     * fails is passed over; its error is the result only when no remote gives the commit.
      */
     readonly fetchCommit: (input: {
       readonly cwd: string;
       readonly commitSha: string;
-    }) => Effect.Effect<boolean, GitCommandError>;
+    }) => Effect.Effect<GitFetchCommitResult, GitCommandError>;
     readonly resolveCommit: (
       input: GitResolveCommitInput,
     ) => Effect.Effect<GitResolveCommitResult, GitCommandError>;

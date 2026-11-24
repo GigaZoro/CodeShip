@@ -1,3 +1,11 @@
+## 2026-11-25 — A worktree's base commit is looked for on every remote, and Git errors quote no names
+
+- A new worktree from a commit its checkout lacks now asks the project's remotes in turn, the primary first, and passes over one that cannot be reached. A server that refuses to send a commit by its SHA is asked through the branches and tags it advertises, and a named branch is looked up on a lone remote that is not called `origin`. Before, the first remote that failed ended the search, a server that refused SHA fetches made the commit look missing, and a lone remote under another name was never asked.
+- A launch refused for its base commit now says which lookup failed and names the remotes that answered without it, so you know where to push it. Before, every refusal said that fetching did not bring the commit in. Fetching a base commit no longer rewrites `FETCH_HEAD`, and a launch that fetched one shows its fetch stage as done instead of skipped.
+- `delegate_task` with worktree isolation to a linked machine now refuses only when your checkout has no Git remote. The linked machine checks its own remotes for your commit, and the task fails with its refusal. Before, your machine refused a commit none of its fetched branches held, even one the linked machine could fetch.
+- When Git fails, times out or cannot start while CodeShip reads which repository a folder holds, delegation, project reads, scheduled tasks and the pull request list now fail with that reason, a thread's pull request is looked for again, and the next read asks Git again. Before, the folder was taken for one with no repository and kept as such for a while, so a worktree helper could start from the default branch, a scheduled task could miss its project, a project left the pull request list unseen and a thread's pull request was not looked for again.
+- Git's error text in failures, logs and clone errors now shows only messages CodeShip knows, with each URL, host, path, ref, name and e-mail in them replaced by `…`; any other line reads "(message withheld)". Before, Git's last lines were quoted as printed with only a URL's credentials removed, so a failure could show your e-mail or a folder path. A project's first commit that fails for an empty Git user name now says to set `user.name` and `user.email`, instead of repeating Git's line with your e-mail in it.
+
 ## 2026-11-25 — Stopped threads continue on the prepaid credits you allowed them
 
 - A thread allowed to spend a Codex account's prepaid credits that the plan's usage limit stopped waited for the plan to reset. It now continues on the credits, or moves to another account it may spend them on, as soon as the sweep sees it, when stopped threads resume or switch accounts for you.
@@ -292,7 +300,6 @@
 - A new worktree from a commit that neither the checkout nor any of its remotes has is now refused before the thread is created, naming the commit, instead of failing later while the worktree is prepared. CodeShip asks each remote for the commit itself, so one pushed on a branch the checkout does not fetch, as in a single-branch clone, is found.
 - A worktree helper is no longer started when your thread's project cannot be read: the call fails with "Unable to read this thread's project." Before, the helper was taken for one of no repository and started from the default branch, or asked for a target it did not need.
 - A worktree from a missing commit now reports it as a missing ref (`ref_not_found`).
-- A local Git failure CodeShip cannot classify now ends its message with Git's last error lines, with quoted values, URLs, and paths replaced, so the failure can be traced without exposing names.
 
 ## 2026-11-21 — The ACP terminal kill test expects SIGTERM on Windows too
 

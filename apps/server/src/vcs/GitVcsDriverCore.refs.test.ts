@@ -605,11 +605,177 @@ it.layer(layerTest)("Git remote worktree bases", (it) => {
       yield* driver.fetchRemote({ cwd, remoteName: "upstream" });
       assert.isFalse(yield* hasCommit);
 
-      assert.isTrue(yield* driver.fetchCommit({ cwd, commitSha: sha }));
+      assert.deepEqual(yield* driver.fetchCommit({ cwd, commitSha: sha }), {
+        fetchedFrom: "upstream",
+        remoteNames: ["origin", "upstream"],
+      });
       assert.isTrue(yield* hasCommit);
-      assert.isFalse(
+      assert.deepEqual(
         yield* driver.fetchCommit({ cwd, commitSha: "1234567890abcdef1234567890abcdef12345678" }),
+        { fetchedFrom: null, remoteNames: ["origin", "upstream"] },
       );
+      yield* git(cwd, ["remote", "remove", "origin"]);
+      yield* git(cwd, ["remote", "remove", "upstream"]);
+      assert.deepEqual(
+        yield* driver.fetchCommit({ cwd, commitSha: "1234567890abcdef1234567890abcdef12345678" }),
+        { fetchedFrom: null, remoteNames: [] },
+      );
+    }),
+  );
+
+  // origin lacks the commit, `broken` names no repository, and `upstream` holds the commit.
+  it.effect(
+    "keeps asking the remotes after one fails, and reports that failure when none has it",
+    () =>
+      Effect.gen(function* () {
+        const source = yield* makeTmpDir("git-source-");
+        const fork = yield* makeTmpDir("git-fork-");
+        const cwd = yield* makeTmpDir();
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const { initialBranch } = yield* initRepoWithCommit(source);
+        yield* git(fork, ["init", "--bare"]);
+        yield* git(source, ["push", fork, `HEAD:refs/heads/${initialBranch}`]);
+        yield* git(source, ["checkout", "-b", "feature"]);
+        yield* git(source, ["commit", "--allow-empty", "-m", "on feature"]);
+        const sha = yield* git(source, ["rev-parse", "HEAD"]);
+        yield* git(cwd, [
+          "clone",
+          "--no-local",
+          "--single-branch",
+          "-b",
+          initialBranch,
+          source,
+          ".",
+        ]);
+        yield* git(cwd, ["remote", "remove", "origin"]);
+        yield* git(cwd, ["remote", "add", "origin", fork]);
+        const missing = yield* makeTmpDir("git-missing-");
+        yield* git(cwd, ["remote", "add", "broken", `${missing}/gone.git`]);
+        yield* git(cwd, ["remote", "add", "upstream", source]);
+
+        assert.deepEqual(yield* driver.fetchCommit({ cwd, commitSha: sha }), {
+          fetchedFrom: "upstream",
+          remoteNames: ["origin", "broken", "upstream"],
+        });
+        const error = yield* driver
+          .fetchCommit({ cwd, commitSha: "1234567890abcdef1234567890abcdef12345678" })
+          .pipe(Effect.flip);
+        assert.include(error.detail, "could not access the remote repository");
+        assert.notInclude(error.detail, missing);
+        assert.match(error.diagnostics ?? "", /^Remote broken: Phases: /);
+      }),
+  );
+
+  // A protocol v0 server without uploadpack.allow*SHA1InWant refuses any SHA it does not
+  // advertise, so only fetching its branches and tags shows whether it has the commit.
+  it.effect("fetches a commit a server refuses by SHA through the refs it advertises", () =>
+    Effect.gen(function* () {
+      const source = yield* makeTmpDir("git-source-");
+      const remote = yield* makeTmpDir("git-remote-");
+      const cwd = yield* makeTmpDir();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { initialBranch } = yield* initRepoWithCommit(source);
+      // The server does give the commits its refs name, so each one asked for sits below a tip.
+      yield* git(source, ["checkout", "-b", "feature"]);
+      yield* git(source, ["commit", "--allow-empty", "-m", "on feature"]);
+      const onBranch = yield* git(source, ["rev-parse", "HEAD"]);
+      yield* git(source, ["commit", "--allow-empty", "-m", "feature tip"]);
+      yield* git(source, ["checkout", "--detach"]);
+      yield* git(source, ["commit", "--allow-empty", "-m", "tagged only"]);
+      const tagOnly = yield* git(source, ["rev-parse", "HEAD"]);
+      yield* git(source, ["commit", "--allow-empty", "-m", "tag tip"]);
+      yield* git(source, ["tag", "pushed-tag"]);
+      yield* git(source, ["checkout", initialBranch]);
+      yield* git(remote, ["clone", "--bare", "--no-local", source, "."]);
+      yield* git(remote, ["--git-dir=.", "config", "uploadpack.allowReachableSHA1InWant", "false"]);
+      yield* git(remote, ["--git-dir=.", "config", "uploadpack.allowAnySHA1InWant", "false"]);
+      yield* git(cwd, ["clone", "--no-local", "--single-branch", "-b", initialBranch, remote, "."]);
+      yield* git(cwd, ["config", "protocol.version", "0"]);
+      const hasObject = (sha: string) =>
+        driver
+          .execute({
+            operation: "GitVcsDriver.test.hasObject",
+            cwd,
+            args: ["cat-file", "-e", sha],
+            allowNonZeroExit: true,
+          })
+          .pipe(Effect.map((result) => result.exitCode === 0));
+      assert.isFalse(yield* hasObject(onBranch));
+
+      for (const sha of [tagOnly, onBranch]) {
+        assert.deepEqual(yield* driver.fetchCommit({ cwd, commitSha: sha }), {
+          fetchedFrom: "origin",
+          remoteNames: ["origin"],
+        });
+        assert.isTrue(yield* hasObject(sha));
+      }
+      assert.deepEqual(
+        yield* driver.fetchCommit({ cwd, commitSha: "1234567890abcdef1234567890abcdef12345678" }),
+        { fetchedFrom: null, remoteNames: ["origin"] },
+      );
+      assert.equal(yield* git(cwd, ["for-each-ref", "refs/t3code/"]), "");
+      // FETCH_HEAD belongs to whichever fetch ran last in the checkout.
+      assert.isFalse(yield* fileSystem.exists(path.join(cwd, ".git", "FETCH_HEAD")));
+    }),
+  );
+
+  it.effect("looks a named branch up on the only remote when that remote is not origin", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      const remote = yield* makeTmpDir("git-remote-");
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* initRepoWithCommit(cwd);
+      yield* git(remote, ["init", "--bare"]);
+      yield* git(cwd, ["remote", "add", "upstream", remote]);
+      yield* git(cwd, ["push", "upstream", "HEAD:refs/heads/release"]);
+      const head = yield* git(cwd, ["rev-parse", "HEAD"]);
+
+      assert.deepEqual(yield* driver.resolveWorktreeBaseRemote({ cwd, refName: "release" }), {
+        remoteName: "upstream",
+        branchName: "release",
+      });
+      assert.deepEqual(yield* driver.fetchWorktreeBaseCommit({ cwd, refName: "release" }), {
+        commitSha: head,
+        remoteRefName: "upstream/release",
+      });
+      yield* git(cwd, ["remote", "add", "origin", remote]);
+      assert.deepEqual(yield* driver.resolveWorktreeBaseRemote({ cwd, refName: "release" }), {
+        remoteName: "origin",
+        branchName: "release",
+      });
+      yield* git(cwd, ["remote", "remove", "origin"]);
+      yield* git(cwd, ["remote", "remove", "upstream"]);
+      assert.isNull(yield* driver.resolveWorktreeBaseRemote({ cwd, refName: "release" }));
+    }),
+  );
+
+  // Another fetch in the checkout, such as the status poll, rewrites FETCH_HEAD at any time.
+  it.effect("reads a fetched ref from a ref of its own, leaving FETCH_HEAD to other fetches", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      const remote = yield* makeTmpDir("git-remote-");
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { initialBranch } = yield* initRepoWithCommit(cwd);
+      yield* git(remote, ["init", "--bare"]);
+      yield* git(cwd, ["remote", "add", "origin", remote]);
+      yield* git(cwd, ["push", "origin", `HEAD:refs/heads/${initialBranch}`]);
+      yield* git(cwd, ["commit", "--allow-empty", "-m", "pull request head"]);
+      const prHead = yield* git(cwd, ["rev-parse", "HEAD"]);
+      yield* git(cwd, ["push", "origin", "HEAD:refs/pull/7/head"]);
+      yield* git(cwd, ["reset", "--hard", "HEAD~1"]);
+      yield* git(cwd, ["fetch", "origin", initialBranch]);
+      const fetchHead = path.join(cwd, ".git", "FETCH_HEAD");
+      const otherFetch = yield* fileSystem.readFileString(fetchHead);
+
+      assert.deepEqual(yield* driver.fetchRefCommit({ cwd, ref: "refs/pull/7/head" }), {
+        commitSha: prHead,
+      });
+      assert.equal(yield* fileSystem.readFileString(fetchHead), otherFetch);
+      assert.equal(yield* git(cwd, ["for-each-ref", "refs/t3code/"]), "");
     }),
   );
 

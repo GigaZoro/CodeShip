@@ -4617,7 +4617,16 @@ export const layer = Layer.effect(
         ),
       );
       const identity =
-        project === undefined ? null : yield* repositoryIdentities.resolve(project.workspaceRoot);
+        project === undefined
+          ? null
+          : yield* repositoryIdentities.resolve(project.workspaceRoot).pipe(
+              Effect.mapError((cause) =>
+                taskError(`Could not read the task's project repository: ${cause.message}`, {
+                  taskId,
+                  cause,
+                }),
+              ),
+            );
       if (project === undefined || identity === null) {
         return yield* taskError(
           "To share a task, pick No project or a project with a git remote, so each machine can find its copy.",
@@ -4674,7 +4683,17 @@ export const layer = Layer.effect(
             ),
           );
         for (const candidate of page.projects) {
-          const identity = yield* repositoryIdentities.resolve(candidate.workspaceRoot);
+          // A project whose repository Git did not give may be the match, so no answer is sure.
+          const identity = yield* repositoryIdentities
+            .resolve(candidate.workspaceRoot)
+            .pipe(
+              Effect.mapError((cause) =>
+                taskError(
+                  `Could not read the repository of project ${candidate.title} on this machine: ${cause.message}`,
+                  { taskId, cause },
+                ),
+              ),
+            );
           const rank = repositoryMatchRank(project, identity);
           if (rank === -1 || rank > bestRank) continue;
           if (rank < bestRank) matches = [];

@@ -888,9 +888,18 @@ export const make = Effect.gen(function* () {
           (project) =>
             project.repositoryIdentity != null
               ? Effect.succeed(project)
-              : repositoryIdentities
-                  .resolve(project.workspaceRoot)
-                  .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity }))),
+              : repositoryIdentities.resolve(project.workspaceRoot).pipe(
+                  Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity })),
+                  // Taken for no repository, the project would drop out of the list unseen.
+                  Effect.mapError(
+                    (cause) =>
+                      new PullRequestOperationError({
+                        operation: "listProjects",
+                        detail: "A project's repository could not be read from Git.",
+                        cause,
+                      }),
+                  ),
+                ),
           { concurrency: REPOSITORY_CONCURRENCY },
         ),
       ),

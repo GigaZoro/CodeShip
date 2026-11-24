@@ -119,9 +119,15 @@ export const NON_INTERACTIVE_GIT_ENV = Object.freeze({
 } satisfies NodeJS.ProcessEnv);
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
 
-/** What `git fetch <remote> <sha>` prints when the remote does not give that object. */
-const REMOTE_LACKS_OBJECT =
-  /upload-pack: not our ref [0-9a-f]+|Server does not allow request for unadvertised object/;
+/** What `git fetch <remote> <sha>` prints when the remote does not have that object. */
+const REMOTE_LACKS_OBJECT = /upload-pack: not our ref [0-9a-f]+/;
+/**
+ * What a protocol v0 server without uploadpack.allow*SHA1InWant prints for every SHA it does not
+ * advertise, whether it has the object or not.
+ */
+const REMOTE_REFUSES_UNADVERTISED_OBJECT = /Server does not allow request for unadvertised object/;
+/** Fetches read what they fetched from refs under here, one prefix per fetch, then delete them. */
+const SCRATCH_FETCH_REF_ROOT = "refs/t3code/fetch";
 const pickPrimaryRemoteName = (remoteNames: ReadonlyArray<string>): string | null =>
   remoteNames.includes("origin") ? "origin" : (remoteNames[0] ?? null);
 const GIT_LIST_BRANCHES_DEFAULT_LIMIT = 100;
@@ -4838,23 +4844,121 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return Number.isFinite(byPatch) ? Math.min(bySha, Math.max(1, byPatch)) : bySha;
     });
 
+  /**
+   * Runs `use` with a ref prefix of its own and deletes every ref under it afterwards. A fetch
+   * reads what it fetched from there: FETCH_HEAD is the whole checkout's, and another fetch, such
+   * as the status poll, can rewrite it between the fetch and the read.
+   */
+  const withScratchRefs = <A, E, R>(
+    cwd: string,
+    operation: string,
+    use: (prefix: string) => Effect.Effect<A, E, R>,
+  ) =>
+    Effect.acquireUseRelease(
+      crypto.randomUUIDv4().pipe(
+        Effect.map((id) => `${SCRATCH_FETCH_REF_ROOT}/${id}`),
+        Effect.mapError(
+          (cause) =>
+            new GitCommandError({
+              operation,
+              command: "crypto.randomUUIDv4",
+              cwd,
+              detail: "Failed to name a scratch ref for the fetch.",
+              cause,
+            }),
+        ),
+      ),
+      use,
+      (prefix) =>
+        runGitStdout(`${operation}.listScratchRefs`, cwd, [
+          "for-each-ref",
+          "--format=%(refname)",
+          `${prefix}/`,
+        ]).pipe(
+          Effect.flatMap((stdout) => {
+            const refs = stdout.split("\n").filter((ref) => ref.length > 0);
+            return refs.length === 0
+              ? Effect.void
+              : executeGit(`${operation}.deleteScratchRefs`, cwd, ["update-ref", "--stdin"], {
+                  stdin: refs.map((ref) => `delete ${ref}\n`).join(""),
+                  fallbackErrorDetail: "git failed to delete the fetch's scratch refs",
+                });
+          }),
+          // The fetch's answer stands; a ref left under the scratch root only keeps objects alive.
+          Effect.catch((cause) =>
+            Effect.logWarning("could not delete a fetch's scratch refs", { prefix, cause }),
+          ),
+        ),
+    );
+
   const fetchRefCommit: GitVcsDriver.GitVcsDriver["Service"]["fetchRefCommit"] = Effect.fn(
     "GitVcsDriver.fetchRefCommit",
   )(function* (input) {
     const remoteName = yield* resolvePrimaryRemoteName(input.cwd);
-    // No refspec destination: the ref lands in FETCH_HEAD (per worktree) instead of a branch,
-    // which is the only way to read it while that branch is checked out somewhere.
-    yield* executeGit(
-      "GitVcsDriver.fetchRefCommit",
-      input.cwd,
-      ["fetch", "--quiet", "--no-tags", "--", remoteName, input.ref],
-      {
-        fallbackErrorDetail: "git fetch ref failed",
-      },
+    // Not into a branch: Git refuses to update one that is checked out somewhere.
+    return yield* withScratchRefs(input.cwd, "GitVcsDriver.fetchRefCommit", (prefix) =>
+      executeGit(
+        "GitVcsDriver.fetchRefCommit",
+        input.cwd,
+        [
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          "--no-write-fetch-head",
+          "--",
+          remoteName,
+          `+${input.ref}:${prefix}/ref`,
+        ],
+        { fallbackErrorDetail: "git fetch ref failed" },
+      ).pipe(Effect.andThen(resolveCommit({ cwd: input.cwd, revision: `${prefix}/ref` }))),
     );
-
-    return yield* resolveCommit({ cwd: input.cwd, revision: "FETCH_HEAD" });
   });
+
+  // A search of several remotes says which one failed; its detail stays the fixed diagnosis.
+  const namingRemote = <T extends { readonly diagnostics: string }>(
+    remoteName: string,
+    result: T,
+  ) => ({
+    ...result,
+    diagnostics: `Remote ${remoteName}: ${result.diagnostics}`,
+  });
+
+  const hasObject = (cwd: string, sha: string) =>
+    executeGit("GitVcsDriver.fetchCommit.hasObject", cwd, ["cat-file", "-e", sha], {
+      allowNonZeroExit: true,
+      // A partial clone would ask its promisor remote for the object, which is the fetch being judged.
+      env: { GIT_NO_LAZY_FETCH: "1" },
+    }).pipe(Effect.map((result) => result.exitCode === 0));
+
+  /**
+   * Fetches every branch and tag `remoteName` advertises into refs of the fetch's own, and says
+   * whether the object came with them: the one way to get a commit from a server that refuses
+   * to be asked for it by SHA.
+   */
+  const fetchObjectThroughAdvertisedRefs = (cwd: string, remoteName: string, sha: string) =>
+    withScratchRefs(cwd, "GitVcsDriver.fetchCommit.advertised", (prefix) =>
+      Effect.gen(function* () {
+        const fetchInput = {
+          operation: "GitVcsDriver.fetchCommit.advertised",
+          cwd,
+          args: [
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--",
+            remoteName,
+            `+refs/heads/*:${prefix}/heads/*`,
+            `+refs/tags/*:${prefix}/tags/*`,
+          ],
+          fallbackErrorDetail: `git fetch ${remoteName} branches and tags failed`,
+        };
+        const result = yield* runRemote(fetchInput);
+        if (result.exitCode !== 0)
+          return yield* remoteFailure(fetchInput, namingRemote(remoteName, result));
+        return yield* hasObject(cwd, sha);
+      }),
+    );
 
   const fetchCommit: GitVcsDriver.GitVcsDriver["Service"]["fetchCommit"] = Effect.fn(
     "GitVcsDriver.fetchCommit",
@@ -4863,20 +4967,36 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const primary = pickPrimaryRemoteName(remoteNames);
     const ordered =
       primary === null ? [] : [primary, ...remoteNames.filter((name) => name !== primary)];
+    // One broken remote says nothing about the others; its error stands only if none has it.
+    let firstFailure: GitCommandError | undefined;
     for (const remoteName of ordered) {
       const fetchInput = {
         operation: "GitVcsDriver.fetchCommit",
         cwd: input.cwd,
-        args: ["fetch", "--quiet", "--no-tags", "--", remoteName, input.commitSha],
+        args: [
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          "--no-write-fetch-head",
+          "--",
+          remoteName,
+          input.commitSha,
+        ],
         fallbackErrorDetail: `git fetch ${remoteName} ${input.commitSha} failed`,
       };
       const result = yield* runRemote(fetchInput);
-      if (result.exitCode === 0) return true;
-      // A remote without the commit says so; one that will not give an object no ref names (protocol
-      // v0 without uploadpack.allowReachableSHA1InWant) cannot give it either.
-      if (!REMOTE_LACKS_OBJECT.test(result.stderr)) return yield* remoteFailure(fetchInput, result);
+      if (result.exitCode === 0) return { fetchedFrom: remoteName, remoteNames: ordered };
+      if (REMOTE_LACKS_OBJECT.test(result.stderr)) continue;
+      const fetched = REMOTE_REFUSES_UNADVERTISED_OBJECT.test(result.stderr)
+        ? yield* Effect.result(
+            fetchObjectThroughAdvertisedRefs(input.cwd, remoteName, input.commitSha),
+          )
+        : Result.fail(remoteFailure(fetchInput, namingRemote(remoteName, result)));
+      if (Result.isFailure(fetched)) firstFailure ??= fetched.failure;
+      else if (fetched.success) return { fetchedFrom: remoteName, remoteNames: ordered };
     }
-    return false;
+    if (firstFailure !== undefined) return yield* firstFailure;
+    return { fetchedFrom: null, remoteNames: ordered };
   });
 
   const refreshCheckedOutBranch: GitVcsDriver.GitVcsDriver["Service"]["refreshCheckedOutBranch"] =
@@ -5003,7 +5123,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const resolveWorktreeBaseRemote: GitVcsDriver.GitVcsDriver["Service"]["resolveWorktreeBaseRemote"] =
     Effect.fn("resolveWorktreeBaseRemote")(function* (input) {
-      const remoteNames = (yield* listRemoteNames(input.cwd)).toSorted(
+      const remoteNamesInGitOrder = yield* listRemoteNames(input.cwd);
+      const remoteNames = remoteNamesInGitOrder.toSorted(
         (left, right) => right.length - left.length,
       );
       // Upstream atoms read config even before the tracking ref has been fetched.
@@ -5031,11 +5152,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       } else {
         target = parseRemoteRefWithRemoteNames(input.refName, remoteNames);
       }
-      const { remoteName, branchName } = target ?? {
-        remoteName: "origin",
-        branchName: input.refName,
-      };
-      return remoteNames.includes(remoteName) ? { remoteName, branchName } : null;
+      if (target !== null) return target;
+      // An unqualified name is the primary remote's branch, as in every other remote lookup.
+      const primary = pickPrimaryRemoteName(remoteNamesInGitOrder);
+      return primary === null ? null : { remoteName: primary, branchName: input.refName };
     });
 
   const fetchWorktreeBaseCommit: GitVcsDriver.GitVcsDriver["Service"]["fetchWorktreeBaseCommit"] =

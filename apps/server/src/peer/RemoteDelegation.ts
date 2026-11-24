@@ -165,8 +165,9 @@ const make = Effect.gen(function* () {
       .getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [taskId] })
       .pipe(Effect.map(({ thread, subagents }) => ({ thread, task: subagents[0] })));
 
-  // A failed read says nothing about the repository, so it fails the call: taken for no repository,
-  // it would ask for a target the thread does not need, or start from the default branch instead.
+  // A failed read, of the project or of its repository from Git, says nothing about the repository,
+  // so it fails the call: taken for no repository, it would ask for a target the thread does not
+  // need, or start from the default branch instead.
   const parentIdentity = (projectId: ProjectId) =>
     projects.getWithRepositoryIdentity(projectId).pipe(
       Effect.map((project) =>
@@ -176,10 +177,13 @@ const make = Effect.gen(function* () {
         Effect.logWarning("remote-delegation.project-read-failed", { projectId, cause }),
       ),
       Effect.mapError(
-        () =>
+        (error) =>
           new OrchestratorMcpFailure({
             code: "orchestration_error",
-            message: "Unable to read this thread's project.",
+            message:
+              error._tag === "RepositoryIdentityLookupError"
+                ? `Unable to read this thread's repository: ${error.message} Try again.`
+                : "Unable to read this thread's project.",
           }),
       ),
     );
@@ -262,8 +266,9 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * A new worktree there, from the commit this thread's checkout is on. The other machine can
-   * only fetch a commit that is pushed, so an unpushed one is refused by name.
+   * A new worktree there, from the commit this thread's checkout is on. Only a checkout with no
+   * remote is sure the other machine cannot fetch it: a commit pushed only as a tag, or to a
+   * branch not fetched here, is on no remote-tracking branch, so the machine there decides.
    */
   const parentCommitWorktree = Effect.fn("RemoteDelegation.parentCommitWorktree")(
     function* (parent: { readonly projectId: ProjectId; readonly worktreePath: string | null }) {
@@ -281,24 +286,13 @@ const make = Effect.gen(function* () {
       const head = yield* git
         .resolveCommit({ cwd, revision: "HEAD" })
         .pipe(Effect.mapError(() => unresolved));
-      const pushedTo = yield* git
-        .execute({
-          operation: "RemoteDelegation.parentCommitWorktree",
-          cwd,
-          args: [
-            "for-each-ref",
-            "--count=1",
-            "--format=%(refname)",
-            "--contains",
-            head.commitSha,
-            "refs/remotes",
-          ],
-        })
+      const remotes = yield* git
+        .execute({ operation: "RemoteDelegation.parentCommitWorktree", cwd, args: ["remote"] })
         .pipe(Effect.mapError(() => unresolved));
-      if (pushedTo.stdout.trim() === "") {
+      if (remotes.stdout.trim() === "") {
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
-          message: `Commit ${head.commitSha} is not pushed, so the other environment cannot fetch it. Push it, or omit isolation to run in that project's checkout.`,
+          message: `Commit ${head.commitSha} cannot reach the other environment: this thread's checkout has no Git remote. Add one and push the commit, or omit isolation to run in that project's checkout.`,
         });
       }
       return { type: "worktree", baseRef: head.commitSha, startFromOrigin: true } as const;

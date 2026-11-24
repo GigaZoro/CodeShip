@@ -1209,13 +1209,16 @@ it.effect("a launch into a new worktree creates nothing when its base ref has no
       runtimeModeCeiling: "auto",
       launched,
       checkWorktreeBase: ({ projectId, workspaceStrategy }) =>
-        workspaceStrategy.type === "worktree" && workspaceStrategy.baseRef === "t3/renamed"
+        workspaceStrategy.type === "worktree" && workspaceStrategy.baseRef !== "main"
           ? Effect.fail(
               new ThreadLaunch.ThreadLaunchBaseRefError({
                 projectId,
                 projectTitle: "Client target",
                 workspaceRoot: "/projects/client-target",
                 baseRef: workspaceStrategy.baseRef,
+                ...(workspaceStrategy.startFromOrigin === true
+                  ? { lookup: "remotes-lack-commit", remoteNames: ["origin", "upstream"] }
+                  : { lookup: "checkout", remoteNames: [] }),
               }),
             )
           : Effect.void,
@@ -1225,19 +1228,25 @@ it.effect("a launch into a new worktree creates nothing when its base ref has no
         McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
       ),
     );
-    const launchFrom = (baseRef: string) =>
+    const launchFrom = (baseRef: string, startFromOrigin = false) =>
       toolkit
         .handle("t3_thread_launch", {
           title: "Fix",
           projectId,
-          workspaceStrategy: { type: "worktree", baseRef, startFromOrigin: false },
+          workspaceStrategy: { type: "worktree", baseRef, startFromOrigin },
         })
         .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
 
     const refused = (yield* launchFrom("t3/renamed")).at(-1)?.result;
     expect(refused).toMatchObject({ code: "invalid_request" });
-    expect((refused as { message: string }).message).toContain(
-      'Base ref "t3/renamed" does not resolve to a commit in project "Client target" (/projects/client-target). No thread was created.',
+    expect((refused as { message: string }).message).toBe(
+      'Base ref "t3/renamed" does not resolve to a commit in project "Client target" (/projects/client-target). No thread was created. Pass a branch, tag, or commit that exists there, or set startFromOrigin:true if it exists only on a remote.',
+    );
+    // The refusal names what was asked, so the caller knows where the commit has to be.
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const unfetched = (yield* launchFrom(sha, true)).at(-1)?.result;
+    expect((unfetched as { message: string }).message).toBe(
+      `Base ref "${sha}" is not in project "Client target" (/projects/client-target), and none of its remotes (origin, upstream) has that commit. No thread was created. Push the commit to one of those remotes, or pass a branch, tag, or commit that exists there.`,
     );
     expect(launched).toHaveLength(0);
 
@@ -1314,6 +1323,8 @@ it.effect("a retried worktree launch replays after its base ref is gone", () =>
                 projectTitle: "Client target",
                 workspaceRoot: "/projects/client-target",
                 baseRef: workspaceStrategy.baseRef,
+                lookup: "checkout",
+                remoteNames: [],
               }),
             ),
     });

@@ -66,6 +66,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -286,6 +287,10 @@ interface BoxSetup {
   readonly providers?: ReadonlyArray<ServerProvider>;
   readonly projectRegistration?: typeof McpHttpServer.layerProjectRegistration;
   readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
+  /** How the box answers whether a new worktree can start from its base. */
+  readonly checkWorktreeBase?: ThreadLaunch.ThreadLaunchService["Service"]["checkWorktreeBase"];
+  /** Why Git gave the box no repository for its projects, when it gave none. */
+  readonly repositoryLookupFailure?: RepositoryIdentityResolver.RepositoryIdentityLookupError;
 }
 
 interface BoxLaunch {
@@ -337,6 +342,8 @@ const boxToolkitLayer = (
     providers = boxProviders,
     projectRegistration = McpHttpServer.layerProjectRegistration,
     settings = {},
+    checkWorktreeBase = () => Effect.void,
+    repositoryLookupFailure,
   }: BoxSetup = {},
 ) => {
   const interrupts = new Set<string>();
@@ -625,7 +632,7 @@ const boxToolkitLayer = (
     },
   });
   const layerBoxLaunches = Layer.mock(ThreadLaunch.ThreadLaunchService)({
-    checkWorktreeBase: () => Effect.void,
+    checkWorktreeBase,
     launch: (input) =>
       Effect.gen(function* () {
         yield* Ref.update(thread.launchCalls, (count) => count + 1);
@@ -705,13 +712,18 @@ const boxToolkitLayer = (
     Layer.provide(
       Layer.mock(ProjectService.ProjectService)({
         getById: projectById,
-        getWithRepositoryIdentity: projectById,
+        getWithRepositoryIdentity: (projectId) =>
+          repositoryLookupFailure === undefined
+            ? projectById(projectId)
+            : Effect.fail(repositoryLookupFailure),
         // More than a page, so finding the project with this repository pages.
         listPage: ({ cursor, limit }) =>
-          Effect.succeed({
-            projects: projects.slice(cursor, cursor + limit),
-            nextCursor: cursor + limit < projects.length ? cursor + limit : null,
-          }),
+          repositoryLookupFailure === undefined
+            ? Effect.succeed({
+                projects: projects.slice(cursor, cursor + limit),
+                nextCursor: cursor + limit < projects.length ? cursor + limit : null,
+              })
+            : Effect.fail(repositoryLookupFailure),
       }),
     ),
     Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
@@ -743,6 +755,7 @@ const adapter = {
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 
 const isProjectOperationError = Schema.is(ProjectService.ProjectOperationError);
+const isRepositoryLookupError = Schema.is(RepositoryIdentityResolver.RepositoryIdentityLookupError);
 
 /**
  * The laptop: a real orchestrator (in-memory SQLite) whose parent thread has
@@ -757,12 +770,12 @@ const makeLaptop = (
   >,
   /** The laptop's links from before a restart, which keep their sessions there. */
   kept?: Context.Context<Layer.Success<ReturnType<typeof layerLinkingEnvironment>>>,
-  /** The parent project's repository, or why reading the project fails. */
-  identity: RepositoryIdentity | ProjectService.ProjectOperationError = {
+  /** The parent project's repository, or why reading the project or its repository fails. */
+  identity: RepositoryIdentity | ProjectService.ProjectRepositoryReadError = {
     canonicalKey: "github.com/acme/app",
   } as RepositoryIdentity,
-  /** Whether the parent checkout's commit is on a remote. */
-  pushed = true,
+  /** The parent checkout's Git remotes. */
+  remotes: ReadonlyArray<string> = ["origin"],
 ) =>
   Effect.gen(function* () {
     const linking = kept ?? (yield* layerLinkingEnvironment(laptop).pipe(Layer.build));
@@ -804,7 +817,7 @@ const makeLaptop = (
                   repositoryIdentity: null,
                 } as never),
               getWithRepositoryIdentity: () =>
-                isProjectOperationError(identity)
+                isProjectOperationError(identity) || isRepositoryLookupError(identity)
                   ? Effect.fail(identity)
                   : Effect.succeedSome({
                       workspaceRoot: "/home/me/app",
@@ -844,10 +857,10 @@ const makeLaptop = (
       Layer.provide(
         Layer.mock(GitVcsDriver.GitVcsDriver)({
           resolveCommit: () => Effect.succeed({ commitSha: parentCommit } as never),
-          execute: () =>
-            Effect.succeed({
-              stdout: pushed ? "refs/remotes/origin/main\n" : "",
-            } as never),
+          execute: ({ args }) =>
+            args.join(" ") === "remote"
+              ? Effect.succeed({ stdout: remotes.map((name) => `${name}\n`).join("") } as never)
+              : Effect.die(`The laptop does not expect git ${args.join(" ")}`),
         }),
       ),
       Layer.fresh,
@@ -1927,7 +1940,69 @@ it.effect.each([
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("refuses worktree isolation for a commit that is not pushed, naming it", () =>
+/** The message of a tool call's failure, as the forwarded error carries it. */
+const failureMessage = (result: { readonly content: unknown }) => {
+  const [content] = result.content as ReadonlyArray<{ readonly text: string }>;
+  return JSON.parse(content!.text).message as string;
+};
+
+// Git that timed out gave a `null` identity on either machine: the laptop asked for a target or
+// the box's named project of this repository started from its default branch, unseen.
+it.effect.each([
+  { side: "here", named: "without a project", projectId: undefined },
+  { side: "here", named: "naming a project of this repository", projectId: boxProject },
+  { side: "there", named: "without a project", projectId: undefined },
+  { side: "there", named: "naming a project of this repository", projectId: boxProject },
+] as const)(
+  "fails a worktree task $named when Git gives no repository $side, starting nothing",
+  ({ side, projectId }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const root = side === "here" ? "/home/me/app" : "/srv/app";
+        const stalled = new RepositoryIdentityResolver.RepositoryIdentityLookupError({
+          cwd: root,
+          step: "find-root",
+          outcome: "timed-out",
+        });
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(
+          thread,
+          boxProjects,
+          side === "there" ? { repositoryLookupFailure: stalled } : {},
+        );
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(
+          database,
+          offers,
+          undefined,
+          side === "here" ? stalled : undefined,
+        );
+        yield* linkTo(a.links, b, "auto");
+        yield* seedParent(a);
+
+        const result = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          target: {
+            environmentId: box.environmentId,
+            ...(projectId === undefined ? {} : { projectId }),
+          },
+          isolation: "worktree",
+        });
+        expect(result.isError).toBe(true);
+        expect(failureMessage(result)).toBe(
+          side === "here"
+            ? `Unable to read this thread's repository: Git timed out while finding the repository root in ${root}. Try again.`
+            : `Could not read which repository a project holds: Git timed out while finding the repository root in ${root}. Try again.`,
+        );
+        expect(yield* Ref.get(thread.launched)).toBeNull();
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("refuses worktree isolation when this thread's checkout has no Git remote", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const thread = yield* makeBoxThread;
@@ -1936,7 +2011,7 @@ it.effect("refuses worktree isolation for a commit that is not pushed, naming it
         ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
       >([]);
       const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const a = yield* makeLaptop(database, offers, undefined, undefined, false);
+      const a = yield* makeLaptop(database, offers, undefined, undefined, []);
       yield* linkTo(a.links, b, "auto");
       yield* seedParent(a);
 
@@ -1946,10 +2021,81 @@ it.effect("refuses worktree isolation for a commit that is not pushed, naming it
         isolation: "worktree",
       });
       expect(result.isError).toBe(true);
-      expect(JSON.stringify(result.content)).toContain(parentCommit);
+      expect(JSON.stringify(result.content)).toContain(
+        `Commit ${parentCommit} cannot reach the other environment: this thread's checkout has no Git remote.`,
+      );
       expect(yield* Ref.get(thread.launched)).toBeNull();
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+// The parent refused every commit no remote-tracking branch held, so one pushed only as a tag,
+// or to a branch not fetched here, never reached the box, which can fetch it by SHA.
+it.effect(
+  "leaves it to the box whether its remotes have this thread's commit, and fails the task with its refusal",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const asked = yield* Ref.make<ReadonlyArray<unknown>>([]);
+        const app = boxProjects.at(-1)!;
+        const b = yield* serveBox(thread, boxProjects, {
+          checkWorktreeBase: (input) =>
+            Ref.update(asked, (seen) => [...seen, input.workspaceStrategy]).pipe(
+              Effect.andThen(
+                new ThreadLaunch.ThreadLaunchBaseRefError({
+                  projectId: app.id,
+                  projectTitle: app.title,
+                  workspaceRoot: app.workspaceRoot,
+                  baseRef: parentCommit,
+                  lookup: "remotes-lack-commit",
+                  remoteNames: ["origin"],
+                }),
+              ),
+            ),
+        });
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "auto");
+        yield* seedParent(a);
+
+        const result = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          target: { environmentId: box.environmentId },
+          isolation: "worktree",
+        });
+        const refusal = `Base ref "${parentCommit}" is not in project "app" (/srv/app), and none of its remotes (origin) has that commit. No thread was created. Push the commit to one of those remotes`;
+        expect(result.isError).toBe(true);
+        expect(failureMessage(result)).toContain(refusal);
+        expect(yield* Ref.get(asked)).toEqual([
+          { type: "worktree", baseRef: parentCommit, startFromOrigin: true },
+        ]);
+        expect(yield* Ref.get(thread.launched)).toBeNull();
+        const failed = yield* a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentThreadId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" && stored.event.payload.result !== null,
+            ),
+            Stream.runHead,
+            Effect.map((stored) =>
+              Option.isSome(stored) && stored.value.event.type === "subagent.updated"
+                ? stored.value.event.payload
+                : undefined,
+            ),
+          );
+        expect(failed).toMatchObject({ status: "failed" });
+        expect(failed?.result).toContain(`The task could not be started in Box: ${refusal}`);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("follows an open task again after the laptop restarts", () =>

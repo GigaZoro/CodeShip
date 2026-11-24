@@ -33,6 +33,7 @@ import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecuto
 import { planThreadDeletion } from "../orchestration-v2/ThreadDeletion.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
+import type * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
 export interface ProjectCreateInput extends ProjectCreatePayload {
@@ -105,6 +106,11 @@ export class ProjectOperationError extends Schema.TaggedError<ProjectOperationEr
   }
 }
 
+/** A project read that resolves its repository, which Git may fail to give. */
+export type ProjectRepositoryReadError =
+  | ProjectOperationError
+  | RepositoryIdentityResolver.RepositoryIdentityLookupError;
+
 export type ProjectServiceError =
   | ProjectNotFoundError
   | ProjectConflictError
@@ -132,10 +138,13 @@ export class ProjectService extends Context.Service<
       options?: { readonly includeDeleted?: boolean },
     ) => Effect.Effect<Option.Option<Project>, ProjectOperationError>;
     readonly snapshot: Effect.Effect<ProjectSnapshot, ProjectOperationError>;
-    /** One active project with its repository identity resolved, as `listPage` gives each. */
+    /**
+     * One active project with its repository identity resolved, as `listPage` gives each. Git
+     * giving no answer fails it: a `null` identity would read as a project with no repository.
+     */
     readonly getWithRepositoryIdentity: (
       projectId: ProjectId,
-    ) => Effect.Effect<Option.Option<Project>, ProjectOperationError>;
+    ) => Effect.Effect<Option.Option<Project>, ProjectRepositoryReadError>;
     /**
      * A page of active projects in creation order, each with its repository
      * identity resolved, so a caller can match projects by repository.
@@ -145,7 +154,7 @@ export class ProjectService extends Context.Service<
       readonly limit: number;
     }) => Effect.Effect<
       { readonly projects: ReadonlyArray<Project>; readonly nextCursor: number | null },
-      ProjectOperationError
+      ProjectRepositoryReadError
     >;
     readonly getShell: (
       projectId: ProjectId,
@@ -577,7 +586,9 @@ export const make = Effect.gen(function* () {
   });
 
   // Hydration reads the enrichment cache, which is blank until it warms.
-  const withRepositoryIdentity = (project: Project): Effect.Effect<Project> =>
+  const withRepositoryIdentity = (
+    project: Project,
+  ): Effect.Effect<Project, RepositoryIdentityResolver.RepositoryIdentityLookupError> =>
     project.repositoryIdentity != null
       ? Effect.succeed(project)
       : projectEnrichment

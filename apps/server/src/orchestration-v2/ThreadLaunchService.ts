@@ -162,6 +162,19 @@ export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
   }
 }
 
+/**
+ * The lookup that established the base ref is unusable: the checkout alone, a checkout with no
+ * remote, every remote (`remoteNames`) answering that it lacks the commit, or a remote
+ * (`remoteNames[0]`) giving an object that is no commit.
+ */
+export const ThreadLaunchBaseRefLookup = Schema.Literals([
+  "checkout",
+  "no-remote",
+  "remotes-lack-commit",
+  "not-a-commit",
+]);
+export type ThreadLaunchBaseRefLookup = typeof ThreadLaunchBaseRefLookup.Type;
+
 export class ThreadLaunchBaseRefError extends Schema.TaggedError<ThreadLaunchBaseRefError>()(
   "ThreadLaunchBaseRefError",
   {
@@ -169,12 +182,26 @@ export class ThreadLaunchBaseRefError extends Schema.TaggedError<ThreadLaunchBas
     projectTitle: Schema.String,
     workspaceRoot: Schema.String,
     baseRef: Schema.String,
+    lookup: ThreadLaunchBaseRefLookup,
+    remoteNames: Schema.Array(Schema.String),
   },
 ) {
   override get message(): string {
-    return `Base ref "${this.baseRef}" does not resolve to a commit in project "${this.projectTitle}" (${this.workspaceRoot}).`;
+    const project = `project "${this.projectTitle}" (${this.workspaceRoot})`;
+    switch (this.lookup) {
+      case "checkout":
+        return `Base ref "${this.baseRef}" does not resolve to a commit in ${project}.`;
+      case "no-remote":
+        return `Base ref "${this.baseRef}" is not in ${project}, which has no Git remote to fetch it from.`;
+      case "remotes-lack-commit":
+        return `Base ref "${this.baseRef}" is not in ${project}, and none of its remotes (${this.remoteNames.join(", ")}) has that commit.`;
+      case "not-a-commit":
+        return `Base ref "${this.baseRef}" names an object from remote ${this.remoteNames[0]} that is not a commit, in ${project}.`;
+    }
   }
 }
+
+type BaseRefRefusal = Pick<ThreadLaunchBaseRefError, "lookup" | "remoteNames">;
 
 const isCommitSha = (ref: string) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(ref);
 
@@ -281,16 +308,21 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Fetches `sha` itself from the project's remotes, the primary first, when the checkout lacks
-   * it, and says whether it has it now: a fetched SHA may name a tree or blob, not a commit.
+   * Fetches `sha`, which the checkout lacks, from the project's remotes, the primary first. The
+   * refusal when it is still no commit here: a fetched SHA may name a tree or blob.
    */
   const fetchCommitFromRemotes = Effect.fn("ThreadLaunchService.fetchCommitFromRemotes")(function* (
     cwd: string,
     sha: string,
   ) {
-    if (yield* git.hasCommit({ cwd, refName: sha })) return true;
-    if (!(yield* git.fetchCommit({ cwd, commitSha: sha }))) return false;
-    return yield* git.hasCommit({ cwd, refName: sha });
+    const { fetchedFrom, remoteNames } = yield* git.fetchCommit({ cwd, commitSha: sha });
+    if (fetchedFrom === null)
+      return {
+        lookup: remoteNames.length === 0 ? "no-remote" : "remotes-lack-commit",
+        remoteNames,
+      } satisfies BaseRefRefusal;
+    if (yield* git.hasCommit({ cwd, refName: sha })) return undefined;
+    return { lookup: "not-a-commit", remoteNames: [fetchedFrom] } satisfies BaseRefRefusal;
   });
 
   const checkWorktreeBase: ThreadLaunchService["Service"]["checkWorktreeBase"] = Effect.fn(
@@ -309,16 +341,24 @@ const make = Effect.gen(function* () {
         return undefined;
       // A commit names no remote branch, so the remote lookup below would find `origin` for any
       // hash and call a commit the remote does not hold resolved.
-      if (strategy.startFromOrigin === true && isCommitSha(baseRef))
-        return (yield* fetchCommitFromRemotes(cwd, baseRef)) ? undefined : project;
-      if (
-        strategy.startFromOrigin === true &&
-        (yield* git.resolveWorktreeBaseRemote({ cwd, refName: baseRef })) !== null
-      )
-        return undefined;
+      if (strategy.startFromOrigin === true && isCommitSha(baseRef)) {
+        const refusal = yield* fetchCommitFromRemotes(cwd, baseRef);
+        return refusal === undefined ? undefined : { project, ...refusal };
+      }
+      const remote =
+        strategy.startFromOrigin === true
+          ? yield* git.resolveWorktreeBaseRemote({ cwd, refName: baseRef })
+          : undefined;
+      // Preparation fetches the branch, and Git says then whether the remote has it.
+      if (remote !== undefined && remote !== null) return undefined;
       // git worktree add accepts remote-tracking branches; let Git decide when any matching ref exists.
       if (yield* git.hasRefNamed({ cwd, refName: baseRef })) return undefined;
-      return (yield* git.hasCommit({ cwd, refName: "HEAD" })) ? project : undefined;
+      if (!(yield* git.hasCommit({ cwd, refName: "HEAD" }))) return undefined;
+      return {
+        project,
+        lookup: remote === null ? "no-remote" : "checkout",
+        remoteNames: [],
+      } satisfies BaseRefRefusal & { project: typeof project };
     }).pipe(
       // The launch reads the base again and reports inside the thread what fails then.
       Effect.tapError((cause) =>
@@ -332,10 +372,12 @@ const make = Effect.gen(function* () {
     );
     if (unresolved !== undefined)
       return yield* new ThreadLaunchBaseRefError({
-        projectId: unresolved.id,
-        projectTitle: unresolved.title,
-        workspaceRoot: unresolved.workspaceRoot,
+        projectId: unresolved.project.id,
+        projectTitle: unresolved.project.title,
+        workspaceRoot: unresolved.project.workspaceRoot,
         baseRef,
+        lookup: unresolved.lookup,
+        remoteNames: unresolved.remoteNames,
       });
   });
 
@@ -444,16 +486,31 @@ const make = Effect.gen(function* () {
         }
         let startRef = input.workspaceStrategy.baseRef;
         let baseRefName = input.workspaceStrategy.baseRef;
+        const fromRemote = input.workspaceStrategy.startFromOrigin === true;
         // A commit SHA names no branch to fetch, so the commit itself is fetched.
-        if (
-          input.workspaceStrategy.startFromOrigin === true &&
-          isCommitSha(input.workspaceStrategy.baseRef)
-        ) {
-          const present = yield* fetchCommitFromRemotes(
+        const fetchesCommit =
+          fromRemote &&
+          isCommitSha(input.workspaceStrategy.baseRef) &&
+          !(yield* git
+            .hasCommit({ cwd: project.workspaceRoot, refName: input.workspaceStrategy.baseRef })
+            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId))));
+        const remote =
+          fromRemote && !isCommitSha(input.workspaceStrategy.baseRef)
+            ? yield* git
+                .resolveWorktreeBaseRemote({
+                  cwd: project.workspaceRoot,
+                  refName: input.workspaceStrategy.baseRef,
+                })
+                .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)))
+            : null;
+        const shouldFetch = fetchesCommit || remote !== null;
+        yield* setupTracker.stageStatus(threadId, "fetch", shouldFetch ? "running" : "skipped");
+        if (fetchesCommit) {
+          const refusal = yield* fetchCommitFromRemotes(
             project.workspaceRoot,
             input.workspaceStrategy.baseRef,
           ).pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
-          if (!present)
+          if (refusal !== undefined)
             return yield* mapError(
               input,
               "provision-worktree",
@@ -464,21 +521,10 @@ const make = Effect.gen(function* () {
                 projectTitle: project.title,
                 workspaceRoot: project.workspaceRoot,
                 baseRef: input.workspaceStrategy.baseRef,
+                ...refusal,
               }),
             );
         }
-        const remote =
-          input.workspaceStrategy.startFromOrigin === true &&
-          !isCommitSha(input.workspaceStrategy.baseRef)
-            ? yield* git
-                .resolveWorktreeBaseRemote({
-                  cwd: project.workspaceRoot,
-                  refName: input.workspaceStrategy.baseRef,
-                })
-                .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)))
-            : null;
-        const shouldFetch = remote !== null;
-        yield* setupTracker.stageStatus(threadId, "fetch", shouldFetch ? "running" : "skipped");
         if (remote !== null) {
           const remoteBase = yield* git
             .fetchWorktreeBaseCommit({

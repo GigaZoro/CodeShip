@@ -5,6 +5,8 @@ import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ProcessRunner from "../processRunner.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
@@ -192,6 +194,69 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         expect(bareProbes()).toEqual([]);
 
         expect(yield* resolver.resolve(gitDir)).toBeNull();
+      }).pipe(Effect.provide(ProcessRunner.layer)),
+  );
+
+  // Git that timed out or failed gave `null`, which callers took for a folder with no repository:
+  // a delegated worktree then started from the default branch instead of the thread's commit.
+  it.effect.each([
+    {
+      outcome: "timed-out",
+      command: "rev-parse --show-toplevel",
+      text: "timed out while finding the repository root",
+    },
+    { outcome: "failed", command: "remote -v", text: "failed while listing the remotes" },
+    { outcome: "not-run", command: "remote -v", text: "could not start while listing the remotes" },
+  ] as const)(
+    "fails the lookup when Git $text, and asks Git again next time",
+    ({ outcome, command, text }) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const cwd = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-repository-identity-lookup-failed-",
+        });
+        yield* git(cwd, ["init"]);
+        yield* git(cwd, ["remote", "add", "origin", "git@github.com:T3Tools/t3code.git"]);
+
+        const runner = yield* ProcessRunner.ProcessRunner;
+        let breaks = 1;
+        const resolver = yield* RepositoryIdentityResolver.make().pipe(
+          Effect.provideService(ProcessRunner.ProcessRunner, {
+            run: (input) =>
+              Effect.suspend(() => {
+                if (breaks === 0 || !input.args.join(" ").endsWith(command))
+                  return runner.run(input);
+                breaks -= 1;
+                if (outcome === "not-run")
+                  return Effect.fail(
+                    new ProcessRunner.ProcessSpawnError({
+                      command: input.command,
+                      argumentCount: input.args.length,
+                      cause: new Error("spawn git EAGAIN"),
+                    }),
+                  );
+                return runner
+                  .run(input)
+                  .pipe(
+                    Effect.map((result) =>
+                      outcome === "timed-out"
+                        ? { ...result, timedOut: true, code: null }
+                        : { ...result, code: ChildProcessSpawner.ExitCode(128) },
+                    ),
+                  );
+              }),
+          }),
+        );
+
+        const lookup = yield* Effect.result(resolver.resolve(cwd));
+        expect(lookup).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "RepositoryIdentityLookupError", outcome },
+        });
+        expect(Result.isFailure(lookup) && lookup.failure.message).toMatch(
+          new RegExp(`^Git ${text} in .+\\.$`),
+        );
+        expect((yield* resolver.resolve(cwd))?.canonicalKey).toBe("github.com/t3tools/t3code");
       }).pipe(Effect.provide(ProcessRunner.layer)),
   );
 

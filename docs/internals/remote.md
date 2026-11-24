@@ -156,13 +156,22 @@ and a refused settle is left to auto-settlement there.
 
 A task with `isolation: "worktree"` branches its child's worktree there from the
 parent checkout's HEAD commit, passed as a SHA `baseRef` with `startFromOrigin`.
-The other machine can only fetch a pushed commit, so `RemoteDelegation` refuses an
-unpushed one by name, and `ThreadLaunchService` fetches a SHA base by itself from the
-project's remotes, the primary first, when the checkout lacks it and refuses the launch
-when no remote gives it. A project of another repository cannot fetch it at all, so when
-`target.projectId` names one (compared by the identity `t3_project_read` resolves),
-the worktree starts from that project's default branch instead. This is how a
-Windows-only test run happens at an exact commit.
+`RemoteDelegation` refuses it here only when this checkout has no Git remote, since
+then no machine can fetch the commit. Whether the other machine's remotes hold it,
+including a commit that only a tag reaches, is for that machine to say. There
+`ThreadLaunchService` fetches a SHA base the checkout lacks from the project's remotes
+in order: the primary first, then the others. A remote that fails, on its credentials
+or its network, is passed over. A server that refuses a fetch by SHA is asked again
+through the branches and tags it advertises. The launch is refused before any thread is
+created only when every remote answered and none has the commit. The refusal names
+those remotes, and the parent's task fails with it. When a remote failed and none gave
+the commit, the check cannot be sure, so the launch goes ahead and preparation reports
+that failure in the thread. A project of another repository cannot fetch it at all, so
+when `target.projectId` names one (compared by the identity `t3_project_read` resolves),
+the worktree starts from that project's default branch instead. Each side reads that
+identity from Git. A read that fails, such as Git timing out, fails the task with its
+reason instead of passing for a different repository. This is how a Windows-only test
+run happens at an exact commit.
 
 The link is routing, not isolation: an agent the link starts runs as the
 receiving environment's user. **A full-access link is therefore not fenced**:
