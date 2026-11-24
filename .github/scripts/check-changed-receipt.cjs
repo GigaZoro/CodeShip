@@ -41,7 +41,14 @@ function workingTree(cwd) {
   try {
     const index = path.join(temp, "index");
     const real = git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
-    if (fs.existsSync(real)) fs.copyFileSync(real, index);
+    if (fs.existsSync(real)) {
+      // Git rereads a file whose stat it cached only when the file is no older than the index, and a copy is new, so a
+      // same-size edit made in the second git wrote the index would read as unchanged. The time is read before the
+      // copy and floored to whole seconds, so the copy is never newer than the index it copies.
+      const second = Number(fs.statSync(real, { bigint: true }).mtimeNs / 1_000_000_000n);
+      fs.copyFileSync(real, index);
+      fs.utimesSync(index, second, second);
+    }
     const objects = path.join(temp, "objects");
     fs.mkdirSync(objects);
     const env = {

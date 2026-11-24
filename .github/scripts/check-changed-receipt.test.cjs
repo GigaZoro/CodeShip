@@ -111,6 +111,22 @@ test("computing the working tree writes no objects to the repository", () =>
     // The id is what a commit of this tree would get.
     git("add", "--all");
     assert.equal(git("write-tree"), tree);
+
+    // An edit of the same size in the second git wrote the index, which only content shows. Times are set, and ctime,
+    // which cannot be, is not compared, so the edit and the index share their second on any machine.
+    git("config", "core.trustctime", "false");
+    const second = 1_600_000_000;
+    const app = path.join(work, "app.txt");
+    write("app.txt", "staged\n");
+    fs.utimesSync(app, second, second);
+    git("add", "app.txt");
+    write("app.txt", "edited\n");
+    fs.utimesSync(app, second, second);
+    const index = git("rev-parse", "--path-format=absolute", "--git-path", "index");
+    fs.utimesSync(index, second, second);
+    const racy = workingTree(work);
+    git("add", "--all");
+    assert.equal(git("write-tree"), racy);
   }));
 
 test("a pass covers the push only when it compared against the commit main is at", () =>

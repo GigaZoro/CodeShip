@@ -1,3 +1,7 @@
+## 2026-11-24 — check:changed sees an edit made as git wrote its index
+
+- `vp run check:changed` hashes the working tree through a copy of git's index. The copy was newer than the index, so git trusted its cached file details for a same-size edit made in the second it last wrote the index. The run then failed with "files changed while the checks ran", or recorded its pass for a tree that did not match the files. The copy now keeps the index's time. No change to the app.
+
 ## 2026-11-24 — A script test passes on macOS
 
 - The test that runs the release-notes command from a copy compared a path through macOS's `/private/var` link with one that did not, so it failed on every Mac. It now resolves its temporary folder first. No change to the app.
