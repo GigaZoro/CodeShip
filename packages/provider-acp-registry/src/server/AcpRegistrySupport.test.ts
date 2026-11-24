@@ -295,25 +295,31 @@ describe("AcpRegistrySupport", () => {
   it.effect("resolves a local executable path and inherits the host environment", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const cacheDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-acp-local-path-" });
-      const commandPath = `${cacheDir}/dsh wrapper`;
+      const workspace = path.join(cacheDir, "workspace");
+      yield* fileSystem.makeDirectory(workspace);
+      const commandPath = path.join(
+        cacheDir,
+        nativePlatform === "win32" ? "dsh wrapper.EXE" : "dsh wrapper",
+      );
       yield* fileSystem.writeFileString(commandPath, "#!/bin/sh\n");
       yield* fileSystem.chmod(commandPath, 0o755);
-      const environment = { PATH: "/unused", INHERITED: "host" };
+      const environment = { PATH: path.join(cacheDir, "unused"), INHERITED: "host" };
       const resolver = yield* AcpRegistrySupport.makeAcpRegistryCatalog({
         cacheDir,
-        toolsDir: `${cacheDir}/tools`,
+        toolsDir: path.join(cacheDir, "tools"),
         registryUrl,
       }).pipe(Effect.provideService(HostProcess.Environment, environment));
       const resolved = yield* resolver.resolve(
         decodeAcpRegistrySettings({ source: "local", commandPath }),
-        "/workspace",
+        workspace,
       );
 
       expect(resolved.spawn).toEqual({
         command: commandPath,
         args: [],
-        cwd: "/workspace",
+        cwd: workspace,
         env: environment,
         shell: false,
       });
@@ -322,7 +328,7 @@ describe("AcpRegistrySupport", () => {
       for (const extension of [".cmd", ".BAT"]) {
         const windowsResolver = yield* AcpRegistrySupport.makeAcpRegistryCatalog({
           cacheDir,
-          toolsDir: `${cacheDir}/tools`,
+          toolsDir: path.join(cacheDir, "tools"),
           registryUrl,
         }).pipe(
           Effect.provideService(HostProcess.Platform, "win32"),
@@ -331,7 +337,7 @@ describe("AcpRegistrySupport", () => {
         const localSettings = decodeAcpRegistrySettings({ source: "local", commandPath: "dsh" });
         for (const failure of [
           yield* windowsResolver.inspect(localSettings).pipe(Effect.flip),
-          yield* windowsResolver.resolve(localSettings, "/workspace").pipe(Effect.flip),
+          yield* windowsResolver.resolve(localSettings, workspace).pipe(Effect.flip),
         ]) {
           expect(failure).toMatchObject({
             reason: "runner_unavailable",
@@ -341,6 +347,7 @@ describe("AcpRegistrySupport", () => {
       }
     }).pipe(
       Effect.scoped,
+      Effect.provideService(HostProcess.Platform, nativePlatform),
       Effect.provide(layerResolver(() => Effect.die("unexpected registry request"))),
     ),
   );
