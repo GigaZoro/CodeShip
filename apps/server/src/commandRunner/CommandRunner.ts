@@ -56,6 +56,7 @@ import { escapePowerShellStringLiteral } from "../process/externalLauncher.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as CpuAdmission from "../resourceTelemetry/CpuAdmission.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import { forkParked } from "../serverActivation.ts";
 import { readProcessStartedAt } from "../serverRuntimeState.ts";
@@ -173,7 +174,7 @@ const POSIX_WRAPPER = [
 type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
 
 /**
- * `queued`: it waits for memory to start, with no process yet. `lost`: it vanished without an
+ * `queued`: it waits for memory or CPU to start, with no process yet. `lost`: it vanished without an
  * exit status. `stopped`: its task got a result elsewhere (task_cancel, Stop, archive), so the
  * runner stopped it.
  */
@@ -505,6 +506,7 @@ const make = Effect.gen(function* () {
   const hostEnv = yield* HostProcess.Environment;
   const watchInterval = yield* WatchInterval;
   const memoryAdmission = yield* MemoryAdmission.MemoryAdmission;
+  const cpuAdmission = yield* CpuAdmission.CpuAdmission;
   const heldShortage = MemoryAdmission.holdShortage(
     memoryAdmission.shortage,
     Duration.toMillis(yield* ShortageRecheck),
@@ -523,7 +525,7 @@ const make = Effect.gen(function* () {
   const watched = new Map<string, CommandRunRow>();
   /** Watched commands whose start read could not tell wrapper from pid reuse; each check asks again. */
   const unconfirmed = new Set<string>();
-  /** Commands waiting for memory to start, oldest first. Changed under the lock. */
+  /** Commands waiting for memory or CPU to start, oldest first. Changed under the lock. */
   const queue: Array<CommandRunRow> = [];
   /** Every change to a watched command, so its process is stopped or delivered once. */
   const lock = yield* Semaphore.make(1);
@@ -1381,6 +1383,21 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const runningCount = () => {
+    let running = 0;
+    for (const row of watched.values()) if (row.status === "running") running += 1;
+    return running;
+  };
+
+  /**
+   * The saturation that holds a command back: none while no command of this server runs, so a
+   * machine loaded by other programs still runs its commands, one at a time, instead of starving
+   * them.
+   */
+  const cpuHold = Effect.suspend(() =>
+    runningCount() === 0 ? Effect.succeed(null) : cpuAdmission.saturation,
+  );
+
   /** Why a new command waits to start, or undefined when it starts at once. */
   const waitingReason = Effect.gen(function* () {
     const shortage = yield* memoryAdmission.shortage;
@@ -1388,10 +1405,14 @@ const make = Effect.gen(function* () {
     if (shortage !== null) {
       return `Queued until this machine has memory for it: ${MemoryAdmission.describeMemoryShortage(shortage)}. ${limit}`;
     }
+    const saturation = yield* cpuHold;
+    if (saturation !== null) {
+      return `Queued, waiting for CPU: ${CpuAdmission.describeCpuSaturation(saturation)}. ${limit}`;
+    }
     // Commands queued before it start first.
     return queue.length === 0
       ? undefined
-      : `Queued behind commands that wait for memory to start. ${limit}`;
+      : `Queued behind commands that wait for memory or CPU to start. ${limit}`;
   });
 
   const closedOf = (thread: {
@@ -1539,13 +1560,13 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Starts the oldest queued command once this machine has memory for it, one a pass, so each
-   * start reads memory after the one before it took its share. Its time limit counts from here.
+   * Starts the oldest queued command once this machine has memory and CPU for it, one a pass, so
+   * each start reads them after the one before it took its share. Its time limit counts from here.
    */
   const startQueued = Effect.fn("CommandRunner.startQueued")(function* () {
     yield* lock.withPermits(1)(Effect.forEach([...unstartedEnds.values()], endUnstarted));
     const next = queue[0];
-    if (next === undefined || (yield* queuedShortage) !== null) return;
+    if (next === undefined || (yield* queuedShortage) !== null || (yield* cpuHold) !== null) return;
     // Outside the lock, which a slow read of the agent's environment would hold.
     const environment = yield* queuedEnvironment(next).pipe(Effect.result);
     yield* lock.withPermits(1)(
@@ -1553,7 +1574,7 @@ const make = Effect.gen(function* () {
         // A cancel, Stop or close took it off meanwhile; the next pass looks again.
         if (queue[0] !== next) return;
         // The read took a while, and may have started a process of its own.
-        if ((yield* queuedShortage) !== null) return;
+        if ((yield* queuedShortage) !== null || (yield* cpuHold) !== null) return;
         const instead = yield* notToStart(next);
         if (instead !== undefined) return yield* dropQueued(next, instead.end);
         if (environment._tag === "Failure") {

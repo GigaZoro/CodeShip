@@ -1,3 +1,7 @@
+## 2026-11-24 — Commands wait for a saturated CPU
+
+- `t3_command_run` now also holds a new command while the machine's CPUs are saturated (busy at or over 0.95 per core), as it already does when memory is short. Before, 18 commands, mostly test suites and pushes, could start together on a 12-core machine, run many times slower and fail their guarded timeouts. A held command waits in the same queue, `task_status` says it is waiting for CPU, its time limit counts from when it starts, and it is never refused. When none of this server's commands is running, the first queued command starts whatever the reading, so a machine loaded by other programs still runs commands.
+
 ## 2026-11-24 — Shell tests run the Mac's real bash in check:changed
 
 - On macOS, `vp run check:changed` now runs the setup-script and desktop-release signing tests outside Vite+'s file tracker, which swaps every `bash` and `sh` for its bundled Oils shell. They no longer fail with `osh usage error: got invalid flag '--noprofile'`, and a new test that starts bash with bash's own flags must be listed the same way. No change to the app.

@@ -56,6 +56,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as CpuAdmission from "../resourceTelemetry/CpuAdmission.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as CommandRunner from "./CommandRunner.ts";
 import { ENDED_IDENTITY, identityWindow } from "./processIdentity.ts";
@@ -360,6 +361,7 @@ const layerTest = Layer.mergeAll(
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-command-runner-" }),
   NodeCrypto.layer,
   MemoryAdmission.layerTest(),
+  CpuAdmission.layerTest(),
 ).pipe(Layer.provideMerge(layerOrchestration), Layer.provideMerge(NodeServices.layer));
 
 /**
@@ -3066,6 +3068,127 @@ it.layer(layerTest, { excludeTestServices: true })("a command waiting for memory
           (yield* taskOf(chat.threadId, waiting.taskId))?.result,
           "Stopped: the chat was archived.",
         );
+      }),
+  );
+});
+
+const SATURATION: CpuAdmission.CpuSaturation = { busyShare: 0.99, limit: 0.95, cores: 12 };
+
+/** CPUs saturated until `clear`; each read is offered to `reads`. */
+const busyCpu = Effect.gen(function* () {
+  let saturation: CpuAdmission.CpuSaturation | null = SATURATION;
+  const reads = yield* Queue.unbounded<CpuAdmission.CpuSaturation | null>();
+  return {
+    reads,
+    clear: Effect.sync(() => {
+      saturation = null;
+    }),
+    on: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(
+        Effect.provideService(CpuAdmission.CpuAdmission, {
+          saturation: Effect.sync(() => saturation).pipe(
+            Effect.tap((seen) => Queue.offer(reads, seen)),
+          ),
+        }),
+      ),
+  };
+});
+
+const CPU_WAIT =
+  /^Queued, waiting for CPU: the CPUs are 0\.99 busy across 12 cores, at or over the 0\.95 limit\. Its time limit counts from when it starts\.$/;
+
+/** A command that runs until its chat's workspace has a `go` file. */
+const HOLD_COMMAND = "until [ -e go ]; do sleep 0.05; done; echo held";
+
+const release = (chat: { readonly workspace: string }) =>
+  Effect.sync(() => NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), ""));
+
+it.layer(layerTest, { excludeTestServices: true })("a command waiting for CPU", (it) => {
+  it.effect.skipIf(isWindowsHost)(
+    "starts nothing while the CPUs are saturated and a command runs, says so in its task, then starts once they clear, its time limit counted from its start",
+    () =>
+      Effect.gen(function* () {
+        const holder = yield* liveChat("command-cpu-holder");
+        const chat = yield* liveChat("command-cpu-waiting");
+        const cpu = yield* busyCpu;
+        const clock = yield* clockBehind;
+        const [held, waiting, queued] = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            // Nothing runs yet, so the saturated CPUs hold nothing back.
+            // The clock catches up an hour, which the default time limit would not outlast.
+            const held = yield* runner.run(callerOf(holder.threadId), {
+              command: HOLD_COMMAND,
+              timeoutMinutes: 240,
+            });
+            assert.equal((yield* commandRow(held.taskId))?.status, "running");
+            const waiting = yield* runner.run(callerOf(chat.threadId), {
+              command: "echo > started; echo waited",
+              timeoutMinutes: 5,
+            });
+            // A pass that read the saturation after the request started nothing.
+            yield* Queue.clear(cpu.reads);
+            yield* Queue.take(cpu.reads);
+            const queued = (yield* commandRow(waiting.taskId))!;
+            assert.equal(queued.status, "queued");
+            assert.isNull(queued.pid);
+            assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "started")));
+            const task = yield* taskOf(chat.threadId, waiting.taskId);
+            assert.equal(task?.status, "pending");
+            assert.match(task?.progress ?? "", CPU_WAIT);
+            yield* clock.catchUp;
+            yield* cpu.clear;
+            yield* nextWake(chat.threadId);
+            return [held, waiting, queued] as const;
+          }),
+        ).pipe(cpu.on, clock.on);
+        const ran = (yield* commandRow(waiting.taskId))!;
+        assert.isAtLeast(Date.parse(ran.started_at) - Date.parse(queued.started_at), HOUR_MS);
+        assert.equal(Date.parse(ran.deadline_at) - Date.parse(ran.started_at), 5 * 60_000);
+        const task = yield* taskOf(chat.threadId, waiting.taskId);
+        assert.equal(task?.status, "completed");
+        assert.notProperty(task, "progress");
+        assert.match(task?.result ?? "", /Last output:\nwaited\n/);
+        // The command that held the place is still running, and ends on its own.
+        assert.equal((yield* commandRow(held.taskId))?.status, "running");
+        yield* release(holder);
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "starts the first queued command whatever the reading once no command of the server runs",
+    () =>
+      Effect.gen(function* () {
+        const holder = yield* liveChat("command-cpu-starve-holder");
+        const first = yield* liveChat("command-cpu-starve-first");
+        const second = yield* liveChat("command-cpu-starve-second");
+        const cpu = yield* busyCpu;
+        const [one, two] = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            yield* runner.run(callerOf(holder.threadId), { command: HOLD_COMMAND });
+            const one = yield* runner.run(callerOf(first.threadId), {
+              command: "echo > started; until [ -e go ]; do sleep 0.05; done; echo first",
+            });
+            const two = yield* runner.run(callerOf(second.threadId), { command: "echo second" });
+            assert.equal((yield* commandRow(one.taskId))?.status, "queued");
+            assert.equal((yield* commandRow(two.taskId))?.status, "queued");
+            const behind = yield* taskOf(second.threadId, two.taskId);
+            assert.match(behind?.progress ?? "", /^Queued, waiting for CPU: /);
+            // Nothing runs after the holder ends; the CPUs are still saturated.
+            yield* release(holder);
+            yield* nextWake(holder.threadId);
+            // The first starts, so the second waits behind a running command again.
+            yield* awaitFile(NodePath.join(first.workspace, "started"));
+            assert.equal((yield* commandRow(two.taskId))?.status, "queued");
+            yield* release(first);
+            yield* nextWake(second.threadId);
+            return [one, two] as const;
+          }),
+        ).pipe(cpu.on);
+        assert.deepStrictEqual(yield* startOrder([one.taskId, two.taskId]), [
+          one.taskId,
+          two.taskId,
+        ]);
+        assert.equal((yield* taskOf(second.threadId, two.taskId))?.status, "completed");
       }),
   );
 });

@@ -207,6 +207,7 @@ import * as DesktopUpdateResume from "./desktopUpdate/DesktopUpdateResume.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as HostResources from "./resourceTelemetry/HostResources.ts";
+import * as CpuAdmission from "./resourceTelemetry/CpuAdmission.ts";
 import * as MemoryAdmission from "./resourceTelemetry/MemoryAdmission.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
@@ -340,6 +341,7 @@ const layerUsage = UsageService.layer.pipe(
 const layerResourceDiagnostics = Layer.mergeAll(
   HostResources.layer,
   MemoryAdmission.layer.pipe(Layer.provide(layerServerSettings)),
+  CpuAdmission.layer,
   layerResourceTelemetry,
   ProcessDiagnostics.layer.pipe(Layer.provide(layerResourceTelemetry)),
   ProcessResourceMonitor.layer.pipe(Layer.provide(layerResourceTelemetry)),
