@@ -13359,6 +13359,7 @@ const catalog: MessageCatalog = {
     "Назви чатів та інший згенерований текст на підключених пристроях із цим провайдером. Написання комітів і пул-реквестів та посібники з рев’ю використовують її, доки не оберуть власну.",
   "thread transfers {times}": "перенесення чатів {times}",
   "Thread unavailable": "Чат недоступний",
+  "Tighter thread rows on the home list.": "Щільніші рядки чатів у списку на головному екрані.",
   "Thread, {title}": "Чат, {title}",
   "thread.page does not let other sites embed it, so in a browser it opens in a new tab. The T3.CodeShip desktop app shows it right here.":
     "thread.page не дозволяє іншим сайтам вбудовувати його, тому в браузері він відкривається в новій вкладці. Настільний застосунок T3.CodeShip показує його прямо тут.",

@@ -6,7 +6,10 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import {
+  ACCENT_COLOR_HUES,
+  type AccentColor,
   EnvironmentId,
+  type InterfaceDensity,
   PullRequestInvolvement,
   PullRequestListFilters,
   PullRequestListState,
@@ -118,6 +121,10 @@ export interface Preferences {
   readonly codeFontSize?: number | null;
   readonly codeWordBreak?: boolean;
   readonly mathRenderingEnabled?: boolean;
+  /** Unset means comfortable. */
+  readonly interfaceDensity?: InterfaceDensity;
+  /** Unset means the theme's own primary. */
+  readonly accentColor?: AccentColor;
   /** Unset means on: crash reports are sent unless the user turns them off. */
   readonly crashReportsEnabled?: boolean;
   readonly connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
@@ -213,6 +220,8 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     codeFontSize?: number | null;
     codeWordBreak?: boolean;
     mathRenderingEnabled?: boolean;
+    interfaceDensity?: InterfaceDensity;
+    accentColor?: AccentColor;
     crashReportsEnabled?: boolean;
     connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
     collapsedProjectGroups?: readonly string[];
@@ -316,6 +325,15 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (typeof parsed.codeWordBreak === "boolean") preferences.codeWordBreak = parsed.codeWordBreak;
   if (typeof parsed.mathRenderingEnabled === "boolean")
     preferences.mathRenderingEnabled = parsed.mathRenderingEnabled;
+  if (parsed.interfaceDensity === "comfortable" || parsed.interfaceDensity === "compact") {
+    preferences.interfaceDensity = parsed.interfaceDensity;
+  }
+  if (
+    parsed.accentColor === "theme" ||
+    (ACCENT_COLOR_HUES as readonly unknown[]).includes(parsed.accentColor)
+  ) {
+    preferences.accentColor = parsed.accentColor as AccentColor;
+  }
   if (typeof parsed.crashReportsEnabled === "boolean") {
     preferences.crashReportsEnabled = parsed.crashReportsEnabled;
   }

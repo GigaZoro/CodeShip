@@ -54,7 +54,6 @@ import { describeSchedule } from "../settings/scheduledTaskPresentation";
 import { useScheduledTaskFolderMenu } from "../settings/useScheduledTaskFolderMenu";
 import { useOpenScheduledTasks } from "../workspace/useOpenScheduledTasks";
 import {
-  THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME,
   THREAD_LIST_V2_ROW_DIVIDERS,
   getThreadListV2RowAppearance,
 } from "./thread-list-v2-row-appearance";
@@ -62,6 +61,7 @@ import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status
 import { threadStatusLabel } from "./thread-list-v2-items";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 import { useVisibleWorkingDurationLabel } from "./use-visible-working-duration-label";
+import { useThreadListRowContentClassName } from "./useThreadListRowDensity";
 import { t } from "../../lib/i18n";
 
 const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
@@ -136,6 +136,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
 }) {
   const { environmentId, task } = props;
+  const rowContentClassName = useThreadListRowContentClassName();
   const openScheduledTasks = useOpenScheduledTasks();
   const navigation = useNavigation();
   const theme = useUniwindTheme();
@@ -333,7 +334,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
             content
           ) : (
             <View>
-              <View className={THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME}>{content}</View>
+              <View className={rowContentClassName}>{content}</View>
               {THREAD_LIST_V2_ROW_DIVIDERS ? <View className="ml-5 h-px bg-border-subtle" /> : null}
             </View>
           )}

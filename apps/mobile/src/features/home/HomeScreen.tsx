@@ -107,6 +107,7 @@ import { useFabScroll } from "./FabScrollContext";
 import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
 import { ThreadListFilters } from "./ThreadListFilters";
 import { t } from "../../lib/i18n";
+import { useThreadListEstimatedRowHeight } from "../threads/useThreadListRowDensity";
 
 interface HomeScreenProps {
   readonly projects: ReadonlyArray<EnvironmentProject>;
@@ -163,7 +164,6 @@ interface HomeScreenProps {
   readonly onNewThreadInProject: (project: EnvironmentProject) => void;
 }
 
-const ESTIMATED_THREAD_LIST_V2_ROW_HEIGHT = 72;
 // Rows away from the viewport skip their swipe actions (see
 // swipe-row-activation), so render further ahead: a fast fling then reaches
 // rows that are already built instead of rows still being rebuilt.
@@ -201,6 +201,7 @@ function renderHomeScrollView(props: ScrollViewProps) {
 }
 
 export function HomeScreen(props: HomeScreenProps) {
+  const estimatedRowHeight = useThreadListEstimatedRowHeight();
   const usesNativeWorkspaceColumns = useNativeWorkspaceColumnsSupported();
   const workspace = useWorkspaceTabs();
   const [initialScrollOffset] = useState(() => workspace?.getScrollOffset("threads") ?? 0);
@@ -884,7 +885,7 @@ export function HomeScreen(props: HomeScreenProps) {
               keyExtractor={v2KeyExtractor}
               getItemType={(item) => item.type}
               itemsAreEqual={threadListV2ListItemsAreEqual}
-              estimatedItemSize={ESTIMATED_THREAD_LIST_V2_ROW_HEIGHT}
+              estimatedItemSize={estimatedRowHeight}
               drawDistance={THREAD_LIST_V2_DRAW_DISTANCE}
               recycleItems
               extraData={v2ExtraData}

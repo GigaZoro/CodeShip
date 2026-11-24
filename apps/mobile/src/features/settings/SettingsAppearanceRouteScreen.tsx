@@ -9,6 +9,7 @@ import { LanguageAppearanceSection } from "./appearance/sections/LanguageAppeara
 import { CodeAppearanceSection } from "./appearance/sections/CodeAppearanceSection";
 import { TerminalAppearanceSection } from "./appearance/sections/TerminalAppearanceSection";
 import { TextAppearanceSection } from "./appearance/sections/TextAppearanceSection";
+import { InterfaceAppearanceSection } from "./appearance/sections/InterfaceAppearanceSection";
 import { ThemeAppearanceSection } from "./appearance/sections/ThemeAppearanceSection";
 
 export function SettingsAppearanceRouteScreen() {
@@ -26,6 +27,7 @@ export function SettingsAppearanceRouteScreen() {
         }}
       >
         <ThemeAppearanceSection />
+        <InterfaceAppearanceSection />
         {Platform.OS === "android" ? <AndroidNavigationAppearanceSection /> : null}
         <LanguageAppearanceSection />
         <TextAppearanceSection />
