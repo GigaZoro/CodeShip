@@ -72,6 +72,10 @@ jobs:
           fi
           sha="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION" --jq .target_commitish)"
           bundle_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUNDLE_RUN" --jq .head_sha)"
+          if [[ "$GITHUB_REF" != "refs/tags/v$VERSION" || "$GITHUB_SHA" != "$sha" ]]; then
+            echo "::error::Dispatch this workflow from the published tag v$VERSION at $sha."
+            exit 1
+          fi
           if [[ "$sha" != "$bundle_sha" ]]; then
             echo "::error::v$VERSION was built from $sha, but run $BUNDLE_RUN built $bundle_sha."
             exit 1

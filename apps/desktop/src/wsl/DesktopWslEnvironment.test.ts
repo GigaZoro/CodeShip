@@ -106,7 +106,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     fixtures.length = 0;
   });
 
-  const createFixture = (serverEntry = SERVER_ENTRY_SOURCE) => {
+  const createFixture = (serverEntry = SERVER_ENTRY_SOURCE, includeMetadata = false) => {
     const result = runShell(
       [
         "set -eu",
@@ -115,6 +115,14 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         'mkdir -p "$stage/node_modules/node-pty/build/Release" "$work/home"',
         `printf '%s' ${sh(serverEntry)} > "$stage/t3"`,
         'chmod +x "$stage/t3"',
+        ...(includeMetadata
+          ? [
+              'mkdir -p "$stage/codex-metadata/bin"',
+              'printf champ > "$stage/codex-metadata/bin/codex"',
+              'chmod +x "$stage/codex-metadata/bin/codex"',
+              "printf 'x 5 bin/codex\\n' > \"$stage/codex-metadata.files\"",
+            ]
+          : []),
         `printf '%s' 'pty-native-payload' > "$stage/node_modules/node-pty/build/Release/pty.node"`,
         `tar -czf "$work/wsl-runtime.tar.gz" -C "$work/stage" t3-0.0.0-linux-x64`,
         `printf 'work:%s\\n' "$work"`,
@@ -225,6 +233,36 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("libatomic.so.1");
+    expect(parseWslRuntimeRoot(result.stdout)).toBeNull();
+  });
+
+  it.each([
+    "rm -rf codex-metadata",
+    "rm -rf codex-metadata codex-metadata.files",
+    "chmod -x codex-metadata/bin/codex",
+    ": > codex-metadata/bin/codex",
+  ])("restores required metadata from the verified archive after %s", (damage) => {
+    const fixture = createFixture(SERVER_ENTRY_SOURCE, true);
+    expect(fixture.install().status).toBe(0);
+    expect(runShell(`cd ${sh(fixture.runtimeRoot)} && ${damage}`).status).toBe(0);
+    const repaired = fixture.install();
+    expect(repaired.status, repaired.stderr).toBe(0);
+    const restored = runShell(
+      `cd ${sh(fixture.runtimeRoot)} && test -s codex-metadata.files && test -x codex-metadata/bin/codex && cat codex-metadata/bin/codex`,
+    );
+    expect(restored.stdout).toBe("champ");
+  });
+
+  it("rejects an extraction that loses the inventory declared by the verified archive", () => {
+    const fixture = createFixture(SERVER_ENTRY_SOURCE, true);
+    const result = runShell(
+      [
+        'tar() { command tar "$@" && rm -f "$runtime_tmp/codex-metadata.files"; }',
+        fixture.installScript(),
+      ].join("\n"),
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("did not restore its Codex metadata inventory");
     expect(parseWslRuntimeRoot(result.stdout)).toBeNull();
   });
 

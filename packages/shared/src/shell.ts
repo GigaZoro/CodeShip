@@ -42,6 +42,8 @@ function canExecuteFile(filePath: string): boolean {
 export interface CommandAvailabilityOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly extendEnv?: boolean;
+  /** Working directory of the child when resolving relative executables and PATH entries. */
+  readonly cwd?: string;
 }
 
 export type CommandAvailabilityChecker = (
@@ -70,12 +72,14 @@ export type SpawnExecutableResolver = (
   command: string,
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
+  cwd?: string,
 ) => string | undefined;
 
 function resolveSpawnExecutableWithNode(
   command: string,
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
+  cwd?: string,
 ): string | undefined {
   const path = platform === "win32" ? NodePath.win32 : NodePath.posix;
   const windowsPathExtensions = platform === "win32" ? resolveWindowsPathExtensions(env) : [];
@@ -98,14 +102,19 @@ function resolveSpawnExecutableWithNode(
   };
 
   if (command.includes("/") || command.includes("\\")) {
-    return candidates.find(isExecutable);
+    return candidates
+      .map((candidate) => (cwd ? path.resolve(cwd, candidate) : candidate))
+      .find(isExecutable);
   }
 
-  for (const pathEntry of (readEnvPath(env) ?? "").split(pathDelimiterForPlatform(platform))) {
-    const normalizedPathEntry = stripWrappingQuotes(pathEntry.trim());
-    if (normalizedPathEntry.length === 0) continue;
+  for (const directory of commandSearchDirectories(
+    readEnvPath(env) ?? "",
+    platform,
+    cwd,
+    path.resolve,
+  )) {
     for (const candidate of candidates) {
-      const candidatePath = path.join(normalizedPathEntry, candidate);
+      const candidatePath = path.join(directory, candidate);
       if (isExecutable(candidatePath)) return candidatePath;
     }
   }
@@ -443,6 +452,22 @@ function readEnvPath(env: NodeJS.ProcessEnv): string | undefined {
   return env.PATH ?? env.Path ?? env.path;
 }
 
+// With a child cwd, POSIX PATH entries are literal and an empty entry denotes that directory.
+function commandSearchDirectories(
+  value: string,
+  platform: NodeJS.Platform,
+  cwd: string | undefined,
+  resolve: (...paths: string[]) => string,
+): Set<string> {
+  const directories = new Set<string>();
+  const literal = cwd !== undefined && platform !== "win32";
+  for (const raw of value.split(pathDelimiterForPlatform(platform))) {
+    const entry = literal ? raw : stripWrappingQuotes(raw.trim());
+    if (entry || literal) directories.add(cwd === undefined ? entry : resolve(cwd, entry));
+  }
+  return directories;
+}
+
 function resolvePathEnvironmentVariable(env: NodeJS.ProcessEnv): string {
   return readEnvPath(env) ?? "";
 }
@@ -627,21 +652,26 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
 
   if (command.includes("/") || command.includes("\\")) {
     for (const candidate of commandCandidates) {
-      if (yield* isExecutableFile(candidate, platform, windowsPathExtensions)) {
-        return candidate;
+      const file = options.cwd ? path.resolve(options.cwd, candidate) : candidate;
+      if (yield* isExecutableFile(file, platform, windowsPathExtensions)) {
+        return file;
       }
     }
     return null;
   }
 
-  const pathValue = resolvePathEnvironmentVariable(env);
-  if (pathValue.length === 0) {
-    return null;
-  }
+  const pathValue =
+    options.cwd && platform !== "win32"
+      ? (env.PATH ?? "/usr/bin:/bin")
+      : resolvePathEnvironmentVariable(env);
 
-  const cacheKey = [platform, pathValue, windowsPathExtensions.join(";"), command].join(
-    COMMAND_RESOLUTION_CACHE_KEY_SEPARATOR,
-  );
+  const cacheKey = [
+    platform,
+    pathValue,
+    windowsPathExtensions.join(";"),
+    options.cwd ?? "",
+    command,
+  ].join(COMMAND_RESOLUTION_CACHE_KEY_SEPARATOR);
   const cache = yield* CommandResolutionCache;
   const nowNanos = yield* Clock.monotonicTimeNanos;
   const cached = cache.get(cacheKey);
@@ -657,16 +687,7 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
     return resolvedPath;
   };
 
-  // Keep case variants: Windows can make PATH directories case-sensitive.
-  const pathEntries: string[] = [];
-  const seenPathEntries = new Set<string>();
-  for (const entry of pathValue.split(pathDelimiterForPlatform(platform))) {
-    const pathEntry = stripWrappingQuotes(entry.trim());
-    if (pathEntry.length === 0 || seenPathEntries.has(pathEntry)) continue;
-
-    seenPathEntries.add(pathEntry);
-    pathEntries.push(pathEntry);
-  }
+  const pathEntries = commandSearchDirectories(pathValue, platform, options.cwd, path.resolve);
 
   const listings = yield* PathDirectoryListings;
   for (const pathEntry of pathEntries) {
@@ -691,6 +712,7 @@ export const resolveCommandPath = Effect.fn("shell.resolveCommandPath")(function
   options: CommandAvailabilityOptions = {},
 ) {
   return yield* resolveCommandPathForPlatform(command, {
+    ...options,
     env: options.env ?? (yield* HostProcess.Environment),
     platform: yield* HostProcess.Platform,
   });
@@ -876,6 +898,7 @@ export const resolveSpawnCommand = Effect.fnUntraced(function* (
     resolvePathEnvironmentVariable(env),
     resolveWindowsPathExtensions(env).join(";"),
     env.MSYSTEM ? "msystem" : "",
+    options.cwd ?? "",
     command,
   ].join(COMMAND_RESOLUTION_CACHE_KEY_SEPARATOR);
   const nowNanos = yield* Clock.currentTimeNanos;
@@ -884,7 +907,7 @@ export const resolveSpawnCommand = Effect.fnUntraced(function* (
   if (cached !== undefined && cached.expiresAtNanos > nowNanos) {
     resolvedExecutable = cached.resolvedPath;
   } else {
-    const found = resolveExecutable(command, platform, env);
+    const found = resolveExecutable(command, platform, env, options.cwd);
     resolvedExecutable = found === undefined ? null : preferGitForWindowsBinary(found, env);
     if (!explicitPath && resolvedExecutable !== null) {
       cacheCommandResolution(cache, cacheKey, resolvedExecutable, nowNanos);

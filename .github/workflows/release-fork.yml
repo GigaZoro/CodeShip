@@ -361,5 +361,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          gh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" \
+          gh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "v$VERSION" \
             -f version="$VERSION" -f bundle_run="$GITHUB_RUN_ID"

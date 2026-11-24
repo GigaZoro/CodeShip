@@ -39,7 +39,10 @@ jobs:
     if: >-
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'failure' &&
-      github.event.workflow_run.head_branch == github.event.repository.default_branch
+      (github.event.workflow_run.head_branch == github.event.repository.default_branch ||
+       (github.event.workflow_run.name == 'Release (fork) macOS' &&
+        github.event.workflow_run.event == 'workflow_dispatch' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -56,8 +59,9 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$RUN_WORKFLOW" == "Release (fork) macOS" ]]; then
-            latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
-            if [[ "$RUN_TITLE" != "Release (fork) macOS $latest" ]]; then
+            release="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '"\(.tag_name) \(.target_commitish)"')"
+            read -r latest sha <<<"$release"
+            if [[ "$RUN_TITLE" != "Release (fork) macOS $latest" || "$RUN_SHA" != "$sha" ]]; then
               echo "$latest is the latest release now, and its own run builds its macOS app."
               exit 0
             fi
@@ -164,7 +168,7 @@ jobs:
             fi
           fi
           export TITLE="Release (fork) macOS $tag"
-          run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-fork-macos.yml --limit 20 \
+          run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-fork-macos.yml --commit "$sha" --limit 20 \
             --json databaseId,status,conclusion,attempt,displayTitle \
             --jq 'first(.[] | select(.displayTitle == env.TITLE)) | "\(.databaseId) \(.status) \(.attempt) \(.conclusion)"')"
           if [[ -z "$run" ]]; then
@@ -179,7 +183,7 @@ jobs:
               exit 1
             fi
             echo "No macOS build for $tag; starting one from run $bundle_run."
-            gh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" \
+            gh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "$tag" \
               -f version="$version" -f bundle_run="$bundle_run"
             exit 0
           fi

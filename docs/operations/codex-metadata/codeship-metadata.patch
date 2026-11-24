@@ -79,105 +79,16 @@ diff --git a/codex-rs/app-server/src/message_processor.rs b/codex-rs/app-server/
          let MessageProcessorArgs {
              cloud_skill_provider,
              outgoing,
-@@ -557,7 +561,7 @@
-             outgoing.clone(),
-             Arc::clone(&thread_list_state_permit),
-         );
--        let thread_processor = ThreadRequestProcessor::new(
-+        let mut thread_processor = ThreadRequestProcessor::new(
-             auth_manager,
-             Arc::clone(&thread_manager),
-             outgoing.clone(),
-@@ -577,6 +581,7 @@
-             config_warnings.clone(),
-             sample_responses,
-         );
-+        thread_processor.codeship_metadata = codeship_metadata;
-         let turn_processor = TurnRequestProcessor::new(
-             Arc::clone(&thread_manager),
-             outgoing.clone(),
-diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
---- a/codex-rs/app-server/src/request_processors/thread_processor.rs
-+++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
-@@ -48,6 +48,7 @@
- use codex_app_server_protocol::ThreadSectionMoveResponse;
- use codex_config::types::WindowsSandboxModeToml;
- use codex_extension_api::ExtensionDataInit;
-+use codex_extension_api::LoadedUserInstructions;
- use codex_extension_api::ThreadIdleCause;
- use codex_protocol::SanitizedGitUrl;
- use codex_protocol::config_types::MultiAgentMode;
-@@ -574,6 +575,7 @@
-     pub(super) skills_watcher: Arc<SkillsWatcher>,
-     pub(super) turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
-     pub(super) initial_config_warnings: Arc<Vec<ConfigWarningNotification>>,
-+    pub(crate) codeship_metadata: bool,
- }
- 
- /// Whether resume attaches a client or restores a cold runtime during daemon startup.
-@@ -637,6 +639,7 @@
-             skills_watcher,
-             turn_cost_worker,
-             initial_config_warnings: Arc::new(initial_config_warnings),
-+            codeship_metadata: false,
-         }
-     }
- 
-@@ -1417,6 +1420,7 @@
-         let initial_config_warnings = Arc::clone(&self.initial_config_warnings);
-         let outgoing = Arc::clone(&listener_task_context.outgoing);
-         let error_request_id = request_id.clone();
-+        let codeship_metadata = self.codeship_metadata;
-         let thread_start_task = async move {
-             if let Err(error) = Self::thread_start_task(
-                 listener_task_context,
-@@ -1442,6 +1446,7 @@
-                 experimental_raw_events,
-                 request_trace,
-                 initial_config_warnings,
-+                codeship_metadata,
-             )
-             .await
-             {
-@@ -1525,6 +1530,7 @@
-         experimental_raw_events: bool,
-         request_trace: Option<W3cTraceContext>,
-         initial_config_warnings: Arc<Vec<ConfigWarningNotification>>,
-+        codeship_metadata: bool,
-     ) -> Result<(), JSONRPCErrorError> {
-         let thread_start_started_at = std::time::Instant::now();
-         let requested_cwd = typesafe_overrides.cwd.clone();
-@@ -1658,6 +1664,30 @@
-             thread_extension_init.insert(selected_capability_roots);
-         }
-         let mut start_options = StartThreadOptions::new(config);
-+        if codeship_metadata {
-+            // Validate the thread's final configuration after the normal policy and trust reloads.
-+            let permissions = start_options
-+                .config
-+                .permissions
-+                .effective_permission_profile();
-+            if !start_options.config.ephemeral
-+                || permissions.intersect_with_read_only().as_ref() != Some(&permissions)
-+            {
-+                return Err(invalid_request(
-+                    "--codeship-metadata-no-mcp requires an ephemeral thread with managed read-only permissions and restricted network access",
-+                ));
-+            }
-+            if start_options.config.permissions.approval_policy.value()
-+                != codex_protocol::protocol::AskForApproval::Never
-+                || start_options.config.bypass_hook_trust
-+            {
-+                return Err(invalid_request(
-+                    "--codeship-metadata-no-mcp requires approvals set to never and normal hook trust checks",
-+                ));
-+            }
-+            start_options.user_instructions = Some(LoadedUserInstructions::default());
-+            thread_extension_init.insert(codex_core::McpServersDisabled);
-+        }
-         let reserved_thread_id = if start_options.config.ephemeral {
-             None
-         } else {
+@@ -421,7 +425,8 @@
+                     thread_state_manager.clone(),
+                 )),
+                 None,
+-            );
++            )
++            .with_codeship_metadata(codeship_metadata);
+             match code_mode_session_provider {
+                 Some(provider) => manager.with_code_mode_session_provider(provider),
+                 None => manager,
 diff --git a/codex-rs/app-server-client/src/lib.rs b/codex-rs/app-server-client/src/lib.rs
 --- a/codex-rs/app-server-client/src/lib.rs
 +++ b/codex-rs/app-server-client/src/lib.rs
@@ -209,6 +120,80 @@ diff --git a/codex-rs/app-server-client/src/lib.rs b/codex-rs/app-server-client/
          let request_sender = handle.sender();
          let thread_permissions_reader = handle.thread_permissions_reader();
          let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
+diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
+--- a/codex-rs/core/src/thread_manager.rs
++++ b/codex-rs/core/src/thread_manager.rs
+@@ -603,6 +603,7 @@
+ /// `Arc` reference that can be downgraded to by `LocalAgentControl` while preventing every single
+ /// function to require an `Arc<&Self>`.
+ pub(crate) struct ThreadManagerState {
++    codeship_metadata: bool,
+     // Eviction updates this registry and residency together, locking the registry first.
+     pub(crate) threads: ThreadRegistry,
+     guardian_policy_loader: Option<Arc<dyn GuardianPolicyLoader>>,
+@@ -708,6 +709,7 @@
+             };
+         Self {
+             state: Arc::new(ThreadManagerState {
++                codeship_metadata: false,
+                 threads: ThreadRegistry::default(),
+                 guardian_policy_loader: None,
+                 shared_thread_instructions: Default::default(),
+@@ -741,6 +743,15 @@
+         }
+     }
+ 
++    /// Scope all threads in this embedded runtime, including children, to CodeShip metadata.
++    pub fn with_codeship_metadata(mut self, enabled: bool) -> Self {
++        let Some(state) = Arc::get_mut(&mut self.state) else {
++            unreachable!("metadata mode must be set before the thread manager is shared");
++        };
++        state.codeship_metadata = enabled;
++        self
++    }
++
+     /// Generate every new thread identifier with the caller-provided factory.
+     pub fn with_thread_id_generator(
+         mut self,
+@@ -921,6 +932,7 @@
+         let agent_graph_store = local_agent_graph_store_from_state_db(state_db.as_ref());
+         Self {
+             state: Arc::new(ThreadManagerState {
++                codeship_metadata: false,
+                 runtime_auth,
+                 threads: ThreadRegistry::default(),
+                 guardian_policy_loader: None,
+@@ -2583,6 +2595,30 @@
+     }
+ 
+     async fn spawn_thread_inner(&self, mut request: ThreadSpawnRequest) -> CodexResult<NewThread> {
++        if self.codeship_metadata {
++            let options = &mut request.options;
++            let config = &options.config;
++            let permissions = config.permissions.effective_permission_profile();
++            if !config.ephemeral
++                || permissions.intersect_with_read_only().as_ref() != Some(&permissions)
++            {
++                return Err(CodexErr::InvalidRequest(
++                    "--codeship-metadata-no-mcp requires an ephemeral thread with managed read-only permissions and restricted network access".into(),
++                ));
++            }
++            if config.permissions.approval_policy.value()
++                != codex_protocol::protocol::AskForApproval::Never
++                || config.bypass_hook_trust
++            {
++                return Err(CodexErr::InvalidRequest(
++                    "--codeship-metadata-no-mcp requires approvals set to never and normal hook trust checks".into(),
++                ));
++            }
++            options.user_instructions = Some(LoadedUserInstructions::default());
++            options
++                .thread_extension_init
++                .insert(crate::McpServersDisabled);
++        }
+         let cancellation = request
+             .options
+             .config
 diff --git a/codex-rs/exec/src/cli.rs b/codex-rs/exec/src/cli.rs
 --- a/codex-rs/exec/src/cli.rs
 +++ b/codex-rs/exec/src/cli.rs

@@ -37,6 +37,8 @@ export function cliInstallCommand(
     : `curl -fsSL ${cliReleasesPageUrl(repository)}/download/v${version}/install.sh | T3CODE_RELEASE_REPOSITORY=${repository} T3CODE_VERSION=${version} sh`;
 }
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
+// Beside the native package so losing that directory can still be reported or repaired.
+export const CODEX_METADATA_INVENTORY = "codex-metadata.files";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
 
 // Keep archive keys aligned with the Linux matrix, Windows ARM64 build, and cli_archive rows in release.yml.

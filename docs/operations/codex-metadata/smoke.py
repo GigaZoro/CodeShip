@@ -4,10 +4,11 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import secrets
+import shlex
 import subprocess
 import sys
 import tempfile
-from threading import Thread
+from threading import Event, Thread
 
 
 def smoke(binary):
@@ -46,7 +47,13 @@ def smoke(binary):
 
         outputs = []
         first_input = ""
-        command = "Get-Content evidence.txt" if windows else "cat evidence.txt"
+        child_inputs = []
+        child_started = Event()
+        child_prompt = "Confirm this repository review is ready."
+        rg = binary.parent.parent / "codex-path" / ("rg.exe" if windows else "rg")
+        # Exercise the packaged helper even on builders that already have ripgrep on PATH.
+        quoted_rg = "& '" + str(rg).replace("'", "''") + "'" if windows else shlex.quote(str(rg))
+        command = f"{quoted_rg} --no-config . evidence.txt"
         code = (f"const cmd = {json.dumps(command)};\n"
                 "text(typeof tools.exec_command === 'function' "
                 "? await tools.exec_command({cmd, login:false}) "
@@ -62,17 +69,43 @@ def smoke(binary):
                     self.send_error(400)
                     return
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                if not outputs:
-                    first_input = json.dumps(request["input"])
-                    item = {"type": "custom_tool_call", "name": "exec", "call_id": "read", "input": code}
-                    if any(t.get("type") == "namespace" and t.get("name") == "functions"
-                           and any(c.get("name") == "exec" for c in t["tools"]) for t in request["tools"]):
+                tool_namespace = next((t for t in request["tools"] if t.get("type") == "namespace"
+                                       and t.get("name") == "functions"), {})
+
+                def run_code(call_id, source):
+                    item = {"type": "custom_tool_call", "name": "exec", "call_id": call_id, "input": source}
+                    if any(tool.get("name") == "exec" for tool in tool_namespace.get("tools", [])):
                         item["namespace"] = "functions"
+                    return item
+
+                child = (self.headers.get("x-openai-subagent")
+                         or request.get("client_metadata", {}).get("x-openai-subagent")) == "collab_spawn"
+                if child:
+                    child_inputs.append(json.dumps(request["input"]))
+                    child_started.set()
+                    item = {"type": "message", "id": "child-reply", "role": "assistant",
+                            "content": [{"type": "output_text", "text": "review ready"}]}
+                elif not outputs:
+                    first_input = json.dumps(request["input"])
+                    item = run_code("read", code)
+                elif len(outputs) == 1:
+                    args = json.dumps({"task_name": "reviewer", "message": child_prompt, "fork_turns": "none"})
+                    if any(t.get("name") == "collaboration" and
+                           any(tool.get("name") == "spawn_agent" for tool in t.get("tools", []))
+                           for t in request["tools"]):
+                        item = {"type": "function_call", "namespace": "collaboration", "name": "spawn_agent",
+                                "call_id": "spawn", "arguments": args}
+                    else:
+                        item = run_code("spawn", f"text(await tools.collaboration__spawn_agent({args}));")
                 else:
+                    # Requests from the parent and child can arrive in either order.
+                    child_started.wait(timeout=15)
                     item = {"type": "message", "id": "reply", "role": "assistant",
                             "content": [{"type": "output_text", "text": "repository read complete"}]}
-                outputs.append([i for i in request["input"] if i.get("type") == "custom_tool_call_output"])
-                response = {"id": "r" + str(len(outputs))}
+                if not child:
+                    outputs.append([i for i in request["input"] if i.get("type") in
+                                    ("custom_tool_call_output", "function_call_output")])
+                response = {"id": "child" if child else "r" + str(len(outputs))}
                 events = [
                     {"type": "response.created", "response": response},
                     {"type": "response.output_item.done", "item": item},
@@ -98,6 +131,9 @@ enabled = false
 [features]
 code_mode = true
 code_mode_only = true
+multi_agent = true
+multi_agent_v2 = true
+multi_agent_v2_dynamic_tools = true
 plugins = false
 apps = false
 [features.code_mode_host]
@@ -132,11 +168,13 @@ stream_max_retries = 0
         started = [p.name for p in (account_start, cli_start) if p.exists()]
         if started:
             raise RuntimeError(f"Metadata started configured MCP servers: {started}")
-        if result.returncode or len(outputs) != 2 or marker not in json.dumps(outputs[1]) or marker in first_input:
+        if result.returncode or len(outputs) != 3 or marker not in json.dumps(outputs[1]) or marker in first_input:
             raise RuntimeError(f"Packaged repository read failed: {outputs}\n{result.stderr}")
         if personal in first_input or project not in first_input or developer not in first_input:
             raise RuntimeError("Metadata request included unexpected guidance or lost required instructions")
-        print(f"{binary}: verified metadata instruction scope, MCP suppression and a read-only code-mode read")
+        if len(child_inputs) != 1 or child_prompt not in child_inputs[0] or personal in child_inputs[0]:
+            raise RuntimeError(f"Expected a metadata child with scoped instructions: {outputs}")
+        print(f"{binary}: verified parent and child metadata scope, MCP suppression and a read-only code-mode read")
 
 
 if __name__ == "__main__":

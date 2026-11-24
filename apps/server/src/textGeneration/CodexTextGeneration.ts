@@ -13,7 +13,11 @@ import {
   type ServerProviderModel,
   TextGenerationError,
 } from "@t3tools/contracts";
-import { resolveCommandPath, resolveSpawnCommand } from "@t3tools/shared/shell";
+import {
+  CommandResolutionCache,
+  resolveCommandPath,
+  resolveSpawnCommand,
+} from "@t3tools/shared/shell";
 
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import { codexExecArgsWithoutMcp } from "./codexStockMcpArgs.ts";
@@ -79,6 +83,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   const resolveMetadataBinary = Effect.fn("CodexTextGeneration.resolveMetadataBinary")(function* (
     operation: TextGenerationOperations.Operation,
     configuredPath: string,
+    cwd: string,
   ) {
     const unusableBinary = new TextGenerationError({
       operation,
@@ -98,8 +103,11 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     // A native custom launcher can own sign-in or policy. Shims dispatch by their invoked name.
     if (nativeCustomLauncher) {
       const launcher = yield* resolveCommandPath(nativeCustomLauncher, {
+        cwd,
         env: resolvedEnvironment,
       }).pipe(
+        // Compare the current account launcher even if another PATH directory gained an executable.
+        Effect.provideService(CommandResolutionCache, new Map()),
         Effect.provideService(HostProcess.Platform, platform),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
@@ -243,7 +251,10 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       readonly launchArgs: ReadonlyArray<string>;
     }) {
       const args = [...input.launchArgs, ...CODEX_NO_PLUGIN_ARGS, "mcp", "list", "--json"];
-      const spawnCommand = yield* resolveSpawnCommand(input.binary, args, { env: input.env });
+      const spawnCommand = yield* resolveSpawnCommand(input.binary, args, {
+        cwd: input.cwd,
+        env: input.env,
+      });
       const child = yield* commandSpawner.spawn(
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           env: input.env,
@@ -320,7 +331,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       const metadataBinary =
         metadataBinaryPath === undefined
           ? undefined
-          : yield* resolveMetadataBinary(operation, metadataBinaryPath);
+          : yield* resolveMetadataBinary(operation, metadataBinaryPath, cwd);
       const resolved = resolveRuntime
         ? yield* resolveRuntime.pipe(
             Effect.mapError(
@@ -408,7 +419,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       ];
       const spawnCommand = metadataBinary
         ? { command: metadataBinary, args, shell: false }
-        : yield* resolveSpawnCommand(binary, args, { env: effectiveEnvironment });
+        : yield* resolveSpawnCommand(binary, args, { cwd, env: effectiveEnvironment });
       const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         env,
         ...(metadataBinary ? { extendEnv: false } : {}),

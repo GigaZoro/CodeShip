@@ -53,6 +53,7 @@ import {
   resolveMergedStageDependencies,
   resolveBuildOptions,
   stageWslRuntimeArchive,
+  stageCodexMetadata,
   ancestorNodeModulesPaths,
   copyDirectoryPreservingSymlinks,
   LinuxBrowserSecretHostError,
@@ -2135,6 +2136,39 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       ["t3-1.2.3-linux-x64/t3", "t3-1.2.3-linux-x64/client"],
     );
   });
+
+  it.effect("records the metadata package separately so a damaged install can be repaired", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const stage = path.join(root, "resources");
+      const source = path.join(root, "runtime");
+      yield* fs.makeDirectory(stage);
+      yield* fs.makeDirectory(path.join(source, "bin"), { recursive: true });
+      const cli = path.join(source, "bin", "codex");
+      yield* fs.writeFileString(cli, "codex");
+      yield* fs.chmod(cli, 0o755);
+      yield* fs.writeFileString(path.join(source, "codex-package.json"), "{}");
+      const inventory = path.join(stage, "codex-metadata.files");
+      yield* stageCodexMetadata(stage).pipe(
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+      );
+      assert.isFalse(yield* fs.exists(inventory));
+      yield* stageCodexMetadata(stage).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({ env: { T3CODE_BUILD_CODEX_METADATA_DIR: source } }),
+          ),
+        ),
+      );
+      const inventoryText = yield* fs.readFileString(inventory);
+      const kind =
+        (yield* fs.stat(path.join(stage, "codex-metadata/bin/codex"))).mode & 0o111 ? "x" : "f";
+      assert.include(inventoryText, `${kind} 5 bin/codex\n`);
+      assert.include(inventoryText, "2 codex-package.json\n");
+    }).pipe(Effect.scoped),
+  );
 
   it.effect("stages the Linux CLI archive verbatim with its SHA-256 sidecar", () =>
     Effect.scoped(

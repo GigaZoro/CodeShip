@@ -16,6 +16,7 @@ import {
 } from "@electron/asar";
 
 import { fromYaml } from "@t3tools/shared/schemaYaml";
+import { CODEX_METADATA_INVENTORY } from "@t3tools/shared/cliRelease";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -1072,6 +1073,7 @@ export const DESKTOP_FILE_EXCLUSIONS = [
   "!**/node_modules/@cursor/sdk-*/**/*",
   "!apps/desktop/prod-resources/codex-metadata",
   "!apps/desktop/prod-resources/codex-metadata/**/*",
+  `!apps/desktop/prod-resources/${CODEX_METADATA_INVENTORY}`,
   "!apps/desktop/prod-resources/cursor-sdk",
   "!apps/desktop/prod-resources/cursor-sdk/**/*",
   // The installed Claude CLI is supplied explicitly; exclude optional bundled executables, retaining SDK JavaScript.
@@ -1176,7 +1178,11 @@ export const WSL_RUNTIME_EXTRA_RESOURCES = [
   WSL_RUNTIME_ARCHIVE_HASH_EXTRA_RESOURCE,
 ] as const;
 export const DESKTOP_EXTRA_RESOURCES = [
-  { from: "apps/desktop/prod-resources", to: ".", filter: ["codex-metadata/**/*"] },
+  {
+    from: "apps/desktop/prod-resources",
+    to: ".",
+    filter: ["codex-metadata/**/*", CODEX_METADATA_INVENTORY],
+  },
   {
     from: "apps/desktop/prod-resources/cursor-sdk",
     to: "node_modules/@cursor",
@@ -1534,7 +1540,20 @@ export const stageCodexMetadata = Effect.fn("stageCodexMetadata")(function* (res
   if (Option.isSome(source)) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    yield* fs.copy(source.value, path.join(resourcesDir, "codex-metadata"));
+    const root = path.join(resourcesDir, "codex-metadata");
+    yield* fs.copy(source.value, root);
+    const files: Array<string> = [];
+    for (const member of yield* fs.readDirectory(root, { recursive: true })) {
+      const info = yield* fs.stat(path.join(root, member));
+      if (info.type === "File") {
+        const kind = info.mode & 0o111 ? "x" : "f";
+        files.push(`${kind} ${String(info.size)} ${member.split(path.sep).join("/")}`);
+      }
+    }
+    yield* fs.writeFileString(
+      path.join(resourcesDir, CODEX_METADATA_INVENTORY),
+      files.sort().join("\n") + "\n",
+    );
   }
 });
 

@@ -1,4 +1,5 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { CODEX_METADATA_INVENTORY } from "@t3tools/shared/cliRelease";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -22,7 +23,11 @@ export const resolvePackagedCodexMetadataBinary = Effect.fn("codex.resolvePackag
     }
     const fs = yield* FileSystem.FileSystem;
     const root = path.join(resources, "codex-metadata");
-    if (!(yield* fs.exists(root).pipe(Effect.orDie))) return undefined;
+    if (
+      !(yield* fs.exists(root).pipe(Effect.orDie)) &&
+      !(yield* fs.exists(path.join(resources, CODEX_METADATA_INVENTORY)).pipe(Effect.orDie))
+    )
+      return undefined;
     return path.join(
       root,
       "bin",

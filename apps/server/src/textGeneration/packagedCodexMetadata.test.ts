@@ -19,6 +19,16 @@ it.effect("selects only the installed server's native metadata package", () =>
         Effect.provideService(HostProcess.Platform, platform),
       );
     assert.isUndefined(yield* resolve(true, "", "linux"));
+    assert.isUndefined(yield* resolve(false, "app.asar", "darwin"));
+    yield* fs.writeFileString(path.join(dir, "codex-metadata.files"), "x 5 bin/codex\n");
+    // The runner can now surface its repair diagnostic even if the entire package vanished.
+    assert.equal(yield* resolve(true, "", "linux"), path.join(dir, "codex-metadata/bin/codex"));
+    assert.equal(
+      yield* resolve(false, "app.asar", "darwin"),
+      path.join(dir, "codex-metadata/bin/codex"),
+    );
+    yield* fs.remove(path.join(dir, "codex-metadata.files"));
+    // An older package containing the executable still works.
     yield* fs.makeDirectory(path.join(dir, "codex-metadata/bin"), { recursive: true });
     assert.equal(yield* resolve(true, "", "linux"), path.join(dir, "codex-metadata/bin/codex"));
     assert.equal(

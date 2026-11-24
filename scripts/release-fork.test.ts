@@ -23,10 +23,9 @@ const Workflow = Schema.Struct({
   jobs: Schema.Record(Schema.String, WorkflowJob),
 });
 const decodeWorkflow = Schema.decodeUnknownSync(fromYaml(Workflow));
-const readWorkflow = (file: string) =>
-  decodeWorkflow(
-    NodeFS.readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), "utf8"),
-  );
+const workflowSource = (file: string) =>
+  NodeFS.readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), "utf8");
+const readWorkflow = (file: string) => decodeWorkflow(workflowSource(file));
 
 const runnersOf = (job: WorkflowJob) =>
   [job["runs-on"], job.with?.runner, job.with?.verify_runner].filter(
@@ -145,10 +144,7 @@ describe("fork release", () => {
     const release = readWorkflow("release-fork.yml");
     expect(release.concurrency.group).toContain("github.ref");
 
-    const retry = NodeFS.readFileSync(
-      new URL("../.github/workflows/release-fork-retry.yml", import.meta.url),
-      "utf8",
-    );
+    const retry = workflowSource("release-fork-retry.yml");
     expect(retry).toContain(
       "github.event.workflow_run.head_branch == github.event.repository.default_branch",
     );
@@ -158,6 +154,21 @@ describe("fork release", () => {
       expect(listing).toContain('--branch "$DEFAULT_BRANCH"');
     }
     expect(retry).toContain("activity?ref=refs/heads/$DEFAULT_BRANCH");
+  });
+
+  it("dispatches both macOS builds against the published tag after the default branch advances", () => {
+    for (const [file, tag] of [
+      ["release-fork.yml", "v$VERSION"],
+      ["release-fork-retry.yml", "$tag"],
+    ] as const) {
+      const commands = workflowSource(file)
+        .split("\n")
+        .filter((line) => line.includes("gh workflow run release-fork-macos.yml "));
+      expect(commands).toHaveLength(1);
+      expect(commands[0]).toContain(`--ref "${tag}"`);
+    }
+    expect(workflowSource("release-fork-macos.yml")).toContain('"$GITHUB_SHA" != "$sha"');
+    expect(workflowSource("release-fork-retry.yml")).toContain('"$RUN_SHA" != "$sha"');
   });
 
   it("serves Macs the previous build until the macOS app is attached", async () => {

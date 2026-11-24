@@ -10,6 +10,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { buildRemoteNodeEnvScript } from "@t3tools/ssh/tunnel";
+import { CODEX_METADATA_INVENTORY } from "@t3tools/shared/cliRelease";
 import { satisfiesSemverRange } from "@t3tools/shared/semver";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -270,16 +271,31 @@ export const buildWslRuntimeInstallScript = (
     "runtime_entry_runs() {",
     '  [ -x "$1/t3" ] && "$1/t3" --version >/dev/null',
     "}",
-    // Hash the entry to detect a swapped or partially written executable, even if it still runs.
-    "runtime_server_entry_digest() {",
-    `  sha256sum "$1/t3" 2>/dev/null | cut -d ' ' -f 1`,
+    // Bind the package inventory to the ready marker. Deleting it along with the package must
+    // invalidate the cache. A legacy unbundled archive keeps its existing server-only digest.
+    "runtime_identity() {",
+    `  entry_digest=$(sha256sum "$1/t3" | cut -d ' ' -f 1)`,
+    '  [ -n "$entry_digest" ] || return 1',
+    `  inventory="$1/${CODEX_METADATA_INVENTORY}"`,
+    '  if [ -f "$inventory" ]; then',
+    '    [ -s "$inventory" ] && [ -d "$1/codex-metadata" ] || return 1',
+    "    while read -r kind size member; do",
+    '      file="$1/codex-metadata/$member"',
+    '      [ -f "$file" ] && [ "$(stat -c %s -- "$file")" = "$size" ] || return 1',
+    '      case "$kind" in f) ;; x) [ -x "$file" ] || return 1 ;; *) return 1 ;; esac',
+    '    done < "$inventory"',
+    `    inventory_digest=$(sha256sum "$inventory" | cut -d ' ' -f 1)`,
+    '    [ -n "$inventory_digest" ] || return 1',
+    '    entry_digest="$entry_digest:$inventory_digest"',
+    "  fi",
+    `  printf '%s\\n' "$entry_digest"`,
     "}",
     "runtime_is_ready() {",
     '  [ -f "$ready_marker" ] &&',
     '    runtime_entry_runs "$runtime_root" 2>/dev/null &&',
     `    recorded_entry_digest=$(tr -d '[:space:]' < "$ready_marker" 2>/dev/null) &&`,
     '    [ -n "$recorded_entry_digest" ] &&',
-    '    [ "$recorded_entry_digest" = "$(runtime_server_entry_digest "$runtime_root")" ]',
+    '    [ "$recorded_entry_digest" = "$(runtime_identity "$runtime_root")" ]',
     "}",
     'mkdir -p "$runtime_parent"',
     `runtime_lock="$runtime_parent/.${safeRuntimeId}.install.lock"`,
@@ -322,14 +338,21 @@ export const buildWslRuntimeInstallScript = (
     `runtime_tmp=$(mktemp -d "$runtime_parent/.${safeRuntimeId}.tmp.XXXXXX")`,
     'cleanup_runtime_install() { rm -rf "$runtime_tmp"; }',
     "trap cleanup_runtime_install EXIT",
-    `tar -xzf ${shellQuote(linuxArchivePath)} -C "$runtime_tmp" --strip-components=1`,
+    // The verified archive itself declares the package. A failed extraction cannot downgrade
+    // a distribution to the legacy unbundled path by omitting its inventory.
+    'listing="$runtime_tmp/.t3code-archive-members"',
+    `tar -xvzf ${shellQuote(linuxArchivePath)} -C "$runtime_tmp" --strip-components=1 > "$listing"`,
+    `if [ ! -s "$runtime_tmp/${CODEX_METADATA_INVENTORY}" ] && sed 's|^\\./||;s|^[^/]*/||' "$listing" | grep -Fxq '${CODEX_METADATA_INVENTORY}'; then`,
+    "  printf 'WSL runtime archive did not restore its Codex metadata inventory\\n' >&2",
+    "  exit 1",
+    "fi",
+    'rm "$listing"',
     'if ! runtime_entry_runs "$runtime_tmp"; then',
     "  printf 'WSL runtime archive does not contain a working t3 executable\\n' >&2",
     "  exit 1",
     "fi",
-    'installed_entry_digest=$(runtime_server_entry_digest "$runtime_tmp")',
-    'if [ -z "$installed_entry_digest" ]; then',
-    "  printf 'Could not hash the WSL runtime server entry\\n' >&2",
+    'if ! installed_entry_digest=$(runtime_identity "$runtime_tmp"); then',
+    "  printf 'WSL runtime archive has missing or damaged runtime files\\n' >&2",
     "  exit 1",
     "fi",
     `printf '%s\\n' "$installed_entry_digest" > "$runtime_tmp/${WSL_RUNTIME_READY_MARKER}"`,

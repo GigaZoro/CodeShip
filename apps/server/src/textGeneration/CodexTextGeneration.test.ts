@@ -22,6 +22,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { CODEX_METADATA_INVENTORY } from "@t3tools/shared/cliRelease";
 import { createModelSelection } from "@t3tools/shared/model";
 import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
@@ -236,11 +237,21 @@ function withFakeCodexEnv<A, E, R>(
     environment?: NodeJS.ProcessEnv;
     models?: ReadonlyArray<string>;
     managedRuntime?: boolean;
-    packaged?: boolean;
+    packaged?: true | "missing-directory";
     metadataPath?: "configured" | "relative" | "missing" | "unset";
-    customBinary?: "same" | "different" | "absolute-shim" | "path-shim" | "different-shim-name";
+    customBinary?:
+      | "same"
+      | "different"
+      | "absolute-shim"
+      | "path-shim"
+      | "relative-shim"
+      | "relative-path-shim"
+      | "different-shim-name";
   },
-  effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
+  effectFn: (
+    textGeneration: TextGeneration.TextGeneration["Service"],
+    fixtureRoot: string,
+  ) => Effect.Effect<A, E, R>,
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -251,7 +262,10 @@ function withFakeCodexEnv<A, E, R>(
     );
     const path = yield* Path.Path;
     const home = path.join(tempDir, "selected-home");
+    const relativeShim =
+      input.customBinary === "relative-shim" || input.customBinary === "relative-path-shim";
     const shim =
+      relativeShim ||
       input.customBinary === "absolute-shim" ||
       input.customBinary === "path-shim" ||
       input.customBinary === "different-shim-name";
@@ -269,10 +283,15 @@ function withFakeCodexEnv<A, E, R>(
           expectedManaged: input.managedRuntime === true,
         })
       : undefined;
+    if (input.packaged === "missing-directory") {
+      yield* fs.writeFileString(path.join(tempDir, CODEX_METADATA_INVENTORY), "x 1 bin/codex\n");
+      yield* fs.remove(packageDir, { recursive: true });
+    }
     let metadataPath = metadataBinary;
     if (shim && metadataBinary) {
       metadataPath = path.join(path.dirname(metadataBinary), "account-codex");
       yield* fs.symlink(metadataBinary, metadataPath);
+      if (relativeShim) yield* fs.symlink(codexPath, path.join(tempDir, "bin", "account-codex"));
     }
     const configuredPath = {
       configured: metadataPath,
@@ -285,6 +304,8 @@ function withFakeCodexEnv<A, E, R>(
       different: codexPath,
       "absolute-shim": metadataPath,
       "path-shim": "account-codex",
+      "relative-shim": "./bin/account-codex",
+      "relative-path-shim": "account-codex",
       "different-shim-name": metadataBinary,
     };
     const config = decodeCodexSettings({
@@ -303,7 +324,7 @@ function withFakeCodexEnv<A, E, R>(
     });
     const environment = {
       ...process.env,
-      ...(shim && metadataPath ? { PATH: path.dirname(metadataPath) } : {}),
+      ...(shim && metadataPath ? { PATH: relativeShim ? "bin" : path.dirname(metadataPath) } : {}),
       T3CODE_CODEX_METADATA_BINARY_PATH: codexPath,
       ...(input.metadata
         ? { OPENAI_API_KEY: input.managedRuntime ? undefined : "synthetic-test-key" }
@@ -331,18 +352,38 @@ function withFakeCodexEnv<A, E, R>(
         : undefined,
       Effect.succeed(codexPath),
     ).pipe(
-      Effect.provideService(HostProcess.IsExecutable, input.packaged === true),
+      Effect.provideService(HostProcess.IsExecutable, Boolean(input.packaged)),
       Effect.provideService(HostProcess.ExecutablePath, path.join(tempDir, "t3")),
       Effect.provideService(HostProcess.Environment, {
         ...process.env,
         T3CODE_CODEX_METADATA_BINARY_PATH: configuredPath,
       }),
     );
-    return yield* effectFn(textGeneration);
+    return yield* effectFn(textGeneration, tempDir);
   }).pipe(Effect.scoped);
 }
 
 it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
+  for (const customBinary of ["relative-shim", "relative-path-shim"] as const) {
+    it.effect.skipIf(isWindowsHost)(`resolves ${customBinary} from the request repository`, () =>
+      withFakeCodexEnv(
+        { customBinary, metadata: "supported", output: '{"title":"Repository launcher"}' },
+        (generation, root) =>
+          Effect.gen(function* () {
+            const path = yield* Path.Path;
+            const title = (cwd: string) =>
+              generation.generateThreadTitle({
+                cwd,
+                message: "Name this thread",
+                modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              });
+            expect((yield* title(path.join(root, "host"))).title).toBe("Repository launcher");
+            const error = yield* Effect.flip(title(root));
+            expect(error.detail).toContain("different custom launcher");
+          }),
+      ),
+    );
+  }
   it.effect.skipIf(isWindowsHost)("allows a cold metadata launch within the request deadline", () =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -556,6 +597,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
   );
 
   for (const [fixture, detail] of [
+    [{ packaged: "missing-directory", metadataPath: "unset" }, "Reinstall CodeShip"],
     [{ packaged: true, metadataPath: "unset", metadata: "legacy" }, "Reinstall CodeShip"],
     [{ packaged: true, metadataPath: "missing" }, "absolute path of an executable patched Codex"],
     [{ metadataPath: "relative" }, "absolute path of an executable patched Codex"],
