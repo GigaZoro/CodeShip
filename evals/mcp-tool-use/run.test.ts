@@ -1,5 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -427,7 +429,16 @@ it.effect.each([{}, { projectSkill: "ship" }])(
   "reads the loaded project skill and simulates the remaining shell command (%j)",
   (selection) =>
     Effect.gen(function* () {
-      const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+      const base = buildBase(
+        {
+          ...template,
+          tools: [
+            ...template.tools,
+            { name: "mcp__host__term_Read", input_schema: { type: "object" } },
+          ],
+        },
+        { model: "claude-sonnet-5-5", keepUserInstructions: false },
+      );
       const skill = {
         name: "ship",
         path: ".agents/skills/ship/SKILL.md",
@@ -438,7 +449,7 @@ it.effect.each([{}, { projectSkill: "ship" }])(
         name: "brief",
         path: "/home/user/extra skills/brief/SKILL.md",
         baseDirectory: "/home/user/extra skills/brief",
-        instructions: "Another skill.",
+        instructions: "Another skill.\nSecond line.\nThird line.",
       };
       const sample = makeSample({ ...childCase, ...selection, promptSkills: [other, skill] }, base);
       const run = (command: string) =>
@@ -479,6 +490,23 @@ it.effect.each([{}, { projectSkill: "ship" }])(
       const invoke = (command: string) =>
         run(command).pipe(Effect.provideService(HttpClient.HttpClient, client));
 
+      const native = yield* answerToolCall(
+        sample,
+        {
+          apiKey: "",
+          model: "claude-sonnet-5-5",
+          shellModel: "claude-haiku-5-5",
+          effort: "low",
+          maxSteps: 1,
+        },
+        {
+          type: "tool_use",
+          id: "native",
+          name: "mcp__host__term_Read",
+          input: { file_path: other.path, offset: 2, limit: 1 },
+        },
+      ).pipe(Effect.provideService(HttpClient.HttpClient, client));
+      assert.equal(native.content, "     2\tSecond line.\n");
       assert.equal((yield* invoke(read)).content, skill.instructions);
       assert.equal(
         (yield* invoke(`cat "${base.environment.cwd}/${skill.path}"`)).content,
@@ -491,11 +519,63 @@ it.effect.each([{}, { projectSkill: "ship" }])(
       assert.deepEqual(requests, [`<call>Bash ${JSON.stringify({ command: git })}</call>`]);
       assert.deepEqual(sample.shell.at(-1)?.input, { command: compound });
 
+      reply = "topic\n";
+      assert.equal(
+        (yield* invoke(`git branch --show-current && ${read}`)).content,
+        "topic\n" + skill.instructions,
+      );
+      assert.equal(
+        (yield* invoke(`${read}; cat '${other.path}'`)).content,
+        skill.instructions + other.instructions,
+      );
+      reply = "without newline";
+      assert.equal(
+        (yield* invoke(`printf %s token && ${read}`)).content,
+        reply + skill.instructions,
+      );
+      reply = "Exit code 7\nbranch failed\n";
+      const stopped = yield* invoke(`git branch --show-current && ${read}`);
+      assert.isTrue(stopped.is_error);
+      assert.equal(stopped.content, reply);
+      assert.equal(
+        (yield* invoke(`git branch --show-current || ${read}`)).content,
+        "branch failed\n" + skill.instructions,
+      );
+      assert.equal(
+        (yield* invoke(`git branch --show-current && ${read}; cat '${other.path}'`)).content,
+        "branch failed\n" + other.instructions,
+      );
+      assert.equal(
+        (yield* invoke(`false && ${read} || cat '${other.path}'`)).content,
+        other.instructions,
+      );
+      assert.equal(
+        (yield* invoke(`true || ${read}; exit 3; cat '${other.path}'`)).content,
+        "Exit code 3",
+      );
+      reply = "(Bash completed with no output)";
+      assert.equal(
+        (yield* invoke(`cd '${skill.baseDirectory}' && cat "SKILL.md"`)).content,
+        skill.instructions,
+      );
+      reply = "No instructions here";
+      const elsewhere = yield* invoke(`cd /tmp && ${read}`);
+      assert.notInclude(String(elsewhere.content), skill.instructions);
+      reply = "invented contents";
+      const unsupported = yield* invoke(`cat '${skill.path}' | sed -e 's/local/remote/g'`).pipe(
+        Effect.exit,
+      );
+      assert.equal(unsupported._tag, "Failure");
+
       for (const file of [`./${skill.path}`, `${base.environment.cwd}/${skill.path}`, other.path]) {
-        reply = `Exit code 2\nsed: can't read '${file}': No such file or directory`;
-        const result = yield* invoke(`git status && sed -n '1,240p' "${file}"`).pipe(Effect.exit);
+        reply = `Exit code 2\nhead: cannot open '${file}' for reading: No such file or directory`;
+        const result = yield* invoke(`head --verbose "${file}"`).pipe(Effect.exit);
         assert.equal(result._tag, "Failure");
-        assert.include(String(result), "Shell simulator reported a missing fixture");
+        assert.include(String(result), "missing fixture");
+        reply = `Exit code 2\nsed: can't read '${file}': No such file or directory`;
+        const sed = yield* invoke(`sed -e 's/a/b/' "${file}"`).pipe(Effect.exit);
+        assert.equal(sed._tag, "Failure");
+        assert.include(String(sed), "missing fixture");
       }
       reply = "Exit code 1\ncat: /somewhere/else/SKILL.md: No such file or directory";
       const missing = yield* invoke("cat /somewhere/else/SKILL.md");
@@ -637,7 +717,79 @@ const pendingReleaseCase = () =>
     .find((testCase) => testCase.id === "ship-pending-installed-release")!;
 
 const releaseOwner = "11111111-1111-4111-8111-111111111111";
+
+it.each(["openai", "anthropic"] as const)(
+  "uses the scenario date in the %s shipping prompt",
+  (provider) => {
+    const testCase = pendingReleaseCase();
+    const folder = NodeURL.fileURLToPath(new URL(".", import.meta.url));
+    const output = NodeChildProcess.execFileSync(
+      process.execPath,
+      ["run.ts", "--provider", provider, "--case", testCase.id, "--dry-run"],
+      { cwd: folder, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 },
+    );
+    const dates = Array.from(
+      output.matchAll(/(?:Today's date is |<current_date>)(\d{4}-\d{2}-\d{2})/g),
+      (match) => match[1],
+    );
+    assert.deepEqual([...new Set(dates)], ["2026-10-15"]);
+  },
+);
+
+it.effect("settles the completed shipping case only for its owning thread", () =>
+  Effect.gen(function* () {
+    const testCase = NodeFS.readFileSync(new URL("./cases/skills.ndjson", import.meta.url), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => decodeDeviceCase(line))
+      .find((c) => c.id === "ship-completed-primary-checkout")!;
+    const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+    const sample = makeSample(testCase, base);
+    const organizer = base.t3.find((tool) => tool.name === "mcp__t3-code__t3_thread_organize")!;
+    sample.tools.push(organizer);
+    const settle = (threadId?: string) =>
+      answerToolCall(
+        sample,
+        {
+          apiKey: "",
+          model: "claude-sonnet-5-5",
+          shellModel: "claude-haiku-5-5",
+          effort: "low",
+          maxSteps: 1,
+        },
+        {
+          type: "tool_use",
+          id: "settle",
+          name: organizer.name,
+          input: { action: "settle", ...(threadId ? { threadId } : {}) },
+        },
+      );
+    const other = "99999999-9999-4999-8999-999999999999";
+    assert.isTrue((yield* settle(other)).is_error);
+    for (const threadId of [undefined, releaseOwner]) {
+      const result = yield* settle(threadId);
+      assert.deepEqual(JSON.parse(String(result.content)), { settlesWhenTurnEnds: true });
+    }
+    const staleSuccess = {
+      step: 0,
+      tool: "t3_thread_organize",
+      input: { action: "settle", threadId: other },
+      failed: false,
+      output: JSON.stringify({ settlesWhenTurnEnds: true }),
+    };
+    assert.isNotEmpty(
+      failed(testCase.expect, { calls: [staleSuccess], text: "", stopReason: "end_turn" }),
+    );
+  }).pipe(
+    Effect.provideService(
+      HttpClient.HttpClient,
+      HttpClient.make(() => Effect.die("Unexpected model request")),
+    ),
+  ),
+);
 const releaseRetry = { type: "once", runAt: "2026-10-19T09:10:00Z" };
+const releasePrompt =
+  "Verify the model name in the thread header in signed v1.2.3 with scripts/check-installed-header.sh.";
 const retryResult = {
   scheduledTaskId: "33333333-3333-4333-8333-333333333333",
   title: "Verify the signed app",
@@ -721,7 +873,7 @@ it.each([
     {
       step: 1,
       tool: "schedule_task",
-      input: { prompt: "Check the installed app", schedule: releaseRetry, ...request },
+      input: { prompt: releasePrompt, schedule: releaseRetry, ...request },
       failed: false,
       output: JSON.stringify({ ...retryResult, ...result }),
     },
@@ -731,6 +883,236 @@ it.each([
     valid,
   );
 });
+
+it("grades the saved verification task after partial updates, lookups and deletion", () => {
+  const run = { calls: [] as Array<SampleRun["calls"][number]>, text: "", stopReason: "end_turn" };
+  const record = (tool: string, input: Record<string, unknown>, result: unknown) => {
+    run.calls.push({
+      tool,
+      input,
+      step: run.calls.length,
+      failed: false,
+      output: JSON.stringify(result),
+    });
+  };
+  const { scheduledTaskId } = retryResult;
+  const update = (input: Record<string, unknown>, fields: Partial<typeof retryResult> = {}) =>
+    record("schedule_task", { scheduledTaskId, ...input }, { ...retryResult, ...fields });
+  const passed = () => failed(pendingReleaseCase().expect, run).length === 0;
+  record("t3_thread_organize", { action: "unsettle" }, { sequence: 1 });
+  record("schedule_task", { prompt: releasePrompt, schedule: releaseRetry }, retryResult);
+  update({ title: "Later verification" }, { title: "Later verification" });
+  assert.isTrue(passed(), "a title-only update must preserve the runnable verification");
+  update({ enabled: false }, { enabled: false });
+  assert.isFalse(passed());
+  update({ enabled: true });
+  assert.isTrue(passed());
+  update({ prompt: "Reply OK and finish." });
+  assert.isFalse(passed(), "a saved prompt that abandons the check must fail");
+  update({ prompt: releasePrompt });
+  record("list_scheduled_tasks", { scheduledTaskId }, { tasks: [] });
+  assert.isFalse(passed(), "the authoritative lookup lost the task");
+  record(
+    "list_scheduled_tasks",
+    { scheduledTaskId },
+    { tasks: [{ ...retryResult, prompt: releasePrompt }] },
+  );
+  assert.isTrue(passed(), "an existing matching task can be reused");
+  record("delete_scheduled_task", { scheduledTaskId }, { scheduledTaskId, deleted: true });
+  assert.isFalse(passed());
+});
+
+it.each([
+  { name: "the complete handoff", prompt: releasePrompt, pass: true },
+  { name: "an unrelated instruction", prompt: "Reply OK and finish.", pass: false },
+  {
+    name: "no delivery identifier",
+    prompt: releasePrompt.replace("v1.2.3", "release"),
+    pass: false,
+  },
+  {
+    name: "no outstanding check",
+    prompt: releasePrompt.replace("thread header", "icon"),
+    pass: false,
+  },
+  {
+    name: "no evidence location",
+    prompt: releasePrompt.replace("scripts/check-installed-header.sh", "the verifier"),
+    pass: false,
+  },
+  { name: "an unresolvable prompt file", prompt: undefined, pass: false },
+])("grades the actual scheduled prompt file containing $name", ({ prompt, pass }) => {
+  const path = "automations/retry-release.md";
+  const calls = [
+    {
+      step: 1,
+      tool: "t3_thread_organize",
+      input: { action: "unsettle" },
+      failed: false,
+      output: JSON.stringify({ sequence: 1 }),
+    },
+    {
+      step: 2,
+      tool: "schedule_task",
+      input: { prompt: "Reply OK and finish.", schedule: releaseRetry },
+      failed: false,
+      output: JSON.stringify(retryResult),
+    },
+    {
+      step: 3,
+      tool: "schedule_task",
+      input: { scheduledTaskId: retryResult.scheduledTaskId, promptFile: path },
+      failed: false,
+      output: JSON.stringify({ ...retryResult, promptFile: { path, lastRead: null } }),
+    },
+  ];
+  const checks = gradeSample(
+    pendingReleaseCase().expect,
+    { calls, text: "", stopReason: "end_turn" },
+    { [path]: prompt },
+  );
+  assert.equal(
+    checks.every((check) => check.pass),
+    pass,
+  );
+});
+
+const releaseSchedulerFixture = () => {
+  const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+  const testCase = pendingReleaseCase();
+  const sample = makeSample(testCase, {
+    ...base,
+    environment: { ...base.environment, date: "2026-10-14" },
+  });
+  const tools = ["schedule_task", "list_scheduled_tasks", "delete_scheduled_task"];
+  sample.tools.push(...base.t3.filter((tool) => tools.includes(normalizeToolName(tool.name))));
+  const invoke = (name: string, input: Record<string, unknown>) =>
+    answerToolCall(
+      sample,
+      {
+        apiKey: "",
+        model: "claude-sonnet-5-5",
+        shellModel: "claude-haiku-5-5",
+        effort: "low",
+        maxSteps: 1,
+      },
+      { type: "tool_use", id: "call", name: `mcp__t3-code__${name}`, input },
+    ).pipe(
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make(() => Effect.die("Unexpected model request")),
+      ),
+    );
+  const success = (name: string, input: Record<string, unknown>) =>
+    invoke(name, input).pipe(
+      Effect.map((answer) => {
+        assert.notEqual(answer.is_error, true, String(answer.content));
+        return JSON.parse(String(answer.content));
+      }),
+    );
+  return { invoke, success };
+};
+
+it.effect("lists, updates and deletes the same saved retry inside one sample", () =>
+  Effect.gen(function* () {
+    const { invoke, success } = releaseSchedulerFixture();
+    const prompt = "Verify the signed application after signing resumes";
+    const create = yield* success("schedule_task", {
+      prompt,
+      title: "Retry verification",
+      schedule: releaseRetry,
+    });
+    const id = { scheduledTaskId: create.scheduledTaskId };
+    const other = yield* success("schedule_task", {
+      prompt: "Another task",
+      schedule: releaseRetry,
+    });
+    assert.notEqual(create.scheduledTaskId, other.scheduledTaskId);
+    const listed = yield* success("list_scheduled_tasks", id);
+    assert.lengthOf(listed.tasks, 1);
+    assert.equal(listed.tasks[0].prompt, prompt);
+    assert.equal(listed.tasks[0].scheduledTaskId, id.scheduledTaskId);
+    const edited = yield* success("schedule_task", { ...id, title: "Renamed retry" });
+    assert.deepEqual(edited, { ...create, title: "Renamed retry" });
+    const reread = yield* success("list_scheduled_tasks", id);
+    assert.equal(reread.tasks[0].title, edited.title);
+    assert.deepEqual(yield* success("delete_scheduled_task", id), { ...id, deleted: true });
+    assert.deepEqual((yield* success("list_scheduled_tasks", id)).tasks, []);
+    assert.equal((yield* invoke("schedule_task", { ...id, title: "Missing" })).is_error, true);
+    assert.equal((yield* invoke("delete_scheduled_task", id)).is_error, true);
+    assert.deepEqual(
+      (yield* success("list_scheduled_tasks", {})).tasks.map(
+        (row: { scheduledTaskId: string }) => row.scheduledTaskId,
+      ),
+      [other.scheduledTaskId],
+    );
+  }),
+);
+
+it.effect(
+  "resolves a saved prompt file from the fixture repository and rejects a missing file",
+  () =>
+    Effect.gen(function* () {
+      const { invoke, success } = releaseSchedulerFixture();
+      const path = "scripts/check-installed-header.sh";
+      const saved = yield* success("schedule_task", { promptFile: path, schedule: releaseRetry });
+      assert.equal(saved.promptFile.path, path);
+      assert.equal(saved.promptFile.lastRead.ref, "origin/main");
+      assert.isUndefined(saved.prompt);
+      const id = { scheduledTaskId: saved.scheduledTaskId };
+      const listed = yield* success("list_scheduled_tasks", id);
+      assert.include(listed.tasks[0].prompt, "check-installed-app");
+      assert.equal(
+        (yield* invoke("schedule_task", { ...id, promptFile: "missing.md" })).is_error,
+        true,
+      );
+      assert.deepEqual((yield* success("list_scheduled_tasks", id)).tasks, listed.tasks);
+    }),
+);
+
+it.effect.each([
+  { reason: "oneMachine on a local task", fields: { oneMachine: true } },
+  { reason: "catch-up on a one-time task", fields: { catchUpMissedRun: false } },
+  {
+    reason: "an enabled occurrence at the fixture clock",
+    fields: { schedule: { type: "once", runAt: "2026-10-14T12:00:00Z" } },
+  },
+])("refuses $reason on create and update without changing the saved retry", ({ fields }) =>
+  Effect.gen(function* () {
+    const { invoke, success } = releaseSchedulerFixture();
+    const request = { prompt: "Verify the signed app", schedule: releaseRetry };
+    assert.equal((yield* invoke("schedule_task", { ...request, ...fields })).is_error, true);
+    const created = yield* success("schedule_task", request);
+    const id = { scheduledTaskId: created.scheduledTaskId };
+    assert.equal((yield* invoke("schedule_task", { ...id, ...fields })).is_error, true);
+    const { tasks } = yield* success("list_scheduled_tasks", id);
+    assert.equal(tasks[0].nextRunAt, created.nextRunAt);
+  }),
+);
+
+it.effect("keeps a paused past occurrence and accepts catch-up on a shared fixed-time task", () =>
+  Effect.gen(function* () {
+    const { success } = releaseSchedulerFixture();
+    const base = { prompt: "Verify the signed app" };
+    const paused = yield* success("schedule_task", {
+      ...base,
+      schedule: { type: "once", runAt: "2026-10-14T11:59:59Z" },
+      enabled: false,
+    });
+    assert.isNull(paused.nextRunAt);
+    const shared = yield* success("schedule_task", {
+      ...base,
+      schedule: { type: "fixed_time", timeOfDay: "14:00" },
+      shared: true,
+      oneMachine: true,
+      catchUpMissedRun: true,
+    });
+    assert.equal(shared.oneMachine, true);
+    assert.equal(shared.catchUpMissedRun, true);
+    assert.isNull(shared.boundThreadId);
+    assert.equal(shared.nextRunAt, "2026-10-14T14:00:00.000Z");
+  }),
+);
 
 it.effect("reports the schedule actually requested in the pending-release fixture", () =>
   Effect.gen(function* () {
