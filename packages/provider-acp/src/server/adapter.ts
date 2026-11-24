@@ -1363,6 +1363,8 @@ function acpIsProviderContinuationMessage(message: {
   return message.createdBy === "agent" && message.creationSource === "provider";
 }
 
+const encodeWakeEventId = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
+
 const sessionScopedId = (sessionId: string, nativeId: string): string =>
   JSON.stringify([sessionId, nativeId]);
 
@@ -2127,7 +2129,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             readonly threadId: ThreadId;
             readonly runtimeGeneration: number;
             readonly offerGeneration: number;
-            readonly promptIds: ReadonlySet<string>;
+            readonly promptIds: Set<string>;
             readonly frames: ReadonlyArray<EffectAcpSchema.SessionNotification>;
           }
         >();
@@ -2137,11 +2139,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           frame._meta.promptId.trim()
             ? frame._meta.promptId
             : undefined;
-        const takeWakeFrames = (sessionId: string, promptIds: ReadonlySet<string>) =>
+        const takeWakeFrames = (sessionId: string, promptIds: Set<string>) =>
           Ref.modify(wakeBuffer, (frames) => {
             const boundary = frames.findIndex((frame) => {
               const id = wakePromptId(frame);
-              return frame.sessionId === sessionId && id !== undefined && !promptIds.has(id);
+              if (frame.sessionId !== sessionId || id === undefined) return false;
+              // A terminal report can offer the wake before its first native prompt frame arrives.
+              if (promptIds.size === 0) promptIds.add(id);
+              return !promptIds.has(id);
             });
             const cutoff = boundary < 0 ? frames.length : boundary;
             return [
@@ -4520,7 +4525,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
 
           const wakeEventIds = new Set(
             reports.flatMap(({ eventKey }) =>
-              eventKey === undefined ? [] : [JSON.stringify([driver, sessionId, "task", eventKey])],
+              eventKey === undefined
+                ? []
+                : [encodeWakeEventId([driver, sessionId, "task", eventKey])],
             ),
           );
           const promptIds = new Set<string>();
@@ -4529,7 +4536,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const id = wakePromptId(entry);
             if (id === undefined) continue;
             promptIds.add(id);
-            wakeEventIds.add(JSON.stringify([driver, sessionId, "prompt", id]));
+            wakeEventIds.add(encodeWakeEventId([driver, sessionId, "prompt", id]));
           }
           const eventIdentity = wakeEventIds.size ? { wakeEventIds: [...wakeEventIds] } : {};
           yield* Effect.logInfo("orchestration-v2.acp-wake-turn-detected", {

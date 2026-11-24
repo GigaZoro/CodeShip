@@ -1292,6 +1292,7 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
       wakes.map((message) => message.notification),
       [
         {
+          wakeEventIds: [wakes[0]!.id],
           source: {
             kind: "delegated_task",
             taskIds: [task.id],

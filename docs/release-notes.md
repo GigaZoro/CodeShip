@@ -1,3 +1,7 @@
+## 2026-11-25 — Identify provider wake events
+
+- Background wake records now retain provider event identities and the parent run that first acknowledged a delegated result, so usage reports can trace repeated deliveries.
+
 ## 2026-11-25 — CodeShip's own scheduled tasks share one group
 
 - For people who work on T3.CodeShip: the project's three scheduled tasks (the weekly sync from T3 Code, the weekly dependency upgrade and the translation check) are now declared in the group "CodeShip maintenance" in `machine-config.json`. Their chats share one sidebar folder, and the group pauses and resumes them together. The machine check reports a copy that sits in another group.
@@ -155,10 +159,6 @@
 
 - Storage cleanup kept a finished worktree with "Worktree has private reflogs" once Git had deleted a worktree-only ref and left its reflog's empty folders. Those worktrees are released; a reflog that still holds history keeps its worktree.
 - A delegated task on a linked machine whose last reply or plan was blank gave the chat that started it a blank result. Its result is now its last reply with text, as for a task on this machine.
-
-## 2026-11-24 — Identify provider wake events
-
-- Background wake records now retain provider event identities and the parent run that first acknowledged a delegated result, so usage reports can trace repeated deliveries.
 
 ## 2026-11-24 — Daily wake usage report
 
