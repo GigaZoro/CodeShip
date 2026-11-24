@@ -61,6 +61,7 @@ const state = vi.hoisted(() => ({
   tasksLoaded: true,
   secondary: false,
   checked: false,
+  describes: false,
 }));
 // The web build runs the React Compiler, so a memoized form re-renders only when a hook it calls
 // changes. The environment mocks read the connection through this store, as the real hooks
@@ -90,6 +91,7 @@ function setup() {
   state.tasksLoaded = true;
   state.secondary = false;
   state.checked = false;
+  state.describes = false;
   permissions.clear();
   permissions.set(environmentId, Atom.make(true));
   permissions.set(secondaryId, Atom.make(true));
@@ -113,6 +115,7 @@ function environment() {
               oneTimeSchedules: true,
               scheduledTaskGroups: true,
               threadFolders: true,
+              ...(state.describes ? { scheduledTaskDescriptions: true } : {}),
             },
           },
         }
@@ -311,6 +314,30 @@ describe("ScheduledTasksSettings", () => {
     await expect
       .element(dialog.getByText(/Laptop runs an older T3.CodeShip that cannot run checks/))
       .toBeVisible();
+  });
+
+  it("keeps an unsaved description without a verdict while the target is unknown", async () => {
+    setup();
+    state.describes = true;
+    await using _screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+    const dialog = page.getByRole("dialog");
+    const description = dialog.getByRole("textbox", { name: "Description (optional)" });
+    await userEvent.fill(description, "Nightly review");
+    await expect
+      .element(dialog.getByText("A short summary shown in the scheduled task list."))
+      .toBeVisible();
+
+    await act(() => connection.set(false));
+
+    await expect.element(dialog.getByRole("button", { name: "Save task" })).toBeDisabled();
+    await expect.element(description).toHaveValue("Nightly review");
+    await expect.element(dialog.getByText(/cannot save descriptions/)).not.toBeInTheDocument();
+
+    // A known target without description support still gets the verdict for the same edit.
+    state.describes = false;
+    await act(() => connection.set(true));
+    await expect.element(dialog.getByText(/Laptop cannot save descriptions/)).toBeVisible();
+    await expect.element(description).toHaveValue("Nightly review");
   });
 
   it("keeps an editor the user opened when the linked task loads later", async () => {

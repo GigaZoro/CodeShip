@@ -2939,7 +2939,7 @@ function ScheduledTaskEditorForm({
   const supportsPromptFiles =
     targetCapabilities === null ? null : targetCapabilities.scheduledTaskPromptFiles === true;
   const supportsDescriptions =
-    environment?.serverConfig?.environment.capabilities.scheduledTaskDescriptions === true;
+    targetCapabilities === null ? null : targetCapabilities.scheduledTaskDescriptions === true;
   const descriptionField = scheduledTaskDescriptionField({
     supported: supportsDescriptions,
     description: draft.description,
@@ -3531,7 +3531,9 @@ function ScheduledTaskEditorForm({
             />
           </Field>
 
-          {supportsDescriptions || draft.description !== "" || draft.savedDescription !== "" ? (
+          {supportsDescriptions === true ||
+          draft.description !== "" ||
+          draft.savedDescription !== "" ? (
             <Field label={t("Description (optional)")} htmlFor="scheduled-task-description">
               <Textarea
                 id="scheduled-task-description"

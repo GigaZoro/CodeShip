@@ -1253,7 +1253,8 @@ function TaskForm({
   const runConditionLost = runConditionLostOnTarget({ targetSupportsRunConditions, draft });
   const supportsPromptFiles =
     config === null ? null : config.environment.capabilities.scheduledTaskPromptFiles === true;
-  const supportsDescriptions = config?.environment.capabilities.scheduledTaskDescriptions === true;
+  const supportsDescriptions =
+    config === null ? null : config.environment.capabilities.scheduledTaskDescriptions === true;
   const savedDescription = draft.task?.description ?? "";
   const descriptionField = scheduledTaskDescriptionField({
     supported: supportsDescriptions,
@@ -1579,7 +1580,7 @@ function TaskForm({
             placeholder={t("Check for issues")}
             onChange={(title) => setDraft({ ...draft, title })}
           />
-          {supportsDescriptions || draft.description !== "" || savedDescription !== "" ? (
+          {supportsDescriptions === true || draft.description !== "" || savedDescription !== "" ? (
             <View className="gap-2 border-t border-border-subtle px-4 py-3">
               <Text className="text-sm text-foreground-muted">{t("Description (optional)")}</Text>
               <RNTextInput
