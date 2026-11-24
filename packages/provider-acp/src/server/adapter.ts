@@ -1402,6 +1402,7 @@ export class AcpWakeEvidence {
     const task = this.tasks.get(key) ?? this.begin(key, this.consumed.has(key));
     // Multiple distinct producers can use the same native task ID. Its bare terminal cannot identify one of them.
     if (task.hasSource && task.sourceRunId !== source) task.reused = true;
+    task.eventKey = identity;
     task.hasSource = true;
     task.sourceRunId = task.reused ? null : source;
     if (task.reused) delete task.report;
@@ -1435,7 +1436,7 @@ export class AcpWakeEvidence {
 
   private detachTerminal(key: string, task: WakeTask) {
     this.pending.push({
-      ...(task.reused ? {} : { eventKey: key }),
+      ...(task.reused || task.eventKey === undefined ? {} : { eventKey: task.eventKey }),
       sourceRunId: task.sourceRunId,
       ...(task.report && { report: task.report }),
     });
@@ -2126,18 +2127,28 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             readonly threadId: ThreadId;
             readonly runtimeGeneration: number;
             readonly offerGeneration: number;
+            readonly promptIds: ReadonlySet<string>;
             readonly frames: ReadonlyArray<EffectAcpSchema.SessionNotification>;
           }
         >();
-        const takeWakeFrames = (sessionId: string) =>
-          Ref.modify(
-            wakeBuffer,
-            (frames) =>
-              [
-                frames.filter((frame) => frame.sessionId === sessionId),
-                frames.filter((frame) => frame.sessionId !== sessionId),
-              ] as const,
-          );
+        const wakePromptId = (frame: EffectAcpSchema.SessionNotification) =>
+          flavor.isProviderWakeNotification?.(frame) &&
+          typeof frame._meta?.promptId === "string" &&
+          frame._meta.promptId.trim()
+            ? frame._meta.promptId
+            : undefined;
+        const takeWakeFrames = (sessionId: string, promptIds: ReadonlySet<string>) =>
+          Ref.modify(wakeBuffer, (frames) => {
+            const boundary = frames.findIndex((frame) => {
+              const id = wakePromptId(frame);
+              return frame.sessionId === sessionId && id !== undefined && !promptIds.has(id);
+            });
+            const cutoff = boundary < 0 ? frames.length : boundary;
+            return [
+              frames.slice(0, cutoff).filter((frame) => frame.sessionId === sessionId),
+              frames.filter((frame, i) => i >= cutoff || frame.sessionId !== sessionId),
+            ] as const;
+          });
         const continuationGeneration = yield* Ref.make(0);
         const continuationPermit = yield* Semaphore.make(1);
         const continuationClosed = yield* Ref.make(false);
@@ -4512,24 +4523,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               eventKey === undefined ? [] : [JSON.stringify([driver, sessionId, "task", eventKey])],
             ),
           );
+          const promptIds = new Set<string>();
           for (const entry of yield* Ref.get(wakeBuffer)) {
-            if (
-              entry.sessionId === sessionId &&
-              flavor.isProviderWakeNotification?.(entry) &&
-              typeof entry._meta?.promptId === "string" &&
-              entry._meta.promptId.trim().length > 0
-            ) {
-              wakeEventIds.add(JSON.stringify([driver, sessionId, "prompt", entry._meta.promptId]));
-            }
+            if (entry.sessionId !== sessionId) continue;
+            const id = wakePromptId(entry);
+            if (id === undefined) continue;
+            promptIds.add(id);
+            wakeEventIds.add(JSON.stringify([driver, sessionId, "prompt", id]));
           }
-          const handledTasks = yield* Ref.get(handledBackgroundTaskIdsInActiveTurn);
-          const previouslyHandledWakeEventIds = Array.from(handledTasks, (key) =>
-            JSON.stringify([driver, sessionId, "task", toolWakeKey(sessionId, key)]),
-          ).filter((key) => wakeEventIds.has(key));
-          const eventIdentity = {
-            wakeEventIds: [...wakeEventIds],
-            ...(previouslyHandledWakeEventIds.length ? { previouslyHandledWakeEventIds } : {}),
-          };
+          const eventIdentity = wakeEventIds.size ? { wakeEventIds: [...wakeEventIds] } : {};
           yield* Effect.logInfo("orchestration-v2.acp-wake-turn-detected", {
             driver,
             providerSessionId: input.providerSessionId,
@@ -4594,7 +4596,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     sessionId,
                     runtimeGeneration,
                     offerGeneration: generation,
-                    frames: yield* takeWakeFrames(sessionId),
+                    promptIds,
+                    frames: yield* takeWakeFrames(sessionId, promptIds),
                   });
                   return Option.some(exit.value);
                 }),
@@ -7938,7 +7941,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     let frames = wake.frames;
                     const ownsOffer = wake.offerGeneration === generation;
                     if (ownsOffer) {
-                      frames = frames.concat(yield* takeWakeFrames(requestedSessionId));
+                      frames = frames.concat(
+                        yield* takeWakeFrames(requestedSessionId, wake.promptIds),
+                      );
                       yield* Ref.update(continuationGeneration, (value) => value + 1);
                       yield* Ref.set(continuationRequested, false);
                     }

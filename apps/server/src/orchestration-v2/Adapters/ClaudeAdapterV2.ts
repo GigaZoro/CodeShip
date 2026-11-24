@@ -5133,7 +5133,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           Ref.get(nestedSubagentTaskIds).pipe(Effect.map((ids) => ids.has(taskId)));
         const recordWakeReport = (
           nativeThreadId: string,
-          taskId: string,
+          notification: Extract<SDKMessage, { subtype: "task_notification" }>,
           report: BackgroundWorkReport,
           sourceRunId: RunId | null = report.sourceRunId ?? null,
         ) =>
@@ -5141,7 +5141,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             userTurns,
             reports: new Map(reports).set(
               nativeThreadId,
-              new Map(reports.get(nativeThreadId)).set(taskId, {
+              new Map(reports.get(nativeThreadId)).set(notification.uuid, {
                 report,
                 sourceRunId,
                 turn: userTurns.get(nativeThreadId) ?? 0,
@@ -5354,6 +5354,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               startedAt: context.startedAt,
               completedAt: null,
               tokenUsage,
+              ...(context.nativeWakeStarted ? { nativeWakeStarted: true } : {}),
             },
           });
         });
@@ -8377,7 +8378,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           if (isPendingTaskNotification) {
             yield* recordWakeReport(
               wakeInput.nativeThreadId,
-              message.task_id,
+              message,
               yield* opaqueTaskWakeReport(wakeInput.nativeThreadId, message),
             );
           } else if (isPendingSubagentNotification) {
@@ -8390,7 +8391,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             );
             yield* recordWakeReport(
               wakeInput.nativeThreadId,
-              message.task_id,
+              message,
               {
                 kind: "subagent",
                 label:
@@ -8483,9 +8484,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               : {
                   notification: {
                     ...notification,
-                    wakeEventIds: Array.from(reports?.keys() ?? [], (taskId) =>
-                      JSON.stringify([CLAUDE_PROVIDER, wakeInput.nativeThreadId, "task", taskId]),
-                    ),
+                    wakeEventIds: Array.from(reports?.keys() ?? [])
+                      .filter((id) => typeof id === "string" && id.trim().length > 0)
+                      .map((id) =>
+                        JSON.stringify([
+                          CLAUDE_PROVIDER,
+                          wakeInput.nativeThreadId,
+                          "notification",
+                          id,
+                        ]),
+                      ),
                   },
                 }),
           });
@@ -9538,7 +9546,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               if (wasBackgroundTask) {
                 yield* recordWakeReport(
                   liveQuery.nativeThreadId,
-                  message.task_id,
+                  message,
                   yield* opaqueTaskWakeReport(liveQuery.nativeThreadId, message),
                 );
               } else if (
@@ -9548,7 +9556,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 const registered = (yield* Ref.get(sessionSubagentsByTaskId)).get(message.task_id);
                 yield* recordWakeReport(
                   liveQuery.nativeThreadId,
-                  message.task_id,
+                  message,
                   {
                     kind: "subagent",
                     label: registered?.task.title ?? undefined,
@@ -10068,9 +10076,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           if (
             context?.promptUuid === null &&
             liveQuery?.query === input.query &&
+            !context.nativeWakeStarted &&
             isClaudeRootTurnFrame(message)
           ) {
             context.nativeWakeStarted = true;
+            yield* emitProviderEvent({
+              type: "provider_turn.updated",
+              driver: CLAUDE_PROVIDER,
+              threadId: context.input.threadId,
+              providerTurn: providerTurnPayload({ context, status: "running", completedAt: null }),
+            });
           }
           if (
             context === null ||

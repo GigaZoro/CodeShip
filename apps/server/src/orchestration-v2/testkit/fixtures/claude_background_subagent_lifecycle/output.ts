@@ -100,6 +100,33 @@ export function assertClaudeBackgroundSubagentLifecycleOutput(
     CLAUDE_BACKGROUND_SUBAGENT_LIFECYCLE_FINAL_PROMPT,
   ]);
 
+  const terminalIds = transcript.entries.flatMap((entry) =>
+    entry.type === "emit_inbound" &&
+    frameField(entry.frame, "subtype") === "task_notification" &&
+    frameField(entry.frame, "task_id") === AGENT_A_TASK_ID
+      ? [
+          JSON.stringify([
+            "claudeAgent",
+            frameField(entry.frame, "session_id"),
+            "notification",
+            frameField(entry.frame, "uuid"),
+          ]),
+        ]
+      : [],
+  );
+  assert.equal(new Set(terminalIds).size, 2);
+  const recordedIds = projection.messages.flatMap(
+    (message) => message.notification?.wakeEventIds ?? [],
+  );
+  assert.includeMembers(recordedIds, terminalIds);
+  assert.isTrue(
+    result.domainEvents.some(
+      (event) =>
+        event.type === "provider-turn.updated" &&
+        event.payload.status === "running" &&
+        event.payload.nativeWakeStarted === true,
+    ),
+  );
   const creators = projection.runs.map((run) => {
     const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
     return `${message?.createdBy}:${message?.creationSource}`;

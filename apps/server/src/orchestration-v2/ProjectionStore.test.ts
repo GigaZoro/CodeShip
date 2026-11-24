@@ -4465,7 +4465,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         driver,
         providerInstanceId,
         occurredAt: now,
-        payload: task,
+        payload: { ...task, terminalResultObservation: { runId, at: now } },
       });
 
       yield* projectionStore.apply({
@@ -4511,6 +4511,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.deepEqual(projection.runs[0]?.delegatedCompletion, run.delegatedCompletion);
       assert.deepEqual(projection.runs[0]?.restartCancelledBackgroundWork, lostWork);
       assert.deepEqual(projection.subagents[0]?.completionDelivery, task.completionDelivery);
+      assert.deepEqual(projection.subagents[0]?.terminalResultObservation, { runId, at: now });
       assert.deepEqual(
         (yield* projectionStore.getThreadRecords(threadId, ["subagents"], {
           omitSettledSubagents: true,

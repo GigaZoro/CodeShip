@@ -957,10 +957,16 @@ function preserveCompletionDelivery(
   current: OrchestrationV2Subagent | undefined,
   next: OrchestrationV2Subagent,
 ): OrchestrationV2Subagent {
-  if (next.completionDelivery !== undefined || current?.completionDelivery === undefined) {
-    return next;
-  }
-  return { ...next, completionDelivery: current.completionDelivery };
+  if (current === undefined) return next;
+  return {
+    ...next,
+    ...(next.completionDelivery === undefined && current.completionDelivery !== undefined
+      ? { completionDelivery: current.completionDelivery }
+      : {}),
+    ...(current.terminalResultObservation === undefined
+      ? {}
+      : { terminalResultObservation: current.terminalResultObservation }),
+  };
 }
 
 export function emptyProjection(
@@ -2553,7 +2559,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   excluded.completion_delivery_state,
                   orchestration_v2_projection_subagents.completion_delivery_state
                 ),
-                payload_json = CASE
+                payload_json = json_patch(
+                  CASE
                   WHEN json_type(excluded.payload_json, '$.completionDelivery') IS NULL
                     AND json_type(orchestration_v2_projection_subagents.payload_json, '$.completionDelivery') IS NOT NULL
                   THEN json_set(
@@ -2565,7 +2572,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     )
                   )
                   ELSE excluded.payload_json
-                END
+                END,
+                  CASE WHEN json_type(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation') = 'object'
+                    THEN json_object('terminalResultObservation', json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation'))
+                    ELSE '{}' END
+                )
             `;
               break;
             }

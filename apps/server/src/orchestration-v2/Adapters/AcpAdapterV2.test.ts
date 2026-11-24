@@ -8548,7 +8548,9 @@ describe("AcpAdapterV2", () => {
     wake.start("current", b, "new-registration");
     wake.terminal("current");
     wake.terminal("task-83", { kind: "command", label: "stale detail", outcome: "completed" });
-    assert.deepEqual(wake.offer(), [{ sourceRunId: b, eventKey: "current" }]);
+    assert.deepEqual(wake.offer(), [
+      { sourceRunId: b, eventKey: JSON.stringify(["current", "new-registration"]) },
+    ]);
     wake.consume();
     wake.start("next", b, "next-registration");
     wake.terminal("next");
@@ -8578,7 +8580,7 @@ describe("AcpAdapterV2", () => {
     wake.terminal("separate");
     assert.deepEqual(wake.offer(), [
       { sourceRunId: null },
-      { sourceRunId: later, eventKey: "separate" },
+      { sourceRunId: later, eventKey: JSON.stringify(["separate", "producer-c"]) },
     ]);
   });
 
@@ -8636,6 +8638,7 @@ describe("AcpAdapterV2", () => {
         driver: ACP_TEST_DRIVER,
         capabilities: AcpProviderCapabilitiesV2,
         enablePostSettleContinuation: true,
+        isProviderWakeNotification: (frame) => typeof frame._meta?.promptId === "string",
         extractBackgroundTaskId: (tool) =>
           tool.toolCallId.startsWith("producer-") ? "shared" : undefined,
         registerExtensions: (context) =>
@@ -8702,9 +8705,10 @@ describe("AcpAdapterV2", () => {
         status: "completed",
         report: { kind: "command", label },
       });
-    const text = (processIndex: number, output = "Result available") =>
+    const text = (processIndex: number, output = "Result available", promptId?: string) =>
       updates[processIndex]!({
         sessionId,
+        ...(promptId === undefined ? {} : { _meta: { promptId } }),
         update: {
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: output },
@@ -8753,6 +8757,28 @@ describe("AcpAdapterV2", () => {
     return { turn, end, text, terminate, offers, inputs, resume, attach, sent };
   });
 
+  it.effect("keeps a later prompt in its own delivery while dispatch is pending", () =>
+    Effect.gen(function* () {
+      const { turn, end, text, offers, attach } = yield* wakeRuntime();
+      yield* turn(1, true);
+      yield* end(0, "finished");
+      yield* text(0, "first output", "prompt-a");
+      const first = offers[0]!;
+      yield* text(0, "later output", "prompt-b");
+      assert.isTrue(Option.isSome(yield* first.dispatchIfCurrent!(Effect.void)));
+      const firstOutput = yield* attach(2, first.messageId);
+      assert.include(firstOutput, "first output");
+      assert.notInclude(firstOutput.join(""), "later output");
+      const later = offers[1]!;
+      assert.isTrue(Option.isSome(yield* later.dispatchIfCurrent!(Effect.void)));
+      assert.include(yield* attach(3, later.messageId), "later output");
+      assert.isFalse(
+        first.notification?.wakeEventIds?.some((id) => id.includes("prompt-b")) ?? false,
+      );
+      assert.isTrue(later.notification?.wakeEventIds?.some((id) => id.includes("prompt-b")));
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
   it.effect("a failed ACP wake keeps its producer through a later turn reusing its task ID", () =>
     Effect.gen(function* () {
       const { turn, end, text, offers, attach } = yield* wakeRuntime();
@@ -8791,6 +8817,9 @@ describe("AcpAdapterV2", () => {
       yield* end(1, "replacement task");
       yield* text(1, "replacement process result");
       const fresh = offers[1]!;
+      assert.isNotEmpty(old.notification?.wakeEventIds);
+      assert.isNotEmpty(fresh.notification?.wakeEventIds);
+      assert.notDeepEqual(old.notification?.wakeEventIds, fresh.notification?.wakeEventIds);
       // The old message was already enqueued, but the new offer still awaits its dispatch.
       assert.deepEqual(yield* attach(3, old.messageId, "deliver old wake"), []);
       assert.include(sent.at(-1)!, "deliver old wake");
