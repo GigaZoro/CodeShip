@@ -228,6 +228,8 @@ interface HarnessOptions {
   readonly notAppliedDesktopVersion?: string;
   /** The hold of another backend the desktop app runs beside this primary. */
   readonly otherBackend?: OrchestrationV2RestartHold;
+  /** The hold kept after an accepted handoff cannot start. */
+  readonly failBackgroundDrain?: boolean;
 }
 
 const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
@@ -365,7 +367,25 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
   );
   // Built in the test's scope, so the restart hold's drain links live as long as the test.
   const services = yield* Layer.build(
-    Layer.effect(MachineRestartHold.MachineRestartHold, MachineRestartHold.make()).pipe(
+    Layer.effect(
+      MachineRestartHold.MachineRestartHold,
+      MachineRestartHold.make().pipe(
+        Effect.map((machineHold) =>
+          options.failBackgroundDrain === true
+            ? {
+                ...machineHold,
+                drainInBackground: () =>
+                  Effect.fail(
+                    new MachineRestartHold.BackendRestartHoldError({
+                      backend: "primary",
+                      cause: "the local hold timed out",
+                    }),
+                  ),
+              }
+            : machineHold,
+        ),
+      ),
+    ).pipe(
       Layer.provide(
         Layer.mergeAll(
           DesktopTelemetryReceiver.layerTest({ desktopBackends: Stream.make(otherBackends) }),
@@ -722,6 +742,42 @@ it.layer(NodeServices.layer)("automatic server update", (it) => {
         "Automatic update check ended without an install.",
         { targetVersion: NEWER, settingsChanged: true },
       ]);
+    }),
+  );
+
+  it.effect("names the release it last tried when a newer one came out while it waited", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ hold: [work("a")] });
+      yield* Ref.set(harness.failUpdates, true);
+      const check = yield* Effect.forkChild(updateLines(harness.auto.check()));
+      yield* Deferred.await(harness.holdSeen);
+      yield* Ref.set(harness.newest, NEWEST_AFTER);
+      yield* SubscriptionRef.set(harness.hold, { work: [] });
+      const lines = yield* Fiber.join(check);
+      expect(harness.events).toEqual([`update ${NEWEST_AFTER}`]);
+      expect(lines.at(-1)).toEqual([
+        "Automatic update check ended without an install.",
+        { targetVersion: NEWEST_AFTER, settingsChanged: false },
+      ]);
+    }),
+  );
+
+  it.effect("reports an accepted handoff whose hold cannot start as handed off", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ failBackgroundDrain: true });
+      const lines = yield* updateLines(harness.auto.check());
+      expect(harness.events).toEqual([`update ${NEWER}`, `handoff ${NEWER}`]);
+      expect(lines.map(([message]) => message).slice(-2)).toEqual([
+        "Automatic update handed to its installer.",
+        "Automatic update could not hold scheduled starts after its handoff.",
+      ]);
+      expect(lines.map(([message]) => message)).not.toContain(
+        "Automatic update failed at the handoff.",
+      );
+      // A server the installer does not stop still says so, though nothing holds its starts.
+      yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_HANDOFF_STOP_LIMIT);
+      yield* Effect.yieldNow;
+      expect(lines.at(-1)?.[0]).toBe("Automatic update handoff did not stop this server.");
     }),
   );
 

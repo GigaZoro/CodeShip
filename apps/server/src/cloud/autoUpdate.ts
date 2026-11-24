@@ -118,6 +118,8 @@ interface UpdateSchedule {
   readonly channel: CliReleaseChannel;
   readonly time: string;
   readonly changed: Effect.Effect<void>;
+  /** The release the check last tried to hand off: a newer one can come out while it waits. */
+  readonly attempted: Ref.Ref<string | undefined>;
 }
 
 export type AutoUpdateDecision =
@@ -466,6 +468,7 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     const target = yield* findTarget(schedule);
     if (target === undefined) return;
     const version = installerVersion(target);
+    yield* Ref.set(schedule.attempted, version);
     yield* Effect.logInfo("Automatic update starting.", { targetVersion: version });
     // Set when the last check puts the update off, which is not a failed attempt.
     const heldOff = yield* Ref.make<HoldOff | undefined>(undefined);
@@ -501,23 +504,29 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
             method: result.method,
             updateId: result.updateId,
           }).pipe(
-            // The installer stops this server shortly; until then no scheduled start may begin.
+            // The installer stops this server shortly; until then no scheduled start may begin. The
+            // installer has the release either way, so a hold that cannot start is no failed
+            // install, and the server still says so when it outlives the handoff.
             Effect.andThen(
-              machineHold
-                .drainInBackground(
-                  Effect.sleep(AUTO_UPDATE_HANDOFF_STOP_LIMIT).pipe(
-                    Effect.andThen(
-                      Effect.logWarning("Automatic update handoff did not stop this server.", {
-                        targetVersion: result.targetVersion,
-                      }),
+              Effect.gen(function* () {
+                const stopWatch = Effect.sleep(AUTO_UPDATE_HANDOFF_STOP_LIMIT).pipe(
+                  Effect.andThen(
+                    Effect.logWarning("Automatic update handoff did not stop this server.", {
+                      targetVersion: result.targetVersion,
+                    }),
+                  ),
+                );
+                yield* machineHold
+                  .drainInBackground(stopWatch)
+                  .pipe(
+                    Effect.catch((error) =>
+                      Effect.logWarning(
+                        "Automatic update could not hold scheduled starts after its handoff.",
+                        { targetVersion: result.targetVersion, reason: error.message },
+                      ).pipe(Effect.andThen(Effect.forkDetach(stopWatch))),
                     ),
-                  ),
-                )
-                .pipe(
-                  Effect.mapError(
-                    (cause) => new ServerSelfUpdateError({ reason: cause.message, cause }),
-                  ),
-                ),
+                  );
+              }),
             ),
             Effect.as("handed-off" as const),
           ),
@@ -615,6 +624,7 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
       channel: cliReleaseChannelOf(packageJson.version),
       time,
       changed: Deferred.await(changed),
+      attempted: yield* Ref.make<string | undefined>(undefined),
     };
     const target = yield* findTarget(schedule);
     if (target === undefined) return;
@@ -622,7 +632,7 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     // A check can end with no line of its own (a schedule change, a release no longer due), and
     // without this one its log would read as an install still under way.
     yield* Effect.logInfo("Automatic update check ended without an install.", {
-      targetVersion: installerVersion(target),
+      targetVersion: (yield* Ref.get(schedule.attempted)) ?? installerVersion(target),
       settingsChanged: yield* Deferred.isDone(changed),
     });
   }, Effect.scoped);
