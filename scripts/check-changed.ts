@@ -893,7 +893,7 @@ const gitNames = (root: string, objects: string, args: ReadonlyArray<string>) =>
 // Cached passes key on the files tests read, which leave out modes. Git's modes leave out the
 // execute bits of files it trusts the index for, of symlinks it checks out as files, and of the
 // files in embedded repositories, so also key on HEAD, working-tree types and modes, and the
-// on-disk execute bits and access of every file outside .git and installed node_modules.
+// on-disk permissions of files outside .git and installed node_modules.
 export const checkoutState = Effect.fn("checkChanged.checkoutState")(function* (input: {
   readonly root: string;
   readonly objects: string;
@@ -918,10 +918,19 @@ export const checkoutState = Effect.fn("checkChanged.checkoutState")(function* (
   const runnable = Option.liftThrowable((file: string) =>
     NodeFS.accessSync(inRoot(file), NodeFS.constants.X_OK),
   );
-  const executables: Array<string> = [];
+  const permissions: Array<string> = [];
+  const directories = new Set<string>();
+  const addDirectoryMode = (file: string) => {
+    if (directories.has(file)) return;
+    directories.add(file);
+    const mode = NodeFS.statSync(inRoot(file)).mode & 0o7777;
+    if (mode !== 0o755) permissions.push(`directory\0${file}\0${mode}\0`);
+    if (file !== ".") addDirectoryMode(NodePath.posix.dirname(file));
+  };
   // Git lists an embedded repository, and checks out a gitlink, as one directory.
   const add = (file: string): void => {
     const entry = unlessAbsent(() => NodeFS.lstatSync(inRoot(file)));
+    if (entry) addDirectoryMode(entry.isDirectory() ? file : NodePath.posix.dirname(file));
     if (entry?.isDirectory()) {
       for (const child of NodeFS.readdirSync(inRoot(file), {
         encoding: "buffer",
@@ -936,11 +945,13 @@ export const checkoutState = Effect.fn("checkChanged.checkoutState")(function* (
     }
     // A link that leads nowhere or loops is no file anyone may run.
     const info = entry?.isSymbolicLink() ? Option.getOrUndefined(target(file)) : entry;
-    // A runner in the file's group, or outside it, may run a file its owner may not, so any
-    // execute bit is an input, beside whether this runner may.
-    if (info?.isFile() && (info.mode & 0o111) !== 0) {
-      const bits = (info.mode & 0o111).toString(8);
-      executables.push(`executable on disk\0${bits}\0${Option.isSome(runnable(file))}\0${file}\0`);
+    if (info?.isFile()) {
+      const mode = info.mode & 0o7777;
+      // The usual 0644 contributes nothing, so adding an unrelated ordinary file keeps group keys.
+      if (mode !== 0o644) {
+        const executable = (mode & 0o111) !== 0 && Option.isSome(runnable(file));
+        permissions.push(`file\0${file}\0${mode}\0${executable}\0`);
+      }
     }
   };
   // Where core.ignoreCase is on, Git's listings leave out an untracked file whose name differs from
@@ -961,7 +972,7 @@ export const checkoutState = Effect.fn("checkChanged.checkoutState")(function* (
     },
     catch: (cause) => `check:changed cannot read the checkout's files: ${String(cause)}`,
   });
-  for (const entry of executables.sort()) hash.update(entry);
+  for (const entry of permissions.sort()) hash.update(entry);
   return hash.digest("hex");
 });
 
@@ -1133,13 +1144,11 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   }
 
   const hostCapabilities = yield* Effect.promise(probeHostCapabilities);
-  const testGit = gitEnvironment();
-  const testRuntime = changedTestRuntime(
-    platform,
-    yield* HostProcess.Architecture,
-    hostCapabilities,
-    testGit,
-  );
+  const testGit = gitEnvironment(root);
+  const architecture = yield* HostProcess.Architecture;
+  const runtimeForGit = (git: string) =>
+    changedTestRuntime(platform, architecture, hostCapabilities, git);
+  const testRuntime = runtimeForGit(testGit);
   const ci = Option.getOrElse(yield* Config.option(Config.String("CI")), () => "");
   // Only uncached tasks get the provider variables this opt-in keeps for a live run.
   const keepProviderEnv =
@@ -1163,11 +1172,11 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     );
   const sourceFingerprint = Effect.fn("checkChanged.sourceFingerprint")(function* (
     against: string,
+    current: string,
   ) {
     const hash = NodeCrypto.createHash("sha256");
     // CI changes test behavior (vite.config.ts rejects .only under CI). The tree holds what the
     // diff and the bytes below leave out, such as an untracked file's mode.
-    const current = yield* checkedTree;
     hash.update(`${testRuntime}\0${against}\0${current}\0${ci}\0`);
     hash.update(
       yield* git(root, [
@@ -1196,10 +1205,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     );
   const installed = () => Effect.try({ try: () => installFingerprint(root), catch: String });
   const testFingerprint = Effect.fn("checkChanged.testFingerprint")(function* (
-    head: string,
+    current: string,
     install: string,
   ) {
-    const hash = yield* sourceFingerprint(head);
+    const hash = yield* sourceFingerprint(head, current);
     yield* addFiles(
       hash,
       yield* ignoredInputs(
@@ -1211,7 +1220,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     return hash.update(install).digest("hex");
   });
   const fingerprints = Effect.fn("checkChanged.fingerprints")(function* (against: string) {
-    const hash = yield* sourceFingerprint(against);
+    const hash = yield* sourceFingerprint(against, yield* checkedTree);
     const source = hash.copy().digest("hex");
     yield* addFiles(
       hash,
@@ -1466,32 +1475,50 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const testWorkers = vitestTests.length - serverTests + Math.min(serverTests, 1);
 
   const slotDirectory = yield* budgetDirectory(root);
+  const testInputs = Effect.gen(function* () {
+    const current = yield* checkedTree;
+    const install = yield* installed();
+    const state = yield* checkoutState({ root, objects, head, tree: current });
+    const git = yield* Effect.try({ try: () => gitEnvironment(root), catch: String });
+    const fingerprint = yield* testFingerprint(current, install);
+    return {
+      state,
+      install,
+      runtime: runtimeForGit(git),
+      proof: `${fingerprint}\0${state}\0${git}`,
+    };
+  });
+  const selectedTests = vitestTests.length + nodeTests.length + compilerApps.length > 0;
+  const checkedInputs = selectedTests ? yield* testInputs : undefined;
+  const currentTestProof = Effect.gen(function* () {
+    if ((yield* gitCommit(root, "HEAD")) !== head) return "";
+    return (yield* testInputs).proof;
+  });
   const testStep: Step<never> = {
     name: `test (${vitestTests.length} files)`,
     run: (slots, collect) =>
       Effect.scoped(
         Effect.gen(function* () {
           const temp = yield* fs.makeTempDirectoryScoped({ prefix: "t3-check-changed-tests-" });
-          const install = yield* installed();
-          const state = yield* checkoutState({ root, objects, head, tree: yield* checkedTree });
+          const { install, state, runtime, proof } = checkedInputs!;
           const cache = path.join(temp, "cache");
+          const markerDirectory = inRoot("node_modules/.cache/check-changed-host");
+          yield* fs.makeDirectory(markerDirectory, { recursive: true });
+          const marker = yield* fs.makeTempFileScoped({ directory: markerDirectory });
+          yield* fs.writeFileString(marker, NodeCrypto.randomUUID());
           const { finish } = yield* stageTestCache(
             yield* testCachePartition(path.join(slotDirectory, "tests"), head),
             cache,
-            `${yield* testFingerprint(head, install)}\0${state}\0${testGit}`,
-            Effect.gen(function* () {
-              if ((yield* gitCommit(root, "HEAD")) !== head) return "";
-              const fingerprint = yield* testFingerprint(head, yield* installed());
-              const git = yield* Effect.try({ try: () => gitEnvironment(), catch: String });
-              const state = yield* checkoutState({ root, objects, head, tree: yield* checkedTree });
-              return `${fingerprint}\0${state}\0${git}`;
-            }),
+            proof,
+            // Retire this run's host-dependent input before another run can seed any published row.
+            fs.remove(marker, { force: true }).pipe(Effect.andThen(currentTestProof)),
           );
           const request = path.join(temp, "tests.json");
           const groups = Math.max(1, Math.floor(slots / 3));
           const workers = Math.floor(slots / groups);
           const env = {
-            ...changedTestRequestEnv(request, testRuntime, workers, cache, state, install),
+            T3_CHECK_CHANGED_HOST_INPUT: marker,
+            ...changedTestRequestEnv(request, runtime, workers, cache, state, install),
             ...hostCapabilitiesEnv(hostCapabilities),
           };
           yield* keepModuleCache(inRoot(`node_modules/.vitest-cache/check-changed/${install}`));
@@ -1504,6 +1531,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
               uncached: keepProviderEnv
                 ? vitestTests
                 : [
+                    "scripts/build-cli-archive.test.ts",
                     "apps/server/integration/transferBudgetV2.integration.test.ts",
                     // No input covers the programs these run: one a variable names (CC, ComSpec,
                     // T3CODE_TEST_HEADLESS_SHELL, T3_TEST_NU_PATH), or the shell tools of the
@@ -1561,7 +1589,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     ),
   };
 
-  const steps: Array<Step<never>> = [
+  const checks: Array<Step<never>> = [
     command("release notes", ["exec", "node", ".github/scripts/release-notes.cjs", "check", base]),
     ...(runPatchCheck ? [{ name: "unused patches", run: () => checkPatches }] : []),
     // The web and mobile builds stop on a shipped package without a license notice. Notices come
@@ -1589,6 +1617,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     ...affected.map((name) =>
       command(`typecheck ${name}`, ["run", "--cache", "--filter", name, "typecheck"]),
     ),
+  ];
+  const testSteps: Array<Step<never>> = [
     ...(vitestTests.length > 0 ? [testStep] : []),
     ...batched(nodeTests, (batch, part) =>
       command(`node --test (${batch.length} files)${part}`, ["exec", "node", "--test", ...batch]),
@@ -1609,10 +1639,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       }),
     ),
   ];
-
-  const stepsToRun = Option.isSome(previousPass)
-    ? steps.filter((step) => step === testStep)
-    : steps;
+  const stepsToRun = Option.isSome(previousPass) ? testSteps : [...checks, ...testSteps];
   const results = yield* runSteps(stepsToRun, {
     concurrency,
     timeoutSeconds,
@@ -1647,14 +1674,13 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   if (
     Option.isSome(previousPass) &&
     after.inputs === key &&
-    results.every(({ outcome }) => outcome === "pass")
+    results.every((result) => result.outcome === "pass")
   ) {
-    if (!(yield* treeUnchanged)) return false;
-    yield* Console.log("Checks passed with the previous run's summary.\n");
+    yield* Console.log("Previous full check summary:\n");
     for (const line of previousPass.value.summary) yield* Console.log(line);
-    return yield* recordCheckedPass;
+  } else {
+    yield* Console.log(`\n${summary.join("\n")}`);
   }
-  yield* Console.log(`\n${summary.join("\n")}`);
   if (after.source !== before.source) {
     yield* Console.log(
       "  FAIL  files changed while the checks ran, so their results can mix old and new code. Run again.",
@@ -1665,7 +1691,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   // The cache key was read after the install, so it can hold a file the checks never selected.
   if (!(yield* treeUnchanged)) return false;
   if (after.inputs !== key) {
-    // A reused pass ran only the test step, so no other check saw the new files.
+    // A reused pass ran only tests, so the other checks did not see the new inputs.
     if (Option.isSome(previousPass)) {
       yield* Console.log(
         "  FAIL  generated files changed while the previous run's pass was checked. Run again.",
@@ -1673,8 +1699,13 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       return false;
     }
     yield* Console.log("  pass not cached: generated files changed during the run");
-    return yield* recordCheckedPass;
   }
+  if (checkedInputs && (yield* currentTestProof) !== checkedInputs.proof) {
+    yield* Console.log("  FAIL  test inputs changed before the push receipt. Run again.");
+    return false;
+  }
+  yield* recordCheckedPass;
+  if (after.inputs !== key || Option.isSome(previousPass)) return true;
   // Write then rename, so a concurrent run never reads half a file.
   const temp = `${cachePath}.${process.pid}`;
   yield* Effect.gen(function* () {
@@ -1682,7 +1713,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     yield* fs.writeFileString(temp, yield* encodeCacheEntry({ key, summary }));
     yield* fs.rename(temp, cachePath);
   }).pipe(Effect.catch((error) => Console.warn(`  pass not cached: ${error.message}`)));
-  return yield* recordCheckedPass;
+  return true;
 }, Effect.scoped);
 
 export const checkChangedCommand = Command.make(

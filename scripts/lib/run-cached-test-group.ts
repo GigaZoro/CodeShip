@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - the standalone runner uses Vitest's Node API.
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import {
   createCLI,
@@ -60,6 +61,7 @@ async function runCachedTestGroup(argv: string[]) {
     finished.delete(key);
     active.set(spec.taskId, key);
   }
+  const hostInput = process.env.T3_CHECK_CHANGED_HOST_INPUT;
   const observer: Reporter = {
     onInit(vitest) {
       // Vitest 5's start() uses this manager directly. Its glob resolves every
@@ -70,6 +72,20 @@ async function runCachedTestGroup(argv: string[]) {
         (await discover(filters)).filter((spec) => member(spec.moduleId));
     },
     onTestRunStart(specs) {
+      if (hostInput) {
+        const preload = import.meta.resolve("./test-host-input.ts");
+        for (const spec of specs) {
+          if (
+            (spec.pool === "forks" || spec.pool === "threads") &&
+            spec.project.config.env?.T3_CHECK_CHANGED_HOST_INPUT === undefined
+          ) {
+            if (!spec.project.config.execArgv.includes(preload))
+              spec.project.config.execArgv.unshift("--import", preload);
+          } else {
+            NodeFS.readFileSync(hostInput);
+          }
+        }
+      }
       scheduled = specs.map(identity);
       const found = new Set(specs.map((spec) => NodePath.resolve(spec.moduleId)));
       const missing = [...requested].filter((file) => !found.has(file));
@@ -98,6 +114,10 @@ async function runCachedTestGroup(argv: string[]) {
         scheduled.every((key) => finished.has(key));
     },
   };
+  if (hostInput) {
+    const guard = await import("./test-host-input.ts");
+    guard.observeHostProcesses(hostInput, true);
+  }
   const context = await startVitest(
     [...filters],
     { ...options, run: true, watch: false },

@@ -141,12 +141,12 @@ const sha256 = (data: string | Buffer) =>
   NodeCrypto.createHash("sha256").update(data).digest("hex");
 
 /**
- * What git reads in a test beyond the repositories it makes: its version, the system config, and
+ * Git inputs for checkout-local commands and test repositories: version, effective config, and
  * the per-user ignore and attributes files it reads by default. Tests get no other GIT_* variable
  * and no XDG_CONFIG_HOME. Files and programs the system config names belong to the machine, as
  * git itself does.
  */
-export function gitEnvironment(env: NodeJS.ProcessEnv = process.env) {
+export function gitEnvironment(root: string, env: NodeJS.ProcessEnv = process.env) {
   const gitEnv = {
     ...Object.fromEntries(
       Object.entries(env).filter(([key]) => !key.startsWith("GIT_") && key !== "XDG_CONFIG_HOME"),
@@ -155,7 +155,7 @@ export function gitEnvironment(env: NodeJS.ProcessEnv = process.env) {
   };
   const git = (args: ReadonlyArray<string>) => {
     const result = NodeChildProcess.spawnSync("git", args, {
-      cwd: NodeOS.tmpdir(),
+      cwd: root,
       env: gitEnv,
       timeout: GIT_PROBE_TIMEOUT_MS,
       maxBuffer: GIT_PROBE_MAX_BYTES,
@@ -165,7 +165,7 @@ export function gitEnvironment(env: NodeJS.ProcessEnv = process.env) {
       throw result.error;
     }
     if (result.status !== 0) {
-      throw new Error(`git ${args.join(" ")} failed: ${result.stderr.toString()}`);
+      throw new Error(`git ${args[0]} failed with status ${result.status}`);
     }
     // Raw bytes: decoding would read two paths that differ in a byte invalid in UTF-8 as one.
     return result.stdout;
@@ -538,7 +538,9 @@ export function cachedTestTasks(
       const task = `test-cache:${key}`;
       if (skip.has(task)) continue;
       const uncachedGroup = uncachedFiles.has(group[0]!);
-      const cacheEnv = changed ? `VITE_CACHE_PATH= ${uncachedGroup ? requestFile + "= " : ""}` : "";
+      const cacheEnv = changed
+        ? `VITE_CACHE_PATH= ${uncachedGroup ? requestFile + "= T3_CHECK_CHANGED_HOST_INPUT= " : ""}`
+        : "";
       const moduleCache = changed
         ? " --fsModuleCachePath " +
           quoteArgument(
@@ -560,7 +562,7 @@ export function cachedTestTasks(
           ? false
           : {
               env: changed ? testEnv : Object.keys(vitePlusTestDefaults),
-              ...(changed ? { untrackedEnv: [testWorkersEnv] } : {}),
+              ...(changed ? { untrackedEnv: [testWorkersEnv, "T3_CHECK_CHANGED_HOST_INPUT"] } : {}),
               // Vitest reads and rewrites these caches while running otherwise unchanged tests.
               input: [
                 { auto: true },

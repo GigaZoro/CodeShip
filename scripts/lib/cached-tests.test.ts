@@ -148,7 +148,10 @@ describe("cachedTestTasks", () => {
       for (const key of tasks["test-cache"]!.dependsOn!) {
         const task = tasks[key]!;
         expect(task.command).not.toContain("--maxWorkers");
-        expect(task.cache && task.cache.untrackedEnv).toEqual(["T3CODE_TEST_MAX_WORKERS"]);
+        expect(task.cache && task.cache.untrackedEnv).toEqual([
+          "T3CODE_TEST_MAX_WORKERS",
+          "T3_CHECK_CHANGED_HOST_INPUT",
+        ]);
         expect(task.cache && task.cache.env).not.toContain("T3CODE_TEST_MAX_WORKERS");
       }
       const ci = cachedTestTasks(JSON.stringify(raw));
@@ -265,6 +268,7 @@ describe("cachedTestTasks", () => {
       await NodeFSP.mkdir(lib, { recursive: true });
       for (const file of [
         "run-cached-test-group.ts",
+        "test-host-input.ts",
         "cached-vitest-options.ts",
         "cached-tests.ts",
         "sharded-tests.ts",

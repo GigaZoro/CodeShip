@@ -1104,6 +1104,7 @@ function launcherFixture(realTests = false) {
     "scripts/lib/cached-tests.ts",
     "scripts/lib/cached-vitest-options.ts",
     "scripts/lib/run-cached-test-group.ts",
+    "scripts/lib/test-host-input.ts",
     ".github/scripts/ci-changes.cjs",
     ".github/scripts/check-node-runtime.cjs",
     ".github/scripts/check-changed-receipt.cjs",
@@ -1150,6 +1151,10 @@ function launcherFixture(realTests = false) {
     const args = process.argv.slice(2);
     // Windows gives a finished step's pid to the next process at once, so a pid-named record could be replaced.
     fs.writeFileSync(path.join(process.env.RECORDS, randomUUID() + '.json'), JSON.stringify({ args, cwd: process.cwd() }), { flag: 'wx' });
+    if (${realTests} && args.slice(0, 3).join(" ") === "exec node --test") {
+      const result = spawnSync(process.execPath, args.slice(2), { stdio: 'inherit' });
+      process.exit(result.status ?? 1);
+    }
     if (args.includes('test-cache') && !${realTests}) {
       const { files } = JSON.parse(fs.readFileSync(process.env.T3_CHECK_CHANGED_TEST_REQUEST, 'utf8'));
       fs.writeFileSync(path.join(process.env.RECORDS, randomUUID() + '.json'), JSON.stringify({args:['test', ...files], cwd:process.cwd()}));
@@ -1229,7 +1234,7 @@ function launcherFixture(realTests = false) {
       git("add", ".");
       git("commit", "-m", message);
     },
-    run(failStep = "", editStep = "", editFile = source) {
+    run(failStep = "", editStep = "", editFile = source, extraEnv: NodeJS.ProcessEnv = {}) {
       const command = realTests
         ? [
             NodePath.join(root, "node_modules/vite-plus/dist/bin.js"),
@@ -1246,11 +1251,18 @@ function launcherFixture(realTests = false) {
           [pathKey]: [nodeBin, env[pathKey]].filter(Boolean).join(NodePath.delimiter),
           TEMP: NodeOS.tmpdir(),
           RECORDS: records,
+          ...extraEnv,
           FAIL_STEP: failStep,
           EDIT_STEP: editStep,
           EDIT_FILE: editFile && NodePath.join(root, editFile),
         },
       });
+    },
+    takeReceipts() {
+      const directory = NodePath.join(root, ".git/t3-check-changed/passed");
+      const receipts = NodeFS.existsSync(directory) ? NodeFS.readdirSync(directory) : [];
+      for (const file of receipts) NodeFS.unlinkSync(NodePath.join(directory, file));
+      return receipts.length;
     },
     calls: (): Array<{ args: Array<string>; cwd: string }> =>
       NodeFS.readdirSync(records).map((file) =>
@@ -1331,6 +1343,194 @@ it.skipIf(isWindowsHost)(
     expect(next.stdout).toContain("FAIL  test");
   },
 );
+
+it.each(["node", "filtered compiler"])(
+  "reruns the selected %s cases before renewing a receipt",
+  (runner) => {
+    using project = launcherFixture(true);
+    const calls = NodePath.join(project.root, "node_modules/.vite/runner-calls");
+    NodeFS.mkdirSync(NodePath.dirname(calls), { recursive: true });
+    const body = `appendFileSync(${JSON.stringify(calls)}, "run\\n");
+    if (process.env.T3_TEST_WARM_FAILURE === "1") throw Error("warm runner failure");`;
+    if (runner === "node") {
+      project.write(
+        ".github/scripts/current.test.cjs",
+        `const { it } = require("node:test"); const { appendFileSync } = require("node:fs");
+       it("current", () => { ${body} });`,
+      );
+    } else {
+      project.write(
+        "apps/web/src/reactCompilerCoverage.test.ts",
+        `import { it } from "vite-plus/test"; import { appendFileSync } from "node:fs";
+       it("compiles apps/web/src/current.ts", () => { ${body} });
+       it("compiles apps/web/src/unselected.ts", () => { throw Error("outside filter"); });`,
+      );
+      project.commit("compiler coverage");
+      project.write("apps/web/src/current.ts", "export const value = 1;");
+    }
+    for (const [attempt, fail] of ["0", "1", "0"].entries()) {
+      const result = project.run("", "", "", { T3_TEST_WARM_FAILURE: fail });
+      expect(result.status, result.stdout + result.stderr).toBe(fail === "1" ? 1 : 0);
+      expect(NodeFS.readFileSync(calls, "utf8")).toBe("run\n".repeat(attempt + 1));
+      expect(project.takeReceipts()).toBe(fail === "1" ? 0 : 1);
+    }
+  },
+);
+
+it.skipIf(isWindowsHost).each(["cold", "warm"])(
+  "withholds the %s receipt after a later runner changes tested permissions",
+  (cache) => {
+    using project = launcherFixture(true);
+    project.git("config", "core.fileMode", "false");
+    project.write("input.txt", "unchanged");
+    NodeFS.chmodSync(NodePath.join(project.root, "input.txt"), 0o600);
+    const calls = NodePath.join(project.root, "node_modules/.vite/permission-calls");
+    NodeFS.mkdirSync(NodePath.dirname(calls), { recursive: true });
+    project.write(
+      "permissions.test.ts",
+      `import { it, expect } from "vite-plus/test";
+    import { appendFileSync, statSync } from "node:fs";
+    it("reads the tested mode", () => { appendFileSync(${JSON.stringify(calls)}, "V");
+      expect(statSync("input.txt").mode & 0o777).toBe(0o600); });`,
+    );
+    project.write(
+      ".github/scripts/later.test.cjs",
+      `const { it } = require("node:test");
+    const { appendFileSync, chmodSync } = require("node:fs");
+    it("later runner", () => { appendFileSync(${JSON.stringify(calls)}, "N");
+      if (process.env.CHANGE_AFTER_VITEST === "1") chmodSync("input.txt", 0o644); });`,
+    );
+    const run = (change: string) =>
+      project.run("", "", "", { CHECK_CHANGED_CONCURRENCY: "1", CHANGE_AFTER_VITEST: change });
+    if (cache === "warm") {
+      const first = run("0");
+      expect(first.status, first.stdout + first.stderr).toBe(0);
+      expect(project.takeReceipts()).toBe(1);
+    }
+    const changed = run("1");
+    expect(changed.status, changed.stdout + changed.stderr).toBe(1);
+    expect(NodeFS.readFileSync(calls, "utf8")).toBe(cache === "warm" ? "VNN" : "VN");
+    expect(project.takeReceipts()).toBe(0);
+    const next = run("0");
+    expect(next.status, next.stdout + next.stderr).toBe(1);
+    expect(NodeFS.readFileSync(calls, "utf8")).toBe(cache === "warm" ? "VNNVN" : "VNVN");
+    expect(project.takeReceipts()).toBe(0);
+  },
+);
+
+// The helper is a real executable resolved through PATH on POSIX.
+it.skipIf(isWindowsHost).each(["forks", "threads"])(
+  "reruns an indirect host command replaced at the same path in %s",
+  (pool) => {
+    using project = launcherFixture(true);
+    const bin = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "check-changed-host-tool-"));
+    try {
+      const config = NodePath.join(project.root, "vite.config.mjs");
+      project.write(
+        "vite.config.mjs",
+        NodeFS.readFileSync(config, "utf8").replace(
+          "maxWorkers: 1",
+          `maxWorkers: 1, pool: "${pool}"`,
+        ),
+      );
+      project.commit("set the project worker pool");
+      const helper = NodePath.join(bin, "archive-tool");
+      NodeFS.writeFileSync(helper, "#!/bin/sh\nprintf first", { mode: 0o755 });
+      const calls = NodePath.join(project.root, "node_modules/.vite/host-calls");
+      NodeFS.mkdirSync(NodePath.dirname(calls), { recursive: true });
+      project.write(
+        "archive.ts",
+        `import { execFileSync } from "node:child_process";
+      export const archive = () => execFileSync("archive-tool", { encoding: "utf8" });`,
+      );
+      project.write(
+        "archive.test.ts",
+        `import { it, expect } from "vite-plus/test";
+      import { appendFileSync } from "node:fs"; import { archive } from "./archive.ts";
+      it("reads host tool output", () => { appendFileSync(${JSON.stringify(calls)}, "T");
+        expect(archive()).toBe("first"); });`,
+      );
+      project.write(
+        ".github/scripts/published.test.cjs",
+        `const { it } = require("node:test");
+      const { readdirSync } = require("node:fs");
+      it("published groups can no longer read their host marker", () => {
+        const dir = "node_modules/.cache/check-changed-host";
+        if (readdirSync(dir, { recursive: true, withFileTypes: true }).some(entry => entry.isFile()))
+          throw Error("host marker survived publication");
+      });`,
+      );
+      const run = () =>
+        project.run("", "", "", {
+          PATH: [bin, env.PATH].join(NodePath.delimiter),
+          CHECK_CHANGED_CONCURRENCY: "1",
+        });
+      const cold = run();
+      expect(cold.status, cold.stdout + cold.stderr).toBe(0);
+      expect(project.takeReceipts()).toBe(1);
+      NodeFS.writeFileSync(helper, "#!/bin/sh\nprintf other");
+      const warm = run();
+      expect(warm.status, warm.stdout + warm.stderr).toBe(1);
+      expect(NodeFS.readFileSync(calls, "utf8")).toBe("TT");
+      expect(project.takeReceipts()).toBe(0);
+    } finally {
+      NodeFS.rmSync(bin, { recursive: true, force: true });
+    }
+  },
+);
+
+it("reuses an idle FFI binding and runs a group again when it calls the binding", () => {
+  using project = launcherFixture(true);
+  const ffi = NodeFS.realpathSync(
+    NodePath.join(import.meta.dirname, "../packages/shared/node_modules/ffi-rs"),
+  );
+  NodeFS.symlinkSync(ffi, NodePath.join(project.root, "node_modules/ffi-rs"), "junction");
+  const calls = NodePath.join(project.root, "node_modules/.vite/native-calls");
+  NodeFS.mkdirSync(NodePath.dirname(calls), { recursive: true });
+  for (const native of [false, true]) {
+    project.write(
+      "native.test.ts",
+      `import { it, expect } from "vite-plus/test";
+      import { DataType, open } from "ffi-rs";
+      import { appendFileSync } from "node:fs";
+      it("uses the binding", () => { appendFileSync(${JSON.stringify(calls)}, "T");
+        expect(typeof DataType.I32).toBe("number");
+        ${native ? 'expect(() => open({ library: "missing", path: "./missing-shared-library" })).toThrow();' : ""}
+      });`,
+    );
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const pass = project.run();
+      expect(pass.status, pass.stdout + pass.stderr).toBe(0);
+      expect(project.takeReceipts()).toBe(1);
+    }
+    expect(NodeFS.readFileSync(calls, "utf8")).toBe(native ? "TTT" : "T");
+  }
+});
+
+it("invalidates a completed group when checkout-local Git configuration changes", () => {
+  using project = launcherFixture(true);
+  project.git("config", "fixture.value", "initial-value");
+  const calls = NodePath.join(project.root, "node_modules/.vite/config-calls");
+  NodeFS.mkdirSync(NodePath.dirname(calls), { recursive: true });
+  project.write(
+    "config.test.ts",
+    `import { it, expect } from "vite-plus/test";
+    import { appendFileSync, readFileSync } from "node:fs";
+    it("observes the checkout configuration", () => { appendFileSync(${JSON.stringify(calls)}, "T");
+      expect(readFileSync(".git/config", "utf8")).toContain("initial-value"); });`,
+  );
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const pass = project.run();
+    expect(pass.status, pass.stdout + pass.stderr).toBe(0);
+    expect(project.takeReceipts()).toBe(1);
+  }
+  expect(NodeFS.readFileSync(calls, "utf8")).toBe("T");
+  project.git("config", "fixture.value", "replacement-value");
+  const invalid = project.run();
+  expect(invalid.status, invalid.stdout + invalid.stderr).toBe(1);
+  expect(NodeFS.readFileSync(calls, "utf8")).toBe("TT");
+  expect(project.takeReceipts()).toBe(0);
+});
 
 it("resumes passed groups after a failed gate and invalidates a changed test input", () => {
   using project = launcherFixture(true);
@@ -1418,7 +1618,7 @@ it.skipIf(isWindowsHost)("checks again after an untracked file's mode changed", 
   NodeFS.chmodSync(NodePath.join(project.root, tool), 0o755);
   const result = project.run();
   expect(result.status, result.stdout + result.stderr).toBe(0);
-  expect(result.stdout).not.toContain("Nothing changed since the last passing run");
+  expect(project.calls().filter(({ args }) => args[0] === "lint")).toHaveLength(2);
 });
 
 it("caches no pass for a file that appeared after the files were listed", () => {

@@ -242,10 +242,10 @@ change the limit (`1` runs the steps one by one). A step that runs past `--timeo
 `CHECK_CHANGED_TIMEOUT` (default 900) is killed with every process it started and reported as
 `TIMEOUT`. On a retry at the same HEAD, the test step reuses completed Vitest groups whose
 inputs still match. Vite+ tracks files read by each group. The gate also checks the runtime,
-installation, environment and executable modes. Server groups run one at a time. Tests that
-depend on external programs, write required reports, or use live provider credentials run
-uncached. When the whole-run cache matches, the gate rechecks the test groups before recording
-the pass. A timeout or failed check never produces a push receipt.
+installation, checkout-local Git configuration, environment and file permissions. Server groups run
+one at a time. Tests that depend on external programs, write required reports, or use live provider
+credentials run uncached. On a whole-run cache hit, the gate validates the selected Vitest groups, executes the
+selected Node and filtered React Compiler tests, and checks the test inputs again before recording the pass. A timeout or failed check never produces a push receipt.
 
 A test step publishes its completed groups when it exits and its inputs still match. Killing
 the coordinator before it can publish loses that attempt's progress. Editing source during the
