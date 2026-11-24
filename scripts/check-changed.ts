@@ -55,6 +55,11 @@ import { recordPass, workingTree } from "../.github/scripts/check-changed-receip
 import { REAL_HISTORY_ENV } from "../.github/scripts/git-history.cjs";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { checkNodeRuntime } from "../.github/scripts/check-node-runtime.cjs";
+import {
+  erasedInterfaceEdit,
+  runtimeImportOffsets,
+  serverTypeScript,
+} from "./check-changed-imports.ts";
 import { vitePlusCommand } from "./check-changed-command.ts";
 import {
   isRepositoryCommandManifest,
@@ -443,6 +448,7 @@ const exportTarget = (exports: unknown, subpath: string) => {
  * that only re-exports selects nothing; typecheck covers it.
  */
 export const testsReaching = (input: {
+  readonly before?: ReadonlyMap<string, string>;
   readonly changed: ReadonlyArray<string>;
   readonly files: ReadonlySet<string>;
   readonly packages: ReadonlyArray<{
@@ -452,13 +458,15 @@ export const testsReaching = (input: {
   }>;
   readonly read: (file: string) => string;
 }) => {
+  const serverSources = new Set(input.before && input.changed.filter(serverTypeScript));
+  const knownPath = (file: string) => input.files.has(file) || serverSources.has(file);
   const resolvePath = (base: string) => {
     const normalized = NodePath.posix.normalize(base);
     for (const suffix of SOURCE_SUFFIXES) {
-      if (input.files.has(normalized + suffix)) return normalized + suffix;
+      if (knownPath(normalized + suffix)) return normalized + suffix;
     }
     const typescript = normalized.replace(/\.([cm]?)js$/, ".$1ts");
-    return input.files.has(typescript) ? typescript : undefined;
+    return knownPath(typescript) ? typescript : undefined;
   };
   const byLongestName = input.packages.toSorted((a, b) => b.name.length - a.name.length);
   const resolvePackage = (specifier: string) => {
@@ -471,6 +479,11 @@ export const testsReaching = (input: {
     return resolvePath(NodePath.posix.join(pkg.dir, target));
   };
 
+  const erased = new Set(
+    [...(input.before ?? [])]
+      .filter(([file, before]) => erasedInterfaceEdit(file, before, input.read(file)))
+      .map(([file]) => file),
+  );
   const tests = new Set<string>();
   const argumentGuard = "scripts/command-arguments.test.ts";
   if (
@@ -500,14 +513,35 @@ export const testsReaching = (input: {
         }
       }
     }
-    const targets = new Set([
-      ...[...text.matchAll(RELATIVE_REFERENCE)].map(([, specifier]) =>
-        resolvePath(NodePath.posix.join(NodePath.posix.dirname(file), specifier!)),
-      ),
-      ...[...text.matchAll(PACKAGE_IMPORT)].map(([, specifier]) => resolvePackage(specifier!)),
-    ]);
+    const targets = new Set<string>();
+    if (serverSources.size > 0) {
+      for (const [source] of text.matchAll(/apps\/server\/src\/[^"'`\s$]+?\.ts(?=["'`?])/g)) {
+        if (serverSources.has(source)) targets.add(source);
+      }
+    }
+    let runtimeOffsets: ReadonlySet<number> | undefined;
+    for (const match of text.matchAll(RELATIVE_REFERENCE)) {
+      const specifier = match[1]!;
+      const base = NodePath.posix.join(NodePath.posix.dirname(file), specifier);
+      const query = base.indexOf("?");
+      let target = resolvePath(base);
+      if (!target && query >= 0) {
+        const source = resolvePath(base.slice(0, query));
+        if (source && serverSources.has(source)) target = source;
+      }
+      if (!target) continue;
+      if (erased.has(target) && query < 0) {
+        runtimeOffsets ??= runtimeImportOffsets(file, text);
+        if (runtimeOffsets.has(match.index)) continue;
+      }
+      targets.add(target);
+    }
+    for (const [, specifier] of text.matchAll(PACKAGE_IMPORT)) {
+      const target = resolvePackage(specifier!);
+      if (target) targets.add(target);
+    }
     for (const target of targets) {
-      if (target === undefined || target === file) continue;
+      if (target === file) continue;
       const known = importers.get(target);
       if (known === undefined) importers.set(target, [file]);
       else known.push(file);
@@ -516,6 +550,7 @@ export const testsReaching = (input: {
 
   const isBarrel = (file: string) =>
     CODE.test(file) &&
+    input.read(file).length > 0 &&
     input.read(file).replace(COMMENT, "").replace(RE_EXPORT, "").trim().length === 0;
   const queue = input.changed.filter((file) => !input.files.has(file) || !isBarrel(file));
   const seen = new Set(queue);
@@ -947,8 +982,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   // changed file through test code, such as a provider's replay fixtures
   // through its adapter's testkit, or through one production importer.
   const tests = new Set(code.filter((file) => TEST.test(file)));
-  for (const file of code) {
+  for (const file of new Set([...code, ...files.filter(serverTypeScript)])) {
     const dir = path.dirname(file);
+    if (!(yield* fs.exists(inRoot(dir)))) continue;
     const prefix = `${path.basename(file).replace(CODE, "")}.`;
     for (const entry of yield* fs.readDirectory(inRoot(dir))) {
       if (entry.startsWith(prefix) && TEST.test(entry)) tests.add(path.join(dir, entry));
@@ -983,7 +1019,36 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       }),
     { concurrency: 64, discard: true },
   );
+  const priorSources = new Map<string, string>();
+  if (
+    files.some(serverTypeScript) &&
+    files.every((file) => serverTypeScript(file) || /^docs\/.*\.md$/.test(file))
+  ) {
+    // Added, deleted, renamed, mode-changed and non-regular files keep their importer edges.
+    const modified = yield* git(root, [
+      "diff",
+      "--raw",
+      "-z",
+      "--no-abbrev",
+      "--no-renames",
+      "--diff-filter=M",
+      base,
+      "--",
+      "apps/server/src",
+    ]).pipe(
+      Effect.map((data) => data.toString().split("\0")),
+      Effect.orElseSucceed(() => [] as string[]),
+    );
+    for (let index = 0; index + 1 < modified.length; index += 2) {
+      const file = modified[index + 1]!;
+      const blob = /^:100644 100644 ([a-f0-9]+) [a-f0-9]+ M$/.exec(modified[index]!)?.[1];
+      if (!blob || !serverTypeScript(file) || TEST.test(file) || isTestSupport(file)) continue;
+      const prior = yield* Effect.option(git(root, ["cat-file", "blob", blob]));
+      if (Option.isSome(prior)) priorSources.set(file, prior.value.toString());
+    }
+  }
   for (const test of testsReaching({
+    before: priorSources,
     changed: files,
     files: workspaceFiles,
     packages,

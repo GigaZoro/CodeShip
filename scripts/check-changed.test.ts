@@ -386,6 +386,55 @@ describe("check:changed", () => {
     );
   });
 
+  it("prunes runtime imports only for proven erased edits and keeps source and type consumers", () => {
+    const dir = "apps/server/src";
+    const file = dir + "/Model.ts";
+    const original = "export interface Model { readonly value?: string; }\nexport const run = 1;";
+    const edited = original.replace("string;", "string | null;");
+    const select = (after: string | undefined, before?: string) => {
+      const sources: Record<string, string> = {
+        [dir + "/Runtime.test.ts"]: 'import * as model from "./Model.ts"; model.run;',
+        [dir + "/Source.test.ts"]: 'import * as model from "./Model.ts"; read("./Model.ts");',
+        [dir + "/Raw.test.ts"]: 'import source from "./Model.ts?raw";',
+        [dir + "/NamespaceType.test.ts"]:
+          'import * as model from "./Model.ts"; type Input = model.Model;',
+        [dir + "/Unknown.test.ts"]: 'const model = await import("./Model.ts");',
+        [dir + "/Type.test.ts"]: 'import { type Model, run } from "./Model.ts";',
+        [dir + "/Declared.test.ts"]: "// @test-input ./Model.ts",
+        [dir + "/testing/reader.ts"]: 'export const url = new URL("../Model.ts", import.meta.url);',
+        [dir + "/ViaReader.test.ts"]: 'import "./testing/reader.ts";',
+      };
+      if (after !== undefined) sources[file] = after;
+      return testsReaching({
+        changed: [file],
+        files: new Set(Object.keys(sources)),
+        packages: [],
+        before: new Map(before === undefined ? [] : [[file, before]]),
+        read: (path) => sources[path] ?? "",
+      }).map((path) => path.slice(dir.length + 1));
+    };
+    const readers = [
+      "Declared.test.ts",
+      "NamespaceType.test.ts",
+      "Raw.test.ts",
+      "Source.test.ts",
+      "Type.test.ts",
+      "Unknown.test.ts",
+      "ViaReader.test.ts",
+    ];
+    assert.deepStrictEqual(select(edited, original), readers);
+    for (const [after, before] of [
+      [edited.replace("1;", "2;"), original],
+      [edited, undefined],
+      [undefined, original],
+      [edited + "@", original + "@"],
+      [edited + "\n@dec class C {}", original + "\n@dec class C {}"],
+      [edited.replace("string | null", "/* directive */ string | null"), original],
+    ]) {
+      assert.deepStrictEqual(select(after, before), [...readers, "Runtime.test.ts"].sort());
+    }
+  });
+
   describe("dependencyChangeFiles", () => {
     const workspace = (patch: string) => `patchedDependencies:\n  dep-a@1.0.0: patches/${patch}\n`;
     const lock = (version: string) =>
@@ -592,6 +641,7 @@ function launcherFixture() {
     "scripts/check-changed.ts",
     "scripts/check-changed-command.ts",
     "scripts/lib/repository-command-source.ts",
+    "scripts/check-changed-imports.ts",
     ".github/scripts/ci-changes.cjs",
     ".github/scripts/check-node-runtime.cjs",
     ".github/scripts/check-changed-receipt.cjs",
@@ -617,6 +667,8 @@ function launcherFixture() {
   write("packages/example/package.json", JSON.stringify({ name: "example" }));
   const source = "packages/example/space & (draft) %PATH% ! 研究.ts";
   write(source, "export const value = 1;\n");
+  // Give Git a distinct baseline timestamp even when a same-size fixture edit follows the commit immediately.
+  NodeFS.utimesSync(NodePath.join(root, source), 1, 1);
   write(
     "node_modules/vite-plus/package.json",
     JSON.stringify({ type: "module", exports: { "./bin": "./cli.js" } }),
@@ -645,7 +697,7 @@ function launcherFixture() {
       'vitePlusCommand(args, "win32")',
     ),
   );
-  for (const name of ["effect", "@effect/platform-node", "@t3tools/shared"]) {
+  for (const name of ["effect", "@effect/platform-node", "@t3tools/shared", "typescript-legacy"]) {
     const dest = NodePath.join(root, "node_modules", name);
     NodeFS.mkdirSync(NodePath.dirname(dest), { recursive: true });
     NodeFS.symlinkSync(
@@ -724,6 +776,33 @@ it("checks changed source paths through the Windows launcher", () => {
   ]);
   expect(result.stdout).toContain("fixture stdout: lint");
   expect(result.stdout).toContain("fixture stderr: lint");
+});
+
+it("keeps colocated tests and runtime changes beside an erased interface edit", () => {
+  using project = launcherFixture();
+  const root = "apps/server/src/";
+  const model = root + "Model.ts";
+  const other = root + "Service.ts";
+  const original = "export interface Input { value: number; }\nexport const run = 1;";
+  project.write(model, original);
+  project.write(other, "export const count = 0;");
+  project.write(root + "Model.test.ts", "export {};");
+  project.write(root + "Unrelated.test.ts", 'import * as model from "./Model.ts"; model.run;');
+  project.write(root + "Runtime.test.ts", 'import "./Service.ts"; import "./Model.ts";');
+  project.write(root + "Source.test.ts", 'read("apps/server/src/Model.ts");');
+  project.commit("add runtime modules and their readers");
+  project.write(model, original.replace("number;", "number | null;"));
+  project.write(other, "export const count = 10;");
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  const selected = project
+    .calls()
+    .filter(({ args }) => args[0] === "test")
+    .flatMap(({ args }) => args.map((arg) => arg.replaceAll("\\", "/")));
+  for (const name of ["Model", "Runtime", "Source"]) {
+    expect(selected).toContain(root + name + ".test.ts");
+  }
+  expect(selected).not.toContain(root + "Unrelated.test.ts");
 });
 
 it("routes a manifest-only change to the repository command guard through the launcher", () => {
