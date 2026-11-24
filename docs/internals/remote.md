@@ -170,8 +170,10 @@ task that already holds its result owes its thread there a stop
 any settle request already sent; a settle still reading or backing off is cut short.
 A launch whose answer was lost (`no_answer`) hands the caller its task and is sent
 again in the background with the same key, which the other side records once; the
-follower starts once a launch answers, so a task cancelled meanwhile is stopped
-there then. A launch refused there is stopped there, and the task fails here once
+follower starts once a launch answers. A stop sent meanwhile finds no thread there,
+so a launch that answers for a task already ended here records a stop it owes its
+new thread (`delegated_task.remote.stop`, keyed by the launch), which the follower
+sends. A launch refused there is stopped there, and the task fails here once
 nothing is left there, a write that fails being retried until it is recorded.
 
 A task with `isolation: "worktree"` branches its child's worktree there from the

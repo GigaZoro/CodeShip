@@ -470,12 +470,33 @@ const make = Effect.gen(function* () {
               }),
           ),
         );
+      // A task that ended here before its launch answered may have had a stop sent there before
+      // the launch's thread existed, which recorded it as stopped there. It owes that thread a
+      // stop, recorded once for this launch, which the follower then sends.
+      const owedStop = readTask(scope.thread.threadId, taskId).pipe(
+        Effect.flatMap(({ task: here }) =>
+          here?.result == null
+            ? Effect.void
+            : threads
+                .dispatch({
+                  type: "delegated_task.remote.stop",
+                  commandId: CommandId.make(`${commandId}:stop-after-launch`),
+                  parentThreadId: scope.thread.threadId,
+                  taskId,
+                })
+                .pipe(Effect.asVoid),
+        ),
+      );
       // Before it follows, the follower's fiber sends again a launch whose answer was lost, then
-      // retries a failure here that could not be recorded: it looks there only once the launch
-      // answered, and no other result is recorded ahead of that failure.
+      // retries the write it owes here: the stop owed to a launch that answered, or a failure that
+      // could not be recorded. It looks there only once the launch answered, and no other result
+      // is recorded ahead of that failure.
       const relaunch = yield* Ref.make<Effect.Effect<void>>(Effect.void);
-      const unrecorded = yield* Ref.make<
-        Effect.Effect<void, Effect.Error<ReturnType<typeof complete>>>
+      const owed = yield* Ref.make<
+        Effect.Effect<
+          void,
+          Effect.Error<ReturnType<typeof complete>> | Effect.Error<typeof owedStop>
+        >
       >(Effect.void);
       // The first committed command alone sends the launch. Overlapping calls can both finish preflight.
       return yield* Effect.acquireUseRelease(
@@ -565,27 +586,29 @@ const make = Effect.gen(function* () {
                 },
               ),
             );
-            // The follower waits on this run once it knows it; a failure here leaves it on the
-            // thread's latest run, which is the run it launched.
-            const started = (
+            const started = Effect.fnUntraced(function* (
               launched: Tool.Success<typeof ProjectToolkit.tools.t3_thread_launch>,
-            ) =>
-              launched.runId === null
-                ? Effect.void
-                : threads
-                    .dispatch({
-                      type: "delegated_task.remote.attach-run",
-                      commandId: CommandId.make(`${commandId}:attach-run`),
-                      parentThreadId: scope.thread.threadId,
-                      taskId,
-                      runId: launched.runId,
-                    })
-                    .pipe(
-                      Effect.tapError((cause) =>
-                        Effect.logWarning("remote-delegation.attach-run-failed", { taskId, cause }),
-                      ),
-                      Effect.ignore,
-                    );
+            ) {
+              // The follower waits on this run once it knows it; a failure here leaves it on the
+              // thread's latest run, which is the run it launched.
+              if (launched.runId !== null) {
+                yield* threads
+                  .dispatch({
+                    type: "delegated_task.remote.attach-run",
+                    commandId: CommandId.make(`${commandId}:attach-run`),
+                    parentThreadId: scope.thread.threadId,
+                    taskId,
+                    runId: launched.runId,
+                  })
+                  .pipe(
+                    Effect.tapError((cause) =>
+                      Effect.logWarning("remote-delegation.attach-run-failed", { taskId, cause }),
+                    ),
+                    Effect.ignore,
+                  );
+              }
+              yield* Ref.set(owed, owedStop);
+            });
             // A launch refused there may still have left its thread, so the task stays on record
             // and is followed while something is there, and is failed here only once nothing is.
             const notStarted = (error: OrchestratorMcpFailure) =>
@@ -601,7 +624,7 @@ const make = Effect.gen(function* () {
                     `The task could not be started in ${remoteChild.label}: ${error.message}`,
                     "stopped",
                   );
-                  return failHere.pipe(Effect.tapError(() => Ref.set(unrecorded, failHere)));
+                  return failHere.pipe(Effect.tapError(() => Ref.set(owed, failHere)));
                 }),
                 Effect.ignoreCause({ log: true }),
               );
@@ -615,8 +638,8 @@ const make = Effect.gen(function* () {
               return yield* first.failure;
             }
             // The launch may have started there or not. Sent again with the same key, it is answered
-            // as recorded there, or starts then, so the task runs once. A task cancelled meanwhile
-            // is stopped there by its follower once the launch answers.
+            // as recorded there, or starts then, so the task runs once. A task stopped or cancelled
+            // meanwhile has its thread there stopped once the launch answers.
             yield* Ref.set(
               relaunch,
               launch.pipe(
@@ -635,7 +658,7 @@ const make = Effect.gen(function* () {
             : // A disconnect can interrupt the first sender after acceptance. Its recorded task still needs its follower.
               Ref.get(relaunch).pipe(
                 Effect.flatten,
-                Effect.andThen(Ref.get(unrecorded).pipe(Effect.flatten, Effect.retry(followRetry))),
+                Effect.andThen(Ref.get(owed).pipe(Effect.flatten, Effect.retry(followRetry))),
                 Effect.ignoreCause({ log: true }),
                 Effect.andThen(followOne(scope.thread.threadId, taskId)),
                 Effect.forkIn(followers),

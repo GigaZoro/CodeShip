@@ -1872,6 +1872,102 @@ it.effect("a launch whose answer is lost on the way is sent again and followed t
   }),
 );
 
+it.effect(
+  "a launch that answers after its task was stopped here has its thread there stopped",
+  () =>
+    Effect.gen(function* () {
+      const nativeFetch = yield* FetchHttpClient.Fetch;
+      let launches = 0;
+      // The first two launches are lost before they reach the box, so nothing is there yet.
+      const fetch: typeof globalThis.fetch = async (input, init) => {
+        const body = init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : null;
+        const rpc: { params?: { name?: string } } = body?.startsWith("{") ? JSON.parse(body) : {};
+        if (rpc.params?.name === "t3_thread_launch") {
+          launches += 1;
+          if (launches <= 2) throw new TypeError("fetch failed");
+        }
+        return nativeFetch(input, init);
+      };
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const thread = yield* makeBoxThread;
+          const b = yield* serveBox(thread);
+          const offers = yield* SubscriptionRef.make<
+            ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+          >([]);
+          const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+          const retries = yield* steppedRetries;
+          const a = yield* makeLaptop(database, offers).pipe(
+            Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
+          );
+          yield* linkTo(a.links, b, "full-access");
+          yield* seedParent(a);
+          yield* a.remote.start();
+          const delegated = yield* delegateToBox(a);
+          // The launch is sent again and lost again, so it backs off before the next.
+          yield* Queue.take(retries.failed);
+          // The parent is stopped, then the task is cancelled. That stop starts its follower,
+          // which finds no thread there yet.
+          yield* a.threads.stopDelegatedTasks({
+            threadId: parentThreadId,
+            commandId: CommandId.make("command:stop:laptop-parent-launching"),
+          });
+          yield* a.call("task_cancel", { taskId: delegated.taskId });
+          yield* stoppedThere(a, delegated.taskId, 1);
+          expect(yield* Ref.get(thread.stops)).toEqual([]);
+
+          // The launch then answers, and the thread it started there is stopped.
+          yield* Queue.offer(retries.retry, undefined);
+          yield* Deferred.await(thread.interruptedOnce);
+          yield* stoppedThere(a, delegated.taskId, 2);
+          expect(yield* Ref.get(thread.stops)).toEqual(["thread.stop", "delegated-tasks"]);
+          expect(yield* taskResult(a, delegated.taskId)).toMatchObject({ status: "interrupted" });
+          expect(launches).toBe(3);
+        }),
+      ).pipe(
+        Effect.provide(NodeHttpServer.layerTest),
+        Effect.provideService(FetchHttpClient.Fetch, fetch),
+      );
+    }),
+);
+
+it.effect("a task cancelled before its launch answers has the thread it started stopped", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* a.remote.start();
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      // The thread is there before the launch answers, and the task is cancelled then: that
+      // stop reaches the thread, but a launch still preparing it may start its run after.
+      yield* Ref.set(
+        thread.afterLaunch,
+        a.projections.getOpenRemoteDelegatedTasks.pipe(
+          Effect.flatMap(([open]) => a.call("task_cancel", { taskId: open!.taskId })),
+          Effect.orDie,
+          Effect.asVoid,
+        ),
+      );
+      const delegated = yield* delegateToBox(a);
+      expect(yield* taskResult(a, delegated.taskId)).toMatchObject({ status: "cancelled" });
+      // Once the launch answers, the thread it started is stopped again.
+      yield* stoppedThere(a, delegated.taskId, 1);
+      expect(yield* Ref.get(thread.stops)).toEqual([
+        "thread.stop",
+        "delegated-tasks",
+        "thread.stop",
+        "delegated-tasks",
+      ]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("a task named only by driver runs on the box's own instance of it", () =>
   Effect.scoped(
     Effect.gen(function* () {
