@@ -86,14 +86,16 @@ export const buildNpmLauncher = Effect.fn("buildNpmLauncher")(function* (input: 
     )}\n`,
   );
   yield* fs.copyFile(path.join(sourceDir, "t3.mjs"), path.join(stageDir, "bin/t3.mjs"));
-  const versionProbe = yield* path.fromFileUrl(
-    new URL("../packages/shared/src/cliVersionProbe.ts", import.meta.url),
-  );
   // The published launcher supports Node 20, so remove the types at build time.
-  yield* fs.writeFileString(
-    path.join(stageDir, "bin/cliVersionProbe.mjs"),
-    NodeModule.stripTypeScriptTypes(yield* fs.readFileString(versionProbe)),
-  );
+  for (const name of ["cliVersionProbe", "runtimeVerificationReceipt"]) {
+    const source = yield* path.fromFileUrl(
+      new URL(`../packages/shared/src/${name}.ts`, import.meta.url),
+    );
+    yield* fs.writeFileString(
+      path.join(stageDir, `bin/${name}.mjs`),
+      NodeModule.stripTypeScriptTypes(yield* fs.readFileString(source)),
+    );
+  }
   yield* fs.chmod(path.join(stageDir, "bin/t3.mjs"), 0o755);
   yield* fs.writeFileString(
     path.join(stageDir, "bin/promote-runtime.sh"),

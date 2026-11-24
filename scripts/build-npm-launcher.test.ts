@@ -233,6 +233,66 @@ syncBuiltinESMExports();
   );
 
   describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("download verification", () => {
+    it.effect(
+      "reuses a healthy npm publication that replaced a runtime during its failed probe",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+          const { packageDir } = yield* buildNpmLauncher({
+            version: VERSION,
+            outputDir: path.join(root, "out"),
+          });
+          const release = yield* serveFakeRelease(root);
+          const home = path.join(root, "home");
+          const installed = path.join(home, "runtime", "versions", VERSION);
+          const winner = path.join(root, "healthy-publication");
+          const displaced = path.join(root, "displaced");
+          const probe = path.join(root, "healthy-probe");
+          const invoke = run(process.execPath, [path.join(packageDir, "bin/t3.mjs"), "serve"], {
+            cwd: root,
+            env: {
+              PATH: process.env.PATH,
+              T3CODE_HOME: home,
+              T3CODE_RELEASE_BASE_URL: release.baseUrl,
+              FIXTURE_PROBE_RECEIPT: probe,
+              INSTALLED: installed,
+              WINNER: winner,
+              DISPLACED: displaced,
+            },
+          });
+          const first = yield* invoke;
+          assert.equal(first.exitCode, 7, first.stderr);
+          const coldRequests = release.requests.slice();
+          yield* fs.rename(installed, winner);
+          yield* fs.makeDirectory(installed);
+          yield* fs.writeFileString(path.join(installed, ".install-complete"), VERSION);
+          yield* fs.writeFileString(
+            path.join(installed, "t3"),
+            `#!/bin/sh
+set -eu
+[ "$T3CODE_VERIFY_INSTALL" = 1 ] || exit 99
+mv "$INSTALLED" "$DISPLACED"
+mv "$WINNER" "$INSTALLED"
+exit 78
+`,
+          );
+          yield* fs.chmod(path.join(installed, "t3"), 0o755);
+          release.setChecksumValid(false);
+          const replaced = yield* invoke;
+          assert.isTrue(yield* fs.exists(displaced));
+          assert.equal(replaced.exitCode, 7, replaced.stderr);
+          assert.include(replaced.stdout, "stub serve launcher=");
+          yield* fs.remove(probe, { force: true });
+          const warm = yield* invoke;
+          assert.equal(warm.exitCode, 7, warm.stderr);
+          assert.include(warm.stdout, "stub serve launcher=");
+          assert.isFalse(yield* fs.exists(probe));
+          assert.deepEqual(release.requests, coldRequests);
+        }),
+    );
+
     it.effect.each([
       { reported: "2.0.0", status: 0, publisher: "npm" },
       { reported: VERSION, status: 78, publisher: "npm" },
@@ -663,6 +723,67 @@ fs.closeSync = (fd, ...rest) => {
           yield* fs.readDirectory(path.join(root, "other-home/runtime/versions")),
           [],
         );
+      }),
+  );
+
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "rejects a successful version exit when a descendant holds the probe output past its deadline",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+        const { packageDir } = yield* buildNpmLauncher({
+          version: VERSION,
+          outputDir: path.join(root, "out"),
+        });
+        const home = path.join(root, "home");
+        const dir = path.join(home, "runtime/versions", VERSION);
+        const executable = path.join(dir, "t3");
+        yield* fs.makeDirectory(dir, { recursive: true });
+        yield* fs.writeFileString(path.join(dir, ".install-complete"), VERSION);
+        yield* fs.writeFileString(
+          executable,
+          `#!/bin/sh
+if [ "$T3CODE_VERIFY_INSTALL" = 1 ]; then
+  sleep 3 &
+  echo 't3 v${VERSION}'
+  exit 0
+fi
+echo launched > ordinary-launch
+`,
+        );
+        yield* fs.chmod(executable, 0o755);
+        // Shorten the timeout under test only for this executable and keep Node's actual result.
+        const preload = path.join(root, "observe-deadline.mjs");
+        yield* fs.writeFileString(
+          preload,
+          `import childProcess from "node:child_process";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const { spawnSync } = childProcess;
+childProcess.spawnSync = (file, args, options) => {
+  if (file !== ${JSON.stringify(executable)} || args[0] !== "--version") return spawnSync(file, args, options);
+  const result = spawnSync(file, args, { ...options, timeout: Math.min(options.timeout, 700) });
+  fs.writeFileSync("probe-result", JSON.stringify([result.status, result.error?.code, result.stdout]));
+  return result;
+};
+syncBuiltinESMExports();
+globalThis.fetch = () => { throw new Error("offline fixture"); };
+`,
+        );
+        const result = yield* run(
+          process.execPath,
+          ["--import", preload, path.join(packageDir, "bin/t3.mjs"), "serve"],
+          { cwd: root, env: { PATH: process.env.PATH, T3CODE_HOME: home } },
+        );
+        assert.equal(
+          yield* fs.readFileString(path.join(root, "probe-result")),
+          JSON.stringify([0, "ETIMEDOUT", `t3 v${VERSION}\n`]),
+        );
+        assert.isFalse(yield* fs.exists(path.join(root, "ordinary-launch")));
+        assert.equal(result.exitCode, 1, result.stderr);
+        assert.include(result.stderr, "offline fixture");
       }),
   );
 });

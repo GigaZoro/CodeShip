@@ -200,8 +200,8 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
         assert.deepStrictEqual(probes, [path.join(target, entryName)]);
         assert.isFalse(yield* fs.exists(previousDir));
         assert.equal(
-          yield* fs.exists(path.join(target, NPM_RUNTIME_VERIFICATION_MARKER)),
-          code === 0,
+          yield* fs.readFileString(path.join(target, NPM_RUNTIME_VERIFICATION_MARKER)),
+          code === 0 ? version : "",
         );
         if (code === 78) {
           assert.lengthOf(downloads, 1);

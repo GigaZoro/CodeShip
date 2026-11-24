@@ -18,6 +18,7 @@ import { runtimePromotion } from "@t3tools/shared/runtimePromotion";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
+import { buildNpmLauncher } from "../../../../scripts/build-npm-launcher.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import {
   ensurePinnedRuntimeInstalled,
@@ -171,7 +172,169 @@ t3_promote_runtime "$3"`,
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+const publishedNpmRuntime = Effect.fn("test.publishedNpmRuntime")(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+  const home = path.join(root, "home");
+  const platform = yield* HostProcess.Platform;
+  const arch = yield* HostProcess.Architecture;
+  const stem = `t3-${version}-${platform}-${arch}`;
+  const archive = stem + ".tar.gz";
+  yield* fs.makeDirectory(path.join(root, stem));
+  yield* fs.writeFileString(
+    path.join(root, stem, "t3"),
+    `#!/bin/sh
+if [ "$T3CODE_VERIFY_INSTALL" = 1 ]; then
+  echo probe >> "$PROBE_LOG"
+  echo 't3 v${version}'
+else
+  echo 'healthy launch'
+fi
+`,
+  );
+  yield* fs.chmod(path.join(root, stem, "t3"), 0o755);
+  const runner = yield* ProcessRunner.ProcessRunner.pipe(Effect.provide(ProcessRunner.layer));
+  const tar = yield* runner.run({ command: "tar", args: ["-czf", archive, stem], cwd: root });
+  assert.equal(Number(tar.code), 0, tar.stderr);
+  const digest = yield* archiveHex(yield* fs.readFile(path.join(root, archive)));
+  yield* fs.writeFileString(path.join(root, "SHA256SUMS"), `${digest}  ${archive}\n`);
+  // The packaged launcher's ordinary fetches consume the private release files.
+  const preload = path.join(root, "release.mjs");
+  yield* fs.writeFileString(
+    preload,
+    `import fs from "node:fs";
+globalThis.fetch = (url) => {
+  const name = new URL(url).pathname.split("/").at(-1);
+  fs.appendFileSync("requests", name + "\\n");
+  return Promise.resolve(new Response(fs.readFileSync(name)));
+};`,
+  );
+  const { packageDir } = yield* buildNpmLauncher({ version, outputDir: path.join(root, "out") });
+  const requests = path.join(root, "requests");
+  const probes = path.join(root, "probes");
+  const launch = runner.run({
+    command: yield* HostProcess.ExecutablePath,
+    args: ["--import", preload, path.join(packageDir, "bin/t3.mjs"), "serve"],
+    cwd: root,
+    env: {
+      T3CODE_HOME: home,
+      T3CODE_RELEASE_BASE_URL: "https://release.invalid",
+      PROBE_LOG: probes,
+    },
+  });
+  const cold = yield* launch;
+  assert.equal(Number(cold.code), 0, cold.stderr);
+  assert.equal(cold.stdout.trim(), "healthy launch");
+  assert.equal(yield* fs.readFileString(requests), `SHA256SUMS\n${archive}\n`);
+  yield* fs.writeFileString(requests, "");
+  yield* fs.writeFileString(probes, "");
+  return { root, home, platform, arch, archive, launch, requests, probes };
+});
+
 it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
+  it.effect.skipIf(isWindowsHost)(
+    "reuses the healthy npm publication when the displaced runtime fails service validation",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const npm = yield* publishedNpmRuntime();
+        const paths = pinnedRuntimePaths(path, npm.home, version, npm.platform);
+        const winner = path.join(npm.root, "winner");
+        yield* fs.rename(paths.versionDir, winner);
+        yield* fs.makeDirectory(paths.versionDir);
+        yield* fs.writeFileString(paths.entryPath, "old runtime");
+        yield* fs.writeFileString(paths.sentinelPath, version);
+        const checked: string[] = [];
+        const requests: string[] = [];
+        const ready = yield* ensurePinnedRuntimeInstalled({
+          fs,
+          path,
+          baseDir: npm.home,
+          version,
+          platform: npm.platform,
+          arch: npm.arch,
+          httpClient: releaseHttpClient("", requests),
+          runner: extractingRunner(fs, path),
+          validate: (candidate) =>
+            Effect.gen(function* () {
+              const content = yield* fs.readFileString(candidate.entryPath).pipe(Effect.orDie);
+              if (content === "old runtime") {
+                checked.push("displaced");
+                yield* fs
+                  .rename(paths.versionDir, path.join(npm.root, "displaced"))
+                  .pipe(Effect.orDie);
+                yield* fs.rename(winner, paths.versionDir).pipe(Effect.orDie);
+                return yield* new PinnedRuntimeInstallError({
+                  step: "validating displaced runtime",
+                  exitCode: 78,
+                });
+              }
+              assert.include(content, "healthy launch");
+              checked.push("winner");
+            }),
+        });
+        assert.deepEqual(ready, paths);
+        assert.deepEqual(checked, ["displaced", "winner"]);
+        assert.deepEqual(requests, []);
+        const warm = yield* npm.launch;
+        assert.equal(Number(warm.code), 0, warm.stderr);
+        assert.equal(warm.stdout.trim(), "healthy launch");
+        assert.equal(yield* fs.readFileString(npm.probes), "");
+        assert.equal(yield* fs.readFileString(npm.requests), "");
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "repairs an incomplete npm installation after the service finds its executable missing offline",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const npm = yield* publishedNpmRuntime();
+        const paths = pinnedRuntimePaths(path, npm.home, version, npm.platform);
+        yield* fs.remove(paths.entryPath);
+        const requests: string[] = [];
+        const offline = HttpClient.make((request) => {
+          requests.push(request.url);
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(request, new Response(null, { status: 503 })),
+          );
+        });
+        yield* ensurePinnedRuntimeInstalled({
+          fs,
+          path,
+          baseDir: npm.home,
+          version,
+          platform: npm.platform,
+          arch: npm.arch,
+          httpClient: offline,
+          runner: extractingRunner(fs, path),
+          validate: () =>
+            Effect.fail(
+              new PinnedRuntimeInstallError({ step: "checking missing executable", exitCode: 78 }),
+            ),
+        }).pipe(Effect.flip);
+        assert.equal(requests.length, 1);
+        assert.isTrue(requests[0]?.endsWith("/SHA256SUMS"));
+        // Even if an incomplete executable reappears, it must earn verification before running.
+        yield* fs.writeFileString(paths.entryPath, "#!/bin/sh\nexit 78\n");
+        yield* fs.chmod(paths.entryPath, 0o755);
+        const repaired = yield* npm.launch;
+        assert.equal(Number(repaired.code), 0, repaired.stderr);
+        assert.equal(repaired.stdout.trim(), "healthy launch");
+        assert.equal(yield* fs.readFileString(npm.requests), `SHA256SUMS\n${npm.archive}\n`);
+        const probesAfterRepair = yield* fs.readFileString(npm.probes);
+        assert.include(probesAfterRepair, "probe");
+        const warm = yield* npm.launch;
+        assert.equal(Number(warm.code), 0, warm.stderr);
+        assert.equal(warm.stdout.trim(), "healthy launch");
+        assert.equal(yield* fs.readFileString(npm.requests), `SHA256SUMS\n${npm.archive}\n`);
+        assert.equal(yield* fs.readFileString(npm.probes), probesAfterRepair);
+      }),
+  );
+
   it.effect.skipIf(isWindowsHost)("validates an npm launcher that wins a first publication", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

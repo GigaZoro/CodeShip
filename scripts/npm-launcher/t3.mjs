@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { matchesCliVersion, NPM_RUNTIME_VERIFICATION_MARKER } from "./cliVersionProbe.mjs";
+import { openRuntimeVerificationReceipt } from "./runtimeVerificationReceipt.mjs";
 
 const { version } = JSON.parse(
   fs.readFileSync(path.join(import.meta.dirname, "../package.json"), "utf8"),
@@ -130,10 +131,23 @@ function promotePosixRuntime(dir, staging) {
   return result.stdout.trim() === "0";
 }
 
-function recheckRuntime(dir) {
-  if (verifiesVersion(dir)) return true;
-  fs.rmSync(path.join(dir, NPM_RUNTIME_VERIFICATION_MARKER), { force: true });
-  return false;
+function recheckRuntime(dir, useReceipt = false) {
+  const marker = path.join(dir, NPM_RUNTIME_VERIFICATION_MARKER);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const receipt = openRuntimeVerificationReceipt(marker, version);
+    try {
+      if (!receipt.current()) continue;
+      const verified =
+        hasVersionMarker(dir) &&
+        ((useReceipt && receipt.trusted && canRunEntry(dir)) || verifiesVersion(dir));
+      if (!receipt.current()) continue;
+      if (!verified) receipt.revoke();
+      if (receipt.current()) return verified;
+    } finally {
+      receipt.close();
+    }
+  }
+  throw new Error(`the local t3 ${version} installation changed repeatedly during verification`);
 }
 
 function verifiedPeer(dir, repairMarkedRuntime = false) {
@@ -192,6 +206,16 @@ function publish(staging, dir, repairMarkedRuntime) {
 
 const entryName = process.platform === "win32" ? "t3.exe" : "t3";
 
+function canRunEntry(dir) {
+  try {
+    const entry = path.join(dir, entryName);
+    fs.accessSync(entry, fs.constants.X_OK);
+    return fs.statSync(entry).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function verifiesVersion(dir) {
   const probe = spawnSync(path.join(dir, entryName), ["--version"], {
     env: { ...process.env, T3CODE_VERIFY_INSTALL: "1" },
@@ -200,7 +224,7 @@ function verifiesVersion(dir) {
     timeout: 30_000,
     killSignal: "SIGKILL",
   });
-  return matchesCliVersion(probe.status, probe.stdout, version);
+  return !probe.error && matchesCliVersion(probe.status, probe.stdout, version);
 }
 
 function recoverPrevious(dir) {
@@ -233,10 +257,7 @@ async function main() {
   const marked = cached || hasVersionMarker(dir);
   if (!marked) {
     await install(dir, key, false);
-  } else if (
-    !(cached && hasVersionMarker(dir, NPM_RUNTIME_VERIFICATION_MARKER)) &&
-    !recheckRuntime(dir)
-  ) {
+  } else if (!recheckRuntime(dir, cached)) {
     await install(dir, key, true);
   }
 
