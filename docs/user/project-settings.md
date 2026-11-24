@@ -644,19 +644,23 @@ For a local no-change handoff, use the primary checkout's branch, such as `refs/
 If earlier commits are preserved elsewhere, repeat `--also-durable-ref <full-ref>` for each
 additional local branch, remote-tracking branch or archive ref that covers them.
 
-Ignored files, including `.env` and installed dependencies, normally keep the checkout.
-Add `--save-ignored` to preserve them in a private folder on the server before queuing release.
-The command prints its location. This requires hard-link support and a T3 home on the
-checkout's filesystem. The saved files retain their disk space and stay available until the
-checkout owner removes them. Newly created or replaced files without a matching saved file
-keep the checkout. Tracked changes and ordinary untracked files also keep it.
+For a checkout with verified CodeShip setup, the release command can recreate the verified
+dependencies and environment links. It keeps additional ignored files in a private backup
+and prints the location and retained file allocation. A checkout whose installed files
+cannot be verified is kept. Add `--save-ignored` to preserve every ignored file.
+
+Backups require hard-link support and a T3 home on the checkout's filesystem. They stay
+available until the checkout owner removes them. Newly created or replaced files without
+a matching saved file keep the checkout. Tracked changes and ordinary untracked files also
+keep it.
 
 The server checks the request at startup and every minute and waits for delivery and
 process teardown. To withdraw a pending request, remove the printed request file.
 Once it has moved to `.releasing`, wait for the result before reusing the checkout.
 **Storage & cleanup** shows the reason a checkout was kept. A follow-up recreates a released
 checkout from the project's current base. If the owner moved the task branch in the meantime,
-the follow-up uses the new branch tip.
+the follow-up uses the new branch tip. Follow-up setup reports progress in the thread and an
+unfinished setup can be retried in the same checkout.
 
 Choose **Delete now** to run the enabled rules immediately. The latest results show which
 worktrees were removed or kept and why, plus any failures.

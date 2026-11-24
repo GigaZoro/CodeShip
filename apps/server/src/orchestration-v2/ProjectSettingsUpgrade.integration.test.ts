@@ -1,4 +1,5 @@
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
+import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -120,6 +121,7 @@ const unusedEnrichment = {
 const layerRuntime = (dbPath: string) => {
   const layerPlatform = Layer.mergeAll(
     NodeServices.layer,
+    WorktreeSetupTracker.layer,
     Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
     Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
       resolveLink: () => Effect.die("unused"),

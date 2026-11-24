@@ -1,3 +1,7 @@
+## 2026-11-24 — Recover setup on a follow-up to released worktrees
+
+- Worktree release keeps recoverable ignored build output in a private backup when dependencies are verified. Follow-ups show setup progress and retry an unfinished setup in the recreated checkout.
+
 ## 2026-11-24 — Release worktrees after completed merges
 
 - A completed integration can release its worktree when Git’s leftover auto-merge tree is identical to the committed tree. Active merges and unpreserved trees still keep the checkout.

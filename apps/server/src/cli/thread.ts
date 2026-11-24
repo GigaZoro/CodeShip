@@ -776,8 +776,9 @@ const releaseWorktreeCommand = Command.make("release-worktree", {
   alsoDurable: Flag.String("also-durable-ref").pipe(Flag.atLeast(0)),
   saveIgnored: Flag.Boolean("save-ignored").pipe(
     Flag.withDescription(
-      "Keep ignored files in a private, same-volume hard-link backup before queuing release.",
+      "Keep every ignored file, including verified setup output, in a private hard-link backup.",
     ),
+    Flag.withDefault(false),
   ),
 }).pipe(
   Command.withDescription(
@@ -796,7 +797,9 @@ const releaseWorktreeCommand = Command.make("release-worktree", {
         saveIgnored: flags.saveIgnored,
       }).pipe(Effect.provide(GitVcsDriver.layer.pipe(Layer.provide(ServerConfig.layer(config)))));
       if (request.savedFiles)
-        yield* Console.log(`Preserved ignored files in ${request.savedFiles}`);
+        yield* Console.log(
+          `Preserved ignored files in ${request.savedFiles} (${request.savedAllocatedBytes} allocated bytes).`,
+        );
       yield* Console.log(`Queued worktree release in ${request.file}`);
     }),
   ),

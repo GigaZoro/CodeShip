@@ -1,0 +1,112 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Native stamps are part of the worktree setup proof.
+import * as NodeFSP from "node:fs/promises";
+import { expect, it } from "@effect/vitest";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import {
+  setupFileStamp,
+  setupTreeDigests,
+  writeSetupProof,
+} from "../../../../scripts/lib/worktree-setup-proof.ts";
+import { layerRealGit } from "../orchestration-v2/ProviderTurnStartService.testkit.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { decodeReleaseRequest, queueWorktreeRelease, releaseHold } from "./worktreeRelease.ts";
+
+it.live.skipIf(isWindowsHost)(
+  "retains unknown ignored build files without relinking installed dependencies",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const gitDriver = yield* GitVcsDriver.GitVcsDriver;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-worktree-release-" });
+      const project = path.join(root, "project");
+      const checkout = path.join(root, "worktree");
+      const git = (cwd: string, ...args: string[]) =>
+        gitDriver
+          .execute({ operation: "test.worktreeRelease", cwd, args })
+          .pipe(Effect.map(({ stdout }) => stdout.trimEnd()));
+      yield* git(root, "init", "-b", "main", project);
+      yield* fs.writeFileString(
+        path.join(project, ".gitignore"),
+        "node_modules/\n.t3/\ndist/\n.env\n",
+      );
+      yield* git(project, "add", ".gitignore");
+      yield* git(
+        project,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "base",
+      );
+      yield* git(project, "worktree", "add", "-b", "feature", checkout);
+      const modules = path.join(checkout, "node_modules");
+      yield* fs.makeDirectory(modules);
+      yield* fs.writeFileString(path.join(modules, "installed.js"), "package contents");
+      yield* fs.makeDirectory(path.join(checkout, ".t3"));
+      const marker = "1a2b3c4d-1234-4567-8910-1a2b3c4d5e6f\n";
+      yield* fs.writeFileString(path.join(checkout, ".t3/setup-done"), marker);
+      const env = path.join(project, ".env");
+      const link = path.join(checkout, ".env");
+      yield* fs.writeFileString(env, "test workspace secret");
+      yield* fs.symlink(env, link);
+      const admin = yield* git(checkout, "rev-parse", "--absolute-git-dir");
+      const head = yield* git(checkout, "rev-parse", "HEAD");
+      yield* Effect.tryPromise(async () =>
+        writeSetupProof(admin, path.join(admin, "staging-proof"), {
+          root: project,
+          checkout: setupFileStamp(
+            await NodeFSP.lstat(path.join(checkout, ".git"), { bigint: true }),
+          ),
+          head,
+          marker,
+          modules: await setupTreeDigests(checkout, ["node_modules"]),
+          links: [
+            { name: ".env", stamp: setupFileStamp(await NodeFSP.lstat(link, { bigint: true })) },
+          ],
+        }),
+      );
+      const generated = path.join(checkout, "dist");
+      yield* fs.makeDirectory(generated);
+      yield* fs.writeFileString(path.join(generated, "bundle.js"), "generated");
+      yield* fs.writeFileString(
+        path.join(generated, "private.txt"),
+        "user data in generated directory",
+      );
+      const release = yield* queueWorktreeRelease({
+        stateDir: path.join(root, "state"),
+        threadId: "thread",
+        runId: "finished",
+        worktreePath: checkout,
+        durableRef: "refs/heads/main",
+      });
+      const request = yield* decodeReleaseRequest(yield* fs.readFileString(release.file));
+      expect(release.savedFiles).toBeTruthy();
+      expect(request.savedAllocatedBytes).toBeGreaterThan(0);
+      const saved = release.savedFiles!;
+      expect(yield* fs.readFileString(path.join(saved, "dist/private.txt"))).toBe(
+        "user data in generated directory",
+      );
+      expect(yield* fs.exists(path.join(saved, "node_modules"))).toBe(false);
+      expect(yield* fs.exists(path.join(saved, ".env"))).toBe(false);
+      const refs = path.join(admin, "refs");
+      yield* fs.makeDirectory(refs, { recursive: true });
+      expect(yield* releaseHold(request, project)).toBeNull();
+      const lateChange = path.join(generated, "created-after-request.txt");
+      yield* fs.writeFileString(lateChange, "new local data");
+      expect(yield* releaseHold(request, project)).toBe(
+        "ignored files have changed or lack a preserved copy",
+      );
+      expect(yield* fs.readFileString(lateChange)).toBe("new local data");
+      yield* fs.remove(lateChange);
+      const privateRefs = path.join(refs, "worktree");
+      yield* fs.makeDirectory(privateRefs);
+      yield* fs.writeFileString(path.join(privateRefs, "local-work"), head + "\n");
+      expect(yield* releaseHold(request, project)).toBe("worktree has private refs");
+    }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);

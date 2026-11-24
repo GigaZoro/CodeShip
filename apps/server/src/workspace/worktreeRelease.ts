@@ -14,6 +14,7 @@ import * as Schema from "effect/Schema";
 import { WORKTREE_RELEASE_DIRECTORY } from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import {
+  hasSetupOnlyStatus,
   matchesSetupProof,
   readSetupProof,
   setupFileStamp,
@@ -30,6 +31,8 @@ const ReleaseRequest = Schema.Struct({
   durableRef,
   alsoDurable: Schema.optional(Schema.Array(durableRef)),
   savedFiles: Schema.optional(Schema.String),
+  savedSetupExtras: Schema.optional(Schema.Literal(true)),
+  savedAllocatedBytes: Schema.optional(Schema.Number),
   head: Schema.String.check(Schema.isPattern(oid)),
   identity: Schema.String,
 });
@@ -62,12 +65,14 @@ export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(functio
   cwd: string,
   threadId: string,
   branch: string,
+  checkoutExists: boolean,
 ) {
   if (!(yield* fs.exists(directory))) return null;
   const parent = yield* releasePath(NodePath.dirname(cwd));
   const canonical = NodePath.join(parent, NodePath.basename(cwd));
   const file = releaseFile(directory, canonical);
-  for (const suffix of [".releasing", ".released"]) {
+  const setupReceipt = file + ".setup";
+  for (const suffix of checkoutExists ? [".setup"] : [".setup", ".releasing", ".released"]) {
     const receipt = file + suffix;
     if (!(yield* fs.exists(receipt))) continue;
     const request = yield* decodeReleaseRequest(yield* fs.readFileString(receipt));
@@ -76,7 +81,7 @@ export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(functio
       request.branch === branch &&
       request.worktreePath === canonical
     )
-      return { request, receipt };
+      return { request, receipt, setupReceipt };
   }
   return null;
 });
@@ -129,7 +134,11 @@ const worktreeStatus = (cwd: string) =>
   ]);
 
 const runFile = NodeUtil.promisify(NodeChildProcess.execFile);
-type BackupCapture = { pending: Promise<void> };
+type BackupCapture = {
+  pending: Promise<void>;
+  inodes: Set<string>;
+  allocatedBytes: number;
+};
 
 async function allCompleted<A>(tasks: Promise<A>[]) {
   const results = await Promise.allSettled(tasks);
@@ -231,6 +240,13 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
           }
           if (!original.isFile() && !original.isSymbolicLink())
             throw new Error("Special file requires its owner");
+          if (capture) {
+            const inode = `${original.dev}/${original.ino}`;
+            if (!capture.inodes.has(inode)) {
+              capture.inodes.add(inode);
+              capture.allocatedBytes += Number(original.blocks * 512n);
+            }
+          }
           if (capture && mac && original.isSymbolicLink()) {
             const siblings = symlinks.get(targetParent) ?? [];
             siblings.push(source);
@@ -269,6 +285,51 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
   return true;
 }, Effect.timeout("10 minutes"));
 
+type SetupProof = NonNullable<Awaited<ReturnType<typeof readSetupProof>>>;
+
+const readCheckoutSetupProof = (cwd: string, admin: string, projectRoot: string) =>
+  Effect.tryPromise(async () =>
+    readSetupProof(
+      admin,
+      await NodeFSP.realpath(projectRoot),
+      setupFileStamp(await NodeFSP.lstat(NodePath.join(cwd, ".git"), { bigint: true })),
+    ),
+  ).pipe(
+    Effect.timeout("5 seconds"),
+    Effect.orElseSucceed(() => null),
+  );
+
+const setupExtras = Effect.fn("WorktreeRelease.setupExtras")(function* (
+  proof: SetupProof,
+  cwd: string,
+  status: string,
+) {
+  const records = status.split("\0").filter(Boolean);
+  if (records.some((record) => !record.startsWith("!! "))) return null;
+  const setup = records.filter((record) => hasSetupOnlyStatus(proof, record));
+  const valid = yield* Effect.tryPromise((signal) =>
+    matchesSetupProof(proof, cwd, setup.join("\0"), signal),
+  ).pipe(
+    Effect.timeout("10 minutes"),
+    Effect.orElseSucceed(() => false),
+  );
+  if (!valid) return null;
+  const owned = new Set(setup);
+  return records.filter((record) => !owned.has(record)).join("\0");
+});
+
+const captureSetupExtras = Effect.fn("WorktreeRelease.captureSetupExtras")(function* (cwd: string) {
+  if (yield* HostProcess.isWindows) return null;
+  const admin = (yield* readGit(cwd, ["rev-parse", "--absolute-git-dir"])).trimEnd();
+  const fs = yield* FileSystem.FileSystem;
+  if (!(yield* fs.exists(NodePath.join(admin, setupProofName)))) return null;
+  const registrations = yield* readGit(cwd, ["worktree", "list", "--porcelain", "-z"]);
+  const main = registrations.split("\0", 1)[0];
+  if (!main?.startsWith("worktree ")) return null;
+  const proof = yield* readCheckoutSetupProof(cwd, admin, main.slice("worktree ".length));
+  return proof ? yield* setupExtras(proof, cwd, yield* worktreeStatus(cwd)) : null;
+});
+
 export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function* (input: {
   stateDir: string;
   threadId: string;
@@ -303,31 +364,39 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
     head: (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim(),
     identity,
   });
-  const capture: BackupCapture = { pending: Promise.resolve() };
+  const extras = input.saveIgnored
+    ? null
+    : yield* captureSetupExtras(cwd).pipe(Effect.orElseSucceed(() => null));
+  const capture: BackupCapture = {
+    pending: Promise.resolve(),
+    inodes: new Set(),
+    allocatedBytes: 0,
+  };
   let unpublished = true;
-  const savedFiles = input.saveIgnored
-    ? yield* Effect.acquireRelease(
-        fs
-          .realPath(directory)
-          .pipe(
-            Effect.flatMap((parent) =>
-              fs.makeTempDirectory({ directory: parent, prefix: "saved-" }),
+  const savedFiles =
+    input.saveIgnored || extras
+      ? yield* Effect.acquireRelease(
+          fs
+            .realPath(directory)
+            .pipe(
+              Effect.flatMap((parent) =>
+                fs.makeTempDirectory({ directory: parent, prefix: "saved-" }),
+              ),
             ),
-          ),
-        (saved) =>
-          unpublished
-            ? Effect.promise(() => capture.pending).pipe(
-                Effect.timeout("30 seconds"),
-                Effect.andThen(Effect.tryPromise(() => discardUnpublished(cwd, saved))),
-                Effect.catch(() =>
-                  Effect.logWarning("Retained unpublished worktree backup", { saved }),
-                ),
-              )
-            : Effect.void,
-      )
-    : undefined;
+          (saved) =>
+            unpublished
+              ? Effect.promise(() => capture.pending).pipe(
+                  Effect.timeout("30 seconds"),
+                  Effect.andThen(Effect.tryPromise(() => discardUnpublished(cwd, saved))),
+                  Effect.catch(() =>
+                    Effect.logWarning("Retained unpublished worktree backup", { saved }),
+                  ),
+                )
+              : Effect.void,
+        )
+      : undefined;
   if (savedFiles) {
-    const records = yield* worktreeStatus(cwd);
+    const records = extras ?? (yield* worktreeStatus(cwd));
     if (!(yield* inspectIgnored(cwd, savedFiles, records, capture)))
       return yield* new GitCommandError({
         operation: "WorktreeRelease.queue",
@@ -336,7 +405,11 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
         detail: `Could not preserve all ignored files in ${savedFiles}.`,
       });
   }
-  const body = yield* encodeRequest({ ...request, ...(savedFiles ? { savedFiles } : {}) });
+  const body = yield* encodeRequest({
+    ...request,
+    ...(savedFiles ? { savedFiles, savedAllocatedBytes: capture.allocatedBytes } : {}),
+    ...(extras ? { savedSetupExtras: true } : {}),
+  });
   const destination = releaseFile(directory, cwd);
   // The worker treats the filename as a commit marker. A partial write must never be consumed.
   const staging = yield* fs.makeTempDirectoryScoped({ directory, prefix: ".release-" });
@@ -355,7 +428,7 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
       );
     }),
   );
-  return { file: destination, savedFiles };
+  return { file: destination, savedFiles, savedAllocatedBytes: capture.allocatedBytes };
 }, Effect.scoped);
 
 const readAutoMergeMarker = Effect.fn("WorktreeRelease.readAutoMergeMarker")(function* (
@@ -442,20 +515,20 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
     if (["HEAD", "index", "commondir", "gitdir"].includes(name)) continue;
     if (name === setupProofName) {
       if (yield* HostProcess.isWindows) return "worktree setup metadata requires its owner";
-      setupProof = yield* Effect.tryPromise(async () =>
-        readSetupProof(
-          admin,
-          await NodeFSP.realpath(projectRoot),
-          setupFileStamp(await NodeFSP.lstat(path.join(cwd, ".git"), { bigint: true })),
-        ),
-      ).pipe(
-        Effect.timeout("5 seconds"),
-        Effect.orElseSucceed(() => null),
-      );
+      setupProof = yield* readCheckoutSetupProof(cwd, admin, projectRoot);
       if (!setupProof) return "worktree setup metadata requires its owner";
       continue;
     }
     let file = path.join(admin, name);
+    if (name === "refs") {
+      // Git 2.56 initializes an empty refs directory for a new linked worktree.
+      if (
+        !(yield* Effect.tryPromise(() => NodeFSP.lstat(file))).isDirectory() ||
+        (yield* fs.readDirectory(file)).length !== 0
+      )
+        return "worktree has private refs";
+      continue;
+    }
     if (name === "AUTO_MERGE") {
       const marker = yield* readAutoMergeMarker(file);
       if (marker === null) return "worktree metadata requires its owner";
@@ -519,23 +592,26 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   const status = yield* worktreeStatus(cwd);
   if (status.split("\0").some((record) => record && !record.startsWith("!! ")))
     return "worktree contains tracked, untracked or ignored local data";
-  if (status && request.savedFiles) {
+  if (request.savedFiles && !request.savedSetupExtras) {
     if (
+      status &&
       !(yield* inspectIgnored(cwd, request.savedFiles, status).pipe(
         Effect.orElseSucceed(() => false),
       ))
     )
       return "ignored files have changed or lack a preserved copy";
-  } else if (!request.savedFiles && (status || setupProof)) {
+  } else if (status || setupProof || request.savedSetupExtras) {
     if (!setupProof) return "worktree contains tracked, untracked or ignored local data";
-    const proof = setupProof;
-    const clean = yield* Effect.tryPromise((signal) =>
-      matchesSetupProof(proof, cwd, status, signal),
-    ).pipe(
-      Effect.timeout("10 minutes"),
-      Effect.orElseSucceed(() => false),
-    );
-    if (!clean) return "standard setup output changed or could not be verified";
+    const extras = yield* setupExtras(setupProof, cwd, status);
+    if (extras === null) return "standard setup output changed or could not be verified";
+    if (
+      extras &&
+      (!request.savedFiles ||
+        !(yield* inspectIgnored(cwd, request.savedFiles, extras).pipe(
+          Effect.orElseSucceed(() => false),
+        )))
+    )
+      return "ignored files have changed or lack a preserved copy";
   }
   return null;
 });

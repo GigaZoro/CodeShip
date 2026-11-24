@@ -132,6 +132,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 
 const layerPlatformTest = Layer.mergeAll(
   ProviderSkillsTestkit.layer,
+  WorktreeSetupTracker.layer,
   Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
   NodeServices.layer,
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
