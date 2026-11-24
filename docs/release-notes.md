@@ -1,3 +1,7 @@
+## 2026-11-24 — Require Git 2.47 on development machines
+
+- `machine-config.json` now requires Git 2.47.0 or later. `node ~/.agents/tools/machine-config.mjs check <checkout>` reports an older Git, which takes minutes on the UTF-16 rows of the Git driver tests. No change to the app.
+
 ## 2026-11-24 — Compact density and an accent colour
 
 - Settings → Appearance has a **Compact spacing** option that tightens thread lists, chat message gaps and settings rows on web and desktop, and the home thread list on mobile.

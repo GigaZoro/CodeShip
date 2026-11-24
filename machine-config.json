@@ -30,8 +30,9 @@
   "toolchain": {
     "node": "package.json"
   },
+  "$tools": "git needs 2.47.0 or later: older git builds a hex dump of every UTF-16 working-tree-encoding conversion even with tracing off, so the utf16le rows of the GitVcsDriverCore tests run minutes past their limit. machine-config check reports an older git as drift.",
   "tools": {
-    "git": {},
+    "git": { "min_version": "2.47.0" },
     "vp": {}
   },
   "machines": {
