@@ -1,10 +1,16 @@
-import type { ProviderDriverKind } from "@t3tools/contracts";
+import type { ProviderDriverKind, ServerProviderUpdateError } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 
 export interface ProviderMaintenanceCapabilities {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
   readonly update: ProviderMaintenanceCommandAction | null;
+  /** Opaque identity of the resolved CLI installation. */
+  readonly updateKey?: string;
+  readonly builtInUpdate?: {
+    readonly lockKey: string;
+    readonly run: (version: string) => Effect.Effect<void, ServerProviderUpdateError>;
+  };
   /** undefined defers to npm; null means the installer could not determine the latest version. */
   readonly latestVersion?: string | null;
   /**

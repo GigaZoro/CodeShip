@@ -18,12 +18,16 @@ import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
 import * as AntigravityInstallation from "./AntigravityInstallation.ts";
-import { type AntigravityReleaseAsset } from "./antigravityRelease.ts";
+import {
+  ANTIGRAVITY_REGISTRY_ENTRY,
+  resolveAntigravityReleaseAsset,
+  type AntigravityReleaseAsset,
+} from "./antigravityRelease.ts";
 
 const serverContents = "antigravity runtime\n";
 const harnessContents = "local harness\n";
 const previousReleaseId = "1".repeat(64);
-const previousVersion = "fixture-old";
+const previousVersion = "1.4.5";
 const encodeJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const zipFixtures = {
@@ -118,6 +122,8 @@ interface HarnessOptions {
   readonly arch?: NodeJS.Architecture;
   readonly path?: string;
   readonly previous?: boolean;
+  readonly registryVersion?: string;
+  readonly registryArchive?: string;
   readonly fileSystem?: FileSystem.FileSystem;
   readonly validate?: AntigravityInstallation.AntigravityInstallationOptions["validate"];
   readonly useDefaultValidation?: boolean;
@@ -161,6 +167,7 @@ const makeHarness = Effect.fn("test.makeAntigravityInstallation")(function* (
           )
         : installationFs.makeTempDirectoryScoped(settings),
   });
+  const pinned = resolveAntigravityReleaseAsset(platform, arch);
   const installation = yield* AntigravityInstallation.makeAntigravityInstallation({
     baseDir,
     releaseAsset: asset,
@@ -182,6 +189,31 @@ const makeHarness = Effect.fn("test.makeAntigravityInstallation")(function* (
       HttpClient.make((request) =>
         Effect.sync(() => {
           requests.push(request.url);
+          if (request.url === ANTIGRAVITY_REGISTRY_ENTRY) {
+            if (!options.registryVersion || !pinned) {
+              return HttpClientResponse.fromWeb(request, new Response(null, { status: 503 }));
+            }
+            const registryPlatform = platform === "win32" ? "windows" : platform;
+            const registryArch = arch === "arm64" ? "aarch64" : "x86_64";
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json({
+                id: "antigravity-acp",
+                version: options.registryVersion,
+                distribution: {
+                  binary: {
+                    [`${registryPlatform}-${registryArch}`]: {
+                      archive:
+                        options.registryArchive ??
+                        pinned.url.replace(pinned.version, options.registryVersion),
+                      cmd: `./${pinned.executable.name}`,
+                      sha256: asset?.sha256,
+                    },
+                  },
+                },
+              }),
+            );
+          }
           const response = HttpClientResponse.fromWeb(
             request,
             new Response(null, {
@@ -245,6 +277,60 @@ it.layer(NodeServices.layer)("Antigravity installation", (it) => {
       expect(requests).toEqual([]);
       expect(validations).toEqual([]);
     }).pipe(Effect.provideService(HostProcess.IsExecutable, true)),
+  );
+
+  it.effect("advances the existing managed runtime to the registry version", () =>
+    Effect.gen(function* () {
+      const { installation, requests } = yield* makeHarness({
+        previous: true,
+        registryVersion: "1.5.3",
+      });
+      expect(yield* installation.latestVersion).toBe("1.5.3");
+      yield* installation.upgrade("1.5.3");
+      expect(yield* installation.resolve()).toMatchObject({
+        source: "managed",
+        version: "1.5.3",
+      });
+      expect(requests.filter((url) => url.endsWith(".zip"))).toHaveLength(1);
+    }),
+  );
+
+  it.effect.each([
+    { name: "prerelease", registryVersion: "1.5.3-rc.1" },
+    {
+      name: "unexpected archive URL",
+      registryVersion: "1.5.3",
+      registryArchive: "https://example.com/runtime.zip",
+    },
+  ])("does not offer a $name from the registry", ({ name: _name, ...options }) =>
+    Effect.gen(function* () {
+      const { installation, requests } = yield* makeHarness({ previous: true, ...options });
+      expect(yield* installation.latestVersion).toBeNull();
+      expect(
+        Exit.isFailure(yield* Effect.exit(installation.upgrade(options.registryVersion))),
+      ).toBe(true);
+      expect(requests).toEqual([ANTIGRAVITY_REGISTRY_ENTRY, ANTIGRAVITY_REGISTRY_ENTRY]);
+      yield* expectPreviousRelease(installation);
+    }),
+  );
+
+  it.effect("does not install Antigravity as part of an update on a new environment", () =>
+    Effect.gen(function* () {
+      const { installation, requests } = yield* makeHarness({ registryVersion: "1.5.3" });
+      expect(Exit.isFailure(yield* Effect.exit(installation.upgrade("1.5.3")))).toBe(true);
+      expect(requests).toEqual([]);
+      expect((yield* installation.state).installedVersion).toBeNull();
+    }),
+  );
+
+  it.effect("keeps using the active runtime when the release registry is unavailable", () =>
+    Effect.gen(function* () {
+      const { installation, requests } = yield* makeHarness({ previous: true });
+      expect(yield* installation.latestVersion).toBeNull();
+      expect(Exit.isFailure(yield* Effect.exit(installation.upgrade("1.5.3")))).toBe(true);
+      expect(requests).toEqual([ANTIGRAVITY_REGISTRY_ENTRY, ANTIGRAVITY_REGISTRY_ENTRY]);
+      yield* expectPreviousRelease(installation);
+    }),
   );
 
   it.effect("verifies both files before activating a streamed download", () =>

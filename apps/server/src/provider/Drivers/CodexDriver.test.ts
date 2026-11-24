@@ -67,6 +67,7 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
   Layer.provideMerge(
     Layer.mock(CodexInstallation.CodexInstallation)({
       managedDirectory: "unused-managed-installation",
+      installedManagedVersion: Effect.succeed(null),
     }),
   ),
   Layer.provideMerge(Layer.mock(ServerSecretStore.ServerSecretStore)({})),
@@ -115,6 +116,81 @@ const encodeCredentials = Schema.encodeEffect(Schema.fromJsonString(Schema.Unkno
 const isOpenSessionError = Schema.is(ProviderAdapter.ProviderAdapterOpenSessionError);
 
 it.layer(layerTest)("CodexDriver", (it) => {
+  it.effect.each([
+    { setupMode: "managed", compatibility: "supported" },
+    { setupMode: "managed", compatibility: "incompatible" },
+    { setupMode: "existing", compatibility: "incompatible" },
+  ] as const)(
+    "advertises an update for a CodeShip installation: $setupMode, $compatibility",
+    ({ setupMode, compatibility }) =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const executable = {
+          executablePath: NodePath.join(config.stateDir, "managed-codex", "bin", "codex"),
+          managedVersionDirectory: NodePath.join(config.stateDir, "managed-codex"),
+          source: "managed" as const,
+          version: compatibility === "supported" ? "0.156.1" : "0.149.0",
+        };
+        const installation = yield* CodexInstallation.CodexInstallation;
+        const instance = yield* CodexDriver.create({
+          instanceId: ProviderInstanceId.make("signed-out-managed-codex"),
+          displayName: "Signed-out Codex",
+          enabled: true,
+          environment: [
+            { name: "PATH", value: NodePath.join(config.stateDir, "empty-bin"), sensitive: false },
+          ],
+          config: { ...CodexDriver.defaultConfig(), setupMode },
+        }).pipe(
+          Effect.provideService(CodexInstallation.CodexInstallation, {
+            ...installation,
+            resolve: () =>
+              compatibility === "supported"
+                ? Effect.succeed(executable)
+                : Effect.fail(
+                    new CodexInstallation.CodexInstallationError({
+                      operation: "resolve",
+                      detail: "Incompatible fixture release",
+                    }),
+                  ),
+            installedManagedVersion: Effect.succeed(executable.version),
+            checkForUpdate: Effect.succeed({
+              installedVersion: executable.version,
+              latestVersion: "0.172.0",
+            }),
+          }),
+          Effect.provide(
+            Layer.mock(ServerSecretStore.ServerSecretStore)({
+              get: () => Effect.succeedNone,
+            }),
+          ),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
+        );
+
+        const checked = Option.getOrThrow(
+          yield* Stream.merge(
+            Stream.fromEffect(instance.snapshot.getSnapshot),
+            instance.snapshot.streamChanges,
+          ).pipe(
+            Stream.filter((snapshot) => snapshot.versionAdvisory !== undefined),
+            Stream.runHead,
+          ),
+        );
+
+        expect(checked).toMatchObject({
+          installed: true,
+          auth: { status: setupMode === "managed" ? "unauthenticated" : "unknown" },
+          versionAdvisory: {
+            status: "behind_latest",
+            currentVersion: executable.version,
+            latestVersion: "0.172.0",
+            canUpdate: true,
+            updateCommand: null,
+            updateKey: "managed-codex",
+          },
+        });
+      }).pipe(Effect.scoped),
+  );
+
   const checkManagedAccount = (replacementTiming: "unchanged" | "during-probe") =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("restored-managed-account");
@@ -901,6 +977,11 @@ it.layer(layerTest)("CodexDriver", (it) => {
               managedDirectory,
               resolve: ownCopy,
               acquire: ownCopy,
+              installedManagedVersion: Effect.succeed(fixture.ownCopy ? "0.156.1" : null),
+              checkForUpdate: Effect.succeed({
+                installedVersion: "0.156.1",
+                latestVersion: "0.172.0",
+              }),
             }),
           ),
           Effect.provideService(
@@ -921,6 +1002,13 @@ it.layer(layerTest)("CodexDriver", (it) => {
         const status = yield* instance.snapshot.refresh;
         expect(status.installed).toBe(false);
         expect(status.setup?.canInstall).toBe(!fixture.explicit);
+        const maintenance = yield* instance.snapshot.resolveMaintenance();
+        expect(maintenance.builtInUpdate?.lockKey).toBe(
+          fixture.ownCopy && !fixture.explicit && !externalOnPath ? "managed-codex" : undefined,
+        );
+        if (maintenance.builtInUpdate) {
+          expect(yield* resolveLatestProviderVersion(maintenance)).toBe("0.172.0");
+        }
         yield* instance.orchestrationAdapter
           .openSession({
             threadId: ThreadId.make("default-binary-thread"),

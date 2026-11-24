@@ -10,6 +10,7 @@ import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -440,6 +441,7 @@ it.layer(
         expect(capabilities).toEqual({
           provider: driver("packageTool"),
           packageName: "@example/package-tool",
+          updateKey: expect.stringMatching(/^cli:[a-f0-9]{64}$/u),
           update: {
             command: `npm install -g --prefix ${tempDir} --allow-scripts=@example/package-tool @example/package-tool@latest`,
             executable: "npm",
@@ -1107,6 +1109,7 @@ it.layer(
       expect(capabilities).toEqual({
         provider: driver("nativePackageTool"),
         packageName: "@example/native-package-tool",
+        updateKey: expect.stringMatching(/^cli:[a-f0-9]{64}$/u),
         update: {
           command: `${nativePath} update`,
           executable: nativePath,
@@ -1264,6 +1267,58 @@ it.layer(
       prefix: "/srv",
     });
   });
+
+  it.effect.skipIf(windowsHost)(
+    "distinguishes Homebrew installations with identical update commands",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const tempDir = yield* fileSystem
+          .makeTempDirectoryScoped({ prefix: "t3-homebrew-scopes-" })
+          .pipe(Effect.flatMap(fileSystem.realPath));
+        const advisories = yield* Effect.forEach(["arm", "intel", "arm"], (scope) => {
+          const prefix = NodePath.join(tempDir, scope);
+          const executable = NodePath.join(
+            prefix,
+            "Cellar",
+            "package-tool",
+            "1.0.0",
+            "bin",
+            "package-tool",
+          );
+          writeExecutable(executable);
+          writeExecutable(NodePath.join(prefix, "bin", "brew"));
+          return resolveProviderMaintenanceCapabilitiesEffect(packageToolUpdate, {
+            binaryPath: executable,
+            env: { PATH: "" },
+          }).pipe(
+            Effect.provideService(HostProcess.Platform, "darwin"),
+            Effect.provideService(
+              ChildProcessSpawner.ChildProcessSpawner,
+              stdoutSpawner(() => `${prefix}\n`),
+            ),
+            Effect.map((maintenanceCapabilities) =>
+              createProviderVersionAdvisory({
+                driver: driver("packageTool"),
+                currentVersion: "1.0.0",
+                latestVersion: "2.0.0",
+                maintenanceCapabilities,
+              }),
+            ),
+          );
+        });
+
+        expect(advisories.map((advisory) => advisory.updateCommand)).toEqual([
+          "brew upgrade package-tool",
+          "brew upgrade package-tool",
+          "brew upgrade package-tool",
+        ]);
+        const [arm, intel, sibling] = advisories.map((advisory) => advisory.updateKey);
+        expect(arm).toMatch(/^cli:[a-f0-9]{64}$/u);
+        expect(arm).not.toBe(intel);
+        expect(arm).toBe(sibling);
+      }).pipe(Effect.scoped),
+  );
 
   it.effect("shares installer lookups only for the same executable and update target", () =>
     Effect.gen(function* () {

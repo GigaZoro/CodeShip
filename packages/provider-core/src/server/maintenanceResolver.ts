@@ -30,6 +30,8 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Hashes the proven installer identity without another service dependency.
+import * as NodeCrypto from "node:crypto";
 
 import { collectUint8StreamText } from "./collectStreamText.ts";
 import * as ProviderLatestVersions from "./ProviderLatestVersions.ts";
@@ -101,6 +103,9 @@ export interface PackageManagedProviderMaintenanceDefinition {
 const NpmLatestVersionResponse = Schema.Struct({
   version: Schema.optional(Schema.String),
 });
+const encodeInstallerIdentity = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -881,13 +886,28 @@ export const resolveProviderMaintenanceCapabilitiesEffect = Effect.fn(
   if (!realCommandPath) {
     return yield* resolver.resolve(null);
   }
-  return yield* resolver.resolve({
+  const platform = yield* HostProcess.Platform;
+  const capabilities = yield* resolver.resolve({
     binaryPath,
     resolvedCommandPath,
     realCommandPath,
     env,
-    platform: yield* HostProcess.Platform,
+    platform,
   });
+  const update = capabilities.update;
+  if (!update) return capabilities;
+  // Homebrew owns the keg through its stable prefix, while other installers can share a command name.
+  const installPath = update.lockKey === "homebrew" ? update.executable : realCommandPath;
+  const target = encodeInstallerIdentity([
+    capabilities.provider,
+    update.lockKey,
+    platform === "win32" ? normalizeCommandPath(installPath) : installPath,
+    ...update.args,
+  ]);
+  return {
+    ...capabilities,
+    updateKey: `cli:${NodeCrypto.createHash("sha256").update(target).digest("hex")}`,
+  };
 }, Effect.flatMap(withConfiguredNpmVersionLookup));
 
 export const makeCachedProviderMaintenanceResolution = Effect.fn(
@@ -929,7 +949,7 @@ function deriveVersionAdvisory(input: {
     return {
       status: "behind_latest",
       message:
-        input.capabilities.update === null
+        input.capabilities.update === null && input.capabilities.builtInUpdate === undefined
           ? manualUpdateMessage(input.latestVersion, input.capabilities.installPath)
           : PROVIDER_UPDATE_ACTION_TOAST_MESSAGE,
     };
@@ -952,6 +972,7 @@ export function createProviderVersionAdvisory(input: {
     latestVersion,
     capabilities,
   });
+  const updateKey = capabilities.builtInUpdate?.lockKey ?? capabilities.updateKey;
 
   return {
     status: advisory.status,
@@ -961,7 +982,8 @@ export function createProviderVersionAdvisory(input: {
       resolveLatestProviderUpdateAction(capabilities, latestVersion)?.command ??
       capabilities.manualCommand ??
       null,
-    canUpdate: capabilities.update !== null,
+    ...(updateKey ? { updateKey } : {}),
+    canUpdate: capabilities.update !== null || capabilities.builtInUpdate !== undefined,
     canInstallVersion: makeTargetedProviderUpdateAction(capabilities, "0.0.0") !== null,
     checkedAt: input.checkedAt ?? null,
     message: advisory.message,
@@ -989,8 +1011,10 @@ const fetchNpmLatestVersion = Effect.fn("fetchNpmLatestVersion")(function* (pack
  */
 function installerLatestVersionKey(capabilities: ProviderMaintenanceCapabilities) {
   if (!capabilities.lookupLatestVersion) return null;
+  if (capabilities.builtInUpdate) return capabilities.builtInUpdate.lockKey;
   const update = capabilities.update;
-  if (update) return [update.lockKey, update.executable, ...update.args].join("\0");
+  if (update)
+    return [capabilities.updateKey ?? update.lockKey, update.executable, ...update.args].join("\0");
   return capabilities.installPath
     ? ["manual", capabilities.installPath].join("\0")
     : capabilities.packageName && `npm-registry\0${capabilities.packageName}`;

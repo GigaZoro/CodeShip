@@ -393,8 +393,8 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       instanceId,
       provider,
     );
-    const update = capabilities.update;
-    if (!update) {
+    const lockKey = capabilities.builtInUpdate?.lockKey ?? capabilities.update?.lockKey;
+    if (!lockKey) {
       return yield* new ServerProviderUpdateError({
         provider,
         reason: "This provider does not support one-click updates.",
@@ -443,7 +443,10 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               provider,
               { fresh: true },
             );
-            if (!fresh.update || fresh.update.lockKey !== update.lockKey) {
+            if (
+              (fresh.builtInUpdate?.lockKey ?? fresh.update?.lockKey) !== lockKey ||
+              fresh.updateKey !== capabilities.updateKey
+            ) {
               return yield* finish(
                 makeUpdateState({
                   status: "failed",
@@ -473,6 +476,33 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
                 provider,
                 candidateVersion,
               );
+            if (fresh.builtInUpdate && targetVersion === undefined) {
+              if (candidateVersion === null) {
+                return yield* finish(
+                  makeUpdateState({
+                    status: "failed",
+                    startedAt,
+                    finishedAt: yield* nowIso,
+                    message:
+                      "Could not determine the latest provider version. Refresh and try again.",
+                  }),
+                );
+              }
+              if (advisory?.status !== "broken" && advisory?.status !== "unsupported") {
+                yield* setRunningMessage("Installing the latest version");
+                // The built-in installer verifies the version before activating it.
+                yield* fresh.builtInUpdate.run(candidateVersion);
+                yield* providerRegistry.refreshAfterUpdate(provider, instanceId);
+                return yield* finish(
+                  makeUpdateState({
+                    status: "succeeded",
+                    startedAt,
+                    finishedAt: yield* nowIso,
+                    message: "Provider updated.",
+                  }),
+                );
+              }
+            }
             const command =
               targetVersion !== undefined
                 ? makeTargetedProviderUpdateAction(fresh, targetVersion)
@@ -628,7 +658,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
     return yield* commandCoordinator
       .withCommandLock({
         targetKey,
-        lockKey: update.lockKey,
+        lockKey,
         onQueued: setQueuedState,
         run: runProviderUpdate(),
       })

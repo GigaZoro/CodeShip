@@ -30,9 +30,10 @@ import {
   checkCodexProviderStatus,
   codexWorkspaceFunding,
   CODEX_NOT_FOUND_MESSAGE,
-  makeMissingCodexProvider,
+  makeUnavailableCodexProvider,
   makePendingCodexProvider,
   probeCodexSkillsForCwd,
+  resolveOwnedCodexMaintenance,
   runCodexCli,
   withCodexAppServerClient,
 } from "../CodexProvider.ts";
@@ -277,14 +278,16 @@ export const CodexDriver: ProviderDriver<
         { binaryPath, env: processEnv },
       );
     const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
-      resolveBinaryPath.pipe(
-        Effect.orElseSucceed(() => DEFAULT_BINARY_PATH),
-        Effect.flatMap((binaryPath) =>
-          usesDefaultBinary && binaryPath !== DEFAULT_BINARY_PATH
-            ? // T3.CodeShip installs and updates its own copy; npm and `codex update` do not own it.
-              Effect.succeed({ provider: DRIVER_KIND, packageName: null, update: null })
-            : maintenanceFor(binaryPath),
-        ),
+      (usesDefaultBinary
+        ? codexOnPath.pipe(
+            Effect.flatMap((found) =>
+              found === null
+                ? resolveOwnedCodexMaintenance(installation)
+                : maintenanceFor(DEFAULT_BINARY_PATH),
+            ),
+          )
+        : maintenanceFor(effectiveConfig.binaryPath)
+      ).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, pathService),
@@ -333,7 +336,12 @@ export const CodexDriver: ProviderDriver<
           effectiveConfig.enabled
             ? resolveBinaryPath.pipe(
                 Effect.matchEffect({
-                  onFailure: () => makeMissingCodexProvider(effectiveConfig),
+                  onFailure: () =>
+                    installation.installedManagedVersion.pipe(
+                      Effect.flatMap((version) =>
+                        makeUnavailableCodexProvider(effectiveConfig, version),
+                      ),
+                    ),
                   onSuccess: (binaryPath) =>
                     checkCodexProviderStatus(
                       { ...effectiveConfig, binaryPath },
