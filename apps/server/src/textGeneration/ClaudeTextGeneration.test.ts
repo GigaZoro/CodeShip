@@ -116,7 +116,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
               body: "Body",
             },
           }),
-          argsMustContain: `--model ${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded] --effort max --settings {"disableAllHooks":true,"fastMode":true}`,
+          argsMustContain: `--model ${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded] --effort max --settings {"fastMode":true,"ultracode":false,"disableAllHooks":true}`,
           claudeConfig: { customModels: [SYNTHETIC_CLAUDE_COLLIDING_ALIAS] },
         },
         (textGeneration) =>
@@ -201,6 +201,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
   const launchSettings = {
     disableAllHooks: false,
     fastMode: false,
+    ultracode: true,
     env: { ANTHROPIC_VERTEX_PROJECT_ID: "issue-25017-marker" },
   };
   it.effect.each([
@@ -218,7 +219,12 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
       return yield* withFakeClaudeEnv(
         {
           output: JSON.stringify({ structured_output: { title: "Use launch settings" } }),
-          settingsMustEqual: { ...launchSettings, disableAllHooks: true, fastMode: true },
+          settingsMustEqual: {
+            ...launchSettings,
+            disableAllHooks: true,
+            fastMode: true,
+            ultracode: false,
+          },
           claudeConfig: {
             launchArgs: `--settings '${inline ? JSON.stringify(launchSettings) : "launch-settings.json"}'`,
           },

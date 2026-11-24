@@ -15,18 +15,10 @@ import {
   normalizeCliError,
   toJsonSchemaObject,
 } from "@t3tools/provider-core/server/textGenerationUtils";
-import {
-  getModelSelectionBooleanOptionValue,
-  getModelSelectionStringOptionValue,
-  getProviderOptionDescriptors,
-} from "@t3tools/shared/model";
+import { compileClaudeModelSelection, withClaudeSelectionSettings } from "../claudeModelOptions.ts";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   type ClaudeModelCatalog,
-  getClaudeCatalogModelCapabilities,
-  normalizeClaudeCatalogEffort,
-  resolveClaudeCatalogApiModelId,
-  resolveClaudeCatalogEffort,
   resolveClaudeModelSlug,
   scopeClaudeModelCatalog,
 } from "../provider/ClaudeModelCatalog.ts";
@@ -179,39 +171,11 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       toJsonSchemaObject(outputSchemaJson),
       "Failed to encode structured output schema.",
     );
-    const caps = getClaudeCatalogModelCapabilities(catalog, resolvedModelSelection.model);
-    const descriptors = getProviderOptionDescriptors({
-      caps,
-      selections: resolvedModelSelection.options,
-    });
-    const findDescriptor = (id: string) => descriptors.find((descriptor) => descriptor.id === id);
-    const rawEffortSelection = getModelSelectionStringOptionValue(resolvedModelSelection, "effort");
-    const resolvedEffort = resolveClaudeCatalogEffort(
-      catalog,
-      resolvedModelSelection.model,
-      rawEffortSelection,
-    );
-    const cliEffort = normalizeClaudeCatalogEffort(
-      catalog,
-      resolvedEffort,
-      resolvedModelSelection.model,
-    );
-    const ultracode = findDescriptor("ultracode")?.currentValue === true;
-    const thinkingDescriptor = findDescriptor("thinking");
-    const fastModeDescriptor = findDescriptor("fastMode");
-    // Only a chosen value; otherwise Claude Code's own default applies, as in chat turns.
-    const thinking =
-      thinkingDescriptor?.type === "boolean"
-        ? getModelSelectionBooleanOptionValue(resolvedModelSelection, "thinking")
-        : undefined;
-    const fastMode =
-      fastModeDescriptor?.type === "boolean" ? fastModeDescriptor.currentValue : undefined;
+    // The same model options a chat turn on this selection launches with.
+    const selection = compileClaudeModelSelection(resolvedModelSelection, catalog);
     const settings = {
-      ...(yield* readLaunchSettings(operation, cwd)),
+      ...withClaudeSelectionSettings(yield* readLaunchSettings(operation, cwd), selection),
       disableAllHooks: true,
-      ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
-      ...(fastMode ? { fastMode: true } : {}),
-      ...(ultracode ? { ultracode: true } : {}),
     };
     const settingsJson = yield* encodeJsonForOperation(
       operation,
@@ -242,8 +206,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           "--json-schema",
           jsonSchemaStr,
           "--model",
-          resolveClaudeCatalogApiModelId(catalog, resolvedModelSelection),
-          ...(cliEffort ? ["--effort", cliEffort] : []),
+          selection.apiModelId,
+          ...(selection.effort ? ["--effort", selection.effort] : []),
           "--settings",
           settingsJson,
           ...(investigate

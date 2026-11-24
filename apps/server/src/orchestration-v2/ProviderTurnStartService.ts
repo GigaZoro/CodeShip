@@ -174,13 +174,15 @@ const isProviderAdapterOpenSessionError = Schema.is(
 
 /**
  * Claude refuses these before it reads the prompt: replacing a process running background work,
- * unreadable launch arguments or settings, MCP registration that never answers while the query
- * opens, or an account that has not reviewed Anthropic's updated Consumer Terms.
+ * unreadable launch arguments or settings, managed settings that would override the chat's
+ * Ultracode, MCP registration that never answers while the query opens, or an account that has
+ * not reviewed Anthropic's updated Consumer Terms.
  */
 const PROMPT_REFUSAL_TAGS = [
   "ClaudeBackgroundWorkBlocksQueryReplacementError",
   "ClaudeAppendSystemPromptFileError",
   "ClaudeAppendSystemPromptMissingValueError",
+  "ClaudeUltracodeOverriddenError",
   "ClaudeSettingsLaunchArgError",
   "ClaudeProjectConfigRootError",
   "ClaudeSettingsResolveError",

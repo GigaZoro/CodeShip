@@ -43,14 +43,16 @@ export function compileClaudeModelSelection(
   const thinking = supportsBoolean("thinking")
     ? getModelSelectionBooleanOptionValue(selection, "thinking")
     : undefined;
+  // The descriptor also carries the old Ultracode effort level, which the raw options do not.
+  const ultracode = supportsBoolean("ultracode")
+    ? descriptors.some(
+        (descriptor) => descriptor.id === "ultracode" && descriptor.currentValue === true,
+      )
+    : undefined;
   const settings = {
     ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
     ...(typeof fastMode === "boolean" ? { fastMode } : {}),
-    ...(descriptors.some(
-      (descriptor) => descriptor.id === "ultracode" && descriptor.currentValue === true,
-    )
-      ? { ultracode: true }
-      : {}),
+    ...(typeof ultracode === "boolean" ? { ultracode } : {}),
   };
   const apiModelId = resolveClaudeCatalogApiModelId(catalog, selection);
   const promptEffort = resolvePromptInjectedEffort(capabilities, rawEffort) ?? undefined;
@@ -61,4 +63,16 @@ export function compileClaudeModelSelection(
     settings,
     queryIdentity: JSON.stringify({ apiModelId, effort: effort ?? null, settings }),
   };
+}
+
+/**
+ * Claude launch `--settings` with the selection's own fields laid over them. The selection alone
+ * decides fastMode and ultracode, as a live switch to it does, so a launch value never outlives
+ * a selection that turns either off.
+ */
+export function withClaudeSelectionSettings<
+  Settings extends { readonly fastMode?: unknown; readonly ultracode?: unknown },
+>(launchSettings: Settings, selection: CompiledClaudeModelSelection) {
+  const { fastMode: _fastMode, ultracode: _ultracode, ...kept } = launchSettings;
+  return { ...kept, ...selection.settings };
 }

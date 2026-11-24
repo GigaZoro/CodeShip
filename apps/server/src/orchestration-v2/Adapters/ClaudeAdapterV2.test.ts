@@ -100,6 +100,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
+import { compileClaudeModelSelection } from "../../claudeModelOptions.ts";
 import * as ClaudeSettingsCascade from "../../provider/Drivers/ClaudeSettingsCascade.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";
@@ -283,6 +284,31 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     assert.equal(options.permissionMode, expected);
     assert.isUndefined(options.extraArgs?.["permission-mode"]);
     assert.isUndefined(options.extraArgs?.["dangerously-skip-permissions"]);
+  });
+
+  it.each([
+    ["the selection's effort over a launch --effort", "claude-opus-5-5", "high", "high", undefined],
+    [
+      "a launch --effort to a model without effort levels",
+      "claude-unlisted",
+      undefined,
+      undefined,
+      "ultracode",
+    ],
+  ] as const)("passes %s", (_, model, selectedEffort, effort, launchEffort) => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: {
+        instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+        model,
+        options: selectedEffort === undefined ? [] : [{ id: "effort", value: selectedEffort }],
+      },
+      nativeThreadId: "native-effort-override",
+      resume: false,
+      cwd: "/workspace",
+      settings: { ...DEFAULT_CLAUDE_SETTINGS, launchArgs: "--effort ultracode" },
+    });
+    assert.equal(options.effort, effort);
+    assert.equal(options.extraArgs?.effort, launchEffort);
   });
 
   it("passes every --add-dir launch directory to Claude", () => {
@@ -4882,6 +4908,91 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         }).pipe(Effect.provide(NodeServices.layer)),
     );
 
+    it.each([
+      ["omitted", [], false],
+      ["off", [{ id: "ultracode", value: false }], false],
+      ["on", [{ id: "ultracode", value: true }], true],
+    ] as const)(
+      "launches a selection with Ultracode %s with each setting a live switch to it sends, over launch --settings",
+      (_, options, ultracode) => {
+        const modelSelection: ModelSelection = {
+          instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+          model: "claude-opus-5-5",
+          options,
+        };
+        // Effort reaches a launch as --effort, not as a setting.
+        const { effortLevel: _effortLevel, ...switched } =
+          ClaudeAdapterV2.claudeLiveSelectionFlagSettings(
+            compileClaudeModelSelection(modelSelection),
+          );
+        const launched = ClaudeAdapterV2.claudeFlagSettings({
+          launchArgSettings: Object.fromEntries(
+            Object.entries(switched).map(([key, value]) => [key, value !== true]),
+          ),
+          modelSelection,
+          settings: DEFAULT_CLAUDE_SETTINGS,
+        }) as Readonly<Record<string, unknown>>;
+        // A live switch clears with null what a launch leaves out.
+        const launchedFields: Readonly<Record<string, unknown>> = Object.fromEntries(
+          Object.keys(switched).map((key) => [key, launched[key] ?? null]),
+        );
+        assert.equal(switched.ultracode, ultracode);
+        assert.deepEqual(launchedFields, switched);
+      },
+    );
+
+    it.effect.each([
+      ["off", true],
+      ["on", false],
+    ] as const)(
+      "refuses to start Ultracode %s under managed settings that set ultracode to %s",
+      ([, managed]) =>
+        Effect.gen(function* () {
+          vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(async (read) => {
+            const effective =
+              read?.serverManagedSettings === undefined ? {} : { ultracode: managed };
+            return { effective, provenance: {}, sources: [] };
+          });
+          const harness = yield* makeWakeHarnessWithOptions();
+          const now = yield* DateTime.now;
+          const start = (attempt: string, ultracode: boolean) =>
+            harness.runtime.startTurn(
+              makeClaudeTestTurnInput({
+                threadId: harness.threadId,
+                providerThread: harness.providerThread,
+                now,
+                attemptId: RunAttemptId.make(`attempt-managed-ultracode-${attempt}`),
+                text: "Hello",
+                attachments: [],
+                providerTurnOrdinal: 1,
+                modelSelection: {
+                  instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+                  model: "claude-opus-5-5",
+                  options: [{ id: "ultracode", value: ultracode }],
+                },
+              }),
+            );
+          const refused = yield* start("refused", !managed).pipe(Effect.result);
+          assert.equal(refused._tag, "Failure");
+          if (refused._tag === "Failure") {
+            assert.instanceOf(
+              refused.failure.cause,
+              ClaudeAdapterV2.ClaudeUltracodeOverriddenError,
+            );
+            assert.include(refused.failure.cause.message, "ultracode");
+          }
+          assert.isUndefined(harness.getOpenedOptions());
+
+          yield* start("matching", managed);
+          const sent = harness.getOpenedOptions()?.settings as Readonly<Record<string, unknown>>;
+          assert.equal(sent.ultracode, managed);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+    );
+
     const DISABLE_BYPASS = { permissions: { disableBypassPermissionsMode: "disable" } };
     it.effect.each([
       [
@@ -5856,7 +5967,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.isTrue(yield* harness.hasPendingBackgroundWork);
 
           yield* harness.runtime.startTurn(
-            turn(2, { ...normal, options: [{ id: "fastMode", value: false }] }),
+            turn(2, {
+              ...normal,
+              options: [
+                { id: "fastMode", value: false },
+                { id: "ultracode", value: false },
+              ],
+            }),
           );
           yield* settle;
           assert.deepEqual(harness.liveSelectionChanges, []);
@@ -5957,7 +6074,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           { model: "claude-sonnet-4-6" },
           { effortLevel: "high", fastMode: null, ultracode: null },
           { model: "claude-opus-5-5" },
-          { effortLevel: "medium", fastMode: false, ultracode: null },
+          { effortLevel: "medium", fastMode: false, ultracode: false },
         ]);
       }).pipe(
         Effect.provide(

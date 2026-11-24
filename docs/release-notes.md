@@ -1,3 +1,7 @@
+## 2026-11-24 — Claude starts with Ultracode exactly as the chat sets it
+
+- A Claude chat or delegated task with Ultracode off could still start with it on when the Claude launch arguments turned it on, with `ultracode` in `--settings` or with `--effort ultracode`. Starting a chat now follows the model's Ultracode toggle and effort, the same as switching models mid-chat, so Ultracode stays off unless you turn it on. Generated titles, commit messages and pull request text follow the model's Ultracode and Fast mode toggles over the launch arguments too. When your organization's managed Claude settings set `ultracode` to the other value, Claude Code would ignore the toggle, so the message is refused with the reason instead, and the chat stays as it was.
+
 ## 2026-11-24 — Resume chats promptly after a restart
 
 - A chat ready to resume while the server checks its memory queue now starts as soon as memory permits, including during startup.

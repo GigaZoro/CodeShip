@@ -46,6 +46,7 @@ export const SYNTHETIC_CLAUDE_MODEL_CATALOG: ClaudeModelCatalog = {
           optionDescriptors: [
             effort,
             { id: "fastMode", label: "Fast Mode", type: "boolean" },
+            { id: "ultracode", label: "Ultracode", type: "boolean" },
             contextWindow,
           ],
         },

@@ -173,6 +173,7 @@ import { claudeConfigDirOf, runClaudeWorker } from "../../provider/Drivers/Claud
 import {
   compileClaudeModelSelection,
   type CompiledClaudeModelSelection,
+  withClaudeSelectionSettings,
 } from "../../claudeModelOptions.ts";
 import * as ServerConfig from "../../config.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
@@ -703,6 +704,16 @@ export class ClaudeAppendSystemPromptMissingValueError extends Schema.TaggedErro
 ) {
   override get message(): string {
     return `The ${this.flag} launch argument has no ${this.flag === "--append-system-prompt" ? "text" : "file path"}. Add it after the flag in the Claude launch arguments, then send the message again.`;
+  }
+}
+
+export class ClaudeUltracodeOverriddenError extends Schema.TaggedError<ClaudeUltracodeOverriddenError>()(
+  "ClaudeUltracodeOverriddenError",
+  { requested: Schema.Boolean },
+) {
+  override get message(): string {
+    const [requested, forced] = this.requested ? ["on", "off"] : ["off", "on"];
+    return `Ultracode is ${requested} for this chat, but the organization's managed Claude settings set ultracode to ${!this.requested}, so Claude Code would start with it ${forced}. Turn Ultracode ${forced} for the model, or have an administrator remove ultracode from the managed settings, then send the message again.`;
   }
 }
 
@@ -1515,7 +1526,7 @@ function canApplyClaudeSelectionLive(
   );
 }
 
-function claudeLiveSelectionFlagSettings(
+export function claudeLiveSelectionFlagSettings(
   selection: CompiledClaudeModelSelection,
 ): ClaudeFlagSettings {
   return {
@@ -1621,8 +1632,13 @@ export function makeClaudeQueryOptions(input: {
     "append-system-prompt-file": _launchArgAppendSystemPromptFile,
     // The SDK replaces this flag with options.settings, so it arrives read as launchArgSettings.
     settings: _launchArgSettings,
+    effort: launchArgEffort,
     ...extraArgs
   } = input.settings === undefined ? {} : parseCliArgs(input.settings.launchArgs).flags;
+  // Extra args follow the SDK's own --effort, so a launch value would override the selection's.
+  if (launchArgEffort !== undefined && compiledSelection.effort === undefined) {
+    extraArgs.effort = launchArgEffort;
+  }
   // Claude Code overwrites its CLI append text with the SDK's initialize
   // appendSystemPrompt, so launch-argument text has to travel in that value.
   // The CLI puts file text before inline text and trims one trailing newline.
@@ -2757,13 +2773,11 @@ export function claudeFlagSettings(input: {
   const autoCompactWindow = input.settings?.autoCompactWindow;
   const launchArgSettings: ClaudeSdkSettings =
     input.launchArgSettings === undefined ? {} : claudeSdkShapedSettings(input.launchArgSettings);
-  // A live switch to this selection (claudeLiveSelectionFlagSettings) leaves fastMode only as the
-  // selection sets it, and so does a launch, so whether Claude Code accepts these settings never
-  // depends on the selections a query ran before. An invalid effortLevel or ultracode drops alone.
-  const { fastMode: _fastMode, ...kept } = launchArgSettings;
+  // A launch and a live switch to this selection (claudeLiveSelectionFlagSettings) give the same
+  // fastMode and ultracode, so whether Claude Code accepts these settings never depends on the
+  // selections a query ran before. An invalid effortLevel drops alone.
   const settings = {
-    ...kept,
-    ...selection.settings,
+    ...withClaudeSelectionSettings(launchArgSettings, selection),
     ...(autoCompactWindow === undefined || autoCompactWindow.length === 0
       ? {}
       : { autoCompactWindow: Number(autoCompactWindow) }),
@@ -10863,6 +10877,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const { launchArgSettings, turnCascade, queryPolicy, mcpOverrides, queryPolicyKey } =
             reusable === null ? livePolicy : yield* policyFor(yield* readLaunchArgSettings);
           const cascade = yield* turnCascade;
+          // Managed policy outranks --settings when Claude Code starts, though not a live switch.
+          const policyUltracode =
+            cascade.unreadablePolicy === undefined ? cascade.tiers.at(-1)?.ultracode : undefined;
+          const requestedUltracode = compiledSelection.settings.ultracode;
+          if (
+            typeof policyUltracode === "boolean" &&
+            requestedUltracode !== undefined &&
+            policyUltracode !== requestedUltracode
+          ) {
+            return yield* new ClaudeUltracodeOverriddenError({ requested: requestedUltracode });
+          }
           const { toolSearchOverride, subagentPromptCacheTtl } = querySettings(
             cascade,
             turnInput.appThread.lineage.relationshipToParent === "subagent",
