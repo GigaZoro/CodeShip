@@ -396,6 +396,11 @@ describe("check:changed", () => {
         [dir + "/Runtime.test.ts"]: 'import * as model from "./Model.ts"; model.run;',
         [dir + "/Source.test.ts"]: 'import * as model from "./Model.ts"; read("./Model.ts");',
         [dir + "/Raw.test.ts"]: 'import source from "./Model.ts?raw";',
+        [dir + "/Reexport.test.ts"]: 'import { run } from "./Model.ts"; export type { run };',
+        [dir + "/DocType.test.ts"]:
+          'import * as model from "./Model.ts"; /** @type {model.Model} */ let value;',
+        [dir + "/InferredType.test.ts"]:
+          'import { run } from "./Model.ts"; expectTypeOf(run).toBeNumber();',
         [dir + "/NamespaceType.test.ts"]:
           'import * as model from "./Model.ts"; type Input = model.Model;',
         [dir + "/Unknown.test.ts"]: 'const model = await import("./Model.ts");',
@@ -415,8 +420,11 @@ describe("check:changed", () => {
     };
     const readers = [
       "Declared.test.ts",
+      "DocType.test.ts",
+      "InferredType.test.ts",
       "NamespaceType.test.ts",
       "Raw.test.ts",
+      "Reexport.test.ts",
       "Source.test.ts",
       "Type.test.ts",
       "Unknown.test.ts",

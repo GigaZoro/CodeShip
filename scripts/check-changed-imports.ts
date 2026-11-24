@@ -47,11 +47,17 @@ export function erasedInterfaceEdit(file: string, before: string, after: string)
 
 export function runtimeImportOffsets(file: string, text: string): ReadonlySet<number> {
   try {
+    // JSDoc types and assertion helpers can consume an imported value's type outside a TypeNode.
+    if (/\b(?:expectTypeOf|assertType)\b/.test(text)) return new Set();
     const source = serverTypeScript(file) && parsed(file, text);
     if (!source) return new Set();
     const typeNames = new Set<string>();
+    for (const [doc] of text.matchAll(/\/\*\*[\s\S]*?\*\//g)) {
+      if (doc.includes("\\")) return new Set();
+      for (const [name] of doc.matchAll(/[\p{ID_Continue}$]+/gu)) typeNames.add(name);
+    }
     function visit(node: ts.Node, inType: boolean) {
-      const type = inType || ts.isTypeNode(node);
+      const type = inType || ts.isTypeNode(node) || ts.isExportSpecifier(node);
       if (type && ts.isIdentifier(node)) typeNames.add(node.text);
       ts.forEachChild(node, (child) => visit(child, type));
     }
