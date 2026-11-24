@@ -407,6 +407,7 @@ const UsageHoldJson = Schema.fromJsonString(
   Schema.Struct({
     until: Schema.String,
     heldOccurrence: Schema.NullOr(FixedTimeOrigin),
+    dispatchAt: Schema.optional(Schema.String),
   }),
 );
 const encodeUsageHold = Schema.encodeSync(UsageHoldJson);
@@ -417,16 +418,19 @@ interface DueTask extends ScheduledTask {
   readonly usageHold: string | null;
 }
 
+function currentUsageHold(task: DueTask) {
+  if (task.usageHold === null) return null;
+  const hold = Option.getOrNull(decodeUsageHold(task.usageHold));
+  return hold?.until === task.nextRunAt ? hold : null;
+}
+
 function fixedTimeOrigin(task: DueTask): FixedTimeOrigin | null {
   const due = task.nextRunAt;
   if (due === null || task.schedule.type !== "fixed_time") return null;
-  const hold = task.usageHold === null ? null : Option.getOrNull(decodeUsageHold(task.usageHold));
   const origin =
     task.usageHold === null
       ? { at: due, timeZone: DateTime.zoneMakeLocal().id, schedule: task.schedule }
-      : hold?.until === due
-        ? hold.heldOccurrence
-        : null;
+      : currentUsageHold(task)?.heldOccurrence;
   if (!origin || !isSameSchedule(task.schedule, origin.schedule)) return null;
   const at = Date.parse(origin.at);
   if (!(Date.parse(task.createdAt) <= at && at <= Date.parse(due))) return null;
@@ -534,6 +538,7 @@ interface ScheduledFire {
   readonly localFixedTime?: {
     readonly incarnation: string;
     readonly origin: FixedTimeOrigin | null;
+    readonly dispatchAt: string;
   };
   readonly scheduledFor: string | null;
   readonly catchUp: boolean;
@@ -2243,7 +2248,10 @@ export const layer = Layer.effect(
           ${record.usageLimit === undefined ? null : encodeRunUsageLimitJson(record.usageLimit)},
           ${record.memory === undefined ? null : encodeRunMemoryJson(record.memory)}
         WHERE EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${record.taskId})
-        ON CONFLICT (run_id) DO NOTHING
+        ON CONFLICT (run_id) DO UPDATE SET
+          outcome = 'running', started_at = excluded.started_at, completed_at = NULL,
+          error = NULL, thread_id = NULL, chat_folder = NULL, check_json = excluded.check_json
+        WHERE scheduled_task_runs.outcome = 'failed' AND excluded.outcome = 'running'
       `.pipe(
         Effect.andThen(sql`
           DELETE FROM scheduled_task_runs WHERE run_id IN (
@@ -2598,17 +2606,15 @@ export const layer = Layer.effect(
                     : null,
               };
         if (fixedTime !== undefined && incarnation !== undefined && scheduledFor !== null) {
-          // Older commands used dispatch time. Reuse one only when its projection proves which
-          // incarnation and occurrence received the prompt.
-          const prior =
-            demand.demandId == null
-              ? undefined
-              : (yield* sql<{ run_id: string }>`
+          // Deletion clears this incarnation's history. Older commands used dispatch time, so
+          // match their projected demand or, for unknown attribution, the persisted cursor.
+          const prior = (yield* sql<{ run_id: string }>`
             SELECT h.run_id FROM scheduled_task_runs h
             JOIN orchestration_v2_projection_runs r ON r.thread_id = h.thread_id
             WHERE h.task_id = ${active.id} AND h.trigger IN ('scheduled', 'catch_up')
-              AND h.scheduled_for IN (${scheduledFor}, ${fixedTime.origin?.at ?? null})
-              AND json_extract(r.payload_json, '$.demandId') = ${demand.demandId}
+              AND substr(h.run_id, length(h.task_id) + 1, 7) <> ':fixed:'
+              AND json_extract(r.payload_json, '$.demandId') IS ${demand.demandId ?? null}
+              AND (${demand.demandId ?? null} IS NOT NULL OR h.scheduled_for = ${fixedTime.dispatchAt})
               AND json_extract(r.payload_json, '$.userMessageId') = 'scheduled-task-message:' ||
                 CASE WHEN h.trigger = 'catch_up' AND substr(h.run_id, -9) = ':catch_up'
                   THEN substr(h.run_id, 1, length(h.run_id) - 9) || ':scheduled' ELSE h.run_id END
@@ -2616,7 +2622,7 @@ export const layer = Layer.effect(
           `.pipe(NodeSqliteClient.readOnly))[0];
           runRecordId =
             prior?.run_id ??
-            `${active.id}:fixed:${incarnation}:${demand.demandId ?? scheduledFor}:scheduled`;
+            `${active.id}:fixed:${incarnation}:${demand.demandId ?? fixedTime.dispatchAt}:scheduled`;
         }
         yield* insertRunRecord({
           id: runRecordId,
@@ -3154,6 +3160,7 @@ export const layer = Layer.effect(
             ? {
                 usageHold: encodeUsageHold({
                   until: block.until,
+                  dispatchAt: waitsForRoom ? fire.localFixedTime.dispatchAt : block.until,
                   heldOccurrence: waitsForRoom
                     ? fire.localFixedTime.origin
                     : {
@@ -4228,8 +4235,14 @@ export const layer = Layer.effect(
       const fire = {
         scheduledFor: task.nextRunAt,
         catchUp,
-        ...(task.schedule.type === "fixed_time"
-          ? { localFixedTime: { incarnation: task.incarnation, origin: fixedTimeOrigin(task) } }
+        ...(task.schedule.type === "fixed_time" && task.nextRunAt !== null
+          ? {
+              localFixedTime: {
+                incarnation: task.incarnation,
+                origin: fixedTimeOrigin(task),
+                dispatchAt: currentUsageHold(task)?.dispatchAt ?? task.nextRunAt,
+              },
+            }
           : {}),
       };
       if (yield* skippedAtLiveRunLimit(task, fire, [])) return;
@@ -4343,7 +4356,13 @@ export const layer = Layer.effect(
       const usageHold =
         task.oneMachine || missedAt === null
           ? null
-          : encodeUsageHold({ until: missedAt, heldOccurrence: caughtOrigin });
+          : encodeUsageHold({
+              until: missedAt,
+              heldOccurrence: caughtOrigin,
+              dispatchAt: newer
+                ? missedAt
+                : (currentUsageHold(task)?.dispatchAt ?? task.nextRunAt ?? missedAt),
+            });
       const pointed = yield* sql
         .withTransaction(
           Effect.gen(function* () {

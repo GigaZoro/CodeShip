@@ -98,7 +98,7 @@
 
 ## 2026-11-24 — Fixed-time retries and recreated tasks
 
-- A delayed task keeps its occurrence when the host moves past a local slot. Editing its schedule starts a new occurrence, and recreating the task can send a fresh prompt even in the same clock tick.
+- A delayed task keeps its occurrence when a local slot falls at or before retry eligibility. Replaying that occurrence sends one prompt, and a successful retry records its chat in run history. Editing its schedule starts a new occurrence, and recreating the task can send a fresh prompt even in the same clock tick.
 
 ## 2026-11-24 — Fixed-time task usage accounting
 
