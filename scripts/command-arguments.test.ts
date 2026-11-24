@@ -578,7 +578,10 @@ describe("command-line scripts", () => {
     );
   });
 
-  const empty = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-command-arguments-"));
+  // macOS tmpdir is a symlink (/var -> /private/var); compare real paths on both sides.
+  const empty = NodeFS.realpathSync(
+    NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-command-arguments-")),
+  );
   afterAll(() => NodeFS.rmSync(empty, { recursive: true, force: true }));
 
   it("runs the release notes command from a disposable copy", () => {
