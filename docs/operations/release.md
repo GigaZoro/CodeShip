@@ -125,7 +125,10 @@ failures are jobs that never got a runner, otherwise twice right away and then f
 schedule, which GitHub often delays by hours. The schedule also starts a release when the head of
 `main` has no run at all, and a macOS build when the latest release has none. Past 24 attempts it
 fails the scheduled run. To repair one by hand, rerun the failed run, or run **Release (fork)
-macOS** from the published release tag with its version and the id of the **Release (fork)** run that published it.
+macOS** from the published release tag and enter its version. The workflow verifies the
+publishing run and retrieves its JS bundle. Older tags also require the publishing run ID.
+Recovery identifies that run from its successful publication step and replaces dispatches that
+rejected their original bundle.
 
 Main also prepares the macOS Codex metadata package in a separate workflow. A release tag can reuse the verified archive from main when its native build recipe matches. A cold cache can build the tag’s own recipe. Windows and Linux publication run independently of the Mac runner.
 

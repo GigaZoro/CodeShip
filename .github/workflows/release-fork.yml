@@ -272,6 +272,7 @@ jobs:
           else
             node .github/scripts/release-notes.cjs render > release-notes.md
           fi
+          printf '\n<!-- codeship-publisher-run: %s -->\n' "$GITHUB_RUN_ID" >> release-notes.md
 
       - name: Download Windows artifacts
         uses: actions/download-artifact@v8
@@ -362,4 +363,4 @@ jobs:
           VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           gh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "v$VERSION" \
-            -f version="$VERSION" -f bundle_run="$GITHUB_RUN_ID"
+            -f version="$VERSION"

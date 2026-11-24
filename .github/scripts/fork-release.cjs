@@ -3,6 +3,7 @@
 // release-fork-macos.yml. Plain CommonJS: their jobs run it without installing.
 "use strict";
 
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 
 const PUBLIC_CONFIG = [
@@ -55,6 +56,112 @@ function carryMacosFeed(feed, tag) {
   return carried;
 }
 
+function githubApi(endpoint) {
+  return JSON.parse(
+    execFileSync("gh", ["api", endpoint], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "inherit"],
+      timeout: 30_000,
+      maxBuffer: 16 * 1024 * 1024,
+    }),
+  );
+}
+
+function macosBundleRun(
+  tag,
+  sha,
+  { repository, defaultBranch, api = githubApi, now = Date.now() },
+) {
+  if (!repository || !defaultBranch || !SAFE_TAG.test(tag) || !/^[0-9a-f]{40}$/.test(sha)) {
+    throw new Error(
+      "A repository, default branch, plain release tag and full release SHA are required.",
+    );
+  }
+  const repo = `repos/${repository}`;
+  const release = api(`${repo}/releases/tags/${tag}`);
+  if (release.draft || release.tag_name !== tag || release.target_commitish !== sha) {
+    throw new Error(`The published release ${tag} does not target ${sha}.`);
+  }
+  const publishedAt = Date.parse(release.published_at);
+  if (!Number.isFinite(publishedAt)) throw new Error(`Release ${tag} has no publication time.`);
+
+  function list(path, field) {
+    const result = [];
+    for (let page = 1; ; page++) {
+      const batch = api(`${repo}/${path}&per_page=100&page=${page}`);
+      const members = batch[field];
+      result.push(...members);
+      if (result.length >= batch.total_count) return result;
+      if (members.length === 0) throw new Error(`Incomplete GitHub ${field} listing for ${tag}.`);
+    }
+  }
+  function isReleaseRun(run) {
+    return (
+      run.repository?.full_name === repository &&
+      run.head_repository?.full_name === repository &&
+      run.path === ".github/workflows/release-fork.yml" &&
+      run.head_branch === defaultBranch &&
+      run.head_sha === sha &&
+      (run.event === "push" || run.event === "workflow_dispatch")
+    );
+  }
+
+  const lastLine = (release.body ?? "").trimEnd().split(/\r?\n/).at(-1);
+  let runId;
+  if (lastLine.startsWith("<!-- codeship-publisher-run:")) {
+    const marker = /^<!-- codeship-publisher-run: ([1-9]\d*) -->$/.exec(lastLine);
+    if (!marker) throw new Error(`Release ${tag} has an invalid publisher marker.`);
+    const run = api(`${repo}/actions/runs/${marker[1]}`);
+    if (!isReleaseRun(run) || String(run.id) !== marker[1]) {
+      throw new Error(
+        `Marked publisher ${marker[1]} is not the release workflow on ${defaultBranch} at ${sha}.`,
+      );
+    }
+    runId = run.id;
+  } else {
+    // A distinct release of the same SHA can have its own bundle and version.
+    const runs = list(
+      `actions/workflows/release-fork.yml/runs?branch=${encodeURIComponent(defaultBranch)}&head_sha=${sha}`,
+      "workflow_runs",
+    );
+    const publishers = runs.filter(
+      (run) =>
+        isReleaseRun(run) &&
+        list(`actions/runs/${run.id}/jobs?filter=all`, "jobs").some(
+          (job) =>
+            job.name === "Publish GitHub Release" &&
+            job.steps?.some(
+              (step) =>
+                step.name === "Publish release" &&
+                step.conclusion === "success" &&
+                Date.parse(step.started_at) <= publishedAt &&
+                publishedAt <= Date.parse(step.completed_at),
+            ),
+        ),
+    );
+    if (publishers.length !== 1) {
+      throw new Error(
+        `Found ${publishers.length} publisher runs for ${tag} at ${release.published_at}; expected exactly one.`,
+      );
+    }
+    runId = publishers[0].id;
+  }
+
+  const artifacts = list(`actions/runs/${runId}/artifacts?name=js-bundle`, "artifacts");
+  const bundles = artifacts.filter(
+    (artifact) =>
+      artifact.name === "js-bundle" &&
+      artifact.expired === false &&
+      Date.parse(artifact.expires_at) > now,
+  );
+  if (bundles.length !== 1) {
+    throw new Error(
+      `Publisher ${runId} for ${tag} has ${bundles.length} available js-bundle artifacts (missing, expired or ambiguous).`,
+    );
+  }
+  return runId;
+}
+
 function main(argv) {
   const [command, ...args] = argv;
   if (command === "public-config" && args.length <= 1) {
@@ -67,8 +174,16 @@ function main(argv) {
     process.stdout.write(carryMacosFeed(fs.readFileSync(file, "utf8"), tag));
     return;
   }
+  if (command === "macos-bundle" && args.length === 2) {
+    const run = macosBundleRun(args[0], args[1], {
+      repository: process.env.GITHUB_REPOSITORY,
+      defaultBranch: process.env.DEFAULT_BRANCH,
+    });
+    process.stdout.write(`${run}\n`);
+    return;
+  }
   throw new Error(
-    "Usage: fork-release.cjs public-config [.env.example] | carry-macos-feed <tag> <latest-mac.yml>",
+    "Usage: fork-release.cjs public-config [.env.example] | carry-macos-feed <tag> <latest-mac.yml> | macos-bundle <tag> <sha>",
   );
 }
 
@@ -81,4 +196,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { carryMacosFeed, publicConfig };
+module.exports = { carryMacosFeed, macosBundleRun, publicConfig };

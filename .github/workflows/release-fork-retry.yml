@@ -38,19 +38,14 @@ jobs:
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
-      ((github.event.workflow_run.name == 'Release (fork)' &&
-        github.event.workflow_run.head_branch == github.event.repository.default_branch) ||
-       (github.event.workflow_run.name == 'Release (fork) macOS' &&
-        github.event.workflow_run.event == 'workflow_dispatch'))
+      github.event.workflow_run.name == 'Release (fork)' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Rerun failed jobs while the run still builds the newest release
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_WORKFLOW: ${{ github.event.workflow_run.name }}
-          RUN_TITLE: ${{ github.event.workflow_run.display_title }}
-          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -58,19 +53,10 @@ jobs:
           IMMEDIATE_ATTEMPTS: 3
         run: |
           set -euo pipefail
-          if [[ "$RUN_WORKFLOW" == "Release (fork) macOS" ]]; then
-            release="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '"\(.tag_name) \(.target_commitish)"')"
-            read -r latest sha <<<"$release"
-            if [[ "$RUN_BRANCH" != "$latest" || "$RUN_TITLE" != "Release (fork) macOS $latest" || "$RUN_SHA" != "$sha" ]]; then
-              echo "$latest is the latest release now, and its own run builds its macOS app."
-              exit 0
-            fi
-          else
-            head="$(gh api "repos/$GITHUB_REPOSITORY/commits/$DEFAULT_BRANCH" --jq .sha)"
-            if [[ "$head" != "$RUN_SHA" ]]; then
-              echo "$DEFAULT_BRANCH moved to $head, whose own run releases it."
-              exit 0
-            fi
+          head="$(gh api "repos/$GITHUB_REPOSITORY/commits/$DEFAULT_BRANCH" --jq .sha)"
+          if [[ "$head" != "$RUN_SHA" ]]; then
+            echo "$DEFAULT_BRANCH moved to $head, whose own run releases it."
+            exit 0
           fi
           never_started="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100" \
             --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")]
@@ -151,21 +137,39 @@ jobs:
        (github.event.workflow_run.name == 'Release (fork) macOS' &&
         github.event.workflow_run.event == 'workflow_dispatch' &&
         github.event.workflow_run.conclusion == 'failure' &&
-        github.event.workflow_run.head_repository.full_name == github.repository &&
-        github.event.workflow_run.display_title != format('Release (fork) macOS {0}', github.event.workflow_run.head_branch)))
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    concurrency:
+      group: retry-fork-macos
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: /.github/scripts/fork-release.cjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Rerun or start the macOS build of the latest release
         env:
           GH_TOKEN: ${{ github.token }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
+          RUN_TITLE: ${{ github.event.workflow_run.display_title }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          IMMEDIATE_ATTEMPTS: 3
         run: |
           set -euo pipefail
           release="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" \
             --jq '"\(.tag_name) \(.target_commitish) \(.published_at) \(any(.assets[]; .name == "latest-mac.yml"))"')"
           read -r tag sha published has_feed <<<"$release"
           version="${tag#v}"
+          export TITLE="Release (fork) macOS $tag"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_run ]] &&
+             [[ "$RUN_SHA" != "$sha" || ( "$RUN_TITLE" != "$TITLE" && "$RUN_TITLE" != "$TITLE (branch dispatch)" ) ]]; then
+            echo "This failure belongs to a different release."
+            exit 0
+          fi
           # Until its own feed is attached, a release carries the previous one's.
           if [[ "$has_feed" == true ]]; then
             gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern latest-mac.yml --dir "$RUNNER_TEMP/feed"
@@ -174,42 +178,48 @@ jobs:
               exit 0
             fi
           fi
-          export TITLE="Release (fork) macOS $tag"
-          run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-fork-macos.yml --branch "$tag" --commit "$sha" --event workflow_dispatch --limit 20 \
+          bundle_run="$(node .github/scripts/fork-release.cjs macos-bundle "$tag" "$sha")"
+          # Prefer an active build. For old tags GitHub does not expose dispatch inputs,
+          # so a rejected bundle must be replaced by a fresh dispatch using the publisher.
+          runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-fork-macos.yml --branch "$tag" --commit "$sha" --event workflow_dispatch --limit "$MAX_ATTEMPTS" \
             --json databaseId,status,conclusion,attempt,displayTitle \
-            --jq 'first(.[] | select(.displayTitle == env.TITLE)) | "\(.databaseId) \(.status) \(.attempt) \(.conclusion)"')"
-          if [[ -z "$run" ]]; then
-            if [[ "$GITHUB_EVENT_NAME" == schedule ]] && (( $(date +%s) - $(date -d "$published" +%s) < 600 )); then
-              echo "$tag is new; its release run may not have started its macOS build yet."
+            --jq '[.[] | select(.displayTitle == env.TITLE)] | (map(select(.status != "completed")) + map(select(.status == "completed")))[] | "\(.databaseId) \(.status) \(.attempt) \(.conclusion)"')"
+          rejected=0
+          while read -r id status attempt conclusion; do
+            [[ -n "$id" ]] || break
+            if [[ "$status" != completed || "$conclusion" == success ]]; then
+              echo "Run $id for $tag is $status $conclusion."
               exit 0
             fi
-            bundle_run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-fork.yml \
-              --branch "$DEFAULT_BRANCH" --commit "$sha" --limit 1 --json databaseId --jq '.[].databaseId')"
-            if [[ -z "$bundle_run" ]]; then
-              echo "::error::No Release (fork) run built $sha, so $tag has no JS bundle for its macOS app."
-              exit 1
+            jobs="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/attempts/$attempt/jobs?per_page=100")"
+            if jq -e --arg download "Download the release's JS bundle" 'any(.jobs[].steps[]?;
+              (.name == "Find the release and its JS bundle" or .name == $download) and .conclusion == "failure")' <<<"$jobs" >/dev/null; then
+              rejected=$((rejected + 1))
+              continue
             fi
-            echo "No macOS build for $tag; starting one from run $bundle_run."
-            gh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "$tag" \
-              -f version="$version" -f bundle_run="$bundle_run"
+            limit="$MAX_ATTEMPTS"
+            if [[ "$GITHUB_EVENT_NAME" == workflow_run ]]; then
+              [[ "$id" == "$RUN_ID" ]] || exit 0
+              if ! jq -e '[.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")]
+                | length > 0 and all((.runner_id // 0) == 0 and (.steps | length) == 0)' <<<"$jobs" >/dev/null; then
+                limit="$IMMEDIATE_ATTEMPTS"
+              fi
+            fi
+            if (( attempt >= limit )); then
+              echo "Run $id reached $limit attempts for $tag."
+              if (( attempt >= MAX_ATTEMPTS )); then exit 1; fi
+              exit 0
+            fi
+            gh run rerun "$id" --failed --repo "$GITHUB_REPOSITORY"
             exit 0
-          fi
-          if [[ "$GITHUB_EVENT_NAME" == workflow_run ]]; then
-            echo "The published tag already has a macOS build."
-            exit 0
-          fi
-          read -r id status attempt conclusion <<<"$run"
-          if [[ "$status" != completed ]]; then
-            echo "Run $id for $tag is $status."
-            exit 0
-          fi
-          if [[ "$conclusion" == success ]]; then
-            echo "::warning::Run $id for $tag succeeded, but $tag does not serve its own latest-mac.yml."
-            exit 0
-          fi
-          if (( attempt >= MAX_ATTEMPTS )); then
-            echo "::error::Run $id for $tag ended $conclusion after $attempt attempts. Rerun it or push a fix."
+          done <<<"$runs"
+          if (( rejected >= MAX_ATTEMPTS )); then
+            echo "::error::$tag exhausted its attempts to obtain the published bundle."
             exit 1
           fi
-          echo "Run $id for $tag ended $conclusion after $attempt attempts; rerunning its failed jobs."
-          gh run rerun "$id" --failed --repo "$GITHUB_REPOSITORY"
+          if (( $(date +%s) - $(date -d "$published" +%s) < 600 )); then
+            echo "Allowing the publisher time to dispatch the macOS build for $tag."
+            exit 0
+          fi
+          gh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "$tag" \
+            -f version="$version" -f bundle_run="$bundle_run"
