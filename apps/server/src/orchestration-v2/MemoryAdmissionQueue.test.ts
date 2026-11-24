@@ -4,6 +4,7 @@ import {
   EventId,
   type MemoryShortage,
   MessageId,
+  type OrchestrationV2StoredEvent,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -13,10 +14,14 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as EffectScheduler from "effect/Scheduler";
+import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -28,6 +33,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as MemoryAdmissionQueue from "./MemoryAdmissionQueue.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -321,6 +327,102 @@ it.effect("admits a restarted run queued between the initial sweep and subscript
       );
     assert.isTrue(Option.isSome(admitted));
   }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "drains incoming events and coalesces a burst into one admission after a stalled sweep",
+  () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const empty = yield* projections.getMemoryAdmissionQueue();
+      const cut = yield* cutThread("burst");
+      const runId = yield* continueCutRun(cut);
+      const waiting = yield* projections.getMemoryAdmissionQueue();
+      const events = yield* sink
+        .readByCommandId({
+          commandId: CommandId.make(`restart-continuation:${cut.cutRunId}`),
+        })
+        .pipe(Stream.runCollect);
+      const wake = events.find(({ event }) => event.type === "run.created")!;
+      const marker = events.find(({ event }) => event.type === "message.updated")!;
+      assert.isDefined(wake);
+      assert.isDefined(marker);
+
+      const scheduler = new EffectScheduler.MixedScheduler("sync");
+      const dispatcher = scheduler.makeDispatcher();
+      // Queue offers and the fibers that consume them must use the same controllable dispatcher.
+      const onDispatcher = Effect.provideService(EffectScheduler.Scheduler, {
+        executionMode: scheduler.executionMode,
+        makeDispatcher: () => dispatcher,
+        shouldYield: (fiber) => scheduler.shouldYield(fiber),
+      });
+      const incoming = yield* Queue.unbounded<OrchestrationV2StoredEvent>().pipe(onDispatcher);
+      let reading = yield* Deferred.make<void>();
+      let release = yield* Deferred.make<void>();
+      const interrupted = yield* Deferred.make<void>();
+      const admitted = yield* Deferred.make<void>();
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      let sweeps = 0;
+      let snapshot = empty;
+      const scope = yield* Scope.fork(yield* Effect.scope);
+      yield* Layer.buildWithScope(MemoryAdmissionQueue.layer, scope).pipe(
+        Effect.provide(MemoryAdmission.layerTest()),
+        Effect.provideService(Scheduler.Scheduler, { register: () => Effect.void }),
+        Effect.provideService(EventSink.EventSinkV2, {
+          ...sink,
+          stream: () => Stream.fromEffectRepeat(Queue.take(incoming)),
+        }),
+        Effect.provideService(ProjectionStore.ProjectionStoreV2, {
+          ...projections,
+          getMemoryAdmissionQueue: () =>
+            Effect.suspend(() => {
+              sweeps++;
+              return Deferred.succeed(reading, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.as(snapshot),
+                Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+              );
+            }),
+        }),
+        Effect.provideService(Orchestrator.OrchestratorV2, {
+          ...orchestrator,
+          dispatch: (command) =>
+            orchestrator
+              .dispatch(command)
+              .pipe(Effect.tap(() => Deferred.succeed(admitted, undefined))),
+        }),
+        onDispatcher,
+      );
+      yield* Queue.offer(incoming, wake);
+      yield* Deferred.await(reading);
+      assert.equal(sweeps, 1);
+
+      snapshot = waiting;
+      yield* Queue.offerAll(incoming, [...Array.from({ length: 32 }, () => wake), marker]);
+      dispatcher.flush();
+      assert.equal(
+        yield* Queue.size(incoming),
+        0,
+        "the unrelated marker must be consumed while the first read is stalled",
+      );
+      yield* Deferred.succeed(release, undefined);
+      yield* Deferred.await(admitted);
+      dispatcher.flush();
+      assert.equal(sweeps, 2);
+      assert.deepEqual(yield* started([{ runId, name: cut.name }]), [cut.name]);
+
+      reading = yield* Deferred.make<void>();
+      release = yield* Deferred.make<void>();
+      yield* Queue.offer(incoming, wake);
+      yield* Deferred.await(reading);
+      yield* Queue.offer(incoming, wake);
+      dispatcher.flush();
+      assert.equal(yield* Queue.size(incoming), 0);
+      yield* Scope.close(scope, Exit.void);
+      assert.isTrue(yield* Deferred.isDone(interrupted));
+      assert.equal(sweeps, 3, "teardown discarded the wake pending behind the interrupted read");
+    }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("a person's start is never held, and starts their chat's waiting run at once", () =>

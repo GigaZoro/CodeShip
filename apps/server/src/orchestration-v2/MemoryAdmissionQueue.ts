@@ -9,6 +9,7 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
@@ -114,22 +115,25 @@ export const layer = Layer.effectDiscard(
     // The first sweep can finish before the subscription opens. Replay changes from before that read.
     const afterSequence = yield* sink.latestSequence().pipe(Effect.orDie);
     yield* scheduler.register("memory-admission", queue.sweep);
-    yield* forkParked(
-      sink.stream({ afterSequence }).pipe(
-        Stream.runForEachArray((events) =>
-          events.some(({ event }) => affectsQueue(event))
-            ? queue.queueChanged.pipe(
-                Effect.catchCause((cause) =>
-                  Cause.hasInterruptsOnly(cause)
-                    ? Effect.void
-                    : Effect.logWarning("orchestration-v2.memory-admission.sweep-failed", {
-                        cause,
-                      }),
-                ),
-              )
-            : Effect.void,
-        ),
+    // A sweep reads the whole queue. One pending wake covers every change since its last read.
+    const wakes = yield* Queue.dropping<void>(1);
+    const sweepOnWake = queue.queueChanged.pipe(
+      Effect.catchCauseIf(
+        (cause) => !Cause.hasInterruptsOnly(cause),
+        (cause) => Effect.logWarning("orchestration-v2.memory-admission.sweep-failed", { cause }),
       ),
+    );
+    yield* forkParked(Queue.take(wakes).pipe(Effect.andThen(sweepOnWake), Effect.forever));
+    yield* forkParked(
+      sink
+        .stream({ afterSequence })
+        .pipe(
+          Stream.runForEachArray((events) =>
+            events.some(({ event }) => affectsQueue(event))
+              ? Queue.offer(wakes, undefined)
+              : Effect.void,
+          ),
+        ),
     );
   }),
 );
