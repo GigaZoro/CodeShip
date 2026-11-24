@@ -649,10 +649,18 @@ dependencies and environment links. It keeps additional ignored files in a priva
 and prints the location and retained file allocation. A checkout whose installed files
 cannot be verified is kept. Add `--save-ignored` to preserve every ignored file.
 
-Backups require hard-link support and a T3 home on the checkout's filesystem. They stay
-available until the checkout owner removes them. Newly created or replaced files without
-a matching saved file keep the checkout. Tracked changes and ordinary untracked files also
-keep it.
+Backups require hard-link support and a T3 home on the checkout's filesystem. Run
+`t3 thread backups <thread-id>` on the server machine to find the original paths and
+retained file allocation for each release. Use `--json` for scripting or omit the thread ID
+to list all backups, including older folders whose release receipt is missing.
+Retained allocation measures file data in the backup. It does not measure disk space freed.
+
+Copy the files you need from the listed directory to a separate location. A follow-up uses
+a fresh checkout and does not restore files from the backup. Backups have no automatic
+expiry. Once the release finishes and you have verified your copies, you can remove the
+listed backup directory and its sibling `saved-….json` receipt, if present. Newly created
+or replaced files without a matching saved file keep the checkout. Tracked changes and
+ordinary untracked files also keep it.
 
 The server checks the request at startup and every minute and waits for delivery and
 process teardown. To withdraw a pending request, remove the printed request file.

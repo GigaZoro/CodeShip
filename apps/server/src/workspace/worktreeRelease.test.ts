@@ -15,7 +15,12 @@ import {
 } from "../../../../scripts/lib/worktree-setup-proof.ts";
 import { layerRealGit } from "../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import { decodeReleaseRequest, queueWorktreeRelease, releaseHold } from "./worktreeRelease.ts";
+import {
+  decodeReleaseRequest,
+  listWorktreeBackups,
+  queueWorktreeRelease,
+  releaseHold,
+} from "./worktreeRelease.ts";
 
 const runFile = NodeUtil.promisify(NodeChildProcess.execFile);
 
@@ -27,7 +32,9 @@ it.live.skipIf(isWindowsHost)(
       const path = yield* Path.Path;
       const platform = yield* HostProcess.Platform;
       const gitDriver = yield* GitVcsDriver.GitVcsDriver;
-      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-worktree-release-" });
+      const root = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-worktree-release-" }),
+      );
       const project = path.join(root, "project");
       const checkout = path.join(root, "worktree");
       const git = (cwd: string, ...args: string[]) =>
@@ -148,5 +155,36 @@ it.live.skipIf(isWindowsHost)(
       yield* fs.makeDirectory(privateRefs);
       yield* fs.writeFileString(path.join(privateRefs, "local-work"), head + "\n");
       expect(yield* releaseHold(request, project)).toBe("worktree has private refs");
+      yield* fs.remove(release.file);
+      yield* fs.writeFileString(path.join(generated, "second.txt"), "second release contents");
+      const second = yield* queueWorktreeRelease({
+        stateDir: path.join(root, "state"),
+        threadId: "thread",
+        runId: "finished-again",
+        worktreePath: checkout,
+        durableRef: "refs/heads/main",
+      });
+      yield* fs.remove(second.file);
+      const state = path.join(root, "state");
+      const orphan = path.join(path.dirname(saved), "saved-orphan");
+      yield* fs.makeDirectory(orphan);
+      const inventory = yield* listWorktreeBackups(state);
+      for (const [backup, runId] of [
+        [release, "finished"],
+        [second, "finished-again"],
+      ] as const) {
+        expect(inventory.find((entry) => entry.savedFiles === backup.savedFiles)).toMatchObject({
+          threadId: "thread",
+          runId,
+          worktreePath: checkout,
+          savedFiles: backup.savedFiles,
+          savedAllocatedBytes: backup.savedAllocatedBytes,
+        });
+      }
+      expect(inventory.find((entry) => entry.savedFiles === orphan)).toMatchObject({
+        threadId: null,
+        runId: null,
+        savedAllocatedBytes: null,
+      });
     }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
 );

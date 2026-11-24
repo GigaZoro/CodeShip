@@ -38,7 +38,11 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 import { STALL_LOG_NOTE } from "../observability/EventLoopMonitor.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
-import { releasedWorktree } from "../workspace/worktreeRelease.ts";
+import {
+  decodeReleaseRequest,
+  releasedWorktree,
+  rememberWorktreeBackup,
+} from "../workspace/worktreeRelease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -118,7 +122,10 @@ class WorktreeRecreateNoBaseError extends Schema.TaggedError<WorktreeRecreateNoB
 
 class RecoveredWorktreeSetupError extends Schema.TaggedError<RecoveredWorktreeSetupError>()(
   "RecoveredWorktreeSetupError",
-  { detail: Schema.String },
+  {
+    detail: Schema.String,
+    disposition: Schema.optional(Schema.Literals(["retryable", "cancelled"])),
+  },
 ) {
   override get message(): string {
     return this.detail;
@@ -287,7 +294,7 @@ export const layer: Layer.Layer<
         context: UnstartedRunContext,
         input: {
           readonly signal: string;
-          readonly status: "completed" | "failed";
+          readonly status: "completed" | "failed" | "cancelled";
           readonly now: DateTime.Utc;
           readonly startedAt?: DateTime.Utc;
           readonly providerInstanceId: OrchestrationV2Run["providerInstanceId"];
@@ -496,21 +503,23 @@ export const layer: Layer.Layer<
         readonly worktreePath: string;
         readonly branch: string;
         readonly receipt: string;
+        readonly contents: string;
       }) {
-        const { threadId, worktreePath, receipt } = input;
+        const { threadId, worktreePath, receipt, contents } = input;
         const ready = yield* Effect.uninterruptible(
           Effect.gen(function* () {
-            const active = activeSetups.get(receipt);
+            const active = activeSetups.get(contents);
             if (active) return active;
             const ready = yield* Deferred.make<void, RecoveredWorktreeSetupError>();
-            activeSetups.set(receipt, ready);
+            activeSetups.set(contents, ready);
+            let cancelSetup = Effect.void;
             const setup = Effect.gen(function* () {
               yield* setupTracker.begin({
                 threadId,
                 branch: input.branch,
                 baseRef: null,
                 stages: ["setup-script", "agent"],
-                fiber: null,
+                fiber: yield* Effect.fiber,
               });
               yield* setupTracker.update(threadId, (snapshot) => ({ ...snapshot, worktreePath }));
               const script = yield* WorktreeSetupTracker.runTrackedSetupScript(
@@ -523,6 +532,13 @@ export const layer: Layer.Layer<
                   worktreePath,
                 },
                 true,
+              ).pipe(
+                Effect.tap((script) =>
+                  Effect.sync(() => {
+                    cancelSetup = script?.cancel ?? Effect.void;
+                  }),
+                ),
+                Effect.uninterruptible,
               );
               if (script) {
                 if (script.async) {
@@ -533,28 +549,54 @@ export const layer: Layer.Layer<
                 if (result?.exitCode !== 0)
                   return yield* new RecoveredWorktreeSetupError({
                     detail: `Setup script exited with ${result?.exitCode ?? "no exit code"}.`,
+                    ...(result?.exitCode == null ? { disposition: "retryable" as const } : {}),
                   });
               }
-              yield* fileSystem.remove(receipt);
-              if (!script?.async) yield* setupTracker.stageStatus(threadId, "agent", "done");
-              yield* setupTracker.finish(threadId, "done");
-              yield* Deferred.succeed(ready, undefined);
+              yield* withWorkspaceLease(
+                worktreePath,
+                Effect.gen(function* () {
+                  yield* setupTracker.markUncancellable(threadId);
+                  if (
+                    (yield* fileSystem.exists(receipt)) &&
+                    (yield* fileSystem.readFileString(receipt)) === contents
+                  )
+                    yield* fileSystem.remove(receipt);
+                  if (!script?.async) yield* setupTracker.stageStatus(threadId, "agent", "done");
+                  yield* setupTracker.finish(threadId, "done");
+                  yield* Deferred.succeed(ready, undefined);
+                }).pipe(Effect.uninterruptible),
+              );
             }).pipe(
               Effect.catchCause((cause) => {
-                if (Cause.hasInterruptsOnly(cause)) return Effect.void;
+                if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
                 const failure = Cause.squash(cause);
                 const error = isRecoveredWorktreeSetupError(failure)
                   ? failure
                   : new RecoveredWorktreeSetupError({
                       detail: failure instanceof Error ? failure.message : String(failure),
+                      disposition: "retryable",
                     });
                 return setupTracker
                   .finish(threadId, "failed", error.message)
                   .pipe(Effect.andThen(Deferred.fail(ready, error)));
               }),
+              Effect.onInterrupt(() =>
+                cancelSetup.pipe(
+                  Effect.andThen(setupTracker.finish(threadId, "cancelled")),
+                  Effect.andThen(
+                    Deferred.fail(
+                      ready,
+                      new RecoveredWorktreeSetupError({
+                        detail: "Worktree setup cancelled.",
+                        disposition: "cancelled",
+                      }),
+                    ),
+                  ),
+                ),
+              ),
               Effect.ensuring(
                 Effect.sync(() => {
-                  activeSetups.delete(receipt);
+                  activeSetups.delete(contents);
                 }),
               ),
             );
@@ -582,8 +624,19 @@ export const layer: Layer.Layer<
           const base = yield* resolveRecreateBase(cwd);
           if (!base) return yield* new WorktreeRecreateNoBaseError({ worktreePath, branch });
           // Move the receipt before adding the checkout so an interrupted start still owes setup.
-          if (released.receipt !== released.setupReceipt)
+          if (released.receipt !== released.setupReceipt) {
+            if (yield* fileSystem.exists(released.setupReceipt)) {
+              const previous = yield* decodeReleaseRequest(
+                yield* fileSystem.readFileString(released.setupReceipt),
+              );
+              yield* rememberWorktreeBackup(
+                fileSystem,
+                path.dirname(released.setupReceipt),
+                previous,
+              );
+            }
             yield* fileSystem.rename(released.receipt, released.setupReceipt);
+          }
           if (localBranchNames.includes(branch)) {
             yield* gitWorkflow.createWorktree(
               { cwd, refName: branch, path: worktreePath },
@@ -746,7 +799,7 @@ export const layer: Layer.Layer<
       readonly runId: RunId;
       readonly willRetry?: boolean;
       readonly waitDuringStart: Effect.Effect<AwakeWait>;
-      readonly readySetupReceipt: string | undefined;
+      readonly readySetupContents: string | undefined;
     }) {
       const { runId } = input;
       const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
@@ -1006,7 +1059,13 @@ export const layer: Layer.Layer<
                 detail: "Recovered worktree is no longer on the expected branch.",
               });
           }
-          return released && { ...recovery, receipt: released.setupReceipt };
+          if (!released) return;
+          yield* rememberWorktreeBackup(
+            fileSystem,
+            path.dirname(released.setupReceipt),
+            released.request,
+          );
+          return { ...recovery, receipt: released.setupReceipt, contents: released.contents };
         });
         const recreateResult = yield* Effect.result(
           restore.pipe(
@@ -1021,8 +1080,28 @@ export const layer: Layer.Layer<
         const failRecovery = Effect.fn("ProviderTurnStartService.failRecovery")(function* (
           error: WorktreeRecreateNoBaseError | WorktreeRecreateError | RecoveredWorktreeSetupError,
         ) {
-          if (input.willRetry === true) return yield* error;
           const setupFailed = error._tag === "RecoveredWorktreeSetupError";
+          if (input.willRetry === true && (!setupFailed || error.disposition === "retryable"))
+            return yield* error;
+          if (setupFailed && error.disposition === "cancelled") {
+            yield* settleRunBeforeStart({
+              signal: "worktree-setup-cancelled",
+              status: "cancelled",
+              now: yield* DateTime.now,
+              providerInstanceId: run.providerInstanceId,
+              itemProviderThreadId: run.providerThreadId,
+              item: {
+                type: "error",
+                title: "Worktree setup cancelled",
+                failure: makeProviderFailure({
+                  cause: error,
+                  message: error.message,
+                  class: "provider_error",
+                }),
+              },
+            });
+            return;
+          }
           yield* settleStartFailure({
             signal: setupFailed ? "worktree-setup-failure" : "worktree-recreate-failure",
             title: setupFailed
@@ -1037,9 +1116,9 @@ export const layer: Layer.Layer<
           return;
         }
         const setup = recreateResult.success;
-        if (setup && setup.receipt !== input.readySetupReceipt) {
+        if (setup && setup.contents !== input.readySetupContents) {
           return {
-            receipt: setup.receipt,
+            receiptContents: setup.contents,
             ready: setupRecoveredWorktree(setup).pipe(
               Effect.as(true),
               Effect.catch((cause) => failRecovery(cause).pipe(Effect.as(false))),
@@ -2213,16 +2292,16 @@ export const layer: Layer.Layer<
           const providerTurn = yield* Effect.scoped(
             Effect.gen(function* () {
               const waitDuringStart = yield* watchWait;
-              let readySetupReceipt: string | undefined;
+              let readySetupContents: string | undefined;
               while (true) {
-                const starting = start({ ...input, readySetupReceipt, waitDuringStart });
+                const starting = start({ ...input, readySetupContents, waitDuringStart });
                 const next = yield* thread.worktreePath === null
                   ? starting
                   : withWorkspaceLease(path.resolve(thread.worktreePath), starting);
                 if (next === undefined || Effect.isEffect(next)) return next;
                 // Setup opens a terminal, which acquires the workspace lease itself.
                 if (!(yield* next.ready)) return;
-                readySetupReceipt = next.receipt;
+                readySetupContents = next.receiptContents;
               }
             }),
           );

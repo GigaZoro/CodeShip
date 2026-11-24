@@ -2,6 +2,7 @@
 
 - Worktree release keeps recoverable ignored build output in a private backup when dependencies are verified. Follow-ups show setup progress and retry an unfinished setup in the recreated checkout.
 - The backup includes new build caches inside verified dependency directories. Release keeps the checkout when it finds directory metadata it cannot preserve.
+- Find retained files after a follow-up with `t3 thread backups`. You can cancel a recovered workspace setup, and a failed setup script exits the turn without repeating the install.
 
 ## 2026-11-24 — Release worktrees after completed merges
 

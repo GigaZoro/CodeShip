@@ -47,6 +47,89 @@ export const worktreeReleaseName = (cwd: string) =>
   NodeCrypto.createHash("sha256").update(cwd).digest("hex") + ".json";
 const releaseFile = (directory: string, cwd: string) =>
   NodePath.join(directory, worktreeReleaseName(cwd));
+const backupName = /^saved-[a-zA-Z0-9_-]+$/;
+const releaseName = /^[a-f0-9]{64}\.json(?:\.(?:setup|releasing|released))?$/;
+
+const readReleaseFile = Effect.fn("WorktreeRelease.readFile")(
+  function* (fs: FileSystem.FileSystem, file: string) {
+    if ((yield* fs.realPath(file)) !== file) return null;
+    const stat = yield* fs.stat(file);
+    if (stat.type !== "File" || stat.size > 128n * 1024n) return null;
+    return yield* decodeReleaseRequest(yield* fs.readFileString(file));
+  },
+  Effect.timeout("5 seconds"),
+  Effect.orElseSucceed(() => null),
+);
+
+export const rememberWorktreeBackup = Effect.fn("WorktreeRelease.rememberBackup")(function* (
+  fs: FileSystem.FileSystem,
+  directory: string,
+  request: ReleaseRequest,
+) {
+  const saved = request.savedFiles;
+  if (saved === undefined) return;
+  const root = yield* fs.realPath(directory);
+  if (
+    NodePath.dirname(saved) !== root ||
+    !backupName.test(NodePath.basename(saved)) ||
+    !(yield* fs.exists(saved)) ||
+    (yield* fs.realPath(saved)) !== saved ||
+    (yield* fs.stat(saved)).type !== "Directory"
+  )
+    return;
+  const index = saved + ".json";
+  const known = yield* readReleaseFile(fs, index);
+  if (
+    known?.savedFiles === saved &&
+    known.threadId === request.threadId &&
+    known.runId === request.runId
+  )
+    return;
+  const staging = yield* fs.makeTempDirectoryScoped({ directory: root, prefix: ".backup-" });
+  const file = NodePath.join(staging, "receipt");
+  yield* fs.writeFileString(file, yield* encodeRequest(request), { mode: 0o600 });
+  // Publish without overwriting an existing association.
+  yield* fs.link(file, index);
+}, Effect.scoped);
+
+export const listWorktreeBackups = Effect.fn("WorktreeRelease.listBackups")(function* (
+  stateDir: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const directory = NodePath.join(stateDir, WORKTREE_RELEASE_DIRECTORY);
+  if (!(yield* fs.exists(directory))) return [];
+  const root = yield* fs.realPath(directory);
+  const names = yield* fs.readDirectory(root);
+  const legacy = new Map<string, ReleaseRequest>();
+  for (const name of names) {
+    if (!releaseName.test(name)) continue;
+    const entry = yield* readReleaseFile(fs, NodePath.join(root, name));
+    if (entry?.savedFiles !== undefined) legacy.set(entry.savedFiles, entry);
+  }
+  const entries = [];
+  for (const name of names.filter((name) => backupName.test(name)).sort()) {
+    const savedFiles = NodePath.join(root, name);
+    const directoryExists = yield* fs.realPath(savedFiles).pipe(
+      Effect.flatMap((real) =>
+        real === savedFiles
+          ? fs.stat(real).pipe(Effect.map((stat) => stat.type === "Directory"))
+          : Effect.succeed(false),
+      ),
+      Effect.orElseSucceed(() => false),
+    );
+    if (!directoryExists) continue;
+    const index = yield* readReleaseFile(fs, savedFiles + ".json");
+    const request = index?.savedFiles === savedFiles ? index : legacy.get(savedFiles);
+    entries.push({
+      savedFiles,
+      threadId: request?.threadId ?? null,
+      runId: request?.runId ?? null,
+      worktreePath: request?.worktreePath ?? null,
+      savedAllocatedBytes: request?.savedAllocatedBytes ?? null,
+    });
+  }
+  return entries;
+});
 
 // Use on-disk spelling for aliases, including Windows short names. A removed checkout still has a receipt.
 export const releasePath = (cwd: string) =>
@@ -72,16 +155,17 @@ export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(functio
   const canonical = NodePath.join(parent, NodePath.basename(cwd));
   const file = releaseFile(directory, canonical);
   const setupReceipt = file + ".setup";
-  for (const suffix of checkoutExists ? [".setup"] : [".setup", ".releasing", ".released"]) {
+  for (const suffix of checkoutExists ? [".setup"] : [".releasing", ".released", ".setup"]) {
     const receipt = file + suffix;
     if (!(yield* fs.exists(receipt))) continue;
-    const request = yield* decodeReleaseRequest(yield* fs.readFileString(receipt));
+    const contents = yield* fs.readFileString(receipt);
+    const request = yield* decodeReleaseRequest(contents);
     if (
       request.threadId === threadId &&
       request.branch === branch &&
       request.worktreePath === canonical
     )
-      return { request, receipt, setupReceipt };
+      return { request, contents, receipt, setupReceipt };
   }
   return null;
 });
@@ -484,27 +568,23 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
         detail: `Could not preserve all ignored files in ${savedFiles}.`,
       });
   }
-  const body = yield* encodeRequest({
+  const savedRequest = {
     ...request,
     ...(savedFiles ? { savedFiles, savedAllocatedBytes: capture.allocatedBytes } : {}),
-    ...(extras ? { savedSetupExtras: true } : {}),
-  });
+    ...(extras ? { savedSetupExtras: true as const } : {}),
+  };
+  const body = yield* encodeRequest(savedRequest);
   const destination = releaseFile(directory, cwd);
   // The worker treats the filename as a commit marker. A partial write must never be consumed.
   const staging = yield* fs.makeTempDirectoryScoped({ directory, prefix: ".release-" });
   const temp = path.join(staging, "request");
   yield* fs.writeFileString(temp, body);
-  // A worker can consume the accepted request before rename reports its result.
+  // Once the backup index is published, it remains recoverable even if queuing the release fails.
   yield* Effect.uninterruptible(
     Effect.gen(function* () {
+      yield* rememberWorktreeBackup(fs, directory, savedRequest);
       unpublished = false;
-      yield* fs.rename(temp, destination).pipe(
-        Effect.tapError(() =>
-          Effect.gen(function* () {
-            unpublished = yield* fs.exists(temp).pipe(Effect.orElseSucceed(() => false));
-          }),
-        ),
-      );
+      yield* fs.rename(temp, destination);
     }),
   );
   return { file: destination, savedFiles, savedAllocatedBytes: capture.allocatedBytes };

@@ -42,7 +42,11 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
-import { queueWorktreeRelease } from "../workspace/worktreeRelease.ts";
+import {
+  listWorktreeBackups,
+  queueWorktreeRelease,
+  worktreeReleaseName,
+} from "../workspace/worktreeRelease.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -1109,6 +1113,7 @@ function makeLocalCommandHarness(input: {
           ? Layer.mock(GitWorkflow.GitWorkflowService)({
               pruneWorktrees: () => Effect.void,
               listLocalBranchNames: () => Effect.succeed(["feature/restore"]),
+              currentBranch: () => Effect.succeed("feature/restore"),
               createWorktree,
             })
           : Layer.succeed(GitWorkflow.GitWorkflowService, input.gitWorkflow),
@@ -1228,7 +1233,9 @@ effectIt.live(
       const path = yield* Path.Path;
       const gitWorkflow = yield* GitWorkflow.GitWorkflowService;
       const driver = yield* GitVcsDriver.GitVcsDriver;
-      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-recreate-repo-" });
+      const root = yield* fileSystem.realPath(
+        yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-recreate-repo-" }),
+      );
       const workspaceRoot = path.join(root, "project");
       const originRoot = path.join(root, "origin.git");
       const worktreesDir = path.join(root, "worktrees");
@@ -1322,6 +1329,22 @@ effectIt.live(
             stateDir: path.join(root, "state"),
           });
           receipt = request;
+          if (!asyncSetup) {
+            const current = JSON.parse(yield* fileSystem.readFileString(request));
+            const savedFiles = path.join(path.dirname(request), "saved-legacy");
+            yield* fileSystem.makeDirectory(savedFiles);
+            yield* fileSystem.writeFileString(path.join(savedFiles, "private.txt"), "old backup");
+            yield* fileSystem.writeFileString(
+              request + ".setup",
+              JSON.stringify({
+                ...current,
+                runId: "obsolete-release",
+                head: threadTip,
+                savedFiles,
+                savedAllocatedBytes: 4096,
+              }),
+            );
+          }
           yield* fileSystem.rename(request, request + ".released");
         }
         yield* fileSystem.remove(worktreePath, { recursive: true });
@@ -1330,13 +1353,24 @@ effectIt.live(
           yield* git(workspaceRoot, ["branch", "-D", "feature/restore"]);
         }
         let setupCalls = 0;
+        let interruptRecreation = scenario === "released";
         const harness = makeLocalCommandHarness({
           text: "Continue",
           workspaceRoot,
           worktreePath,
           worktreesDir,
           fileSystem,
-          gitWorkflow,
+          gitWorkflow: {
+            ...gitWorkflow,
+            createWorktree: (...args) =>
+              gitWorkflow.createWorktree(...args).pipe(
+                Effect.flatMap((result) => {
+                  if (!interruptRecreation) return Effect.succeed(result);
+                  interruptRecreation = false;
+                  return Effect.interrupt;
+                }),
+              ),
+          },
           failReadsAfterRunning: true,
           runSetup: (input) =>
             withWorkspaceLease(
@@ -1418,14 +1452,37 @@ effectIt.live(
                 ],
               });
               expect(yield* fileSystem.exists(receipt + ".setup")).toBe(true);
+              yield* git(worktreePath, ["switch", "-c", "user-branch"]);
+              for (const branch of ["user-branch", ""]) {
+                if (branch === "") yield* git(worktreePath, ["switch", "--detach"]);
+                harness.setProjection(original);
+                yield* start;
+                expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+                expect(yield* git(worktreePath, ["branch", "--show-current"])).toBe(branch);
+                expect(yield* git(worktreePath, ["rev-parse", "HEAD"])).toBe(projectTip);
+                expect(yield* fileSystem.exists(receipt + ".setup")).toBe(true);
+              }
+              expect(setupCalls).toBe(1);
+              yield* git(worktreePath, ["switch", "feature/restore"]);
               yield* fileSystem.remove(receipt + ".setup");
             }),
           );
           continue;
         }
         if (scenario === "released") {
-          const first = yield* Effect.exit(harness.startWithRetry);
-          expect(first._tag).toBe("Failure");
+          const original = harness.projection();
+          const interrupted = yield* Effect.exit(harness.startWithRetry);
+          expect(interrupted._tag).toBe("Failure");
+          if (interrupted._tag === "Failure")
+            expect(Cause.hasInterruptsOnly(interrupted.cause)).toBe(true);
+          expect(setupCalls).toBe(0);
+          expect(JSON.parse(yield* fileSystem.readFileString(receipt + ".setup")).runId).toBe(
+            "finished",
+          );
+          yield* harness.startWithRetry;
+          expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+          yield* harness.startWithRetry;
+          expect(setupCalls).toBe(1);
           expect(harness.open).not.toHaveBeenCalled();
           expect(yield* fileSystem.exists(worktreePath)).toBe(true);
           expect(yield* fileSystem.exists(receipt + ".released")).toBe(false);
@@ -1434,6 +1491,7 @@ effectIt.live(
             path.join(worktreePath, "local.txt"),
             "retain on retry",
           );
+          harness.setProjection(original);
         }
         yield* harness.start;
         if (scenario === "released") {
@@ -1442,6 +1500,17 @@ effectIt.live(
           );
           expect(setupCalls).toBe(2);
           expect(yield* fileSystem.exists(receipt + ".setup")).toBe(false);
+          const backups = yield* listWorktreeBackups(path.join(root, "state"));
+          expect(backups).toEqual([
+            expect.objectContaining({
+              runId: "obsolete-release",
+              worktreePath,
+              savedAllocatedBytes: 4096,
+            }),
+          ]);
+          expect(
+            yield* fileSystem.readFileString(path.join(backups[0]!.savedFiles, "private.txt")),
+          ).toBe("old backup");
         }
 
         expect(harness.open).toHaveBeenCalledOnce();
@@ -1453,6 +1522,74 @@ effectIt.live(
         expect(harness.projection().runs.at(-1)?.status).toBe("running");
       }
     }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
+
+effectIt.effect("cancels recovered synchronous setup and unblocks the awaiting run", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-recovered-setup-cancel-" });
+    const worktreesDir = path.join(root, "worktrees");
+    const checkout = path.join(worktreesDir, "project", "checkout");
+    const receipts = path.join(root, "state", ServerConfig.WORKTREE_RELEASE_DIRECTORY);
+    yield* fs.makeDirectory(receipts, { recursive: true });
+    yield* fs.makeDirectory(checkout, { recursive: true });
+    const worktreePath = yield* fs.realPath(checkout);
+    const receipt = path.join(receipts, worktreeReleaseName(worktreePath) + ".setup");
+    yield* fs.writeFileString(
+      receipt,
+      JSON.stringify({
+        threadId: "thread-native-account-command",
+        runId: "finished",
+        worktreePath,
+        branch: "feature/restore",
+        durableRef: "refs/heads/main",
+        identity: "removed checkout",
+        head: "1".repeat(40),
+      }),
+    );
+    const cancel = vi.fn();
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      fileSystem: fs,
+      worktreesDir,
+      worktreePath,
+      runSetup: () =>
+        Effect.succeed({
+          status: "started",
+          scriptId: "install",
+          scriptName: "Install",
+          scriptCommand: "install",
+          terminalId: "setup-install",
+          cwd: worktreePath,
+          async: false,
+          completion: Effect.never,
+          cancel: Effect.sync(cancel),
+        }),
+    });
+    yield* harness.withRuntime(
+      Effect.gen(function* () {
+        const starter = yield* ProviderTurnStart.ProviderTurnStartServiceV2;
+        const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+        const { thread, runs } = harness.projection();
+        const start = yield* starter
+          .start({ threadId: thread.id, runId: runs[0]!.id, willRetry: true })
+          .pipe(Effect.forkScoped);
+        yield* tracker.stream(thread.id).pipe(
+          Stream.filter((snapshot) => snapshot?.setupScript != null),
+          Stream.runHead,
+        );
+        expect(yield* tracker.cancel(thread.id)).toBe(true);
+        yield* Fiber.join(start);
+        expect(cancel).toHaveBeenCalledOnce();
+        expect((yield* tracker.get(thread.id))?.phase).toBe("cancelled");
+        expect(harness.projection().runs.at(-1)?.status).toBe("cancelled");
+        expect(harness.open).not.toHaveBeenCalled();
+        expect(yield* fs.exists(receipt)).toBe(true);
+        expect(yield* fs.exists(worktreePath)).toBe(true);
+      }),
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 effectIt.effect(
