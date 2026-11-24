@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import { cliArchiveTarCommand } from "@t3tools/shared/cliRelease";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { compareSemverVersions } from "@t3tools/shared/semver";
 import { resolveCommandPath, resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
@@ -56,49 +57,47 @@ export interface CodexReleaseAsset {
   readonly sha256: string;
   readonly archiveBytes: number;
 }
+const MANAGED_VERSION = "0.172.0";
+function releaseAsset(target: string, sha256: string, archiveBytes: number): CodexReleaseAsset {
+  return {
+    version: MANAGED_VERSION,
+    target,
+    url: `https://github.com/openai/codex/releases/download/rust-v${MANAGED_VERSION}/codex-package-${target}.tar.gz`,
+    sha256,
+    archiveBytes,
+  };
+}
 const RELEASES: Readonly<Record<string, CodexReleaseAsset>> = {
-  "darwin-arm64": {
-    version: "0.156.1",
-    target: "aarch64-apple-darwin",
-    url: "https://github.com/openai/codex/releases/download/rust-v0.156.1/codex-package-aarch64-apple-darwin.tar.gz",
-    sha256: "fea42f9625091f011e38f059da974d52e57ba31831648bb1c7f0b1a385fde547",
-    archiveBytes: 127394863,
-  },
-  "darwin-x64": {
-    version: "0.156.1",
-    target: "x86_64-apple-darwin",
-    url: "https://github.com/openai/codex/releases/download/rust-v0.156.1/codex-package-x86_64-apple-darwin.tar.gz",
-    sha256: "618dbcd55419fa041871f777a14b107ceb3fe2d339ef81e21e6ab5374420dc71",
-    archiveBytes: 138670455,
-  },
-  "linux-arm64": {
-    version: "0.156.1",
-    target: "aarch64-unknown-linux-musl",
-    url: "https://github.com/openai/codex/releases/download/rust-v0.156.1/codex-package-aarch64-unknown-linux-musl.tar.gz",
-    sha256: "fdd47ed6aade0360796fd3f6f95a45096f327c15e19e8c7339f9dc5633041786",
-    archiveBytes: 136933361,
-  },
-  "linux-x64": {
-    version: "0.156.1",
-    target: "x86_64-unknown-linux-musl",
-    url: "https://github.com/openai/codex/releases/download/rust-v0.156.1/codex-package-x86_64-unknown-linux-musl.tar.gz",
-    sha256: "8b711520beddf385467b8da4d2c93736637c6ba1e46811cf0d8606b7c490b6f6",
-    archiveBytes: 145976992,
-  },
-  "win32-arm64": {
-    version: "0.156.1",
-    target: "aarch64-pc-windows-msvc",
-    url: "https://github.com/openai/codex/releases/download/rust-v0.156.1/codex-package-aarch64-pc-windows-msvc.tar.gz",
-    sha256: "85994caecdc7609c49fd585c1cdb5677fa9d0acbf789650cff23a13afc9505db",
-    archiveBytes: 142037952,
-  },
-  "win32-x64": {
-    version: "0.156.1",
-    target: "x86_64-pc-windows-msvc",
-    url: "https://github.com/openai/codex/releases/download/rust-v0.156.1/codex-package-x86_64-pc-windows-msvc.tar.gz",
-    sha256: "a2e017db9807e6a2269a26fea0e1d9546469cef4d472a33016bc9f3ad7d3b733",
-    archiveBytes: 153839991,
-  },
+  "darwin-arm64": releaseAsset(
+    "aarch64-apple-darwin",
+    "0970016d48209a09c4039139629ed79b4a31c5e3d864e792c043419d98fa6466",
+    179280925,
+  ),
+  "darwin-x64": releaseAsset(
+    "x86_64-apple-darwin",
+    "b5e94828f45171f13d81de2b96cae05c0b7e6a7f2f7d3c9d4e748be3d3906c02",
+    194297241,
+  ),
+  "linux-arm64": releaseAsset(
+    "aarch64-unknown-linux-musl",
+    "faf17b8071927f33346a805dc8cb45de4e08c0d75cf0e5e68cecddca28b8861e",
+    201917755,
+  ),
+  "linux-x64": releaseAsset(
+    "x86_64-unknown-linux-musl",
+    "63e3b00065ed7f62166d0522e17f663cb866a31d80d03e63365482ed34a1d991",
+    200434347,
+  ),
+  "win32-arm64": releaseAsset(
+    "aarch64-pc-windows-msvc",
+    "6aa686d9ac16cc171b8207273ac20eb9321bf3963f2801722045e906c00ea804",
+    201213323,
+  ),
+  "win32-x64": releaseAsset(
+    "x86_64-pc-windows-msvc",
+    "b723674d7caf26a3f55121a02d6cad8f3ac8ddf5860747a6edde1c904cf593af",
+    218274372,
+  ),
 };
 const resolveCodexReleaseAsset = (platform: NodeJS.Platform, arch: string) =>
   RELEASES[`${platform}-${arch}`] ?? null;
@@ -125,6 +124,23 @@ export interface CodexExecutable {
   readonly version: string;
   readonly managedVersionDirectory: string | null;
 }
+export const resolveExternalCodexPath = Effect.fn("resolveExternalCodexPath")(
+  function* (managedDirectory: string, environment: NodeJS.ProcessEnv) {
+    const executablePath = yield* resolveCommandPath("codex", { env: environment });
+    if (executablePath === null) return null;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const realExecutablePath = yield* fs.realPath(executablePath);
+    const realManaged = yield* fs
+      .realPath(managedDirectory)
+      .pipe(Effect.orElseSucceed(() => managedDirectory));
+    const relative = path.relative(realManaged, realExecutablePath);
+    if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+      return null;
+    return { executablePath, realExecutablePath };
+  },
+  Effect.orElseSucceed(() => null),
+);
 interface CodexInstallationService {
   readonly managedDirectory: string;
   readonly resolve: () => Effect.Effect<CodexExecutable, CodexInstallationError>;
@@ -380,21 +396,14 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
   const localCache = new Map<string, { fingerprint: string; executable: CodexExecutable | null }>();
   const resolveLocal = Effect.fn("CodexInstallation.resolveLocal")(
     function* () {
-      const executablePath = yield* resolveCommandPath("codex", { env: environment }).pipe(
+      const external = yield* resolveExternalCodexPath(managedDirectory, environment).pipe(
         Effect.provideService(HostProcess.Platform, platform),
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provideService(Path.Path, path),
       );
-      if (executablePath === null) return null;
+      if (external === null) return null;
       // Keep launcher symlinks intact: version-manager shims dispatch by their invoked name.
-      const realExecutablePath = yield* fs.realPath(executablePath);
-      const realManaged = yield* fs.realPath(managedDirectory).pipe(Effect.option);
-      if (
-        realExecutablePath.startsWith(
-          `${Option.getOrElse(realManaged, () => managedDirectory)}${path.sep}`,
-        )
-      )
-        return null;
+      const { executablePath, realExecutablePath } = external;
       if (!(yield* hasCodeModeHost(realExecutablePath))) return null;
       const info = yield* fs.stat(executablePath);
       const fingerprint = `${realExecutablePath}:${info.size}:${Option.getOrUndefined(info.mtime)?.getTime()}:${Option.getOrUndefined(info.ino)}`;
@@ -662,6 +671,9 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
           totalBytes: asset.archiveBytes,
           version: asset.version,
           installedVersion: current.installedVersion,
+          ...(current.source === "managed"
+            ? { source: current.source, executablePath: current.executablePath }
+            : {}),
           canRemove: current.canRemove,
           message: "Downloading Codex.",
         };
@@ -820,6 +832,25 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
       ),
     ),
   );
+
+  const current = yield* SubscriptionRef.get(state);
+  // An existing CodeShip-owned copy follows the release pinned by the app.
+  if (
+    asset &&
+    current.source === "managed" &&
+    current.installedVersion &&
+    compareSemverVersions(current.installedVersion, asset.version) < 0
+  ) {
+    yield* start.pipe(
+      Effect.catch((error) =>
+        SubscriptionRef.update(state, (value) => ({
+          ...value,
+          phase: "failed" as const,
+          message: error.detail,
+        })),
+      ),
+    );
+  }
 
   return CodexInstallation.of({
     managedDirectory,

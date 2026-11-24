@@ -5980,6 +5980,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       expectedClass: "provider_error",
     },
     {
+      name: "exhausted-opaque",
+      code: "responseTooManyFailedAttempts",
+      errorInfo: { responseTooManyFailedAttempts: null },
+      notification: false,
+      expectedClass: "provider_error",
+    },
+    {
       name: "chatgpt-workspace-limit",
       code: "other",
       details: "subscription_sharing_workplace_individual_usage_limit_exceeded",

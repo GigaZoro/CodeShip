@@ -69,7 +69,6 @@ import * as CodexManagedTokenBroker from "../CodexManagedTokenBroker.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { resolveCommandPath } from "@t3tools/shared/shell";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 const DEFAULT_BINARY_PATH = decodeCodexSettings({}).binaryPath;
 
@@ -236,7 +235,10 @@ export const CodexDriver: ProviderDriver<
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
       homePath: homeLayout.effectiveHomePath ?? "",
     } satisfies CodexSettings;
-    const codexOnPath = resolveCommandPath(DEFAULT_BINARY_PATH, { env: processEnv }).pipe(
+    const codexOnPath = CodexInstallation.resolveExternalCodexPath(
+      installation.managedDirectory,
+      processEnv,
+    ).pipe(
       Effect.provideService(HostProcess.Platform, platform),
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, pathService),

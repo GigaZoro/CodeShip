@@ -209,7 +209,7 @@ it.live.each(
             assert.equal(refused.stdout, "");
             assert.isFalse(yield* fs.exists(ambient.T3CODE_HOME));
           }
-          assert.include(args, "features.multi_agent=false");
+          assert.include(args, "agents.enabled=false");
           assert.include(args, "features.multi_agent_v2=false");
           // regression: the catalog's multi_agent_version overrides those features, and
           // ChatGPT sharing rejects the agent_message items Codex subagents send.

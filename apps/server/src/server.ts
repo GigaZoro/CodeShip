@@ -719,7 +719,13 @@ const layerProviderInstallationRefresh = Layer.effectDiscard(
       ),
       codex.changes.pipe(
         Stream.changesWith((a, b) => a.installedVersion === b.installedVersion),
-        Stream.drop(1),
+        Stream.zipWithIndex,
+        // An already-downloaded upgrade can activate before the listener subscribes.
+        Stream.filter(
+          ([state, index]) =>
+            index > 0 || (state.phase === "succeeded" && state.operationId !== null),
+        ),
+        Stream.map(([state]) => state),
       ),
     ).pipe(
       Stream.runForEach((state) =>

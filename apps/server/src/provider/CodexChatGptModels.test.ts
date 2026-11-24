@@ -1,7 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
-import { chatGptModels } from "./CodexChatGptModels.ts";
+import { chatGptCodexCatalog, chatGptModelsFromCatalog } from "./CodexChatGptModels.ts";
 
 it.effect(
   "uses each selected profile's token and the server's visible catalog order and names",
@@ -67,7 +67,8 @@ it.effect(
         },
         { slug: "not-entitled", name: "Cached other", isCustom: false, capabilities: null },
       ];
-      const a = yield* chatGptModels("account-a", native).pipe(
+      const a = yield* chatGptCodexCatalog("account-a", "0.172.0").pipe(
+        Effect.flatMap((catalog) => chatGptModelsFromCatalog(catalog, native)),
         Effect.provideService(HttpClient.HttpClient, http),
       );
       assert.deepEqual(
@@ -90,7 +91,8 @@ it.effect(
           currentValue: "low",
         },
       ]);
-      const b = yield* chatGptModels("account-b", native).pipe(
+      const b = yield* chatGptCodexCatalog("account-b", "0.172.0").pipe(
+        Effect.flatMap((catalog) => chatGptModelsFromCatalog(catalog, native)),
         Effect.provideService(HttpClient.HttpClient, http),
       );
       assert.deepEqual(
@@ -108,7 +110,9 @@ it.effect("does not present a cached catalog as account entitlements when discov
       Effect.succeed(HttpClientResponse.fromWeb(request, new Response(null, { status: 503 }))),
     );
     const error = yield* Effect.flip(
-      chatGptModels("account-a", []).pipe(Effect.provideService(HttpClient.HttpClient, http)),
+      chatGptCodexCatalog("account-a", "0.172.0").pipe(
+        Effect.provideService(HttpClient.HttpClient, http),
+      ),
     );
     assert.strictEqual(error._tag, "ChatGptCatalogError");
   }),

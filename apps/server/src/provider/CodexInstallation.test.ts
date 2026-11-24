@@ -365,34 +365,63 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("requires an update before running an older activated managed installation", () =>
-    Effect.gen(function* () {
-      const first = yield* makeHarness();
-      yield* first.installation.start;
-      yield* terminalState(first.installation);
-      const executable = yield* first.installation.resolve();
-      const oldDirectory = `${first.installation.managedDirectory}/0.155.1`;
-      yield* first.fs.rename(executable.managedVersionDirectory!, oldDirectory);
-      for (const name of ["codex-package.json", ".install-complete.json"]) {
-        const file = `${oldDirectory}/${name}`;
-        yield* first.fs.writeFileString(
-          file,
-          (yield* first.fs.readFileString(file)).replaceAll("0.156.1", "0.155.1"),
-        );
-      }
-      yield* first.fs.writeFileString(
-        `${first.installation.managedDirectory}/active.json`,
-        '{"version":"0.155.1"}',
-      );
-      const restarted = yield* makeHarness({ baseDir: first.baseDir });
-      expect((yield* Effect.flip(restarted.installation.resolve())).detail).toContain(
-        "outside the supported range",
-      );
-      yield* restarted.installation.start;
-      expect((yield* terminalState(restarted.installation)).phase).toBe("succeeded");
-      expect((yield* restarted.installation.resolve()).version).toBe("0.156.1");
-      expect(restarted.downloads()).toBe(1);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  it.effect.each(["verified", "corrupt download"] as const)(
+    "upgrades an older managed installation when CodeShip starts: %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        const first = yield* makeHarness();
+        yield* first.installation.start;
+        yield* terminalState(first.installation);
+        const executable = yield* first.installation.resolve();
+        const oldVersion = "0.156.0";
+        const oldDirectory = `${first.installation.managedDirectory}/${oldVersion}`;
+        const activePath = `${first.installation.managedDirectory}/active.json`;
+        yield* first.fs.rename(executable.managedVersionDirectory!, oldDirectory);
+        for (const name of ["codex-package.json", ".install-complete.json"]) {
+          const file = `${oldDirectory}/${name}`;
+          yield* first.fs.writeFileString(
+            file,
+            (yield* first.fs.readFileString(file)).replaceAll(asset.version, oldVersion),
+          );
+        }
+        yield* first.fs.writeFileString(activePath, JSON.stringify({ version: oldVersion }));
+        const finishDownload = yield* Deferred.make<void>();
+        const corrupt = scenario === "corrupt download";
+        const restarted = yield* makeHarness({
+          baseDir: first.baseDir,
+          body: Stream.fromEffect(
+            Deferred.await(finishDownload).pipe(Effect.as(corrupt ? archive.subarray(1) : archive)),
+          ),
+        });
+        const pending = yield* restarted.installation.state;
+        expect(pending).toMatchObject({ phase: "downloading", installedVersion: oldVersion });
+        expect((yield* restarted.installation.start).operationId).toBe(pending.operationId);
+        const oldLease = yield* restarted.installation.acquire();
+        expect(oldLease.version).toBe(oldVersion);
+        yield* Deferred.succeed(finishDownload, undefined);
+        const activeVersion = corrupt ? oldVersion : asset.version;
+        expect(yield* terminalState(restarted.installation)).toMatchObject({
+          phase: corrupt ? "failed" : "succeeded",
+          source: "managed",
+          installedVersion: activeVersion,
+        });
+        expect((yield* restarted.installation.resolve()).version).toBe(activeVersion);
+        expect(yield* first.fs.exists(oldLease.executablePath)).toBe(true);
+        expect(restarted.downloads()).toBe(1);
+        if (!corrupt) {
+          const reopened = yield* makeHarness({
+            baseDir: first.baseDir,
+            options: {
+              releaseAsset: { ...asset, version: oldVersion, sha256: "0".repeat(64) },
+            },
+          });
+          expect(yield* reopened.installation.state).toMatchObject({
+            phase: "idle",
+            installedVersion: activeVersion,
+          });
+          expect(reopened.downloads()).toBe(0);
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("rejects corrupted downloads without publishing a runtime", () =>
