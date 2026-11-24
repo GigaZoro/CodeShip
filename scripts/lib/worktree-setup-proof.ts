@@ -6,6 +6,7 @@ import * as NodeWorkerThreads from "node:worker_threads";
 import { windowsSetupHost } from "./windows-worktree-files.ts";
 
 export const setupProofName = "t3-setup-proof-v1";
+export const setupStageName = "setup-stage";
 export const setupEnvFiles = [".env", "infra/relay/.env"] as const;
 const digestPattern = /^[a-f0-9]{64}$/;
 const maxProofBytes = 128 * 1024;

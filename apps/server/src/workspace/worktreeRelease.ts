@@ -486,6 +486,13 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
       continue;
     }
     let file = path.join(admin, name);
+    // Git's files backend initializes an empty refs directory in new linked worktrees.
+    if (windowsSetupHost && name === "refs") {
+      const stat = yield* Effect.tryPromise(() => NodeFSP.lstat(file));
+      if (!stat.isDirectory() || (yield* fs.readDirectory(file)).length !== 0)
+        return "worktree has private refs";
+      continue;
+    }
     if (name === "AUTO_MERGE") {
       const marker = yield* readAutoMergeMarker(file);
       if (marker === null) return "worktree metadata requires its owner";

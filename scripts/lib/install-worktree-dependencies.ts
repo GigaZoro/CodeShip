@@ -188,23 +188,24 @@ const canRunPreparePrivately = async (cwd: string, manifests: readonly string[])
 
 const relocatePnpmState = async (staged: string, worktree: string) => {
   const modules = NodePath.join(staged, "node_modules");
+  const canonicalStage = windowsSetupHost ? await NodeFSP.realpath(staged) : staged;
   const movePath = async (value: string) => {
     if (windowsSetupHost) {
-      const relative = await windowsStagedPath(staged, value);
+      const relative = await windowsStagedPath(canonicalStage, value);
       return relative === undefined ? value : NodePath.join(worktree, relative);
     }
     return value === staged || value.startsWith(staged + NodePath.sep)
       ? worktree + value.slice(staged.length)
       : value;
   };
-  const includesStage = (value: string) =>
-    windowsSetupHost
-      ? value
-          .replaceAll("\\\\", "\\")
-          .replaceAll("\\", "/")
-          .toLowerCase()
-          .includes(staged.replaceAll("\\", "/").toLowerCase())
-      : value.includes(staged);
+  const windowsPathSpelling = (value: string) =>
+    value.replaceAll("\\\\", "\\").replaceAll("\\", "/").toLowerCase();
+  const stageSpellings = [staged, canonicalStage].map(windowsPathSpelling);
+  const includesStage = (value: string) => {
+    if (!windowsSetupHost) return value.includes(staged);
+    const normalized = windowsPathSpelling(value);
+    return stageSpellings.some((spelling) => normalized.includes(spelling));
+  };
   const modulesPath = NodePath.join(modules, ".modules.yaml");
   if (windowsSetupHost && !(await NodeFSP.lstat(modulesPath)).isFile()) return false;
   const rawLayout = await NodeFSP.readFile(modulesPath, "utf8");
@@ -258,6 +259,7 @@ const relocateWindowsDependencyLinks = async (
   worktree: string,
   modules: readonly string[],
 ) => {
+  const canonicalStage = await NodeFSP.realpath(staged);
   // Resolve every target before replacing any link. pnpm can point one junction at another.
   const links: Array<{ file: string; target: string; kind: "junction" | "file" }> = [];
   const pending = modules.map((name) => NodePath.join(staged, name));
@@ -269,11 +271,15 @@ const relocateWindowsDependencyLinks = async (
     } else if (stat.isSymbolicLink()) {
       const target = windowsLocalPath(await NodeFSP.readlink(file));
       const relative = await windowsStagedPath(
-        staged,
+        canonicalStage,
         NodePath.resolve(NodePath.dirname(file), target),
       );
       const resolved = await NodeFSP.realpath(file).catch(missingSetupPath);
-      if (relative === undefined || !resolved || relativeInside(staged, resolved) === undefined)
+      if (
+        relative === undefined ||
+        !resolved ||
+        relativeInside(canonicalStage, resolved) === undefined
+      )
         return false;
       if (NodePath.isAbsolute(target)) {
         links.push({

@@ -869,6 +869,21 @@ it.live.each(["direct land", "no change"] as const)(
         yield* fixture.service.runNow;
         expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
         yield* fixture.fs.remove(NodePath.join(fixture.worktree, ".env"));
+        if (isWindowsHost) {
+          const refs = (yield* fixture.command(fixture.worktree, [
+            "rev-parse",
+            "--absolute-git-dir",
+          ])).stdout.trim();
+          const refDir = NodePath.join(refs, "refs");
+          const privateFile = NodePath.join(refDir, "owner.txt");
+          yield* fixture.fs.makeDirectory(refDir, { recursive: true });
+          yield* fixture.fs.writeFileString(privateFile, "preserve");
+          expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+            "Worktree has private refs",
+          );
+          expect(yield* fixture.fs.readFileString(privateFile)).toBe("preserve");
+          yield* fixture.fs.remove(privateFile);
+        }
         const insideGitlink = NodePath.join(fixture.worktree, "vendor", "empty", ".env");
         yield* fixture.fs.writeFileString(insideGitlink, "local");
         expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
@@ -1380,18 +1395,20 @@ if (fs.existsSync(".pnpmfile.cjs")) {
               : {
                   outcome: "kept",
                   reason:
-                    race || inPlace || scenario === "a legacy done marker"
-                      ? "Worktree contains tracked, untracked or ignored local data"
-                      : scenario === "a changed proof" ||
-                          scenario === "an unknown proof directory with saved ignored files"
-                        ? "Worktree setup metadata requires its owner"
-                        : scenario === "a private file stream" ||
-                            scenario === "a private directory stream" ||
-                            scenario === "a tracked stream on repeat"
-                          ? "Windows worktree contains data or filesystem entries that could not be verified (private-stream)"
-                          : scenario === "a custom dependency ACL"
-                            ? "Windows worktree contains data or filesystem entries that could not be verified (explicit-ace)"
-                            : "Standard setup output changed or could not be verified",
+                    stageStream || existingStage
+                      ? "Worktree has a preserved setup stage"
+                      : race || inPlace || scenario === "a legacy done marker"
+                        ? "Worktree contains tracked, untracked or ignored local data"
+                        : scenario === "a changed proof" ||
+                            scenario === "an unknown proof directory with saved ignored files"
+                          ? "Worktree setup metadata requires its owner"
+                          : scenario === "a private file stream" ||
+                              scenario === "a private directory stream" ||
+                              scenario === "a tracked stream on repeat"
+                            ? "Windows worktree contains data or filesystem entries that could not be verified (private-stream)"
+                            : scenario === "a custom dependency ACL"
+                              ? "Windows worktree contains data or filesystem entries that could not be verified (explicit-ace)"
+                              : "Standard setup output changed or could not be verified",
                 },
           );
           expect(yield* fs.exists(worktree)).toBe(!released);
@@ -1547,9 +1564,11 @@ it.live.each([
       expect(result).toMatchObject({
         outcome: "kept",
         reason:
-          kind === "active merge" || kind === "symlink" || kind === "oversized"
-            ? "Worktree metadata requires its owner"
-            : "Worktree has an unpreserved auto-merge tree",
+          kind === "symlink" && isWindowsHost
+            ? "Worktree metadata requires its owner (reparse-point)"
+            : kind === "active merge" || kind === "symlink" || kind === "oversized"
+              ? "Worktree metadata requires its owner"
+              : "Worktree has an unpreserved auto-merge tree",
       });
       expect(yield* fs.exists(marker)).toBe(true);
       expect(yield* fs.exists(worktree)).toBe(true);

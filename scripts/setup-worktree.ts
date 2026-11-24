@@ -27,6 +27,7 @@ import {
   setupEnvTarget,
   setupFileStamp,
   setupProofName,
+  setupStageName,
   writeSetupProof,
 } from "./lib/worktree-setup-proof.ts";
 
@@ -38,7 +39,7 @@ const failedMarker = NodePath.join(markerDir, "setup-failed");
 const inPlaceMarker = NodePath.join(markerDir, "setup-install-in-place");
 const claimName = `setup-owner-${process.pid}`;
 const claim = NodePath.join(markerDir, claimName);
-const staging = NodePath.join(markerDir, "setup-stage");
+const staging = NodePath.join(markerDir, setupStageName);
 
 const alive = (pid: number) => {
   if ((pid | 0) !== pid || pid <= 0) throw new Error("Unrecognized setup process");
