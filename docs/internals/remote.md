@@ -168,6 +168,9 @@ and a refused settle is left to auto-settlement there. A Stop or cancel here of 
 task that already holds its result owes its thread there a stop
 (`delegated_task.remote.stop`), which the follower sends, so it reaches there after
 any settle request already sent; a settle still reading or backing off is cut short.
+A cancel's stop goes under the cancel's own key (`remoteChild.stopKey`), which the
+other side records once, so a cancel sent again, or one whose stop lost its answer,
+stops nothing that started there since; a Stop here gets a numbered key of its own.
 A launch whose answer was lost (`no_answer`) hands the caller its task and is sent
 again in the background with the same key, which the other side records once; the
 follower starts once a launch answers. A stop sent meanwhile finds no thread there,

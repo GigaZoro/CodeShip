@@ -1048,6 +1048,12 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
    * one owed, so each reaches the thread there once however often it is sent.
    */
   stopCount: Schema.optional(NonNegativeInt),
+  /**
+   * The key of the cancel whose stop is owed there, so the follower sends the stop that
+   * cancel already sent, which reaches the thread there once. Absent: the follower names
+   * the stop by `stopCount`.
+   */
+  stopKey: Schema.optional(Schema.String),
 });
 export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChild.Type;
 
@@ -3800,6 +3806,8 @@ const OrchestrationV2InternalCommand = Schema.Union([
     stoppedThere: Schema.optional(Schema.Literals(["ran-out", "stopped"])),
     /** The stop generation this report acknowledges; absent for the original unnumbered stop. */
     stopCount: Schema.optional(NonNegativeInt),
+    /** Without `stoppedThere`: the key of the cancel whose stop there is still owed. */
+    stopKey: Schema.optional(Schema.String),
   }),
   /**
    * Owes a stop to the thread there of a remote task that already has its result, as Stop on
@@ -3811,6 +3819,8 @@ const OrchestrationV2InternalCommand = Schema.Union([
     commandId: CommandId,
     parentThreadId: ThreadId,
     taskId: NodeId,
+    /** The key of the cancel that owes this stop; absent for a Stop here. */
+    stopKey: Schema.optional(Schema.String),
   }),
   /**
    * Records the run there that carries a remote task, once its launch returned it. The task is

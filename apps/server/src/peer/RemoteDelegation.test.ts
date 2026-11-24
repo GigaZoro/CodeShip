@@ -2407,6 +2407,97 @@ it.effect("a delegate and its cancel work with a caller key at the 256-character
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect("a cancel sent again with its key stops nothing newer there", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* a.remote.start();
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const delegated = yield* delegateToBox(a);
+      const first = yield* a.call("task_cancel", {
+        taskId: delegated.taskId,
+        clientRequestId: "cancel-once",
+      });
+      expect(first.structuredContent).toEqual({
+        taskId: delegated.taskId,
+        status: "cancel_requested",
+      });
+      expect(yield* Ref.get(thread.stops)).toEqual(["thread.stop", "delegated-tasks"]);
+
+      // The parent gives the thread there more work, then sends that cancel again, as a caller
+      // does whose answer was lost.
+      const sent = yield* a.call("t3_thread_send", {
+        environmentId: box.environmentId,
+        threadId: delegated.remoteChild.threadId,
+        message: "Now run the slow suite too.",
+      });
+      expect(sent.isError, JSON.stringify(sent.content)).toBe(false);
+      const again = yield* a.call("task_cancel", {
+        taskId: delegated.taskId,
+        clientRequestId: "cancel-once",
+      });
+      expect(again.structuredContent).toEqual({ taskId: delegated.taskId, status: "cancelled" });
+      // Its stop goes there again under its key, which the box already recorded, so that work
+      // runs on.
+      yield* stoppedThere(a, delegated.taskId, 1);
+      expect(yield* Ref.get(thread.stops)).toEqual(["thread.stop", "delegated-tasks"]);
+      expect(yield* Ref.get(thread.interrupted)).toBe(1);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a cancel whose stop lost its answer has that same stop sent again", () =>
+  Effect.gen(function* () {
+    const nativeFetch = yield* FetchHttpClient.Fetch;
+    let interrupts = 0;
+    // The box records the cancel's stop, and its answer never arrives here.
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const body = init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : null;
+      const rpc: { params?: { name?: string } } = body?.startsWith("{") ? JSON.parse(body) : {};
+      const response = await nativeFetch(input, init);
+      if (rpc.params?.name !== "t3_thread_interrupt") return response;
+      interrupts += 1;
+      if (interrupts > 1) return response;
+      await response.arrayBuffer();
+      throw new TypeError("fetch failed");
+    };
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* a.remote.start();
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const delegated = yield* delegateToBox(a);
+        yield* a.call("task_cancel", { taskId: delegated.taskId, clientRequestId: "cancel-lost" });
+        expect(yield* taskResult(a, delegated.taskId)).toMatchObject({ status: "cancelled" });
+
+        // The follower sends that stop again, which the box already recorded, so nothing else
+        // there is stopped.
+        yield* stoppedThere(a, delegated.taskId, null);
+        expect(interrupts).toBe(2);
+        expect(yield* Ref.get(thread.stops)).toEqual(["thread.stop", "delegated-tasks"]);
+        expect(yield* Ref.get(thread.interrupted)).toBe(1);
+      }),
+    ).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.provideService(FetchHttpClient.Fetch, fetch),
+    );
+  }),
+);
+
 it.effect("a task's result is its own run's whole last reply, not a later run's", () =>
   Effect.scoped(
     Effect.gen(function* () {

@@ -679,6 +679,7 @@ const make = Effect.gen(function* () {
     result: string,
     stoppedThere: "ran-out" | "stopped" | undefined,
     stopCount?: number,
+    stopKey?: string,
   ) {
     const attempt = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
     yield* threads
@@ -691,6 +692,7 @@ const make = Effect.gen(function* () {
         result,
         ...(stoppedThere === undefined ? {} : { stoppedThere }),
         ...(stopCount === undefined ? {} : { stopCount }),
+        ...(stopKey === undefined ? {} : { stopKey }),
       })
       .pipe(Effect.asVoid);
   });
@@ -718,8 +720,9 @@ const make = Effect.gen(function* () {
 
   /**
    * Stops the task's own thread there as its Stop button does: its running turn, queued
-   * messages, pull request watches and delegated tasks. `key` names the stop (the follower
-   * sends one, each cancel its own), and each is recorded there once however often it is sent.
+   * messages, pull request watches and delegated tasks. `key` names the stop (each cancel its
+   * own, which the follower sends again while it is owed; the follower's own are numbered), and
+   * each is recorded there once however often it is sent.
    */
   const stopThere = Effect.fn("RemoteDelegation.stopThere")(function* (
     scope: ThreadScope,
@@ -994,7 +997,9 @@ const make = Effect.gen(function* () {
         ((task.status === "cancelled" || task.status === "interrupted") &&
           remote.stoppedThere !== true)
       ) {
-        const key = remote.stopCount === undefined ? "stop" : `stop-${remote.stopCount}`;
+        // A cancel's own stop, sent again, reaches the thread there once.
+        const key =
+          remote.stopKey ?? (remote.stopCount === undefined ? "stop" : `stop-${remote.stopCount}`);
         yield* stopThere(scope, remote, key).pipe(
           // Its thread there now runs above what this side may touch, say
           // because the parent here was lowered since; no retry changes that.
@@ -1165,14 +1170,16 @@ const make = Effect.gen(function* () {
         input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie))
       }`;
       if (task.result !== null) {
-        // The result stands, and its thread there owes a stop, which the follower sends after
-        // any settle request it already sent there, as for a Stop here.
+        // The result stands, and its thread there owes this cancel's stop, which the follower
+        // sends after any settle request it already sent there, as for a Stop here. Under this
+        // cancel's key, a retry of a cancel that already stopped it there stops nothing newer.
         yield* threads
           .dispatch({
             type: "delegated_task.remote.stop",
             commandId: CommandId.make(`command:remote-task-stop:${task.id}:${key}`),
             parentThreadId: task.threadId,
             taskId: task.id,
+            stopKey: key,
           })
           .pipe(cancelNotRecorded(task.id));
         return {
@@ -1205,6 +1212,8 @@ const make = Effect.gen(function* () {
           : `${cancelled} It could not be stopped in ${remote.label} and may still run there: ${unstopped}`,
         unstopped === undefined ? "stopped" : undefined,
         remote.stopCount,
+        // Its stop may have reached there with only the answer lost, so the follower sends it again.
+        unstopped === undefined ? undefined : key,
       ).pipe(cancelNotRecorded(task.id));
       return {
         taskId: task.id,

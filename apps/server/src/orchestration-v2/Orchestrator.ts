@@ -9059,10 +9059,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (command.stopCount ?? 0) !== (task.remoteChild?.stopCount ?? 0)
     )
       return;
+    // A cancel whose stop did not reach there leaves its key, so the follower sends that stop.
     const remoteChild =
-      command.stoppedThere === undefined
-        ? task.remoteChild
-        : { ...task.remoteChild!, stoppedThere: true };
+      command.stoppedThere !== undefined
+        ? { ...task.remoteChild!, stoppedThere: true }
+        : command.stopKey === undefined
+          ? task.remoteChild
+          : { ...task.remoteChild!, stopKey: command.stopKey };
     // The first result stands, so a repeated or superseded report records nothing. A stop
     // there after the result is still recorded, but a run that ended by itself does not
     // settle a stop the task here still owes.
@@ -9562,6 +9565,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     remoteChild: OrchestrationV2RemoteTaskChild,
   ) {
     const now = yield* DateTime.now;
+    // A Stop here owes a stop of its own; a cancel owes the one it named.
+    const { stopKey: _earlierKey, ...owed } = remoteChild;
     yield* emit(
       events,
       command,
@@ -9575,9 +9580,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       payload: {
         ...task,
         remoteChild: {
-          ...remoteChild,
+          ...owed,
           stoppedThere: false,
           stopCount: (remoteChild.stopCount ?? 0) + 1,
+          ...(command.stopKey === undefined ? {} : { stopKey: command.stopKey }),
         },
         updatedAt: now,
       },
