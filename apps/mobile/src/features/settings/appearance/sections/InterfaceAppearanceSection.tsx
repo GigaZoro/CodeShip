@@ -1,6 +1,6 @@
 import { ACCENT_COLOR_HUES, type AccentColor } from "@t3tools/contracts/settings";
 import { ACCENT_PALETTE } from "@t3tools/shared/accentPalette";
-import { Pressable, View, useColorScheme } from "react-native";
+import { Platform, Pressable, View, useColorScheme } from "react-native";
 
 import { SymbolView } from "../../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../../components/ui/AppText";
@@ -24,7 +24,7 @@ const ACCENT_COLOR_LABELS: Record<AccentColor, Message> = {
 
 const ACCENT_CHOICES: ReadonlyArray<AccentColor> = ["theme", ...ACCENT_COLOR_HUES];
 
-/** The hit area is 44pt; the visible swatch is smaller so neighbours keep a gap. */
+/** The hit area is 44pt (iOS) / 48dp (Android) in points, not rem; the visible swatch is smaller. */
 function AccentSwatch(props: {
   readonly accent: AccentColor;
   readonly appearance: "light" | "dark";
@@ -42,7 +42,10 @@ function AccentSwatch(props: {
       accessibilityState={{ checked: props.selected, disabled: props.disabled }}
       disabled={props.disabled}
       onPress={props.onPress}
-      className="size-11 items-center justify-center"
+      className={cn(
+        Platform.OS === "android" ? "size-[48px]" : "size-[44px]",
+        "items-center justify-center",
+      )}
     >
       <View
         className={cn(

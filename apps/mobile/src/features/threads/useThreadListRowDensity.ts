@@ -8,14 +8,13 @@ import {
 } from "./thread-list-v2-row-appearance";
 
 export function useThreadListRowContentClassName() {
-  return THREAD_LIST_V2_ROW_CONTENT_CLASS_NAMES[useAppearancePreferences().interfaceDensity];
+  return THREAD_LIST_V2_ROW_CONTENT_CLASS_NAMES[useAppearancePreferences().interfaceDensity][
+    Platform.OS === "android" ? "android" : "ios"
+  ];
 }
 
 export function useThreadListSlimRowClassName() {
-  const { interfaceDensity } = useAppearancePreferences();
-  return THREAD_LIST_V2_SLIM_ROW_CLASS_NAMES[interfaceDensity][
-    Platform.OS === "android" ? "android" : "ios"
-  ];
+  return THREAD_LIST_V2_SLIM_ROW_CLASS_NAMES[useAppearancePreferences().interfaceDensity];
 }
 
 export function useThreadListEstimatedRowHeight() {

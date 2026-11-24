@@ -23,7 +23,7 @@ of the selected theme.
 
 ## Density and accent color
 
-- **Interface density** (web, desktop and mobile): **Compact spacing** tightens thread rows, folder headers, chat message gaps and settings rows. Every button and row stays easy to hit. **Comfortable** is the default.
+- **Interface density**: **Compact spacing** tightens thread rows, folder headers, chat message gaps and settings rows on web and desktop, and the home thread list on mobile. Every button and row stays easy to hit. **Comfortable** is the default.
 - **Accent color** (web, desktop and mobile): pick a color for buttons, selection and focus rings. It applies over any theme, and **Theme** goes back to the theme's own color.
 
 ## The same look on all your devices

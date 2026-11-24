@@ -1348,8 +1348,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
         className={cn(
-          "list-none [content-visibility:auto] [contain-intrinsic-size:auto_--spacing(9)]",
-          metaLine !== null && multiline && "[contain-intrinsic-size:auto_--spacing(13.5)]",
+          "list-none [content-visibility:auto]",
+          // A fixed-height row reserves its exact density height; `auto` would keep a stale one.
+          !multiline
+            ? "[contain-intrinsic-size:none_var(--sidebar-thread-row-height)]"
+            : metaLine !== null
+              ? "[contain-intrinsic-size:auto_--spacing(13.5)]"
+              : "[contain-intrinsic-size:auto_--spacing(9)]",
           sortable?.isDragging && "relative z-20",
         )}
       >

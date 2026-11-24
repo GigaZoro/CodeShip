@@ -5,52 +5,45 @@ export type AccentAppearance = "light" | "dark";
 export interface AccentColors {
   readonly primary: string;
   readonly primaryForeground: string;
-  readonly ring: string;
 }
 
 /**
- * The one definition of the accent choices, read by web and mobile. Every entry keeps
- * primaryForeground-on-primary at 4.5:1 or more and the ring at 3:1 or more against every
- * surface in `ACCENT_RING_SURFACES`; dark rings are lighter than their primary so they clear
- * dark cards and popovers too.
+ * The one definition of the accent choices, read by web and mobile. Each primary is also the
+ * focus ring and colors plain text, so it reads at 4.5:1 on every built-in surface of its
+ * appearance, and its foreground reads at 4.5:1 on it. Dark entries are light shades with dark
+ * text: a saturated mid shade cannot clear both white text and dark surfaces.
  */
 export const ACCENT_PALETTE = {
   blue: {
-    light: { primary: "#1d4ed8", primaryForeground: "#ffffff", ring: "#1d4ed8" },
-    dark: { primary: "#2563eb", primaryForeground: "#ffffff", ring: "#60a5fa" },
+    light: { primary: "#1d4ed8", primaryForeground: "#ffffff" },
+    dark: { primary: "#93c5fd", primaryForeground: "#172554" },
   },
   indigo: {
-    light: { primary: "#4338ca", primaryForeground: "#ffffff", ring: "#4338ca" },
-    dark: { primary: "#4f46e5", primaryForeground: "#ffffff", ring: "#818cf8" },
+    light: { primary: "#4338ca", primaryForeground: "#ffffff" },
+    dark: { primary: "#c7d2fe", primaryForeground: "#1e1b4b" },
   },
   violet: {
-    light: { primary: "#6d28d9", primaryForeground: "#ffffff", ring: "#6d28d9" },
-    dark: { primary: "#7c3aed", primaryForeground: "#ffffff", ring: "#a78bfa" },
+    light: { primary: "#6d28d9", primaryForeground: "#ffffff" },
+    dark: { primary: "#c4b5fd", primaryForeground: "#2e1065" },
   },
   pink: {
-    light: { primary: "#be185d", primaryForeground: "#ffffff", ring: "#be185d" },
-    dark: { primary: "#db2777", primaryForeground: "#ffffff", ring: "#f472b6" },
+    light: { primary: "#be185d", primaryForeground: "#ffffff" },
+    dark: { primary: "#f9a8d4", primaryForeground: "#500724" },
   },
   red: {
-    light: { primary: "#b91c1c", primaryForeground: "#ffffff", ring: "#b91c1c" },
-    dark: { primary: "#dc2626", primaryForeground: "#ffffff", ring: "#f87171" },
+    light: { primary: "#b91c1c", primaryForeground: "#ffffff" },
+    dark: { primary: "#fca5a5", primaryForeground: "#450a0a" },
   },
   orange: {
-    light: { primary: "#b45309", primaryForeground: "#ffffff", ring: "#b45309" },
-    dark: { primary: "#c2410c", primaryForeground: "#ffffff", ring: "#fb923c" },
+    light: { primary: "#9a3412", primaryForeground: "#ffffff" },
+    dark: { primary: "#fdba74", primaryForeground: "#431407" },
   },
   green: {
-    light: { primary: "#15803d", primaryForeground: "#ffffff", ring: "#15803d" },
-    dark: { primary: "#17853f", primaryForeground: "#ffffff", ring: "#4ade80" },
+    light: { primary: "#166534", primaryForeground: "#ffffff" },
+    dark: { primary: "#86efac", primaryForeground: "#052e16" },
   },
   teal: {
-    light: { primary: "#0f766e", primaryForeground: "#ffffff", ring: "#0f766e" },
-    dark: { primary: "#0e7f76", primaryForeground: "#ffffff", ring: "#2dd4bf" },
+    light: { primary: "#115e59", primaryForeground: "#ffffff" },
+    dark: { primary: "#5eead4", primaryForeground: "#042f2e" },
   },
 } as const satisfies Record<AccentColorHue, Record<AccentAppearance, AccentColors>>;
-
-/** The built-in canvas and card surfaces (index.css `--background`, `--card`) a focus ring sits on. */
-export const ACCENT_RING_SURFACES = {
-  light: ["#fcfcfc", "#ffffff"],
-  dark: ["#000000", "#111111"],
-} as const satisfies Record<AccentAppearance, ReadonlyArray<string>>;

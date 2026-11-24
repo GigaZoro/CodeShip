@@ -14,7 +14,7 @@ export function applyAccentToMobileThemeVariables(
   appearance: MobileThemeAppearance,
 ): MobileThemeVariables {
   if (accent === "theme") return variables;
-  const { primary, primaryForeground, ring } = ACCENT_PALETTE[accent][appearance];
+  const { primary, primaryForeground } = ACCENT_PALETTE[accent][appearance];
   const surfaces = [
     variables["--color-screen"],
     variables["--color-card"],
@@ -27,7 +27,7 @@ export function applyAccentToMobileThemeVariables(
     "--color-primary-text": themeColorWithContrast(primary, surfaces),
     "--color-switch-active-track": primary,
     "--color-switch-active-thumb": primaryForeground,
-    "--color-focus": ring,
+    "--color-focus": primary,
     "--color-md-link": themeColorWithContrast(primary, variables["--color-screen"]),
   };
 }

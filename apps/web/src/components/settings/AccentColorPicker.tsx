@@ -24,7 +24,7 @@ const ACCENT_COLOR_LABELS: Record<AccentColor, Message> = {
 const isAccentColor = Schema.is(AccentColor);
 
 const SWATCH_CLASS_NAME =
-  "relative inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full border border-border outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring data-checked:border-foreground data-checked:ring-2 data-checked:ring-inset data-checked:ring-background";
+  "relative inline-flex size-[max(24px,1.75rem)] shrink-0 cursor-pointer items-center justify-center rounded-full border border-border outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring data-checked:border-foreground data-checked:ring-2 data-checked:ring-inset data-checked:ring-background";
 
 /** Raw radios on purpose: a swatch's geometry and fill are its own, which no `ui` primitive offers. */
 export function AccentColorPicker(props: {

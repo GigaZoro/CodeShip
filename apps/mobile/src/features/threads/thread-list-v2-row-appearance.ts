@@ -5,15 +5,18 @@ import { t } from "../../lib/i18n";
 
 export const THREAD_LIST_V2_MONO_FONT = "Menlo";
 
-/** Compact tightens only the padding; every row still clears 44pt (iOS) / 48dp (Android). */
+/**
+ * Compact tightens only the padding. The minimum is in points, not rem (Uniwind's rem is 14),
+ * so every row clears 44pt (iOS) / 48dp (Android) whatever its content.
+ */
 export const THREAD_LIST_V2_ROW_CONTENT_CLASS_NAMES = {
-  comfortable: "px-5 py-2.5",
-  compact: "px-5 py-1.5",
-} as const satisfies Record<InterfaceDensity, string>;
+  comfortable: { ios: "min-h-[44px] px-5 py-2.5", android: "min-h-[48px] px-5 py-2.5" },
+  compact: { ios: "min-h-[44px] px-5 py-1.5", android: "min-h-[48px] px-5 py-1.5" },
+} as const satisfies Record<InterfaceDensity, Record<"ios" | "android", string>>;
 export const THREAD_LIST_V2_SLIM_ROW_CLASS_NAMES = {
-  comfortable: { ios: "min-h-[44px] py-2", android: "min-h-[44px] py-2" },
-  compact: { ios: "min-h-[44px] py-1", android: "min-h-12 py-1" },
-} as const satisfies Record<InterfaceDensity, { ios: string; android: string }>;
+  comfortable: "py-2",
+  compact: "py-1",
+} as const satisfies Record<InterfaceDensity, string>;
 export const THREAD_LIST_V2_ESTIMATED_ROW_HEIGHTS = {
   comfortable: 72,
   compact: 64,

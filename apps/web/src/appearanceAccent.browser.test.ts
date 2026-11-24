@@ -1,17 +1,30 @@
+import { MIN_INTERFACE_FONT_SIZE } from "@t3tools/contracts/settings";
 import { ACCENT_PALETTE } from "@t3tools/shared/accentPalette";
+import { OCEAN_THEME, getThemeColorsForAppearance } from "@t3tools/shared/themePalettes";
 import { describe, expect, it } from "vite-plus/test";
 
 import "~/index.css";
 import { applyAccentColor } from "./appearanceAccent";
+import { applyThemePalette } from "./themePalette";
 
 const root = document.documentElement;
 const token = (name: string) => getComputedStyle(root).getPropertyValue(name).trim();
+const ACCENT_TOKENS = [
+  "--primary",
+  "--primary-foreground",
+  "--ring",
+  "--message-action",
+  "--message-action-foreground",
+  "--message-action-hover",
+] as const;
+const readAccentTokens = () => ACCENT_TOKENS.map(token);
 
-/** Runs `check` on a root with a theme applied, then puts the root back as it was. */
-function withThemedRoot(check: () => void): void {
+/** Runs `check` with Ocean applied the way the app applies it, then puts the root back. */
+function withOcean(mode: "light" | "dark", check: () => void): void {
   const style = root.getAttribute("style");
   const wasDark = root.classList.contains("dark");
-  root.dataset.themeId = "ocean";
+  applyThemePalette(OCEAN_THEME.id, mode);
+  root.classList.toggle("dark", mode === "dark");
   try {
     check();
   } finally {
@@ -25,48 +38,59 @@ function withThemedRoot(check: () => void): void {
 }
 
 describe("applyAccentColor", () => {
-  it("lays the hue over a theme's primary in each appearance", () => {
-    withThemedRoot(() => {
-      applyAccentColor(root, "violet");
+  it.each(["light", "dark"] as const)(
+    "lays the hue over a theme's primary and ring in %s",
+    (mode) => {
+      withOcean(mode, () => {
+        applyAccentColor(root, "violet");
 
-      root.classList.remove("dark");
-      expect(token("--primary")).toBe(ACCENT_PALETTE.violet.light.primary);
-      expect(token("--ring")).toBe(ACCENT_PALETTE.violet.light.ring);
+        expect(token("--primary")).toBe(ACCENT_PALETTE.violet[mode].primary);
+        expect(token("--primary-foreground")).toBe(ACCENT_PALETTE.violet[mode].primaryForeground);
+        expect(token("--ring")).toBe(ACCENT_PALETTE.violet[mode].primary);
+      });
+    },
+  );
 
-      root.classList.add("dark");
-      expect(token("--primary")).toBe(ACCENT_PALETTE.violet.dark.primary);
-      expect(token("--primary-foreground")).toBe(ACCENT_PALETTE.violet.dark.primaryForeground);
-    });
-  });
+  it.each(["light", "dark"] as const)(
+    "returns to the theme's own tokens in %s when set back to theme",
+    (mode) => {
+      withOcean(mode, () => {
+        const themeTokens = readAccentTokens();
+        applyAccentColor(root, "teal");
+        expect(readAccentTokens()).not.toEqual(themeTokens);
 
-  it("returns to the theme's own primary and leaves no variables when set back to theme", () => {
-    withThemedRoot(() => {
-      const themePrimary = token("--primary");
-      applyAccentColor(root, "teal");
+        applyAccentColor(root, "theme");
 
-      applyAccentColor(root, "theme");
-
-      expect(token("--primary")).toBe(themePrimary);
-      expect(root.dataset.accentColor).toBeUndefined();
-      expect(root.style.getPropertyValue("--accent-light-primary")).toBe("");
-    });
-  });
+        expect(token("--primary")).toBe(
+          getThemeColorsForAppearance(OCEAN_THEME, mode)?.messageAction,
+        );
+        expect(readAccentTokens()).toEqual(themeTokens);
+        expect(root.dataset.accentColor).toBeUndefined();
+        expect(root.style.getPropertyValue("--accent-light-primary")).toBe("");
+      });
+    },
+  );
 });
 
 describe("interface density tokens", () => {
-  it("tighten the sidebar rows when compact and restore them when comfortable", () => {
-    withThemedRoot(() => {
-      const comfortable = token("--sidebar-thread-row-height");
-
-      root.dataset.interfaceDensity = "compact";
-      const compact = token("--sidebar-thread-row-height");
-      root.dataset.interfaceDensity = "comfortable";
-
-      expect([comfortable, compact, token("--sidebar-thread-row-height")]).toEqual([
-        "2.25rem",
-        "1.75rem",
-        "2.25rem",
-      ]);
-    });
-  });
+  it.each(["--sidebar-thread-row-height", "--sidebar-folder-header-height"])(
+    "keep %s at 24px or more at the smallest interface font, compact or not",
+    (variable) => {
+      withOcean("light", () => {
+        const probe = document.createElement("div");
+        probe.style.height = `var(${variable})`;
+        document.body.append(probe);
+        root.style.fontSize = `${MIN_INTERFACE_FONT_SIZE}px`;
+        try {
+          const heights = (["comfortable", "compact"] as const).map((density) => {
+            root.dataset.interfaceDensity = density;
+            return probe.getBoundingClientRect().height;
+          });
+          expect(Math.min(...heights)).toBeGreaterThanOrEqual(24);
+        } finally {
+          probe.remove();
+        }
+      });
+    },
+  );
 });

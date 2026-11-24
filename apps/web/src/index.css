@@ -1409,19 +1409,21 @@ html[data-theme-id]:not([data-theme-id=""]) {
 }
 
 /* The accent color setting lays one palette hue over the theme's primary (appearanceAccent.ts
-   publishes both appearances). Same specificity as the theme block above, so it must follow it. */
+   publishes both appearances). Same specificity as the theme block above, so it must follow it.
+   Hover moves away from the foreground (darker under white text, lighter under dark text), so
+   its label keeps the contrast accentPalette.test.ts checks. */
 html[data-accent-color]:not([data-accent-color=""]) {
   --primary: var(--accent-light-primary);
   --primary-foreground: var(--accent-light-primary-foreground);
-  --ring: var(--accent-light-ring);
+  --ring: var(--primary);
   --message-action: var(--primary);
   --message-action-foreground: var(--primary-foreground);
-  --message-action-hover: color-mix(in srgb, var(--primary) 90%, var(--background));
+  --message-action-hover: color-mix(in srgb, var(--primary) 90%, black);
 
   @variant dark {
     --primary: var(--accent-dark-primary);
     --primary-foreground: var(--accent-dark-primary-foreground);
-    --ring: var(--accent-dark-ring);
+    --message-action-hover: color-mix(in srgb, var(--primary) 90%, white);
   }
 }
 
@@ -2319,8 +2321,8 @@ code {
 }
 
 /* Interface density. Comfortable is the default; compact tightens the sidebar rows, the
-   timeline gaps and the settings rows. Every pointer target stays at 24px or more. The
-   timeline's estimated row height (TIMELINE_ESTIMATED_ITEM_SIZE) follows the same switch. */
+   timeline gaps and the settings rows. Pointer targets stay at 24px or more down to the 12px
+   interface font. The timeline's row estimate (TIMELINE_ESTIMATED_ITEM_SIZE) follows it too. */
 :root {
   --sidebar-thread-row-height: 2.25rem;
   --sidebar-thread-card-height: 4.875rem;
@@ -2334,9 +2336,9 @@ code {
 }
 
 :root[data-interface-density="compact"] {
-  --sidebar-thread-row-height: 1.75rem;
+  --sidebar-thread-row-height: max(24px, 1.75rem);
   --sidebar-thread-card-height: 4.25rem;
-  --sidebar-folder-header-height: 1.75rem;
+  --sidebar-folder-header-height: max(24px, 1.75rem);
   --sidebar-row-gap: 0.0625rem;
   --timeline-gap-grouped: 0.125rem;
   --timeline-gap-tight: 0.25rem;
