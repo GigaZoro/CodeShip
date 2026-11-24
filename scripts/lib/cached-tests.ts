@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Vite loads this before dependency installation and service initialization.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeOS from "node:os";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -22,10 +24,298 @@ interface CachedTestTask {
     | false
     | {
         env: Array<string>;
-        input: Array<string | { auto: true }>;
+        untrackedEnv?: Array<string>;
+        input: Array<string | { auto: true } | { pattern: string; base: "workspace" }>;
         output: Array<string>;
       };
 }
+
+// Keep a large selection out of argv and the environment block, especially on Windows.
+const requestFile = "T3_CHECK_CHANGED_TEST_REQUEST";
+const changedTestEnv = "T3_CHECK_CHANGED_TEST_RUNTIME";
+const testInstallEnv = "T3_CHECK_CHANGED_TEST_INSTALL";
+const testWorkersEnv = "T3CODE_TEST_MAX_WORKERS";
+const checkoutEnv = "T3_CHECK_CHANGED_TEST_CHECKOUT";
+const searchPathEnv = "T3_CHECK_CHANGED_TEST_PATH";
+// A group runs its files as CI runs the package's suite, under the projects its script names; a
+// filter such as -t would let it pass after running only some of their tests. Option values are
+// literal, so no shell syntax such as `||` reaches the command.
+const SUPPORTED_TEST_SCRIPT =
+  /^vp test run(?: --passWithNoTests| --(?:config|dir|project) (?!-)[\w.@/:+=,-]+)*$/;
+const workspaceRoot = NodePath.resolve(import.meta.dirname, "../..");
+// Tests run without the user's global Git config, as on CI. Git for Windows maps /dev/null too.
+const testGitEnv = { GIT_CONFIG_GLOBAL: "/dev/null" };
+const testEnv = [
+  changedTestEnv,
+  ...Object.keys(vitePlusTestDefaults),
+  ...Object.keys(testGitEnv),
+  testInstallEnv,
+  checkoutEnv,
+  searchPathEnv,
+  // DEFAULT_UNTRACKED_ENV in vite-task a3c087a (Vite+ 1.4.0), less PWD and PATH: they name this
+  // checkout, so the search path is tracked through searchPathEnv instead.
+  "HOME",
+  "USER",
+  "TZ",
+  "LANG",
+  "SHELL",
+  "XDG_RUNTIME_DIR",
+  "XAUTHORITY",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "CI",
+  "NODE_OPTIONS",
+  "COREPACK_*",
+  "NPM_CONFIG_STORE_DIR",
+  "PNPM_HOME",
+  "LD_LIBRARY_PATH",
+  "LD_PRELOAD",
+  "DYLD_FALLBACK_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  "LIBPATH",
+  "DISPLAY",
+  "TMP",
+  "TEMP",
+  // Not in that list, but os.tmpdir() reads it outside Windows.
+  "TMPDIR",
+  "VERCEL",
+  "VERCEL_*",
+  "NEXT_*",
+  "USE_OUTPUT_FOR_EDGE_FUNCTIONS",
+  "NOW_BUILDER",
+  "VC_MICROFRONTENDS_CONFIG_FILE_NAME",
+  "GITHUB_*",
+  "RUNNER_*",
+  "ACTIONS_ID_TOKEN_REQUEST_URL",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROGRAMDATA",
+  "SYSTEMROOT",
+  "SYSTEMDRIVE",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "WINDIR",
+  "PATHEXT",
+  "ProgramFiles",
+  "ProgramFiles[(]x86[)]",
+  "ELECTRON_RUN_AS_NODE",
+  "JB_INTERPRETER",
+  "_JETBRAINS_TEST_RUNNER_RUN_SCOPE_TYPE",
+  "JB_IDE_*",
+  "VSCODE_*",
+  "DOCKER_*",
+  "BUILDKIT_*",
+  "COMPOSE_*",
+  "PLAYWRIGHT_*",
+  "VP_*",
+  "*_TOKEN",
+  "LC_*",
+  "NODE_ENV",
+  "VITE_*",
+  "!VITE_CACHE_PATH",
+  "VITEST*",
+  "T3_TEST_*",
+];
+
+export function changedTestRuntime(
+  platform: string,
+  architecture: string,
+  capabilities: Record<string, boolean>,
+  git: string,
+) {
+  // Tests skip cases as root that another user runs, some name paths after the user, and some
+  // check the modes of files they create, which the umask narrows.
+  const user = process.getuid?.() ?? null;
+  const umask = process.umask();
+  return NodeCrypto.createHash("sha256")
+    .update(
+      JSON.stringify([process.version, platform, architecture, user, umask, capabilities, git]),
+    )
+    .digest("hex");
+}
+
+const GIT_PROBE_TIMEOUT_MS = 30_000;
+// Past spawnSync's 1 MiB default, which a large system config would overflow.
+const GIT_PROBE_MAX_BYTES = 64 * 1024 * 1024;
+const sha256 = (data: string | Buffer) =>
+  NodeCrypto.createHash("sha256").update(data).digest("hex");
+
+/**
+ * What git reads in a test beyond the repositories it makes: its version, the system config, and
+ * the per-user ignore and attributes files it reads by default. Tests get no other GIT_* variable
+ * and no XDG_CONFIG_HOME. Files and programs the system config names belong to the machine, as
+ * git itself does.
+ */
+export function gitEnvironment(env: NodeJS.ProcessEnv = process.env) {
+  const gitEnv = {
+    ...Object.fromEntries(
+      Object.entries(env).filter(([key]) => !key.startsWith("GIT_") && key !== "XDG_CONFIG_HOME"),
+    ),
+    ...testGitEnv,
+  };
+  const git = (args: ReadonlyArray<string>) => {
+    const result = NodeChildProcess.spawnSync("git", args, {
+      cwd: NodeOS.tmpdir(),
+      env: gitEnv,
+      timeout: GIT_PROBE_TIMEOUT_MS,
+      maxBuffer: GIT_PROBE_MAX_BYTES,
+    });
+    if (result.error) {
+      if ("code" in result.error && result.error.code === "ENOENT") return undefined;
+      throw result.error;
+    }
+    if (result.status !== 0) {
+      throw new Error(`git ${args.join(" ")} failed: ${result.stderr.toString()}`);
+    }
+    // Raw bytes: decoding would read two paths that differ in a byte invalid in UTF-8 as one.
+    return result.stdout;
+  };
+  const version = git(["version"]);
+  if (version === undefined) return "no git";
+  const config = git(["config", "-z", "--list", "--show-scope", "--show-origin"]) ?? "";
+  const home = env.HOME || NodeOS.homedir();
+  const defaults = ["ignore", "attributes"].map((name) => {
+    const content = unlessAbsent(() =>
+      NodeFS.readFileSync(NodePath.join(home, ".config/git", name)),
+    );
+    return content === undefined ? null : sha256(content);
+  });
+  return JSON.stringify({ version: version.toString().trim(), config: sha256(config), defaults });
+}
+
+const readInstallFile = (file: string) => unlessAbsent(() => NodeFS.readFileSync(file));
+
+export function installFingerprint(root = workspaceRoot) {
+  const modules = NodePath.join(root, "node_modules");
+  const lock = readInstallFile(NodePath.join(modules, ".pnpm", "lock.yaml"));
+  const manifest = readInstallFile(NodePath.join(modules, ".modules.yaml"));
+  const hash = NodeCrypto.createHash("sha256")
+    .update(lock ?? "")
+    .update("\0");
+  if (!manifest) return hash.digest("hex");
+
+  let normalized: unknown;
+  try {
+    normalized = JSON.parse(manifest.toString());
+  } catch {
+    return hash.update(manifest).digest("hex");
+  }
+  if (typeof normalized === "object" && normalized !== null && "prunedAt" in normalized) {
+    delete normalized.prunedAt;
+  }
+  return hash.update(JSON.stringify(normalized)).digest("hex");
+}
+
+// A backslash separates path parts only on Windows; elsewhere it can be part of a file name.
+const climbsOut = (path: string) => path.split(NodePath.sep === "\\" ? /[\\/]/ : "/")[0] === "..";
+
+// Search path entries inside the checkout, written relative to it, so two checkouts compare equal.
+// Only normalized entries qualify: `..` after a symlink can leave the checkout. A relative entry
+// resolves against a group's folder in the checkout, so one that climbs out of it is checkout-specific.
+export function checkoutSearchPath(searchPath: string, root = workspaceRoot) {
+  return JSON.stringify(
+    searchPath.split(NodePath.delimiter).map((entry) => {
+      const normalized = NodePath.normalize(entry) === entry;
+      if (!NodePath.isAbsolute(entry)) {
+        return entry === "" || (normalized && !climbsOut(entry)) ? entry : { root, entry };
+      }
+      const relative = NodePath.relative(root, entry);
+      return normalized && !NodePath.isAbsolute(relative) && !climbsOut(relative)
+        ? { checkout: relative }
+        : entry;
+    }),
+  );
+}
+
+export function changedTestRequestEnv(
+  file: string,
+  runtime: string,
+  workers: number,
+  cache: string,
+  checkout: string,
+  install = installFingerprint(),
+) {
+  return {
+    [requestFile]: file,
+    [changedTestEnv]: runtime,
+    [testInstallEnv]: install,
+    T3_CACHED_TESTS: "",
+    [testWorkersEnv]: String(workers),
+    [checkoutEnv]: checkout,
+    [searchPathEnv]: checkoutSearchPath(process.env.PATH ?? ""),
+    VITE_CACHE_PATH: cache,
+    ...testGitEnv,
+  };
+}
+
+// Windows cannot start a process whose command line passes 32,767 characters, and vp passes
+// its arguments on to the tool it starts, so a long list of paths runs in several steps.
+export const ARGUMENT_CHARACTERS = 24_000;
+
+// A leading U+FEFF is part of the first name, so neither decoder drops it.
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const lossyUtf8 = new TextDecoder("utf-8", { ignoreBOM: true });
+
+function gitPath(name: Uint8Array) {
+  try {
+    return strictUtf8.decode(name);
+  } catch {
+    throw new Error(`A file name is not UTF-8, so rename it: ${lossyUtf8.decode(name)}`);
+  }
+}
+
+/**
+ * The paths of a `git -z` listing. A lossy decode would name a file that is not on disk, so a test
+ * whose name is not UTF-8 would drop out of the run unseen.
+ */
+export function gitPaths(stdout: Uint8Array) {
+  const paths: Array<string> = [];
+  let start = 0;
+  for (let end = stdout.indexOf(0); end !== -1; end = stdout.indexOf(0, start)) {
+    paths.push(gitPath(stdout.subarray(start, end)));
+    start = end + 1;
+  }
+  paths.push(gitPath(stdout.subarray(start)));
+  return paths;
+}
+
+const ABSENT = new Set(["ENOENT", "ENOTDIR"]);
+
+/** What `read` finds at a path, or undefined when nothing is there, as under a file. */
+export function unlessAbsent<A>(read: () => A): A | undefined {
+  try {
+    return read();
+  } catch (error) {
+    if (error instanceof Error && "code" in error && ABSENT.has(String(error.code)))
+      return undefined;
+    throw error;
+  }
+}
+
+const ASCII = /^\p{ASCII}*$/u;
+const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
+
+/** Whether a regular file is at `path`, following symlinks. */
+export const isFileAt = (path: string) =>
+  unlessAbsent(() => NodeFS.statSync(path))?.isFile() === true;
+
+/**
+ * A name as a disk that ignores case and Unicode normalization compares it, folded one character
+ * at a time as full case folding does: `ß`, `ẞ` and `ss` key alike, and so does a final sigma.
+ * Default-ignorable code points, such as a zero-width joiner, which such disks may skip, drop out.
+ */
+export const nameKey = (name: string) =>
+  ASCII.test(name)
+    ? name.toLowerCase()
+    : Array.from(name.normalize("NFC").replace(DEFAULT_IGNORABLE, ""), (character) =>
+        character.toLowerCase().toUpperCase().toLowerCase(),
+      )
+        .join("")
+        .normalize("NFC");
+
+/** Vendored read-only references, as any spelling of `.repos` a disk takes for it: no workspace
+ * builds or tests the files in them. */
+export const isReferenceRepoPath = (file: string) => nameKey(file).startsWith(".repos/");
 
 /** Git, Vitest filters and cache keys use slash-separated paths on every host. */
 export function relativeTestPath(base: string, target: string): string {
@@ -105,8 +395,10 @@ export function matchesTestPath(file: string, filters: ReadonlyArray<string | un
 
 export function cachedTestTasks(
   raw: string | undefined,
-  root = NodePath.resolve(import.meta.dirname, "../.."),
+  root = workspaceRoot,
+  changed = !raw && !!process.env[requestFile],
 ): Record<string, CachedTestTask> {
+  if (!raw && changed) raw = NodeFS.readFileSync(process.env[requestFile]!, "utf8");
   if (!raw) return {};
   const request: unknown = JSON.parse(raw);
   if (
@@ -125,6 +417,11 @@ export function cachedTestTasks(
   if (!Array.isArray(uncached) || !uncached.every((file) => typeof file === "string")) {
     throw new Error("Invalid uncached test files");
   }
+  const completed: unknown = changed && "completed" in request ? request.completed : [];
+  if (!Array.isArray(completed) || !completed.every((task) => typeof task === "string")) {
+    throw new Error("Invalid completed test tasks");
+  }
+  const skip = new Set(completed);
   const files: Array<string> = [];
   for (const file of request.files) {
     if (
@@ -142,11 +439,46 @@ export function cachedTestTasks(
     ...missingVitePlusTestEnv().map(([name, value]) => `${name}=${quoteArgument(value)}`),
     "node",
   ].join(" ");
-  const sorted = [...new Set(files)].sort();
+  // The checked tree uses Git's spelling. The exact-file runner compares Vitest's on-disk spelling.
+  const resolve = testPathResolver(root);
+  const canonical = (file: string) => {
+    const entry = resolve(file);
+    if (!entry) throw new Error(`Selected test is missing: ${file}`);
+    return entry;
+  };
+  const sorted = [...new Set(changed ? files.map(canonical) : files)].sort();
+  const uncachedFiles = new Set(changed ? uncached.map((file) => resolve(file) ?? file) : uncached);
+  const testScripts = new Map<string, string | undefined>();
+  function packageTest(directory: string) {
+    if (!testScripts.has(directory)) {
+      const path = NodePath.join(directory, "package.json");
+      const manifest: unknown = NodeFS.existsSync(path)
+        ? JSON.parse(NodeFS.readFileSync(path, "utf8"))
+        : undefined;
+      testScripts.set(
+        directory,
+        manifest &&
+          typeof manifest === "object" &&
+          "scripts" in manifest &&
+          manifest.scripts &&
+          typeof manifest.scripts === "object" &&
+          "test" in manifest.scripts &&
+          typeof manifest.scripts.test === "string"
+          ? manifest.scripts.test
+          : undefined,
+      );
+    }
+    return testScripts.get(directory);
+  }
   const packages = new Map<string, Array<string>>();
   for (const file of sorted) {
     let directory = NodePath.dirname(NodePath.join(root, file));
-    while (directory !== root && !NodeFS.existsSync(NodePath.join(directory, "package.json"))) {
+    while (
+      directory !== root &&
+      (changed
+        ? packageTest(directory) === undefined
+        : !NodeFS.existsSync(NodePath.join(directory, "package.json")))
+    ) {
       directory = NodePath.dirname(directory);
     }
     const entries = packages.get(directory) ?? [];
@@ -154,56 +486,97 @@ export function cachedTestTasks(
     packages.set(directory, entries);
   }
   for (const [directory, entries] of packages) {
-    const manifest: unknown = JSON.parse(
-      NodeFS.readFileSync(NodePath.join(directory, "package.json"), "utf8"),
-    );
-    const command =
-      directory !== root &&
-      typeof manifest === "object" &&
-      manifest !== null &&
-      "scripts" in manifest &&
-      typeof manifest.scripts === "object" &&
-      manifest.scripts !== null &&
-      "test" in manifest.scripts &&
-      typeof manifest.scripts.test === "string"
-        ? manifest.scripts.test
-        : "vp test run";
-    if (command !== "vp test run" && !command.startsWith("vp test run ")) {
-      throw new Error(`Unsupported test command in ${directory}`);
+    const command = (directory !== root && packageTest(directory)) || "vp test run";
+    if (
+      (changed && !SUPPORTED_TEST_SCRIPT.test(command)) ||
+      (command !== "vp test run" && !command.startsWith("vp test run "))
+    ) {
+      throw new Error(`Unsupported test command in ${directory}: ${command}`);
     }
     const runner = relativeTestPath(
       directory,
       NodePath.join(root, "scripts/lib/run-cached-test-group.ts"),
     );
     const options = command.slice("vp test run".length);
-    const cacheable = entries.filter((file) => !uncached.includes(file));
+    const cacheable = entries.filter((file) => !uncachedFiles.has(file));
     const groups: Array<Array<string>> = [];
-    for (let index = 0; index < cacheable.length; index += request.groupSize) {
-      groups.push(cacheable.slice(index, index + request.groupSize));
+    let group: string[] = [];
+    let length = 0;
+    for (const file of cacheable) {
+      const size = quoteArgument(file).length + 3;
+      if (
+        group.length &&
+        (group.length >= request.groupSize || length + size > ARGUMENT_CHARACTERS)
+      ) {
+        groups.push(group);
+        group = [];
+        length = 0;
+      }
+      group.push(file);
+      length += size;
+      // A content-defined boundary lets groups beyond an inserted or removed test keep their keys.
+      if (
+        changed &&
+        NodeCrypto.createHash("sha256").update(file).digest().readUInt32BE() % request.groupSize ===
+          0
+      ) {
+        groups.push(group);
+        group = [];
+        length = 0;
+      }
     }
-    groups.push(...entries.filter((file) => uncached.includes(file)).map((file) => [file]));
+    if (group.length) groups.push(group);
+    groups.push(...entries.filter((file) => uncachedFiles.has(file)).map((file) => [file]));
+    const server = changed && directory === NodePath.join(root, "apps/server");
+    let previousServerTask: string | undefined;
     for (const group of groups) {
       const key = NodeCrypto.createHash("sha256").update(group.join("\0")).digest("hex");
       const filters = group.map((file) => {
         const relative = relativeTestPath(directory, NodePath.join(root, file));
         return quoteArgument("./" + relative);
       });
-      tasks[`test-cache:${key}`] = {
-        command: `${nodeCommand} ${quoteArgument(runner)} ${filters.join(" ")} --${options}`,
+      const task = `test-cache:${key}`;
+      if (skip.has(task)) continue;
+      const uncachedGroup = uncachedFiles.has(group[0]!);
+      const cacheEnv = changed ? `VITE_CACHE_PATH= ${uncachedGroup ? requestFile + "= " : ""}` : "";
+      const moduleCache = changed
+        ? " --fsModuleCachePath " +
+          quoteArgument(
+            relativeTestPath(
+              directory,
+              NodePath.join(
+                root,
+                "node_modules/.vitest-cache/check-changed",
+                process.env[testInstallEnv] ?? "",
+              ),
+            ),
+          )
+        : "";
+      tasks[task] = {
+        command: `${cacheEnv}${nodeCommand} ${quoteArgument(runner)} ${filters.join(" ")} --${options}${moduleCache}`,
+        ...(previousServerTask ? { dependsOn: [previousServerTask] } : {}),
         ...(directory === root ? {} : { cwd: relativeTestPath(root, directory) }),
-        cache: uncached.includes(group[0]!)
+        cache: uncachedGroup
           ? false
           : {
-              env: Object.keys(vitePlusTestDefaults),
+              env: changed ? testEnv : Object.keys(vitePlusTestDefaults),
+              ...(changed ? { untrackedEnv: [testWorkersEnv] } : {}),
               // Vitest reads and rewrites these caches while running otherwise unchanged tests.
               input: [
                 { auto: true },
                 "!**/node_modules/.vite/**",
                 "!**/node_modules/.vitest-cache/**",
+                ...(changed
+                  ? ["!.git", "!.git/**"].map((pattern) => ({
+                      pattern,
+                      base: "workspace" as const,
+                    }))
+                  : []),
               ],
               output: [],
             },
       };
+      if (server) previousServerTask = task;
     }
   }
   return {

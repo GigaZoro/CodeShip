@@ -10,6 +10,8 @@ import {
 import { validateNestedVitestOptions } from "./cached-vitest-options.ts";
 
 async function runCachedTestGroup(argv: string[]) {
+  // A gate group masks the private Vite+ cache. Nested vp commands need their own default cache.
+  if (process.env.VITE_CACHE_PATH === "") delete process.env.VITE_CACHE_PATH;
   const separator = argv.indexOf("--");
   const files = separator < 0 ? argv : argv.slice(0, separator);
   const packageArgs = separator < 0 ? [] : argv.slice(separator + 1);

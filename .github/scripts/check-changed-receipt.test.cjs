@@ -5,7 +5,12 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { recordPass, requirePass, workingTree } = require("./check-changed-receipt.cjs");
+const {
+  alternateObjectDirectory,
+  recordPass,
+  requirePass,
+  workingTree,
+} = require("./check-changed-receipt.cjs");
 const { TURN_ENV, tryAcquire } = require("./landing-turn.cjs");
 
 const repoRoot = path.resolve(__dirname, "../..");
@@ -67,7 +72,17 @@ const fixture = (root) => {
       stdio: "pipe",
       env: { ...process.env, [TURN_ENV]: turn },
     });
-  return { work, git, write, commit, push, base };
+  // workingTree's scratch object directory, which reads of its tree name as an alternate.
+  const objects = path.join(root, "objects");
+  fs.mkdirSync(objects);
+  const show = (object) =>
+    execFileSync("git", ["cat-file", "-p", object], {
+      cwd: work,
+      encoding: "utf8",
+      stdio: "pipe",
+      env: { ...process.env, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateObjectDirectory(objects) },
+    }).trim();
+  return { work, git, write, commit, push, base, objects, show };
 };
 
 const withRoot = (run) => {
@@ -79,9 +94,19 @@ const withRoot = (run) => {
   }
 };
 
+test("reads the working tree where the checkout and scratch objects hold the path delimiter", () =>
+  withRoot((root) => {
+    // Windows, whose delimiter is `;`, forbids `"` in a name; there its root's backslashes are escaped.
+    const named = path.join(root, path.delimiter === ";" ? "a;b" : 'a:"b');
+    fs.mkdirSync(named);
+    const { write, objects, show, work } = fixture(named);
+    write("app.txt", "two\n");
+    assert.equal(show(`${workingTree(work, objects)}:app.txt`), "two");
+  }));
+
 test("main refuses a push until check:changed passed for the exact tree it pushes", () =>
   withRoot((root) => {
-    const { work, write, commit, push, base } = fixture(root);
+    const { work, write, commit, push, base, objects } = fixture(root);
     write("docs/release-notes.md", `${SECOND_NOTE}\n${FIRST_NOTE}`);
     write("app.txt", "two\n");
     write("helper.txt", "read by app.txt\n");
@@ -92,7 +117,7 @@ test("main refuses a push until check:changed passed for the exact tree it pushe
     assert.match(unchecked.stderr, /check:changed` has not passed/);
 
     // The pass covered helper.txt while it was untracked, so it does not describe a commit without it.
-    recordPass(work, workingTree(work), base);
+    recordPass(work, workingTree(work, objects), base);
     assert.notEqual(push().status, 0);
 
     commit("helper.txt");
@@ -102,15 +127,46 @@ test("main refuses a push until check:changed passed for the exact tree it pushe
 
 test("computing the working tree writes no objects to the repository", () =>
   withRoot((root) => {
-    const { work, git, write } = fixture(root);
+    const { work, git, write, objects } = fixture(root);
     write("app.txt", "edited but never committed\n");
     write("untracked.txt", "new\n");
     const before = git("count-objects", "-v");
-    const tree = workingTree(work);
+    const tree = workingTree(work, objects);
     assert.equal(git("count-objects", "-v"), before);
     // The id is what a commit of this tree would get.
     git("add", "--all");
     assert.equal(git("write-tree"), tree);
+  }));
+
+test("the checked tree holds a same-size edit made in the second the index was written", (t) =>
+  withRoot((root) => {
+    const { work, git, write, objects, show } = fixture(root);
+    // Whole-second stats without ctime let the edit below match the index's cached stat, as a
+    // same-size edit in the index's second does.
+    git("config", "core.checkStat", "minimal");
+    git("config", "core.trustctime", "false");
+    const stamp = (file) => fs.utimesSync(file, 1_700_000_000, 1_700_000_000);
+    const app = path.join(work, "app.txt");
+    stamp(app);
+    git("add", "app.txt");
+    const index = git("rev-parse", "--path-format=absolute", "--git-path", "index");
+    stamp(index);
+    write("app.txt", "two\n");
+    stamp(app);
+    assert.equal(show(`${workingTree(work, objects)}:app.txt`), "two");
+
+    // Node cannot set this time: the index's second, whose milliseconds round up to the next one.
+    const statSync = fs.statSync;
+    t.mock.method(fs, "statSync", (file, options) =>
+      file !== index
+        ? statSync(file, options)
+        : options?.bigint
+          ? { mtimeNs: 1_700_000_000_999_999_999n, mtimeMs: 1_700_000_000_999n }
+          : { mtimeMs: 1_700_000_001_000 },
+    );
+    write("app.txt", "six\n");
+    stamp(app);
+    assert.equal(show(`${workingTree(work, objects)}:app.txt`), "six");
   }));
 
 test("a pass covers the push only when it compared against the commit main is at", () =>
@@ -135,11 +191,11 @@ test("a pass covers the push only when it compared against the commit main is at
 
 test("a pass is never recorded for a tree computed while files are marked assume-unchanged or skip-worktree", () =>
   withRoot((root) => {
-    const { work, git, write } = fixture(root);
+    const { work, git, write, objects } = fixture(root);
     for (const flag of ["--assume-unchanged", "--skip-worktree"]) {
       git("update-index", flag, "app.txt");
       write("app.txt", "edited behind the mark\n");
-      assert.throws(() => workingTree(work), /app\.txt/);
+      assert.throws(() => workingTree(work, objects), /app\.txt/);
       git("update-index", flag.replace("--", "--no-"), "app.txt");
       git("checkout", "--", "app.txt");
     }

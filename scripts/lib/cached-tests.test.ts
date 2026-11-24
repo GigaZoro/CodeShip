@@ -1,12 +1,18 @@
 // @effect-diagnostics nodeBuiltinImport:off - verifies native task caching in isolated subprocesses.
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
-import { cachedTestTasks, matchesTestPath, relativeTestPath } from "./cached-tests.ts";
+import {
+  changedTestRequestEnv,
+  gitPaths,
+  cachedTestTasks,
+  matchesTestPath,
+  relativeTestPath,
+} from "./cached-tests.ts";
 
 describe("cachedTestTasks", () => {
   it("matches Git and shard selections to the same package, file and cache exception", () => {
@@ -88,6 +94,69 @@ describe("cachedTestTasks", () => {
         ),
       ),
     ).toBe(true);
+  });
+
+  it("names a listed file whose name is not UTF-8 rather than leaving it out", () => {
+    const bom = String.fromCodePoint(0xfeff);
+    expect(gitPaths(Buffer.from(`${bom}a.test.ts\0研究.test.ts\0`))).toEqual([
+      `${bom}a.test.ts`,
+      "研究.test.ts",
+      "",
+    ]);
+    const listing = Buffer.concat([Buffer.from("\uFFFD.test.ts\0"), Buffer.from([0x61, 0xff])]);
+    expect(() => gitPaths(listing)).toThrow(/not UTF-8, so rename it: a\uFFFD$/);
+  });
+  it("uses the requested workers and chains only pending server tasks", async () => {
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cached-test-request-"));
+    try {
+      const request = NodePath.join(directory, "request.json");
+      const files = [
+        "apps/server/src/server.test.ts",
+        "apps/server/src/cli/project.test.ts",
+        "apps/server/src/cli/update.test.ts",
+        "apps/server/src/cli/theme.test.ts",
+        "apps/web/src/appearanceFonts.browser.test.ts",
+        "apps/web/src/authBootstrap.test.ts",
+      ];
+      const raw = { files, groupSize: 1 };
+      const keys = cachedTestTasks(JSON.stringify(raw))["test-cache"]!.dependsOn!;
+      const [first, completed, third, fourth, ...nonServer] = keys as [
+        string,
+        string,
+        string,
+        string,
+        ...Array<string>,
+      ];
+      await NodeFSP.writeFile(request, JSON.stringify({ ...raw, completed: [completed] }));
+      const env = changedTestRequestEnv(
+        request,
+        "runtime",
+        3,
+        NodePath.join(directory, "cache"),
+        "head",
+      );
+      vi.stubEnv("T3_CHECK_CHANGED_TEST_REQUEST", env.T3_CHECK_CHANGED_TEST_REQUEST);
+
+      const tasks = cachedTestTasks(undefined);
+      expect(env.T3CODE_TEST_MAX_WORKERS).toBe("3");
+      expect(tasks["test-cache"]!.dependsOn).toEqual([first, third, fourth, ...nonServer]);
+      expect(tasks[completed]).toBeUndefined();
+      expect(tasks[first]!.dependsOn).toBeUndefined();
+      expect(tasks[third]!.dependsOn).toEqual([first]);
+      expect(tasks[fourth]!.dependsOn).toEqual([third]);
+      for (const key of nonServer) expect(tasks[key]!.dependsOn).toBeUndefined();
+      for (const key of tasks["test-cache"]!.dependsOn!) {
+        const task = tasks[key]!;
+        expect(task.command).not.toContain("--maxWorkers");
+        expect(task.cache && task.cache.untrackedEnv).toEqual(["T3CODE_TEST_MAX_WORKERS"]);
+        expect(task.cache && task.cache.env).not.toContain("T3CODE_TEST_MAX_WORKERS");
+      }
+      const ci = cachedTestTasks(JSON.stringify(raw));
+      for (const key of keys) expect(ci[key]!.dependsOn).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("does not add tasks without an explicit request", () => {

@@ -240,12 +240,17 @@ On a large machine a run takes about as long as its slowest step, usually
 knip's exports pass at about 10 s. Pass `--concurrency <n>` or set `CHECK_CHANGED_CONCURRENCY` to
 change the limit (`1` runs the steps one by one). A step that runs past `--timeout <seconds>` or
 `CHECK_CHANGED_TIMEOUT` (default 900) is killed with every process it started and reported as
-`TIMEOUT`, not as a failing check. When the files are exactly those of the last passing run, it prints that
-run's summary instead of running again. Any change to a file, the install, or a generated file runs
-the checks again. Editing a file of the change while the checks run fails the run: a test run keeps
-the version of each file it loaded first, so its result would mix old and new code. A generated
-file that the checks themselves rewrite only keeps that pass out of the cache. The test step's
-limit grows by two minutes per selected test file, because server test files run one at a time.
+`TIMEOUT`. On a retry at the same HEAD, the test step reuses completed Vitest groups whose
+inputs still match. Vite+ tracks files read by each group. The gate also checks the runtime,
+installation, environment and executable modes. Server groups run one at a time. Tests that
+depend on external programs, write required reports, or use live provider credentials run
+uncached. When the whole-run cache matches, the gate rechecks the test groups before recording
+the pass. A timeout or failed check never produces a push receipt.
+
+A test step publishes its completed groups when it exits and its inputs still match. Killing
+the coordinator before it can publish loses that attempt's progress. Editing source during the
+gate invalidates the result. Generated declarations written by the checks keep the pass out of
+the whole-run cache. The test step's limit grows by two minutes per selected file.
 
 Each pass, a cached one included, records the tree a commit of everything it checked would get:
 tracked changes and untracked files that are not ignored. The receipt lives in the repository's git
