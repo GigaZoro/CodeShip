@@ -7,7 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 
-import { makeReplayServerConfig } from "./ProviderReplayHarness.ts";
+import { makeReplayServerConfig } from "./ReplayServerConfig.ts";
 
 it.effect.each([
   { outcome: "success", finish: Effect.void },

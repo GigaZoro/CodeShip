@@ -1,3 +1,7 @@
+## 2026-11-24 — Faster replay fixture cleanup checks
+
+- Replay fixture cleanup tests now load only the configuration they exercise, shortening local test runs.
+
 ## 2026-11-24 — Agent launches and model changes refuse options the model does not offer
 
 - `t3_thread_launch` now checks the options of a given model as `delegate_task` and `create_threads` do, and refuses one the model or account does not offer, naming it, instead of starting a thread that silently runs without it (such as `serviceTier` on a managed Codex account).
