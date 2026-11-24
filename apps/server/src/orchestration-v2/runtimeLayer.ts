@@ -453,6 +453,7 @@ export const layerProduction = Layer.mergeAll(
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),
 ).pipe(
   Layer.provide(ResourceCleanupService.layer.pipe(Layer.provide(layerScheduledTaskProvided))),
+  Layer.provide(layerProjectSetupScriptRunner),
   // Outside ResourceCleanupService, which builds the memoized session manager first: it
   // reads ProjectService optionally, and without it project overrides fail closed.
   Layer.provide(layerProjectService),

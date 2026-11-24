@@ -1,3 +1,4 @@
+import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import {
   AUTHENTICATION_FAILED_FAILURE_CODE,
@@ -131,6 +132,8 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 
 const layerPlatformTest = Layer.mergeAll(
   ProviderSkillsTestkit.layer,
+  WorktreeSetupTracker.layer,
+  Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
   NodeServices.layer,
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),

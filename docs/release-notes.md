@@ -1,3 +1,17 @@
+## 2026-11-24 — Recover setup on a follow-up to released worktrees
+
+- Worktree release keeps recoverable ignored build output in a private backup when dependencies are verified. Follow-ups show setup progress and retry an unfinished setup in the recreated checkout.
+- The backup includes new build caches inside verified dependency directories. Release keeps the checkout when it finds directory metadata it cannot preserve.
+- Find retained files after a follow-up with `t3 thread backups`. You can cancel a recovered workspace setup, and a failed setup script exits the turn without repeating the install.
+
+## 2026-11-24 — Release worktrees after completed merges
+
+- A completed integration can release its worktree when Git’s leftover auto-merge tree is identical to the committed tree. Active merges and unpreserved trees still keep the checkout.
+
+## 2026-11-24 — Release worktrees with standard CodeShip setup
+
+- A completed run on macOS or Linux can release its worktree when the ignored files match the dependencies and environment links created by standard CodeShip setup. Local additions and edits keep the checkout. Follow-ups run setup in the recreated checkout.
+
 ## 2026-11-24 — Name the files that changed during check:changed
 
 - When files change while `vp run check:changed` runs, its failure now lists the changed paths, up to 20, so the writer can be found without another full run.

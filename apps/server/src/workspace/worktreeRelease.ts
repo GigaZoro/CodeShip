@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
@@ -12,6 +13,13 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { WORKTREE_RELEASE_DIRECTORY } from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import {
+  hasSetupOnlyStatus,
+  inspectSetupProof,
+  readSetupProof,
+  setupFileStamp,
+  setupProofName,
+} from "../../../../scripts/lib/worktree-setup-proof.ts";
 
 const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const durableRef = Schema.String.check(Schema.isPattern(/^refs\/(?:heads|remotes|archive)\//));
@@ -23,6 +31,8 @@ const ReleaseRequest = Schema.Struct({
   durableRef,
   alsoDurable: Schema.optional(Schema.Array(durableRef)),
   savedFiles: Schema.optional(Schema.String),
+  savedSetupExtras: Schema.optional(Schema.Literal(true)),
+  savedAllocatedBytes: Schema.optional(Schema.Number),
   head: Schema.String.check(Schema.isPattern(oid)),
   identity: Schema.String,
 });
@@ -37,6 +47,90 @@ export const worktreeReleaseName = (cwd: string) =>
   NodeCrypto.createHash("sha256").update(cwd).digest("hex") + ".json";
 const releaseFile = (directory: string, cwd: string) =>
   NodePath.join(directory, worktreeReleaseName(cwd));
+const backupName = /^saved-[a-zA-Z0-9_-]+$/;
+const releaseName = /^[a-f0-9]{64}\.json(?:\.(?:setup|releasing|released))?$/;
+
+const readReleaseFile = Effect.fn("WorktreeRelease.readFile")(
+  function* (fs: FileSystem.FileSystem, file: string) {
+    if ((yield* fs.realPath(file)) !== file) return null;
+    const stat = yield* fs.stat(file);
+    if (stat.type !== "File" || stat.size > 128n * 1024n) return null;
+    return yield* decodeReleaseRequest(yield* fs.readFileString(file));
+  },
+  Effect.timeout("5 seconds"),
+  Effect.orElseSucceed(() => null),
+);
+
+export const rememberWorktreeBackup = Effect.fn("WorktreeRelease.rememberBackup")(function* (
+  fs: FileSystem.FileSystem,
+  directory: string,
+  request: ReleaseRequest,
+) {
+  const saved = request.savedFiles;
+  if (saved === undefined) return false;
+  const root = yield* fs.realPath(directory);
+  if (
+    NodePath.dirname(saved) !== root ||
+    !backupName.test(NodePath.basename(saved)) ||
+    !(yield* fs.exists(saved)) ||
+    (yield* fs.realPath(saved)) !== saved ||
+    (yield* fs.stat(saved)).type !== "Directory"
+  )
+    return false;
+  const index = saved + ".json";
+  const known = yield* readReleaseFile(fs, index);
+  if (
+    known?.savedFiles === saved &&
+    known.threadId === request.threadId &&
+    known.runId === request.runId
+  )
+    return false;
+  const staging = yield* fs.makeTempDirectoryScoped({ directory: root, prefix: ".backup-" });
+  const file = NodePath.join(staging, "receipt");
+  yield* fs.writeFileString(file, yield* encodeRequest(request), { mode: 0o600 });
+  // Publish without overwriting an existing association.
+  yield* fs.link(file, index);
+  return true;
+}, Effect.scoped);
+
+export const listWorktreeBackups = Effect.fn("WorktreeRelease.listBackups")(function* (
+  stateDir: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const directory = NodePath.join(stateDir, WORKTREE_RELEASE_DIRECTORY);
+  if (!(yield* fs.exists(directory))) return [];
+  const root = yield* fs.realPath(directory);
+  const names = yield* fs.readDirectory(root);
+  const legacy = new Map<string, ReleaseRequest>();
+  for (const name of names) {
+    if (!releaseName.test(name)) continue;
+    const entry = yield* readReleaseFile(fs, NodePath.join(root, name));
+    if (entry?.savedFiles !== undefined) legacy.set(entry.savedFiles, entry);
+  }
+  const entries = [];
+  for (const name of names.filter((name) => backupName.test(name)).sort()) {
+    const savedFiles = NodePath.join(root, name);
+    const directoryExists = yield* fs.realPath(savedFiles).pipe(
+      Effect.flatMap((real) =>
+        real === savedFiles
+          ? fs.stat(real).pipe(Effect.map((stat) => stat.type === "Directory"))
+          : Effect.succeed(false),
+      ),
+      Effect.orElseSucceed(() => false),
+    );
+    if (!directoryExists) continue;
+    const index = yield* readReleaseFile(fs, savedFiles + ".json");
+    const request = index?.savedFiles === savedFiles ? index : legacy.get(savedFiles);
+    entries.push({
+      savedFiles,
+      threadId: request?.threadId ?? null,
+      runId: request?.runId ?? null,
+      worktreePath: request?.worktreePath ?? null,
+      savedAllocatedBytes: request?.savedAllocatedBytes ?? null,
+    });
+  }
+  return entries;
+});
 
 // Use on-disk spelling for aliases, including Windows short names. A removed checkout still has a receipt.
 export const releasePath = (cwd: string) =>
@@ -55,21 +149,24 @@ export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(functio
   cwd: string,
   threadId: string,
   branch: string,
+  checkoutExists: boolean,
 ) {
   if (!(yield* fs.exists(directory))) return null;
   const parent = yield* releasePath(NodePath.dirname(cwd));
   const canonical = NodePath.join(parent, NodePath.basename(cwd));
   const file = releaseFile(directory, canonical);
-  for (const suffix of [".releasing", ".released"]) {
+  const setupReceipt = file + ".setup";
+  for (const suffix of checkoutExists ? [".setup"] : [".releasing", ".released", ".setup"]) {
     const receipt = file + suffix;
     if (!(yield* fs.exists(receipt))) continue;
-    const request = yield* decodeReleaseRequest(yield* fs.readFileString(receipt));
+    const contents = yield* fs.readFileString(receipt);
+    const request = yield* decodeReleaseRequest(contents);
     if (
       request.threadId === threadId &&
       request.branch === branch &&
       request.worktreePath === canonical
     )
-      return { request, receipt };
+      return { request, contents, receipt, setupReceipt };
   }
   return null;
 });
@@ -122,7 +219,11 @@ const worktreeStatus = (cwd: string) =>
   ]);
 
 const runFile = NodeUtil.promisify(NodeChildProcess.execFile);
-type BackupCapture = { pending: Promise<void> };
+type BackupCapture = {
+  pending: Promise<void>;
+  inodes: Set<string>;
+  allocatedBytes: number;
+};
 
 async function allCompleted<A>(tasks: Promise<A>[]) {
   const results = await Promise.allSettled(tasks);
@@ -146,6 +247,54 @@ async function verifySavedLink(source: string, target: string) {
     copy.nlink < 2n
   )
     throw new Error("Ignored file has no matching retained link");
+}
+
+async function verifyPlainDirectories(
+  platform: NodeJS.Platform,
+  directories: readonly string[],
+  signal: AbortSignal,
+) {
+  if (directories.length === 0 || platform === "win32") return;
+  const options = { signal, timeout: 30_000 };
+  const plain = await (async () => {
+    if (platform === "darwin") {
+      // The mode suffix marks xattrs and ACLs. The flags column is "-" for an ordinary directory.
+      const { stdout, stderr } = await runFile("/bin/ls", ["-ldnObe@", ...directories], options);
+      const entries = stdout.trimEnd().split("\n");
+      return (
+        !stderr &&
+        entries.length === directories.length &&
+        entries.every((entry) => /^d[rwxstST-]{9} +\d+ +\d+ +\d+ +- +/.test(entry))
+      );
+    }
+    if (platform !== "linux") return false;
+    // After dropping timestamps and long path records, any PAX header carries unsupported metadata.
+    const { stdout, stderr } = await runFile(
+      "/bin/tar",
+      [
+        "--create",
+        "--file=-",
+        "--format=pax",
+        "--xattrs",
+        "--acls",
+        "--selinux",
+        "--no-recursion",
+        "--pax-option=delete=atime,delete=ctime,delete=mtime,delete=path",
+        "-C",
+        "/",
+        ...directories.map((directory) => "." + directory),
+      ],
+      { ...options, encoding: "buffer", env: { ...process.env, TAR_OPTIONS: "" } },
+    );
+    const end = directories.length * 512;
+    return (
+      stderr.length === 0 &&
+      stdout.length >= end + 512 &&
+      directories.every((_, index) => stdout[index * 512 + 156] === 53) &&
+      stdout.subarray(end, end + 512).every((byte) => byte === 0)
+    );
+  })().catch(() => false);
+  if (!plain) throw new Error("Ignored directory metadata cannot be preserved");
 }
 
 // Only unlink a staged name while the source still owns the same inode. Never recursively remove a backup.
@@ -175,7 +324,7 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
   capture?: BackupCapture,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const mac = (yield* HostProcess.Platform) === "darwin";
+  const platform = yield* HostProcess.Platform;
   const saved = yield* fs.realPath(savedFiles);
   if (saved !== savedFiles || saved === cwd || saved.startsWith(cwd + NodePath.sep)) return false;
   const pending: string[] = [];
@@ -197,6 +346,7 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
     const batch = pending.splice(-64);
     const results = yield* Effect.tryPromise((signal) => {
       const symlinks = new Map<string, string[]>();
+      const directories: Array<{ source: string; target: string; stat: NodeFS.BigIntStats }> = [];
       const work = allCompleted(
         batch.map(async (name) => {
           const source = NodePath.join(cwd, name);
@@ -216,6 +366,7 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
               !(await NodeFSP.lstat(target)).isDirectory()
             )
               throw new Error("Missing saved directory");
+            directories.push({ source, target, stat: original });
             return (await NodeFSP.readdir(source)).map((child) => {
               if (child.includes("\uFFFD") || child.toLowerCase() === ".git")
                 throw new Error("Uninspectable directory");
@@ -224,7 +375,14 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
           }
           if (!original.isFile() && !original.isSymbolicLink())
             throw new Error("Special file requires its owner");
-          if (capture && mac && original.isSymbolicLink()) {
+          if (capture) {
+            const inode = `${original.dev}/${original.ino}`;
+            if (!capture.inodes.has(inode)) {
+              capture.inodes.add(inode);
+              capture.allocatedBytes += Number(original.blocks * 512n);
+            }
+          }
+          if (capture && platform === "darwin" && original.isSymbolicLink()) {
             const siblings = symlinks.get(targetParent) ?? [];
             siblings.push(source);
             symlinks.set(targetParent, siblings);
@@ -235,6 +393,31 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
           return [];
         }),
       ).then(async (children) => {
+        await verifyPlainDirectories(
+          platform,
+          directories.map(({ source }) => source),
+          signal,
+        );
+        if (platform !== "win32") {
+          await allCompleted(
+            directories.map(async ({ source, target, stat }) => {
+              const mode = Number(stat.mode & 0o7777n);
+              if (capture && (mode & 0o7700) === 0o700) await NodeFSP.chmod(target, mode);
+              const [current, saved] = await Promise.all([
+                NodeFSP.lstat(source, { bigint: true }),
+                NodeFSP.lstat(target, { bigint: true }),
+              ]);
+              if (
+                setupFileStamp(current) !== setupFileStamp(stat) ||
+                !saved.isDirectory() ||
+                current.mode !== saved.mode ||
+                current.uid !== saved.uid ||
+                current.gid !== saved.gid
+              )
+                throw new Error("Ignored directory metadata has changed or lacks a preserved copy");
+            }),
+          );
+        }
         // Darwin's link(2) follows the source symlink. ln -P links the inode and accepts siblings in one call.
         for (const [parent, sources] of symlinks) {
           await runFile("/bin/ln", ["-P", ...sources, parent], { signal, timeout: 30_000 });
@@ -261,6 +444,55 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
   }
   return true;
 }, Effect.timeout("10 minutes"));
+
+type SetupProof = NonNullable<Awaited<ReturnType<typeof readSetupProof>>>;
+
+const readCheckoutSetupProof = (cwd: string, admin: string, projectRoot: string) =>
+  Effect.tryPromise(async () =>
+    readSetupProof(
+      admin,
+      await NodeFSP.realpath(projectRoot),
+      setupFileStamp(await NodeFSP.lstat(NodePath.join(cwd, ".git"), { bigint: true })),
+    ),
+  ).pipe(
+    Effect.timeout("5 seconds"),
+    Effect.orElseSucceed(() => null),
+  );
+
+const setupExtras = Effect.fn("WorktreeRelease.setupExtras")(function* (
+  proof: SetupProof,
+  cwd: string,
+  status: string,
+) {
+  const records = status.split("\0").filter(Boolean);
+  if (records.some((record) => !record.startsWith("!! "))) return null;
+  const setup = records.filter((record) => hasSetupOnlyStatus(proof, record));
+  const additions = yield* Effect.tryPromise((signal) =>
+    inspectSetupProof(proof, cwd, setup.join("\0"), signal),
+  ).pipe(
+    Effect.timeout("10 minutes"),
+    Effect.orElseSucceed(() => null),
+  );
+  if (additions === null) return null;
+  const owned = new Set(setup);
+  // Git collapses these roots into the ignored node_modules entry.
+  return [
+    ...records.filter((record) => !owned.has(record)),
+    ...additions.map((name) => `!! ${name}/`),
+  ].join("\0");
+});
+
+const captureSetupExtras = Effect.fn("WorktreeRelease.captureSetupExtras")(function* (cwd: string) {
+  if (yield* HostProcess.isWindows) return null;
+  const admin = (yield* readGit(cwd, ["rev-parse", "--absolute-git-dir"])).trimEnd();
+  const fs = yield* FileSystem.FileSystem;
+  if (!(yield* fs.exists(NodePath.join(admin, setupProofName)))) return null;
+  const registrations = yield* readGit(cwd, ["worktree", "list", "--porcelain", "-z"]);
+  const main = registrations.split("\0", 1)[0];
+  if (!main?.startsWith("worktree ")) return null;
+  const proof = yield* readCheckoutSetupProof(cwd, admin, main.slice("worktree ".length));
+  return proof ? yield* setupExtras(proof, cwd, yield* worktreeStatus(cwd)) : null;
+});
 
 export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function* (input: {
   stateDir: string;
@@ -296,31 +528,41 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
     head: (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim(),
     identity,
   });
-  const capture: BackupCapture = { pending: Promise.resolve() };
+  const extras = input.saveIgnored
+    ? null
+    : yield* captureSetupExtras(cwd).pipe(Effect.orElseSucceed(() => null));
+  const capture: BackupCapture = {
+    pending: Promise.resolve(),
+    inodes: new Set(),
+    allocatedBytes: 0,
+  };
   let unpublished = true;
-  const savedFiles = input.saveIgnored
-    ? yield* Effect.acquireRelease(
-        fs
-          .realPath(directory)
-          .pipe(
-            Effect.flatMap((parent) =>
-              fs.makeTempDirectory({ directory: parent, prefix: "saved-" }),
+  let indexed = false;
+  const savedFiles =
+    input.saveIgnored || extras
+      ? yield* Effect.acquireRelease(
+          fs
+            .realPath(directory)
+            .pipe(
+              Effect.flatMap((parent) =>
+                fs.makeTempDirectory({ directory: parent, prefix: "saved-" }),
+              ),
             ),
-          ),
-        (saved) =>
-          unpublished
-            ? Effect.promise(() => capture.pending).pipe(
-                Effect.timeout("30 seconds"),
-                Effect.andThen(Effect.tryPromise(() => discardUnpublished(cwd, saved))),
-                Effect.catch(() =>
-                  Effect.logWarning("Retained unpublished worktree backup", { saved }),
-                ),
-              )
-            : Effect.void,
-      )
-    : undefined;
+          (saved) =>
+            unpublished
+              ? Effect.promise(() => capture.pending).pipe(
+                  Effect.timeout("30 seconds"),
+                  Effect.andThen(Effect.tryPromise(() => discardUnpublished(cwd, saved))),
+                  Effect.andThen(() => (indexed ? fs.remove(saved + ".json") : Effect.void)),
+                  Effect.catch(() =>
+                    Effect.logWarning("Retained unpublished worktree backup", { saved }),
+                  ),
+                )
+              : Effect.void,
+        )
+      : undefined;
   if (savedFiles) {
-    const records = yield* worktreeStatus(cwd);
+    const records = extras ?? (yield* worktreeStatus(cwd));
     if (!(yield* inspectIgnored(cwd, savedFiles, records, capture)))
       return yield* new GitCommandError({
         operation: "WorktreeRelease.queue",
@@ -329,7 +571,12 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
         detail: `Could not preserve all ignored files in ${savedFiles}.`,
       });
   }
-  const body = yield* encodeRequest({ ...request, ...(savedFiles ? { savedFiles } : {}) });
+  const savedRequest = {
+    ...request,
+    ...(savedFiles ? { savedFiles, savedAllocatedBytes: capture.allocatedBytes } : {}),
+    ...(extras ? { savedSetupExtras: true as const } : {}),
+  };
+  const body = yield* encodeRequest(savedRequest);
   const destination = releaseFile(directory, cwd);
   // The worker treats the filename as a commit marker. A partial write must never be consumed.
   const staging = yield* fs.makeTempDirectoryScoped({ directory, prefix: ".release-" });
@@ -338,6 +585,7 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
   // A worker can consume the accepted request before rename reports its result.
   yield* Effect.uninterruptible(
     Effect.gen(function* () {
+      indexed = yield* rememberWorktreeBackup(fs, directory, savedRequest);
       unpublished = false;
       yield* fs.rename(temp, destination).pipe(
         Effect.tapError(() =>
@@ -348,8 +596,36 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
       );
     }),
   );
-  return { file: destination, savedFiles };
+  return { file: destination, savedFiles, savedAllocatedBytes: capture.allocatedBytes };
 }, Effect.scoped);
+
+const readAutoMergeMarker = Effect.fn("WorktreeRelease.readAutoMergeMarker")(function* (
+  file: string,
+) {
+  return yield* Effect.tryPromise(async () => {
+    const before = await NodeFSP.lstat(file, { bigint: true });
+    if (!before.isFile() || before.size > 65n || before.ino === 0n) return null;
+    const handle = await NodeFSP.open(
+      file,
+      NodeFS.constants.O_RDONLY | (NodeFS.constants.O_NOFOLLOW ?? 0),
+    );
+    try {
+      const buffer = Buffer.alloc(66);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      if (
+        BigInt(bytesRead) !== before.size ||
+        setupFileStamp(await handle.stat({ bigint: true })) !== setupFileStamp(before)
+      )
+        return null;
+      return buffer.subarray(0, bytesRead).toString("utf8");
+    } finally {
+      await handle.close();
+    }
+  }).pipe(
+    Effect.timeout("5 seconds"),
+    Effect.orElseSucceed(() => null),
+  );
+});
 
 export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   request: ReleaseRequest,
@@ -399,10 +675,36 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
       return "durable ref is unavailable";
     anchors.push(anchor[1]!);
   }
-  const tips = new Set([request.head]);
+  const currentHead = (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
+  if (!oid.test(currentHead)) return "worktree history could not be inspected";
+  const tips = new Set([request.head, currentHead]);
+  let setupProof: Awaited<ReturnType<typeof readSetupProof>> = null;
   for (const name of yield* fs.readDirectory(admin)) {
     if (["HEAD", "index", "commondir", "gitdir"].includes(name)) continue;
+    if (name === setupProofName) {
+      if (yield* HostProcess.isWindows) return "worktree setup metadata requires its owner";
+      setupProof = yield* readCheckoutSetupProof(cwd, admin, projectRoot);
+      if (!setupProof) return "worktree setup metadata requires its owner";
+      continue;
+    }
     let file = path.join(admin, name);
+    if (name === "refs") {
+      // Git 2.56 initializes an empty refs directory for a new linked worktree.
+      if (
+        !(yield* Effect.tryPromise(() => NodeFSP.lstat(file))).isDirectory() ||
+        (yield* fs.readDirectory(file)).length !== 0
+      )
+        return "worktree has private refs";
+      continue;
+    }
+    if (name === "AUTO_MERGE") {
+      const marker = yield* readAutoMergeMarker(file);
+      if (marker === null) return "worktree metadata requires its owner";
+      const tree = (yield* readGit(cwd, ["rev-parse", "--verify", currentHead + "^{tree}"])).trim();
+      if (!oid.test(tree) || marker !== tree + "\n")
+        return "worktree has an unpreserved auto-merge tree";
+      continue;
+    }
     if (name === "logs") {
       const logs = yield* fs.readDirectory(file);
       if (logs.length !== 1 || logs[0] !== "HEAD") return "worktree has private reflogs";
@@ -456,16 +758,26 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
       return "gitlink contains local data";
   }
   const status = yield* worktreeStatus(cwd);
-  if (status) {
+  if (status.split("\0").some((record) => record && !record.startsWith("!! ")))
+    return "worktree contains tracked, untracked or ignored local data";
+  if (request.savedFiles && !request.savedSetupExtras) {
     if (
-      !request.savedFiles ||
-      status.split("\0").some((record) => record && !record.startsWith("!! "))
-    )
-      return "worktree contains tracked, untracked or ignored local data";
-    if (
+      status &&
       !(yield* inspectIgnored(cwd, request.savedFiles, status).pipe(
         Effect.orElseSucceed(() => false),
       ))
+    )
+      return "ignored files have changed or lack a preserved copy";
+  } else if (status || setupProof || request.savedSetupExtras) {
+    if (!setupProof) return "worktree contains tracked, untracked or ignored local data";
+    const extras = yield* setupExtras(setupProof, cwd, status);
+    if (extras === null) return "standard setup output changed or could not be verified";
+    if (
+      extras &&
+      (!request.savedFiles ||
+        !(yield* inspectIgnored(cwd, request.savedFiles, extras).pipe(
+          Effect.orElseSucceed(() => false),
+        )))
     )
       return "ignored files have changed or lack a preserved copy";
   }

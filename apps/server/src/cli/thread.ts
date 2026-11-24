@@ -28,7 +28,7 @@ import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import { queueWorktreeRelease } from "../workspace/worktreeRelease.ts";
+import { listWorktreeBackups, queueWorktreeRelease } from "../workspace/worktreeRelease.ts";
 import * as ServerConfig from "../config.ts";
 import { mcpToolSession, type McpToolSession } from "../mcp/AcpMcpStdioBridge.ts";
 import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
@@ -776,8 +776,9 @@ const releaseWorktreeCommand = Command.make("release-worktree", {
   alsoDurable: Flag.String("also-durable-ref").pipe(Flag.atLeast(0)),
   saveIgnored: Flag.Boolean("save-ignored").pipe(
     Flag.withDescription(
-      "Keep ignored files in a private, same-volume hard-link backup before queuing release.",
+      "Keep every ignored file, including verified setup output, in a private hard-link backup.",
     ),
+    Flag.withDefault(false),
   ),
 }).pipe(
   Command.withDescription(
@@ -796,8 +797,42 @@ const releaseWorktreeCommand = Command.make("release-worktree", {
         saveIgnored: flags.saveIgnored,
       }).pipe(Effect.provide(GitVcsDriver.layer.pipe(Layer.provide(ServerConfig.layer(config)))));
       if (request.savedFiles)
-        yield* Console.log(`Preserved ignored files in ${request.savedFiles}`);
+        yield* Console.log(
+          `Preserved ignored files in ${request.savedFiles} (${request.savedAllocatedBytes} allocated bytes).`,
+        );
       yield* Console.log(`Queued worktree release in ${request.file}`);
+    }),
+  ),
+);
+
+const worktreeBackupsCommand = Command.make("backups", {
+  ...projectLocationFlags,
+  thread: threadArgument.pipe(Argument.optional),
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription("Find files kept by worktree release on this machine."),
+  Command.withHandler(
+    Effect.fn("cli.thread.backups")(function* (flags) {
+      const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel, {
+        quietLogs: flags.json,
+      });
+      const thread = Option.getOrUndefined(flags.thread);
+      const backups = (yield* listWorktreeBackups(config.stateDir)).filter(
+        (backup) => thread === undefined || backup.threadId === thread,
+      );
+      if (flags.json) return yield* printJson(backups);
+      if (backups.length === 0) return yield* Console.log("No retained worktree backups.");
+      for (const backup of backups) {
+        yield* Console.log(backup.savedFiles);
+        if (backup.threadId === null) {
+          yield* Console.log("  No release receipt was found for this backup.");
+          continue;
+        }
+        yield* Console.log(`  Thread ${backup.threadId}, run ${backup.runId}`);
+        yield* Console.log(`  Checkout ${backup.worktreePath}`);
+        const bytes = backup.savedAllocatedBytes;
+        if (bytes !== null) yield* Console.log(`  ${bytes} allocated file bytes retained`);
+      }
     }),
   ),
 );
@@ -810,5 +845,6 @@ export const threadCommand = Command.make("thread").pipe(
     threadSendCommand,
     threadShowCommand,
     releaseWorktreeCommand,
+    worktreeBackupsCommand,
   ]),
 );
