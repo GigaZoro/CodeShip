@@ -1,3 +1,7 @@
+## 2026-11-24 — Scheduler test coverage
+
+- Scheduler changes run the notebook cleanup test and skip 29 unrelated attachment cases. Changes to attachment handling or document extraction still run all 30.
+
 ## 2026-11-24 — Changed-file checks resume completed test work
 
 - Maintainers: `vp run check:changed` saves passed test groups when the test step ends and its inputs still match, so a retry after a timeout, in any worktree or chat with its own install, reuses them at the same commit with the same file modes, matching inputs, tracked environment, user, umask, host capabilities, Git version, system Git configuration, and Git ignore and attributes files under `~/.config/git`. Its tests run without your global Git configuration, as on CI, so a setting there such as a hooks path or commit signing no longer changes them.
