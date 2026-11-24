@@ -72,6 +72,8 @@ export class ApnsDeliveryQueue extends Context.Service<
       readonly bundleId?: string | null;
       readonly apsEnvironment?: "sandbox" | "production" | null;
       readonly notification: NonNullable<ApnsDeliveryJobPayload["notification"]>;
+      /** A stable id lets the delivery claim drop a re-enqueued copy. */
+      readonly jobId?: string;
     }) => Effect.Effect<RelayDeliveryResult, ApnsDeliveryQueueError>;
   }
 >()("t3code-relay/agentActivity/ApnsDeliveryQueue") {}
@@ -148,7 +150,9 @@ const make = Effect.gen(function* () {
           "relay.thread_id": input.notification.threadId,
         });
         const now = yield* DateTime.now;
-        const jobId = yield* crypto.randomUUIDv4().pipe(
+        const jobId = yield* (
+          input.jobId === undefined ? crypto.randomUUIDv4() : Effect.succeed(input.jobId)
+        ).pipe(
           Effect.mapError(
             (cause) =>
               new ApnsDeliveryQueueSendError({

@@ -675,6 +675,8 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.pin.reorder":
     case "thread.active.reorder":
     case "thread.tag.set":
+    case "thread.notification-level.set":
+    case "thread.color.set":
     case "thread.folder.set":
     case "thread.artifact.hide":
     case "thread.visit":
@@ -3490,6 +3492,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.unpin"
           | "thread.pin.reorder"
           | "thread.tag.set"
+          | "thread.notification-level.set"
+          | "thread.color.set"
           | "thread.folder.set"
           | "thread.artifact.hide"
           | "thread.active.reorder"
@@ -4064,6 +4068,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               : current.filter((tag) => tag !== command.tag),
           };
         }
+        case "thread.notification-level.set":
+          return { ...thread, notificationLevel: command.notificationLevel };
+        case "thread.color.set":
+          return { ...thread, color: command.color };
         case "thread.folder.set": {
           const { folder: _previous, ...rest } = thread;
           return command.folder === null ? rest : { ...rest, folder: command.folder };
@@ -4429,6 +4437,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.active-reordered" as const;
         case "thread.tag.set":
           return "thread.tags-updated" as const;
+        case "thread.notification-level.set":
+          return "thread.notification-level-updated" as const;
+        case "thread.color.set":
+          return "thread.color-updated" as const;
         case "thread.folder.set":
           return "thread.folder-updated" as const;
         case "thread.artifact.hide":
@@ -14879,6 +14891,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.pin.reorder":
       case "thread.active.reorder":
       case "thread.tag.set":
+      case "thread.notification-level.set":
+      case "thread.color.set":
       case "thread.folder.set":
       case "thread.artifact.hide":
       case "thread.mark-unread":

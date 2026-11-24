@@ -5,8 +5,45 @@ import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { act, render } from "../../test/render";
 import { CommandPalette } from "./CommandPalette";
 import { openCommandPalette } from "../commandPaletteBus";
-import { primaryServerKeybindingsAtom } from "../state/server";
+import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
+import { EnvironmentId, ThreadId, type ServerConfig } from "@t3tools/contracts";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { useActiveThreadPaletteItems } from "./CommandPaletteThreadActions";
+import { Atom } from "effect/reactivity";
 import { environmentThreadShells } from "../state/threads";
+
+const environmentId = EnvironmentId.make("local");
+const thread = {
+  id: ThreadId.make("thread"),
+  environmentId,
+  title: "Thread",
+  runtime: null,
+  notificationLevel: "muted",
+  color: "blue",
+} as unknown as EnvironmentThreadShell;
+
+const preferences = vi.hoisted(() => ({
+  canSet: false,
+  threadColor: false,
+  threadNotificationLevel: false,
+}));
+function setupPreferences(options: typeof preferences) {
+  Object.assign(preferences, options);
+}
+const preferencePermission = Atom.make(false);
+vi.mock("../state/threads", async (original) => {
+  const module = await original<typeof import("../state/threads")>();
+  return {
+    ...module,
+    threadEnvironment: {
+      ...module.threadEnvironment,
+      setPreferences: {
+        ...module.threadEnvironment.setPreferences,
+        permissionAtom: () => preferencePermission,
+      },
+    },
+  };
+});
 
 vi.mock("@effect/atom-react", async (original) => ({
   ...(await original<typeof import("@effect/atom-react")>()),
@@ -15,7 +52,23 @@ vi.mock("@effect/atom-react", async (original) => ({
       ? DEFAULT_RESOLVED_KEYBINDINGS
       : atom === environmentThreadShells.needsYouThreadsAtom
         ? { threads: [] }
-        : [],
+        : atom === environmentServerConfigsAtom
+          ? new Map([
+              [
+                environmentId,
+                {
+                  environment: {
+                    capabilities: {
+                      threadColor: preferences.threadColor,
+                      threadNotificationLevel: preferences.threadNotificationLevel,
+                    },
+                  },
+                } as unknown as ServerConfig,
+              ],
+            ])
+          : atom === preferencePermission
+            ? preferences.canSet
+            : [],
 }));
 vi.mock("../hooks/useTheme", () => ({
   useRenderedAppearance: () => "light",
@@ -110,6 +163,7 @@ describe.each(["repository", "folder", "destination"] as const)("add-project %s"
     { isComposing: true, keyCode: 13 },
     { isComposing: false, keyCode: 229 },
   ])("keeps Enter in the input during composition: %j", async (composition) => {
+    setupPreferences({ canSet: false, threadColor: false, threadNotificationLevel: false });
     await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
     await act(() => openCommandPalette({ open: "add-project" }));
     await page.getByText(step === "folder" ? "Local folder" : "Git URL", { exact: true }).click();
@@ -137,4 +191,29 @@ describe.each(["repository", "folder", "destination"] as const)("add-project %s"
       await expect.element(page.getByRole("combobox")).not.toBeInTheDocument();
     }
   });
+});
+
+function ActiveThreadActions() {
+  return (
+    <ul>
+      {useActiveThreadPaletteItems(thread).map((item) => (
+        <li key={item.value}>{item.title}</li>
+      ))}
+    </ul>
+  );
+}
+
+it.each([
+  { canSet: true, threadColor: true, threadNotificationLevel: true },
+  { canSet: true, threadColor: false, threadNotificationLevel: true },
+  { canSet: false, threadColor: true, threadNotificationLevel: true },
+])("shows reset choices when the destination supports and authorizes them: %j", async (options) => {
+  setupPreferences(options);
+  await using screen = await render(<ActiveThreadActions />);
+  expect(screen.getByText("Notifications: Default").query() !== null).toBe(
+    options.canSet && options.threadNotificationLevel,
+  );
+  expect(screen.getByText("Color: None").query() !== null).toBe(
+    options.canSet && options.threadColor,
+  );
 });

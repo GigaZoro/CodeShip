@@ -163,6 +163,8 @@ const COLD_HISTORY_RULE: Record<OrchestrationV2DomainEvent["type"], "latest" | "
   "thread.pin-reordered": "all",
   "thread.active-reordered": "all",
   "thread.tags-updated": "all",
+  "thread.notification-level-updated": "all",
+  "thread.color-updated": "all",
   "thread.folder-updated": "all",
   "thread.artifacts-updated": "all",
   "thread.visited": "all",
@@ -365,10 +367,13 @@ export const layer: Layer.Layer<
     ];
     // Read-state events preserve updatedAt and supersede only each other. Activity events supersede both groups.
     const READ_STATE_THREAD_EVENT_TYPES = ["thread.visited", "thread.marked-unread"];
-    // Older clients skip tag events, so these supersede only each other.
-    const TAG_THREAD_EVENT_TYPE = "thread.tags-updated";
-    // Older clients skip folder events too, so they supersede only each other.
-    const FOLDER_THREAD_EVENT_TYPE = "thread.folder-updated";
+    // Older clients may skip these events, so only a newer event of the same type or activity supersedes them.
+    const metadataThreadEventTypes = new Set([
+      "thread.tags-updated",
+      "thread.folder-updated",
+      "thread.notification-level-updated",
+      "thread.color-updated",
+    ]);
 
     const supersedableThreadEventTypes = new Set(SUPERSEDABLE_THREAD_EVENT_TYPES);
     const readStateThreadEventTypes = new Set(READ_STATE_THREAD_EVENT_TYPES);
@@ -393,8 +398,7 @@ export const layer: Layer.Layer<
       let throughReceiptRowId = bounds[0]?.receipt_row_id ?? 0;
       const retainedThreadIds = new Set<string>();
       const retainedReadStateThreadIds = new Set<string>();
-      const retainedTagThreadIds = new Set<string>();
-      const retainedFolderThreadIds = new Set<string>();
+      const retainedMetadataEvents = new Set<string>();
       // Retain each key's oldest candidate, deleting it only when an older event appears.
       const oldestCandidateByEntityKey = new Map<string, number | null>();
       let deletedEventCount = 0;
@@ -470,21 +474,12 @@ export const layer: Layer.Layer<
               } else retainedReadStateThreadIds.add(row.stream_id);
             } else if (
               row.aggregate_kind === "thread" &&
-              row.event_type === TAG_THREAD_EVENT_TYPE
+              metadataThreadEventTypes.has(row.event_type)
             ) {
-              if (retainedThreadIds.has(row.stream_id) || retainedTagThreadIds.has(row.stream_id)) {
+              const key = `${row.event_type}:${row.stream_id}`;
+              if (retainedThreadIds.has(row.stream_id) || retainedMetadataEvents.has(key)) {
                 obsolete.push(row.sequence);
-              } else retainedTagThreadIds.add(row.stream_id);
-            } else if (
-              row.aggregate_kind === "thread" &&
-              row.event_type === FOLDER_THREAD_EVENT_TYPE
-            ) {
-              if (
-                retainedThreadIds.has(row.stream_id) ||
-                retainedFolderThreadIds.has(row.stream_id)
-              ) {
-                obsolete.push(row.sequence);
-              } else retainedFolderThreadIds.add(row.stream_id);
+              } else retainedMetadataEvents.add(key);
             } else if (
               row.event_type === "thread.pull-request-link-updated" &&
               retainedThreadIds.has(row.stream_id)

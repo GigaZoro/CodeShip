@@ -25,6 +25,7 @@ import {
   type PreparedConnection,
 } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
+import { RpcPermissionGuard } from "../rpc/client.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import * as RpcSession from "../rpc/session.ts";
 import { v2Now, v2Projection, v2ThreadId } from "../state/orchestrationV2TestFixtures.ts";
@@ -272,6 +273,9 @@ describe("routine command transport budget", () => {
       });
       expect(currentRpcJsonBytes).toBeLessThanOrEqual(MAX_CURRENT_SEND_RPC_JSON_BYTES);
       expect(currentRpcJsonBytes / formerRpcJsonBytes).toBeLessThanOrEqual(0.000_06);
-    }).pipe(Effect.provide(layerTestCrypto)),
+    }).pipe(
+      Effect.provide(layerTestCrypto),
+      Effect.provideService(RpcPermissionGuard, { authorize: () => Effect.void }),
+    ),
   );
 });

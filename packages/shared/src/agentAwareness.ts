@@ -4,6 +4,7 @@ import {
   type OrchestrationV2ThreadShell,
   type Project,
   type ThreadId,
+  type ThreadNotificationLevel,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -24,10 +25,13 @@ export interface AgentAwarenessState {
   readonly projectTitle: string;
   readonly threadTitle: string;
   readonly phase: AgentAwarenessPhase;
+  readonly notificationLevel?: ThreadNotificationLevel;
   readonly headline: string;
   readonly detail?: string;
   readonly modelTitle: string;
   readonly updatedAt: string;
+  /** When the current alertable occurrence began; shell edits such as a rename keep it. */
+  readonly occurredAt?: string;
   readonly deepLink: string;
 }
 
@@ -48,7 +52,9 @@ export interface ProjectThreadAwarenessV2Input {
     | "activityRunStatus"
     | "id"
     | "lineage"
+    | "latestRunCompletedAt"
     | "latestRunStopRequested"
+    | "notificationLevel"
     | "modelSelection"
     | "pendingBackgroundTasks"
     | "pendingRuntimeRequest"
@@ -73,6 +79,7 @@ export function projectThreadAwarenessV2(
   // A snoozed thread's completion stays quiet, as on web; a request or failure still wakes it.
   if (
     phase === "completed" &&
+    thread.notificationLevel !== "following" &&
     thread.snoozedUntil != null &&
     DateTime.toEpochMillis(thread.snoozedUntil) > input.nowMs
   ) {
@@ -86,6 +93,7 @@ export function projectThreadAwarenessV2(
   ) {
     return null;
   }
+  const occurredAt = occurredAtForPhase(thread, phase);
   const detail =
     phase === "completed"
       ? "Review the completed task."
@@ -98,12 +106,34 @@ export function projectThreadAwarenessV2(
     projectTitle: project.title,
     threadTitle: thread.title,
     phase,
+    ...(thread.notificationLevel === undefined || thread.notificationLevel === "default"
+      ? {}
+      : { notificationLevel: thread.notificationLevel }),
     headline: headlineForPhase(phase),
     ...(detail === undefined ? {} : { detail }),
     modelTitle: thread.modelSelection.model,
     updatedAt: DateTime.formatIso(thread.updatedAt),
+    ...(occurredAt === null ? {} : { occurredAt: DateTime.formatIso(occurredAt) }),
     deepLink: buildAgentAwarenessDeepLink({ environmentId, threadId: thread.id }),
   };
+}
+
+function occurredAtForPhase(
+  thread: ProjectThreadAwarenessV2Input["thread"],
+  phase: AgentAwarenessPhase,
+): DateTime.Utc | null {
+  switch (phase) {
+    case "waiting_for_input":
+    case "waiting_for_approval":
+      return thread.pendingRuntimeRequest?.createdAt ?? null;
+    case "completed":
+    case "failed":
+      return thread.latestRunCompletedAt ?? null;
+    case "starting":
+    case "running":
+    case "stale":
+      return null;
+  }
 }
 
 function resolveThreadAwarenessPhaseV2(

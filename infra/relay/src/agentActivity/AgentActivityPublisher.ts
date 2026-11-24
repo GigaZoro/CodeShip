@@ -13,6 +13,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import { isAlertTrigger } from "./agentActivityAlerts.ts";
 import { isTerminalPhase } from "./agentActivityPayloads.ts";
 
 export { isExpiredAgentActivityState } from "./agentActivityPayloads.ts";
@@ -61,6 +62,7 @@ const make = Effect.gen(function* () {
   const publishForDeliveryUser = Effect.fnUntraced(function* (input: {
     readonly deliveryUser: EnvironmentLinks.AgentAwarenessDeliveryUserRecord;
     readonly state: RelayAgentActivityState | null;
+    readonly trigger: RelayAgentActivityState | null;
     readonly nowMs: number;
   }) {
     const activeStates = input.deliveryUser.liveActivitiesEnabled
@@ -73,22 +75,15 @@ const make = Effect.gen(function* () {
           nowMs: input.nowMs,
         })
       : null;
-    const notificationOnlyAggregate =
-      input.deliveryUser.notificationsEnabled &&
-      !input.deliveryUser.liveActivitiesEnabled &&
-      input.state !== null
-        ? makeAggregateState({
-            activeStates: isTerminalPhase(input.state) ? [] : [input.state],
-            terminalState: isTerminalPhase(input.state) ? input.state : null,
-            nowMs: input.nowMs,
-          })
-        : null;
+    const trigger = input.deliveryUser.notificationsEnabled ? input.trigger : null;
     const targets = yield* liveActivities.listTargets({ userId: input.deliveryUser.userId });
     const deliveriesByTarget = yield* Effect.forEach(
       targets,
       Effect.fnUntraced(function* (target) {
         if (target.platform === "android") {
-          return [yield* fcmDeliveries.enqueue({ target, state: input.state })];
+          return [
+            yield* fcmDeliveries.enqueue({ target, state: input.state, trigger: trigger !== null }),
+          ];
         }
         return yield* Effect.all(
           [
@@ -96,13 +91,11 @@ const make = Effect.gen(function* () {
               target,
               aggregate: liveActivityAggregate,
               nowMs: input.nowMs,
+              trigger: input.deliveryUser.liveActivitiesEnabled ? trigger : null,
             }),
-            notificationOnlyAggregate === null
+            trigger === null || input.deliveryUser.liveActivitiesEnabled
               ? Effect.succeed(null)
-              : apnsDeliveries.sendPushNotificationForTarget({
-                  target,
-                  aggregate: notificationOnlyAggregate,
-                }),
+              : apnsDeliveries.sendPushNotificationForTarget({ target, trigger }),
           ],
           { concurrency: 2 },
         );
@@ -206,35 +199,62 @@ const make = Effect.gen(function* () {
         "relay.thread_id": input.threadId,
         "relay.agent_activity.phase": input.state?.phase ?? "deleted",
       });
-      if (input.state) {
-        // Retain terminal rows until cron pruning so completed threads remain visible alongside active ones.
-        yield* rows.upsert({
-          environmentPublicKey: input.environmentPublicKey,
-          state: input.state,
-        });
-      } else {
-        yield* rows.remove({
+      const { state } = input;
+      // Retain terminal rows until cron pruning so completed threads remain visible alongside active ones.
+      const previous = state
+        ? yield* rows.upsert({ environmentPublicKey: input.environmentPublicKey, state })
+        : yield* rows
+            .remove({
+              environmentId: input.environmentId,
+              environmentPublicKey: input.environmentPublicKey,
+              threadId: input.threadId,
+            })
+            .pipe(Effect.as(null));
+
+      if (state?.silent === true) return { ok: true, deliveries: [] };
+      // Renames, retries and restart replays repaint the card without alerting again.
+      const trigger = state && isAlertTrigger(previous, state) ? state : null;
+
+      const fanOut = Effect.gen(function* () {
+        const deliveryUsers = yield* links.listDeliveryUsersForEnvironment({
           environmentId: input.environmentId,
           environmentPublicKey: input.environmentPublicKey,
-          threadId: input.threadId,
         });
-      }
-
-      const deliveryUsers = yield* links.listDeliveryUsersForEnvironment({
-        environmentId: input.environmentId,
-        environmentPublicKey: input.environmentPublicKey,
+        const now = yield* DateTime.now;
+        return yield* Effect.forEach(
+          deliveryUsers,
+          (deliveryUser) =>
+            publishForDeliveryUser({
+              deliveryUser,
+              state,
+              trigger,
+              nowMs: now.epochMilliseconds,
+            }),
+          { concurrency: 4 },
+        );
       });
-      const now = yield* DateTime.now;
-      const deliveriesByUser = yield* Effect.forEach(
-        deliveryUsers,
-        (deliveryUser) =>
-          publishForDeliveryUser({
-            deliveryUser,
-            state: input.state,
-            nowMs: now.epochMilliseconds,
-          }),
-        { concurrency: 4 },
-      );
+      const deliveriesByUser = yield* trigger === null
+        ? fanOut
+        : fanOut.pipe(
+            // The server retries a failed publish. Devices queued before the failure may alert
+            // twice on iOS; Android drops a repeated alert id.
+            Effect.onError(() =>
+              rows
+                .markAlertUnsent({
+                  environmentPublicKey: input.environmentPublicKey,
+                  state: trigger,
+                })
+                .pipe(
+                  Effect.catch((error) =>
+                    Effect.logError("Failed to mark an agent activity alert as unsent", {
+                      environmentId: trigger.environmentId,
+                      threadId: trigger.threadId,
+                      error,
+                    }),
+                  ),
+                ),
+            ),
+          );
       const deliveries = deliveriesByUser.flat();
       return {
         ok: true,

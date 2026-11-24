@@ -51,6 +51,7 @@ import * as FcmClient from "./agentActivity/FcmClient.ts";
 import * as FcmDeliveryQueueSender from "./agentActivity/FcmDeliveryQueueSender.ts";
 import * as FcmDeliveries from "./agentActivity/FcmDeliveries.ts";
 import * as FcmDeliveryQueueConsumer from "./agentActivity/FcmDeliveryQueueConsumer.ts";
+import * as ApnsDeliveryQueueConsumer from "./agentActivity/ApnsDeliveryQueueConsumer.ts";
 import * as RelayConfiguration from "./Config.ts";
 import * as AgentActivityPublisher from "./agentActivity/AgentActivityPublisher.ts";
 import * as ApnsClient from "./agentActivity/ApnsClient.ts";
@@ -453,12 +454,7 @@ export const layer = Api.make(
       (stream) =>
         stream.pipe(
           Stream.withSpan("relay.apn_delivery_queue.process_batch"),
-          Stream.runForEach((message) =>
-            ApnsDeliveries.ApnsDeliveries.pipe(
-              Effect.flatMap((deliveries) => deliveries.processSignedJob(message.body)),
-              Effect.withSpan("relay.apn_delivery_queue.process_message"),
-            ),
-          ),
+          Stream.runForEach(ApnsDeliveryQueueConsumer.processMessage),
           Effect.provide(layerRuntime),
         ),
     );

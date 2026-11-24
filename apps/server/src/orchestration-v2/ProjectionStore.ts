@@ -1034,6 +1034,8 @@ export function applyToProjection(
     case "thread.active-reordered":
     case "thread.later-set":
     case "thread.tags-updated":
+    case "thread.notification-level-updated":
+    case "thread.color-updated":
     case "thread.folder-updated":
     case "thread.artifacts-updated":
     case "thread.pull-request-synced":
@@ -1866,6 +1868,8 @@ export function threadShellFromProjection(
     laterAt: projection.thread.laterAt ?? null,
     pinOrderKey: projection.thread.pinOrderKey ?? null,
     ...(projection.thread.tags?.length ? { tags: projection.thread.tags } : {}),
+    notificationLevel: projection.thread.notificationLevel ?? "default",
+    color: projection.thread.color ?? null,
     ...(threadFolderKeyOf(projection.thread.folder) === null
       ? {}
       : { folder: projection.thread.folder }),
@@ -2142,6 +2146,8 @@ function shellFromState(input: {
     laterAt: input.state.thread.laterAt ?? null,
     pinOrderKey: input.state.thread.pinOrderKey ?? null,
     ...(input.state.thread.tags?.length ? { tags: input.state.thread.tags } : {}),
+    notificationLevel: input.state.thread.notificationLevel ?? "default",
+    color: input.state.thread.color ?? null,
     ...(threadFolderKeyOf(input.state.thread.folder) === null
       ? {}
       : { folder: input.state.thread.folder }),
@@ -2249,6 +2255,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             case "thread.pin-reordered":
             case "thread.active-reordered":
             case "thread.tags-updated":
+            case "thread.notification-level-updated":
+            case "thread.color-updated":
             case "thread.folder-updated":
             case "thread.artifacts-updated":
             case "thread.visited":
@@ -3077,6 +3085,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             event.type !== "thread.pin-reordered" &&
             event.type !== "thread.active-reordered" &&
             event.type !== "thread.tags-updated" &&
+            event.type !== "thread.notification-level-updated" &&
+            event.type !== "thread.color-updated" &&
             event.type !== "thread.folder-updated" &&
             event.type !== "thread.artifacts-updated" &&
             event.type !== "thread.visited" &&

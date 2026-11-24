@@ -189,6 +189,8 @@ export interface EnvironmentThreadShell {
   readonly finalReview?: boolean;
   readonly pinOrderKey: string | null;
   readonly activeOrderKey: string | null;
+  readonly notificationLevel?: OrchestrationV2ThreadShell["notificationLevel"];
+  readonly color?: OrchestrationV2ThreadShell["color"];
   /** The sidebar folder; absent or null is none. */
   readonly folder?: string | null;
   readonly pullRequests: ReadonlyArray<import("@t3tools/contracts").ThreadPullRequestLink>;
@@ -346,6 +348,8 @@ export function presentThreadShell(
     pinOrderKey: thread.pinOrderKey ?? null,
     activeOrderKey: thread.activeOrderKey ?? null,
     folder: thread.folder ?? null,
+    notificationLevel: thread.notificationLevel ?? "default",
+    color: thread.color ?? null,
     ...(thread.lastVisitedAt === undefined
       ? {}
       : { lastVisitedAt: nullableIso(thread.lastVisitedAt) }),

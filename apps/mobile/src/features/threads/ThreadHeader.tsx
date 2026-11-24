@@ -27,6 +27,7 @@ export function ThreadHeader(
     useAdaptiveWorkspaceLayout();
   const { onOpenTerminal, onMergeBack, mergingBack } = props.gitControls;
   const native = useThreadHeaderOptions(props);
+  const preferences = native.preferences;
   const androidHeaderActions = useMemo<ReadonlyArray<AppBarAction>>(() => {
     const actions: AppBarAction[] = [];
     if (props.onReturnToThread) {
@@ -113,6 +114,28 @@ export function ThreadHeader(
       }
       onBack={layout.usesSplitView ? undefined : goBack}
       actions={androidHeaderActions}
+      menus={
+        preferences.items.length === 0
+          ? undefined
+          : [
+              {
+                title: t("Thread preferences"),
+                icon: "ellipsis.circle",
+                items: preferences.items.map((item) => ({
+                  id: item.id,
+                  title: item.label,
+                  items: item.children.map((child) => ({
+                    id: child.id,
+                    title: child.label,
+                    selected: child.checked,
+                    onPress: () => {
+                      preferences.select(child.id);
+                    },
+                  })),
+                })),
+              },
+            ]
+      }
       hideBottomBorder
       compact={composerKeyboardActive}
     />

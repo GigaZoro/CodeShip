@@ -2800,6 +2800,32 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           step,
         );
       }
+      for (const notificationLevel of ["muted", "following", "default"] as const) {
+        yield* orchestrator.dispatch({
+          type: "thread.notification-level.set",
+          commandId: CommandId.make(`runtime-layer-lifecycle-notifications-${notificationLevel}`),
+          threadId,
+          notificationLevel,
+        });
+        assert.equal(
+          shellOf(yield* orchestrator.getShellSnapshot()).notificationLevel,
+          notificationLevel,
+        );
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).thread.notificationLevel,
+          notificationLevel,
+        );
+      }
+      for (const color of ["blue", "purple", null] as const) {
+        yield* orchestrator.dispatch({
+          type: "thread.color.set",
+          commandId: CommandId.make(`runtime-layer-lifecycle-color-${color}`),
+          threadId,
+          color,
+        });
+        assert.equal(shellOf(yield* orchestrator.getShellSnapshot()).color, color);
+        assert.equal((yield* orchestrator.getThreadProjection(threadId)).thread.color, color);
+      }
       const taggedShell = shellOf(yield* orchestrator.getShellSnapshot());
       // Tags are not activity, so the thread keeps its place in thread lists.
       assert.equal(

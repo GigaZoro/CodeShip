@@ -4,7 +4,7 @@ import {
   ThreadId,
   type ContextMenuItem,
 } from "@t3tools/contracts";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { ThreadActionMenuId } from "../components/threadActionMenu.logic";
@@ -19,6 +19,7 @@ function deferred<T>() {
 
 const state = vi.hoisted(() => ({
   granted: new Set<string>(),
+  preferenceGrants: new Set<string>(),
   effects: [] as string[],
   completed: deferred<void>(),
   show: vi.fn<
@@ -43,9 +44,10 @@ vi.mock("./useThreadFolderActions", () => ({
   readThreadFolderMenuState: () => null,
   useThreadFolderActions: () => ({ runMenuAction: vi.fn() }),
 }));
-vi.mock("react", () => ({
-  useCallback: (callback: unknown) => callback,
-  useMemo: (factory: () => unknown) => factory(),
+vi.mock(import("react"), async (original) => ({
+  ...(await original()),
+  useCallback: <T>(callback: T) => callback,
+  useMemo: <T>(factory: () => T) => factory(),
 }));
 vi.mock("@tanstack/react-router", () => ({
   useRouter: () => ({ navigate: async () => recordEffect("project-settings") }),
@@ -55,6 +57,7 @@ vi.mock("../state/session", () => ({
     scope === AuthOrchestrationOperateScope && state.granted.has(environmentId),
 }));
 vi.mock("../state/entities", () => ({
+  readEnvironmentCapabilities: () => ({ threadNotificationLevel: true, threadColor: true }),
   readEnvironmentServerConfigLoaded: () => true,
   readEnvironmentSupportsAutoSettleOptOut: () => true,
   readEnvironmentSupportsThreadLater: () => true,
@@ -73,7 +76,15 @@ vi.mock("../state/entities", () => ({
   useProjects: () => [{ id: "project", environmentId: "secondary" }],
 }));
 vi.mock("../state/environments", () => ({ usePrimaryEnvironmentId: () => "primary" }));
-vi.mock("../state/threads", () => ({ threadEnvironment: { updateMetadata: "metadata" } }));
+vi.mock("../state/threads", () => ({
+  threadEnvironment: {
+    updateMetadata: "metadata",
+    setPreferences: {
+      permissionAtom: (environmentId: string) =>
+        Atom.make(state.preferenceGrants.has(environmentId)),
+    },
+  },
+}));
 vi.mock("../state/use-atom-command", () => ({
   useAtomCommand: () => async () => {
     recordEffect("metadata");
@@ -174,6 +185,7 @@ const createMenu = (options: { readonly onFind?: (threadRef: typeof target) => v
 
 beforeEach(() => {
   state.granted = new Set(["primary"]);
+  state.preferenceGrants = new Set(["primary"]);
   state.effects = [];
   state.completed = deferred<void>();
   state.show.mockReset().mockResolvedValue(null);
@@ -199,6 +211,18 @@ describe("thread menu permissions", () => {
     createMenu().openMenu(position);
     await state.completed.promise;
     expect(state.effects).toEqual(["export-markdown"]);
+  });
+
+  it("offers preferences only with the preference command's destination grant", () => {
+    state.granted.add("secondary");
+    createMenu().openMenu(position);
+    expect(state.show.mock.calls[0]![0].map((item) => item.id)).not.toContain("notifications");
+
+    state.preferenceGrants.add("secondary");
+    createMenu().openMenu(position);
+    expect(state.show.mock.calls[1]![0].map((item) => item.id)).toEqual(
+      expect.arrayContaining(["notifications", "color"]),
+    );
   });
 
   it("offers find only to a header that can open it, without task permission", async () => {

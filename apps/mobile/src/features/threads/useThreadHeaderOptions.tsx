@@ -1,3 +1,6 @@
+import type { NativeStackHeaderItemMenu } from "@react-navigation/native-stack";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+import { useThreadPreferenceMenu } from "./useThreadPreferenceMenu";
 import { useWorkspaceSidebarHeaderItem } from "../layout/useWorkspaceSidebarHeaderItem";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { threadHeaderAppearance } from "./thread-header-appearance";
@@ -19,6 +22,7 @@ type NativeHeaderItems = ReadonlyArray<Record<string, unknown>>;
 
 export function useThreadHeaderOptions(props: {
   readonly title: string;
+  readonly thread?: EnvironmentThreadShell;
   readonly subtitle: string;
   readonly headerColor: string;
   readonly usesNativeHeaderGlass: boolean;
@@ -97,6 +101,35 @@ export function useThreadHeaderOptions(props: {
     }),
   ];
 
+  const preferences = useThreadPreferenceMenu(props.thread);
+  const preferenceMenu =
+    preferences.items.length > 0
+      ? withNativeGlassHeaderItem({
+          type: "menu",
+          identifier: "thread-right-preferences",
+          accessibilityLabel: t("Thread preferences"),
+          label: t("Thread preferences"),
+          icon: { name: "ellipsis.circle", type: "sfSymbol" },
+          menu: {
+            title: t("Thread preferences"),
+            items: preferences.items.map((item) => ({
+              type: "submenu",
+              label: item.label,
+              items: item.children.map((child) => ({
+                type: "action",
+                label: child.label,
+                state: child.checked ? "on" : "off",
+                onPress: () => {
+                  preferences.select(child.id);
+                },
+              })),
+            })),
+          },
+        } satisfies NativeStackHeaderItemMenu)
+      : null;
+  const rightHeaderItems =
+    usesDuoHeader || layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems;
+
   const options: AppNativeStackNavigationOptions = {
     ...threadHeaderAppearance(props.usesNativeHeaderGlass),
     headerTitle: props.title,
@@ -109,7 +142,7 @@ export function useThreadHeaderOptions(props: {
         : () => compactHomeHeaderItems,
     // The workspace navigator adds compose to the Duo detail column's bar.
     unstable_headerRightItems: () =>
-      usesDuoHeader || layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems,
+      preferenceMenu ? [...rightHeaderItems, preferenceMenu] : rightHeaderItems,
     unstable_headerToolbarItems: () => [],
     unstable_headerSubtitle: props.usesNativeHeaderGlass ? props.subtitle : undefined,
     contentStyle: undefined,
@@ -122,6 +155,7 @@ export function useThreadHeaderOptions(props: {
       splitLeftHeaderItems,
       threadCenterHeaderItems,
       compactRightHeaderItems,
+      preferenceMenu,
       usesDuoHeader,
       environmentId,
       threadId,
@@ -130,5 +164,6 @@ export function useThreadHeaderOptions(props: {
       gitStatus?.pr?.url,
     ],
     sidebar: false,
+    preferences,
   };
 }

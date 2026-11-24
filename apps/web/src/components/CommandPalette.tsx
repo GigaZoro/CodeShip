@@ -2972,6 +2972,17 @@ function OpenCommandPaletteDialog(props: {
       setQuery(">Snooze");
       return;
     }
+    if (
+      (command === "thread.notifications" || command === "thread.color") &&
+      !event.nativeEvent.isComposing &&
+      activeThreadLifecycleItems.some((item) => item.shortcutCommand === command)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      setHighlightedItemValue(null);
+      setQuery(command === "thread.notifications" ? ">notifications" : ">color");
+      return;
+    }
     if (command === "thread.pin") {
       const highlightedItem = findHighlightedCommandPaletteItem(
         displayedGroups,

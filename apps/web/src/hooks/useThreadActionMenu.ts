@@ -1,3 +1,10 @@
+import { useAtomCommand } from "../state/use-atom-command";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import {
+  threadPreferenceCommand,
+  threadPreferenceMenuItems,
+} from "@t3tools/client-runtime/thread-preferences";
+import { randomUUID } from "../lib/utils";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { t } from "~/i18n";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
@@ -30,6 +37,7 @@ import { threadEnvironment } from "../state/threads";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { readEnvironmentScope } from "../state/session";
 import {
+  readEnvironmentCapabilities,
   readEnvironmentServerConfigLoaded,
   readEnvironmentFinalReviewDefault,
   readEnvironmentSupportsAutoSettleOptOut,
@@ -100,6 +108,10 @@ export function useThreadActionMenu(input: {
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const setPreferences = useAtomCommand(
+    threadEnvironment.setPreferences,
+    t("Failed to update thread preferences"),
+  );
   const folderActions = useThreadFolderActions();
   const runThreadTagAction = useThreadTagActions();
   const handleNewThread = useNewThreadHandler();
@@ -168,10 +180,20 @@ export function useThreadActionMenu(input: {
         canTurnIntoProject: canTurnThreadIntoProject(threadRef),
         folders: readThreadFolderMenuState([threadRef]),
         ...(configLoaded ? { tags: readThreadTagsMenuState([threadRef]) } : {}),
+        preferenceItems: appAtomRegistry.get(
+          threadEnvironment.setPreferences.permissionAtom(threadRef.environmentId),
+        )
+          ? threadPreferenceMenuItems(thread, readEnvironmentCapabilities(threadRef.environmentId))
+          : [],
       });
       const clicked = await settlePromise(() => api.contextMenu.show(items, position));
       if (clicked._tag === "Failure" || clicked.value === null) return;
       const action: ThreadActionMenuId = clicked.value;
+      const preference = threadPreferenceCommand(action, threadRef.threadId, randomUUID);
+      if (preference) {
+        await setPreferences({ environmentId: threadRef.environmentId, input: preference });
+        return;
+      }
       if (
         threadActionRequiresOperate(action) &&
         !readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope)

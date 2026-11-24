@@ -2521,7 +2521,7 @@ function pdfScroll(screen: Screen) {
 // pdf.js renders pages on a worker; under load that outlasts waitFor's one-second default.
 const pdfWaitFor = <T,>(check: () => T) => vi.waitFor(check, { timeout: 10_000 });
 
-it("keeps workspace PDF scroll and zoom after reloads", async () => {
+it("keeps manual zoom and scroll on the last workspace PDF page after reload", async () => {
   using fixture = await workspacePdfPreview();
   const { preview, urls } = fixture;
   await using screen = await render(preview(urls.original, "one"));
@@ -2552,8 +2552,17 @@ it("keeps workspace PDF scroll and zoom after reloads", async () => {
     expect(region().scrollLeft).toBe(80);
     expect(offset(3)).toBeCloseTo(savedOffset, 0);
   });
-  await screen.getByRole("button", { name: "Previous page", exact: true }).click();
+});
+
+it("keeps fit width and scroll after reloading a workspace PDF", async () => {
+  using fixture = await workspacePdfPreview();
+  const { preview, urls } = fixture;
+  await using screen = await render(preview(urls.updated, "one"));
+  await expect.element(screen.getByText("1 / 3 pages", { exact: true })).toBeVisible();
+  await screen.getByRole("button", { name: "Next page", exact: true }).click();
   await pdfWaitFor(() => expect(screen.container.textContent).toContain("2 / 3 pages"));
+  await screen.getByRole("button", { name: "Zoom in", exact: true }).click();
+  const { region, offset, scrollTo } = pdfScroll(screen);
   await screen.getByRole("button", { name: "Fit width", exact: true }).click();
   await scrollTo({ top: region().scrollTop + 30 });
   const fitOffset = offset(2);
@@ -2564,8 +2573,14 @@ it("keeps workspace PDF scroll and zoom after reloads", async () => {
     expect(region().scrollLeft).toBe(0);
     expect(offset(2)).toBeCloseTo(fitOffset, 0);
   });
-  await screen.getByRole("button", { name: "Previous page", exact: true }).click();
-  await pdfWaitFor(() => expect(screen.container.textContent).toContain("1 / 3 pages"));
+});
+
+it("keeps first-page zoom on reload and resets the view when switching to another PDF", async () => {
+  using fixture = await workspacePdfPreview();
+  const { preview, urls } = fixture;
+  await using screen = await render(preview(urls.original, "one"));
+  await expect.element(screen.getByText("1 / 3 pages", { exact: true })).toBeVisible();
+  const { region } = pdfScroll(screen);
   await screen.getByRole("button", { name: "Zoom in", exact: true }).click();
   const firstPageZoom = screen.container.textContent!.match(/\d+%/)![0];
   await screen.rerender(preview(urls.original, "first-page"));

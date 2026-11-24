@@ -8,6 +8,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ThreadLinkedPullRequest } from "./threadPullRequest.ts";
+import { ThreadColor, ThreadNotificationLevel } from "./threadPreferences.ts";
 import { ThreadTitleRegeneration } from "./threadTitle.ts";
 
 export function hasOnlyPairedSurrogates(value: string): boolean {
@@ -40,19 +41,28 @@ const ThreadMetadataClientRequestId = TrimmedNonEmptyString.check(Schema.isMaxLe
   )
   .annotate({ description: "Stable idempotency key to reuse when retrying this mutation." });
 
-export const ThreadMetadataMcpAction = Schema.Literals(["rename", "regenerate_title"]);
+export const ThreadMetadataMcpAction = Schema.Literals([
+  "rename",
+  "regenerate_title",
+  "set_notification_level",
+  "set_color",
+]);
 export type ThreadMetadataMcpAction = typeof ThreadMetadataMcpAction.Type;
 
 export const ThreadMetadataMcpUpdateInput = Schema.Struct({
   threadId: Schema.optional(ThreadId),
   action: ThreadMetadataMcpAction,
   title: Schema.optional(ThreadMetadataTitle),
+  notificationLevel: Schema.optionalKey(ThreadNotificationLevel),
+  color: Schema.optionalKey(Schema.NullOr(ThreadColor)),
   clientRequestId: Schema.optional(ThreadMetadataClientRequestId),
 }).check(
   Schema.makeFilter((input) =>
-    (input.action === "rename") === (input.title !== undefined)
+    (input.action === "rename") === (input.title !== undefined) &&
+    (input.action === "set_notification_level") === (input.notificationLevel !== undefined) &&
+    (input.action === "set_color") === (input.color !== undefined)
       ? true
-      : "rename requires title; regenerate_title does not accept one.",
+      : "Pass only the field for the selected action: title, notificationLevel, or color.",
   ),
 );
 export type ThreadMetadataMcpUpdateInput = typeof ThreadMetadataMcpUpdateInput.Type;
@@ -63,6 +73,8 @@ export const ThreadMetadataMcpUpdateResult = Schema.Struct({
   commandId: CommandId,
   sequence: NonNegativeInt,
   title: Schema.String,
+  notificationLevel: Schema.optionalKey(ThreadNotificationLevel),
+  color: Schema.optionalKey(Schema.NullOr(ThreadColor)),
   titleRegeneration: Schema.NullOr(ThreadTitleRegeneration),
   linkedPullRequest: Schema.NullOr(ThreadLinkedPullRequest),
   updatedAt: IsoDateTime,

@@ -1,3 +1,5 @@
+import { threadPreferenceLabels } from "@t3tools/client-runtime/thread-preferences";
+import type { ThreadColor } from "@t3tools/contracts";
 import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { resolveThreadRowStatus, ThreadRowStatusContent } from "./threadRowStatus";
@@ -34,6 +36,8 @@ import type { TimestampFormat } from "@t3tools/contracts/settings";
 import {
   AlarmClockIcon,
   AlarmClockOffIcon,
+  BellIcon,
+  BellOffIcon,
   ArrowRightLeftIcon,
   CheckIcon,
   CircleAlertIcon,
@@ -1073,6 +1077,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       </span>
     ) : null;
 
+  const preferenceLabels = threadPreferenceLabels(thread);
   const accessibility = resolveSidebarRowAccessibility({
     title: thread.title,
     statusLabel: topStatus?.lastKnown?.label ?? topStatus?.label ?? null,
@@ -1367,7 +1372,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 tabIndex={-1}
                 data-sidebar-row={rowId}
                 data-sidebar-parent={props.navigationParent}
-                aria-label={accessibility.label}
+                aria-label={[
+                  accessibility.label,
+                  preferenceLabels.color,
+                  preferenceLabels.notifications,
+                ]
+                  .filter(Boolean)
+                  .join(", ")}
                 aria-current={accessibility.current}
                 data-testid={
                   indented
@@ -1395,6 +1406,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             {/* `contents` keeps one-line rows a single flex row. */}
             <div className={multiline ? "flex h-6 min-w-0 items-center gap-2.5" : "contents"}>
               {accessibleTitle}
+              <ThreadPreferenceMarkers thread={thread} />
               {props.inProjectFolder ? null : (
                 <span
                   className={cn(
@@ -1599,7 +1611,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               tabIndex={-1}
               data-sidebar-row={rowId}
               data-sidebar-parent={props.navigationParent}
-              aria-label={accessibility.label}
+              aria-label={[
+                accessibility.label,
+                preferenceLabels.color,
+                preferenceLabels.notifications,
+              ]
+                .filter(Boolean)
+                .join(", ")}
               aria-current={accessibility.current}
               data-testid="sidebar-row-card"
               aria-busy={isRegeneratingTitle || undefined}
@@ -1619,6 +1637,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             )}
           >
             <div className="flex h-5 min-w-0 items-center gap-1.5">
+              <ThreadPreferenceMarkers thread={thread} />
               {draftIndicator}
               {queuedIndicator}
               {props.project ? (
@@ -1828,6 +1847,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
 }) {
   const thread =
     useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id)) ?? props.thread;
+  const preferenceLabels = threadPreferenceLabels(thread);
   const accessibility = resolveSidebarRowAccessibility({
     title: thread.title,
     statusLabel: null,
@@ -1902,7 +1922,13 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
               aria-selected={props.isHighlighted}
               aria-current={accessibility.current}
               aria-describedby={`${props.resultId}-pr`}
-              aria-label={accessibility.label}
+              aria-label={[
+                accessibility.label,
+                preferenceLabels.color,
+                preferenceLabels.notifications,
+              ]
+                .filter(Boolean)
+                .join(", ")}
               onMouseMove={props.onHighlight}
               onClick={props.onSelect}
               className={cn(
@@ -1928,6 +1954,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
               )}
             />
           ) : null}
+          <ThreadPreferenceMarkers thread={thread} />
           <span className="flex min-w-0 flex-1 flex-col">
             <span className="flex min-w-0 items-center gap-2.5">
               <span
@@ -1991,3 +2018,35 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
     </li>
   );
 });
+
+const threadColorDotClass = {
+  red: "bg-red-600 dark:bg-red-400",
+  orange: "bg-orange-600 dark:bg-orange-400",
+  yellow: "bg-yellow-700 dark:bg-yellow-400",
+  green: "bg-green-600 dark:bg-green-400",
+  blue: "bg-blue-600 dark:bg-blue-400",
+  purple: "bg-purple-600 dark:bg-purple-400",
+  gray: "bg-gray-600 dark:bg-gray-400",
+} satisfies Record<ThreadColor, string>;
+
+function ThreadPreferenceMarkers({
+  thread,
+}: {
+  readonly thread: Pick<SidebarThreadSummary, "color" | "notificationLevel">;
+}) {
+  return (
+    <>
+      {thread.color == null ? null : (
+        <span
+          aria-hidden
+          className={cn("size-2 shrink-0 rounded-full", threadColorDotClass[thread.color])}
+        />
+      )}
+      {thread.notificationLevel === "muted" ? (
+        <BellOffIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+      ) : thread.notificationLevel === "following" ? (
+        <BellIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+      ) : null}
+    </>
+  );
+}

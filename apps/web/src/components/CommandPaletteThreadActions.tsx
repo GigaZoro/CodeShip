@@ -1,3 +1,10 @@
+import {
+  threadPreferenceCommand,
+  threadPreferenceMenuItems,
+} from "@t3tools/client-runtime/thread-preferences";
+import { randomUUID } from "../lib/utils";
+import { threadEnvironment } from "../state/threads";
+import { useAtomCommand } from "../state/use-atom-command";
 import { t } from "~/i18n";
 import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -14,10 +21,12 @@ import {
   AlarmClockIcon,
   AlarmClockOffIcon,
   ArchiveIcon,
+  BellIcon,
   CheckCircle2Icon,
   FolderIcon,
   FolderMinusIcon,
   FolderPlusIcon,
+  PaletteIcon,
   PencilIcon,
   PinIcon,
   PinOffIcon,
@@ -55,7 +64,6 @@ function failureToast(title: string, result: AtomCommandResult<unknown, unknown>
   );
 }
 
-/** Pin, settle, snooze, archive and rename for the thread on screen, through the sidebar menu's commands. */
 export function useActiveThreadPaletteItems(
   thread: EnvironmentThreadShell | null | undefined,
 ): ReadonlyArray<CommandPaletteActionItem> {
@@ -79,14 +87,49 @@ export function useActiveThreadPaletteItems(
   );
   // Subscribed, not read, so rows appear when the config loads after the palette opens.
   const serverConfigs = useAtomValue(environmentServerConfigsAtom);
+  const canSetPreferences = useAtomValue(
+    threadEnvironment.setPreferences.permissionAtom(thread?.environmentId ?? null),
+  );
+  const setPreferences = useAtomCommand(
+    threadEnvironment.setPreferences,
+    t("Failed to update thread preferences"),
+  );
   if (!thread || !canOperate) return [];
 
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
-  const configLoaded = serverConfigs.has(thread.environmentId);
+  const config = serverConfigs.get(thread.environmentId);
   const now = new Date(`${nowMinute}:00.000Z`);
   const items: CommandPaletteActionItem[] = [];
 
-  if (configLoaded) {
+  if (canSetPreferences) {
+    for (const group of threadPreferenceMenuItems(thread, config?.environment.capabilities)) {
+      const notifications = group.id === "notifications";
+      const Icon = notifications ? BellIcon : PaletteIcon;
+      const shortcutCommand = notifications ? "thread.notifications" : "thread.color";
+      const searchTerms = notifications
+        ? ["thread", "notifications", "alerts", "mute", "follow"]
+        : ["thread", "color", "colour", "marker"];
+      for (const [index, choice] of group.children.entries()) {
+        items.push({
+          kind: "action",
+          value: `action:thread-preference:${choice.id}`,
+          title: notifications
+            ? t("Notifications: {value}", { value: choice.label })
+            : t("Color: {value}", { value: choice.label }),
+          searchTerms: [...searchTerms, choice.id, choice.label],
+          icon: <Icon className={ITEM_ICON_CLASS} />,
+          ...(index === 0 ? { shortcutCommand } : {}),
+          run: async () => {
+            const command = threadPreferenceCommand(choice.id, thread.id, randomUUID);
+            if (command)
+              await setPreferences({ environmentId: thread.environmentId, input: command });
+          },
+        });
+      }
+    }
+  }
+
+  if (config) {
     const pinned = thread.pinnedAt != null;
     items.push({
       kind: "action",

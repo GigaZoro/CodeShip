@@ -1436,6 +1436,47 @@ describe("server state projection", () => {
 });
 
 describe("server config commands", () => {
+  it.effect("updates thread preference capabilities only when their values change", () =>
+    Effect.gen(function* () {
+      const config = Atom.make<ServerConfig>(CONFIG);
+      const runtime = Atom.runtime(
+        Layer.merge(
+          Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, {
+            followStream: () => Stream.empty,
+            run: () => Effect.never,
+          } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]),
+          Layer.succeed(Persistence.EnvironmentCacheStore, {} as never),
+        ),
+      );
+      const atoms = createServerEnvironmentAtoms(runtime, { initialConfigValueAtom: () => config });
+      const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (value) =>
+        Effect.sync(() => value.dispose()),
+      );
+      const atom = atoms.threadPreferenceCapabilitiesAtom(TARGET.environmentId);
+      expect(atoms.threadPreferenceCapabilitiesAtom(TARGET.environmentId)).toBe(atom);
+      const observed: unknown[] = [];
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          registry.subscribe(atom, (value) => observed.push(value), { immediate: true }),
+        ),
+        (unsubscribe) => Effect.sync(unsubscribe),
+      );
+      registry.set(config, { ...CONFIG, keybindingsConfigPath: "/workspace/keybindings.json" });
+      expect(observed).toEqual([{ threadNotificationLevel: false, threadColor: false }]);
+      registry.set(config, {
+        ...CONFIG,
+        environment: {
+          ...CONFIG.environment,
+          capabilities: { ...CONFIG.environment.capabilities, threadColor: true },
+        },
+      });
+      expect(observed).toEqual([
+        { threadNotificationLevel: false, threadColor: false },
+        { threadNotificationLevel: false, threadColor: true },
+      ]);
+    }),
+  );
+
   it.effect("toggles a provider while another provider's update is still running", () =>
     Effect.scoped(
       Effect.gen(function* () {

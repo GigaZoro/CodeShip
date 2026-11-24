@@ -5,16 +5,11 @@ import type {
 } from "@t3tools/contracts/relay";
 import {
   activityPhasePriority,
-  statusForPhase,
+  aggregateRowForState,
   TERMINAL_AGENT_ACTIVITY_DISPLAY_TTL_MS,
 } from "./agentActivityAggregate.ts";
 import { agentActivityExpiresAt, notificationForActivity } from "./agentActivityPayloads.ts";
-import {
-  alertForActivityRows,
-  attentionTransitionRows,
-  terminalTransitionRows,
-  shouldAlertForActivity,
-} from "./agentActivityAlerts.ts";
+import { alertOccurrence, shouldAlertForActivity } from "./agentActivityAlerts.ts";
 
 export function androidActivityData(aggregate: RelayAgentActivityAggregateState | null) {
   const rows = [...(aggregate?.activities ?? [])].sort(
@@ -98,51 +93,17 @@ export function androidAlertForState(
   nowMs: number,
 ) {
   if (!shouldAlertForActivity({ ...state, preferences, nowMs })) return null;
-  const notification = notificationForActivity({ ...state, status: statusForPhase(state.phase) });
+  const notification = notificationForActivity(aggregateRowForState(state));
   return {
-    alert_id: JSON.stringify([state.environmentId, state.threadId, state.phase, state.updatedAt]),
+    alert_id: JSON.stringify([
+      state.environmentId,
+      state.threadId,
+      state.phase,
+      alertOccurrence(state),
+    ]),
     alert_group: JSON.stringify([state.environmentId, state.threadId]),
     alert_title: notification.title,
     alert_body: notification.body,
     alert_path: notification.deepLink,
-  };
-}
-
-export function androidAlertForAggregate(input: {
-  readonly previousAggregate: RelayAgentActivityAggregateState;
-  readonly nextAggregate: RelayAgentActivityAggregateState;
-  readonly preferences: RelayAgentAwarenessPreferences;
-  readonly nowMs: number;
-}) {
-  if (!input.preferences.notificationsEnabled) return null;
-  const attention = attentionTransitionRows(input);
-  const activities =
-    attention.length > 0
-      ? attention
-      : terminalTransitionRows({ ...input, includeUnobserved: true });
-  const first = activities[0];
-  const alert = alertForActivityRows(activities);
-  if (!first || !alert) return null;
-  if (activities.length === 1) {
-    const notification = notificationForActivity(first);
-    return {
-      alert_id: JSON.stringify([first.environmentId, first.threadId, first.phase, first.updatedAt]),
-      alert_group: JSON.stringify([first.environmentId, first.threadId]),
-      alert_title: notification.title,
-      alert_body: notification.body,
-      alert_path: notification.deepLink,
-    };
-  }
-  return {
-    // Stable group IDs let the native handler deduplicate across jobs, retries, and row orders.
-    alert_id: JSON.stringify(
-      activities
-        .map((row) => [row.environmentId, row.threadId, row.phase, row.updatedAt])
-        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
-    ),
-    alert_title: alert.title,
-    alert_body: alert.body,
-    // Target the overview so one visible thread cannot suppress other threads' alerts.
-    alert_path: "/",
   };
 }

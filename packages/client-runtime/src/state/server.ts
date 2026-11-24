@@ -970,6 +970,22 @@ export function createServerEnvironmentAtoms<R, E>(
       return { ...merged, providers: previousProviders };
     }).pipe(Atom.withLabel(`environment-data:server:config:${environmentId}`));
   });
+  const threadPreferenceCapabilitiesAtom = Atom.family((environmentId: EnvironmentId | null) =>
+    Atom.make((get) => {
+      const capabilities = get(configValueAtom(environmentId))?.environment.capabilities;
+      return {
+        threadNotificationLevel: capabilities?.threadNotificationLevel === true,
+        threadColor: capabilities?.threadColor === true,
+      };
+    }).pipe(
+      Atom.withEquality(
+        (a: { threadNotificationLevel: boolean; threadColor: boolean }, b: typeof a) =>
+          a.threadNotificationLevel === b.threadNotificationLevel &&
+          a.threadColor === b.threadColor,
+      ),
+      Atom.withLabel(`environment-data:server:thread-preference-capabilities:${environmentId}`),
+    ),
+  );
   const updateStateValueAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) =>
       serverUpdateStateForServerVersion(
@@ -1569,6 +1585,7 @@ export function createServerEnvironmentAtoms<R, E>(
     monitoringThread,
     monitoringThreadView,
     configValueAtom,
+    threadPreferenceCapabilitiesAtom,
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
       tag: WS_METHODS.serverRunStorageCleanup,

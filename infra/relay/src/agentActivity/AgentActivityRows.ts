@@ -62,10 +62,35 @@ export class AgentActivityRowListPersistenceError extends Schema.TaggedError<Age
   }
 }
 
+/** The stored row's occurrence before an upsert replaced it. */
+export interface AgentActivityOccurrence {
+  readonly phase: string;
+  readonly occurredAt: string | null;
+  /** The publish that wrote it meant to alert but failed before every delivery was queued. */
+  readonly alertUnsent: boolean;
+}
+
+const whereThreadRow = (input: {
+  readonly environmentId: string;
+  readonly environmentPublicKey: string;
+  readonly threadId: string;
+}) =>
+  and(
+    eq(relayAgentActivityRows.environmentId, input.environmentId),
+    eq(relayAgentActivityRows.environmentPublicKey, input.environmentPublicKey),
+    eq(relayAgentActivityRows.threadId, input.threadId),
+  );
+
 export class AgentActivityRows extends Context.Service<
   AgentActivityRows,
   {
+    /** Writes the state and returns the occurrence it replaced; silent publishes return null. */
     readonly upsert: (input: {
+      readonly environmentPublicKey: string;
+      readonly state: RelayAgentActivityState;
+    }) => Effect.Effect<AgentActivityOccurrence | null, AgentActivityRowUpsertPersistenceError>;
+    /** Lets the retry of a failed publish alert again; the next write of the row clears it. */
+    readonly markAlertUnsent: (input: {
       readonly environmentPublicKey: string;
       readonly state: RelayAgentActivityState;
     }) => Effect.Effect<void, AgentActivityRowUpsertPersistenceError>;
@@ -87,6 +112,7 @@ export class AgentActivityRows extends Context.Service<
       readonly userId: string;
       readonly environmentId: string;
       readonly threadId: string;
+      readonly requireNotifications?: boolean;
     }) => Effect.Effect<RelayAgentActivityState | null, AgentActivityRowListPersistenceError>;
   }
 >()("t3code-relay/agentActivity/AgentActivityRows") {}
@@ -108,40 +134,105 @@ const make = Effect.gen(function* () {
         "relay.environment_id": input.state.environmentId,
         "relay.thread_id": input.state.threadId,
       });
+      const persistenceError = (cause: unknown) =>
+        new AgentActivityRowUpsertPersistenceError({
+          environmentId: input.state.environmentId,
+          threadId: input.state.threadId,
+          cause,
+        });
+      const whereRow = whereThreadRow({
+        environmentId: input.state.environmentId,
+        environmentPublicKey: input.environmentPublicKey,
+        threadId: input.state.threadId,
+      });
+      if (input.state.silent) {
+        // A preference publish can outlive the server's copy of the relay activity identity.
+        yield* db
+          .update(relayAgentActivityRows)
+          .set({
+            stateJson: sql`${relayAgentActivityRows.stateJson} || jsonb_build_object('notificationLevel', ${input.state.notificationLevel ?? "default"}::text)`,
+          })
+          .where(whereRow)
+          .pipe(Effect.mapError(persistenceError));
+        return null;
+      }
       const now = yield* DateTime.now;
       const stateJson = yield* encodeRelayAgentActivityStateJson(input.state).pipe(
         Effect.flatMap(decodeJsonString),
         Effect.map(Function.cast<unknown, RelayAgentActivityState>),
-        Effect.mapError(
-          (cause) =>
-            new AgentActivityRowUpsertPersistenceError({
-              environmentId: input.state.environmentId,
-              threadId: input.state.threadId,
-              cause,
-            }),
-        ),
+        Effect.mapError(persistenceError),
       );
+      const values = {
+        environmentId: input.state.environmentId,
+        environmentPublicKey: input.environmentPublicKey,
+        threadId: input.state.threadId,
+        stateJson,
+        updatedAt: input.state.updatedAt,
+        createdAt: DateTime.formatIso(now),
+      };
+      const target = [
+        relayAgentActivityRows.environmentId,
+        relayAgentActivityRows.environmentPublicKey,
+        relayAgentActivityRows.threadId,
+      ];
+      // The row lock makes concurrent publishes of one thread see each other's occurrence.
+      const replace = Effect.gen(function* () {
+        const inserted = yield* db
+          .insert(relayAgentActivityRows)
+          .values(values)
+          .onConflictDoNothing({ target })
+          .returning({ threadId: relayAgentActivityRows.threadId });
+        if (inserted.length > 0) {
+          return null;
+        }
+        const previous = yield* db
+          .select({
+            phase: sql<string | null>`${relayAgentActivityRows.stateJson} ->> 'phase'`,
+            occurredAt: sql<string | null>`${relayAgentActivityRows.stateJson} ->> 'occurredAt'`,
+            alertUnsent: sql<string | null>`${relayAgentActivityRows.stateJson} ->> 'alertUnsent'`,
+          })
+          .from(relayAgentActivityRows)
+          .where(whereRow)
+          .limit(1)
+          .for("update");
+        yield* db
+          .insert(relayAgentActivityRows)
+          .values(values)
+          .onConflictDoUpdate({ target, set: { stateJson, updatedAt: input.state.updatedAt } });
+        const row = previous[0];
+        return row?.phase == null
+          ? null
+          : {
+              phase: row.phase,
+              occurredAt: row.occurredAt,
+              alertUnsent: row.alertUnsent === "true",
+            };
+      });
+      return yield* db.$client.withTransaction(replace).pipe(Effect.mapError(persistenceError));
+    }),
+
+    markAlertUnsent: Effect.fn("relay.agent_activity_rows.mark_alert_unsent")(function* (input) {
+      yield* Effect.annotateCurrentSpan({
+        "relay.environment_id": input.state.environmentId,
+        "relay.thread_id": input.state.threadId,
+      });
       yield* db
-        .insert(relayAgentActivityRows)
-        .values({
-          environmentId: input.state.environmentId,
-          environmentPublicKey: input.environmentPublicKey,
-          threadId: input.state.threadId,
-          stateJson,
-          updatedAt: input.state.updatedAt,
-          createdAt: DateTime.formatIso(now),
+        .update(relayAgentActivityRows)
+        .set({
+          stateJson: sql`${relayAgentActivityRows.stateJson} || jsonb_build_object('alertUnsent', true)`,
         })
-        .onConflictDoUpdate({
-          target: [
-            relayAgentActivityRows.environmentId,
-            relayAgentActivityRows.environmentPublicKey,
-            relayAgentActivityRows.threadId,
-          ],
-          set: {
-            stateJson,
-            updatedAt: input.state.updatedAt,
-          },
-        })
+        .where(
+          and(
+            whereThreadRow({
+              environmentId: input.state.environmentId,
+              environmentPublicKey: input.environmentPublicKey,
+              threadId: input.state.threadId,
+            }),
+            // Only the state this publish wrote; a newer one made its own alert decision.
+            eq(relayAgentActivityRows.updatedAt, input.state.updatedAt),
+            sql`${relayAgentActivityRows.stateJson} ->> 'phase' = ${input.state.phase}`,
+          ),
+        )
         .pipe(
           Effect.mapError(
             (cause) =>
@@ -161,13 +252,7 @@ const make = Effect.gen(function* () {
       });
       yield* db
         .delete(relayAgentActivityRows)
-        .where(
-          and(
-            eq(relayAgentActivityRows.environmentId, input.environmentId),
-            eq(relayAgentActivityRows.environmentPublicKey, input.environmentPublicKey),
-            eq(relayAgentActivityRows.threadId, input.threadId),
-          ),
-        )
+        .where(whereThreadRow(input))
         .pipe(
           Effect.mapError(
             (cause) =>
@@ -259,6 +344,9 @@ const make = Effect.gen(function* () {
             isNull(relayEnvironmentLinks.revokedAt),
             eq(relayAgentActivityRows.environmentId, input.environmentId),
             eq(relayAgentActivityRows.threadId, input.threadId),
+            input.requireNotifications
+              ? eq(relayEnvironmentLinks.notificationsEnabled, true)
+              : undefined,
           ),
         )
         .orderBy(desc(relayAgentActivityRows.updatedAt))

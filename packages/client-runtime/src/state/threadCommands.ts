@@ -9,7 +9,9 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
 import {
+  ORCHESTRATION_V2_WS_METHODS,
   WS_METHODS,
+  type OrchestrationV2Command,
   type EnvironmentId,
   type OrchestrationV2ShellSnapshot,
 } from "@t3tools/contracts";
@@ -216,6 +218,20 @@ export function createThreadEnvironmentAtoms<R, E>(
     reorderPin: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:reorder-pin",
       execute: reorderPinnedThread,
+      scheduler,
+      concurrency,
+    }),
+    setPreferences: createEnvironmentRpcCommand<
+      R | Crypto.Crypto,
+      E,
+      typeof ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+      Extract<
+        OrchestrationV2Command,
+        { type: "thread.notification-level.set" | "thread.color.set" }
+      >
+    >(runtime, {
+      label: "environment-data:commands:thread:set-preferences",
+      tag: ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
       scheduler,
       concurrency,
     }),

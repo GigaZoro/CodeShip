@@ -1,3 +1,4 @@
+import { shouldNotifyThread } from "@t3tools/shared/threadNotifications";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 
@@ -11,8 +12,11 @@ export function installNeedsYouBadge(): () => void {
   return appAtomRegistry.subscribe(
     environmentThreadShells.needsYouThreadsAtom,
     (needsYou) => {
-      if (needsYou.threads.length === count) return;
-      count = needsYou.threads.length;
+      const nextCount = needsYou.threads.filter((thread) =>
+        shouldNotifyThread(true, thread.notificationLevel, "input"),
+      ).length;
+      if (nextCount === count) return;
+      count = nextCount;
       // Without badge permission the OS ignores it; the list still shows the count.
       void Notifications.setBadgeCountAsync(count).catch((error: unknown) =>
         console.warn("Could not update the app icon badge", error),

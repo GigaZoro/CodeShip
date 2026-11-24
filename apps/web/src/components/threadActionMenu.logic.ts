@@ -1,3 +1,4 @@
+import type { ThreadPreferenceMenuId } from "@t3tools/client-runtime/thread-preferences";
 import { t } from "~/i18n";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
@@ -71,6 +72,7 @@ export type ThreadActionMenuId =
   | "share-guest"
   | "folder"
   | ThreadFolderMenuAction
+  | ThreadPreferenceMenuId
   | "copy"
   | "copy-path"
   | "copy-branch"
@@ -158,6 +160,7 @@ export interface ThreadActionMenuState {
   /** Absent where the server cannot file chats in sidebar folders. */
   readonly folders?: ThreadFolderMenuState | null;
   readonly tags?: Parameters<typeof buildThreadTagsMenuItem>[0];
+  readonly preferenceItems?: ReadonlyArray<ContextMenuItem<ThreadPreferenceMenuId>>;
 }
 
 export interface ThreadFolderMenuState {
@@ -212,6 +215,8 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
     "project-settings",
     "mark-unread",
     "share-guest",
+    "notifications",
+    "color",
     "copy",
     "copy-path",
     "copy-branch",
@@ -301,6 +306,7 @@ export function buildThreadActionMenuItems(
       : []),
     ...(state.folders ? [buildThreadFolderMenuItem(state.folders)] : []),
     ...(state.tags ? [buildThreadTagsMenuItem(state.tags)] : []),
+    ...(state.preferenceItems ?? []),
     ...(state.projectFilter
       ? [
           {

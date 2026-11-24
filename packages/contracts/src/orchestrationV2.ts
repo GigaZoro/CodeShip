@@ -45,6 +45,7 @@ import { AuthMcpClientAccess } from "./auth.ts";
 import { ChatAttachment } from "./chatAttachment.ts";
 import { ThreadGuestShare } from "./guestShare.ts";
 import { StoredThreadFolder, ThreadFolder, threadFolderKeyOf } from "./threadFolders.ts";
+import { ThreadColor, ThreadNotificationLevel } from "./threadPreferences.ts";
 import { StoredThreadTags, ThreadTag } from "./threadTags.ts";
 import {
   OrchestrationSearchThreadsInput,
@@ -509,6 +510,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   activeOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   /** Absent on threads written before tags existed; read as empty. */
   tags: Schema.optional(StoredThreadTags),
+  notificationLevel: Schema.optionalKey(ThreadNotificationLevel),
+  color: Schema.optionalKey(Schema.NullOr(ThreadColor)),
   /** The sidebar folder; absent or null is none. Names match by `threadFolderKey`. */
   folder: Schema.optional(StoredThreadFolder),
   /** Pages (by html_render attachment id) removed from the Artifacts gallery; the thread keeps rendering them inline. */
@@ -2102,6 +2105,8 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.pin-reordered",
       "thread.active-reordered",
       "thread.tags-updated",
+      "thread.notification-level-updated",
+      "thread.color-updated",
       "thread.folder-updated",
       "thread.artifacts-updated",
       "thread.visited",
@@ -2375,6 +2380,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   activeOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   /** Absent on threads written before tags existed; read as empty. */
   tags: Schema.optional(StoredThreadTags),
+  notificationLevel: Schema.optionalKey(ThreadNotificationLevel),
+  color: Schema.optionalKey(Schema.NullOr(ThreadColor)),
   /** The sidebar folder; absent or null is none. Names match by `threadFolderKey`. */
   folder: Schema.optional(StoredThreadFolder),
   lastVisitedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -3052,6 +3059,8 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.pin-reordered",
       "thread.active-reordered",
       "thread.tags-updated",
+      "thread.notification-level-updated",
+      "thread.color-updated",
       "thread.folder-updated",
       "thread.artifacts-updated",
       "thread.visited",
@@ -3319,6 +3328,18 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     tag: ThreadTag,
     tagged: Schema.Boolean,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.notification-level.set"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    notificationLevel: ThreadNotificationLevel,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.color.set"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    color: Schema.NullOr(ThreadColor),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.folder.set"),

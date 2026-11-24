@@ -123,6 +123,10 @@
       "types": "./src/scheduledTaskGroups.ts",
       "default": "./src/scheduledTaskGroups.ts"
     },
+    "./thread-preferences": {
+      "types": "./src/threadPreferences.ts",
+      "default": "./src/threadPreferences.ts"
+    },
     "./thread-folders": {
       "types": "./src/threadFolders.ts",
       "default": "./src/threadFolders.ts"

@@ -22,14 +22,10 @@ import * as AgentActivityRows from "./AgentActivityRows.ts";
 import * as LiveActivities from "./LiveActivities.ts";
 import * as FcmDeliveryQueueSender from "./FcmDeliveryQueueSender.ts";
 import * as FcmClient from "./FcmClient.ts";
-import {
-  androidActivityData,
-  androidAlertForAggregate,
-  androidAlertForState,
-  fitFcmData,
-} from "./fcmPayloads.ts";
-import { makeAggregateState } from "./agentActivityAggregate.ts";
+import { androidActivityData, androidAlertForState, fitFcmData } from "./fcmPayloads.ts";
+import { aggregateRowForState, makeAggregateState } from "./agentActivityAggregate.ts";
 import { isExpiredAgentActivityState } from "./agentActivityPayloads.ts";
+import { isSameOccurrence } from "./agentActivityAlerts.ts";
 
 export const FcmDeliveryJob = Schema.Struct({
   userId: Schema.String,
@@ -38,6 +34,8 @@ export const FcmDeliveryJob = Schema.Struct({
   state: Schema.NullOr(RelayAgentActivityState),
   queuedAt: Schema.Number,
   replay: Schema.optional(Schema.Boolean),
+  /** Set when the publish started a new occurrence of `state` that may alert. */
+  trigger: Schema.optional(Schema.Boolean),
 });
 export type FcmDeliveryJob = typeof FcmDeliveryJob.Type;
 const decodeJob = Schema.decodeUnknownEffect(FcmDeliveryJob);
@@ -63,6 +61,7 @@ export class FcmDeliveries extends Context.Service<
     readonly enqueue: (input: {
       readonly target: LiveActivities.TargetRow;
       readonly state: RelayAgentActivityState | null;
+      readonly trigger?: boolean;
       readonly replay?: boolean;
     }) => Effect.Effect<RelayDeliveryResult | null, FcmDeliveryError>;
     readonly process: (
@@ -113,6 +112,7 @@ const make = Effect.gen(function* () {
           token: input.target.push_token,
           state: input.state,
           ...(input.replay ? { replay: true } : {}),
+          ...(input.trigger ? { trigger: true } : {}),
           queuedAt: now.epochMilliseconds,
         })
         .pipe(Effect.mapError((cause) => new FcmDeliveryError({ operation: "enqueue", cause })));
@@ -144,91 +144,54 @@ const make = Effect.gen(function* () {
       if (Option.isNone(preferences)) return;
 
       // Re-read at consumption to honor current links, tokens, preferences, and thread states.
-      const states = preferences.value.liveActivitiesEnabled
-        ? yield* rows.listForUser({ userId: job.userId })
-        : [];
+      const showActivity =
+        preferences.value.notificationsEnabled && preferences.value.liveActivitiesEnabled;
+      const states = showActivity ? yield* rows.listForUser({ userId: job.userId }) : [];
       const aggregate = makeAggregateState({
         activeStates: states,
         terminalState: null,
         nowMs: now.epochMilliseconds,
       });
+      const baseline = aggregate && {
+        ...aggregate,
+        activities: states
+          .filter((state) => !isExpiredAgentActivityState(state, now.epochMilliseconds))
+          .map(aggregateRowForState),
+      };
       const previousAggregate = target.last_aggregate_json
         ? Option.getOrNull(decodePreviousActivity(target.last_aggregate_json))
         : null;
-      let alert: ReturnType<typeof androidAlertForState | typeof androidAlertForAggregate> = null;
-      // Deletions update the card but must not consume another thread's pending completion alert.
-      let acknowledgeAggregate = job.state !== null || job.replay === true || aggregate === null;
+      let alert: ReturnType<typeof androidAlertForState> = null;
       if (job.state && preferences.value.notificationsEnabled) {
         const state = yield* rows.getForUserThread({
           userId: job.userId,
           environmentId: job.state.environmentId,
           threadId: job.state.threadId,
         });
+        // Without a card to repaint, a superseded job has nothing left to deliver.
+        if (!previousAggregate && (!state || !isSameOccurrence(state, job.state))) return;
         if (
-          !previousAggregate &&
-          (!state || state.phase !== job.state.phase || state.updatedAt !== job.state.updatedAt)
-        )
-          return;
-        const link = yield* links.getForUser({
-          userId: job.userId,
-          environmentId: job.state.environmentId,
-        });
-        const deliveryUsers = link
-          ? yield* links.listDeliveryUsersForEnvironment({
-              environmentId: job.state.environmentId,
-              environmentPublicKey: link.environmentPublicKey,
-            })
-          : [];
-        const deliveryUser = deliveryUsers.find((user) => user.userId === job.userId);
-        // Notification-only jobs must not acknowledge another environment's pending card transitions.
-        acknowledgeAggregate =
-          deliveryUser?.liveActivitiesEnabled === true || !preferences.value.liveActivitiesEnabled;
-        if (
-          deliveryUser?.liveActivitiesEnabled &&
-          preferences.value.liveActivitiesEnabled &&
-          previousAggregate &&
-          aggregate
-        ) {
-          const environmentIds = [...new Set(aggregate.activities.map((row) => row.environmentId))];
-          const allowedEnvironments = new Set<string>();
-          for (const environmentId of environmentIds) {
-            const environmentLink = yield* links.getForUser({
-              userId: job.userId,
-              environmentId,
-            });
-            if (!environmentLink) continue;
-            const users = yield* links.listDeliveryUsersForEnvironment({
-              environmentId,
-              environmentPublicKey: environmentLink.environmentPublicKey,
-            });
-            if (users.some((user) => user.userId === job.userId && user.notificationsEnabled)) {
-              allowedEnvironments.add(environmentId);
-            }
-          }
-          alert = androidAlertForAggregate({
-            previousAggregate,
-            nextAggregate: {
-              ...aggregate,
-              activities: aggregate.activities.filter((row) =>
-                allowedEnvironments.has(row.environmentId),
-              ),
-            },
-            preferences: preferences.value,
-            nowMs: now.epochMilliseconds,
-          });
-        } else if (
-          deliveryUser?.notificationsEnabled &&
-          state?.phase === job.state.phase &&
-          state.updatedAt === job.state.updatedAt &&
+          job.trigger === true &&
+          state &&
+          isSameOccurrence(state, job.state) &&
           !isExpiredAgentActivityState(state, now.epochMilliseconds)
         ) {
-          alert = androidAlertForState(state, preferences.value, now.epochMilliseconds);
+          const link = yield* links.getForUser({
+            userId: job.userId,
+            environmentId: job.state.environmentId,
+          });
+          const deliveryUsers = link
+            ? yield* links.listDeliveryUsersForEnvironment({
+                environmentId: job.state.environmentId,
+                environmentPublicKey: link.environmentPublicKey,
+              })
+            : [];
+          if (deliveryUsers.find((user) => user.userId === job.userId)?.notificationsEnabled) {
+            alert = androidAlertForState(state, preferences.value, now.epochMilliseconds);
+          }
         }
       }
-      const displayedAggregate =
-        preferences.value.notificationsEnabled && preferences.value.liveActivitiesEnabled
-          ? aggregate
-          : null;
+      const displayedAggregate = showActivity ? aggregate : null;
       const active = (displayedAggregate?.activeCount ?? 0) > 0;
       if (!displayedAggregate && !alert && !previousAggregate && job.state !== null) return;
       const data: Record<string, string> = {
@@ -240,7 +203,7 @@ const make = Effect.gen(function* () {
         ...alert,
       };
       if (alert) {
-        // Hash the full stable group identity to stay within the payload budget.
+        // Hash the stable occurrence identity to stay within the payload budget.
         const digest = yield* crypto.digest("SHA-256", new TextEncoder().encode(alert.alert_id));
         data.alert_id = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
       }
@@ -266,13 +229,13 @@ const make = Effect.gen(function* () {
               (cause) => new FcmDeliveryError({ operation: "invalidate-token", cause }),
             ),
           );
-      } else if (acknowledgeAggregate) {
+      } else {
         yield* devices.markDelivery({
           userId: job.userId,
           deviceId: job.deviceId,
           kind: active ? "live_activity_update" : "live_activity_end",
-          // Retain terminal rows as the baseline so finished-card replays cannot alert again.
-          aggregate: preferences.value.liveActivitiesEnabled ? aggregate : null,
+          // Keep rows beyond the card's display limit so their alerts also deduplicate.
+          aggregate: baseline,
           deliveredAt: DateTime.formatIso(now),
         });
       }

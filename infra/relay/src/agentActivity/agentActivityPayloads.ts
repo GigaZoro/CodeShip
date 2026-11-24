@@ -111,6 +111,9 @@ export function notificationForActivity(
     threadId: activity.threadId,
     deepLink: activity.deepLink,
     phase: activity.phase,
+    ...(activity.notificationLevel === undefined
+      ? {}
+      : { notificationLevel: activity.notificationLevel }),
     updatedAt: activity.updatedAt,
   });
 }

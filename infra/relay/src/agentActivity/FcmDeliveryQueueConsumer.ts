@@ -11,6 +11,15 @@ export const processMessage = Effect.fn("relay.fcm_delivery_queue.process_messag
     Effect.matchEffect({
       // The enclosing operation owns the span for this inline handler.
       onFailure: Effect.fnUntraced(function* (error) {
+        // A job that does not decode fails the same way on every retry.
+        if (error._tag === "FcmDeliveryError" && error.operation === "decode-job") {
+          message.ack();
+          return yield* Effect.logWarning("FCM queue job is permanently invalid; dropping it", {
+            messageId: message.id,
+            errorTag: error._tag,
+            disposition: "dropped",
+          });
+        }
         // Cloudflare keeps the first ack/retry decision; decide before Alchemy acknowledges the batch.
         message.retry();
         yield* Effect.logWarning("FCM queue delivery failed; retrying message", {
