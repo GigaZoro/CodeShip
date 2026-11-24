@@ -11,6 +11,7 @@ import {
   TurnItemId,
   type OrchestrationV2Run,
   type OrchestrationV2AppThread,
+  type OrchestrationV2TurnItem,
   ProjectId,
   ProviderInstanceId,
   ProviderThreadId,
@@ -419,11 +420,12 @@ it("orders a task's assistant messages and proposed plans by turn item, not by t
   const plan = {
     ...report.turnItem,
     id: TurnItemId.make("plan"),
-    type: "proposed_plan" as const,
+    type: "proposed_plan",
     planId: PlanId.make("plan"),
     markdown: "1. Read the brief.",
+    streaming: false,
     ordinal: 3,
-  };
+  } as OrchestrationV2TurnItem;
   const results = [
     { messages: [], turnItems: [plan] },
     { messages: [progress.message, report.message], turnItems: [report.turnItem, plan] },
