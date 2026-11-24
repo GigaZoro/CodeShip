@@ -42,6 +42,7 @@
 ## 2026-11-24 — Codex metadata instructions
 
 - CodeShip’s metadata runtime uses fewer input tokens for titles and other generated text by skipping personal Codex instructions. It retains repository guidance and the selected account.
+- After an interrupted CLI update, the npm launcher can restore a verified local copy of the requested version offline. WSL defers runtime replacement while a mounted backend is using its Codex helpers.
 
 ## 2026-11-24 — Requests stop waiting when a linked machine goes quiet
 
