@@ -2,6 +2,7 @@
 
 - Standard worktree setup records the installed dependencies and environment links on macOS, Linux and Windows. A finished chat can release its checkout when those files still match. A completed merge can release when Git’s leftover auto-merge tree matches the delivered commit.
 - The release preserves new build caches and other ignored output in a private backup. Run `t3 thread backups <thread-id>` to find the files and their retained allocation, including after a follow-up.
+- On macOS, an ignored build directory can be backed up when its Apple provenance attribute matches the saved copy byte for byte.
 - Follow-ups show setup progress in the recreated checkout. Interrupted setup can resume, and a failed configure step can retry using the dependencies already installed. CodeShip keeps checkouts with modified dependencies, in-place installs or directory metadata the backup cannot preserve. On macOS and Linux it also checks installed files and setup markers for extended attributes and access control lists.
 
 ## 2026-11-25 — Release a completed family's shared checkout

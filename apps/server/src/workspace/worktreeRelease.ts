@@ -424,7 +424,8 @@ async function verifySavedDirectories(
         const entry = /^d[rwxstST-]{9}(@?) +\d+ +\d+ +\d+ +- +/.exec(lines[line++] ?? "");
         if (!entry) throw new Error("Unverified directory flags or ACL");
         if (!entry[1]) return null;
-        const attr = /^\tcom\.apple\.provenance\t(\d+) *$/.exec(lines[line++] ?? "");
+        // Darwin ls aligns the attribute size with the widest size in this batch.
+        const attr = /^\tcom\.apple\.provenance\t *(\d+) *$/.exec(lines[line++] ?? "");
         if (!attr) throw new Error("Unverified directory attribute");
         return attr[1];
       };

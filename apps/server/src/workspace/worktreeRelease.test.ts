@@ -109,6 +109,7 @@ it.live("retains unknown ignored build files without relinking installed depende
     const { fs, path, root, project, checkout, modules, admin, head } = fixture;
     const generated = path.join(checkout, "dist");
     yield* fs.makeDirectory(generated, { mode: 0o750 });
+    // Two entries make APFS report a three-digit directory size, padding ls's provenance column.
     yield* fs.writeFileString(path.join(generated, "bundle.js"), "generated");
     yield* fs.writeFileString(
       path.join(generated, "private.txt"),
