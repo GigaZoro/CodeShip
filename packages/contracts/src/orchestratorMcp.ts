@@ -973,7 +973,7 @@ export const OrchestratorMcpProviderUsage = Schema.Struct({
   /**
    * The reset rule's decision for each limit on this reading, now and with `maxWaitHours`: the
    * account's own, then each model-scoped meter at 100%. The server claims the first claim only
-   * while `redeemUsageResets` is on.
+   * while `redeemUsageResets` is on, and only for a signed-in account with an `accountKey`.
    */
   resetDecisions: Schema.Array(OrchestratorMcpResetDecision),
   /** The last banked reset this server claimed for the account; null when it has claimed none. */

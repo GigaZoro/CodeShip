@@ -3637,7 +3637,7 @@ const make = Effect.gen(function* () {
         input.usage === true && Option.isSome(usageResetRedeemer)
           ? yield* usageResetRedeemer.value.lastRedemptions
           : new Map<string, OrchestratorMcpLastRedemption>();
-      // Readings re-read above can be newer than `nowMs`; the reset rule decides as of now.
+      // Read after the re-check, so no reading is newer than the time the reset rule decides at.
       const publishedAtMs = yield* Clock.currentTimeMillis;
       const inherited = parent?.thread.modelSelection;
       const inheritedProvider = providers.find(
