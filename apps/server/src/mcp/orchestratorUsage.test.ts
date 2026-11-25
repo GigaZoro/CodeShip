@@ -68,6 +68,34 @@ const claudeLimits: ServerProviderUsageLimits = {
   credits: { balance: "453.69", currency: "USD", unlimited: false },
 };
 
+describe("publishesUsage", () => {
+  it.each([
+    { name: "enabled claude without limits yet", driver: "claudeAgent", expected: true },
+    { name: "enabled codex without limits yet", driver: "codex", expected: true },
+    {
+      name: "enabled antigravity reporting limits",
+      driver: "antigravity",
+      overrides: { usageLimits: claudeLimits },
+      expected: true,
+    },
+    {
+      name: "enabled cursor reporting limits",
+      driver: "cursor",
+      overrides: { usageLimits: claudeLimits },
+      expected: true,
+    },
+    {
+      name: "disabled provider with limits",
+      driver: "antigravity",
+      overrides: { enabled: false, usageLimits: claudeLimits },
+      expected: false,
+    },
+    { name: "enabled pi without limits", driver: "pi", expected: true },
+  ])("$name -> $expected", ({ driver, overrides, expected }) => {
+    expect(publishesUsage(provider(driver, overrides))).toBe(expected);
+  });
+});
+
 describe("providerUsageFields", () => {
   it("publishes native quota IDs and scopes for a metered driver outside Claude and Codex", () => {
     const antigravity = provider("antigravity", {

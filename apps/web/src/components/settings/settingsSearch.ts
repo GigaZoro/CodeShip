@@ -777,7 +777,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/projects",
     scope: "project-defaults",
     searchTerms: [
-      "claude code codex history sessions transcripts sync existing past old chats bring in",
+      "claude code codex pi history sessions transcripts sync existing past old chats bring in",
     ],
   },
   {
@@ -957,7 +957,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Providers"),
     to: "/settings/providers",
     searchTerms: [
-      "agents cli codex claude cursor grok fx opencode antigravity google sign in sign out install subscription instances authentication api key models configuration binary path config directory codex_home shadow home endpoint arguments environment variables display name accent color custom favorite hidden auto compact native sessions import resume",
+      "agents cli codex claude cursor grok fx muse pi acp opencode antigravity google sign in sign out install subscription instances authentication api key models configuration binary path config directory codex_home grok_home pi_coding_agent_dir shadow home endpoint arguments environment variables display name accent color custom favorite hidden auto compact native sessions import resume",
     ],
   },
   {

@@ -120,6 +120,13 @@ const DEFAULT_OPEN_COLS = 120;
 const DEFAULT_OPEN_ROWS = 30;
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const MAX_TERMINAL_LABEL_LENGTH = 128;
+const PROVIDER_HOME_ENV_VARS: ReadonlySet<string> = new Set([
+  "CODEX_HOME",
+  "CLAUDE_CONFIG_DIR",
+  "GROK_HOME",
+  "PI_CODING_AGENT_DIR",
+]);
+
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
 
@@ -1462,8 +1469,9 @@ function createTerminalSpawnEnv(
         platform === "win32"
           ? Object.keys(spawnEnv).find((candidate) => candidate.toLowerCase() === key.toLowerCase())
           : undefined;
-      spawnEnv[existingKey ?? key] =
-        key === "CODEX_HOME" || key === "CLAUDE_CONFIG_DIR" ? expandHomePath(value, home) : value;
+      spawnEnv[existingKey ?? key] = PROVIDER_HOME_ENV_VARS.has(key)
+        ? expandHomePath(value, home)
+        : value;
     }
   }
   if (!spawnEnv.COLORTERM && runtimeEnv?.COLORTERM === undefined) {

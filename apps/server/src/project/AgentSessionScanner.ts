@@ -1687,9 +1687,12 @@ export const make = Effect.gen(function* () {
           );
           const fileSessionId = TRANSCRIPT_SESSION_ID_PATTERN.exec(transcript.filePath)?.[1];
           const owned =
-            fileSessionId !== undefined &&
+            (fileSessionId !== undefined &&
+              options.ownedSessions?.has(
+                ownedSessionKey(candidate.providerInstanceId, fileSessionId),
+              ) === true) ||
             options.ownedSessions?.has(
-              ownedSessionKey(candidate.providerInstanceId, fileSessionId),
+              ownedSessionKey(candidate.providerInstanceId, transcript.filePath),
             ) === true;
           if (completed === undefined) {
             if (owned) return Option.none<AgentSessionRecentThread>();

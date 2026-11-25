@@ -33,6 +33,9 @@ const PROVIDER_GROUPS: ReadonlyArray<readonly [RegExp, string]> = [
   [/opencode/, "opencode"],
   [/grok/, "grok"],
   [/antigravity|gemini/, "antigravity"],
+  [/muse/, "muse"],
+  [/\bpi(?:\.exe)?\b|pi-coding-agent/, "pi"],
+  [/\bfx(?:\.exe)?\b/, "fx"],
 ];
 const OTHER_GROUPS: ReadonlyArray<readonly [RegExp, string]> = [
   [/chrom/, "browser"],

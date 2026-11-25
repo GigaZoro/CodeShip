@@ -1,4 +1,5 @@
 /* oxlint-disable t3code/no-untranslated-text -- widget runtime has no `t`; these strings are shown or compared literally by the widget, so they stay English */
+import { PROVIDER_DISPLAY_NAMES, type ProviderDriverKind } from "@t3tools/contracts";
 import {
   collectLimitAccounts,
   collectLimitPools,
@@ -45,79 +46,85 @@ export function createWidgetRefresher<Id>(refresh: (id: Id) => Promise<unknown>)
   };
 }
 
+const PREFERRED_WIDGET_DRIVER_ORDER: ReadonlyArray<string> = ["codex", "claudeAgent"];
+
+function orderWidgetDrivers(drivers: ReadonlySet<ProviderDriverKind>): Array<ProviderDriverKind> {
+  const rank = (driver: ProviderDriverKind) => {
+    const index = PREFERRED_WIDGET_DRIVER_ORDER.indexOf(driver);
+    return index === -1 ? PREFERRED_WIDGET_DRIVER_ORDER.length : index;
+  };
+  return [...drivers].sort((left, right) => rank(left) - rank(right) || left.localeCompare(right));
+}
+
 function subscriptionUsageProps(
   accounts: readonly LimitAccount[],
   now: number,
-  configuredDrivers: ReadonlySet<string>,
+  configuredDrivers: ReadonlySet<ProviderDriverKind>,
   maxWindowsPerProvider: number,
 ): SubscriptionUsageSnapshot {
   const pools = collectLimitPools(accounts, now);
-  const checked = accounts
-    .filter((account) => account.driver === "codex" || account.driver === "claudeAgent")
-    .map((account) => Date.parse(account.limits.checkedAt));
+  const drivers = orderWidgetDrivers(
+    new Set([...configuredDrivers, ...accounts.map((account) => account.driver)]),
+  );
+  const checked = accounts.map((account) => Date.parse(account.limits.checkedAt));
   return {
     checkedAt: checked.length > 0 && checked.every(Number.isFinite) ? Math.min(...checked) : 0,
-    providers: (["codex", "claudeAgent"] as const)
-      .filter(
-        (driver) =>
-          configuredDrivers.has(driver) || accounts.some((account) => account.driver === driver),
-      )
-      .map((driver) => {
-        const pool = pools.find((candidate) => candidate.driver === driver);
-        const name = driver === "codex" ? "Codex" : "Claude";
-        if (!pool)
-          return {
-            name,
-            detail: "No limits available",
-            windows: [],
-            expiresAt: 0,
-            totalWindows: 0,
-          };
-        const checkedAt = Math.min(...pool.accounts.map((a) => Date.parse(a.limits.checkedAt)));
-        const expiresAt = Math.min(
-          checkedAt + SNAPSHOT_MAX_AGE,
-          ...pool.windows.flatMap((window) => window.resets.map((reset) => reset.at)),
-        );
-        const fresh = Number.isFinite(expiresAt) && expiresAt > now;
-        const sortedWindows = [...pool.windows].sort(
-          (a, b) => a.remainingPercent - b.remainingPercent,
-        );
-        const selectedWindows = [
-          ...new Set([
-            sortedWindows.find((window) => window.kind === "session"),
-            sortedWindows.find((window) => window.kind === "weekly"),
-            ...sortedWindows,
-          ]),
-        ]
-          .filter((window) => window !== undefined)
-          .slice(0, maxWindowsPerProvider)
-          .sort((a, b) => a.remainingPercent - b.remainingPercent);
+    providers: drivers.map((driver) => {
+      const pool = pools.find((candidate) => candidate.driver === driver);
+      const name = PROVIDER_DISPLAY_NAMES[driver] ?? driver;
+      if (!pool)
         return {
           name,
-          detail: !fresh
-            ? "Open T3.CodeShip to refresh"
-            : pool.accounts.length > 1
-              ? `${pool.accounts.length} accounts · pooled`
-              : "Subscription remaining",
-          expiresAt: fresh ? expiresAt : 0,
-          totalWindows: fresh ? pool.windows.length : 0,
-          windows: fresh
-            ? selectedWindows.map((window) => ({
-                kind: window.kind,
-                label: window.label,
-                remaining: Math.round(window.remainingPercent),
-                reset: window.resets[0]
-                  ? `Next reset ${new Date(window.resets[0].at).toLocaleString("en-US", {
-                      month: "short",
-                      day: "numeric",
-                      hour: "numeric",
-                      minute: "2-digit",
-                    })}`
-                  : "Reset time unavailable",
-              }))
-            : [],
+          detail: "No limits available",
+          windows: [],
+          expiresAt: 0,
+          totalWindows: 0,
         };
-      }),
+      const checkedAt = Math.min(...pool.accounts.map((a) => Date.parse(a.limits.checkedAt)));
+      const expiresAt = Math.min(
+        checkedAt + SNAPSHOT_MAX_AGE,
+        ...pool.windows.flatMap((window) => window.resets.map((reset) => reset.at)),
+      );
+      const fresh = Number.isFinite(expiresAt) && expiresAt > now;
+      const sortedWindows = [...pool.windows].sort(
+        (a, b) => a.remainingPercent - b.remainingPercent,
+      );
+      const selectedWindows = [
+        ...new Set([
+          sortedWindows.find((window) => window.kind === "session"),
+          sortedWindows.find((window) => window.kind === "weekly"),
+          ...sortedWindows,
+        ]),
+      ]
+        .filter((window) => window !== undefined)
+        .slice(0, maxWindowsPerProvider)
+        .sort((a, b) => a.remainingPercent - b.remainingPercent);
+      return {
+        name,
+        detail: !fresh
+          ? "Open T3.CodeShip to refresh"
+          : pool.accounts.length > 1
+            ? `${pool.accounts.length} accounts · pooled`
+            : "Subscription remaining",
+        expiresAt: fresh ? expiresAt : 0,
+        totalWindows: fresh ? pool.windows.length : 0,
+        windows: fresh
+          ? selectedWindows.map((window) => ({
+              kind: window.kind,
+              label: window.label,
+              remaining: Math.round(window.remainingPercent),
+              reset: window.resets[0]
+                ? `Next reset ${new Date(window.resets[0].at).toLocaleString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}`
+                : "Reset time unavailable",
+            }))
+          : [],
+      };
+    }),
   };
 }
 
@@ -134,7 +141,8 @@ export function buildSubscriptionUsageSnapshot(
           (provider) =>
             provider.enabled &&
             provider.installed &&
-            provider.usageLimits?.unavailable?.reason !== "unsupported",
+            provider.usageLimits !== undefined &&
+            provider.usageLimits.unavailable?.reason !== "unsupported",
         )
         .map((provider) => provider.driver),
     ),

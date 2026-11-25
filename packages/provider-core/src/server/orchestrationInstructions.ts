@@ -1,4 +1,5 @@
 import {
+  PROVIDER_DISPLAY_NAMES,
   REASONING_EFFORT_OPTION_IDS,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
@@ -59,8 +60,8 @@ const AUTO_MODEL_HINTS = [
   ["luna", "fast and cheap: easier tasks"],
 ] as const;
 
-const autoProviderName = (driver: ProviderDriverKind) =>
-  driver === "claudeAgent" ? "Claude" : "Codex";
+const autoProviderName = (driver: ProviderDriverKind, fallback?: string) =>
+  PROVIDER_DISPLAY_NAMES[driver] ?? fallback ?? driver;
 
 interface AutoBriefModel {
   readonly slug: string;
@@ -166,12 +167,13 @@ export function autoCoordinatorInstructions(input: {
   let remaining = MAX_AUTO_COORDINATOR_MODELS;
   let omitted = nativeModels.length > remaining;
   for (const provider of input.otherProviders ?? []) {
-    const available = provider.models.filter((model) => !seen.has(model.slug));
+    const seenKey = (slug: string) => `${provider.driver}:${slug}`;
+    const available = provider.models.filter((model) => !seen.has(seenKey(model.slug)));
     const models = available.slice(0, remaining);
     omitted ||= available.length > remaining;
     if (models.length === 0) continue;
     remaining -= models.length;
-    for (const model of models) seen.add(model.slug);
+    for (const model of models) seen.add(seenKey(model.slug));
     const group = describeModels(models, false);
     const target = JSON.stringify({
       providerInstanceId: provider.providerInstanceId,
@@ -179,12 +181,11 @@ export function autoCoordinatorInstructions(input: {
       ...(group.common === null ? {} : { options: { [group.common.id]: "<effort>" } }),
     });
     sections.push(
-      `- ${autoProviderName(provider.driver)} via \`delegate_task\`, target \`${target}\`${group.common === null ? "" : `, effort ${group.common.values}`}:\n${group.lines}`,
+      `- ${autoProviderName(provider.driver, provider.displayName)} via \`delegate_task\`, target \`${target}\`${group.common === null ? "" : `, effort ${group.common.values}`}:\n${group.lines}`,
     );
   }
   const ownPrimary = input.models.find((model) => model.slug === input.primary!.model);
   const primary = `${ownPrimary?.name ?? input.primary.model}${(input.primary.options ?? []).map(({ id, value }) => `, ${id} ${value}`).join("")}`;
-  // Both providers review while both can run; with one, the independent review stays on that one.
   const target = (reviewer: AutoReviewer) =>
     `\`${JSON.stringify({ model: reviewer.model, options: Object.fromEntries((reviewer.options ?? []).map(({ id, value }) => [id, value])), providerInstanceId: reviewer.providerInstanceId })}\``;
   const alone = "your own review is the only one: say so in your report.";
@@ -194,11 +195,11 @@ export function autoCoordinatorInstructions(input: {
       : `take the review from your own provider's Settings primary instead, target ${target(input.ownReviewer)}; if neither can run, ${alone}`;
   const review =
     input.otherReviewer !== undefined
-      ? ` Also obtain an independent review from the other provider's Settings primary: \`delegate_task\` role "review", target ${target(input.otherReviewer)}. Preserve its model and options. If it cannot run, ${otherFallback}`
+      ? ` Also obtain an independent review from another provider's Settings primary: \`delegate_task\` role "review", target ${target(input.otherReviewer)}. Preserve its model and options. If it cannot run, ${otherFallback}`
       : input.ownReviewer !== undefined
-        ? ` The other provider's Settings primary cannot run now, so take the independent review from your own provider's Settings primary: \`delegate_task\` role "review", target ${target(input.ownReviewer)}. Preserve its model and options. If it cannot run, ${alone}`
+        ? ` No other provider's Settings primary can run now, so take the independent review from your own provider's Settings primary: \`delegate_task\` role "review", target ${target(input.ownReviewer)}. Preserve its model and options. If it cannot run, ${alone}`
         : ` No account can run an independent reviewer now, so ${alone}`;
-  return `Auto: coordinate as ${input.models.find((model) => model.slug === input.model)?.name ?? input.model}. Do tiny requests yourself; otherwise choose the best model for each task from either Claude or Codex. Use the cheapest capable model for straightforward work. Keep judgment, subtle bugs and review. Brief workers with goal, files, constraints and checks.
+  return `Auto: coordinate as ${input.models.find((model) => model.slug === input.model)?.name ?? input.model}. Do tiny requests yourself; otherwise choose the best model for each task from the available providers. Use the cheapest capable model for straightforward work. Keep judgment, subtle bugs and review. Brief workers with goal, files, constraints and checks.
 ${sections.join("\n")}
 - After implementation, review the diff yourself on your Settings primary, ${primary}.${review}
 - Read results and diffs, run relevant checks, fix small issues yourself; take over or reassign bigger ones.${omitted ? "\n- More accounts and models: call `orchestrator_capabilities`." : ""}`;

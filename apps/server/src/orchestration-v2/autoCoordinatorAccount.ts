@@ -1,9 +1,10 @@
 import type { autoCoordinatorInstructions } from "@t3tools/provider-core/server/orchestrationInstructions";
 import {
   type ModelSelection,
-  ProviderDriverKind,
+  type ProviderDriverKind,
   type ProviderInstanceId,
   type ProjectId,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { offeredOptionSelections } from "@t3tools/shared/model";
 import {
@@ -20,47 +21,46 @@ type AutoCoordinatorContext = AccountRoutingContext & {
   readonly orchestrationCapableInstanceIds: ReadonlySet<ProviderInstanceId>;
 };
 
-function otherDriverOf(driver: ProviderDriverKind) {
-  return driver === "claudeAgent"
-    ? ProviderDriverKind.make("codex")
-    : driver === "codex"
-      ? ProviderDriverKind.make("claudeAgent")
-      : undefined;
-}
-
-/** `driver`'s accounts that can run a delegated task, in failover order. */
-function delegateAccounts(input: AutoCoordinatorContext, driver: ProviderDriverKind) {
+/** Accounts matching `predicate` that can run a delegated task, in failover order. */
+function delegateAccounts(
+  input: AutoCoordinatorContext,
+  predicate: (provider: ServerProvider) => boolean,
+) {
   return orderProviderInstancesForFailover(
     input.settings.providerInstanceFailoverOrder,
     input.providers,
   ).filter(
     (provider) =>
-      provider.driver === driver &&
+      predicate(provider) &&
       providerConstraints(provider, input.orchestrationCapableInstanceIds.has(provider.instanceId))
         .length === 0,
   );
 }
 
-/** The other provider's accounts a delegate can run on now, each with its current models that have room. */
+/** Other providers' accounts a delegate can run on now, each with its current models that have room. */
 export function autoCoordinatorAccounts(input: AutoCoordinatorContext) {
-  const other = otherDriverOf(input.driver);
-  return (other === undefined ? [] : delegateAccounts(input, other)).flatMap((provider) => {
-    const models = provider.models.filter(
-      (model) =>
-        !model.isLegacy && modelWithRoom(provider, { ...input, model: model.slug }) !== null,
-    );
-    return models.length === 0 ? [] : [{ ...provider, models }];
-  });
+  return delegateAccounts(input, (provider) => provider.driver !== input.driver).flatMap(
+    (provider) => {
+      const models = provider.models.filter(
+        (model) =>
+          !model.isLegacy && modelWithRoom(provider, { ...input, model: model.slug }) !== null,
+      );
+      return models.length === 0 ? [] : [{ ...provider, models }];
+    },
+  );
 }
 
 /**
- * `driver`'s Settings primary on its first account with room for it, as a review target. The
- * primary is the user's choice, so a model its catalog marks legacy still counts.
+ * First account matching `predicate` whose driver's Settings primary has room, as a review target.
+ * The primary is the user's choice, so a model its catalog marks legacy still counts.
  */
-function reviewerOn(input: AutoCoordinatorContext, driver: ProviderDriverKind | undefined) {
-  const primary = driver === undefined ? null : autoModeModelFor(input.settings, driver);
-  if (driver === undefined || primary === null) return undefined;
-  for (const account of delegateAccounts(input, driver)) {
+function reviewerOn(
+  input: AutoCoordinatorContext,
+  predicate: (provider: ServerProvider) => boolean,
+) {
+  for (const account of delegateAccounts(input, predicate)) {
+    const primary = autoModeModelFor(input.settings, account.driver);
+    if (primary === null) continue;
     // The account's own id for the model: delegate_task rejects a display name it does not list.
     const model = modelWithRoom(account, { ...input, model: primary.model });
     if (model === null) continue;
@@ -84,8 +84,8 @@ export function autoCoordinatorBriefInput(
   const own = input.providers.find(
     (provider) => provider.instanceId === input.selection.instanceId,
   );
-  const otherReviewer = reviewerOn(input, otherDriverOf(input.driver));
-  const ownReviewer = reviewerOn(input, input.driver);
+  const otherReviewer = reviewerOn(input, (provider) => provider.driver !== input.driver);
+  const ownReviewer = reviewerOn(input, (provider) => provider.driver === input.driver);
   return {
     driver: input.driver,
     model: input.selection.model,

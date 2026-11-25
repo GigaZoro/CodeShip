@@ -568,3 +568,60 @@ it.each([false, true])(
     expect(result.otherReviewer?.providerInstanceId).toBe(otherLimited ? undefined : first);
   },
 );
+
+it("discovers all distinct enabled providers for delegation and independent review", () => {
+  const ownId = ProviderInstanceId.make("claude_own");
+  const museId = ProviderInstanceId.make("muse_main");
+  const antigravityId = ProviderInstanceId.make("antigravity_main");
+  const claude = ProviderDriverKind.make("claudeAgent");
+  const muse = ProviderDriverKind.make("muse");
+  const antigravity = ProviderDriverKind.make("antigravity");
+  const result = autoCoordinatorBriefInput({
+    driver: claude,
+    selection: { instanceId: ownId, model: "claude-opus-5-5" },
+    projectId: ProjectId.make("project:auto"),
+    settings: {
+      ...DEFAULT_SERVER_SETTINGS,
+      autoModeModels: {
+        [claude]: { model: "claude-opus-5-5" },
+        [muse]: { model: "muse-wonder" },
+      },
+      providerInstances: {
+        [ownId]: { driver: claude, enabled: true },
+        [museId]: { driver: muse, enabled: true },
+        [antigravityId]: { driver: antigravity, enabled: true },
+      },
+      providerInstanceFailoverOrder: [museId, antigravityId],
+    },
+    nowMs: Date.parse("2026-11-08T12:00:00Z"),
+    recordedLimits: new Map(),
+    orchestrationCapableInstanceIds: new Set([ownId, museId, antigravityId]),
+    providers: [
+      provider(ownId, {
+        driver: claude,
+        models: [{ slug: "claude-opus-5-5", name: "Opus", isCustom: false, capabilities: null }],
+      }),
+      provider(museId, {
+        driver: muse,
+        displayName: "Muse Code",
+        models: [{ slug: "muse-wonder", name: "Muse Wonder", isCustom: false, capabilities: null }],
+      }),
+      provider(antigravityId, {
+        driver: antigravity,
+        displayName: "Antigravity",
+        models: [
+          { slug: "gemini-3-pro", name: "Gemini 3 Pro", isCustom: false, capabilities: null },
+        ],
+      }),
+    ],
+  });
+  expect(result.otherProviders?.map((entry) => [entry.providerInstanceId, entry.driver])).toEqual([
+    [museId, muse],
+    [antigravityId, antigravity],
+  ]);
+  expect(result.otherReviewer).toEqual({
+    model: "muse-wonder",
+    options: [],
+    providerInstanceId: museId,
+  });
+});

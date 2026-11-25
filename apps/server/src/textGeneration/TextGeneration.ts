@@ -67,9 +67,6 @@ const resolveInstance = (
     ),
   );
 
-// Review guides investigate the checkout read-only; the other drivers reject that request.
-const INVESTIGATING_DRIVERS = new Set(["codex", "claudeAgent"]);
-
 /** @public */
 export const make = Effect.gen(function* () {
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
@@ -89,11 +86,9 @@ export const make = Effect.gen(function* () {
         detail: "Auto needs a provider selection before starting text generation.",
       });
     }
-    const snapshots = yield* registry.listInstances.pipe(
-      Effect.flatMap((instances) =>
-        Effect.forEach(instances, (instance) => instance.snapshot.getSnapshot),
-      ),
-    );
+    const instances = yield* registry.listInstances;
+    const instanceById = new Map(instances.map((instance) => [instance.instanceId, instance]));
+    const snapshots = yield* Effect.forEach(instances, (instance) => instance.snapshot.getSnapshot);
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     const limited = exhaustedUsageWindow(
       snapshots.find((provider) => provider.instanceId === selection.instanceId),
@@ -124,7 +119,8 @@ export const make = Effect.gen(function* () {
               provider.auth.status !== "unauthenticated" &&
               isProviderAvailable(provider) &&
               isProviderTextGenerationCapable(provider) &&
-              (operation !== "generateReviewGuide" || INVESTIGATING_DRIVERS.has(driver)) &&
+              (operation !== "generateReviewGuide" ||
+                instanceById.get(instanceId)?.textGeneration.supportsInvestigation === true) &&
               !exhaustedUsageWindow(provider, now, defaultTextGenerationModel(driver))
             );
           },

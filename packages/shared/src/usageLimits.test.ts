@@ -1502,6 +1502,7 @@ describe("pooled account columns", () => {
     ["codex", "14:00", 100, "14:00", 100],
     ["claudeAgent", "15:00", 100, "15:00", 100],
     ["codex", "15:00", 40, "14:00", 60],
+    ["muse", "13:00", 40, "14:00", 100],
   ] as const)(
     "%s session resetting at %s with %i percent spent becomes usable at %s with %i percent restored",
     (driver, sessionReset, usedPercent, usableAt, restoresPercent) => {
@@ -1545,12 +1546,21 @@ describe("pooled account columns", () => {
         { ...weekly, usedPercent: 99 },
         { ...weekly, id: "seven_day_fable", usedPercent: 40 },
       ]),
-      { ...blocked, key: "cursor", driver: ProviderDriverKind.make("cursor") },
+      { ...blocked, key: "muse", driver: ProviderDriverKind.make("muse") },
+      {
+        ...account("antigravity", [
+          { ...window, id: "gemini-5h" },
+          { ...weekly, id: "gemini-weekly", usedPercent: 100 },
+        ]),
+        key: "antigravity",
+        driver: ProviderDriverKind.make("antigravity"),
+      },
     ];
     const snapshot = structuredClone(accounts);
-    const [claude, cursor] = collectLimitPools(accounts, now);
+    const [claude, muse, antigravity] = collectLimitPools(accounts, now);
     expect.soft(claude?.windows.map((row) => row.remainingPercent)).toEqual([40, 1, 70]);
-    expect.soft(cursor?.windows.map((row) => row.remainingPercent)).toEqual([60, 0, 80]);
+    expect.soft(muse?.windows.map((row) => row.remainingPercent)).toEqual([0, 0, 80]);
+    expect.soft(antigravity?.windows.map((row) => row.remainingPercent)).toEqual([60, 0]);
     expect(accounts).toEqual(snapshot);
   });
 

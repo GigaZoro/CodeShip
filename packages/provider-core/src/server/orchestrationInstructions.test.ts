@@ -205,17 +205,14 @@ describe("autoCoordinatorInstructions", () => {
       expect(brief).toContain("review the diff yourself on your Settings primary, Custom Primary");
       expect(brief).toContain(claude ? "effort xhigh" : "reasoningEffort ultra");
       expect(brief).not.toContain("fresh native subagent");
-      expect(brief).toContain("choose the best model for each task from either Claude or Codex");
+      expect(brief).toContain("choose the best model for each task from the available providers");
       expect(brief).not.toContain("incomplete");
-      // The other provider's reviewer comes first, and this provider's takes over when it cannot run.
       expect(
         [...brief.matchAll(/target `(\{[^`]+\})`/g)].map((match) => JSON.parse(match[1]!)),
       ).toEqual([...(other ? [otherReviewer] : []), ...(own ? [ownReviewer] : [])].map(asTarget));
       expect(brief.includes('`delegate_task` role "review"')).toBe(other || own);
-      expect(brief.includes("Also obtain an independent review from the other provider")).toBe(
-        other,
-      );
-      expect(brief.includes("The other provider's Settings primary cannot run now")).toBe(
+      expect(brief.includes("Also obtain an independent review from another provider")).toBe(other);
+      expect(brief.includes("No other provider's Settings primary can run now")).toBe(
         !other && own,
       );
       expect(brief).toContain(
@@ -227,6 +224,30 @@ describe("autoCoordinatorInstructions", () => {
       );
     },
   );
+
+  it("labels non-Claude/Codex providers accurately and keeps shared slugs across distinct drivers", () => {
+    const brief = autoCoordinatorInstructions({
+      ...input,
+      otherProviders: [
+        {
+          providerInstanceId: "antigravity_main",
+          displayName: "Antigravity",
+          driver: ProviderDriverKind.make("antigravity"),
+          models: [{ slug: "default", name: "Gemini Pro" }],
+        },
+        {
+          providerInstanceId: "muse_main",
+          displayName: "Muse Code",
+          driver: ProviderDriverKind.make("muse"),
+          models: [{ slug: "default", name: "Muse Default" }],
+        },
+      ],
+    });
+    expect(brief).toContain("- Antigravity via `delegate_task`");
+    expect(brief).toContain("- Muse Code via `delegate_task`");
+    expect(brief).toContain("Gemini Pro (`default`)");
+    expect(brief).toContain("Muse Default (`default`)");
+  });
 });
 
 it.each([3, 8])("bounds the brief with four Claude and %s Codex models", (count) => {

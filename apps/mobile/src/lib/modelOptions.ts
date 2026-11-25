@@ -14,6 +14,7 @@ import type {
 import {
   isManagedDriverAllowed,
   isProviderDriverKind,
+  PROVIDER_DISPLAY_NAMES,
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { disallowedProviderMessage } from "@t3tools/shared/managedPolicyMessages";
@@ -67,9 +68,10 @@ function providerDisplayLabel(provider: {
   readonly instanceId: string;
 }): string {
   if (provider.displayName) return provider.displayName;
-  if (provider.driver === "codex") return "Codex";
-  if (provider.driver === "claudeAgent") return "Claude";
-  if (provider.driver === "pi") return "Pi";
+  if (isProviderDriverKind(provider.driver)) {
+    const displayName = PROVIDER_DISPLAY_NAMES[provider.driver];
+    if (displayName) return displayName;
+  }
   return provider.instanceId;
 }
 

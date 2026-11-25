@@ -1,7 +1,13 @@
 import { ProviderInstanceId, ThreadId, type ServerProvider } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 
-import { type AgentThread, agentToolProperties, handoffSettings } from "./ProviderDimensions.ts";
+import {
+  type AgentThread,
+  agentToolProperties,
+  catalogModelLabel,
+  handoffSettings,
+  providerDimensions,
+} from "./ProviderDimensions.ts";
 
 const provider = (
   instanceId: string,
@@ -21,6 +27,8 @@ const providers = [
     { slug: "my-private-finetune", isCustom: true },
   ]),
   provider("opencode", "opencode", [{ slug: "ollama/acme-internal", isCustom: false }]),
+  provider("muse", "muse", [{ slug: "muse-wonder", isCustom: false }]),
+  provider("pi", "pi", [{ slug: "local/custom-model", isCustom: false }]),
 ];
 
 const thread = (
@@ -75,4 +83,20 @@ it("drops input strings outside the schema's literals, since rejected calls are 
   expect(
     handoffSettings("t3_thread_launch", { workspaceStrategy: { type: "/home/me/secret" } }, {}),
   ).toEqual({ targetChosen: false, workspace: "root" });
+});
+
+it("reports vendor catalog models for muse while omitting user-configured pi models", () => {
+  expect(
+    providerDimensions(providers, {
+      instanceId: ProviderInstanceId.make("muse"),
+      model: "muse-wonder",
+    }),
+  ).toEqual({ provider: "muse", model: "muse-wonder" });
+  expect(catalogModelLabel(providers, "muse-wonder")).toBe("muse-wonder");
+  expect(
+    providerDimensions(providers, {
+      instanceId: ProviderInstanceId.make("pi"),
+      model: "local/custom-model",
+    }),
+  ).toEqual({ provider: "pi" });
 });

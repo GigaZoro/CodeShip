@@ -8,7 +8,11 @@ import {
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
 
-import { hydrateCachedProvider, isCachedProviderCorrelated } from "./providerStatusCache.ts";
+import {
+  hydrateCachedProvider,
+  isCachedProviderCorrelated,
+  orderProviderSnapshots,
+} from "./providerStatusCache.ts";
 
 const emptyCapabilities = createModelCapabilities({ optionDescriptors: [] });
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
@@ -228,6 +232,38 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
         fallbackProvider: fallbackCodex,
       }),
       fallbackCodex,
+    );
+  });
+
+  it("orders all built-in drivers deterministically", () => {
+    const ordered = orderProviderSnapshots(
+      [
+        "acpRegistry",
+        "fx",
+        "pi",
+        "muse",
+        "antigravity",
+        "opencode",
+        "grok",
+        "cursor",
+        "claudeAgent",
+        "codex",
+      ].map((driver) => makeProvider(ProviderDriverKind.make(driver))),
+    );
+    assert.deepStrictEqual(
+      ordered.map((entry) => entry.driver),
+      [
+        "codex",
+        "claudeAgent",
+        "cursor",
+        "grok",
+        "opencode",
+        "antigravity",
+        "muse",
+        "pi",
+        "fx",
+        "acpRegistry",
+      ],
     );
   });
 });

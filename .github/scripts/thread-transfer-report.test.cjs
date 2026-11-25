@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  renderComment,
   resolve,
   upsertCommentForCurrentHead,
   validateResult,
@@ -50,6 +51,34 @@ test("validates the fixed artifact schema", () => {
     () => validateResult(result({ totalWireBytes: "lots" })),
     /non-negative safe integer/,
   );
+  assert.throws(
+    () =>
+      validateResult({
+        ...result(),
+        providers: { "codex|injected": result().providers.codex },
+      }),
+    /invalid provider key/,
+  );
+  const withAntigravity = {
+    ...result(),
+    providers: {
+      ...result().providers,
+      antigravity: result().providers.codex,
+    },
+  };
+  assert.equal(validateResult(withAntigravity).schemaVersion, 1);
+  const rendered = renderComment({
+    current: withAntigravity,
+    baseline: result(),
+    currentRun: { sha: "1234567890", conclusion: "success", url: "https://example.com/run/2" },
+    baselineRun: {
+      sha: "abcdef1234",
+      matchesBase: true,
+      url: "https://example.com/run/1",
+    },
+  });
+  assert.match(rendered, /\| Antigravity \| Total thread wire \| — \|/);
+  assert.match(rendered, /- Antigravity decoded thread snapshot:/);
 });
 
 test("resolves a fallback PR with a redacted head repo and exact main baseline", async () => {

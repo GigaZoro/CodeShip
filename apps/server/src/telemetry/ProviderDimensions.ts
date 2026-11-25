@@ -17,6 +17,8 @@ const VENDOR_CATALOG_DRIVERS: ReadonlySet<string> = new Set([
   "cursor",
   "grok",
   "antigravity",
+  "muse",
+  "fx",
 ]);
 
 export interface ProviderDimensions {
@@ -52,7 +54,7 @@ const MANIFEST_LABELS: ReadonlyMap<string, string> = new Map(
     ),
   ),
 );
-const REGISTRY_LABEL_DRIVERS: ReadonlySet<string> = new Set(["cursor", "grok"]);
+const REGISTRY_LABEL_DRIVERS: ReadonlySet<string> = new Set(["cursor", "grok", "muse"]);
 
 /**
  * The vendor catalog slug that a native or routed model id names, such as

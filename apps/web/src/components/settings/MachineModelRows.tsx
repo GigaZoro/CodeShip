@@ -263,7 +263,7 @@ export function AutoModeModelRow() {
             description={
               supportsAutoCoordinator(driver)
                 ? t(
-                    "Auto's coordinator: it does small requests itself, chooses models from either provider for larger work, and checks the result.",
+                    "Auto's coordinator: it does small requests itself, chooses models from available providers for larger work, and checks the result.",
                   )
                 : t("Auto runs this model.")
             }

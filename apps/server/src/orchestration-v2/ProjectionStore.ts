@@ -1,4 +1,5 @@
 import {
+  AgentSessionSource,
   AUTHENTICATION_FAILED_FAILURE_CODE,
   countOlderSettledFolders,
   isReadOnlyGuestShare,
@@ -8162,7 +8163,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         INNER JOIN orchestration_v2_projection_provider_threads AS provider_threads
           ON provider_threads.thread_id = threads.thread_id
         WHERE threads.project_id = ${projectId}
-          AND provider_threads.driver IN ('claudeAgent', 'codex')
+          AND provider_threads.driver IN ${sql.in(AgentSessionSource.literals)}
           AND provider_threads.provider_instance_id IS NOT NULL
           AND native_id IS NOT NULL
       `;

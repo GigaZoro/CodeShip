@@ -1039,10 +1039,9 @@ function poolMember(account: LimitAccount, reported: ServerProviderUsageWindow, 
     reported.kind === "session"
       ? account.limits.windows.find(
           (window) =>
+            window.kind === "weekly" &&
             window.usedPercent >= 100 &&
-            (account.driver === "claudeAgent"
-              ? window.id === "seven_day"
-              : account.driver === "codex" && window.kind === "weekly"),
+            usageWindowScope(account.driver, window) === "account",
         )
       : undefined;
   if (!spentWeekly) return { account, window: reported, refillPercent: reported.usedPercent };

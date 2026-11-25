@@ -123,6 +123,8 @@ export interface ManualStepReviewGenerationResult {
 }
 
 export interface ProviderTextGeneration {
+  readonly supportsInvestigation?: boolean | undefined;
+
   readonly generateCommitMessage: (
     input: CommitMessageGenerationInput,
   ) => Effect.Effect<CommitMessageGenerationResult, TextGenerationError>;
