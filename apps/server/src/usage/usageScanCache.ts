@@ -15,7 +15,8 @@ const SPEED_COMPATIBLE_SINCE_VERSION = 4;
 /**
  * Snapshots here are written once and never changed, so processes sharing a state directory need
  * no lock. A save holds the rows changed since its writer's last save; only a full save, which
- * holds every live row, deletes what it covers. A newer format claims these as legacy inputs.
+ * holds every live row, deletes what it covers. A newer format reads these in place and deletes
+ * them by the same rule, since a running writer's later saves rely on them.
  */
 export const SCAN_CACHE_DIRECTORY_NAME = `usage-scan-cache-v${USAGE_SCAN_CACHE_VERSION}`;
 /** Single-file caches of older builds, which a sync moves into the store as legacy inputs. */

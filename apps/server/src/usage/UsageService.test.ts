@@ -408,6 +408,16 @@ const captureLogs = () => {
 const PERMISSION_DENIED = (method: string) =>
   PlatformError.systemError({ _tag: "PermissionDenied", module: "FileSystem", method });
 
+/** How a rename fails on Windows while another program holds the file open. */
+const RENAME_LOCKED = (path: string) =>
+  PlatformError.systemError({
+    _tag: "Unknown",
+    module: "FileSystem",
+    method: "rename",
+    pathOrDescriptor: path,
+    cause: Object.assign(new Error("EPERM, rename"), { code: "EPERM" }),
+  });
+
 const seedCodexHistory = (input: {
   id: string;
   nativeTurnId?: string;
@@ -4421,6 +4431,7 @@ describe("UsageService", () => {
         { discard: true },
       );
       yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
         const { stateDir } = yield* ServerConfig.ServerConfig;
         const service = yield* UsageService.make;
         yield* service.readSummary(WINDOW);
@@ -4436,6 +4447,7 @@ describe("UsageService", () => {
         assert.notStrictEqual(saved.path, full.path);
         assert.deepStrictEqual(Object.keys(saved.document.files), [transcripts[1]]);
         assert.isBelow(Buffer.byteLength(saved.raw) * 4, Buffer.byteLength(full.raw));
+        yield* Effect.forEach(transcripts, (file) => fs.remove(file), { discard: true });
         assert.strictEqual(yield* outputTokensAfterRestart, 107);
       }).pipe(Effect.provide(layerService({ prefix: "usage-cache-delta", home, settings })));
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
@@ -4549,6 +4561,7 @@ describe("UsageService", () => {
         yield* peer.readSummary(WINDOW);
         yield* peer.awaitPersisted;
         const compacted = yield* onlySnapshot(stateDir);
+        assert.sameMembers(Object.keys(compacted.document.files), transcripts);
 
         yield* grow(1);
         yield* TestClock.adjust("5 seconds");
@@ -4557,6 +4570,8 @@ describe("UsageService", () => {
         const saved = yield* newestSnapshot(stateDir);
         assert.deepStrictEqual(Object.keys(saved.document.files), [transcripts[1]]);
         assert.isTrue(yield* fs.exists(compacted.path));
+        yield* Effect.forEach(transcripts, (file) => fs.remove(file), { discard: true });
+        assert.strictEqual(yield* outputTokensAfterRestart, 114);
       }).pipe(
         Effect.provide(layerService({ prefix: "usage-cache-peer-compaction", home, settings })),
       );
@@ -4670,6 +4685,44 @@ describe("UsageService", () => {
       }).pipe(
         Effect.provide(layerService({ prefix: "usage-cache-pruned-session", home, settings })),
       );
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live("retries a snapshot rename that a Windows lock blocks", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const locked = yield* Deferred.make<void>();
+        let attempts = 0;
+        const service = yield* UsageService.make.pipe(
+          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            rename: (from, to) =>
+              Effect.suspend(() =>
+                isSnapshotPublish(stateDir, from, to) && attempts++ === 0
+                  ? Deferred.succeed(locked, undefined).pipe(
+                      Effect.andThen(Effect.fail(RENAME_LOCKED(to))),
+                    )
+                  : fs.rename(from, to),
+              ),
+          }),
+        );
+        yield* service.readSummary(WINDOW);
+        yield* Deferred.await(locked);
+        yield* TestClock.adjust("100 millis");
+        yield* service.awaitPersisted;
+
+        const { path, document } = yield* onlySnapshot(stateDir);
+        assert.deepStrictEqual(Object.keys(document.files), [transcript]);
+        assert.deepStrictEqual(yield* fs.readDirectory(storeDirOf(stateDir)), [
+          NodePath.basename(path),
+        ]);
+      }).pipe(Effect.provide(layerService({ prefix: "usage-cache-windows-lock", home, settings })));
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 

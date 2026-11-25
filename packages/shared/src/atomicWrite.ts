@@ -4,6 +4,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
+import * as Schedule from "effect/Schedule";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSymlinkTarget } from "@t3tools/shared/symlink";
 
@@ -16,6 +17,19 @@ export const isWindowsRenameLock = (error: PlatformError.PlatformError) => {
 // Bound denial delays to about two seconds because settings saves hold their write lock.
 const LOCKED_RENAME_RETRIES = 20;
 const LOCKED_RENAME_RETRY_DELAY = "100 millis";
+
+/** Retries a rename onto a new name while a Windows open-file lock blocks it. */
+export const retryWhileWindowsLocked = <A, R>(
+  platform: NodeJS.Platform,
+  rename: Effect.Effect<A, PlatformError.PlatformError, R>,
+) =>
+  rename.pipe(
+    Effect.retry({
+      times: LOCKED_RENAME_RETRIES,
+      schedule: Schedule.spaced(LOCKED_RENAME_RETRY_DELAY),
+      while: (error) => platform === "win32" && isWindowsRenameLock(error),
+    }),
+  );
 
 /** Resolves symlink targets before renaming so writes preserve the link. */
 export const writeFileStringAtomically = (input: {

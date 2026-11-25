@@ -28,7 +28,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
-import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import { retryWhileWindowsLocked, writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { formatMalformedUsageWarning } from "@t3tools/shared/usageFormat";
 import { type UsageScanSettings, usageScanSettings } from "@t3tools/shared/usageScanSettings";
 import * as ServerConfig from "../config.ts";
@@ -443,6 +443,7 @@ export const make = Effect.gen(function* () {
 
   const storeDir = path.join(config.stateDir, SCAN_CACHE_DIRECTORY_NAME);
   const writerId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+  const platform = yield* HostProcess.Platform;
   let snapshotSeq = 0;
   /** Every name this process wrote or tried to write; a full save deletes all but itself. */
   const ownSnapshots = new Set<string>();
@@ -747,7 +748,7 @@ export const make = Effect.gen(function* () {
         yield* handle.sync;
       }),
     ).pipe(
-      Effect.andThen(fileSystem.rename(temporary, file)),
+      Effect.andThen(retryWhileWindowsLocked(platform, fileSystem.rename(temporary, file))),
       Effect.onError(() => fileSystem.remove(temporary).pipe(Effect.ignore({ log: true }))),
     );
     yield* syncStoreDirectory;
