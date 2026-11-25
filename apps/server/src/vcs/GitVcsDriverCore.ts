@@ -32,6 +32,7 @@ import {
   type ReviewDiffPreviewInput,
   type ReviewDiffFileStat,
   type ReviewDiffPreviewSource,
+  type VcsCreateWorktreeInput,
   type VcsRef,
 } from "@t3tools/contracts";
 import { dedupeRemoteBranchesWithLocalMatches } from "@t3tools/shared/git";
@@ -45,7 +46,11 @@ import { resolveProjectFileBackedSetting } from "@t3tools/shared/projectSettings
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
 import { timeoutProcessOption } from "../process/processDeadline.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
-import { existingWorkspacePath } from "../workspace/workspaceLease.ts";
+import { existingWorkspacePath, withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import {
+  directoryEntryExists,
+  familyReservesWorktree,
+} from "../workspace/worktreeReleaseReceipt.ts";
 import { familyCheckoutHook } from "./familyWorktreeCheckout.ts";
 import { countGitSpawn } from "./GitSpawnBudget.ts";
 import { removeEmptyDirectory } from "./removeEmptyDirectory.ts";
@@ -1248,7 +1253,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const { worktreesDir } = yield* ServerConfig.ServerConfig;
+  const { worktreesDir, stateDir } = yield* ServerConfig.ServerConfig;
   const isServerInternalPath = yield* makeIsServerInternalPath;
   const crypto = yield* Crypto.Crypto;
   const hostPlatform = yield* HostProcess.Platform;
@@ -4547,42 +4552,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       : refName;
   });
 
-  const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
-    "createWorktree",
-  )(function* (input, options) {
-    yield* refuseOptionLikeRefName("GitVcsDriver.createWorktree", input.cwd, input.refName);
-    yield* refuseOptionLikeRefName("GitVcsDriver.createWorktree", input.cwd, input.newRefName);
+  const addWorktree = Effect.fn("GitVcsDriver.addWorktree")(function* (
+    input: VcsCreateWorktreeInput,
+    worktreePath: string,
+    options?: GitVcsDriver.CreateWorktreeOptions,
+  ) {
     const targetBranch = input.newRefName ?? input.refName;
-    // Resolve sub/.. before taking the basename.
-    const repoName = path.basename(path.resolve(input.cwd));
-    let worktreePath = input.path;
-    if (worktreePath == null) {
-      const parentDir = resolveWorktreesDirectory(
-        options?.worktreesDirectory ?? "",
-        worktreesDir,
-        path,
-        yield* HostProcess.HomeDirectory,
-      );
-      if (parentDir === null) {
-        return yield* new GitCommandError({
-          operation: "GitVcsDriver.createWorktree",
-          command: "git worktree add",
-          cwd: input.cwd,
-          detail: `The worktree location "${options?.worktreesDirectory}" must be an absolute folder on this machine, not a drive root. Change it in Settings → Worktrees.`,
-        });
-      }
-      let directoryName = targetBranch.replace(/\//g, "-");
-      // Leave room for files beneath the worktree on Windows, regardless of branch length.
-      if (directoryName.length > 40) {
-        const digest = yield* crypto
-          .digest("SHA-256", new TextEncoder().encode(targetBranch))
-          .pipe(Effect.orDie);
-        // Avoid splitting a surrogate pair, which Git would list back as a different path.
-        const prefix = directoryName.slice(0, 23).replace(/[\uD800-\uDBFF]$/, "");
-        directoryName = `${prefix}-${Hex.encode(digest).slice(0, 16)}`;
-      }
-      worktreePath = path.join(parentDir, repoName, directoryName);
-    }
     if (input.newRefName) {
       // Kept apart from the checkout so the shared-config lock only covers the tracking write.
       yield* createBranchAt(
@@ -4656,9 +4631,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           "HEAD",
         ])).trim();
         const runCheckoutGit = (args: string[]) =>
-          runGit(operation, cwd, ["-c", `checkout.workers=${checkoutWorkers}`, ...args], {
+          executeGit(operation, cwd, ["-c", `checkout.workers=${checkoutWorkers}`, ...args], {
             timeoutMs: null,
-          });
+          }).pipe(Effect.map((result) => result.stdout));
         if ((yield* fileSystem.readDirectory(cwd)).some((entry) => entry !== ".git"))
           return yield* new GitCommandError({
             operation,
@@ -4800,6 +4775,73 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         refName: targetBranch,
       },
     };
+  });
+
+  const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
+    "createWorktree",
+  )(function* (input, options) {
+    yield* refuseOptionLikeRefName("GitVcsDriver.createWorktree", input.cwd, input.refName);
+    yield* refuseOptionLikeRefName("GitVcsDriver.createWorktree", input.cwd, input.newRefName);
+    if (input.path != null) return yield* addWorktree(input, input.path, options);
+    const targetBranch = input.newRefName ?? input.refName;
+    const repoName = path.basename(path.resolve(input.cwd));
+    const parentDir = resolveWorktreesDirectory(
+      options?.worktreesDirectory ?? "",
+      worktreesDir,
+      path,
+      yield* HostProcess.HomeDirectory,
+    );
+    if (parentDir === null) {
+      return yield* new GitCommandError({
+        operation: "GitVcsDriver.createWorktree",
+        command: "git worktree add",
+        cwd: input.cwd,
+        detail: `The worktree location "${options?.worktreesDirectory}" must be an absolute folder on this machine, not a drive root. Change it in Settings → Worktrees.`,
+      });
+    }
+    let directoryName = targetBranch.replace(/\//g, "-");
+    // Leave room for files beneath the worktree on Windows, regardless of branch length.
+    if (directoryName.length > 40) {
+      const digest = yield* crypto
+        .digest("SHA-256", new TextEncoder().encode(targetBranch))
+        .pipe(Effect.orDie);
+      // Avoid splitting a surrogate pair, which Git would list back as a different path.
+      const prefix = directoryName.slice(0, 23).replace(/[\uD800-\uDBFF]$/, "");
+      directoryName = `${prefix}-${Hex.encode(digest).slice(0, 16)}`;
+    }
+    const receipts = path.join(stateDir, ServerConfig.WORKTREE_RELEASE_DIRECTORY);
+    for (let number = 1; ; number++) {
+      const suffix = number === 1 ? "" : `-${number}`;
+      const leaf =
+        directoryName.slice(0, 40 - suffix.length).replace(/[\uD800-\uDBFF]$/, "") + suffix;
+      const candidate = path.join(parentDir, repoName, leaf);
+      const reserved = familyReservesWorktree(fileSystem, receipts, candidate);
+      const created = yield* Effect.gen(function* () {
+        if ((yield* directoryEntryExists(candidate)) && (number > 1 || (yield* reserved)))
+          return null;
+        return yield* withWorkspaceLease(
+          candidate,
+          Effect.gen(function* () {
+            if ((number > 1 && (yield* directoryEntryExists(candidate))) || (yield* reserved))
+              return null;
+            return yield* addWorktree(input, candidate, options);
+          }),
+        );
+      }).pipe(
+        Effect.mapError((cause) =>
+          cause._tag === "GitCommandError"
+            ? cause
+            : new GitCommandError({
+                operation: "GitVcsDriver.createWorktree",
+                command: "git worktree add",
+                cwd: candidate,
+                detail: "Could not verify whether the managed worktree directory is available.",
+                cause,
+              }),
+        ),
+      );
+      if (created !== null) return created;
+    }
   });
 
   const fetchRefIntoBranch: GitVcsDriver.GitVcsDriver["Service"]["fetchRefIntoBranch"] = Effect.fn(

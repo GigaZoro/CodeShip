@@ -5,22 +5,32 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeUtil from "node:util";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
-import {
-  GitCommandError,
-  OrchestrationV2AppThreadLineage,
-  type OrchestrationV2ThreadShell,
-  ProjectId,
-  RunId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { GitCommandError, type OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { WORKTREE_RELEASE_DIRECTORY } from "../config.ts";
 import { existingWorkspacePath, resolveWorkspacePath } from "./workspaceLease.ts";
+import {
+  decodeReleaseMemberRow,
+  decodeReleaseRequest,
+  encodeRequest,
+  gitObjectIdPattern as oid,
+  readReleaseFile,
+  releaseFile,
+  releaseReceiptPath,
+  releaseStages,
+  type ReleaseRequest,
+  validateRequest,
+} from "./worktreeReleaseReceipt.ts";
+export {
+  decodeReleaseRequest,
+  releaseReceiptPath,
+  worktreeReleaseName,
+  type ReleaseRequest,
+} from "./worktreeReleaseReceipt.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import {
   hasSetupOnlyStatus,
@@ -36,8 +46,10 @@ import {
 } from "../../../../scripts/lib/windows-worktree-files.ts";
 import {
   familyCheckoutHook,
+  familyHookUnavailable,
   pendingFamilyCheckoutHook,
   runningFamilyCheckoutHook,
+  supportsFamilyCheckoutHook,
 } from "../vcs/familyWorktreeCheckout.ts";
 
 /** Only a complete subagent or side chat chain within this worktree shares ownership. */
@@ -69,66 +81,37 @@ export function worktreeOwner<T extends Pick<OrchestrationV2ThreadShell, "id" | 
   return owner;
 }
 
-const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
-const durableRef = Schema.String.check(Schema.isPattern(/^refs\/(?:heads|remotes|archive)\//));
-const ReleaseMember = Schema.Struct({
-  threadId: ThreadId,
-  runId: RunId,
-  projectId: ProjectId,
-  lineage: OrchestrationV2AppThreadLineage,
-});
-
-const decodeReleaseMemberRow = Schema.decodeUnknownEffect(
-  Schema.Struct({
-    ...ReleaseMember.fields,
-    lineage: Schema.fromJsonString(OrchestrationV2AppThreadLineage),
-  }),
-);
-const ReleaseRequest = Schema.Struct({
-  threadId: ThreadId,
-  runId: RunId,
-  worktreePath: Schema.String,
-  branch: Schema.String,
-  family: Schema.optional(Schema.Array(ReleaseMember)),
-  durableRef,
-  alsoDurable: Schema.optional(Schema.Array(durableRef)),
-  savedFiles: Schema.optional(Schema.String),
-  savedSetupExtras: Schema.optional(Schema.Literal(true)),
-  savedAllocatedBytes: Schema.optional(Schema.Number),
-  head: Schema.String.check(Schema.isPattern(oid)),
-  identity: Schema.String,
-});
-export type ReleaseRequest = typeof ReleaseRequest.Type;
 export interface CheckoutRecoveryOptions {
   /** A claimed removal may resume the original checkout only after a read-only verification. */
-  readonly original?: Pick<ReleaseRequest, "head" | "identity">;
+  readonly original?: Pick<
+    ReleaseRequest,
+    "head" | "identity" | "savedFiles" | "savedSetupExtras" | "requiresSetupProof"
+  > & {
+    readonly backupDirectory: string;
+  };
   /** The checkout was materialized before setup. Setup may already have edited tracked files. */
   readonly setup?: boolean;
+  /** Another thread has a live checkout at a completed release's path. Verify it without repairing it. */
+  readonly replacementOf?: string;
 }
-const requestJson = Schema.fromJsonString(ReleaseRequest);
-const validateRequest = Schema.decodeEffect(ReleaseRequest);
-const encodeRequest = Schema.encodeEffect(requestJson);
 const encodeCheckoutPaths = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
-export const decodeReleaseRequest = Schema.decodeUnknownEffect(requestJson, {
-  onExcessProperty: "error",
-});
-export const worktreeReleaseName = (cwd: string) =>
-  NodeCrypto.createHash("sha256").update(cwd).digest("hex") + ".json";
-const releaseFile = (directory: string, cwd: string) =>
-  NodePath.join(directory, worktreeReleaseName(cwd));
 const backupName = /^saved-[a-zA-Z0-9_-]+$/;
-const releaseName = /^[a-f0-9]{64}\.json(?:\.(?:setup|restoring|releasing|released))?$/;
+const releaseName =
+  /^[a-f0-9]{64}\.json(?:\.(?:setup|restoring|releasing|released)|\.releasing\.[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.withdrawn)?$/;
 
-const readReleaseFile = Effect.fn("WorktreeRelease.readFile")(
-  function* (fs: FileSystem.FileSystem, file: string) {
-    if ((yield* existingWorkspacePath(file)) !== file) return null;
-    const stat = yield* fs.stat(file);
-    if (stat.type !== "File" || stat.size > 128n * 1024n) return null;
-    return yield* decodeReleaseRequest(yield* fs.readFileString(file));
-  },
-  Effect.timeout("5 seconds"),
-  Effect.orElseSucceed(() => null),
-);
+const isWorktreeBackup = Effect.fn("WorktreeRelease.isBackup")(function* (
+  fs: FileSystem.FileSystem,
+  directory: string,
+  saved: string,
+) {
+  return (
+    NodePath.dirname(saved) === (yield* existingWorkspacePath(directory)) &&
+    backupName.test(NodePath.basename(saved)) &&
+    (yield* fs.exists(saved)) &&
+    (yield* existingWorkspacePath(saved)) === saved &&
+    (yield* fs.stat(saved)).type === "Directory"
+  );
+});
 
 export const rememberWorktreeBackup = Effect.fn("WorktreeRelease.rememberBackup")(function* (
   fs: FileSystem.FileSystem,
@@ -137,15 +120,8 @@ export const rememberWorktreeBackup = Effect.fn("WorktreeRelease.rememberBackup"
 ) {
   const saved = request.savedFiles;
   if (saved === undefined) return false;
-  const root = yield* existingWorkspacePath(directory);
-  if (
-    NodePath.dirname(saved) !== root ||
-    !backupName.test(NodePath.basename(saved)) ||
-    !(yield* fs.exists(saved)) ||
-    (yield* existingWorkspacePath(saved)) !== saved ||
-    (yield* fs.stat(saved)).type !== "Directory"
-  )
-    return false;
+  if (!(yield* isWorktreeBackup(fs, directory, saved))) return false;
+  const root = NodePath.dirname(saved);
   const index = saved + ".json";
   const known = yield* readReleaseFile(fs, index);
   if (
@@ -215,29 +191,24 @@ export const observedCheckoutPath = (cwd: string) =>
 export const restoringWorktreeFile = (directory: string, cwd: string) =>
   releaseFile(directory, cwd) + ".restoring";
 
-export const releaseReceiptPath = (cwd: string) =>
-  resolveWorkspacePath(NodePath.dirname(cwd)).pipe(
-    Effect.timeout("5 seconds"),
-    Effect.map((parent) => NodePath.join(parent, NodePath.basename(cwd))),
-  );
-
 type RestoreThread = Pick<
   OrchestrationV2ThreadShell,
   "id" | "lineage" | "projectId" | "worktreePath" | "branch"
 >;
 
-export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(function* <E>(
+export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(function* <E, E2>(
   fs: FileSystem.FileSystem,
   directory: string,
   canonical: string,
   thread: RestoreThread,
   getParent: (id: ThreadId) => Effect.Effect<RestoreThread | null, E>,
   checkoutExists: boolean,
+  verifyReplacement: (identity: string) => Effect.Effect<void, E2>,
 ) {
   if (!(yield* fs.exists(directory))) return null;
   const file = releaseFile(directory, canonical);
   const setupReceipt = file + ".setup";
-  for (const suffix of [".restoring", ".releasing", ".released", ".setup"]) {
+  for (const suffix of releaseStages) {
     const receipt = file + suffix;
     if (!(yield* fs.exists(receipt))) continue;
     const contents = yield* fs.readFileString(receipt);
@@ -280,13 +251,29 @@ export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(functio
         }
       }
     }
-    if (request.family)
+    if (request.family) {
+      if (
+        suffix === ".released" &&
+        checkoutExists &&
+        request.worktreePath === canonical &&
+        thread.lineage.rootThreadId !== request.threadId &&
+        !request.family.some(
+          (member) =>
+            member.threadId === thread.id || member.threadId === thread.lineage.parentThreadId,
+        ) &&
+        (request.branch !== thread.branch ||
+          request.family.every((member) => member.projectId !== thread.projectId))
+      ) {
+        yield* verifyReplacement(request.identity);
+        continue;
+      }
       return yield* new GitCommandError({
         operation: "WorktreeRelease.readReceipt",
         command: "restore",
         cwd: canonical,
         detail: "This thread does not own the released checkout.",
       });
+    }
   }
   return null;
 });
@@ -505,8 +492,9 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
   cwd: string,
   savedFiles: string,
   status: string,
-  capture?: BackupCapture,
+  operation?: BackupCapture | "verify-original",
 ) {
+  const capture = typeof operation === "object" ? operation : undefined;
   const platform = yield* HostProcess.Platform;
   const saved = yield* existingWorkspacePath(savedFiles);
   if (saved !== savedFiles || saved === cwd || saved.startsWith(cwd + NodePath.sep)) return false;
@@ -523,6 +511,29 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
     )
       return false;
     pending.push(name);
+  }
+  if (operation === "verify-original") {
+    // A whole captured root can disappear before Git removes its registration. Only compare
+    // backup names here: a parent created to hold a nested cache also contains installed files in cwd.
+    const parents = new Map<string, Set<string>>([[saved, new Set()]]);
+    for (const name of pending) {
+      let item = NodePath.join(saved, name);
+      while (item !== saved) {
+        const parent = NodePath.dirname(item);
+        const names = parents.get(parent) ?? new Set<string>();
+        const child = NodePath.basename(item);
+        if (names.has(child)) break;
+        names.add(child);
+        parents.set(parent, names);
+        item = parent;
+      }
+    }
+    for (const [parent, expected] of parents) {
+      if ((yield* existingWorkspacePath(parent)) !== parent) return false;
+      const actual = yield* Effect.tryPromise(() => NodeFSP.readdir(parent));
+      if (actual.length !== expected.size || actual.some((name) => !expected.has(name)))
+        return false;
+    }
   }
   let count = 0;
   while (pending.length) {
@@ -550,7 +561,16 @@ const inspectIgnored = Effect.fn("WorktreeRelease.inspectIgnored")(function* (
             )
               throw new Error("Missing saved directory");
             directories.push({ source, target, stat: original });
-            return (await NodeFSP.readdir(source)).map((child) => {
+            const children = await NodeFSP.readdir(source);
+            if (operation === "verify-original") {
+              const savedChildren = new Set(await NodeFSP.readdir(target));
+              if (
+                children.length !== savedChildren.size ||
+                children.some((name) => !savedChildren.has(name))
+              )
+                throw new Error("The original directory no longer matches its saved files");
+            }
+            return children.map((child) => {
               if (child.includes("\uFFFD") || child.toLowerCase() === ".git")
                 throw new Error("Uninspectable directory");
               return NodePath.join(name, child);
@@ -858,6 +878,7 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
     ...request,
     ...(savedFiles ? { savedFiles, savedAllocatedBytes: capture.allocatedBytes } : {}),
     ...(extras ? { savedSetupExtras: true as const } : {}),
+    ...(extras === "" ? { requiresSetupProof: true as const } : {}),
   };
   const body = yield* encodeRequest(savedRequest);
   const destination = releaseFile(directory, cwd);
@@ -974,6 +995,12 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
   )
     return yield* refuse("The restored working directory changed.");
   const identity = yield* gitFileIdentity(path.join(cwd, ".git"));
+  if (options.replacementOf !== undefined) {
+    // A timestamp or permission change updates ctime on the same Git pointer.
+    const previous = /^(\d+\/[1-9]\d*\/\d+)\/\d+$/.exec(options.replacementOf);
+    if (!previous || identity.startsWith(previous[1] + "/"))
+      return yield* refuse("Cannot verify a new Git checkout at the released path.");
+  }
   if (
     options.original &&
     (identity !== options.original.identity ||
@@ -994,9 +1021,11 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
     );
   if (adminFiles.includes("locked") || adminFiles.some((entry) => entry.endsWith(".lock")))
     return yield* refuse("The restored checkout is locked.");
-  if (options.setup) {
+  if (options.setup || options.replacementOf !== undefined) {
     if (adminFiles.includes(pendingFamilyCheckoutHook))
       return yield* refuse("The restored checkout has an unfinished post-checkout hook.");
+    if (options.replacementOf !== undefined && !adminFiles.includes("index"))
+      return yield* refuse("The new checkout has no working tree index.");
     return;
   }
   const index = path.join(admin, "index");
@@ -1010,7 +1039,7 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
     yield* familyCheckoutHook(cwd, admin, head, stage, (args) =>
       git
         .execute({ operation: "WorktreeRelease.recoverCheckout", cwd, timeoutMs: null, args })
-        .pipe(Effect.asVoid),
+        .pipe(Effect.map((result) => result.stdout)),
     );
   });
   if (!hasIndex) {
@@ -1050,6 +1079,37 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
       return yield* refuse("The restored checkout changed during its post-checkout hook.");
   });
   const changes = yield* trackedStatus;
+  if (!changes && options.original) {
+    const original = options.original;
+    const saved = original.savedFiles;
+    if (
+      (original.savedSetupExtras && saved === undefined) ||
+      (saved !== undefined && !(yield* isWorktreeBackup(fs, original.backupDirectory, saved)))
+    )
+      return yield* refuse("The original checkout backup cannot be verified.");
+    const verifySetup =
+      original.savedSetupExtras ||
+      original.requiresSetupProof ||
+      (!saved && adminFiles.includes(setupProofName));
+    if (saved || verifySetup) {
+      // New untracked files can remain in the owner's checkout. Compare its ignored output with
+      // the preserved files and, for a sealed install, verify the dependencies outside the backup.
+      const ignored = (yield* worktreeStatus(cwd))
+        .split("\0")
+        .filter((entry) => entry.startsWith("!! "))
+        .join("\0");
+      let records = ignored;
+      if (verifySetup) {
+        const proof = yield* readCheckoutSetupProof(cwd, admin, projectRoot);
+        const extras = proof && (yield* setupExtras(proof, cwd, ignored));
+        if (extras === null)
+          return yield* refuse("The original checkout lost or changed its setup files.");
+        records = extras;
+      }
+      if (saved && !(yield* inspectIgnored(cwd, saved, records, "verify-original")))
+        return yield* refuse("The original checkout no longer matches its saved files.");
+    }
+  }
   if (!changes) return yield* finish;
   if (!options.original && changes.endsWith("\0")) {
     const entries = changes.slice(0, -1).split("\0");
@@ -1074,6 +1134,8 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const cwd = request.worktreePath;
+  if (request.family && !(yield* supportsFamilyCheckoutHook((args) => readGit(cwd, args))))
+    return familyHookUnavailable;
   if (
     (yield* existingWorkspacePath(
       (yield* readGit(cwd, ["rev-parse", "--show-toplevel"])).trim(),
@@ -1205,6 +1267,8 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   const status = yield* worktreeStatus(cwd);
   if (status.split("\0").some((record) => record && !record.startsWith("!! ")))
     return "worktree contains tracked, untracked or ignored local data";
+  if (request.requiresSetupProof && !setupProof)
+    return "worktree setup metadata requires its owner";
   const fullBackup = request.savedFiles !== undefined && !request.savedSetupExtras;
   if (windowsSetupHost && (!status || request.savedFiles || setupProof)) {
     const hold = yield* windowsInspectionHold(
