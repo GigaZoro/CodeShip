@@ -15,6 +15,7 @@
 ## 2026-11-25 — A Mac's sleep no longer fails check:changed's tests
 
 - For people who work on T3.CodeShip: when a Mac sleeps while `vp run check:changed` runs its tests, a test failure now runs the failed test groups once more instead of ending the check, because a test's own time limit counts the sleep. A test that fails while the Mac stays awake still fails at once.
+- The `check:changed` tests no longer hang inside a landing: their own `check:changed` runs now ignore the landing's turn and time-limit settings, as the launcher tests already did.
 
 ## 2026-11-25 — The metadata smoke test answers its child first and fails on a broken reply
 

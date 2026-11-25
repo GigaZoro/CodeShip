@@ -1427,10 +1427,20 @@ const fixtureConfig = {
   "user.name": "Fixture",
   "user.email": "fixture@example.invalid",
 };
+// The run under test reads none of the settings of the check:changed run or landing turn running
+// these tests, such as a landing's test step limit, so its steps run the same for whoever runs
+// them. Windows reads environment names in any case, so they are left out whatever their case.
+const CALLER_SETTINGS = /^(?:CHECK_CHANGED_|T3_LANDING_TURN)/iu;
+const withoutCallerSettings = (from: Readonly<Record<string, string>>) =>
+  Object.fromEntries(Object.entries(from).filter(([name]) => !CALLER_SETTINGS.test(name)));
+
 const env: Record<string, string> = {
-  ...Object.fromEntries(
-    Object.entries(process.env).filter(
-      (entry): entry is [string, string] => entry[1] !== undefined && !entry[0].startsWith("GIT_"),
+  ...withoutCallerSettings(
+    Object.fromEntries(
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] =>
+          entry[1] !== undefined && !entry[0].startsWith("GIT_"),
+      ),
     ),
   ),
   GIT_CONFIG_GLOBAL: "/dev/null",
@@ -1875,13 +1885,6 @@ const providerEnv = NodePath.join(
   import.meta.dirname,
   "../packages/shared/src/testing/providerEnv.ts",
 );
-
-// The run under test reads none of the settings of the check:changed run or landing turn running
-// these tests, such as a landing's test step limit, so its steps run the same for whoever runs
-// them. Windows reads environment names in any case, so they are left out whatever their case.
-const CALLER_SETTINGS = /^(?:CHECK_CHANGED_|T3_LANDING_TURN)/iu;
-const withoutCallerSettings = (from: Readonly<Record<string, string>>) =>
-  Object.fromEntries(Object.entries(from).filter(([name]) => !CALLER_SETTINGS.test(name)));
 
 const summaryOf = (stdout: string) => stdout.slice(stdout.lastIndexOf("check:changed summary"));
 
