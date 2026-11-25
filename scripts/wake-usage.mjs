@@ -160,8 +160,9 @@ export function wakeReport(db, day) {
 }
 
 if (process.argv[1] && import.meta.url === NodeURL.pathToFileURL(process.argv[1]).href) {
-  const [file, day] = process.argv.slice(2);
-  if (!file || !day)
+  const args = process.argv.slice(2);
+  const [file, day] = args;
+  if (args.length !== 2 || !file || !day)
     throw new Error("Usage: node scripts/wake-usage.mjs <statev2.sqlite> <YYYY-MM-DD UTC>");
   const db = new NodeSqlite.DatabaseSync(file, { readOnly: true });
   try {

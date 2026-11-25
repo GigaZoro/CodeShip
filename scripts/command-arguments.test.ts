@@ -28,6 +28,7 @@ const landingUsage =
   "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote>";
 const metadataPackageUsage = "Usage: node package.mjs <helpers|verify> <directory> <rust-target>";
 const metadataSigningUsage = "Usage: node scripts/sign-macos.ts --verify-codex-metadata";
+const wakeUsageUsage = "Usage: node scripts/wake-usage.mjs <statev2.sqlite> <YYYY-MM-DD UTC>";
 const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
   "../.github/scripts/bounded-git.cjs": [
     [[UNREAD, "status"], 2, "usage: bounded-git.cjs <timeoutMs> <git args…>"],
@@ -165,6 +166,10 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
     [["--verify-codex-metadata", "Test.app"], 1, metadataSigningUsage],
     [["--verify-codex-metadata", " ", "staged"], 1, "App must be a non-blank path."],
     [["--verify-codex-metadata", "Test.app", " "], 1, "Staged package must be a non-blank path."],
+  ],
+  "./wake-usage.mjs": [
+    [["statev2.sqlite", "2026-11-25", UNREAD], 1, wakeUsageUsage],
+    [["statev2.sqlite"], 1, wakeUsageUsage],
   ],
   "./upstream-sync.ts": ["begin", "status", "land", "check"].map((command) => [
     [command, UNREAD],
