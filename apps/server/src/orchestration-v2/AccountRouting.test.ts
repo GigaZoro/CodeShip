@@ -22,11 +22,15 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
+  MessageId,
   type ModelSelection,
+  NodeId,
+  type OrchestrationV2Run,
   type ProviderMcpServer,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   type CodexCreditSpending,
   type ServerProvider,
   type ServerSettings as ServerSettingsValue,
@@ -1630,13 +1634,14 @@ describe("prepaid Codex credits", () => {
       /** Null: the account has no credits. */
       readonly balance?: string | null;
       readonly creditLimitLeft?: number;
+      readonly checkedAt?: string;
     } = {},
   ) =>
     provider(instanceId, {
       driver: codexDriver,
       models: [{ ...provider(primary).models[0]!, slug: model, aliases: [] }],
       usageLimits: codexRateLimitsToLimits({
-        checkedAt: "2026-11-03T11:59:00.000Z",
+        checkedAt: read.checkedAt ?? "2026-11-03T11:59:00.000Z",
         read: {
           rateLimits: {
             planType: "plus",
@@ -1894,6 +1899,13 @@ describe("prepaid Codex credits", () => {
     readonly allowance?: CodexCreditSpending;
     readonly held?: Ref.Ref<boolean>;
     readonly database?: Layer.Layer<SqlClient.SqlClient>;
+    /** What a full read of the account finds, and how many were made. */
+    readonly fresh?: { readonly reading: ServerProvider; readonly reads: Ref.Ref<number> };
+    /** The runs underway, and how many times they were looked up. */
+    readonly underway?: {
+      readonly runs: ReadonlyArray<OrchestrationV2Run>;
+      readonly reads: Ref.Ref<number>;
+    };
   }) =>
     AccountRouting.layer.pipe(
       Layer.provide(
@@ -1917,9 +1929,26 @@ describe("prepaid Codex credits", () => {
             liftUsageLimitHolds: () =>
               input.held === undefined ? Effect.void : Ref.set(input.held, false),
             getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
+            getRunsUnderwayOn: (instanceIds) =>
+              input.underway === undefined
+                ? Effect.succeed([])
+                : Ref.update(input.underway.reads, (reads) => reads + 1).pipe(
+                    Effect.as(
+                      input.underway.runs.filter((run) =>
+                        instanceIds.includes(run.providerInstanceId),
+                      ),
+                    ),
+                  ),
           }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
             getProviders: Ref.get(input.reading).pipe(Effect.map((reading) => [reading])),
+            refreshInstance: () =>
+              input.fresh === undefined
+                ? Effect.die("No full read was expected.")
+                : Ref.update(input.fresh.reads, (reads) => reads + 1).pipe(
+                    Effect.andThen(Ref.set(input.reading, input.fresh.reading)),
+                    Effect.as([input.fresh.reading]),
+                  ),
             streamChanges: Stream.empty,
           }),
           input.database ?? SqlitePersistence.layerMemory,
@@ -2062,6 +2091,117 @@ describe("prepaid Codex credits", () => {
         ),
       );
       assert.equal(refusal?.credits, refused);
+    }),
+  );
+
+  it.effect.each([
+    {
+      name: "reads an account again when its reading is older than two minutes",
+      checkedAt: "2026-11-03T11:00:00.000Z",
+      expected: { credits: "not_enabled", reads: 1 },
+    },
+    {
+      name: "judges a recent reading as it stands",
+      checkedAt: "2026-11-03T11:59:00.000Z",
+      expected: { credits: undefined, reads: 0 },
+    },
+  ] as const)("a turn that could spend credits $name", ({ checkedAt, expected }) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      const reads = yield* Ref.make(0);
+      // The reading in hand shows plan room; Codex has used the plan up since.
+      const layer = routingLayer({
+        optedIn: [],
+        reading: yield* Ref.make(codexAccount(paid, { weeklyUsed: 30, checkedAt })),
+        fresh: { reading: codexAccount(paid), reads },
+      });
+      const refusal = yield* AccountRouting.AccountRouting.use((routing) =>
+        routing.creditRefusal({ threadId: allowed, instanceId: paid, model }),
+      ).pipe(Effect.provide(layer));
+      assert.deepEqual({ credits: refusal?.credits, reads: yield* Ref.get(reads) }, expected);
+    }),
+  );
+
+  const runUnderway = (threadId: ThreadId, instanceId: ProviderInstanceId): OrchestrationV2Run => ({
+    id: RunId.make(`run:${threadId}`),
+    threadId,
+    ordinal: 1,
+    providerInstanceId: instanceId,
+    modelSelection: { instanceId, model },
+    providerThreadId: null,
+    userMessageId: MessageId.make(`message:${threadId}`),
+    rootNodeId: NodeId.make(`node:${threadId}`),
+    activeAttemptId: null,
+    status: "running",
+    requestedAt: DateTime.makeUnsafe(nowMs),
+    startedAt: DateTime.makeUnsafe(nowMs),
+    completedAt: null,
+    checkpointId: null,
+    contextHandoffId: null,
+  });
+
+  it.effect.each([
+    {
+      name: "stops a turn once its spending reaches the cap",
+      optedIn: [paid],
+      allowance: { capCredits: 5 },
+      readings: [{ balance: "25.00" }, { balance: "20.00" }],
+      expected: { stopped: ["cap_reached"], reads: 1 },
+    },
+    {
+      name: "keeps a turn whose spending is within the cap",
+      optedIn: [paid],
+      allowance: { capCredits: 5 },
+      readings: [{ balance: "25.00" }, { balance: "22.00" }],
+      expected: { stopped: [], reads: 1 },
+    },
+    {
+      name: "stops a turn whose plan ran out while spending credits is off",
+      optedIn: [],
+      readings: [{ weeklyUsed: 30 }, {}],
+      expected: { stopped: ["not_enabled"], reads: 1 },
+    },
+    {
+      name: "stops a turn of a thread the allowance leaves out",
+      optedIn: [paid],
+      allowance: scopedCap,
+      threadId: other,
+      readings: [{}, { balance: "24.00" }],
+      expected: { stopped: ["out_of_scope"], reads: 1 },
+    },
+    {
+      name: "looks up no runs while the plan has room",
+      optedIn: [],
+      readings: [{ weeklyUsed: 30 }, { weeklyUsed: 40 }],
+      expected: { stopped: [], reads: 0 },
+    },
+  ] as const)("a turn underway on credits: $name", ({ optedIn, readings, expected, ...input }) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      const reading = yield* Ref.make(codexAccount(paid, readings[0]));
+      const reads = yield* Ref.make(0);
+      const layer = routingLayer({
+        optedIn,
+        reading,
+        ...("allowance" in input ? { allowance: input.allowance } : {}),
+        underway: {
+          runs: [
+            runUnderway("threadId" in input ? input.threadId : allowed, paid),
+            runUnderway(delegate, spare),
+          ],
+          reads,
+        },
+      });
+      const overruns = yield* Effect.gen(function* () {
+        const routing = yield* AccountRouting.AccountRouting;
+        yield* Ref.set(reading, codexAccount(paid, readings[1]));
+        return yield* routing.creditOverruns;
+      }).pipe(Effect.provide(layer));
+      const actual: { readonly stopped: ReadonlyArray<string>; readonly reads: number } = {
+        stopped: overruns.map((overrun) => overrun.refusal.credits),
+        reads: yield* Ref.get(reads),
+      };
+      assert.deepEqual(actual, expected);
     }),
   );
 });

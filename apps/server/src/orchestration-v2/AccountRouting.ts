@@ -1,6 +1,7 @@
 import {
   CodexSettings,
   type ModelSelection,
+  type OrchestrationV2Run,
   type ProjectId,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
@@ -16,6 +17,7 @@ import {
 } from "@t3tools/contracts";
 import { mergedProviderInstanceEnvironmentName } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { modelPicksEqual, resolveSelectableModel } from "@t3tools/shared/model";
 import {
   autoModeModelFor,
@@ -883,6 +885,25 @@ export interface CreditRefusal {
   readonly limitedUntil: string;
 }
 
+/** A turn running on prepaid credits its allowance no longer lets it spend. */
+export interface CreditOverrun {
+  readonly run: OrchestrationV2Run;
+  readonly refusal: CreditRefusal;
+}
+
+/** What a turn refused or stopped for a credit refusal tells the user. */
+export function creditRefusalMessage(refusal: CreditRefusal): string {
+  const used = `This account's plan usage is used up until ${refusal.limitedUntil}, and work on it now would spend its prepaid credits.`;
+  switch (refusal.credits) {
+    case "not_enabled":
+      return `${used} Spending them is off. Only you can turn it on, with Spend prepaid credits in Settings → Providers & models.`;
+    case "out_of_scope":
+      return `${used} You allowed them only for other threads' work.`;
+    case "cap_reached":
+      return `${used} The credits you allowed it are spent. Only you can raise the cap, in Settings → Providers & models.`;
+  }
+}
+
 export class AccountRouting extends Context.Service<
   AccountRouting,
   {
@@ -940,6 +961,7 @@ export class AccountRouting extends Context.Service<
     /**
      * Why a turn of this thread may not start on the account: its plan usage for `model` is used
      * up, so it would spend prepaid credits the user did not allow it; null when it may start.
+     * Judged from a reading of the account no older than CREDIT_READING_MAX_AGE_MS.
      */
     readonly creditRefusal: (input: {
       readonly threadId: ThreadId;
@@ -950,6 +972,12 @@ export class AccountRouting extends Context.Service<
     readonly creditAccess: (
       requesterThreadId: ThreadId,
     ) => Effect.Effect<PrepaidCreditSpend.CreditAccess>;
+    /**
+     * The turns running or waiting on accounts whose plan usage is used up that the current
+     * readings no longer let spend prepaid credits: spending is off, the allowance leaves their
+     * thread out, or the count reached the cap.
+     */
+    readonly creditOverruns: Effect.Effect<ReadonlyArray<CreditOverrun>>;
     /** The accounts `retryAccount` can release, and the ones ChatGPT's app cap stopped. */
     readonly holds: Effect.Effect<ReadonlyArray<ProviderUsageHold>>;
     /** The usage-limited account a new thread on `selection` would start on, or null if it has room. */
@@ -1026,6 +1054,14 @@ export function codexSignInChanges(
   });
 }
 const USAGE_PROBE_TIMEOUT = "20 seconds";
+// Codex spends credits as soon as the plan runs out, so a turn start does not trust an older reading.
+const CREDIT_READING_MAX_AGE_MS = 2 * 60_000;
+
+/** A Codex account with prepaid credits whose reading is too old to judge spending them from. */
+const creditReadingIsStale = (provider: ServerProvider | undefined, nowMs: number) =>
+  provider?.usageLimits !== undefined &&
+  codexCreditStanding(provider, nowMs) !== null &&
+  !(nowMs - Date.parse(provider.usageLimits.checkedAt) <= CREDIT_READING_MAX_AGE_MS);
 const MCP_LIST_CONCURRENCY = 4;
 
 /**
@@ -1248,6 +1284,71 @@ export const layer = Layer.effect(
           ),
         ),
     );
+    const creditReads = yield* KeyedLock.make<ProviderInstanceId>();
+    // Guarded by `creditReads`: when each account's last read for a turn start began.
+    const creditReadStartedAt = new Map<ProviderInstanceId, number>();
+    // The readings, with this account's read again when older than CREDIT_READING_MAX_AGE_MS. A
+    // failed read leaves the old one; creditOverruns then stops a turn once a reading shows it
+    // spending credits it may not.
+    const readCreditsFresh = Effect.fn("AccountRouting.readCreditsFresh")(function* (
+      instanceId: ProviderInstanceId,
+      nowMs: number,
+    ) {
+      const providers = yield* providerRegistry.getProviders;
+      if (
+        !creditReadingIsStale(
+          providers.find((entry) => entry.instanceId === instanceId),
+          nowMs,
+        )
+      )
+        return providers;
+      return yield* creditReads.withLock(
+        instanceId,
+        Effect.gen(function* () {
+          // Turns that start together wait for one read, failed or not.
+          if ((creditReadStartedAt.get(instanceId) ?? -Infinity) >= nowMs)
+            return yield* providerRegistry.getProviders;
+          creditReadStartedAt.set(instanceId, DateTime.toEpochMillis(yield* DateTime.now));
+          return yield* providerRegistry.refreshInstance(instanceId).pipe(
+            Effect.timeout(USAGE_PROBE_TIMEOUT),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("orchestration-v2.account-routing.credit-read-failed", {
+                instanceId,
+                cause,
+              }).pipe(Effect.andThen(providerRegistry.getProviders)),
+            ),
+          );
+        }),
+      );
+    });
+    // Why this thread's work on `model` may not spend the account's prepaid credits, judged from
+    // these readings; null while the plan has room or there are no credits, as the provider decides.
+    const judgeCredits = Effect.fn("AccountRouting.judgeCredits")(function* (input: {
+      readonly settings: LimitInput["settings"];
+      readonly providers: ReadonlyArray<ServerProvider>;
+      readonly provider: ServerProvider;
+      readonly threadId: ThreadId;
+      readonly model: string;
+      readonly nowMs: number;
+    }) {
+      const { provider, nowMs } = input;
+      if (provider.usageLimits === undefined || !isSubscriptionAccount(provider)) return null;
+      const window = exhaustedUsageWindow(provider, nowMs, canonicalModel(provider, input.model));
+      if (window === undefined || codexCreditStanding(provider, nowMs) !== "usable") return null;
+      const state = PrepaidCreditSpend.creditGrantState(
+        input.settings,
+        provider.instanceId,
+        yield* readCreditAccess(input.settings, input.providers, input.threadId),
+      );
+      return state === "granted"
+        ? null
+        : ({
+            credits: state,
+            limitedUntil: DateTime.formatIso(
+              DateTime.makeUnsafe(usageWindowLimitEnd(provider.usageLimits, window)),
+            ),
+          } satisfies CreditRefusal);
+    });
     const releaseScannedAt = yield* Ref.make(-Infinity);
     return {
       releaseAllowedHolds: Effect.gen(function* () {
@@ -1444,33 +1545,58 @@ export const layer = Layer.effect(
         });
       }),
       creditRefusal: Effect.fn("AccountRouting.creditRefusal")(function* (input) {
-        const providers = yield* providerRegistry.getProviders;
-        const provider = providers.find((entry) => entry.instanceId === input.instanceId);
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-        if (provider?.usageLimits === undefined || !isSubscriptionAccount(provider)) return null;
-        const window = exhaustedUsageWindow(provider, nowMs, canonicalModel(provider, input.model));
-        // With plan usage left, or no credits to spend, the provider itself decides.
-        if (window === undefined || codexCreditStanding(provider, nowMs) !== "usable") return null;
-        const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
-        const state = PrepaidCreditSpend.creditGrantState(
-          settings,
-          provider.instanceId,
-          yield* readCreditAccess(settings, providers, input.threadId),
-        );
-        return state === "granted"
-          ? null
-          : {
-              credits: state,
-              limitedUntil: DateTime.formatIso(
-                DateTime.makeUnsafe(usageWindowLimitEnd(provider.usageLimits, window)),
-              ),
-            };
+        const providers = yield* readCreditsFresh(input.instanceId, nowMs);
+        const provider = providers.find((entry) => entry.instanceId === input.instanceId);
+        if (provider === undefined) return null;
+        return yield* judgeCredits({
+          settings: yield* serverSettings.getSettings.pipe(Effect.orDie),
+          providers,
+          provider,
+          threadId: input.threadId,
+          model: input.model,
+          nowMs,
+        });
       }),
       creditAccess: Effect.fn("AccountRouting.creditAccess")(function* (requesterThreadId) {
         const providers = yield* providerRegistry.getProviders;
         const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
         return yield* readCreditAccess(settings, providers, requesterThreadId);
       }),
+      creditOverruns: Effect.gen(function* () {
+        const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        const providers = yield* providerRegistry.getProviders;
+        const onCredits = providers.filter(
+          (provider) =>
+            isSubscriptionAccount(provider) &&
+            codexCreditStanding(provider, nowMs) === "usable" &&
+            exhaustedUsageWindow(provider, nowMs) !== undefined,
+        );
+        if (onCredits.length === 0) return [];
+        const runs = yield* projections
+          .getRunsUnderwayOn(onCredits.map((provider) => provider.instanceId))
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("orchestration-v2.account-routing.runs-underway-unavailable", {
+                cause,
+              }).pipe(Effect.as([])),
+            ),
+          );
+        const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+        const overruns = yield* Effect.forEach(runs, (run) => {
+          const provider = onCredits.find((entry) => entry.instanceId === run.providerInstanceId);
+          if (provider === undefined) return Effect.succeed([]);
+          return judgeCredits({
+            settings,
+            providers,
+            provider,
+            threadId: run.threadId,
+            model: run.modelSelection.model,
+            nowMs,
+          }).pipe(Effect.map((refusal) => (refusal === null ? [] : [{ run, refusal }])));
+        });
+        return overruns.flat();
+      }).pipe(Effect.withSpan("AccountRouting.creditOverruns")),
       // Unlike routing, a list the user reads fails loudly rather than showing no holds.
       holds: Effect.gen(function* () {
         const now = yield* DateTime.now;

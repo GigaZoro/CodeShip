@@ -1,3 +1,8 @@
+## 2026-11-25 — Codex turns stop at the prepaid credit cap
+
+- A turn running on a Codex account's prepaid credits kept going after the count reached the cap you set, or after the plan ran out for work the credits were not allowed for. It now stops as soon as a reading shows that, with the same explanation a refused turn gives, and so do turns running on credits when you clear the cap or narrow it to other threads.
+- Before a turn starts on a Codex account with prepaid credits, T3.CodeShip reads the account's usage again when its last reading is more than two minutes old, so a stale reading can no longer let a turn spend credits you did not allow.
+
 ## 2026-11-25 — A worktree's base commit is looked for on every remote, and Git errors quote no names
 
 - A new worktree from a commit its checkout lacks now asks the project's remotes in turn, the primary first, and passes over one that cannot be reached. A server that refuses to send a commit by its SHA is asked through the branches and tags it advertises, and a named branch is looked up on a lone remote that is not called `origin`. Before, the first remote that failed ended the search, a server that refused SHA fetches made the commit look missing, and a lone remote under another name was never asked.

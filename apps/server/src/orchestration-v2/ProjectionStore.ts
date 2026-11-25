@@ -823,6 +823,10 @@ export interface ProjectionStoreV2Shape {
   readonly getHeldQueuedRuns: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<OrchestrationV2Run>, ProjectionStoreV2Error>;
+  /** The turns running or waiting on the user on these accounts, in chats not deleted. */
+  readonly getRunsUnderwayOn: (
+    instanceIds: ReadonlyArray<ProviderInstanceId>,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationV2Run>, ProjectionStoreV2Error>;
   /**
    * The automatic starts under memory admission, across threads: the ones still waiting, in the
    * order they began to wait (the earlier request first when several began at once), and whether
@@ -1412,6 +1416,8 @@ function booleanInt(value: boolean): 0 | 1 {
 
 // A machine has a few dozen chats; the queue is read a page at a time and only its head starts.
 const MEMORY_ADMISSION_QUEUE_LIMIT = 200;
+// More turns than a machine runs at once.
+const RUNS_UNDERWAY_LIMIT = 200;
 
 const decodeRows =
   <A, E>(decode: (json: string) => Effect.Effect<A, E>, threadId: ThreadId) =>
@@ -6255,6 +6261,25 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError(controlReadError(threadId)),
       );
 
+    const getRunsUnderwayOn = Effect.fn("ProjectionStore.getRunsUnderwayOn")(
+      function* (instanceIds: ReadonlyArray<ProviderInstanceId>) {
+        if (instanceIds.length === 0) return [];
+        // The first status term is the recovery index's own condition (see getMemoryAdmissionQueue).
+        const rows = yield* sql<PayloadRow>`
+          SELECT run.payload_json FROM orchestration_v2_projection_runs AS run
+          JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = run.thread_id
+          WHERE run.status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
+            AND run.status IN ('running', 'waiting')
+            AND run.provider_instance_id IN ${sql.in(instanceIds)}
+            AND thread.deleted_at IS NULL
+          ORDER BY run.requested_at, run.run_id
+          LIMIT ${RUNS_UNDERWAY_LIMIT}
+        `;
+        return yield* Effect.forEach(rows, (row) => decodeRunPayload(row.payload_json));
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
     const getMemoryAdmissionQueue = Effect.fn("ProjectionStore.getMemoryAdmissionQueue")(
       function* () {
         // The first status term is the recovery index's own condition, which lets SQLite read
@@ -8268,6 +8293,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       canStartQueuedRun: readOnReader(canStartQueuedRun),
       getHeldQueuedRuns: readOnReader(getHeldQueuedRuns),
       getMemoryAdmissionQueue: readOnReader(getMemoryAdmissionQueue),
+      getRunsUnderwayOn: readOnReader(getRunsUnderwayOn),
       getPendingNativeUserInputs: readOnReader(getPendingNativeUserInputs),
       hasUnpairedRunInterruptRequest: readOnReader(hasUnpairedRunInterruptRequest),
       getRunTurnItemIdentities: readOnReader(getRunTurnItemIdentities),

@@ -951,7 +951,12 @@ const threadWorktreePathsIncludeArchivedOnRequest = Effect.gen(function* () {
     { threadId: ThreadId.make("thread:archived"), worktreePath: "/worktrees/archived" },
   ]);
 
-  const addRun = (id: string, ordinal: number, status: OrchestrationV2RunStatus) => {
+  const addRun = (
+    id: string,
+    ordinal: number,
+    status: OrchestrationV2RunStatus,
+    account = providerInstanceId,
+  ) => {
     const threadId = ThreadId.make(id);
     const runId = RunId.make(`run:${id}:${ordinal}`);
     const rootNodeId = NodeId.make(`node:${id}:${ordinal}`);
@@ -962,14 +967,14 @@ const threadWorktreePathsIncludeArchivedOnRequest = Effect.gen(function* () {
       runId,
       nodeId: rootNodeId,
       driver,
-      providerInstanceId,
+      providerInstanceId: account,
       occurredAt: now,
       payload: {
         id: runId,
         threadId,
         ordinal,
-        providerInstanceId,
-        modelSelection,
+        providerInstanceId: account,
+        modelSelection: { ...modelSelection, instanceId: account },
         providerThreadId: null,
         userMessageId: MessageId.make(`message:${id}:${ordinal}`),
         rootNodeId,
@@ -987,7 +992,13 @@ const threadWorktreePathsIncludeArchivedOnRequest = Effect.gen(function* () {
   yield* addRun("thread:active", 2, "queued");
   yield* addRun("thread:archived", 1, "waiting");
   yield* addRun("thread:local", 1, "running");
+  yield* addRun("thread:local", 2, "starting");
+  yield* addRun("thread:local", 3, "running", ProviderInstanceId.make("codex_other"));
   yield* addRun("thread:deleted", 1, "running");
+  assert.deepEqual(
+    (yield* store.getRunsUnderwayOn([providerInstanceId])).map((run) => run.id).toSorted(),
+    [RunId.make("run:thread:archived:1"), RunId.make("run:thread:local:1")],
+  );
   const projectId = ProjectId.make("project:worktree-paths");
   assert.deepEqual(
     (yield* store.getActiveTurnWorkspaces()).toSorted((left, right) =>
@@ -2068,7 +2079,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     () => delegatedProviderThreadRecoversInItsOwnChat,
   );
   it.effect(
-    "worktree lookups list active threads, archived on request, and turns underway",
+    "worktree lookups list active threads, archived on request, and turns underway, also by account",
     () => threadWorktreePathsIncludeArchivedOnRequest,
   );
 

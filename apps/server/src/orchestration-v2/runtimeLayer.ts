@@ -2,6 +2,7 @@ import * as GuestShareService from "../guest/GuestShareService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as MemoryAdmissionQueue from "./MemoryAdmissionQueue.ts";
 import * as NetworkRecoveryWorker from "./NetworkRecoveryWorker.ts";
+import * as PrepaidCreditStopWorker from "./PrepaidCreditStopWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -433,6 +434,7 @@ export const layerProduction = Layer.mergeAll(
     ),
   ),
   UsageResetRedeemer.layer,
+  PrepaidCreditStopWorker.layer.pipe(Layer.provide(layerOrchestratorProvided)),
   NetworkRecoveryWorker.layer.pipe(
     Layer.provide(
       Layer.mergeAll(

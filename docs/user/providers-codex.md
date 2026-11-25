@@ -130,11 +130,14 @@ each machine that runs its threads. New work still goes first to an account whos
 and runs on this account's credits only when none has.
 
 T3.CodeShip counts how far the account's balance falls from then on, from any use of the account,
-and starts no new turn on credits once it has fallen by the cap. Turns already running finish, so
-the count can pass the cap a little. The count survives restarts; clearing the cap turns spending
-off and the next cap counts from zero. Spending also stops when the credits, or the monthly credit
-limit you set in ChatGPT, run out. What is left of the cap shows under it in Settings, and on the
-account in the mobile app's provider settings.
+and starts no new turn on credits once it has fallen by the cap. Before a turn starts on the
+account, it reads the account's usage again if its last reading is more than two minutes old. A
+turn already running stops, with the same explanation, as soon as a reading shows the cap reached
+or the plan used up for work the credits do not cover, so the count can pass the cap only by what
+that turn spent between two readings. The count survives restarts; clearing the cap turns spending
+off, stops the turns running on credits, and the next cap counts from zero. Spending also stops
+when the credits, or the monthly credit limit you set in ChatGPT, run out. What is left of the cap
+shows under it in Settings, and on the account in the mobile app's provider settings.
 
 A thread that may spend the credits and was stopped by the plan's usage limit continues on them,
 or moves to another account it may spend them on, without waiting for the reset, when stopped

@@ -205,6 +205,7 @@ it.effect.each([
           retryAccount: () => Effect.succeed({}),
           creditRefusal: () => Effect.succeed(null),
           creditAccess: () => Effect.succeed({ spent: new Map(), requesters: [] }),
+          creditOverruns: Effect.succeed([]),
           holds: Effect.succeed([]),
           launchLimit: () => Effect.succeed(null),
           failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
@@ -337,6 +338,7 @@ it.effect.each([{ scheduled: false }, { scheduled: true }])(
           retryAccount: () => Effect.succeed({}),
           creditRefusal: () => Effect.succeed(null),
           creditAccess: () => Effect.succeed({ spent: new Map(), requesters: [] }),
+          creditOverruns: Effect.succeed([]),
           holds: Effect.succeed([]),
           launchLimit: () => Effect.succeed(null),
           failoverLaunch: (input) =>
@@ -422,6 +424,7 @@ it.effect("a buffered provider wake-up stays on its account when routing would m
         retryAccount: () => Effect.succeed({}),
         creditRefusal: () => Effect.succeed(null),
         creditAccess: () => Effect.succeed({ spent: new Map(), requesters: [] }),
+        creditOverruns: Effect.succeed([]),
         holds: Effect.succeed([]),
         launchLimit: () => Effect.succeed(null),
         failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
