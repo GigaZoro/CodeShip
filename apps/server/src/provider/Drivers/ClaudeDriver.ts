@@ -58,6 +58,7 @@ import {
   probeClaudeWorkspaceSnapshot,
   type ClaudeCapabilitiesProbe,
 } from "../ClaudeProvider.ts";
+import { makeCliVersionMemory } from "@t3tools/provider-core/server/cliVersionMemory";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 import { resolveClaudeModelCatalog } from "../ClaudeModelCatalog.ts";
@@ -609,19 +610,23 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       Effect.map((result) => result.capabilities),
     );
 
+    const versionMemory = yield* makeCliVersionMemory({ instanceId, driver: DRIVER_KIND });
     const checkProvider = catalogService.refreshInBackground.pipe(
       Effect.andThen(
         modelCatalog.pipe(
           Effect.flatMap((catalog) =>
-            checkClaudeProviderStatus(
-              effectiveConfig,
-              () => resolveCapabilities,
-              processEnv,
-              stateDir,
-              catalog,
-              scopedLimitNames,
-              limitResets.current,
-              readLoginExpiry,
+            versionMemory.check((lastKnownVersion) =>
+              checkClaudeProviderStatus(
+                effectiveConfig,
+                () => resolveCapabilities,
+                processEnv,
+                stateDir,
+                catalog,
+                scopedLimitNames,
+                limitResets.current,
+                readLoginExpiry,
+                lastKnownVersion,
+              ),
             ),
           ),
           Effect.tap((provider) =>

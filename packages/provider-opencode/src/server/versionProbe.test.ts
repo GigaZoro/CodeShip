@@ -1,13 +1,17 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import {
   classifyOpenCodeCliVersion,
   makeOpenCodeRuntimeProbe,
+  OPENCODE_VERSION_PROBE_TIMEOUT,
   probeOpenCodeRuntime,
 } from "./versionProbe.ts";
 import {
@@ -156,6 +160,48 @@ describe("OpenCode version probe", () => {
         const error = yield* Effect.flip(probeServer(serverUrl, secret, http));
         assert.notInclude(error.detail, secret, serverUrl);
         assert.notInclude(error.detail, "10.0.0.1", serverUrl);
+      }
+    }),
+  );
+
+  it.effect.each([
+    {
+      scenario: "after a version was known",
+      lastKnownVersion: "2.0.18",
+      expected: { generation: "v2", version: "2.0.18" },
+    },
+    { scenario: "with no known version", lastKnownVersion: null, expected: undefined },
+  ] as const)("a binary `--version` that times out $scenario", ({ lastKnownVersion, expected }) =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const runtime = {
+        runOpenCodeCommand: () =>
+          Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+      } as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"];
+      const fiber = yield* probeOpenCodeRuntime(
+        { binaryPath: "opencode", serverUrl: "", serverPassword: "" },
+        undefined,
+        Effect.succeed(lastKnownVersion),
+      ).pipe(
+        Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make(() => Effect.die("A local binary must not be probed over HTTP")),
+        ),
+        Effect.result,
+        Effect.forkChild,
+      );
+      yield* Deferred.await(started);
+      yield* TestClock.adjust(OPENCODE_VERSION_PROBE_TIMEOUT);
+      const result = yield* Fiber.join(fiber);
+      if (expected === undefined) {
+        assert.isTrue(result._tag === "Failure");
+        assert.match(
+          result._tag === "Failure" ? result.failure.detail : "",
+          /version probe timed out/,
+        );
+      } else {
+        assert.deepStrictEqual(result._tag === "Success" ? result.success : undefined, expected);
       }
     }),
   );

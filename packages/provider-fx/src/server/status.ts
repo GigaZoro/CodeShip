@@ -17,6 +17,7 @@ import {
   FX_EFFORT_OPTION_DESCRIPTOR,
   FX_SUPPORTED_RUNTIME_MODES,
 } from "./acpSupport.ts";
+import { resolveCliVersion } from "@t3tools/provider-core/server/cliVersionMemory";
 import {
   AUTH_PROBE_TIMEOUT_MS,
   buildServerProvider,
@@ -156,6 +157,8 @@ function fxAuth(auth: string | undefined): ServerProviderAuth {
 export const checkFxProviderStatus = Effect.fn("checkFxProviderStatus")(function* (
   settings: FxSettings,
   environment: NodeJS.ProcessEnv,
+  /** The version this instance last reported, used when `--version` misses its deadline. */
+  lastKnownVersion: string | null = null,
 ): Effect.fn.Return<ServerProviderDraft, never, ChildProcessSpawner.ChildProcessSpawner> {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   if (!settings.enabled) {
@@ -172,8 +175,8 @@ export const checkFxProviderStatus = Effect.fn("checkFxProviderStatus")(function
     Effect.timeoutOption(VERSION_PROBE_TIMEOUT_MS),
     Effect.result,
   );
-  if (Result.isFailure(versionResult) || Option.isNone(versionResult.success)) {
-    const missing = Result.isFailure(versionResult) && isCommandMissingCause(versionResult.failure);
+  if (Result.isFailure(versionResult)) {
+    const missing = isCommandMissingCause(versionResult.failure);
     return snapshot(settings, checkedAt, {
       installed: !missing,
       version: null,
@@ -182,9 +185,23 @@ export const checkFxProviderStatus = Effect.fn("checkFxProviderStatus")(function
       message: missing ? "fx is not installed or not on PATH." : "Failed to run `fx --version`.",
     });
   }
-  const versionOutput = versionResult.success.value;
-  const version = parseGenericCliVersion(`${versionOutput.stdout}\n${versionOutput.stderr}`);
-  if (versionOutput.code !== 0) {
+  const resolvedVersion = yield* resolveCliVersion({
+    cli: "fx",
+    output: versionResult.success,
+    lastKnownVersion,
+    parse: parseGenericCliVersion,
+  });
+  if (resolvedVersion === null) {
+    return snapshot(settings, checkedAt, {
+      installed: true,
+      version: null,
+      status: "error",
+      auth: { status: "unknown" },
+      message: `fx did not answer \`fx --version\` within ${VERSION_PROBE_TIMEOUT_MS / 1_000}s.`,
+    });
+  }
+  const { output: versionOutput, version } = resolvedVersion;
+  if (versionOutput !== undefined && versionOutput.code !== 0) {
     return snapshot(settings, checkedAt, {
       installed: true,
       version,

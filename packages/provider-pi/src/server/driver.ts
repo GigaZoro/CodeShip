@@ -20,6 +20,7 @@ import {
   discoverPiCommandsForCwd,
   enrichPiSnapshot,
 } from "./status.ts";
+import { makeCliVersionMemory } from "@t3tools/provider-core/server/cliVersionMemory";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import {
   defaultProviderContinuationIdentity,
@@ -140,7 +141,11 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
     );
     const textGeneration = yield* makePiTextGeneration(effectiveConfig, processEnv);
 
-    const checkProvider = checkPiProviderStatus(effectiveConfig, processEnv, cwd).pipe(
+    const versionMemory = yield* makeCliVersionMemory({ instanceId, driver: DRIVER_KIND });
+    const checkStatus = versionMemory.check((lastKnownVersion) =>
+      checkPiProviderStatus(effectiveConfig, processEnv, cwd, lastKnownVersion),
+    );
+    const checkProvider = checkStatus.pipe(
       Effect.map(stampIdentity),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );

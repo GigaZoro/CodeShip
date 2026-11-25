@@ -30,6 +30,7 @@ import {
   type SettingSource,
 } from "@anthropic-ai/claude-agent-sdk";
 
+import { resolveCliVersion } from "@t3tools/provider-core/server/cliVersionMemory";
 import {
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
@@ -573,6 +574,8 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   >,
   /** When the saved subscription login stops renewing; undefined when unknown. */
   resolveLoginExpiry?: Effect.Effect<string | undefined>,
+  /** The version this instance last reported, used when `--version` misses its deadline. */
+  lastKnownVersion: string | null = null,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -631,7 +634,13 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     });
   }
 
-  if (Option.isNone(versionProbe.success)) {
+  const resolvedVersion = yield* resolveCliVersion({
+    cli: "Claude Agent CLI",
+    output: versionProbe.success,
+    lastKnownVersion,
+    parse: parseGenericCliVersion,
+  });
+  if (resolvedVersion === null) {
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
@@ -642,15 +651,13 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         version: null,
         status: "error",
         auth: { status: "unknown" },
-        message:
-          "Claude Agent CLI is installed but failed to run. Timed out while running command.",
+        message: `Claude Agent CLI did not answer \`claude --version\` within ${CLAUDE_VERSION_CHECK_TIMEOUT_MS / 1_000}s.`,
       },
     });
   }
 
-  const version = versionProbe.success.value;
-  const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
-  if (version.code !== 0) {
+  const { output: version, version: parsedVersion } = resolvedVersion;
+  if (version !== undefined && version.code !== 0) {
     const reason = commandFailureReason(
       version,
       yield* HostProcess.HomeDirectory,

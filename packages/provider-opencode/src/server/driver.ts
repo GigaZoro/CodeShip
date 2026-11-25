@@ -33,6 +33,7 @@ import {
   openCodeSkillsToServerProviderSkills,
   openCodeCommandsToServerProviderSlashCommands,
 } from "./status.ts";
+import { makeCliVersionMemory } from "@t3tools/provider-core/server/cliVersionMemory";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import {
@@ -213,8 +214,9 @@ export const OpenCodeDriver: ProviderDriver<
       continuationGroupKey: continuationIdentity.continuationKey,
     });
     const effectiveConfig = { ...config, enabled } satisfies OpenCodeSettings;
+    const versionMemory = yield* makeCliVersionMemory({ instanceId, driver: DRIVER_KIND });
     const runtimeProbe = yield* makeOpenCodeRuntimeProbe(
-      probeOpenCodeRuntime(effectiveConfig, processEnv).pipe(
+      probeOpenCodeRuntime(effectiveConfig, processEnv, versionMemory.lastKnownVersion).pipe(
         Effect.provideService(HttpClient.HttpClient, httpClient),
         Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, openCodeRuntime),
       ),
@@ -351,14 +353,18 @@ export const OpenCodeDriver: ProviderDriver<
       Effect.provideService(HttpClient.HttpClient, httpClient),
       Effect.provideService(Crypto.Crypto, crypto),
     );
+    // The runtime probe reads the last known version itself, since session opens share it.
+    const checkStatus = versionMemory.check(() =>
+      checkOpenCodeProviderStatus(
+        effectiveConfig,
+        host.paths.cwd,
+        runtimeProbe.refresh,
+        loadOpenCode2Models,
+      ),
+    );
     const checkProvider = Effect.all(
       {
-        provider: checkOpenCodeProviderStatus(
-          effectiveConfig,
-          host.paths.cwd,
-          runtimeProbe.refresh,
-          loadOpenCode2Models,
-        ).pipe(
+        provider: checkStatus.pipe(
           Effect.annotateLogs({ providerInstanceId: instanceId }),
           Effect.annotateSpans({ providerInstanceId: instanceId }),
         ),

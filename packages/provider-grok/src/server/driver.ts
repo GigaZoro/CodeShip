@@ -21,6 +21,7 @@ import {
 } from "./status.ts";
 import { grokUsageReader } from "./usage.ts";
 import { readGrokAccount } from "./usageLimits.ts";
+import { makeCliVersionMemory } from "@t3tools/provider-core/server/cliVersionMemory";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import {
   defaultProviderContinuationIdentity,
@@ -176,7 +177,11 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv, Path.Path> 
       cwd: host.paths.stateDir,
     });
 
-    const checkProvider = checkGrokProviderStatus(effectiveConfig, processEnv, cwd).pipe(
+    const versionMemory = yield* makeCliVersionMemory({ instanceId, driver: DRIVER_KIND });
+    const checkStatus = versionMemory.check((lastKnownVersion) =>
+      checkGrokProviderStatus(effectiveConfig, processEnv, cwd, lastKnownVersion),
+    );
+    const checkProvider = checkStatus.pipe(
       Effect.filterOrElse(
         (snapshot) =>
           !(

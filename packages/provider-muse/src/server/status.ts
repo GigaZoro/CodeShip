@@ -11,6 +11,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import { createMuseSdkHost, makeMuseEnvironment } from "./sdk.ts";
 import { parseMuseVersion } from "./maintenance.ts";
 import { discoverMuseModels, museModelCapabilities } from "./modelCatalog.ts";
+import { resolveCliVersion } from "@t3tools/provider-core/server/cliVersionMemory";
 import {
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
@@ -62,6 +63,8 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
   cwd?: string,
   createHost: typeof createMuseSdkHost = createMuseSdkHost,
   onLiveCatalog: Effect.Effect<void> = Effect.void,
+  /** The version this instance last reported, used when `--version` misses its deadline. */
+  lastKnownVersion: string | null = null,
 ) {
   if (!settings.enabled) return yield* makePendingMuseProvider(settings);
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
@@ -102,7 +105,13 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
         : "Failed to execute Muse Code CLI. Check its binary path on this T3.CodeShip server host.",
     });
   }
-  if (Option.isNone(versionResult.success)) {
+  const resolvedVersion = yield* resolveCliVersion({
+    cli: "Muse Code CLI",
+    output: versionResult.success,
+    lastKnownVersion,
+    parse: parseMuseVersion,
+  });
+  if (resolvedVersion === null) {
     return snapshot({
       installed: true,
       version: null,
@@ -111,9 +120,8 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
       message: "Muse Code CLI version check timed out.",
     });
   }
-  const versionOutput = versionResult.success.value;
-  const version = parseMuseVersion(`${versionOutput.stdout}\n${versionOutput.stderr}`);
-  if (versionOutput.code !== 0) {
+  const { output: versionOutput, version } = resolvedVersion;
+  if (versionOutput !== undefined && versionOutput.code !== 0) {
     return snapshot({
       installed: true,
       version,

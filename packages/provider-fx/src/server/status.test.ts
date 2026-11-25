@@ -39,7 +39,11 @@ function processHandle(stdout: string, code: number, answered: Effect.Effect<voi
 }
 
 /** Answers `fx` invocations by their arguments and records which ran. */
-const check = (statusJson: string, versionDelay: Duration.Input = 0) =>
+const check = (
+  statusJson: string,
+  versionDelay: Duration.Input = 0,
+  lastKnownVersion: string | null = null,
+) =>
   Effect.gen(function* () {
     const outputs: Record<string, string> = {
       "--version": "fx 0.0.13\n",
@@ -67,7 +71,7 @@ const check = (statusJson: string, versionDelay: Duration.Input = 0) =>
         ),
       );
     });
-    const draft = yield* checkFxProviderStatus(settings, {}).pipe(
+    const draft = yield* checkFxProviderStatus(settings, {}, lastKnownVersion).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
     return { draft, invoked };
@@ -82,20 +86,32 @@ describe("checkFxProviderStatus", () => {
       version: "0.0.13",
       message: undefined,
       invoked: ["--version", "status --json", "models --json"],
+      lastKnownVersion: null,
     },
     {
-      label: "never answers",
+      label: "never answers after a version was known",
+      versionDelay: "Infinity",
+      status: "ready",
+      version: "0.0.12",
+      message: undefined,
+      invoked: ["--version", "status --json", "models --json"],
+      lastKnownVersion: "0.0.12",
+    },
+    {
+      label: "never answers and no version is known",
       versionDelay: "Infinity",
       status: "error",
       version: null,
-      message: "Failed to run `fx --version`.",
+      message: "fx did not answer `fx --version` within 10s.",
       invoked: ["--version"],
+      lastKnownVersion: null,
     },
   ] as const)("gives `fx --version` 10 s when it $label", (row) =>
     Effect.gen(function* () {
       const fiber = yield* check(
         JSON.stringify({ kind: "status", model: "anthropic/claude-opus-5.5", auth: "fx login" }),
         row.versionDelay,
+        row.lastKnownVersion,
       ).pipe(Effect.forkChild);
       yield* TestClock.adjust("10 seconds");
       const { draft, invoked } = yield* Fiber.join(fiber);

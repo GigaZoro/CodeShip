@@ -211,11 +211,13 @@ function mockHandle(result: { stdout: string; stderr: string; code: number }) {
 }
 
 function layerMockSpawner(
-  handler: (args: ReadonlyArray<string>) => {
-    stdout: string;
-    stderr: string;
-    code: number;
-  },
+  handler: (args: ReadonlyArray<string>) =>
+    | {
+        stdout: string;
+        stderr: string;
+        code: number;
+      }
+    | ChildProcessSpawner.ChildProcessHandle,
 ) {
   // Claude's settings worker reads another account's settings files, so it runs for real.
   return Layer.effect(
@@ -223,9 +225,11 @@ function layerMockSpawner(
     Effect.map(ChildProcessSpawner.ChildProcessSpawner, (real) =>
       ChildProcessSpawner.make((command) => {
         const cmd = command as unknown as { args: ReadonlyArray<string> };
-        return cmd.args.some((arg) => arg.endsWith("claude-history-worker.ts"))
-          ? real.spawn(command)
-          : Effect.succeed(mockHandle(handler(cmd.args)));
+        if (cmd.args.some((arg) => arg.endsWith("claude-history-worker.ts"))) {
+          return real.spawn(command);
+        }
+        const result = handler(cmd.args);
+        return Effect.succeed("exitCode" in result ? result : mockHandle(result));
       }),
     ),
   ).pipe(Layer.provide(NodeServices.layer));
@@ -3026,6 +3030,80 @@ it.layer(
           }),
         ),
       ),
+    );
+
+    it.effect.each([
+      {
+        scenario: "goes on with the version it last reported",
+        lastKnownVersion: "1.1.0",
+        expected: { status: "ready", version: "1.1.0", gatedModelOffered: true },
+      },
+      {
+        scenario: "reports the timeout when no version was ever known",
+        lastKnownVersion: null,
+        expected: {
+          status: "error",
+          version: null,
+          message: "Claude Agent CLI did not answer `claude --version` within 20s.",
+        },
+      },
+    ] as const)(
+      "an account whose --version times out $scenario",
+      ({ lastKnownVersion, expected }) =>
+        Effect.gen(function* () {
+          const started = yield* Deferred.make<void>();
+          const fiber = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({
+              tokenSource: "claude.ai",
+              subscriptionType: "max",
+              email: "a@example.com",
+              apiKeySource: "none",
+              apiProvider: "firstParty",
+            }),
+            { ANTHROPIC_BASE_URL: "" },
+            undefined,
+            {
+              models: [
+                {
+                  model: { slug: "claude-next", name: "Next", isCustom: false, capabilities: null },
+                  runtime: {},
+                  compatibility: { minVersion: "1.1.0" },
+                },
+              ],
+            },
+            undefined,
+            undefined,
+            undefined,
+            lastKnownVersion,
+          ).pipe(
+            Effect.provide(
+              layerMockSpawner((args) => {
+                if (args.join(" ") !== "--version") {
+                  throw new Error(`Unexpected args: ${args.join(" ")}`);
+                }
+                return ChildProcessSpawner.makeHandle({
+                  ...mockHandle({ stdout: "", stderr: "", code: 0 }),
+                  exitCode: Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+                });
+              }),
+            ),
+            Effect.forkChild,
+          );
+          yield* Deferred.await(started);
+          yield* TestClock.adjust("20 seconds");
+          const status = yield* Fiber.join(fiber);
+          assert.deepInclude(
+            {
+              status: status.status,
+              version: status.version,
+              message: status.message,
+              gatedModelOffered: status.models.some((model) => model.slug === "claude-next"),
+            },
+            expected,
+          );
+          assert.isTrue(status.installed);
+        }),
     );
 
     it.effect.each([

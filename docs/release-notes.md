@@ -1,3 +1,8 @@
+## 2026-11-25 — A slow `--version` on a busy machine no longer takes a provider offline
+
+- When a provider CLI does not answer `--version` in time, for example on a machine short of memory, T3.CodeShip now checks the account with the version that CLI last reported instead of marking the provider unable to run. Before, a busy machine could make Claude report "installed but failed to run. Timed out while running command." and leave the account unavailable for up to an hour, even though the CLI worked. This applies to Claude, Grok, fx, Muse Code, Pi and OpenCode.
+- The version is remembered across restarts, so the first check after T3.CodeShip starts on a busy machine is covered too. A provider that has never reported a version still says that `--version` timed out. Pi, whose model discovery may fail without stopping it, shows a warning instead of ready when neither `pi --version` nor discovery answered.
+
 ## 2026-11-25 — check:changed no longer discards passing tests in a new worktree
 
 - For people who work on T3.CodeShip: `vp run check:changed` now writes the mobile app's generated modules before it starts its checks. In a new worktree, such as the one each landing uses, knip used to write them while the tests ran, and the run reported `FAIL test` with every test passing.

@@ -17,7 +17,7 @@ export interface ProbedOpenCode {
 }
 
 // Meant to stop a hung `--version`; wrapped installs can take several seconds to start cold.
-const OPENCODE_VERSION_PROBE_TIMEOUT = "10 seconds";
+export const OPENCODE_VERSION_PROBE_TIMEOUT = "10 seconds";
 const OPENCODE_SERVER_PROBE_TIMEOUT = "5 seconds";
 // 2.x's own CLI decodes `{version, pid}` from `/api/info`; requiring both keeps unrelated JSON out.
 const decodeApiInfo = Schema.decodeUnknownOption(
@@ -58,27 +58,32 @@ function classifyOpenCodeProbeResponse(
 const probeOpenCodeBinary = Effect.fn("probeOpenCodeBinary")(function* (
   binaryPath: string,
   environment: NodeJS.ProcessEnv | undefined,
+  lastKnownVersion: Effect.Effect<string | null>,
 ) {
   const runtime = yield* OpenCodeRuntime.OpenCodeRuntime;
-  const { stdout } = yield* runtime
+  const output = yield* runtime
     .runOpenCodeCommand({
       binaryPath,
       args: ["--version"],
       ...(environment === undefined ? {} : { environment }),
     })
-    .pipe(
-      Effect.timeoutOrElse({
-        duration: OPENCODE_VERSION_PROBE_TIMEOUT,
-        orElse: () =>
-          Effect.fail(
-            new OpenCodeRuntime.OpenCodeRuntimeError({
-              operation: "probeOpenCodeBinary",
-              detail: `OpenCode CLI version probe timed out after ${OPENCODE_VERSION_PROBE_TIMEOUT}.`,
-            }),
-          ),
-      }),
+    .pipe(Effect.timeoutOption(OPENCODE_VERSION_PROBE_TIMEOUT));
+  if (Option.isNone(output)) {
+    // A `--version` that misses its deadline on a loaded machine says nothing about the CLI.
+    const fallback = probed(yield* lastKnownVersion);
+    if (fallback === undefined) {
+      return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
+        operation: "probeOpenCodeBinary",
+        detail: `OpenCode CLI version probe timed out after ${OPENCODE_VERSION_PROBE_TIMEOUT}.`,
+      });
+    }
+    yield* Effect.logWarning(
+      "OpenCode --version timed out; checking with the version it last reported.",
+      { lastKnownVersion: fallback.version },
     );
-  const result = classifyOpenCodeCliVersion(stdout);
+    return fallback;
+  }
+  const result = classifyOpenCodeCliVersion(output.value.stdout);
   if (result) return result;
   return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
     operation: "probeOpenCodeBinary",
@@ -163,6 +168,8 @@ export const probeOpenCodeRuntime = (
     readonly serverPassword: string;
   },
   environment?: NodeJS.ProcessEnv,
+  /** The version this instance last reported, read only when the binary's `--version` times out. */
+  lastKnownVersion: Effect.Effect<string | null> = Effect.succeed(null),
 ): Effect.Effect<
   ProbedOpenCode,
   OpenCodeRuntime.OpenCodeRuntimeError,
@@ -170,7 +177,7 @@ export const probeOpenCodeRuntime = (
 > =>
   settings.serverUrl.trim().length > 0
     ? probeOpenCodeServer(settings.serverUrl, settings.serverPassword)
-    : probeOpenCodeBinary(settings.binaryPath, environment);
+    : probeOpenCodeBinary(settings.binaryPath, environment, lastKnownVersion);
 
 export const makeOpenCodeRuntimeProbe = <E>(probe: Effect.Effect<ProbedOpenCode, E>) =>
   Effect.map(

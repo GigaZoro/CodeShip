@@ -161,14 +161,26 @@ describe("PiProvider", () => {
       version: "0.84.3",
       message: "could not refresh its models and commands",
       probesAfterVersion: true,
+      lastKnownVersion: null,
     },
     {
-      label: "never answers",
+      label: "never answers after a version was known",
+      versionDelay: "Infinity",
+      status: "warning",
+      version: "0.84.2",
+      message:
+        "Pi did not answer `pi --version` within 10s and RPC discovery failed. T3.CodeShip is using Pi 0.84.2, the version it last reported; the live session will retry startup.",
+      probesAfterVersion: true,
+      lastKnownVersion: "0.84.2",
+    },
+    {
+      label: "never answers and no version is known",
       versionDelay: "Infinity",
       status: "error",
       version: null,
       message: "Pi CLI is installed but timed out while running `pi --version`.",
       probesAfterVersion: false,
+      lastKnownVersion: null,
     },
   ] as const)("gives `pi --version` 10 s when it $label", (row) =>
     Effect.gen(function* () {
@@ -182,7 +194,12 @@ describe("PiProvider", () => {
             : processHandle({ stderr: "RPC startup failed", exitCode: 1 }),
         );
       });
-      const fiber = yield* checkPiProviderStatus(settings).pipe(
+      const fiber = yield* checkPiProviderStatus(
+        settings,
+        undefined,
+        undefined,
+        row.lastKnownVersion,
+      ).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.forkChild,
       );

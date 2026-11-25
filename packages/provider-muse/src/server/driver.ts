@@ -20,6 +20,7 @@ import * as ProviderContinuationRequests from "@t3tools/provider-core/server/Pro
 import { checkMuseProviderStatus, makePendingMuseProvider } from "./status.ts";
 import { makeMuseSignedOut, museSignedOutMessage } from "./signedOut.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import { makeCliVersionMemory } from "@t3tools/provider-core/server/cliVersionMemory";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import { enrichMuseSnapshot, latestMuseVersion, museMaintenance } from "./maintenance.ts";
 import { makeMuseEnvironment } from "./sdk.ts";
@@ -103,6 +104,7 @@ export const MuseDriver: ProviderDriver<
       accentColor,
       continuationGroupKey: continuationIdentity.continuationKey,
     });
+    const versionMemory = yield* makeCliVersionMemory({ instanceId, driver: DRIVER_KIND });
     const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
     const resolveInstallation = yield* makeCachedProviderMaintenanceResolution(
       resolveProviderMaintenanceCapabilitiesEffect(museMaintenance, {
@@ -147,12 +149,15 @@ export const MuseDriver: ProviderDriver<
         makePendingMuseProvider(settings.provider).pipe(Effect.map(stampIdentity)),
       checkProvider: signedOut.launch.pipe(
         Effect.flatMap((login) =>
-          checkMuseProviderStatus(
-            effectiveConfig,
-            processEnvironment,
-            cwd,
-            undefined,
-            Effect.asVoid(login.accepted),
+          versionMemory.check((lastKnownVersion) =>
+            checkMuseProviderStatus(
+              effectiveConfig,
+              processEnvironment,
+              cwd,
+              undefined,
+              Effect.asVoid(login.accepted),
+              lastKnownVersion,
+            ),
           ),
         ),
         Effect.map(stampIdentity),

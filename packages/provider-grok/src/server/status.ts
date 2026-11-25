@@ -24,6 +24,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
+import { resolveCliVersion } from "@t3tools/provider-core/server/cliVersionMemory";
 import {
   AUTH_PROBE_TIMEOUT_MS,
   buildServerProvider,
@@ -403,6 +404,8 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
   grokSettings: GrokSettings,
   environment: NodeJS.ProcessEnv = process.env,
   cwd?: string,
+  /** The version this instance last reported, used when `--version` misses its deadline. */
+  lastKnownVersion: string | null = null,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -458,7 +461,13 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     });
   }
 
-  if (Option.isNone(versionResult.success)) {
+  const resolvedVersion = yield* resolveCliVersion({
+    cli: "Grok CLI",
+    output: versionResult.success,
+    lastKnownVersion,
+    parse: parseGenericCliVersion,
+  });
+  if (resolvedVersion === null) {
     return buildServerProvider({
       presentation: GROK_PRESENTATION,
       enabled: grokSettings.enabled,
@@ -474,9 +483,8 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     });
   }
 
-  const versionOutput = versionResult.success.value;
-  const version = parseGenericCliVersion(`${versionOutput.stdout}\n${versionOutput.stderr}`);
-  if (versionOutput.code !== 0) {
+  const { output: versionOutput, version } = resolvedVersion;
+  if (versionOutput !== undefined && versionOutput.code !== 0) {
     const reason = commandFailureReason(
       versionOutput,
       yield* HostProcess.HomeDirectory,
