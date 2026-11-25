@@ -63,6 +63,8 @@ import {
   isRetained,
   isScanCacheInput,
   makeScanCacheWriter,
+  markMissing,
+  markPresent,
   mergeCachedSource,
   mergeScanEntry,
   SCAN_CACHE_DIRECTORY_NAME,
@@ -87,8 +89,10 @@ const MTIME_SLACK_MS = 36 * 60 * 60 * 1000;
 const MAX_HOURLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 const CACHE_RETENTION_MS = 92 * 24 * 60 * 60 * 1000;
-// A check of a hung network mount gives up so the scan can answer; a later scan checks again.
-const EXPIRED_FILE_CHECK_TIMEOUT_MS = 10_000;
+// A check on a hung network mount can only be abandoned, not cancelled, so the pass stops
+// waiting at its limit and leaves an abandoned path alone for the backoff.
+const EXPIRED_FILE_CHECKS_TIMEOUT_MS = 5_000;
+const EXPIRED_FILE_CHECK_BACKOFF_MS = 60 * 60 * 1000;
 const CACHE_GAP_RETRY_MS = 60_000;
 const MAX_STORE_RELISTS = 3;
 
@@ -209,6 +213,8 @@ export const make = Effect.gen(function* () {
   const correctedBatch = (records: readonly UsageRecord[]) =>
     records.some((record) => resolvedRecords.has(record)) ? records.map(correctedRecord) : records;
   const sourceCache = new Map<string, CachedSource>();
+  /** Monotonic time from which a path whose existence check was abandoned may be checked again. */
+  const expiredCheckRetryAt = new Map<string, number>();
   /** Counts changes to fileCache and sourceCache; a sync writes while it is ahead of the saved one. */
   let generation = 0;
   const observedAt = (filePath: string, nowMs: number) =>
@@ -617,36 +623,50 @@ export const make = Effect.gen(function* () {
   /**
    * Settles each row past retention by its last write before an answer picks rows. A file still
    * there has aged out, so its row goes. A file gone since the last listing of its directory
-   * starts its missing time now, so its usage does not end early. A failed check counts as gone;
-   * one that does not finish leaves the row for a later scan.
+   * starts its missing time now, so its usage does not end early. A failed check counts as gone.
+   * Rows the pass does not settle before its time limit stay as they are for a later scan.
    */
   const checkExpiredFiles = Effect.fn("UsageService.checkExpiredFiles")(function* (
     retentionCutoffMs: number,
   ) {
+    const startedMs = yield* monotonicMillis;
+    for (const [filePath, retryAtMs] of expiredCheckRetryAt) {
+      if (retryAtMs <= startedMs) expiredCheckRetryAt.delete(filePath);
+    }
     const unchecked: Array<readonly [string, CachedFile]> = [];
     for (const [filePath, entry] of fileCache) {
-      if (entry.missingSinceMs === undefined && !isRetained(entry, retentionCutoffMs)) {
+      if (
+        entry.missingSinceMs === undefined &&
+        !isRetained(entry, retentionCutoffMs) &&
+        !expiredCheckRetryAt.has(filePath)
+      ) {
         unchecked.push([filePath, entry]);
       }
     }
     if (unchecked.length === 0) return;
     const nowMs = yield* Clock.currentTimeMillis;
+    const running = new Set<string>();
     yield* Effect.forEach(
       unchecked,
       ([filePath, entry]) =>
-        fileSystem.exists(filePath).pipe(
+        Effect.suspend(() => {
+          running.add(filePath);
+          return fileSystem.exists(filePath);
+        }).pipe(
           Effect.orElseSucceed(() => false),
-          Effect.timeoutOption(EXPIRED_FILE_CHECK_TIMEOUT_MS),
           Effect.map((exists) => {
+            running.delete(filePath);
             // A scan may have stored a newer row while the check ran.
-            if (Option.isNone(exists) || fileCache.get(filePath) !== entry) return;
-            if (exists.value) fileCache.delete(filePath);
-            else fileCache.set(filePath, { ...entry, missingSinceMs: nowMs });
+            if (fileCache.get(filePath) !== entry) return;
+            if (exists) fileCache.delete(filePath);
+            else fileCache.set(filePath, markMissing(entry, nowMs));
             generation += 1;
           }),
         ),
       { concurrency: STAT_CONCURRENCY, discard: true },
-    );
+    ).pipe(Effect.timeoutOption(EXPIRED_FILE_CHECKS_TIMEOUT_MS));
+    const retryAtMs = (yield* monotonicMillis) + EXPIRED_FILE_CHECK_BACKOFF_MS;
+    for (const filePath of running) expiredCheckRetryAt.set(filePath, retryAtMs);
   });
 
   /**
@@ -1046,16 +1066,12 @@ export const make = Effect.gen(function* () {
     for (const { path: filePath } of present) {
       const entry = fileCache.get(filePath);
       if (entry?.provider !== provider || entry.missingSinceMs === undefined) continue;
-      const { missingSinceMs: _, ...seen } = entry;
-      fileCache.set(filePath, { ...seen, presentSinceMs: nowMs });
+      fileCache.set(filePath, markPresent(entry, nowMs));
       generation += 1;
     }
   };
 
-  /**
-   * A complete listing that lacks a cached file starts its missing time,
-   * or moves one ahead of the clock back to now.
-   */
+  /** A complete listing that lacks a cached file starts its missing time. */
   const recordMissing = (
     provider: UsageProviderKind,
     dir: string,
@@ -1065,13 +1081,13 @@ export const make = Effect.gen(function* () {
     for (const [filePath, entry] of fileCache) {
       if (
         entry.provider !== provider ||
-        (entry.missingSinceMs ?? Infinity) <= nowMs ||
+        entry.missingSinceMs !== undefined ||
         present.has(filePath) ||
         !isWithinDirectory(filePath, dir)
       ) {
         continue;
       }
-      fileCache.set(filePath, { ...entry, missingSinceMs: nowMs });
+      fileCache.set(filePath, markMissing(entry, nowMs));
       generation += 1;
     }
   };

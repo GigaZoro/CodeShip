@@ -3,6 +3,8 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   decodeScanCache,
   makeScanCacheWriter,
+  markMissing,
+  markPresent,
   mergeCachedSource,
   mergeScanEntry,
   type CachedFile,
@@ -320,11 +322,13 @@ describe("scan cache round trip", () => {
   });
 
   it.each([
-    ["a string", "500"],
-    ["NaN", Number.NaN],
-    ["a negative time", -1],
-    ["a fraction", 1.5],
-  ])("keeps a row but not its presence times when they are %s", (_name, time) => {
+    ["a string", "500", undefined],
+    ["NaN", Number.NaN, undefined],
+    ["a negative time", -1, undefined],
+    ["a fraction", 1.5, undefined],
+    // The service counts a time ahead of its clock from now, so the decoder keeps it.
+    ["far ahead of the clock", 1e15, 1e15],
+  ])("keeps a row whose presence times are %s", (_name, time, decoded) => {
     const encoded = JSON.parse(
       makeScanCacheWriter()(cacheWith([["/a.jsonl", 100, [record()]]]), {}),
     );
@@ -335,8 +339,8 @@ describe("scan cache round trip", () => {
 
     const restored = decodeScanCache(document, TEST_FORMAT_MAP).get("/a.jsonl");
     expect(restored?.records).toHaveLength(1);
-    expect(restored?.missingSinceMs).toBeUndefined();
-    expect(restored?.presentSinceMs).toBeUndefined();
+    expect(restored?.missingSinceMs).toBe(decoded);
+    expect(restored?.presentSinceMs).toBe(decoded);
   });
 
   it("drops the whole entry when any row is corrupt, forcing a cold re-parse", () => {
@@ -443,6 +447,15 @@ describe("scan cache merge", () => {
       expect(merged.presentSinceMs).toBe(presentSinceMs);
       expect(merged.observedAtMs).toBe(observedAtMs);
     }
+  });
+
+  it.each([
+    ["the same millisecond", 3_000],
+    ["a clock stepped back", 2_000],
+  ])("keeps a file's missing time and its return in order when they come in %s", (_name, atMs) => {
+    const missing = markMissing(row({ presentSinceMs: 3_000 }), atMs);
+    expect(mergeScanEntry(missing, missing).missingSinceMs).toBe(3_001);
+    expect(mergeScanEntry(markPresent(missing, atMs), missing).missingSinceMs).toBeUndefined();
   });
 
   it("keeps the later source and fills its volume from the same directory", () => {
