@@ -640,23 +640,50 @@ the delivered commits.
 t3 thread release-worktree "$thread_id" --run "$run_id" --worktree "$checkout" --durable-ref refs/remotes/origin/main
 ```
 
+When a root chat shares the exact checkout and branch with its subagents or side chats, pass
+the root chat's IDs. The command records each member and its current run. The root must
+settle after the work finishes. A parent must receive each delegate's result in a
+completed run. An unfinished run or an outstanding delivery keeps the checkout.
+If membership or a run changes, issue a new request once the family finishes. A member,
+or a new fork or side chat that inherits its checkout, can start the first follow-up.
+
 For a local no-change handoff, use the primary checkout's branch, such as `refs/heads/main`.
 If earlier commits are preserved elsewhere, repeat `--also-durable-ref <full-ref>` for each
 additional local branch, remote-tracking branch or archive ref that covers them.
 
-Ignored files, including `.env` and installed dependencies, normally keep the checkout.
-Add `--save-ignored` to preserve them in a private folder on the server before queuing release.
-The command prints its location. This requires hard-link support and a T3 home on the
-checkout's filesystem. The saved files retain their disk space and stay available until the
-checkout owner removes them. Newly created or replaced files without a matching saved file
-keep the checkout. Tracked changes and ordinary untracked files also keep it.
+For a checkout with verified CodeShip setup, the release command can recreate the verified
+dependencies and environment links. It keeps additional ignored files in a private backup
+and prints the location and retained file allocation. A checkout whose installed files
+cannot be verified is kept. On macOS and Linux this includes installed files with
+custom extended attributes or access control lists, and checkouts set up before
+CodeShip recorded that metadata. Add `--save-ignored` to preserve every ignored file.
+
+Backups require hard-link support and a T3 home on the checkout's filesystem. Run
+`t3 thread backups <thread-id>` on the server machine to find the original paths and
+retained file allocation for each release. For a shared checkout, use the root thread ID that
+queued the release. Use `--json` for scripting or omit the thread ID to list all backups,
+including older folders whose release receipt is missing.
+Retained allocation measures file data in the backup. It does not measure disk space freed.
+
+Copy the files you need from the listed directory to a separate location. A follow-up uses
+a fresh checkout and does not restore files from the backup. Backups have no automatic
+expiry. Once the release finishes and you have verified your copies, you can remove the
+listed backup directory and its sibling `saved-….json` receipt, if present. Newly created
+or replaced files without a matching saved file keep the checkout. Tracked changes and
+ordinary untracked files also keep it.
 
 The server checks the request at startup and every minute and waits for delivery and
 process teardown. To withdraw a pending request, remove the printed request file.
 Once it has moved to `.releasing`, wait for the result before reusing the checkout.
-**Storage & cleanup** shows the reason a checkout was kept. A follow-up recreates a released
-checkout from the project's current base. If the owner moved the task branch in the meantime,
-the follow-up uses the new branch tip.
+**Storage & cleanup** shows the reason a checkout was kept. After an interrupted family
+removal, a follow-up can resume the original checkout once CodeShip verifies its identity,
+branch, commit and tracked files. A partially removed original stays available for inspection.
+
+A follow-up starts from the project's current base when that base contains the delivered
+commit. If the histories diverged, CodeShip can restore the delivered commit from a
+recorded durable ref. If the owner moved the task branch in the meantime, the follow-up
+uses the new branch tip. Follow-up setup reports progress in the thread. A later follow-up can retry an
+unfinished setup in the same checkout.
 
 Choose **Delete now** to run the enabled rules immediately. The latest results show which
 worktrees were removed or kept and why, plus any failures.

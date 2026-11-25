@@ -45,6 +45,8 @@ import { resolveProjectFileBackedSetting } from "@t3tools/shared/projectSettings
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
 import { timeoutProcessOption } from "../process/processDeadline.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import { existingWorkspacePath } from "../workspace/workspaceLease.ts";
+import { familyCheckoutHook } from "./familyWorktreeCheckout.ts";
 import { countGitSpawn } from "./GitSpawnBudget.ts";
 import { removeEmptyDirectory } from "./removeEmptyDirectory.ts";
 import { explicitBareRepositoryEnv, gitConfigEnv } from "./VcsProcess.ts";
@@ -4593,7 +4595,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         "git branch create failed",
       );
     }
-    const args = ["worktree", "add", "--", worktreePath, input.newRefName ?? input.refName];
+    const args = [
+      "worktree",
+      "add",
+      ...(options?.releasedFamily ? ["--no-checkout"] : []),
+      "--",
+      worktreePath,
+      input.newRefName ?? input.refName,
+    ];
     const progress = options?.progress;
     const onCheckoutProgress = progress?.onCheckoutProgress;
 
@@ -4634,6 +4643,50 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       },
     );
 
+    if (options?.releasedFamily) {
+      const cwd = worktreePath;
+      const operation = "GitVcsDriver.createWorktree";
+      yield* Effect.gen(function* () {
+        const admin = yield* existingWorkspacePath(
+          (yield* runGitStdout(operation, cwd, ["rev-parse", "--absolute-git-dir"])).trim(),
+        );
+        const head = (yield* runGitStdout(operation, cwd, [
+          "rev-parse",
+          "--verify",
+          "HEAD",
+        ])).trim();
+        const runCheckoutGit = (args: string[]) =>
+          runGit(operation, cwd, ["-c", `checkout.workers=${checkoutWorkers}`, ...args], {
+            timeoutMs: null,
+          });
+        if ((yield* fileSystem.readDirectory(cwd)).some((entry) => entry !== ".git"))
+          return yield* new GitCommandError({
+            operation,
+            command: "git read-tree",
+            cwd,
+            detail: "The new checkout contains local files.",
+          });
+        yield* familyCheckoutHook(cwd, admin, head, "prepare", runCheckoutGit);
+        // Unlike an ordinary add, Git's transient "initializing" lock is gone before any
+        // filters run. read-tree protects the materialization with Git's own index.lock.
+        yield* runCheckoutGit(["read-tree", "-m", "-u", head]);
+        yield* familyCheckoutHook(cwd, admin, head, "finish", runCheckoutGit);
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.mapError((cause) =>
+          cause._tag === "GitCommandError"
+            ? cause
+            : new GitCommandError({
+                operation,
+                command: "git worktree add",
+                cwd,
+                detail: "Could not verify the family checkout or its post-checkout hook.",
+                cause,
+              }),
+        ),
+      );
+    }
     if (progress?.onWorktreeClaimed) {
       yield* progress.onWorktreeClaimed(worktreePath);
     }

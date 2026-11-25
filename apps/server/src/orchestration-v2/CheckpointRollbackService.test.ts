@@ -125,12 +125,17 @@ it.effect.each(["initial", "waiting"])(
 
     return Effect.gen(function* () {
       const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
+      const holderEntered = yield* Deferred.make<void>();
       const holder =
         state === "waiting"
-          ? yield* withWorkspaceLease(process.cwd(), Deferred.await(release)).pipe(
-              Effect.forkChild({ startImmediately: true }),
-            )
+          ? yield* withWorkspaceLease(
+              process.cwd(),
+              Deferred.succeed(holderEntered, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+              ),
+            ).pipe(Effect.forkChild({ startImmediately: true }))
           : undefined;
+      if (holder) yield* Deferred.await(holderEntered);
       const rollback = yield* service
         .execute({
           threadId,
@@ -202,6 +207,7 @@ it.effect.each([
     const release = Deferred.makeUnsafe<void>();
     const openEntered = Deferred.makeUnsafe<void>();
     const calls: string[] = [];
+    const cleanupHeld = yield* Deferred.make<void>();
     let cleanupEntered = false;
     const providerThread = { id: providerThreadId, providerSessionId, providerInstanceId };
     const projection = {
@@ -310,6 +316,7 @@ it.effect.each([
         worktreePath,
         Effect.gen(function* () {
           cleanupEntered = true;
+          yield* Deferred.succeed(cleanupHeld, undefined);
           if (order === "cleanup-first") yield* Deferred.await(release);
           yield* fileSystem.remove(worktreePath, { recursive: true, force: true });
           calls.push("cleanup");
@@ -319,6 +326,7 @@ it.effect.each([
         order === "cleanup-first"
           ? yield* cleanupEffect.pipe(Effect.forkChild({ startImmediately: true }))
           : undefined;
+      if (cleanup) yield* Deferred.await(cleanupHeld);
       const rollback = yield* service
         .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })
         .pipe(Effect.forkChild({ startImmediately: true }));

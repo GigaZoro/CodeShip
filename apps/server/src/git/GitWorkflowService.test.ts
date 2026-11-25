@@ -44,7 +44,16 @@ const layerUnmergedWork = (
   GitWorkflowService.layer.pipe(
     Layer.provide(VcsDriverRegistry.layer),
     Layer.provide(
-      Layer.mock(GitManager.GitManager)({ branchPullRequest: () => Effect.sync(pullRequest) }),
+      Layer.unwrap(
+        GitVcsDriver.GitVcsDriver.pipe(
+          Effect.map((driver) =>
+            Layer.mock(GitManager.GitManager)({
+              branchPullRequest: () => Effect.sync(pullRequest),
+              createWorktree: driver.createWorktree,
+            }),
+          ),
+        ),
+      ),
     ),
     Layer.provide(layerActiveTurns()),
     Layer.provideMerge(GitVcsDriver.layer),
@@ -81,6 +90,70 @@ const unmergedWorkRepo = Effect.gen(function* () {
 });
 
 it.layer(NodeServices.layer)("GitWorkflowService", (it) => {
+  it.effect(
+    "restores released branches at a fresh base, preserved task tip, or the owner’s moved tip",
+    () =>
+      Effect.gen(function* () {
+        const { cwd, root, git, change, driver, workflow } = yield* unmergedWorkRepo;
+        const head = (dir: string, revision = "HEAD") =>
+          driver
+            .resolveCommit({ cwd: dir, revision })
+            .pipe(Effect.map((commit) => commit.commitSha));
+        const initial = yield* head(cwd);
+        yield* git(cwd, ["switch", "-c", "task"]);
+        yield* change("delivered");
+        const delivered = yield* head(cwd);
+        yield* git(cwd, ["update-ref", "refs/archive/delivered", delivered]);
+        yield* git(cwd, ["switch", "main"]);
+        yield* change("new-main");
+        const main = yield* head(cwd);
+        const checkout = `${root}/resumed`;
+        const restore = (previousHead: string, create = false) =>
+          workflow.createWorktree(
+            {
+              cwd,
+              path: checkout,
+              refName: create ? "main" : "task",
+              ...(create ? { newRefName: "task" } : {}),
+            },
+            {
+              releasedBranch: {
+                previousHead,
+                baseRef: "main",
+                durableRefs: ["refs/heads/main", "refs/archive/delivered"],
+              },
+            },
+          );
+
+        yield* restore(delivered);
+        assert.equal(yield* head(checkout), delivered);
+        yield* git(cwd, ["worktree", "remove", checkout]);
+        yield* git(cwd, ["branch", "-D", "task"]);
+        yield* restore(delivered, true);
+        assert.equal(yield* head(checkout), delivered);
+        yield* git(cwd, ["worktree", "remove", checkout]);
+
+        yield* git(cwd, ["branch", "-f", "task", initial]);
+        yield* restore(delivered);
+        assert.equal(yield* head(checkout), initial);
+        yield* git(cwd, ["worktree", "remove", checkout]);
+        yield* restore(initial);
+        assert.equal(yield* head(checkout), main);
+        yield* git(cwd, ["worktree", "remove", checkout]);
+        yield* git(cwd, ["branch", "-D", "task"]);
+        yield* restore(initial, true);
+        assert.equal(yield* head(checkout), main);
+        yield* git(cwd, ["worktree", "remove", checkout]);
+        yield* git(cwd, ["branch", "-D", "task"]);
+
+        yield* git(cwd, ["update-ref", "-d", "refs/archive/delivered"]);
+        yield* git(cwd, ["update-ref", "refs/archive/delivered/other", delivered]);
+        const error = yield* Effect.flip(restore(delivered, true));
+        assert.include(error.detail, "durable ref");
+        assert.isFalse(yield* workflow.hasCommit({ cwd, refName: "refs/heads/task" }));
+      }).pipe(Effect.scoped, Effect.provide(layerUnmergedWork())),
+  );
+
   it.effect("finds a name among the refs of every namespace", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

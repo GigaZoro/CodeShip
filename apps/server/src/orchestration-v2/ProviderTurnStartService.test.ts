@@ -1,5 +1,6 @@
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as AccountRouting from "./AccountRouting.ts";
+import { linkDirectory } from "@t3tools/shared/testing/symlinks";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import * as ProviderSkills from "../provider/ProviderSkills.ts";
@@ -42,14 +43,22 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
-import { queueWorktreeRelease } from "../workspace/worktreeRelease.ts";
+import {
+  decodeReleaseRequest,
+  listWorktreeBackups,
+  queueWorktreeRelease,
+  worktreeReleaseName,
+} from "../workspace/worktreeRelease.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { layerRealGit } from "./ProviderTurnStartService.testkit.ts";
+import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
+import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -197,6 +206,8 @@ function startWithMissingWorktree(
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        WorktreeSetupTracker.layer,
+        Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
@@ -336,6 +347,7 @@ function makeLocalCommandHarness(input: {
   readonly worktreesDir?: string;
   readonly workspaceRoot?: string;
   readonly gitWorkflow?: GitWorkflow.GitWorkflowService["Service"];
+  readonly runSetup?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"];
   readonly fileSystem?: FileSystem.FileSystem;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
@@ -1020,6 +1032,11 @@ function makeLocalCommandHarness(input: {
         runtimeMode: thread.runtimeMode,
       } as never),
   );
+  const getProject = vi.fn<ProjectService.ProjectService["Service"]["getById"]>(() =>
+    Effect.succeedSome({
+      workspaceRoot: input.workspaceRoot ?? "/tmp/native-account-project",
+    } as never),
+  );
   const createWorktree = vi.fn<GitWorkflow.GitWorkflowService["Service"]["createWorktree"]>(() =>
     Effect.succeed({} as never),
   );
@@ -1037,8 +1054,12 @@ function makeLocalCommandHarness(input: {
     }),
   );
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provideMerge(WorktreeSetupTracker.layer),
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)(
+          input.runSetup ? { runForThread: input.runSetup } : {},
+        ),
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: (handoff) =>
             input.sideChat?.nativeForkFrom === undefined
@@ -1139,21 +1160,20 @@ function makeLocalCommandHarness(input: {
               creditRefusal: () => Effect.succeed(input.creditRefusal ?? null),
             }),
         input.fileSystem === undefined
-          ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
+          ? FileSystem.layerNoop({
+              exists: (target) =>
+                Effect.succeed(!target.endsWith(ServerConfig.WORKTREE_RELEASE_DIRECTORY)),
+            })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
         input.gitWorkflow === undefined
           ? Layer.mock(GitWorkflow.GitWorkflowService)({
               pruneWorktrees: () => Effect.void,
               listLocalBranchNames: () => Effect.succeed(["feature/restore"]),
+              currentBranch: () => Effect.succeed("feature/restore"),
               createWorktree,
             })
           : Layer.succeed(GitWorkflow.GitWorkflowService, input.gitWorkflow),
-        Layer.mock(ProjectService.ProjectService)({
-          getById: () =>
-            Effect.succeedSome({
-              workspaceRoot: input.workspaceRoot ?? "/tmp/native-account-project",
-            } as never),
-        }),
+        Layer.mock(ProjectService.ProjectService)({ getById: getProject }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getUsageLimitedProviderInstances: () =>
             input.limitsReadFailure
@@ -1214,6 +1234,7 @@ function makeLocalCommandHarness(input: {
   );
   return {
     settledRuns,
+    getProject,
     getThreadRecords,
     getTurnStartContext,
     setProjection: (next: OrchestrationV2ThreadProjection) => {
@@ -1236,6 +1257,7 @@ function makeLocalCommandHarness(input: {
     attemptId,
     providerSessionId,
     projection: () => projection,
+    withRuntime: <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(layer)),
     start: Effect.gen(function* () {
       yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({ threadId, runId });
     }).pipe(
@@ -1255,7 +1277,7 @@ function makeLocalCommandHarness(input: {
   };
 }
 
-effectIt.effect(
+effectIt.live(
   "recovers the local or pushed thread tip, else the current branch, remote default, or detached HEAD",
   () =>
     Effect.gen(function* () {
@@ -1263,7 +1285,9 @@ effectIt.effect(
       const path = yield* Path.Path;
       const gitWorkflow = yield* GitWorkflow.GitWorkflowService;
       const driver = yield* GitVcsDriver.GitVcsDriver;
-      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-recreate-repo-" });
+      const root = yield* fileSystem.realPath(
+        yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-recreate-repo-" }),
+      );
       const workspaceRoot = path.join(root, "project");
       const originRoot = path.join(root, "origin.git");
       const worktreesDir = path.join(root, "worktrees");
@@ -1308,6 +1332,13 @@ effectIt.effect(
       const expectedTips = {
         retained: { tip: threadTip, file: "thread.txt", upstream: null, base: "" },
         released: { tip: projectTip, file: "project.txt", upstream: null, base: "" },
+        "released-diverged-and-deleted": {
+          tip: threadTip,
+          file: "thread.txt",
+          upstream: null,
+          base: null,
+        },
+        "released-async": { tip: projectTip, file: "project.txt", upstream: null, base: "" },
         deleted: { tip: projectTip, file: "project.txt", upstream: null, base: "project-current" },
         pushed: {
           tip: threadTip,
@@ -1341,36 +1372,105 @@ effectIt.effect(
         if (scenario === "detached-no-remote") {
           yield* git(workspaceRoot, ["remote", "remove", "origin"]);
         }
-        if (scenario === "released") {
-          yield* git(worktreePath, ["reset", "--hard", baseTip]);
+        const asyncSetup = scenario === "released-async";
+        const archived = scenario === "released-diverged-and-deleted";
+        const released = scenario === "released" || asyncSetup || archived;
+        const setupResult =
+          yield* Deferred.make<ProjectSetupScriptRunner.ProjectSetupScriptCompletion>();
+        let receipt: string | undefined;
+        if (released) {
+          yield* git(worktreePath, ["reset", "--hard", archived ? threadTip : baseTip]);
+          if (archived)
+            yield* git(workspaceRoot, ["update-ref", "refs/archive/previous-task", threadTip]);
           const { file: request } = yield* queueWorktreeRelease({
             threadId: "thread-native-account-command",
             runId: "finished",
             worktreePath,
-            durableRef: "refs/heads/project-current",
+            durableRef: archived ? "refs/archive/previous-task" : "refs/heads/project-current",
             stateDir: path.join(root, "state"),
           });
+          receipt = request;
+          if (scenario === "released") {
+            const current = JSON.parse(yield* fileSystem.readFileString(request));
+            const savedFiles = path.join(path.dirname(request), "saved-legacy");
+            yield* fileSystem.makeDirectory(savedFiles);
+            yield* fileSystem.writeFileString(path.join(savedFiles, "private.txt"), "old backup");
+            yield* fileSystem.writeFileString(
+              request + ".setup",
+              JSON.stringify({
+                ...current,
+                runId: "obsolete-release",
+                head: threadTip,
+                savedFiles,
+                savedAllocatedBytes: 4096,
+              }),
+            );
+          }
           yield* fileSystem.rename(request, request + ".released");
         }
         yield* fileSystem.remove(worktreePath, { recursive: true });
-        if (scenario !== "retained" && scenario !== "released") {
+        if (scenario !== "retained" && (!released || archived)) {
           yield* git(workspaceRoot, ["worktree", "prune"]);
           yield* git(workspaceRoot, ["branch", "-D", "feature/restore"]);
         }
+        let setupCalls = 0;
+        let interruptRecreation = scenario === "released";
         const harness = makeLocalCommandHarness({
           text: "Continue",
           workspaceRoot,
           worktreePath,
           worktreesDir,
           fileSystem,
-          gitWorkflow,
+          gitWorkflow: {
+            ...gitWorkflow,
+            createWorktree: (...args) =>
+              gitWorkflow.createWorktree(...args).pipe(
+                Effect.flatMap((result) => {
+                  if (!interruptRecreation) return Effect.succeed(result);
+                  interruptRecreation = false;
+                  return Effect.interrupt;
+                }),
+              ),
+          },
           failReadsAfterRunning: true,
+          runSetup: (input) =>
+            withWorkspaceLease(
+              worktreePath,
+              Effect.gen(function* () {
+                expect(released).toBe(true);
+                expect(input.worktreePath).toBe(worktreePath);
+                expect(input.projectCwd).toBe(workspaceRoot);
+                expect(yield* fileSystem.exists(path.join(worktreePath, expected.file!))).toBe(
+                  true,
+                );
+                setupCalls++;
+                if (asyncSetup || archived || setupCalls > 1) {
+                  yield* fileSystem.writeFileString(path.join(worktreePath, "setup-ran"), "ready");
+                }
+                return {
+                  status: "started",
+                  scriptId: "install",
+                  scriptName: "Install",
+                  scriptCommand: "install",
+                  terminalId: "setup-install",
+                  cwd: worktreePath,
+                  async: asyncSetup,
+                  completion: asyncSetup
+                    ? Deferred.await(setupResult)
+                    : Effect.succeed({
+                        exitCode: !archived && setupCalls === 1 ? 2 : 0,
+                        durationMs: 0,
+                      }),
+                } as const;
+              }).pipe(Effect.orDie),
+            ),
         });
         const open = harness.open.getMockImplementation()!;
         harness.open.mockImplementation(() =>
           Effect.gen(function* () {
             expect(yield* git(worktreePath, ["branch", "--show-current"])).toBe("feature/restore");
             expect(yield* git(worktreePath, ["rev-parse", "HEAD"])).toBe(expected.tip);
+            expect(yield* fileSystem.exists(path.join(worktreePath, "setup-ran"))).toBe(released);
             for (const file of ["thread.txt", "project.txt"]) {
               expect(yield* fileSystem.exists(path.join(worktreePath, file))).toBe(
                 file === expected.file,
@@ -1384,12 +1484,101 @@ effectIt.effect(
                 yield* git(worktreePath, ["rev-parse", "--symbolic-full-name", "@{upstream}"]),
               ).toBe(expected.upstream);
             }
-            expect(yield* branchConfig("t3-merge-base")).toBe(expected.base);
+            if (expected.base !== null)
+              expect(yield* branchConfig("t3-merge-base")).toBe(expected.base);
             return yield* open();
           }).pipe(Effect.orDie),
         );
 
+        if (asyncSetup) {
+          yield* harness.withRuntime(
+            Effect.gen(function* () {
+              const starter = yield* ProviderTurnStart.ProviderTurnStartServiceV2;
+              const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+              const { thread, runs } = harness.projection();
+              const start = starter.start({ threadId: thread.id, runId: runs[0]!.id });
+              const original = harness.projection();
+              yield* start;
+              expect(harness.open).toHaveBeenCalledOnce();
+              expect((yield* tracker.get(thread.id))?.phase).toBe("running");
+              harness.setProjection(original);
+              yield* start;
+              expect(setupCalls).toBe(1);
+              expect(harness.startRootRun).toHaveBeenCalledTimes(2);
+              yield* Deferred.succeed(setupResult, { exitCode: 2, durationMs: 0 });
+              const snapshot = yield* tracker.stream(thread.id).pipe(
+                Stream.filter((snapshot) => snapshot?.phase === "failed"),
+                Stream.runHead,
+              );
+              expect(Option.getOrUndefined(snapshot)).toMatchObject({
+                phase: "failed",
+                error: "Setup script exited with 2.",
+                stages: [
+                  { id: "setup-script", status: "failed" },
+                  { id: "agent", status: "done" },
+                ],
+              });
+              expect(yield* fileSystem.exists(receipt + ".setup")).toBe(true);
+              yield* git(worktreePath, ["switch", "-c", "user-branch"]);
+              for (const branch of ["user-branch", ""]) {
+                if (branch === "") yield* git(worktreePath, ["switch", "--detach"]);
+                harness.setProjection(original);
+                yield* start;
+                expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+                expect(yield* git(worktreePath, ["branch", "--show-current"])).toBe(branch);
+                expect(yield* git(worktreePath, ["rev-parse", "HEAD"])).toBe(projectTip);
+                expect(yield* fileSystem.exists(receipt + ".setup")).toBe(true);
+              }
+              expect(setupCalls).toBe(1);
+              yield* git(worktreePath, ["switch", "feature/restore"]);
+              yield* fileSystem.remove(receipt + ".setup");
+            }),
+          );
+          continue;
+        }
+        if (scenario === "released") {
+          const original = harness.projection();
+          const interrupted = yield* Effect.exit(harness.startWithRetry);
+          expect(interrupted._tag).toBe("Failure");
+          if (interrupted._tag === "Failure")
+            expect(Cause.hasInterruptsOnly(interrupted.cause)).toBe(true);
+          expect(setupCalls).toBe(0);
+          expect(JSON.parse(yield* fileSystem.readFileString(receipt + ".setup")).runId).toBe(
+            "finished",
+          );
+          yield* harness.startWithRetry;
+          expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+          yield* harness.startWithRetry;
+          expect(setupCalls).toBe(1);
+          expect(harness.open).not.toHaveBeenCalled();
+          expect(yield* fileSystem.exists(worktreePath)).toBe(true);
+          expect(yield* fileSystem.exists(receipt + ".released")).toBe(false);
+          expect(yield* fileSystem.exists(receipt + ".setup")).toBe(true);
+          yield* fileSystem.writeFileString(
+            path.join(worktreePath, "local.txt"),
+            "retain on retry",
+          );
+          harness.setProjection(original);
+        }
         yield* harness.start;
+        if (scenario === "released") {
+          expect(yield* fileSystem.readFileString(path.join(worktreePath, "local.txt"))).toBe(
+            "retain on retry",
+          );
+          expect(setupCalls).toBe(2);
+          expect(yield* fileSystem.exists(receipt + ".setup")).toBe(false);
+          const backups = yield* listWorktreeBackups(path.join(root, "state"));
+          expect(backups).toEqual([
+            expect.objectContaining({
+              runId: "obsolete-release",
+              worktreePath,
+              savedAllocatedBytes: 4096,
+            }),
+          ]);
+          expect(
+            yield* fileSystem.readFileString(path.join(backups[0]!.savedFiles, "private.txt")),
+          ).toBe("old backup");
+        }
 
         expect(harness.open).toHaveBeenCalledOnce();
         expect(harness.startRootRun).toHaveBeenCalledWith(
@@ -1400,6 +1589,354 @@ effectIt.effect(
         expect(harness.projection().runs.at(-1)?.status).toBe("running");
       }
     }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
+
+for (const scenario of [
+  "new fork",
+  "new side chat",
+  "unrelated thread",
+  "unrelated thread under an alias with a missing parent",
+  "different lineage root",
+  "setup pending for a new side chat",
+  "setup pending for an unrelated thread",
+  "setup pending in another repository",
+  "complete checkout",
+  "no checkout",
+  "index without files",
+  "partially restored tracked files",
+  "partially restored with an edited file",
+  "interrupted with local files",
+  "unrelated repository",
+  "released with a foreign checkout",
+  "released with a local file",
+  "project read failed before restore",
+  "released with an empty directory",
+  "removal interrupted with the original checkout",
+  "removal interrupted with a saved backup",
+  "removal interrupted with a missing tracked file",
+  "removal interrupted with replaced Git metadata",
+  "removal interrupted after the branch moved",
+] as const) {
+  effectIt.effect(`restores a released family checkout safely: ${scenario}`, () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const gitWorkflow = yield* GitWorkflow.GitWorkflowService;
+      const root = yield* fileSystem.realPath(
+        yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-family-restore-" }),
+      );
+      const workspaceRoot = path.join(root, "project");
+      const worktreesDir = path.join(root, "worktrees");
+      const worktreePath = path.join(worktreesDir, "project", "restore");
+      const branch = "feature/restore";
+      const git = (cwd: string, args: string[]) =>
+        driver.execute({ operation: "test.familyRestore", cwd, args });
+      yield* fileSystem.makeDirectory(workspaceRoot);
+      yield* git(workspaceRoot, ["init", "-b", "main"]);
+      yield* git(workspaceRoot, ["config", "user.name", "Test"]);
+      yield* git(workspaceRoot, ["config", "user.email", "test@example.com"]);
+      yield* fileSystem.writeFileString(path.join(workspaceRoot, "tracked"), "from Git");
+      yield* fileSystem.writeFileString(path.join(workspaceRoot, "remaining"), "second file");
+      yield* git(workspaceRoot, ["add", "."]);
+      yield* git(workspaceRoot, ["commit", "-m", "base"]);
+      yield* git(workspaceRoot, ["worktree", "add", "-b", branch, worktreePath]);
+
+      const setupPending = scenario.startsWith("setup pending");
+      const runSetup = vi.fn(() => Effect.succeed({ status: "no-script" as const }));
+      const aliasWithMissingParent =
+        scenario === "unrelated thread under an alias with a missing parent";
+      const alias = path.join(root, "saved-worktrees");
+      if (aliasWithMissingParent) yield* linkDirectory(worktreesDir, alias);
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        worktreesDir,
+        worktreePath: aliasWithMissingParent
+          ? path.join(alias, "project", "restore")
+          : worktreePath,
+        workspaceRoot,
+        fileSystem,
+        gitWorkflow,
+        runSetup,
+        failReadsAfterRunning: true,
+      });
+      const projection = harness.projection();
+      const actor = projection.thread.id;
+      const owner = ThreadId.make("original-owner");
+      const unrelatedThread =
+        scenario === "unrelated thread" ||
+        scenario === "setup pending for an unrelated thread" ||
+        aliasWithMissingParent;
+      const isNewThread =
+        unrelatedThread ||
+        [
+          "new fork",
+          "new side chat",
+          "different lineage root",
+          "setup pending for a new side chat",
+        ].includes(scenario);
+      const originalChild = isNewThread ? ThreadId.make("original-child") : actor;
+      const childLineage = {
+        parentThreadId: owner,
+        relationshipToParent: "subagent" as const,
+        rootThreadId: owner,
+      };
+      const { file } = yield* queueWorktreeRelease({
+        threadId: owner,
+        runId: "finished",
+        worktreePath,
+        durableRef: "refs/heads/main",
+        stateDir: path.join(root, "state"),
+      });
+      const request = yield* decodeReleaseRequest(yield* fileSystem.readFileString(file));
+      const removalInterrupted = scenario.startsWith("removal interrupted");
+      const intactRemoval =
+        scenario === "removal interrupted with the original checkout" ||
+        scenario === "removal interrupted with a saved backup";
+      const savedFiles =
+        scenario === "removal interrupted with a saved backup"
+          ? yield* fileSystem.makeTempDirectoryScoped({ directory: root, prefix: "saved-" })
+          : undefined;
+      const partialRestore = scenario.startsWith("partially restored");
+      const newlyReleased = isNewThread || scenario.startsWith("released with");
+      const receipt =
+        file +
+        (setupPending
+          ? ".setup"
+          : removalInterrupted
+            ? ".releasing"
+            : newlyReleased
+              ? ".released"
+              : ".restoring");
+      yield* fileSystem.writeFileString(
+        file,
+        JSON.stringify({
+          ...request,
+          ...(savedFiles ? { savedFiles } : {}),
+          family: [
+            {
+              threadId: owner,
+              runId: "finished",
+              projectId: projection.thread.projectId,
+              lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: owner },
+            },
+            {
+              threadId: originalChild,
+              runId: "child-run",
+              projectId: projection.thread.projectId,
+              lineage: childLineage,
+            },
+          ],
+        }),
+      );
+      yield* fileSystem.rename(file, receipt);
+      if (!removalInterrupted) yield* git(workspaceRoot, ["worktree", "remove", worktreePath]);
+      if (aliasWithMissingParent)
+        yield* fileSystem.remove(path.dirname(worktreePath), { recursive: true });
+      const lineage = !isNewThread
+        ? childLineage
+        : unrelatedThread
+          ? projection.thread.lineage
+          : {
+              parentThreadId: owner,
+              relationshipToParent: "fork" as const,
+              rootThreadId: scenario === "different lineage root" ? actor : owner,
+              ...(["new side chat", "setup pending for a new side chat"].includes(scenario)
+                ? { sideChat: true }
+                : {}),
+            };
+      harness.setProjection({ ...projection, thread: { ...projection.thread, lineage } });
+
+      if (
+        [
+          "unrelated repository",
+          "released with a foreign checkout",
+          "setup pending in another repository",
+        ].includes(scenario)
+      ) {
+        const otherRepo = path.join(root, "other-project");
+        yield* git(root, ["clone", "--quiet", workspaceRoot, otherRepo]);
+        yield* git(otherRepo, ["worktree", "add", "-b", branch, worktreePath]);
+      } else if (
+        scenario === "released with a local file" ||
+        scenario === "released with an empty directory"
+      ) {
+        yield* fileSystem.makeDirectory(worktreePath);
+        if (scenario === "released with a local file")
+          yield* fileSystem.writeFileString(path.join(worktreePath, "tracked"), "local copy");
+      } else if (setupPending || (!isNewThread && !removalInterrupted)) {
+        yield* git(workspaceRoot, [
+          "worktree",
+          "add",
+          ...(setupPending || scenario === "complete checkout" || partialRestore
+            ? []
+            : ["--no-checkout"]),
+          worktreePath,
+          branch,
+        ]);
+      }
+      if (scenario === "setup pending for a new side chat")
+        yield* fileSystem.writeFileString(path.join(worktreePath, "tracked"), "local setup edit");
+      if (scenario === "index without files") yield* git(worktreePath, ["read-tree", "HEAD"]);
+      if (scenario === "removal interrupted with a missing tracked file" || partialRestore)
+        yield* fileSystem.remove(path.join(worktreePath, "remaining"));
+      if (scenario === "removal interrupted with replaced Git metadata") {
+        const pointer = path.join(worktreePath, ".git");
+        yield* fileSystem.writeFileString(
+          pointer + ".new",
+          yield* fileSystem.readFileString(pointer),
+        );
+        yield* fileSystem.rename(pointer + ".new", pointer);
+      }
+      if (scenario === "removal interrupted after the branch moved")
+        yield* git(worktreePath, ["commit", "--allow-empty", "-m", "later work"]);
+      if (
+        scenario === "interrupted with local files" ||
+        scenario === "partially restored with an edited file"
+      )
+        yield* fileSystem.writeFileString(path.join(worktreePath, "tracked"), "local copy");
+      if (scenario === "project read failed before restore") {
+        harness.getProject.mockReturnValueOnce(
+          Effect.fail(
+            new ProjectService.ProjectOperationError({ operation: "read-project", cause: "busy" }),
+          ),
+        );
+        const retry = yield* Effect.result(harness.startWithRetry);
+        expect(retry).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            cause: { _tag: "WorktreeRecreateError", cause: { _tag: "ProjectOperationError" } },
+          },
+        });
+        expect(harness.open).not.toHaveBeenCalled();
+        expect(yield* fileSystem.exists(receipt)).toBe(true);
+      }
+      yield* scenario === "released with a local file" ? harness.startWithRetry : harness.start;
+      if (
+        (removalInterrupted && !intactRemoval) ||
+        scenario === "partially restored with an edited file" ||
+        scenario === "released with a foreign checkout" ||
+        scenario === "released with a local file" ||
+        scenario === "unrelated repository" ||
+        scenario === "setup pending in another repository" ||
+        scenario === "interrupted with local files" ||
+        unrelatedThread ||
+        scenario === "different lineage root"
+      ) {
+        expect(yield* fileSystem.exists(receipt)).toBe(true);
+        expect(harness.open).not.toHaveBeenCalled();
+        expect(runSetup).not.toHaveBeenCalled();
+        if (aliasWithMissingParent) expect(yield* fileSystem.exists(worktreePath)).toBe(false);
+        if (removalInterrupted || scenario.startsWith("released with")) {
+          expect(harness.projection().turnItems.at(-1)).toMatchObject({
+            failure: {
+              message: expect.stringContaining(
+                removalInterrupted ? "removal was interrupted" : "already occupied",
+              ),
+            },
+          });
+        }
+        if (scenario === "removal interrupted with a missing tracked file")
+          expect(yield* fileSystem.exists(path.join(worktreePath, "remaining"))).toBe(false);
+        if (
+          scenario === "interrupted with local files" ||
+          scenario === "partially restored with an edited file" ||
+          scenario === "released with a local file"
+        )
+          expect(yield* fileSystem.readFileString(path.join(worktreePath, "tracked"))).toBe(
+            "local copy",
+          );
+      } else {
+        expect(yield* fileSystem.readFileString(path.join(worktreePath, "remaining"))).toBe(
+          "second file",
+        );
+        expect(yield* fileSystem.readFileString(path.join(worktreePath, "tracked"))).toBe(
+          scenario === "setup pending for a new side chat" ? "local setup edit" : "from Git",
+        );
+        expect(runSetup).toHaveBeenCalledTimes(intactRemoval ? 0 : 1);
+        expect(yield* fileSystem.exists(receipt)).toBe(false);
+        if (savedFiles) {
+          const withdrawn = (yield* fileSystem.readDirectory(path.dirname(receipt))).filter(
+            (name) => name.endsWith(".withdrawn"),
+          );
+          expect(withdrawn).toHaveLength(1);
+          const savedRequest = yield* decodeReleaseRequest(
+            yield* fileSystem.readFileString(path.join(path.dirname(receipt), withdrawn[0]!)),
+          );
+          expect(savedRequest.savedFiles).toBe(savedFiles);
+        }
+        expect(harness.open).toHaveBeenCalledOnce();
+      }
+    }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+  );
+}
+
+effectIt.effect("cancels recovered synchronous setup and unblocks the awaiting run", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-recovered-setup-cancel-" });
+    const worktreesDir = path.join(root, "worktrees");
+    const checkout = path.join(worktreesDir, "project", "checkout");
+    const receipts = path.join(root, "state", ServerConfig.WORKTREE_RELEASE_DIRECTORY);
+    yield* fs.makeDirectory(receipts, { recursive: true });
+    yield* fs.makeDirectory(checkout, { recursive: true });
+    const worktreePath = yield* fs.realPath(checkout);
+    const receipt = path.join(receipts, worktreeReleaseName(worktreePath) + ".setup");
+    yield* fs.writeFileString(
+      receipt,
+      JSON.stringify({
+        threadId: "thread-native-account-command",
+        runId: "finished",
+        worktreePath,
+        branch: "feature/restore",
+        durableRef: "refs/heads/main",
+        identity: "removed checkout",
+        head: "1".repeat(40),
+      }),
+    );
+    const cancel = vi.fn();
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      fileSystem: fs,
+      worktreesDir,
+      worktreePath,
+      runSetup: () =>
+        Effect.succeed({
+          status: "started",
+          scriptId: "install",
+          scriptName: "Install",
+          scriptCommand: "install",
+          terminalId: "setup-install",
+          cwd: worktreePath,
+          async: false,
+          completion: Effect.never,
+          cancel: Effect.sync(cancel),
+        }),
+    });
+    yield* harness.withRuntime(
+      Effect.gen(function* () {
+        const starter = yield* ProviderTurnStart.ProviderTurnStartServiceV2;
+        const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+        const { thread, runs } = harness.projection();
+        const start = yield* starter
+          .start({ threadId: thread.id, runId: runs[0]!.id, willRetry: true })
+          .pipe(Effect.forkScoped);
+        yield* tracker.stream(thread.id).pipe(
+          Stream.filter((snapshot) => snapshot?.setupScript != null),
+          Stream.runHead,
+        );
+        expect(yield* tracker.cancel(thread.id)).toBe(true);
+        yield* Fiber.join(start);
+        expect(cancel).toHaveBeenCalledOnce();
+        expect((yield* tracker.get(thread.id))?.phase).toBe("cancelled");
+        expect(harness.projection().runs.at(-1)?.status).toBe("cancelled");
+        expect(harness.open).not.toHaveBeenCalled();
+        expect(yield* fs.exists(receipt)).toBe(true);
+        expect(yield* fs.exists(worktreePath)).toBe(true);
+      }),
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 effectIt.effect(
@@ -1816,16 +2353,23 @@ effectIt.effect("does not resume a continuation stopped while recovery was in fl
 );
 
 effectIt.effect.each(["cleanup-first", "startup-first"])(
-  "coordinates provider startup with %s",
+  "coordinates provider startup with %s across stored and canonical checkout paths",
   (order) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const workspaceRoot = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-start-" });
+      const temp = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-start-" });
+      const managed = path.join(yield* fileSystem.realPath(temp), "managed");
+      yield* fileSystem.makeDirectory(managed);
+      const workspaceRoot = path.join(temp, "saved-managed");
+      yield* linkDirectory(managed, workspaceRoot);
       const worktreePath = path.join(workspaceRoot, "project", "worktree");
+      const canonical = path.join(managed, "project", "worktree");
       yield* fileSystem.makeDirectory(worktreePath, { recursive: true });
       const release = yield* Deferred.make<void>();
       const openEntered = yield* Deferred.make<void>();
+      const cleanupHeld = yield* Deferred.make<void>();
+      const startupRequested = yield* Deferred.make<void>();
       const harness = makeLocalCommandHarness({
         text: "Continue",
         worktreePath,
@@ -1833,9 +2377,12 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
         fileSystem,
         failReadsAfterRunning: true,
       });
-      harness.createWorktree.mockImplementation(() =>
-        fileSystem.makeDirectory(worktreePath).pipe(Effect.as({} as never), Effect.orDie),
-      );
+      harness.createWorktree.mockImplementation(({ path: savedPath }) => {
+        expect(savedPath).toBe(worktreePath);
+        return fileSystem
+          .makeDirectory(worktreePath, { recursive: true })
+          .pipe(Effect.as({} as never), Effect.orDie);
+      });
       const open = harness.open.getMockImplementation()!;
       harness.open.mockImplementation(() =>
         Effect.gen(function* () {
@@ -1846,24 +2393,42 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
         }),
       );
       let cleanupEntered = false;
+      let cleanupFinished = false;
+      if (order === "cleanup-first") {
+        harness.getThreadRecords.mockImplementationOnce(() =>
+          Deferred.succeed(startupRequested, undefined).pipe(Effect.as(harness.projection())),
+        );
+        const read = harness.getTurnStartContext.getMockImplementation()!;
+        harness.getTurnStartContext.mockImplementation(() => {
+          expect(cleanupFinished).toBe(true);
+          return read();
+        });
+      }
       const cleanupEffect = withWorkspaceLease(
-        worktreePath,
+        canonical,
         Effect.gen(function* () {
           cleanupEntered = true;
-          if (order === "cleanup-first") yield* Deferred.await(release);
-          else {
+          if (order === "startup-first") {
             expect(harness.projection().providerSessions).toHaveLength(1);
             expect(harness.projection().runs.at(-1)?.status).toBe("running");
           }
-          yield* fileSystem.remove(worktreePath, { recursive: true, force: true });
+          // Both the leaf and the project directory can disappear before a family follow-up begins.
+          yield* fileSystem.remove(path.dirname(canonical), { recursive: true });
+          yield* Deferred.succeed(cleanupHeld, undefined);
+          if (order === "cleanup-first") yield* Deferred.await(release);
+          cleanupFinished = true;
         }),
       );
       const cleanup =
         order === "cleanup-first"
           ? yield* cleanupEffect.pipe(Effect.forkChild({ startImmediately: true }))
           : undefined;
+      if (cleanup) yield* Deferred.await(cleanupHeld);
       const startup = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
-      if (order === "cleanup-first") expect(harness.open).not.toHaveBeenCalled();
+      if (order === "cleanup-first") {
+        yield* Deferred.await(startupRequested);
+        expect(harness.open).not.toHaveBeenCalled();
+      }
       if (order === "startup-first") yield* Deferred.await(openEntered);
       const laterCleanup =
         order === "startup-first"
@@ -1915,9 +2480,12 @@ effectIt.effect("reads current startup state after waiting for the workspace lea
     );
     // The service keys its lease by the resolved path, which gains a drive letter on Windows.
     const resolvedPath = (yield* Path.Path).resolve(worktreePath);
-    const holder = yield* withWorkspaceLease(resolvedPath, Deferred.await(release)).pipe(
-      Effect.forkChild({ startImmediately: true }),
-    );
+    const holderEntered = yield* Deferred.make<void>();
+    const holder = yield* withWorkspaceLease(
+      resolvedPath,
+      Deferred.succeed(holderEntered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+    ).pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(holderEntered);
     const startup = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
     yield* Deferred.await(readEntered);
     expect(harness.getTurnStartContext).not.toHaveBeenCalled();

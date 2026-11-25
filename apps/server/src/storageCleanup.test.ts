@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Exercises the real setup script in a linked Git checkout.
+import * as NodeChildProcess from "node:child_process";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Link identity requires native lstat, including dangling links.
 import * as NodeFSP from "node:fs/promises";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Fixture paths match host paths.
@@ -28,6 +30,7 @@ import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as ServerConfig from "./config.ts";
+import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import { withWorkspaceProcessStart } from "./workspace/workspaceLease.ts";
 import { queueWorktreeRelease } from "./workspace/worktreeRelease.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
@@ -44,6 +47,7 @@ import { ServerActivation } from "./serverActivation.ts";
 import { describe, expect, it } from "@effect/vitest";
 import {
   EventId,
+  NodeId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -373,6 +377,7 @@ const cleanupFixture = (
     };
     let threads = [shell({ branch: "feature", worktreePath: worktree })];
     let deletedThreads: OrchestrationV2ThreadShell[] = [];
+    let closedSideChats: ReadonlySet<ThreadId> = new Set();
     let storedWorktreePaths: string[] = [worktree];
     let projectRoots = [repo];
     let editBeforeRemoval = false;
@@ -475,38 +480,53 @@ const cleanupFixture = (
       } as unknown as Orchestrator.OrchestratorV2["Service"]),
       Effect.provideService(SqlClient.SqlClient, ((strings: TemplateStringsArray) =>
         Effect.sync(() =>
-          openSessionCwd !== null && strings.join("").includes("projection_provider_sessions")
-            ? [
-                {
-                  payload_json: JSON.stringify({
-                    id: "session-1",
-                    driver: "codex",
-                    providerInstanceId: "codex",
-                    status: "ready",
-                    cwd: openSessionCwd,
-                    model: null,
-                    capabilities: CodexProviderCapabilitiesV2,
-                    createdAt: "2026-06-01T12:00:00.000Z",
-                    updatedAt: "2026-06-01T12:00:00.000Z",
-                    lastError: null,
-                  }),
-                },
-              ]
-            : delegateDelivered && strings.join("").includes("AND completed_at >=")
-              ? [{ delivered: 1 }]
-              : outboxStatus !== null && strings.join("").includes("orchestration_v2_effect_outbox")
-                ? [{ status: outboxStatus }]
-                : strings.join("").includes("deleted_at IS NOT NULL")
-                  ? deletedThreads.map((thread) => ({
-                      payload_json: JSON.stringify(thread),
-                      workspaceRoot: repo,
-                    }))
-                  : strings.join("").includes('AS "worktreePath"')
-                    ? [
-                        ...threads.flatMap((thread) => thread.worktreePath ?? []),
-                        ...storedWorktreePaths,
-                      ].map((worktreePath) => ({ worktreePath }))
-                    : [],
+          strings.join("").includes('AS "deletedWorktree"')
+            ? deletedThreads.map((thread) => ({
+                deletedWorktree: thread.worktreePath,
+                unused: closedSideChats.has(thread.id) ? JSON.stringify(thread) : null,
+              }))
+            : openSessionCwd !== null && strings.join("").includes("projection_provider_sessions")
+              ? [
+                  {
+                    payload_json: JSON.stringify({
+                      id: "session-1",
+                      driver: "codex",
+                      providerInstanceId: "codex",
+                      status: "ready",
+                      cwd: openSessionCwd,
+                      model: null,
+                      capabilities: CodexProviderCapabilitiesV2,
+                      createdAt: "2026-06-01T12:00:00.000Z",
+                      updatedAt: "2026-06-01T12:00:00.000Z",
+                      lastError: null,
+                    }),
+                  },
+                ]
+              : delegateDelivered && strings.join("").includes("SELECT task.subagent_id AS id")
+                ? [
+                    {
+                      id: "task",
+                      spawningRun: "spawner",
+                      delivery: "acknowledged",
+                      acknowledged: 1,
+                    },
+                  ]
+                : delegateDelivered && strings.join("").includes("AND completed_at >=")
+                  ? [{ delivered: 1 }]
+                  : outboxStatus !== null &&
+                      strings.join("").includes("orchestration_v2_effect_outbox")
+                    ? [{ status: outboxStatus }]
+                    : strings.join("").includes("deleted_at IS NOT NULL")
+                      ? deletedThreads.map((thread) => ({
+                          payload_json: JSON.stringify(thread),
+                          workspaceRoot: repo,
+                        }))
+                      : strings.join("").includes('AS "worktreePath"')
+                        ? [
+                            ...threads.flatMap((thread) => thread.worktreePath ?? []),
+                            ...storedWorktreePaths,
+                          ].map((worktreePath) => ({ worktreePath }))
+                        : [],
         ).pipe(
           Effect.tap(() =>
             Effect.map(NodeSqliteClient.Background, (background) => {
@@ -584,8 +604,9 @@ const cleanupFixture = (
       setOutboxStatus: (status: string | null) => {
         outboxStatus = status;
       },
-      setDeletedThreads: (next: OrchestrationV2ThreadShell[]) => {
+      setDeletedThreads: (next: OrchestrationV2ThreadShell[], finishedUnused: ThreadId[] = []) => {
         deletedThreads = next;
+        closedSideChats = new Set(finishedUnused);
       },
       setStoredWorktreePaths: (paths: string[]) => {
         storedWorktreePaths = paths;
@@ -790,10 +811,16 @@ it.live.each(["redundant", "unique", "published"] as const)(
           "accepted",
         );
         const dir = NodePath.dirname(accepted.file);
-        const other = (yield* fixture.fs.readDirectory(dir)).filter(
-          (n) => n.startsWith("saved-") && n !== NodePath.basename(accepted.savedFiles!),
+        const names = yield* fixture.fs.readDirectory(dir);
+        const acceptedName = NodePath.basename(accepted.savedFiles!);
+        const backups = names.filter(
+          (name) => name.startsWith("saved-") && !name.endsWith(".json"),
         );
+        const other = backups.filter((name) => name !== acceptedName);
         expect(other).toHaveLength(kind === "redundant" ? 0 : 1);
+        expect(
+          names.filter((name) => name.startsWith("saved-") && name.endsWith(".json")).sort(),
+        ).toEqual(backups.map((name) => name + ".json").sort());
         if (other.length)
           expect(yield* fixture.fs.readFileString(NodePath.join(dir, other[0]!, ".env"))).toBe(
             "second",
@@ -867,6 +894,21 @@ it.live.each(["direct land", "no change"] as const)(
         yield* fixture.service.runNow;
         expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
         yield* fixture.fs.remove(NodePath.join(fixture.worktree, ".env"));
+        if (isWindowsHost) {
+          const refs = (yield* fixture.command(fixture.worktree, [
+            "rev-parse",
+            "--absolute-git-dir",
+          ])).stdout.trim();
+          const refDir = NodePath.join(refs, "refs");
+          const privateFile = NodePath.join(refDir, "owner.txt");
+          yield* fixture.fs.makeDirectory(refDir, { recursive: true });
+          yield* fixture.fs.writeFileString(privateFile, "preserve");
+          expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+            "Worktree has private refs",
+          );
+          expect(yield* fixture.fs.readFileString(privateFile)).toBe("preserve");
+          yield* fixture.fs.remove(privateFile);
+        }
         const insideGitlink = NodePath.join(fixture.worktree, "vendor", "empty", ".env");
         yield* fixture.fs.writeFileString(insideGitlink, "local");
         expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
@@ -911,6 +953,851 @@ it.live.each(["direct land", "no change"] as const)(
           expect(yield* fixture.fs.readFileString(NodePath.join(savedFiles!, output))).toBe(output);
       }),
     ),
+);
+
+describe("owned setup output", () => {
+  const scenarios = [
+    "standard setup only",
+    "an added dependency file",
+    "an edited dependency file",
+    "a replaced done marker",
+    "a changed proof",
+    "a legacy done marker",
+    "a real dotenv file",
+    "a missing dotenv source",
+    "a retargeted dependency symlink",
+    "a dependency added during setup",
+    "a dirty install input",
+    "a dead setup owner",
+    "an unpublished success marker",
+    "a prior proof without dependencies",
+    "an unknown proof directory with saved ignored files",
+    "an external junction",
+    "a private file stream",
+    "a private directory stream",
+    "unverifiable staged setup output",
+    "a custom dependency ACL",
+    "an existing stage junction",
+    "a tracked stream on repeat",
+    "a crashed setup publication",
+    "a staged pnpmfile outside the checkout",
+    "a dirty lock on repeat",
+    "a dirty manifest on repeat",
+    "an ignored override on repeat",
+    "a committed lock change",
+    "two in-place reruns",
+    "a failed configure followed by recovery",
+    "an interrupted install followed by two reruns",
+    "an unrelated source edit on repeat",
+    "a build cache added after setup",
+  ] as const;
+  const checkSetups = (
+    title: string,
+    run: (scenario: (typeof scenarios)[number]) => Effect.Effect<void, unknown>,
+  ) => {
+    const windowsOnly = [
+      "an external junction",
+      "a private file stream",
+      "a private directory stream",
+      "unverifiable staged setup output",
+      "a custom dependency ACL",
+      "an existing stage junction",
+      "a tracked stream on repeat",
+      "a crashed setup publication",
+      "a staged pnpmfile outside the checkout",
+      "a dirty lock on repeat",
+      "a dirty manifest on repeat",
+      "an ignored override on repeat",
+      "a committed lock change",
+      "two in-place reruns",
+      "an interrupted install followed by two reruns",
+      "an unrelated source edit on repeat",
+    ];
+    const windowsWithPosix = [
+      "standard setup only",
+      "an edited dependency file",
+      "a dirty install input",
+      "a failed configure followed by recovery",
+      "a build cache added after setup",
+    ];
+    describe.skipIf(isWindowsHost)("POSIX", () => {
+      it.live.each(scenarios.filter((name) => !windowsOnly.includes(name)))(title, run);
+    });
+    describe.runIf(isWindowsHost)("Windows", () => {
+      it.live.each(
+        scenarios.filter((name) => windowsOnly.includes(name) || windowsWithPosix.includes(name)),
+      )(title, run);
+    });
+  };
+
+  checkSetups(
+    "releases an ordinary completed worktree only with unchanged setup output (%s)",
+    (scenario) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const fixture = yield* cleanupFixture(undefined, true);
+          fixture.disable();
+          const { fs, repo, command } = fixture;
+          const worktree = yield* fs.realPath(fixture.worktree);
+          yield* fs.writeFileString(
+            NodePath.join(repo, ".gitignore"),
+            ".env\n.npmrc\nnode_modules/\n.t3/\n",
+          );
+          yield* fs.makeDirectory(NodePath.join(repo, "scripts/lib"), { recursive: true });
+          yield* fs.makeDirectory(NodePath.join(repo, "packages/shared/src"), { recursive: true });
+          yield* fs.makeDirectory(NodePath.join(repo, "apps/server"), { recursive: true });
+          yield* fs.writeFileString(NodePath.join(repo, "apps/server/package.json"), "{}");
+          yield* fs.writeFileString(
+            NodePath.join(repo, "apps/server/local-source.txt"),
+            "linked package source",
+          );
+          yield* fs.writeFileString(
+            NodePath.join(repo, "pnpm-workspace.yaml"),
+            "packages:\n  - apps/*\n",
+          );
+          yield* fs.writeFileString(NodePath.join(repo, "pnpm-lock.yaml"), "lockfileVersion: 9\n");
+          const configureFailure = scenario === "a failed configure followed by recovery";
+          if (configureFailure) {
+            const scripts = NodePath.join(repo, ".github/scripts");
+            yield* fs.makeDirectory(scripts, { recursive: true });
+            yield* fs.writeFileString(
+              NodePath.join(scripts, "release-notes.cjs"),
+              "if (process.env.T3_TEST_FAIL_CONFIGURE) process.exit(19);\n",
+            );
+          }
+          for (const file of [
+            "t3.json",
+            "scripts/setup-worktree.ts",
+            "scripts/lib/install-worktree-dependencies.ts",
+            "scripts/lib/worktree-setup-proof.ts",
+            "scripts/lib/posix-worktree-metadata.ts",
+            "scripts/lib/windows-worktree-files.ts",
+            "packages/shared/src/processProbe.ts",
+          ]) {
+            yield* fs.copyFile(
+              NodePath.resolve(import.meta.dirname, "../../../", file),
+              NodePath.join(repo, file),
+            );
+          }
+          yield* command(repo, ["add", "."]);
+          yield* command(repo, ["commit", "-m", "Configure standard setup"]);
+          yield* command(worktree, ["merge", "--ff-only", "main"]);
+          const mainEnv = NodePath.join(repo, ".env");
+          const worktreeEnv = NodePath.join(worktree, ".env");
+          const sentinel = NodePath.join(repo, "sentinel.txt");
+          const existingStage = scenario === "an existing stage junction";
+          if (existingStage) {
+            yield* fs.writeFileString(sentinel, "keep");
+            yield* fs.makeDirectory(NodePath.join(worktree, ".t3"));
+            yield* Effect.promise(() =>
+              NodeFSP.symlink(repo, NodePath.join(worktree, ".t3/setup-stage"), "junction"),
+            );
+          }
+          if (!isWindowsHost) yield* fs.writeFileString(mainEnv, "example-main-value");
+          if (scenario === "a real dotenv file")
+            yield* fs.writeFileString(worktreeEnv, "local-value");
+          if (scenario === "a dirty install input" || scenario === "two in-place reruns")
+            yield* fs.writeFileString(
+              NodePath.join(worktree, ".pnpmfile.cjs"),
+              "use live checkout",
+            );
+          const fixturePackageManager = yield* fs.makeTempDirectoryScoped({ prefix: "setup-vp-" });
+          yield* fs.writeFileString(
+            NodePath.join(fixturePackageManager, "install.mjs"),
+            String.raw`import * as fs from "node:fs";
+import * as path from "node:path";
+if (process.env.T3_TEST_REJECT_INSTALL) throw new Error("unexpected repeat install");
+const inWindowsStage = process.platform === "win32" && process.cwd().includes(path.sep + "setup-stage" + path.sep);
+fs.appendFileSync(process.env.T3_TEST_INSTALL_LOG, (inWindowsStage ? "stage" : "install") + "\n");
+if (inWindowsStage && process.env.T3_TEST_SETUP_PID) {
+  fs.writeFileSync("owner-sentinel.txt", "keep");
+  process.kill(Number(process.env.T3_TEST_SETUP_PID), "SIGKILL");
+  process.exit(1);
+}
+const withWindowsAliases = (value) =>
+  inWindowsStage ? value[0].toLowerCase() + value.slice(1).split(path.sep).join("/") : value;
+fs.mkdirSync("node_modules/.pnpm/example/node_modules/example", { recursive: true });
+fs.mkdirSync("apps/server/node_modules", { recursive: true });
+fs.writeFileSync("apps/server/node_modules/helper.js", "module");
+if (!fs.existsSync("apps/server/node_modules/hardlinked.txt")) {
+  fs.linkSync("apps/server/local-source.txt", "apps/server/node_modules/hardlinked.txt");
+}
+if (process.env.T3_TEST_CONCURRENT_WORKTREE) {
+  const added = path.join(process.env.T3_TEST_CONCURRENT_WORKTREE, "apps/server/node_modules");
+  fs.mkdirSync(added, { recursive: true });
+  fs.writeFileSync(path.join(added, "local.js"), "added during setup");
+}
+
+fs.writeFileSync("node_modules/.pnpm/example/node_modules/example/index.js", "module");
+
+if (!fs.existsSync("node_modules/example")) {
+  const target = ".pnpm/example/node_modules/example";
+  fs.symlinkSync(process.platform === "win32" ? withWindowsAliases(path.resolve("node_modules", target)) : target,
+    "node_modules/example", process.platform === "win32" ? "junction" : "dir");
+}
+if (process.env.T3_TEST_STORE && !fs.existsSync("node_modules/shared.js")) {
+  fs.linkSync(path.join(process.env.T3_TEST_STORE, "shared.js"), "node_modules/shared.js");
+}
+if (process.env.T3_TEST_STAGE_STREAM && inWindowsStage) {
+  fs.writeFileSync("node_modules/.pnpm/example/node_modules/example/index.js:private", "keep");
+}
+fs.writeFileSync("node_modules/.modules.yaml", JSON.stringify({ storeDir: process.env.T3_TEST_VP }));
+const cwd = process.cwd();
+fs.writeFileSync("node_modules/.pnpm-workspace-state-v1.json", JSON.stringify({
+  projects: { [withWindowsAliases(cwd)]: {}, [withWindowsAliases(path.join(cwd, "apps/server"))]: {} },
+  pnpmfiles: [
+    inWindowsStage && process.env.T3_TEST_OUTSIDE_PNPMFILE ||
+    withWindowsAliases(path.join(cwd, ".pnpmfile.cjs"))
+  ],
+}));
+if (fs.existsSync(".pnpmfile.cjs")) {
+  fs.copyFileSync(".pnpmfile.cjs", "node_modules/seen-input.cjs");
+}
+fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntries(
+  ["pnpm-lock.yaml", "pnpm-workspace.yaml", "apps/server/package.json", ".npmrc"]
+    .filter((name) => fs.existsSync(name))
+    .map((name) => [name, fs.readFileSync(name, "utf8")])
+)));
+`,
+          );
+          for (const [name, body] of [
+            ["vp", '#!/bin/sh\nexec "$T3_TEST_NODE" "$T3_TEST_VP/install.mjs"\n'],
+            ["vp.cmd", '@"%T3_TEST_NODE%" "%T3_TEST_VP%\\install.mjs"\r\n'],
+          ] as const) {
+            yield* fs.writeFileString(NodePath.join(fixturePackageManager, name), body, {
+              mode: 0o755,
+            });
+          }
+          yield* fs.writeFileString(NodePath.join(fixturePackageManager, "shared.js"), "shared");
+          const race = scenario === "a dependency added during setup";
+          const stageStream = scenario === "unverifiable staged setup output";
+          const outsidePnpmfile = scenario === "a staged pnpmfile outside the checkout";
+          const outsideConfig = NodePath.join(fixturePackageManager, "outside.cjs");
+          const installLog = NodePath.join(fixturePackageManager, "install.log");
+          if (outsidePnpmfile) yield* fs.writeFileString(outsideConfig, "preserve");
+          const env = {
+            ...Object.fromEntries(
+              Object.entries(process.env).filter(([name]) => name.toUpperCase() !== "PATH"),
+            ),
+            T3_TEST_CONCURRENT_WORKTREE: race ? worktree : "",
+            T3_TEST_NODE: process.execPath,
+            T3_TEST_INSTALL_LOG: installLog,
+            T3_TEST_OUTSIDE_PNPMFILE: outsidePnpmfile ? outsideConfig : "",
+            T3_TEST_STAGE_STREAM: stageStream ? "1" : "",
+            T3_TEST_VP: fixturePackageManager,
+            T3_TEST_STORE: isWindowsHost ? fixturePackageManager : "",
+            T3CODE_PROJECT_ROOT: repo,
+            PATH: fixturePackageManager + NodePath.delimiter + process.env.PATH,
+          };
+          const setupCommand = JSON.parse(
+            yield* fs.readFileString(NodePath.join(worktree, "t3.json")),
+          ).scripts[0].command;
+          expect(setupCommand).toBe("node scripts/setup-worktree.ts");
+          const runSetup = (
+            repeat = false,
+            cwd = worktree,
+            attempt?: "interrupt" | "fail configure",
+          ) =>
+            Effect.promise(
+              () =>
+                new Promise<{ success: boolean; output: string }>((resolve) => {
+                  NodeChildProcess.execFile(
+                    process.execPath,
+                    attempt === "interrupt"
+                      ? [
+                          "--input-type=module",
+                          "-e",
+                          'process.env.T3_TEST_SETUP_PID = String(process.pid); await import("./scripts/setup-worktree.ts");',
+                        ]
+                      : setupCommand.split(" ").slice(1),
+                    {
+                      cwd,
+                      env: {
+                        ...env,
+                        T3_TEST_REJECT_INSTALL: repeat ? "1" : "",
+                        T3_TEST_FAIL_CONFIGURE: attempt === "fail configure" ? "1" : "",
+                      },
+                    },
+                    (error, stdout, stderr) =>
+                      resolve({ success: !error, output: stdout + stderr }),
+                  );
+                }),
+            );
+          if (scenario === "a dead setup owner") {
+            const child = yield* Effect.acquireRelease(
+              Effect.tryPromise(
+                () =>
+                  new Promise<NodeChildProcess.ChildProcess>((resolve, reject) => {
+                    const running = NodeChildProcess.spawn(
+                      process.execPath,
+                      [
+                        "-e",
+                        `
+                  const fs = require("node:fs");
+                  fs.mkdirSync(".t3", { recursive: true });
+                  fs.mkdirSync(".t3/setup-owner-" + process.pid, { mode: 0o700 });
+                  fs.writeFileSync(".t3/setup-running", process.pid + "\\n");
+                  console.log("ready");
+                  process.stdin.resume();
+                `,
+                      ],
+                      { cwd: worktree, stdio: ["pipe", "pipe", "inherit"] },
+                    );
+                    running.stdout.once("data", () => resolve(running));
+                    running.once("error", reject);
+                    running.once("exit", () =>
+                      reject(new Error("Setup owner quit before it was ready")),
+                    );
+                  }),
+              ),
+              (running) =>
+                Effect.sync(() => {
+                  running.stdin?.end();
+                }),
+            );
+            const blocked = yield* runSetup();
+            expect(blocked.success).toBe(false);
+            expect(blocked.output).toContain("Another worktree setup");
+            yield* Effect.promise(
+              () =>
+                new Promise<void>((resolve) => {
+                  child.once("exit", () => resolve());
+                  child.kill("SIGKILL");
+                }),
+            );
+          }
+          const done = NodePath.join(worktree, ".t3/setup-done");
+          const failed = NodePath.join(worktree, ".t3/setup-failed");
+          const proof = (yield* command(worktree, [
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "t3-setup-proof-v1",
+          ])).stdout.trim();
+          const interruptedInstall = scenario === "an interrupted install followed by two reruns";
+          const preservedStage = NodePath.join(worktree, ".t3/setup-stage/repo/owner-sentinel.txt");
+          const claimStream = NodePath.join(worktree, ".t3/setup-owner-2147483647:private");
+          let deadClaim: string | undefined;
+          if (interruptedInstall) {
+            const interrupted = yield* runSetup(false, worktree, "interrupt");
+            expect(interrupted.success).toBe(false);
+            expect(yield* fs.readFileString(preservedStage)).toBe("keep");
+            expect(yield* fs.exists(done)).toBe(false);
+            expect(yield* fs.exists(proof)).toBe(false);
+            const pid = (yield* fs.readFileString(
+              NodePath.join(worktree, ".t3/setup-running"),
+            )).trim();
+            deadClaim = NodePath.join(worktree, ".t3", "setup-owner-" + pid);
+            expect(yield* fs.exists(deadClaim)).toBe(true);
+            yield* fs.makeDirectory(NodePath.join(worktree, ".t3/setup-owner-2147483647"));
+            yield* Effect.promise(() => NodeFSP.writeFile(claimStream, "preserve"));
+          }
+          if (configureFailure) {
+            const failedSetup = yield* runSetup(false, worktree, "fail configure");
+            expect(failedSetup.success).toBe(false);
+            expect(yield* fs.exists(failed)).toBe(true);
+            expect(yield* fs.exists(done)).toBe(false);
+            expect(yield* fs.exists(proof)).toBe(true);
+          }
+          const setup = yield* runSetup(configureFailure);
+          expect(setup.success, setup.output).toBe(!race);
+          if (race) expect(setup.output).toContain("setup destinations changed");
+          if (stageStream) {
+            expect(setup.output).toContain("Windows worktree inspection failed (private-stream)");
+            expect(setup.output).not.toContain("-EncodedCommand");
+          }
+          expect(yield* fs.exists(done)).toBe(!race);
+          if (configureFailure) {
+            expect(yield* fs.exists(failed)).toBe(false);
+            expect(yield* fs.readFileString(installLog)).toBe(
+              isWindowsHost ? "stage\n" : "install\n",
+            );
+          }
+          const inPlace =
+            existingStage ||
+            outsidePnpmfile ||
+            stageStream ||
+            interruptedInstall ||
+            scenario === "two in-place reruns" ||
+            scenario === "a real dotenv file" ||
+            scenario === "a dirty install input";
+          expect(yield* fs.exists(proof)).toBe(!race && (!inPlace || isWindowsHost));
+          const expectLocalReceipt = () =>
+            Effect.gen(function* () {
+              const receipt = JSON.parse(yield* fs.readFileString(proof));
+              expect(receipt.inPlace).toBe(true);
+              expect(yield* fs.readFileString(done)).toBe(receipt.marker);
+              expect(yield* fs.exists(failed)).toBe(false);
+            });
+          if (isWindowsHost && inPlace) yield* expectLocalReceipt();
+          if (!race) {
+            const state = JSON.parse(
+              yield* fs.readFileString(
+                NodePath.join(worktree, "node_modules/.pnpm-workspace-state-v1.json"),
+              ),
+            );
+            expect(Object.keys(state.projects)).toEqual([
+              worktree,
+              NodePath.join(worktree, "apps/server"),
+            ]);
+            expect(state.pnpmfiles).toEqual([NodePath.join(worktree, ".pnpmfile.cjs")]);
+          }
+          if (scenario === "a dirty install input")
+            expect(
+              yield* fs.readFileString(NodePath.join(worktree, "node_modules/seen-input.cjs")),
+            ).toBe("use live checkout");
+          if (!race && !isWindowsHost)
+            expect(yield* fs.readFileString(worktreeEnv)).toBe(
+              scenario === "a real dotenv file" ? "local-value" : "example-main-value",
+            );
+          const dependency = NodePath.join(
+            worktree,
+            "node_modules/.pnpm/example/node_modules/example",
+          );
+          const sibling = NodePath.join(NodePath.dirname(worktree), "other");
+          const abandonedClaim = NodePath.join(worktree, ".t3/setup-owner-2147483647");
+          const privateStream = NodePath.join(
+            worktree,
+            scenario === "a private directory stream"
+              ? "node_modules:private"
+              : scenario === "a tracked stream on repeat"
+                ? "tracked.txt:Zone.Identifier"
+                : "tracked.txt:private",
+          );
+          const dependencyAcl = (...args: string[]) =>
+            Effect.tryPromise(
+              () =>
+                new Promise<string>((resolve, reject) => {
+                  NodeChildProcess.execFile(
+                    NodePath.join(process.env.SystemRoot!, "System32", "icacls.exe"),
+                    [NodePath.join(dependency, "index.js"), ...args],
+                    { windowsHide: true },
+                    (error, stdout) => {
+                      if (error) reject(new Error(`Fixture ACL command failed (${error.code})`));
+                      else resolve(stdout);
+                    },
+                  );
+                }),
+            );
+          let customAcl: string | undefined;
+          let refreshedInputs = false;
+          switch (scenario) {
+            case "a dirty lock on repeat":
+            case "a dirty manifest on repeat":
+            case "an ignored override on repeat":
+            case "a committed lock change": {
+              const [name, contents] =
+                scenario === "a dirty manifest on repeat"
+                  ? ["pnpm-workspace.yaml", "packages:\n  - apps/*\n\n# update\n"]
+                  : scenario === "an ignored override on repeat"
+                    ? [".npmrc", "node-linker=isolated\n"]
+                    : ["pnpm-lock.yaml", "lockfileVersion: 9\n# update\n"];
+              yield* fs.writeFileString(NodePath.join(worktree, name), contents);
+              if (scenario === "a committed lock change") {
+                yield* command(worktree, ["add", "--", name]);
+                yield* command(worktree, ["commit", "-m", "Change the lockfile"]);
+                yield* command(repo, ["merge", "--ff-only", "feature"]);
+              }
+              const repeated = yield* runSetup();
+              expect(repeated.success, repeated.output).toBe(true);
+              expect(yield* fs.readFileString(installLog)).toBe("stage\ninstall\n");
+              expect(
+                JSON.parse(
+                  yield* fs.readFileString(
+                    NodePath.join(worktree, "node_modules/seen-inputs.json"),
+                  ),
+                )[name],
+              ).toBe(contents);
+              yield* expectLocalReceipt();
+              refreshedInputs = true;
+              break;
+            }
+            case "two in-place reruns":
+            case "an interrupted install followed by two reruns": {
+              const priorInstalls = interruptedInstall ? "stage\ninstall\n" : "install\n";
+              const reruns = interruptedInstall ? 1 : 2;
+              for (let i = 0; i < reruns; i++) {
+                const repeated = yield* runSetup();
+                expect(repeated.success, repeated.output).toBe(true);
+                yield* expectLocalReceipt();
+              }
+              expect(yield* fs.readFileString(installLog)).toBe(
+                priorInstalls + "install\n".repeat(reruns),
+              );
+              if (deadClaim) expect(yield* fs.exists(deadClaim)).toBe(false);
+              if (interruptedInstall) expect(yield* fs.readFileString(preservedStage)).toBe("keep");
+              if (interruptedInstall)
+                expect(yield* Effect.promise(() => NodeFSP.readFile(claimStream, "utf8"))).toBe(
+                  "preserve",
+                );
+              break;
+            }
+            case "an unrelated source edit on repeat": {
+              yield* fs.writeFileString(NodePath.join(worktree, "tracked.txt"), "preserve\n");
+              const repeated = yield* runSetup(true);
+              expect(repeated.success, repeated.output).toBe(true);
+              expect(yield* fs.readFileString(installLog)).toBe("stage\n");
+              expect(yield* fs.readFileString(NodePath.join(worktree, "tracked.txt"))).toBe(
+                "preserve\n",
+              );
+              break;
+            }
+            case "a tracked stream on repeat": {
+              yield* Effect.promise(() => NodeFSP.writeFile(privateStream, "keep"));
+              const repeated = yield* runSetup(true);
+              expect(repeated.success, repeated.output).toBe(true);
+              break;
+            }
+            case "a crashed setup publication": {
+              yield* fs.makeDirectory(abandonedClaim);
+              yield* fs.writeFileString(
+                NodePath.join(abandonedClaim, "proof"),
+                "unrecognized data",
+              );
+              yield* Effect.promise(() =>
+                NodeFSP.link(done, NodePath.join(abandonedClaim, "done")),
+              );
+              const repeated = yield* runSetup(true);
+              expect(repeated.success, repeated.output).toBe(true);
+              break;
+            }
+            case "a custom dependency ACL": {
+              const inheritedAcl = yield* dependencyAcl();
+              yield* dependencyAcl("/grant", "*S-1-1-0:(RX)");
+              customAcl = yield* dependencyAcl();
+              expect(customAcl !== inheritedAcl).toBe(true);
+              break;
+            }
+            case "an external junction":
+              yield* fs.writeFileString(sentinel, "keep");
+              yield* Effect.promise(() =>
+                NodeFSP.symlink(
+                  repo,
+                  NodePath.join(worktree, "node_modules", "external"),
+                  "junction",
+                ),
+              );
+              break;
+            case "a private file stream":
+            case "a private directory stream":
+              yield* Effect.promise(() => NodeFSP.writeFile(privateStream, "keep"));
+              break;
+            case "a build cache added after setup": {
+              const cache = NodePath.join(worktree, "node_modules/.vite-temp");
+              yield* fs.makeDirectory(cache);
+              yield* fs.writeFileString(NodePath.join(cache, "bundle.txt"), "built after setup");
+              break;
+            }
+            case "standard setup only":
+            case "an unpublished success marker": {
+              if (isWindowsHost && scenario === "standard setup only") {
+                yield* command(repo, ["worktree", "add", "-b", "other", sibling]);
+                const second = yield* runSetup(false, sibling);
+                expect(second.success, second.output).toBe(true);
+                const shared = (checkout: string) =>
+                  Effect.promise(() =>
+                    NodeFSP.stat(NodePath.join(checkout, "node_modules/shared.js")),
+                  );
+                const firstFile = yield* shared(worktree);
+                expect(firstFile.nlink).toBeGreaterThanOrEqual(3);
+                expect((yield* shared(sibling)).ino).toBe(firstFile.ino);
+              }
+              if (scenario === "an unpublished success marker") yield* fs.remove(done);
+              const repeated = yield* runSetup(true);
+              expect(repeated.success, repeated.output).toBe(true);
+              expect(yield* fs.exists(done)).toBe(true);
+              break;
+            }
+            case "a prior proof without dependencies": {
+              for (const name of ["node_modules", "apps/server/node_modules", ".env"])
+                yield* fs.remove(NodePath.join(worktree, name), { recursive: true });
+              const repeated = yield* runSetup();
+              expect(repeated.success, repeated.output).toBe(true);
+              expect(yield* fs.exists(proof)).toBe(true);
+              break;
+            }
+            case "an unknown proof directory with saved ignored files":
+              yield* fs.remove(proof);
+              yield* fs.makeDirectory(proof);
+              yield* fs.writeFileString(NodePath.join(proof, "owner.txt"), "preserve this");
+              break;
+            case "an added dependency file": {
+              yield* fs.writeFileString(NodePath.join(dependency, "local.js"), "added");
+              const repeated = yield* runSetup(true);
+              expect(repeated.success).toBe(false);
+              expect(repeated.output).toContain("Installed files changed");
+              break;
+            }
+            case "an edited dependency file": {
+              const file = NodePath.join(dependency, "index.js");
+              const original = yield* fs.stat(file);
+              yield* fs.writeFileString(file, "edited");
+              if (Option.isSome(original.atime) && Option.isSome(original.mtime))
+                yield* fs.utimes(file, original.atime.value, original.mtime.value);
+              break;
+            }
+            case "a replaced done marker":
+              yield* fs.remove(done);
+              yield* fs.writeFileString(done, "");
+              break;
+            case "a changed proof":
+              yield* fs.writeFileString(proof, "{}");
+              break;
+            case "a legacy done marker":
+              yield* fs.remove(proof);
+              break;
+            case "a missing dotenv source":
+              yield* fs.remove(mainEnv);
+              break;
+            case "a retargeted dependency symlink": {
+              const link = NodePath.join(worktree, "node_modules/example");
+              yield* fs.remove(link);
+              yield* fs.symlink("missing-target", link);
+              break;
+            }
+          }
+          const status = (yield* command(worktree, [
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--ignored=matching",
+            "--untracked-files=all",
+          ])).stdout;
+          expect(status.split("\0")).toContain("!! apps/server/node_modules/");
+          if (!race) expect(status.split("\0")).toContain("!! node_modules/");
+          expect(status).not.toContain("index.js");
+          expect(status).not.toContain("local.js");
+          const runId = RunId.make("finished-setup");
+          const owner = shell({
+            branch: "feature",
+            worktreePath: worktree,
+            status: "completed",
+            latestRunId: runId,
+            latestRunCompletedAt: at(0),
+          });
+          fixture.setThreads([owner]);
+          const { file, savedFiles } = yield* queueWorktreeRelease({
+            stateDir: fixture.config.stateDir,
+            threadId: owner.id,
+            runId,
+            worktreePath: worktree,
+            durableRef: "refs/heads/main",
+            ...(scenario === "an unknown proof directory with saved ignored files"
+              ? { saveIgnored: true }
+              : {}),
+          });
+          const released =
+            configureFailure ||
+            scenario === "standard setup only" ||
+            scenario === "a dead setup owner" ||
+            scenario === "a build cache added after setup" ||
+            scenario === "an unpublished success marker" ||
+            scenario === "a prior proof without dependencies";
+          const result = (yield* fixture.service.runNow).entries[0];
+          expect(result).toMatchObject(
+            released
+              ? { outcome: "removed", reason: "Owner released the completed run" }
+              : {
+                  outcome: "kept",
+                  reason:
+                    stageStream || existingStage || interruptedInstall
+                      ? "Worktree has a preserved setup stage"
+                      : race ||
+                          inPlace ||
+                          refreshedInputs ||
+                          scenario === "a legacy done marker" ||
+                          scenario === "an unrelated source edit on repeat"
+                        ? "Worktree contains tracked, untracked or ignored local data"
+                        : scenario === "a changed proof" ||
+                            scenario === "an unknown proof directory with saved ignored files"
+                          ? "Worktree setup metadata requires its owner"
+                          : scenario === "a private file stream" ||
+                              scenario === "a private directory stream" ||
+                              scenario === "a tracked stream on repeat"
+                            ? "Windows worktree contains data or filesystem entries that could not be verified (private-stream)"
+                            : scenario === "a custom dependency ACL"
+                              ? "Windows worktree contains data or filesystem entries that could not be verified (explicit-ace)"
+                              : "Standard setup output changed or could not be verified",
+                },
+          );
+          expect(yield* fs.exists(worktree)).toBe(!released);
+          expect(yield* fs.exists(file + ".released")).toBe(released);
+          const registrations = (yield* command(repo, ["worktree", "list", "--porcelain"])).stdout;
+          expect(registrations.includes(worktree.split(NodePath.sep).join("/"))).toBe(!released);
+          if (!isWindowsHost && scenario !== "a missing dotenv source") {
+            expect(yield* fs.readFileString(mainEnv)).toBe("example-main-value");
+          }
+          if (scenario === "a build cache added after setup")
+            expect(
+              yield* fs.readFileString(
+                NodePath.join(savedFiles!, "node_modules/.vite-temp/bundle.txt"),
+              ),
+            ).toBe("built after setup");
+          if (
+            scenario === "standard setup only" ||
+            scenario === "a build cache added after setup"
+          ) {
+            yield* command(repo, ["worktree", "add", worktree, "feature"]);
+            const followUp = yield* runSetup();
+            expect(followUp.success, followUp.output).toBe(true);
+            expect(
+              yield* fs.readFileString(NodePath.join(worktree, "node_modules/example/index.js")),
+            ).toBe("module");
+            if (isWindowsHost && scenario === "standard setup only")
+              expect(
+                yield* fs.readFileString(NodePath.join(sibling, "node_modules/example/index.js")),
+              ).toBe("module");
+          }
+          if (scenario === "an external junction" || existingStage)
+            expect(yield* fs.readFileString(sentinel)).toBe("keep");
+          if (outsidePnpmfile) expect(yield* fs.readFileString(outsideConfig)).toBe("preserve");
+          if (existingStage)
+            expect(yield* fs.realPath(NodePath.join(worktree, ".t3/setup-stage"))).toBe(repo);
+          if (scenario === "a crashed setup publication") {
+            expect(yield* fs.readFileString(NodePath.join(abandonedClaim, "proof"))).toBe(
+              "unrecognized data",
+            );
+            expect(yield* fs.readFileString(NodePath.join(abandonedClaim, "done"))).toBe(
+              yield* fs.readFileString(done),
+            );
+          }
+          if (customAcl !== undefined) {
+            expect((yield* dependencyAcl()) === customAcl).toBe(true);
+            expect(yield* fs.readFileString(NodePath.join(dependency, "index.js"))).toBe("module");
+          }
+          if (stageStream)
+            expect(
+              yield* Effect.promise(() =>
+                NodeFSP.readFile(
+                  NodePath.join(
+                    worktree,
+                    ".t3/setup-stage/repo/node_modules/.pnpm/example/node_modules/example/index.js:private",
+                  ),
+                  "utf8",
+                ),
+              ),
+            ).toBe("keep");
+          if (
+            scenario === "a private file stream" ||
+            scenario === "a private directory stream" ||
+            scenario === "a tracked stream on repeat"
+          )
+            expect(yield* Effect.promise(() => NodeFSP.readFile(privateStream, "utf8"))).toBe(
+              "keep",
+            );
+          if (scenario === "an unknown proof directory with saved ignored files")
+            expect(yield* fs.readFileString(NodePath.join(proof, "owner.txt"))).toBe(
+              "preserve this",
+            );
+          if (scenario === "an added dependency file")
+            expect(yield* fs.readFileString(NodePath.join(dependency, "local.js"))).toBe("added");
+          if (scenario === "an edited dependency file")
+            expect(yield* fs.readFileString(NodePath.join(dependency, "index.js"))).toBe("edited");
+          if (race)
+            expect(
+              yield* fs.readFileString(
+                NodePath.join(worktree, "apps/server/node_modules/local.js"),
+              ),
+            ).toBe("added during setup");
+        }),
+      ),
+  );
+});
+
+it.live.each([
+  "HEAD tree",
+  "different tree",
+  "commit",
+  "symbolic ref",
+  "newline-less tree",
+  "symlink",
+  "oversized",
+  "active merge",
+] as const)("inspects a worktree with AUTO_MERGE metadata (%s)", (kind) =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fixture = yield* cleanupFixture(undefined, true);
+      fixture.disable();
+      const { fs, repo, worktree, command } = fixture;
+      const marker = (yield* command(worktree, [
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "AUTO_MERGE",
+      ])).stdout.trim();
+      const head = (yield* command(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+      const tree = (yield* command(worktree, ["rev-parse", "HEAD^{tree}"])).stdout.trim();
+      if (kind === "active merge") {
+        yield* fs.writeFileString(NodePath.join(repo, "merge.txt"), "incoming");
+        yield* command(repo, ["add", "merge.txt"]);
+        yield* command(repo, ["commit", "-m", "Incoming commit"]);
+        yield* command(worktree, ["merge", "--no-ff", "--no-commit", "main"]);
+      }
+      switch (kind) {
+        case "newline-less tree":
+          yield* fs.writeFileString(marker, tree);
+          break;
+        case "symbolic ref":
+          yield* fs.writeFileString(marker, "ref: refs/heads/main\n");
+          break;
+        case "symlink": {
+          const target = NodePath.join(repo, ".git", "auto-merge-target");
+          yield* fs.writeFileString(target, tree + "\n");
+          yield* fs.symlink(target, marker);
+          break;
+        }
+        case "oversized":
+          yield* fs.writeFileString(marker, tree.padEnd(66, " "));
+          break;
+        case "different tree": {
+          const other = (yield* command(repo, ["rev-parse", "HEAD~1^{tree}"])).stdout.trim();
+          expect(other).not.toBe(tree);
+          yield* command(worktree, ["update-ref", "AUTO_MERGE", other]);
+          break;
+        }
+        default:
+          yield* command(worktree, ["update-ref", "AUTO_MERGE", kind === "commit" ? head : tree]);
+      }
+      const runId = RunId.make("finished-integration");
+      const owner = shell({
+        branch: "feature",
+        worktreePath: worktree,
+        status: "completed",
+        latestRunId: runId,
+        latestRunCompletedAt: at(0),
+      });
+      fixture.setThreads([owner]);
+      yield* queueWorktreeRelease({
+        stateDir: fixture.config.stateDir,
+        threadId: owner.id,
+        runId,
+        worktreePath: worktree,
+        durableRef: "refs/heads/main",
+      });
+      const result = (yield* fixture.service.runNow).entries[0];
+      if (kind === "HEAD tree") {
+        expect(result).toMatchObject({ outcome: "removed" });
+        expect(yield* fs.exists(worktree)).toBe(false);
+        return;
+      }
+      expect(result.outcome).toBe("kept");
+      if (kind === "active merge") {
+        expect(result.reason).toMatch(
+          /^Worktree metadata MERGE_(HEAD|MODE|MSG) requires its owner$/,
+        );
+      } else {
+        expect(result.reason).toBe(
+          kind === "symlink" && isWindowsHost
+            ? "Worktree metadata requires its owner (reparse-point)"
+            : kind === "symlink" || kind === "oversized"
+              ? "Worktree metadata requires its owner"
+              : "Worktree has an unpreserved auto-merge tree",
+        );
+      }
+      expect(yield* fs.exists(marker)).toBe(true);
+      expect(yield* fs.exists(worktree)).toBe(true);
+    }),
+  ),
 );
 
 it.live(
@@ -1085,6 +1972,361 @@ it.effect(
           Stream.runDrain,
         );
         expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+      }),
+    ),
+);
+
+it.effect("requires the approved child's result and a completed parent run that received it", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const taskId = NodeId.make("node:delegated-task:command:fixture");
+    const child = shell({
+      id: ThreadId.make("child"),
+      lineage: {
+        parentThreadId: ThreadId.make("parent"),
+        rootThreadId: ThreadId.make("parent"),
+        relationshipToParent: "subagent",
+      },
+      forkedFrom: { type: "node", nodeId: taskId },
+    });
+    const run = RunId.make("child-run");
+    const consumed = () => StorageCleanup.familyDelegateResultConsumed(sql, child, run);
+    const now = DateTime.formatIso(at(0));
+    yield* sql`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, status, requested_at, completed_at, payload_json)
+      VALUES (${run}, 'child', 1, 'test', 'completed', ${now}, ${now}, '{}'),
+        ('spawner', 'parent', 1, 'test', 'completed', ${now}, ${now}, '{}'),
+        ('reader', 'parent', 2, 'test', 'completed', ${now}, ${now}, '{"userMessageId":"wake"}'),
+        ('stranger', 'elsewhere', 1, 'test', 'completed', ${now}, ${now}, '{}')`;
+    yield* sql`INSERT INTO orchestration_v2_projection_subagents
+      (subagent_id, thread_id, run_id, parent_node_id, provider, child_thread_id, origin,
+       status, completed_at, updated_at, payload_json, completion_delivery_state)
+      VALUES (${taskId},'parent','spawner','root','test','child','app_owned','completed',${now},${now},
+        '{"result":"Done","completionDelivery":{"observedByRunId":"reader"}}','acknowledged')`;
+    yield* sql`INSERT INTO orchestration_v2_projection_context_transfers
+      (context_transfer_id, source_thread_id, target_thread_id, target_run_id, type, status, updated_at, payload_json)
+      VALUES ('transfer','child','parent','spawner','subagent_result','consumed',${now},'{"sourcePoint":{"runId":"previous"}}')`;
+    expect(yield* consumed()).toBe(false);
+    yield* sql`UPDATE orchestration_v2_projection_context_transfers
+      SET payload_json = json_set(payload_json, '$.sourcePoint.runId', ${run})`;
+    expect(yield* consumed()).toBe(true);
+    yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = '{"delegatedTaskId":"other-task"}' WHERE run_id = ${run}`;
+    expect(yield* consumed()).toBe(false);
+    yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = json_set(payload_json, '$.delegatedTaskId', ${taskId}) WHERE run_id = ${run}`;
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json =
+      json_set(payload_json, '$.completionDelivery.observedByRunId', 'stranger')`;
+    expect(yield* consumed()).toBe(false);
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET completion_delivery_state = 'delivered'`;
+    const fullText = `Delegated task ${taskId} [completed]:\nDone`;
+    const wake = {
+      createdBy: "agent",
+      creationSource: "server",
+      text: fullText,
+      delegatedCompletion: { parentRunId: "spawner", taskIds: [taskId] },
+    };
+    yield* sql`INSERT INTO orchestration_v2_projection_messages
+      (message_id, thread_id, run_id, role, streaming, created_at, updated_at, payload_json)
+      VALUES ('wake','parent','reader','user',0,${now},${now},${JSON.stringify(wake)})`;
+    expect(yield* consumed()).toBe(true);
+    yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'failed' WHERE run_id = 'reader'`;
+    expect(yield* consumed()).toBe(false);
+    yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'completed', payload_json = '{"userMessageId":"started-earlier"}' WHERE run_id = 'reader'`;
+    expect(yield* consumed()).toBe(true);
+    yield* sql`UPDATE orchestration_v2_projection_context_transfers SET target_thread_id = 'elsewhere'`;
+    expect(yield* consumed()).toBe(false);
+    yield* sql`UPDATE orchestration_v2_projection_context_transfers SET target_thread_id = 'parent'`;
+    // Older notifications can retain a display ID from before the structured task was remapped.
+    const historicText =
+      "Delegated task node:delegated-task:command%253Afixture (Build) [completed]:\nDone";
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json = json_set(payload_json, '$.title', 'Build') WHERE subagent_id = ${taskId}`;
+    yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = '{"userMessageId":"wake"}' WHERE run_id = 'reader'`;
+    const setWake = (message: typeof wake) =>
+      sql`UPDATE orchestration_v2_projection_messages SET payload_json = ${JSON.stringify(message)} WHERE message_id = 'wake'`;
+    for (const changed of [
+      { ...wake, text: historicText.replace("command%253Afixture", "command%253Aother") },
+      { ...wake, text: historicText.replace("(Build)", "(Different task)") },
+      { ...wake, text: historicText + " later" },
+      { ...wake, text: historicText.slice(0, -1) },
+      { ...wake, text: historicText, creationSource: "client" },
+      {
+        ...wake,
+        text: historicText,
+        delegatedCompletion: { parentRunId: "spawner", taskIds: [NodeId.make("other")] },
+      },
+      {
+        ...wake,
+        text: historicText,
+        delegatedCompletion: { parentRunId: "other", taskIds: [taskId] },
+      },
+    ]) {
+      yield* setWake(changed);
+      expect(yield* consumed()).toBe(false);
+    }
+    yield* setWake({ ...wake, text: historicText });
+    yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = '{}' WHERE run_id = 'reader'`;
+    expect(yield* consumed()).toBe(false);
+    yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = '{"userMessageId":"wake"}' WHERE run_id = 'reader'`;
+    expect(yield* consumed()).toBe(true);
+    const oversizedResult = "é".repeat(8_000);
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json = json_set(payload_json, '$.result', ${oversizedResult}) WHERE subagent_id = ${taskId}`;
+    yield* setWake({ ...wake, text: historicText.replace("Done", oversizedResult) });
+    expect(yield* consumed()).toBe(false);
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json = json_remove(json_set(payload_json, '$.result', 'Done'), '$.title') WHERE subagent_id = ${taskId}`;
+    // A sibling can quote the full result even when the budget omitted this task's own report.
+    const sibling = fullText.padStart(15_970, "x");
+    yield* sql`INSERT INTO orchestration_v2_projection_subagents
+      (subagent_id, thread_id, run_id, parent_node_id, provider, origin, status, updated_at, payload_json)
+      VALUES ('s','parent','spawner','root','test','app_owned','completed',${now},${JSON.stringify({ result: sibling })})`;
+    yield* sql`UPDATE orchestration_v2_projection_messages SET payload_json = ${JSON.stringify({
+      ...wake,
+      delegatedCompletion: { parentRunId: "spawner", taskIds: ["s", taskId] },
+      text: `Delegated task s [completed]:\n${sibling}\n\nDelegated task ${taskId} [completed]. Use task_status with taskId ${taskId} to read the result.`,
+    })}`;
+    expect(yield* consumed()).toBe(false);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.live("releases the bound family only after every member settles and delivers", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fixture = yield* cleanupFixture(undefined, true);
+      fixture.disable();
+      const owner = shell({
+        branch: "feature",
+        worktreePath: fixture.worktree,
+        status: "completed",
+        latestRunId: RunId.make("root-run"),
+        latestRunCompletedAt: at(-DAY_MS),
+        settledAt: at(-DAY_MS),
+        settledOverride: "settled",
+      });
+      const child = {
+        ...owner,
+        id: ThreadId.make("child"),
+        latestRunId: RunId.make("child-run"),
+        lineage: {
+          ...owner.lineage,
+          parentThreadId: owner.id,
+          relationshipToParent: "subagent" as const,
+        },
+      };
+      fixture.setThreads([child, owner]);
+      const { file } = yield* queueWorktreeRelease({
+        stateDir: fixture.config.stateDir,
+        threadId: owner.id,
+        runId: owner.latestRunId!,
+        worktreePath: fixture.worktree,
+        durableRef: "refs/heads/main",
+      });
+      expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("kept");
+      const request = JSON.parse(yield* fixture.fs.readFileString(file));
+      request.family = [child, owner].map((member) => ({
+        threadId: member.id,
+        runId: member.latestRunId,
+        projectId: member.projectId,
+        lineage: member.lineage,
+      }));
+      yield* fixture.fs.writeFileString(file, JSON.stringify(request));
+      expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+        "Parent has not received this delegate's result",
+      );
+      fixture.recordDelegateDelivery();
+      for (const changed of [
+        { ...child, status: "failed" as const },
+        { ...child, latestRunId: RunId.make("another-run") },
+        { ...child, settledAt: null },
+      ]) {
+        fixture.setThreads([owner, changed]);
+        expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("kept");
+      }
+      fixture.setThreads([
+        owner,
+        child,
+        shell({ id: ThreadId.make("other"), worktreePath: fixture.worktree }),
+      ]);
+      expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("kept");
+      const staleParent = NodePath.join(fixture.repo, "former-worktree-parent");
+      yield* fixture.fs.writeFileString(staleParent, "replacement");
+      const historical = shell({
+        id: ThreadId.make("historical"),
+        worktreePath: NodePath.join(staleParent, NodePath.basename(fixture.worktree)),
+        archivedAt: at(-DAY_MS),
+      });
+      fixture.setThreads([child, owner, historical]);
+      const report = yield* fixture.service.runNow;
+      const entry = report.entries.find((item) => item.threadId === owner.id);
+      expect(report.entries.some((item) => item.threadId === historical.id)).toBe(false);
+      expect(entry?.outcome, entry?.reason).toBe("removed");
+      expect(yield* fixture.fs.exists(file + ".released")).toBe(true);
+      expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+      expect(
+        (yield* fixture.command(fixture.repo, ["worktree", "list", "--porcelain"])).stdout,
+      ).not.toContain(fixture.worktree);
+    }),
+  ),
+);
+
+it.live("releases a settled family through ancestor aliases and rechecks new alias owners", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fixture = yield* cleanupFixture(undefined, true);
+      fixture.disable();
+      const parent = NodePath.dirname(fixture.worktree);
+      const ownerAlias = NodePath.join(fixture.repo, "owner-worktrees");
+      const otherAlias = NodePath.join(fixture.repo, "other-worktrees");
+      const linkedCheckout = NodePath.join(fixture.repo, "checkout-link");
+      for (const [target, alias] of [
+        [parent, ownerAlias],
+        [parent, otherAlias],
+        [fixture.worktree, linkedCheckout],
+      ] as const)
+        yield* Effect.promise(() =>
+          NodeFSP.symlink(target, alias, isWindowsHost ? "junction" : "dir"),
+        );
+      const root = shell({
+        branch: "feature",
+        worktreePath: NodePath.join(ownerAlias, NodePath.basename(fixture.worktree)),
+        status: "completed",
+        latestRunId: RunId.make("finished-root"),
+        latestRunCompletedAt: at(-3 * DAY_MS),
+        settledAt: at(-DAY_MS),
+        settledOverride: "settled",
+      });
+      const side = shell({
+        id: ThreadId.make("side"),
+        latestRunId: RunId.make("finished-side"),
+        latestRunCompletedAt: at(-2 * DAY_MS),
+        status: "completed",
+        branch: root.branch,
+        worktreePath: fixture.worktree,
+        lineage: {
+          rootThreadId: root.id,
+          parentThreadId: root.id,
+          relationshipToParent: "fork",
+          sideChat: true,
+        },
+      });
+      fixture.setThreads([root, side]);
+      const { file } = yield* queueWorktreeRelease({
+        stateDir: fixture.config.stateDir,
+        threadId: root.id,
+        runId: root.latestRunId!,
+        worktreePath: fixture.worktree,
+        durableRef: "refs/heads/main",
+      });
+      const request = JSON.parse(yield* fixture.fs.readFileString(file));
+      request.family = [root, side].map((member) => ({
+        threadId: member.id,
+        projectId: member.projectId,
+        runId: member.latestRunId,
+        lineage: member.lineage,
+      }));
+      yield* fixture.fs.writeFileString(file, JSON.stringify(request));
+      for (const changes of [
+        { worktreePath: linkedCheckout },
+        { settledOverride: "active" as const },
+        { autoSettleDisabledAt: at(-DAY_MS) },
+        { latestRunCompletedAt: at(0) },
+        { updatedAt: at(0) },
+        { snoozedUntil: at(DAY_MS) },
+      ]) {
+        fixture.setThreads([root, { ...side, ...changes }]);
+        expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("kept");
+      }
+      fixture.setThreads([root, side]);
+      const unrelated = shell({
+        id: ThreadId.make("unrelated-alias"),
+        branch: root.branch,
+        worktreePath: NodePath.join(otherAlias, NodePath.basename(fixture.worktree)),
+      });
+      fixture.setOpenSessionCwd(fixture.worktree);
+      fixture.setSessionLive(false);
+      fixture.setOnLiveCheck(Effect.sync(() => fixture.setThreads([root, side, unrelated])));
+      expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+        "Checkout is shared by another thread",
+      );
+      expect(yield* fixture.fs.exists(file)).toBe(true);
+      fixture.setOnLiveCheck(Effect.void);
+      fixture.setThreads([root, side]);
+      fixture.setDeletedThreads([{ ...unrelated, deletedAt: at(0) }]);
+      expect(
+        (yield* fixture.service.runNow).entries.find((entry) => entry.threadId === root.id)?.reason,
+      ).toBe("Checkout still has a deleted owner");
+      fixture.setDeletedThreads([]);
+      const result = (yield* fixture.service.runNow).entries[0];
+      expect(result?.outcome, result?.reason).toBe("removed");
+      expect(yield* fixture.fs.exists(file + ".released")).toBe(true);
+    }),
+  ),
+);
+
+it.live(
+  "rechecks deleted owners and ignores only a finished unused side chat from this checkout family",
+  () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture(undefined, true);
+        fixture.disable();
+        const root = shell({
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          status: "completed",
+          latestRunId: RunId.make("finished-root"),
+          latestRunCompletedAt: at(-2 * DAY_MS),
+          settledAt: at(-DAY_MS),
+          settledOverride: "settled",
+        });
+        const closed = shell({
+          id: ThreadId.make("closed-side"),
+          branch: root.branch,
+          worktreePath: root.worktreePath,
+          deletedAt: at(-DAY_MS),
+          lineage: {
+            rootThreadId: root.id,
+            parentThreadId: root.id,
+            relationshipToParent: "fork",
+            sideChat: true,
+          },
+        });
+        fixture.setThreads([root]);
+        const { file } = yield* queueWorktreeRelease({
+          stateDir: fixture.config.stateDir,
+          threadId: root.id,
+          runId: root.latestRunId!,
+          worktreePath: fixture.worktree,
+          durableRef: "refs/heads/main",
+        });
+        fixture.setDeletedThreads([closed]);
+        expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+          "Checkout still has a deleted owner",
+        );
+        fixture.setDeletedThreads([{ ...closed, projectId: ProjectId.make("other") }], [closed.id]);
+        expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("kept");
+        fixture.setDeletedThreads(
+          [{ ...closed, lineage: { ...closed.lineage, parentThreadId: ThreadId.make("missing") } }],
+          [closed.id],
+        );
+        expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("kept");
+        fixture.setDeletedThreads([closed], [closed.id]);
+        // A different deleted owner appears after the first ownership check.
+        fixture.setOpenSessionCwd(fixture.worktree);
+        fixture.setSessionLive(false);
+        fixture.setOnLiveCheck(
+          Effect.sync(() =>
+            fixture.setDeletedThreads(
+              [closed, { ...closed, id: ThreadId.make("another-owner") }],
+              [closed.id],
+            ),
+          ),
+        );
+        expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+          "Checkout still has a deleted owner",
+        );
+        fixture.setOnLiveCheck(Effect.void);
+        fixture.setDeletedThreads([closed], [closed.id]);
+        const result = (yield* fixture.service.runNow).entries[0];
+        expect(result?.outcome, result?.reason).toBe("removed");
+        expect(yield* fixture.fs.exists(file + ".released")).toBe(true);
       }),
     ),
 );
@@ -2503,6 +3745,48 @@ describe("storage cleanup reports and local file policies", () => {
         const report = yield* fixture.service.runNow;
         expect(report.entries).toEqual([]);
         expect(report.counts).toEqual({ removed: 0, kept: 0, failed: 0 });
+      }),
+    ),
+  );
+  it.live("retains a claimed release when the checkout parent is replaced by a regular file", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture(undefined, true);
+        fixture.disable();
+        const runId = RunId.make("finished");
+        const owner = shell({
+          status: "completed",
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          latestRunId: runId,
+          latestRunCompletedAt: at(-DAY_MS),
+          settledAt: at(-DAY_MS),
+        });
+        fixture.setThreads([owner]);
+        const { file } = yield* queueWorktreeRelease({
+          stateDir: fixture.config.stateDir,
+          threadId: owner.id,
+          runId,
+          worktreePath: fixture.worktree,
+          durableRef: "refs/heads/main",
+        });
+        const contents = yield* fixture.fs.readFileString(file);
+        yield* fixture.fs.rename(file, file + ".releasing");
+        const parent = NodePath.dirname(fixture.worktree);
+        yield* fixture.fs.rename(parent, NodePath.join(fixture.repo, "original-checkout-parent"));
+        yield* fixture.fs.writeFileString(parent, "replacement");
+
+        const report = yield* fixture.service.runNow;
+        expect(report.entries).toMatchObject([
+          {
+            threadId: owner.id,
+            outcome: "kept",
+            reason: "Cannot resolve checkout for release request",
+          },
+        ]);
+        expect(yield* fixture.fs.readFileString(file + ".releasing")).toBe(contents);
+        expect(yield* fixture.fs.exists(file + ".released")).toBe(false);
+        expect(yield* fixture.fs.readFileString(parent)).toBe("replacement");
       }),
     ),
   );
