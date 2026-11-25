@@ -1614,7 +1614,7 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
                         ? "Worktree contains tracked, untracked or ignored local data"
                         : scenario === "a changed proof" ||
                             scenario === "an unknown proof directory with saved ignored files"
-                          ? "Worktree setup metadata requires its owner"
+                          ? "Worktree setup metadata requires its owner (Unrecognized setup proof)"
                           : scenario === "a private file stream" ||
                               scenario === "a private directory stream" ||
                               scenario === "a tracked stream on repeat"
@@ -4176,7 +4176,10 @@ it.live.each(["new receipt", "legacy receipt"] as const)(
         const held = yield* fixture.service.runNow;
         expect(held.entries.find((entry) => entry.threadId === owner.id)).toMatchObject({
           outcome: "kept",
-          reason: "The recorded pull request base changed",
+          reason:
+            kind === "legacy receipt"
+              ? "The release receipt predates base recording; queue the release again"
+              : "The recorded pull request base changed",
         });
         expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
         yield* queueWorktreeRelease(input);
