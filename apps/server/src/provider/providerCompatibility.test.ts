@@ -21,6 +21,7 @@ import {
   applyProviderCompatibility,
   ProviderCompatibilityPolicy,
   resolveProviderCompatibility,
+  resolveT3CodeVersion,
 } from "./providerCompatibility.ts";
 import { resolveAntigravityReleaseAsset } from "./antigravityRelease.ts";
 import bundledManifest from "./model-manifest.json" with { type: "json" };
@@ -179,6 +180,35 @@ describe("provider compatibility", () => {
     for (const version of ["0.0.41", "0.1.0"]) {
       assert.isUndefined(resolveProviderCompatibility([scopedPolicy], driver, "0.9.0", version));
     }
+  });
+
+  it("matches a CodeShip release against the T3 Code version it is built from", () => {
+    // Upstream refuses Antigravity below 1.5 from T3 Code 0.1.10. A release built from 0.1.6
+    // still runs 1.4.5, and its calendar version must not select upstream's newer policy.
+    const antigravity = ProviderDriverKind.make("antigravity");
+    const upstreamPolicies = decodeCompatibilityPolicies([
+      {
+        driver: "antigravity",
+        t3CodeRange: ">=0.0.42 <0.1.10",
+        ranges: [{ range: "=1.4.5", status: "supported" }],
+      },
+      {
+        driver: "antigravity",
+        t3CodeRange: ">=0.1.10",
+        ranges: [
+          { range: ">=1.5.0 <2", status: "supported" },
+          { range: "<1.5.0", status: "broken" },
+        ],
+      },
+    ]);
+    const release = resolveT3CodeVersion({ version: "2026.1125.11", t3CodeVersion: "0.1.6" });
+    assert.strictEqual(release, "0.1.6");
+    assert.strictEqual(resolveT3CodeVersion({ version: "0.1.6" }), "0.1.6");
+    assert.strictEqual(
+      resolveProviderCompatibility(upstreamPolicies, antigravity, "agy_acp_server_1.4.5", release)
+        ?.status,
+      "supported",
+    );
   });
 
   it("relaxes remote policy without losing probe errors, and falls back when a policy is omitted", () => {

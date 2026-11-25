@@ -140,7 +140,10 @@ Main also prepares the macOS Codex metadata package in a separate workflow. A re
 - **Versions.** An empty `version` input releases `<year>.<MMDD>.<n>`, such as `2026.1030.1`. Clones
   of a fork also fetch upstream's `v0.x` tags, and a fork tag with the same name as one of them
   makes every later fetch fail with "would clobber existing tag". An explicit version must be
-  higher than the installed one, or the update button never offers it.
+  higher than the installed one, or the update button never offers it. The committed
+  `package.json` versions stay upstream's, and stamping the release version keeps the replaced
+  one as `t3CodeVersion`: the model manifest's provider compatibility policies name T3 Code
+  versions, so the server matches their `t3CodeRange` against it.
 - **Windows signing.** Windows builds are unsigned unless the fork has the Azure Trusted Signing
   secrets described below. SmartScreen warns on the first install (**More info → Run anyway**);
   updates install without it.

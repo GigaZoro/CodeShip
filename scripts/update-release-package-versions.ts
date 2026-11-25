@@ -97,7 +97,21 @@ export const updateReleasePackageVersions = Effect.fn("updateReleasePackageVersi
       continue;
     }
 
-    const packageJsonString = yield* encodePackageJson({ ...packageJson, version }).pipe(
+    const existingT3CodeVersion =
+      typeof packageJson.t3CodeVersion === "string" && packageJson.t3CodeVersion.trim().length > 0
+        ? packageJson.t3CodeVersion.trim()
+        : undefined;
+    const replacedVersion =
+      typeof packageJson.version === "string" && packageJson.version.trim().length > 0
+        ? packageJson.version.trim()
+        : undefined;
+    const t3CodeVersion = existingT3CodeVersion ?? replacedVersion;
+
+    const packageJsonString = yield* encodePackageJson({
+      ...packageJson,
+      version,
+      ...(t3CodeVersion !== undefined ? { t3CodeVersion } : {}),
+    }).pipe(
       Effect.mapError(
         (cause) =>
           new ReleasePackageManifestError({

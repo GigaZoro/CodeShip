@@ -1,3 +1,8 @@
+## 2026-11-25 — Antigravity 1.4.5 is no longer marked incompatible
+
+- Settings no longer marks the managed Antigravity runtime, 1.4.5, as incompatible or offers an update it cannot install. T3.CodeShip checked T3 Code's provider compatibility rules against its own release number, such as 2026.1125.11, so it took on a rule meant for T3 Code 0.1.10 and later, which needs Antigravity 1.5. Each release now keeps the T3 Code version it is built from and checks the rules against that version.
+- Support for Antigravity 1.5 comes once T3.CodeShip takes in the T3 Code release that adds it.
+
 ## 2026-11-25 — Star messages you want to revisit
 
 - Star prompts and replies to bookmark them across devices. Jump back from **Outline → Starred** or the command palette on web and desktop, or from the star in the thread header on mobile. Repeated jumps cycle through starred messages in conversation order. You can also unstar a message directly from either list.
