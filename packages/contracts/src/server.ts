@@ -638,6 +638,11 @@ export const ServerConfig = Schema.Struct({
   directEndpoints: Schema.optionalKey(ForwardCompatibleArray(ServerDirectEndpoint)),
   observability: ServerObservability,
   settings: ServerSettings,
+  /**
+   * Opaque key of the settings this environment reads usage with. It changes when a secret
+   * environment value does, which the redacted settings cannot show. Older servers omit it.
+   */
+  usageSettingsKey: Schema.optionalKey(Schema.String),
   /** Present when an administrator's policy file manages this environment. */
   managedPolicy: Schema.optionalKey(ManagedPolicySummary),
   shellResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
@@ -741,6 +746,8 @@ export type ServerConfigProviderStatusesPayload = typeof ServerConfigProviderSta
 
 export const ServerConfigSettingsUpdatedPayload = Schema.Struct({
   settings: ServerSettings,
+  /** See `ServerConfig.usageSettingsKey`. */
+  usageSettingsKey: Schema.optionalKey(Schema.String),
 });
 export type ServerConfigSettingsUpdatedPayload = typeof ServerConfigSettingsUpdatedPayload.Type;
 

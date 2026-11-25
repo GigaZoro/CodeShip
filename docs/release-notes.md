@@ -1,3 +1,9 @@
+## 2026-11-25 — Usage follows secret setting changes and keeps newer reads
+
+- Changing a secret environment value of a provider instance, such as an API key, now refreshes Usage on every connected client. Clients only ever see such a value hidden, so before they kept showing figures read with the old value. The server now sends clients a key it derives from its settings with a secret of its own, which changes with the value but does not reveal it.
+- Two Usage requests with the same settings share one read of the transcripts even when the settings list their fields in a different order.
+- When Usage works out the speed tier of an earlier turn, it no longer counts the corrected figures as a new read of the transcript. A later read of the same transcript by another T3.CodeShip process sharing the saved usage now wins, so the turns it found are no longer dropped.
+
 ## 2026-11-25 — Identify provider wake events
 
 - Background wake records now retain provider event identities, whether the provider actually started the wake, and the parent run that first acknowledged a delegated result, so usage reports can trace repeated deliveries.

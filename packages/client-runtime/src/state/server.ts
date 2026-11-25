@@ -1389,11 +1389,13 @@ export function createServerEnvironmentAtoms<R, E>(
         : (get(hiddenThreadTagsAtom(environmentId)) ?? NO_BLOCKED_THREAD_TAGS),
     ).pipe(Atom.withLabel(`environment-data:server:blocked-thread-tags:${environmentId}`)),
   );
-  // The refresh trigger and the compatibility key of every retained Usage answer.
+  // The refresh trigger and the compatibility key of every retained Usage answer. Only the
+  // server's key sees secret values; older servers send none, so their redacted settings stand in.
   const usageScanSettingsKeyAtom = Atom.family((environmentId: EnvironmentId) =>
-    Atom.make((get) => usageScanSettingsKey(get(settingsValueAtom(environmentId)))).pipe(
-      Atom.withLabel(`environment-data:server:usage-scan-settings:${environmentId}`),
-    ),
+    Atom.make((get) => {
+      const config = get(configValueAtom(environmentId));
+      return config?.usageSettingsKey ?? usageScanSettingsKey(config?.settings ?? null);
+    }).pipe(Atom.withLabel(`environment-data:server:usage-scan-settings:${environmentId}`)),
   );
   // Settings snapshots rebuild the filter object; only a changed filter should touch the Usage tab.
   const usageModelFilterAtom = Atom.family((environmentId: EnvironmentId) =>

@@ -543,6 +543,10 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
   }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer)),
 );
 
+// Built from fields the config test changes, so a stale key in a snapshot or update shows.
+const usageSettingsKeyOf: UsageService.UsageService["Service"]["clientSettingsKey"] = (settings) =>
+  `${settings.defaultAutoPull}/${settings.enableProviderUpdateChecks}`;
+
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(DocumentText.DocumentText)({}),
@@ -624,7 +628,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ThreadManagement.ThreadManagementService)({}),
   Layer.mock(ThreadSearch.ThreadSearch)({}),
   Layer.mock(HtmlRenderLibrary.HtmlRenderLibrary)({}),
-  Layer.mock(UsageService.UsageService)({}),
+  Layer.mock(UsageService.UsageService)({ clientSettingsKey: usageSettingsKeyOf }),
   Layer.mock(VcsProvisioningService.VcsProvisioningService)({}),
   Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
   Layer.mock(WorkspaceEntries.WorkspaceEntries)({}),
@@ -782,6 +786,7 @@ it.effect.each(["pending", "cached"] as const)(
       if (snapshot.type !== "snapshot") return yield* Effect.die("Missing initial snapshot");
       assert.deepEqual(snapshot.config.remoteOpenTargets, discovery === "cached" ? targets : []);
       assert.isFalse(snapshot.config.settings.defaultAutoPull);
+      assert.equal(snapshot.config.usageSettingsKey, usageSettingsKeyOf(snapshot.config.settings));
       assert.deepEqual(snapshot.config.keybindings, initialKeybindings);
       const duringAck = yield* keybindings.upsertKeybindingRule({
         key: "mod+alt+y",
@@ -797,15 +802,16 @@ it.effect.each(["pending", "cached"] as const)(
         key: "mod+alt+z",
         command: "terminal.split",
       });
-      const expectedSettings = [duringDiscovery, latestSettings].map(
-        ServerSettings.redactServerSettingsForClient,
-      );
+      const expectedSettings = [duringDiscovery, latestSettings].map((current) => ({
+        settings: ServerSettings.redactServerSettingsForClient(current),
+        usageSettingsKey: usageSettingsKeyOf(current),
+      }));
       const expectedKeybindings = [duringAck.keybindings, latestKeybindings.keybindings];
       // The two sources can interleave, but each must retain its own publication order.
       for (let i = 0; i < 4; i++) {
         const event = yield* Queue.take(responses);
         if (event.type === "settingsUpdated") {
-          assert.deepEqual(event.payload.settings, expectedSettings.shift());
+          assert.deepEqual(event.payload, expectedSettings.shift());
         } else {
           assert.equal(event.type, "keybindingsUpdated");
           if (event.type !== "keybindingsUpdated")
@@ -828,6 +834,7 @@ it.effect.each(["pending", "cached"] as const)(
           resolved.config.settings,
           ServerSettings.redactServerSettingsForClient(latestSettings),
         );
+        assert.equal(resolved.config.usageSettingsKey, usageSettingsKeyOf(latestSettings));
         assert.deepEqual(resolved.config.keybindings, latestKeybindings.keybindings);
         yield* acknowledge;
       }

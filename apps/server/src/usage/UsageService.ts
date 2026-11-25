@@ -1,6 +1,7 @@
 import {
   type ProviderInstanceConfig,
   ProviderInstanceId,
+  type ServerSettings as ServerSettingsValue,
   USAGE_CONTRACT_VERSION,
   type UsageProviderKind,
   type UsageSource,
@@ -30,7 +31,13 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 
 import { retryWhileWindowsLocked, writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { formatMalformedUsageWarning } from "@t3tools/shared/usageFormat";
-import { type UsageScanSettings, usageScanSettings } from "@t3tools/shared/usageScanSettings";
+import {
+  type UsageScanSettings,
+  usageScanSettings,
+  usageScanSettingsKey,
+} from "@t3tools/shared/usageScanSettings";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import { signPayload } from "../auth/utils.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { BUILT_IN_USAGE_DRIVERS, type BuiltInUsageReadersEnv } from "../provider/builtInDrivers.ts";
@@ -195,6 +202,8 @@ export class UsageService extends Context.Service<
   {
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     readonly refreshRates: Effect.Effect<UsagePricing>;
+    /** Changes with every usage setting, secret environment values included, and reveals none. */
+    readonly clientSettingsKey: (settings: ServerSettingsValue) => string;
     /** Standard-speed API-equivalent cost per item at the current prices, aliases and overrides; null when the model has no price. */
     readonly priceTokens: (
       items: ReadonlyArray<{ readonly model: string; readonly totals: UsageTokenTotals }>,
@@ -213,6 +222,13 @@ export const make = Effect.gen(function* () {
   const readerContext = yield* Effect.context<BuiltInUsageReadersEnv>();
   const scope = yield* Effect.scope;
   const crypto = yield* Crypto.Crypto;
+  // A plain hash would let a client test guesses at a low-entropy secret. A persisted key keeps
+  // the value stable across restarts, so clients keep their retained answers.
+  const settingsKeySecret = yield* (yield* ServerSecretStore.ServerSecretStore)
+    .getOrCreateRandom("usage-settings-key", 32)
+    .pipe(Effect.orDie);
+  const clientSettingsKey = (settings: ServerSettingsValue) =>
+    signPayload(usageScanSettingsKey(settings), settingsKeySecret);
 
   const fileCache: ScanCache = new Map();
   const resolvedRecords = new WeakMap<UsageRecord, UsageRecord>();
@@ -346,7 +362,6 @@ export const make = Effect.gen(function* () {
   );
 
   const readSettings = settingsService.getSettings.pipe(
-    Effect.map(usageScanSettings),
     Effect.mapError(
       (cause) =>
         new UsageReadError({
@@ -1778,13 +1793,13 @@ export const make = Effect.gen(function* () {
       }
     }
     if (resolvedAny) {
-      const nowMs = yield* Clock.currentTimeMillis;
+      // A resolved tier derives from the same read, so the row keeps its read time and a
+      // peer's later read of the file still wins the merge.
       for (const [filePath, entry] of fileCache) {
         const records = correctedBatch(entry.records);
         const tailRecords = correctedBatch(entry.tailRecords);
         if (records === entry.records && tailRecords === entry.tailRecords) continue;
-        const observedAtMs = observedAt(filePath, nowMs);
-        fileCache.set(filePath, { ...entry, observedAtMs, records, tailRecords });
+        fileCache.set(filePath, { ...entry, records, tailRecords });
         generation += 1;
       }
     }
@@ -1907,8 +1922,9 @@ export const make = Effect.gen(function* () {
     ]);
     let admitted: ScanFlight | undefined;
     return yield* Effect.gen(function* () {
-      const settings = yield* readSettings;
-      const key = encodeUsageRecordKey([query, settings]);
+      const current = yield* readSettings;
+      const settings = usageScanSettings(current);
+      const key = encodeUsageRecordKey([query, usageScanSettingsKey(current)]);
       const now = yield* monotonicMillis;
       const cached = completed.get(key);
       if (
@@ -1985,7 +2001,7 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  return { readSummary, refreshRates, awaitPersisted, priceTokens } as const;
+  return { readSummary, refreshRates, clientSettingsKey, awaitPersisted, priceTokens } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

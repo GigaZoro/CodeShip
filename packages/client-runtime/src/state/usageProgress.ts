@@ -116,7 +116,7 @@ export interface EnvironmentUsageStatus extends UsageProgressEnvironment {
   readonly needsCursorKeychainAccess: boolean;
   readonly readsCursorAccount?: boolean;
   readonly modelFilter?: UsageModelFilter | undefined;
-  /** `usageScanSettingsKey` of the settings this environment reads usage with; it includes the model filter. */
+  /** Key of the settings this environment reads usage with (`ServerConfig.usageSettingsKey`); it includes the model filter. */
   readonly usageSettingsKey: string;
 }
 

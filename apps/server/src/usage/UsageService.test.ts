@@ -159,6 +159,11 @@ const makeWithCursor = (read: CursorAccountReader.CursorAccountReader["Service"]
     };
   });
 
+const serverKey = (byte: number) =>
+  Layer.mock(ServerSecretStore.ServerSecretStore)({
+    getOrCreateRandom: (_name, bytes) => Effect.succeed(new Uint8Array(bytes).fill(byte)),
+  });
+
 const layerService = (input: {
   readonly prefix: string;
   readonly home: string;
@@ -181,7 +186,7 @@ const layerService = (input: {
     Layer.provideMerge(ProviderHostLive.layer),
     Layer.provideMerge(CodexUsageHistory.layer.pipe(Layer.provideMerge(Sqlite.layerMemory))),
     Layer.provideMerge(Layer.mock(BackgroundPolicy.BackgroundPolicy)({})),
-    Layer.provideMerge(Layer.mock(ServerSecretStore.ServerSecretStore)({})),
+    Layer.provideMerge(serverKey(1)),
     Layer.provideMerge(
       ServerConfig.layerTest(process.cwd(), NodePath.join(input.home, input.prefix)),
     ),
@@ -943,6 +948,85 @@ describe("UsageService", () => {
           ),
         );
       }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps the read time when a tier resolves, so a peer's later read wins the merge", () =>
+    Effect.gen(function* () {
+      const { home, settings } = yield* setup;
+      const sessions = NodePath.join(home, "codex", "sessions");
+      const transcript = NodePath.join(sessions, "tier.jsonl");
+      const lines = (records: readonly unknown[]) =>
+        records.map((record) => encodeUnknownJsonString(record)).join("\n") + "\n";
+      const usage = (output_tokens: number) => ({
+        type: "event_msg",
+        timestamp: "2026-08-01T10:00:00Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 0, output_tokens } },
+        },
+      });
+      // Older than a day, so a cached listing does not stat it again.
+      const writeCold = (contents: string, mtimeMs: number) =>
+        Effect.promise(async () => {
+          await NodeFSP.mkdir(sessions, { recursive: true });
+          await NodeFSP.writeFile(transcript, contents);
+          await NodeFSP.utimes(transcript, mtimeMs / 1000, mtimeMs / 1000);
+          return (await NodeFSP.stat(transcript)).size;
+        });
+      const opening = lines([
+        { type: "session_meta", payload: { id: "tier-session", model_provider: "openai" } },
+        { type: "turn_context", payload: { model: "gpt-6-astra", turn_id: "tier-turn" } },
+        usage(4),
+      ]);
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* writeCold(opening, Date.parse("2026-08-01T10:00:00Z"));
+
+      yield* Effect.gen(function* () {
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const old = yield* UsageService.make;
+        assert.strictEqual(totalOutputTokens(yield* old.readSummary(WINDOW)), 4);
+        yield* old.awaitPersisted;
+
+        yield* TestClock.adjust("1 second");
+        const peerSize = yield* writeCold(
+          opening + lines([usage(5)]),
+          Date.parse("2026-08-01T10:01:00Z"),
+        );
+        const peer = yield* UsageService.make;
+        assert.strictEqual(totalOutputTokens(yield* peer.readSummary(WINDOW)), 9);
+        yield* peer.awaitPersisted;
+
+        yield* seedCodexHistory({
+          id: "tier-turn",
+          sessionId: "tier-session",
+          options: [{ id: "serviceTier", value: "ultrafast" }],
+        });
+        yield* TestClock.adjust("1 second");
+        const corrected = yield* old.readSummary(WINDOW);
+        assert.strictEqual(corrected.buckets[0]?.costUsd, 24);
+        yield* old.awaitPersisted;
+
+        const { document } = yield* onlySnapshot(stateDir);
+        const row = document.files[transcript];
+        assert.deepStrictEqual([row?.s, row?.oa], [peerSize, CURSOR_NOW + 1000]);
+      }).pipe(
+        Effect.provide(
+          layerService({
+            prefix: "usage-tier-correction-merge",
+            home,
+            settings,
+            ratesDocument: {
+              "gpt-6-astra": {
+                input_cost_per_token: 0,
+                output_cost_per_token: 1,
+                input_cost_per_token_ultrafast: 0,
+                output_cost_per_token_ultrafast: 6,
+              },
+            },
+          }),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
   it.live(
@@ -6049,59 +6133,134 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
-  it.live("does not share an in-flight scan after custom prices change", () =>
+  it.live.each([
+    { change: "custom prices", scans: 2, updatedCostUsd: 0.00006 },
+    { change: "property order", scans: 1, updatedCostUsd: 0 },
+  ] as const)(
+    "shares an in-flight scan only while the usage settings match ($change)",
+    ({ change, scans, updatedCostUsd }) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* Effect.promise(() =>
+          NodeFSP.writeFile(transcript, claudeLine(1, 5, "example-model")),
+        );
+        const transcriptDir = yield* Effect.promise(() =>
+          NodeFSP.realpath(NodePath.join(home, "claude", "projects")),
+        );
+
+        yield* Effect.gen(function* () {
+          const settingsService = yield* ServerSettings.ServerSettingsService;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const firstScanStarted = yield* Deferred.make<void>();
+          const secondRead = yield* Deferred.make<void>();
+          const releaseRates = yield* Deferred.make<void>();
+          let homeProbes = 0;
+          let reads = 0;
+          const service = yield* UsageService.make.pipe(
+            Effect.provideService(ServerSettings.ServerSettingsService, {
+              ...settingsService,
+              getSettings: settingsService.getSettings.pipe(
+                Effect.map((current) => {
+                  reads += 1;
+                  if (change !== "property order" || reads === 1) return current;
+                  const providerInstances = Object.fromEntries(
+                    Object.entries(current.providerInstances).reverse(),
+                  ) as typeof current.providerInstances;
+                  return { ...current, providerInstances };
+                }),
+                Effect.tap(() =>
+                  reads === 2 ? Deferred.succeed(secondRead, undefined) : Effect.void,
+                ),
+              ),
+            }),
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fileSystem,
+              exists: (path) =>
+                fileSystem.exists(path).pipe(
+                  Effect.tap(() => {
+                    if (path !== transcriptDir) return Effect.void;
+                    homeProbes += 1;
+                    return Deferred.succeed(firstScanStarted, undefined);
+                  }),
+                ),
+            }),
+            Effect.provideService(
+              HttpClient.HttpClient,
+              HttpClient.make((request) =>
+                Deferred.await(releaseRates).pipe(
+                  Effect.as(HttpClientResponse.fromWeb(request, Response.json({}))),
+                ),
+              ),
+            ),
+          );
+
+          const first = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
+          yield* Deferred.await(firstScanStarted);
+          if (change === "custom prices") {
+            yield* settingsService.updateSettings({
+              usagePriceOverrides: {
+                "example-model": { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 },
+              },
+            });
+          }
+          const second = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
+          // The first scan holds until the second read has its settings, so the second joins it
+          // or queues its own scan instead of finding it already finished.
+          yield* Deferred.await(secondRead);
+          yield* Deferred.succeed(releaseRates, undefined);
+
+          const original = yield* Fiber.join(first);
+          const updated = yield* Fiber.join(second);
+          assert.strictEqual(homeProbes, scans);
+          assert.strictEqual(original.buckets[0]?.costUsd, 0);
+          assert.closeTo(updated.buckets[0]?.costUsd ?? -1, updatedCostUsd, 1e-12);
+        }).pipe(
+          Effect.provide(layerService({ prefix: "usage-service-price-race-test", home, settings })),
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("changes the client settings key with a secret value it does not reveal", () =>
     Effect.gen(function* () {
-      const { transcript, settings, home } = yield* setup;
-      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5, "example-model")));
-      const transcriptDir = yield* Effect.promise(() =>
-        NodeFSP.realpath(NodePath.join(home, "claude", "projects")),
-      );
+      const { settings, home } = yield* setup;
+      const codex = ProviderInstanceId.make("codex");
+      const withToken = (value: string) => ({
+        ...settings.providerInstances,
+        [codex]: {
+          driver: ProviderDriverKind.make("codex"),
+          config: { homePath: NodePath.join(home, "codex") },
+          environment: [{ name: "OPENAI_API_KEY", value, sensitive: true }],
+        },
+      });
 
       yield* Effect.gen(function* () {
         const settingsService = yield* ServerSettings.ServerSettingsService;
-        const fileSystem = yield* FileSystem.FileSystem;
-        const firstScanStarted = yield* Deferred.make<void>();
-        const releaseRates = yield* Deferred.make<void>();
-        let homeProbes = 0;
-        const service = yield* UsageService.make.pipe(
-          Effect.provideService(FileSystem.FileSystem, {
-            ...fileSystem,
-            exists: (path) =>
-              fileSystem.exists(path).pipe(
-                Effect.tap(() => {
-                  if (path !== transcriptDir) return Effect.void;
-                  homeProbes += 1;
-                  return Deferred.succeed(firstScanStarted, undefined);
-                }),
-              ),
-          }),
-          Effect.provideService(
-            HttpClient.HttpClient,
-            HttpClient.make((request) =>
-              Deferred.await(releaseRates).pipe(
-                Effect.as(HttpClientResponse.fromWeb(request, Response.json({}))),
-              ),
-            ),
-          ),
+        const service = yield* UsageService.make;
+        const before = yield* settingsService.getSettings;
+        const after = yield* settingsService.updateSettings({
+          providerInstances: withToken("sk-second-token"),
+        });
+        assert.deepEqual(
+          ServerSettings.redactServerSettingsForClient(after),
+          ServerSettings.redactServerSettingsForClient(before),
         );
 
-        const first = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
-        yield* Deferred.await(firstScanStarted);
-        yield* settingsService.updateSettings({
-          usagePriceOverrides: {
-            "example-model": { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 },
-          },
-        });
-        const second = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
-        yield* Deferred.succeed(releaseRates, undefined);
-
-        const original = yield* Fiber.join(first);
-        const updated = yield* Fiber.join(second);
-        assert.strictEqual(homeProbes, 2);
-        assert.strictEqual(original.buckets[0]?.costUsd, 0);
-        assert.closeTo(updated.buckets[0]?.costUsd ?? -1, 0.00006, 1e-12);
+        const keys = [service.clientSettingsKey(before), service.clientSettingsKey(after)];
+        assert.notStrictEqual(keys[1], keys[0]);
+        for (const key of keys) {
+          assert.notInclude(key, "sk-first-token");
+          assert.notInclude(key, "sk-second-token");
+        }
+        const otherServer = yield* UsageService.make.pipe(Effect.provide(serverKey(2)));
+        assert.notStrictEqual(otherServer.clientSettingsKey(after), keys[1]);
       }).pipe(
-        Effect.provide(layerService({ prefix: "usage-service-price-race-test", home, settings })),
+        Effect.provide(
+          layerService({
+            prefix: "usage-service-settings-key-test",
+            home,
+            settings: { ...settings, providerInstances: withToken("sk-first-token") },
+          }),
+        ),
       );
     }).pipe(Effect.scoped),
   );

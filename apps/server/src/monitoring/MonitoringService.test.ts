@@ -169,7 +169,9 @@ const makeHarness = Effect.fn("makeHarness")(function* (
   const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
   const layer = MonitoringService.layer.pipe(
     Layer.provide(NodeCrypto.layer),
-    Layer.provide(Layer.mock(UsageService.UsageService)({ priceTokens })),
+    Layer.provide(
+      Layer.mock(UsageService.UsageService)({ priceTokens, clientSettingsKey: () => "unused" }),
+    ),
     Layer.provide(
       Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.fromQueue(events) }),
     ),
