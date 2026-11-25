@@ -1,3 +1,7 @@
+## 2026-11-25 — Low-priority load no longer holds every command waiting for CPU
+
+- `t3_command_run` no longer counts niced (low-priority) CPU time as saturation. A deliberately niced load, such as a flake soak, kept every new command queued for hours even though a normal-priority command takes the CPU ahead of it. On Linux, niced work at or above a command's own priority, such as other commands of this server, still counts, so commands cannot overcommit the machine. A command that waits for CPU now says how much of the load is low-priority work that gives way.
+
 ## 2026-11-25 — Pull request checks no longer crowd out your Azure CLI
 
 - T3.CodeShip now runs at most two Azure CLI (`az`) commands at a time, including the checks it makes when it starts. Before, its pull request lookups could keep eight running at once, so your own `az` commands on the same machine slowed to a crawl.

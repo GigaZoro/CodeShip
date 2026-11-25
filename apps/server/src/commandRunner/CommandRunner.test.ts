@@ -3127,7 +3127,12 @@ it.layer(layerTest, { excludeTestServices: true })("a command waiting for memory
   );
 });
 
-const SATURATION: CpuAdmission.CpuSaturation = { busyShare: 0.99, limit: 0.95, cores: 12 };
+const SATURATION: CpuAdmission.CpuSaturation = {
+  busyShare: 0.99,
+  nicedShare: 0,
+  limit: 0.95,
+  cores: 12,
+};
 
 /** CPUs saturated until `clear`; each read is offered to `reads`. */
 const busyCpu = Effect.gen(function* () {
