@@ -1,6 +1,7 @@
 ## 2026-11-25 — Deleting a transcript no longer shrinks past usage early
 
 - Usage keeps the saved figures of a deleted transcript for 92 days after T3.CodeShip first finds it gone. Before, they expired 92 days after the file's last write, so deleting an old transcript could drop its usage from a past window within days. If the file comes back, it counts as a live transcript again.
+- Usage keeps refreshing on schedule after the system clock is set back, by a time sync or by hand. Before, its short waits between refreshes ran on the clock and could last until the clock caught up again.
 
 ## 2026-11-25 — Cursor account usage stays readable through a dashboard blip
 

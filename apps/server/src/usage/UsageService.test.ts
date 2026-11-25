@@ -97,6 +97,13 @@ function claudeLine(
   })}\n`;
 }
 
+/** Writes one Claude line last modified at CURSOR_NOW. */
+const writeTranscriptAtCursorNow = (transcript: string, outputTokens: number) =>
+  Effect.promise(async () => {
+    await NodeFSP.writeFile(transcript, claudeLine(1, outputTokens));
+    await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+  });
+
 const WINDOW: UsageSummaryInput = {
   timeZone: "UTC",
   sinceDay: UsageDay.make("2026-07-31"),
@@ -296,6 +303,7 @@ interface StoredRow {
   s: number;
   m: number;
   oa?: number;
+  ms?: number;
   nr?: true;
   mr: number;
   r: unknown[][];
@@ -3578,10 +3586,7 @@ describe("UsageService", () => {
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
         yield* TestClock.setTime(CURSOR_NOW);
-        yield* Effect.promise(async () => {
-          await NodeFSP.writeFile(transcript, claudeLine(1, 5));
-          await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
-        });
+        yield* writeTranscriptAtCursorNow(transcript, 5);
         yield* Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -3599,11 +3604,7 @@ describe("UsageService", () => {
           );
           yield* fs.writeFileString(archive, encodeUnknownJsonString({ ...saved, version: 9 }));
           if (scenario === "deleted usage") yield* fs.remove(transcript);
-          else
-            yield* Effect.promise(async () => {
-              await NodeFSP.writeFile(transcript, claudeLine(1, 7));
-              await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
-            });
+          else yield* writeTranscriptAtCursorNow(transcript, 7);
 
           const updated = yield* UsageService.make;
           const loaded = yield* updated.readSummary(
@@ -3646,18 +3647,12 @@ describe("UsageService", () => {
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
       yield* TestClock.setTime(CURSOR_NOW);
-      yield* Effect.promise(async () => {
-        await NodeFSP.writeFile(transcript, claudeLine(1, 12));
-        await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
-      });
+      yield* writeTranscriptAtCursorNow(transcript, 12);
       yield* Effect.gen(function* () {
         const service = yield* UsageService.make;
         assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 12);
         yield* service.awaitPersisted;
-        yield* Effect.promise(async () => {
-          await NodeFSP.writeFile(transcript, claudeLine(1, 5));
-          await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
-        });
+        yield* writeTranscriptAtCursorNow(transcript, 5);
         assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
         yield* service.awaitPersisted;
         yield* Effect.promise(() => NodeFSP.rm(transcript));
@@ -3673,10 +3668,7 @@ describe("UsageService", () => {
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
         yield* TestClock.setTime(CURSOR_NOW);
-        yield* Effect.promise(async () => {
-          await NodeFSP.writeFile(transcript, claudeLine(1, 12));
-          await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
-        });
+        yield* writeTranscriptAtCursorNow(transcript, 12);
         yield* Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -3705,10 +3697,7 @@ describe("UsageService", () => {
             assert.strictEqual(totalOutputTokens(yield* peer.readSummary(WINDOW)), 12);
             yield* peer.awaitPersisted;
           }
-          yield* Effect.promise(async () => {
-            await NodeFSP.writeFile(transcript, claudeLine(1, 5));
-            await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
-          });
+          yield* writeTranscriptAtCursorNow(transcript, 5);
           assert.strictEqual(totalOutputTokens(yield* writer.readSummary(WINDOW)), 5);
           yield* writer.awaitPersisted;
           yield* fs.remove(transcript);
@@ -3734,10 +3723,7 @@ describe("UsageService", () => {
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
       yield* TestClock.setTime(CURSOR_NOW);
-      yield* Effect.promise(async () => {
-        await NodeFSP.writeFile(transcript, claudeLine(1, 5));
-        await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
-      });
+      yield* writeTranscriptAtCursorNow(transcript, 5);
       yield* Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -3770,10 +3756,7 @@ describe("UsageService", () => {
       const { transcript, settings, home } = yield* setup;
       const deletedAt = CURSOR_NOW + 91 * DAY_MS;
       yield* TestClock.setTime(deletedAt);
-      yield* Effect.promise(async () => {
-        await NodeFSP.writeFile(transcript, claudeLine(1, 5));
-        await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
-      });
+      yield* writeTranscriptAtCursorNow(transcript, 5);
       yield* Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -3799,10 +3782,7 @@ describe("UsageService", () => {
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
       yield* TestClock.setTime(CURSOR_NOW);
-      const writeTranscript = Effect.promise(async () => {
-        await NodeFSP.writeFile(transcript, claudeLine(1, 5));
-        await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
-      });
+      const writeTranscript = writeTranscriptAtCursorNow(transcript, 5);
       yield* writeTranscript;
       const projectDir = yield* Effect.promise(() =>
         NodeFSP.realpath(NodePath.dirname(transcript)),
@@ -3844,10 +3824,7 @@ describe("UsageService", () => {
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
         yield* TestClock.setTime(CURSOR_NOW);
-        const writeTranscript = Effect.promise(async () => {
-          await NodeFSP.writeFile(transcript, claudeLine(1, 5));
-          await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
-        });
+        const writeTranscript = writeTranscriptAtCursorNow(transcript, 5);
         yield* writeTranscript;
         yield* Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
@@ -3885,16 +3862,44 @@ describe("UsageService", () => {
       }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
+  it.live(
+    "keeps the missing time of a transcript found back and gone again in one millisecond",
+    () =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        const writeTranscript = writeTranscriptAtCursorNow(transcript, 5);
+        yield* writeTranscript;
+        yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          assert.strictEqual(yield* outputTokensAfterRestart, 5);
+          yield* fs.remove(transcript);
+          assert.strictEqual(yield* outputTokensAfterRestart, 5);
+          yield* writeTranscript;
+          assert.strictEqual(yield* outputTokensAfterRestart, 5);
+          yield* fs.remove(transcript);
+          assert.strictEqual(yield* outputTokensAfterRestart, 5);
+          // A peer's copy of the row makes the next load merge the row with itself.
+          yield* seedSnapshot(stateDir, (yield* onlySnapshot(stateDir)).raw);
+          yield* Effect.scoped(
+            Effect.flatMap(UsageService.make, (service) => service.awaitPersisted),
+          );
+          const { document } = yield* onlySnapshot(stateDir);
+          assert.strictEqual(document.files[transcript]?.ms, CURSOR_NOW);
+        }).pipe(
+          Effect.provide(layerService({ prefix: "usage-same-millisecond-return", home, settings })),
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.live.each(["finishes", "does not finish"] as const)(
     "counts a transcript an unreadable folder hid until 92 days after a check found it gone, when the first check %s",
     (scenario) =>
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
         yield* TestClock.setTime(CURSOR_NOW);
-        yield* Effect.promise(async () => {
-          await NodeFSP.writeFile(transcript, claudeLine(1, 5));
-          await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
-        });
+        yield* writeTranscriptAtCursorNow(transcript, 5);
         const projectDir = yield* Effect.promise(() =>
           NodeFSP.realpath(NodePath.dirname(transcript)),
         );
@@ -3938,6 +3943,8 @@ describe("UsageService", () => {
             yield* service.awaitPersisted;
             assert.deepStrictEqual(yield* storedFileKeys(stateDir), [transcript]);
             hangs = false;
+            // The backoff runs on time awake, so a wall clock stepped back does not stretch it.
+            yield* TestClock.setTime((yield* Clock.currentTimeMillis) - 6 * HOUR_MS);
             yield* TestClock.adjust("59 minutes");
             assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 0);
             assert.strictEqual(checks, 1);
@@ -3994,19 +4001,22 @@ describe("UsageService", () => {
           denied = true;
           yield* TestClock.adjust("93 days");
           const allBegan = yield* Deferred.make<void>();
-          let checks = 0;
-          const hung = new Set(transcripts);
+          const checked: string[] = [];
+          let hangs = true;
           const service = yield* UsageService.make.pipe(
             Effect.provideService(FileSystem.FileSystem, {
               ...fs,
               exists: (path) =>
-                hung.has(path)
+                transcripts.includes(path)
                   ? Effect.suspend(() => {
-                      checks += 1;
-                      return checks === STAT_CONCURRENCY
-                        ? Deferred.succeed(allBegan, undefined)
-                        : Effect.void;
-                    }).pipe(Effect.andThen(Effect.never))
+                      checked.push(path);
+                      if (!hangs) return fs.exists(path);
+                      return (
+                        checked.length === STAT_CONCURRENCY
+                          ? Deferred.succeed(allBegan, undefined)
+                          : Effect.void
+                      ).pipe(Effect.andThen(Effect.never));
+                    })
                   : fs.exists(path),
             }),
           );
@@ -4014,7 +4024,12 @@ describe("UsageService", () => {
           yield* Deferred.await(allBegan);
           yield* TestClock.adjust("5 seconds");
           assert.strictEqual(totalOutputTokens(yield* Fiber.join(answer)), 0);
-          assert.strictEqual(checks, STAT_CONCURRENCY);
+          assert.lengthOf(checked, STAT_CONCURRENCY);
+          const unreached = transcripts.filter((file) => !checked.includes(file));
+          hangs = false;
+          yield* TestClock.adjust("1 minute");
+          assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 0);
+          assert.deepStrictEqual(checked.slice(STAT_CONCURRENCY), unreached);
         }).pipe(Effect.provide(layerService({ prefix: "usage-hung-checks", home, settings })));
       }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
@@ -4025,10 +4040,7 @@ describe("UsageService", () => {
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
         yield* TestClock.setTime(CURSOR_NOW);
-        yield* Effect.promise(async () => {
-          await NodeFSP.writeFile(transcript, claudeLine(1, 5));
-          await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
-        });
+        yield* writeTranscriptAtCursorNow(transcript, 5);
         yield* Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -4064,10 +4076,7 @@ describe("UsageService", () => {
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
       yield* TestClock.setTime(CURSOR_NOW);
-      yield* Effect.promise(async () => {
-        await NodeFSP.writeFile(transcript, claudeLine(1, 5));
-        await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
-      });
+      yield* writeTranscriptAtCursorNow(transcript, 5);
       yield* Effect.gen(function* () {
         const { stateDir } = yield* ServerConfig.ServerConfig;
         assert.strictEqual(yield* outputTokensAfterRestart, 5);

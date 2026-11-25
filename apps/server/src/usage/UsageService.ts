@@ -103,7 +103,7 @@ const SUMMARY_DEADLINE = "30 seconds";
 const SCAN_STALL_MS = 5 * 60 * 1000;
 const FOLLOW_UP_TTL_MS = 10_000;
 const MAX_SCAN_KEYS = 16;
-const monotonicMillis = Clock.currentTimeNanos.pipe(Effect.map((ns) => Number(ns / 1_000_000n)));
+const monotonicMillis = Clock.monotonicTimeNanos.pipe(Effect.map((ns) => Number(ns / 1_000_000n)));
 
 const transcriptReaders = BUILT_IN_USAGE_DRIVERS.flatMap((driver) =>
   driver.usage?.kind === "transcripts" ? [{ driver, reader: driver.usage }] : [],
