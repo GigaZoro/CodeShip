@@ -1504,6 +1504,13 @@ export function createServerEnvironmentAtoms<R, E>(
     staleTimeMs: 30_000,
     refreshIntervalMs: 60_000,
   });
+  // Spending shows here within the minute of the balance reading it is counted from.
+  const creditGrants = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:provider:credit-grants",
+    tag: WS_METHODS.providerCreditGrants,
+    staleTimeMs: 30_000,
+    refreshIntervalMs: 60_000,
+  });
   const databaseStorage = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
     label: "environment-data:server:database-storage",
     tag: WS_METHODS.serverGetDatabaseStorage,
@@ -1938,6 +1945,7 @@ export function createServerEnvironmentAtoms<R, E>(
       },
     }),
     usageHolds,
+    creditGrants,
     retryUsageLimit: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:retry-usage-limit",
       tag: WS_METHODS.providerRetryUsageLimit,

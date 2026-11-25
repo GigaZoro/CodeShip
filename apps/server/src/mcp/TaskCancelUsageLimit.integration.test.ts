@@ -175,6 +175,7 @@ it.effect.each([
               ServerSettings.layerTest({ autoResumeLimitedThreads: true }),
               Layer.mock(AccountRouting.AccountRouting)({
                 releaseAllowedHolds: Effect.succeed(false),
+                creditAccess: () => Effect.succeed({ spent: new Map(), requesters: [] }),
               }),
               Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({}),
             ),

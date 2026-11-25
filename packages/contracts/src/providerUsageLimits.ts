@@ -262,6 +262,14 @@ export const ProviderUsageHoldsResult = Schema.Struct({
 });
 export type ProviderUsageHoldsResult = typeof ProviderUsageHoldsResult.Type;
 
+/** Each Codex account the user allowed to spend prepaid credits, with what is left of it. */
+export const ProviderCreditGrantsResult = Schema.Struct({
+  grants: ForwardCompatibleArray(
+    Schema.Struct({ instanceId: ProviderInstanceId, ...ProviderCreditGrant.fields }),
+  ),
+});
+export type ProviderCreditGrantsResult = typeof ProviderCreditGrantsResult.Type;
+
 export const UsageLimitsReport = Schema.Struct({
   createdAt: IsoDateTime,
   accounts: Schema.Array(

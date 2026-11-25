@@ -1,9 +1,10 @@
 import type {
+  ProviderCreditGrant,
   ProviderRetryUsageLimitResult,
   ProviderUsageHold,
   ServerProvider,
 } from "@t3tools/contracts";
-import { t } from "@t3tools/shared/i18n";
+import { getFormattingLocale, t } from "@t3tools/shared/i18n";
 
 export interface HeldAccount {
   readonly provider: ServerProvider;
@@ -33,6 +34,17 @@ export function describeUsageHold(
   if (hold.heldUntil === undefined) return t("Held until its next turn");
   const time = formatTime(hold.heldUntil);
   return hold.estimated ? t("Held until about {time}", { time }) : t("Held until {time}", { time });
+}
+
+/** What is left of the prepaid credits the user allowed an account, never more than is left. */
+export function creditGrantLeftText(
+  grant: Pick<ProviderCreditGrant, "capCredits" | "remainingCredits">,
+): string {
+  const format = new Intl.NumberFormat(getFormattingLocale());
+  return t("Prepaid credits left: {remaining} of {cap}", {
+    remaining: format.format(Math.floor(grant.remainingCredits)),
+    cap: format.format(grant.capCredits),
+  });
 }
 
 /**

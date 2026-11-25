@@ -946,6 +946,10 @@ export class AccountRouting extends Context.Service<
       readonly instanceId: ProviderInstanceId;
       readonly model: string;
     }) => Effect.Effect<CreditRefusal | null>;
+    /** What judges the prepaid credits the user allowed for this thread's work, as every launch reads it. */
+    readonly creditAccess: (
+      requesterThreadId: ThreadId,
+    ) => Effect.Effect<PrepaidCreditSpend.CreditAccess>;
     /** The accounts `retryAccount` can release, and the ones ChatGPT's app cap stopped. */
     readonly holds: Effect.Effect<ReadonlyArray<ProviderUsageHold>>;
     /** The usage-limited account a new thread on `selection` would start on, or null if it has room. */
@@ -1461,6 +1465,11 @@ export const layer = Layer.effect(
                 DateTime.makeUnsafe(usageWindowLimitEnd(provider.usageLimits, window)),
               ),
             };
+      }),
+      creditAccess: Effect.fn("AccountRouting.creditAccess")(function* (requesterThreadId) {
+        const providers = yield* providerRegistry.getProviders;
+        const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+        return yield* readCreditAccess(settings, providers, requesterThreadId);
       }),
       // Unlike routing, a list the user reads fails loudly rather than showing no holds.
       holds: Effect.gen(function* () {

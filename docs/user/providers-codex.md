@@ -133,7 +133,13 @@ T3.CodeShip counts how far the account's balance falls from then on, from any us
 and starts no new turn on credits once it has fallen by the cap. Turns already running finish, so
 the count can pass the cap a little. The count survives restarts; clearing the cap turns spending
 off and the next cap counts from zero. Spending also stops when the credits, or the monthly credit
-limit you set in ChatGPT, run out.
+limit you set in ChatGPT, run out. What is left of the cap shows under it in Settings, and on the
+account in the mobile app's provider settings.
+
+A thread that may spend the credits and was stopped by the plan's usage limit continues on them,
+or moves to another account it may spend them on, without waiting for the reset, when stopped
+threads resume or switch accounts for you (**Settings → Threads → When a thread hits a usage
+limit**).
 
 To let only some threads spend the credits, add their ids to the account's `spendCredits` entry
 in `settings.json`, as `"spendCredits": { "capCredits": 3000, "threadIds": ["<thread id>"] }`.

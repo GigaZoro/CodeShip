@@ -50,6 +50,10 @@ import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Switch } from "../ui/switch";
 import { ManagedControl, ManagedNotice } from "../ManagedPolicy";
 import { useManagedPolicy } from "../../state/managedPolicy";
+import { useServerConfigs } from "../../state/entities";
+import { useEnvironmentQuery } from "../../state/query";
+import { serverEnvironment } from "../../state/server";
+import { creditGrantLeftText } from "@t3tools/client-runtime/usage-holds";
 import { isManagedDriverAllowed } from "@t3tools/contracts";
 import {
   disallowedProviderMessage,
@@ -878,6 +882,20 @@ export function ProviderInstanceCard({
       ? creditGrant.capCredits
       : undefined;
   const creditScope = Array.isArray(creditGrant?.threadIds) ? creditGrant.threadIds.length : null;
+  const serverConfigs = useServerConfigs();
+  const creditGrants = useEnvironmentQuery(
+    environmentId != null &&
+      creditCap !== undefined &&
+      serverConfigs.get(environmentId)?.environment.capabilities.creditGrants === true
+      ? serverEnvironment.creditGrants({ environmentId, input: {} })
+      : null,
+  );
+  const creditReport = creditGrants.data?.grants.find((grant) => grant.instanceId === instanceId);
+  // A count made against another cap than the one shown waits for the next read.
+  const creditLeft =
+    creditReport !== undefined && creditReport.capCredits === creditCap
+      ? creditGrantLeftText(creditReport)
+      : undefined;
   // Credits are money, so no cap is ever filled in for the user; clearing it turns spending off.
   const updateCreditCap = (draft: string) => {
     const cap = Number.parseInt(draft, 10);
@@ -1347,6 +1365,7 @@ export function ProviderInstanceCard({
                     { count: creditScope },
                   )
             }
+            status={creditLeft}
             control={
               <ManagedControl
                 reason={

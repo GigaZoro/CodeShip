@@ -2584,6 +2584,12 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.providerUsageHolds]: () =>
           accountRouting.holds.pipe(Effect.map((holds) => ({ holds }))),
+        [WS_METHODS.providerCreditGrants]: () =>
+          accountRouting.limits().pipe(
+            Effect.map(({ grants }) => ({
+              grants: [...grants].map(([instanceId, grant]) => ({ instanceId, ...grant })),
+            })),
+          ),
         [WS_METHODS.providerAuthStart]: (input) => providerAuth.start(input, currentSessionId),
         [WS_METHODS.providerAuthRespond]: (input) =>
           Effect.annotateCurrentSpan({ instanceId: input.instanceId }).pipe(

@@ -399,6 +399,7 @@ import {
   UsageLimitSourceError,
   ProviderConsumeResetCreditInput,
   ProviderConsumeResetCreditResult,
+  ProviderCreditGrantsResult,
   ProviderRetryUsageLimitResult,
   ProviderUsageHoldsResult,
 } from "./providerUsageLimits.ts";
@@ -531,6 +532,7 @@ export const WS_METHODS = {
   providerConsumeResetCredit: "provider.consumeResetCredit",
   providerRetryUsageLimit: "provider.retryUsageLimit",
   providerUsageHolds: "provider.usageHolds",
+  providerCreditGrants: "provider.creditGrants",
   providerAuthComplete: "provider.auth.complete",
   chatGptReconnectProfile: "provider.chatgpt.reconnect-profile",
   chatGptImportProfile: "provider.chatgpt.import-profile",
@@ -822,6 +824,12 @@ const WsProviderRetryUsageLimitRpc = Rpc.make(WS_METHODS.providerRetryUsageLimit
 const WsProviderUsageHoldsRpc = Rpc.make(WS_METHODS.providerUsageHolds, {
   payload: Schema.Struct({}),
   success: ProviderUsageHoldsResult,
+  error: EnvironmentAuthorizationError,
+});
+
+const WsProviderCreditGrantsRpc = Rpc.make(WS_METHODS.providerCreditGrants, {
+  payload: Schema.Struct({}),
+  success: ProviderCreditGrantsResult,
   error: EnvironmentAuthorizationError,
 });
 
@@ -2442,6 +2450,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderConsumeResetCreditRpc,
   WsProviderRetryUsageLimitRpc,
   WsProviderUsageHoldsRpc,
+  WsProviderCreditGrantsRpc,
   WsProviderAuthStartRpc,
   WsProviderAuthCompleteRpc,
   WsChatGptReconnectProfileRpc,

@@ -1,7 +1,12 @@
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { describeRetryOutcome, describeUsageHold, heldAccountsForDriver } from "./usageHolds.ts";
+import {
+  creditGrantLeftText,
+  describeRetryOutcome,
+  describeUsageHold,
+  heldAccountsForDriver,
+} from "./usageHolds.ts";
 
 const codex = ProviderDriverKind.make("codex");
 const provider = (instanceId: string, driver = codex) =>
@@ -24,6 +29,14 @@ describe("heldAccountsForDriver", () => {
       codex,
     );
     expect(held.map((entry) => entry.hold.instanceId)).toEqual(["codex"]);
+  });
+});
+
+describe("creditGrantLeftText", () => {
+  it("rounds a part credit down, so it never shows more than is left", () => {
+    expect(creditGrantLeftText({ capCredits: 3000, remainingCredits: 2399.99 })).toBe(
+      "Prepaid credits left: 2,399 of 3,000",
+    );
   });
 });
 

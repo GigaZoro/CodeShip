@@ -752,6 +752,7 @@ it.effect.each([
             }),
           retryAccount: () => Effect.succeed({}),
           creditRefusal: () => Effect.succeed(null),
+          creditAccess: () => Effect.succeed({ spent: new Map(), requesters: [] }),
           holds: Effect.succeed([]),
           launchLimit: () => Effect.succeed(null),
         }),

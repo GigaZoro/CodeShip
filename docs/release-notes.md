@@ -1,3 +1,8 @@
+## 2026-11-25 — Stopped threads continue on the prepaid credits you allowed them
+
+- A thread allowed to spend a Codex account's prepaid credits that the plan's usage limit stopped waited for the plan to reset. It now continues on the credits, or moves to another account it may spend them on, as soon as the sweep sees it, when stopped threads resume or switch accounts for you.
+- **Settings → Providers & models** shows what is left of each Codex account's prepaid-credit cap under it, and the mobile app's provider settings show it with the threads the allowance covers.
+
 ## 2026-11-25 — Choose how much of a Codex account's prepaid credits work may spend
 
 - A Codex account whose plan usage is used up starts no turn on its prepaid credits until you set a cap under **Spend prepaid credits** for it in **Settings → Providers & models**. It is off by default and applies on that machine only. New work still prefers accounts whose plan has room, and once the account's balance has fallen by the cap, no new turn starts on it. The count survives restarts and starts again from zero when you clear the cap.

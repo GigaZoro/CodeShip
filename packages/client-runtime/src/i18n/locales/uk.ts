@@ -2516,6 +2516,7 @@ const catalog: MessageCatalog = {
   "Any local files": "Будь-які локальні файли",
   "Any new activity un-settles a thread automatically.":
     "Будь-яка нова активність автоматично повертає чат зі стану завершеного.",
+  "Any thread may spend them": "Витрачати їх може будь-який чат",
   Anyone: "Будь-хто",
   "Anyone on the web": "Будь-хто в інтернеті",
   "API estimate": "Оцінка за API",
@@ -9060,6 +9061,8 @@ const catalog: MessageCatalog = {
   },
   "Premium {amount}": "Преміум {amount}",
   "Prepaid credits {name} may spend": "Передплачені кредити, які може витратити {name}",
+  "Prepaid credits left: {remaining} of {cap}":
+    "Залишок передплачених кредитів: {remaining} з {cap}",
   prepare: "підготувати",
   Prepared: "Підготовлено",
   Preparing: "Підготовка",
@@ -13432,6 +13435,7 @@ const catalog: MessageCatalog = {
   "ThreadPage token on {machine}": "Токен ThreadPage на {machine}",
   Threads: "Чати",
   "threads {times}": "чати {times}",
+  "Threads allowed: {count}": "Дозволено чатів: {count}",
   "Threads needing you": "Чати, що потребують вас",
   "Threads you archive will appear here.": "Тут з’являться чати, які ви архівуєте.",
   "Threads you archived, with restore and delete.":
