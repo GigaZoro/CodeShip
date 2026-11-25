@@ -2,7 +2,6 @@ import {
   type ProviderInstanceConfig,
   ProviderInstanceId,
   USAGE_CONTRACT_VERSION,
-  type ServerSettings as ServerSettingsValue,
   type UsageProviderKind,
   type UsageSource,
   type UsagePricing,
@@ -31,6 +30,7 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { formatMalformedUsageWarning } from "@t3tools/shared/usageFormat";
+import { type UsageScanSettings, usageScanSettings } from "@t3tools/shared/usageScanSettings";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { BUILT_IN_USAGE_DRIVERS, type BuiltInUsageReadersEnv } from "../provider/builtInDrivers.ts";
@@ -330,6 +330,7 @@ export const make = Effect.gen(function* () {
   );
 
   const readSettings = settingsService.getSettings.pipe(
+    Effect.map(usageScanSettings),
     Effect.mapError(
       (cause) =>
         new UsageReadError({
@@ -342,7 +343,7 @@ export const make = Effect.gen(function* () {
 
   const usageInstances = Effect.fn("UsageService.usageInstances")(function* <Config>(
     driver: ProviderDriver<Config, unknown, unknown>,
-    settings: ServerSettingsValue,
+    settings: UsageScanSettings,
   ) {
     const entries: Array<
       readonly [ProviderInstanceId, Pick<ProviderInstanceConfig, "config" | "environment">, boolean]
@@ -371,7 +372,7 @@ export const make = Effect.gen(function* () {
   });
 
   const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* (
-    settings: ServerSettingsValue,
+    settings: UsageScanSettings,
     retentionCutoffMs: number,
     onProgress: () => void,
   ) {
@@ -1034,7 +1035,7 @@ export const make = Effect.gen(function* () {
 
   const collectProviderDirs = Effect.fn("UsageService.collectProviderDirs")(function* (
     windowStartMs: number,
-    settings: ServerSettingsValue,
+    settings: UsageScanSettings,
     retentionCutoffMs: number,
     awaitRefresh: boolean,
     providers?: ReadonlySet<UsageProviderKind>,
@@ -1083,7 +1084,7 @@ export const make = Effect.gen(function* () {
   interface ScanFlight {
     readonly key: string;
     readonly input: UsageSummaryInput;
-    readonly settings: ServerSettingsValue;
+    readonly settings: UsageScanSettings;
     readonly initial: Deferred.Deferred<UsageSummary, UsageReadError>;
     readonly refreshed: Deferred.Deferred<UsageSummary, UsageReadError>;
     snapshot?: UsageSummary;
@@ -1092,7 +1093,7 @@ export const make = Effect.gen(function* () {
 
   const scanSummary = Effect.fn("UsageService.scanSummary")(function* (
     input: UsageSummaryInput,
-    settings: ServerSettingsValue,
+    settings: UsageScanSettings,
     flight: ScanFlight,
     onProgress: () => void,
   ): Effect.fn.Return<UsageSummary, UsageReadError> {
@@ -1242,7 +1243,7 @@ export const make = Effect.gen(function* () {
 
   const aggregateSummary = Effect.fn("UsageService.aggregateSummary")(function* (
     input: UsageSummaryInput,
-    settings: ServerSettingsValue,
+    settings: UsageScanSettings,
     scannedDirs: readonly ScannedDir[],
     window: ScanWindow,
     flight?: ScanFlight,

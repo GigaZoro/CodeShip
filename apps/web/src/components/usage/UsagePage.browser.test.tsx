@@ -328,6 +328,7 @@ function reading(window: UsageSummaryInput, response = state.response): Environm
     isConnected: true,
     canReadDiagnostics: response !== "revoked",
     needsCursorKeychainAccess: false,
+    usageSettingsKey: "settings",
     error:
       response === "revoked"
         ? "Diagnostics access was revoked."

@@ -57,6 +57,12 @@
 - Storage cleanup kept a finished worktree with "Worktree has private reflogs" once Git had deleted a worktree-only ref and left its reflog's empty folders. Those worktrees are released; a reflog that still holds history keeps its worktree.
 - A delegated task on a linked machine whose last reply or plan was blank gave the chat that started it a blank result. Its result is now its last reply with text, as for a task on this machine.
 
+## 2026-11-24 — Usage figures follow every usage setting
+
+- Changing any setting the Usage page reads starts a new scan. The figures and scan errors from before the change are no longer shown while it runs, on web and mobile. This covers prices, model aliases, the model filter, Cursor Keychain access, and turning a provider on or off. It also covers a provider's home folder or environment variables.
+- Usage figures that include a transcript the scan could not read are labelled as possibly incomplete instead of "Ready" or "Usage up to date".
+- When a refresh times out, the page keeps the last figures it had for the same window and settings and marks them as possibly incomplete, instead of failing.
+
 ## 2026-11-24 — Shipping a branch with release checks pending
 
 - Shipping chats wait for requested checks on installed releases. If a release is delayed, the chat arranges a retry and keeps the checkout needed for verification.

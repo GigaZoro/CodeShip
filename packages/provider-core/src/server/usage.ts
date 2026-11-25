@@ -1,11 +1,11 @@
 import type {
   ProviderInstanceId,
-  ServerSettings,
   UsageProviderKind,
   UsageReadError,
   UsageSource,
   UsageTokenTotals,
 } from "@t3tools/contracts";
+import type { UsageScanSettings } from "@t3tools/shared/usageScanSettings";
 import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 
@@ -98,7 +98,7 @@ export interface ProviderUsageScan {
 
 export interface ProviderUsageScanInput<Config> {
   readonly instances: ReadonlyArray<ProviderUsageInstance<Config>>;
-  readonly settings: ServerSettings;
+  readonly settings: UsageScanSettings;
   readonly windowStartMs: number;
   readonly retentionCutoffMs: number;
   readonly awaitRefresh: boolean;

@@ -431,6 +431,10 @@
       "types": "./src/usageLimits.ts",
       "import": "./src/usageLimits.ts"
     },
+    "./usageScanSettings": {
+      "types": "./src/usageScanSettings.ts",
+      "import": "./src/usageScanSettings.ts"
+    },
     "./desktopAppControl": {
       "types": "./src/desktopAppControl.ts",
       "import": "./src/desktopAppControl.ts"

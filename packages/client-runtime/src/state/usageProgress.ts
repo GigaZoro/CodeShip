@@ -29,8 +29,17 @@ interface UsageProgressEnvironment {
   readonly summary: UsageSummary | null;
 }
 
-export function isUsageSummaryPartial(summary: UsageSummary): boolean {
+/** The server is still working on these figures, so asking again with awaitRefresh can finish them. */
+export function usageSummaryAwaitsRefresh(summary: UsageSummary): boolean {
   return summary.partialReason !== undefined || summary.sources.some((source) => source.refreshing);
+}
+
+/** A source that could not be read in full is settled: asking again would not complete it. */
+function isUsageSummaryIncomplete(summary: UsageSummary): boolean {
+  return (
+    usageSummaryAwaitsRefresh(summary) ||
+    summary.sources.some((source) => source.status === "partial" || source.status === "failed")
+  );
 }
 
 export function usageEnvironmentProgress(
@@ -42,7 +51,7 @@ export function usageEnvironmentProgress(
   if (summary === null) return { phase: "loading" } as const;
   if (refreshing) return { phase: "stale" } as const;
   if (!environment.isPending)
-    return { phase: isUsageSummaryPartial(summary) ? "incomplete" : "ready" } as const;
+    return { phase: isUsageSummaryIncomplete(summary) ? "incomplete" : "ready" } as const;
   const providers = [
     ...new Set(
       summary.sources.flatMap((source) => (source.refreshing ? [source.fingerprint.provider] : [])),
@@ -107,6 +116,8 @@ export interface EnvironmentUsageStatus extends UsageProgressEnvironment {
   readonly needsCursorKeychainAccess: boolean;
   readonly readsCursorAccount?: boolean;
   readonly modelFilter?: UsageModelFilter | undefined;
+  /** `usageScanSettingsKey` of the settings this environment reads usage with; it includes the model filter. */
+  readonly usageSettingsKey: string;
 }
 
 export function equalUsageStatuses(
@@ -127,7 +138,7 @@ export function equalUsageStatuses(
         env.canReadDiagnostics === other.canReadDiagnostics &&
         env.needsCursorKeychainAccess === other.needsCursorKeychainAccess &&
         env.readsCursorAccount === other.readsCursorAccount &&
-        JSON.stringify(env.modelFilter) === JSON.stringify(other.modelFilter)
+        env.usageSettingsKey === other.usageSettingsKey
       );
     })
   );

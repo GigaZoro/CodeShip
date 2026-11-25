@@ -27,6 +27,7 @@ import {
 
 export interface UsageReading {
   readonly summary: UsageSummary;
+  readonly usageSettingsKey: string;
   readonly requestKey: string;
   readonly window: UsageSummaryInput;
   readonly complete: boolean;
@@ -38,6 +39,7 @@ export interface UsageReading {
 }
 
 export interface UsageFailure {
+  readonly usageSettingsKey: string;
   readonly requestKey: string;
   readonly window: UsageSummaryInput;
   readonly windowKey: string;
@@ -105,15 +107,11 @@ function compatible(summary: UsageSummary): boolean {
   return isCompatibleUsageContractVersion(summary.contractVersion, USAGE_CONTRACT_VERSION);
 }
 
-function requestKeyOf(
-  window: UsageSummaryInput,
-  environment: EnvironmentUsageStatus,
-  hidden: readonly UsageProviderKind[],
-): string {
-  return JSON.stringify([usagePeriodKey(window), environment.modelFilter ?? null, hidden]);
+// The model filter is a usage setting: readings under another one are dropped, not keyed apart.
+function requestKeyOf(window: UsageSummaryInput, hidden: readonly UsageProviderKind[]): string {
+  return JSON.stringify([usagePeriodKey(window), hidden]);
 }
 
-// A slot leaves out the per-environment model filter so readings compare across environments.
 function slotOf(
   window: UsageSummaryInput,
   windowKey: string,
@@ -229,10 +227,22 @@ export function settleUsageView(state: UsageViewState, input: UsageViewInput): U
       changed = true;
       continue;
     }
+    const { usageSettingsKey } = environment;
+    const saved = readings.get(id) ?? [];
+    if (saved.some((reading) => reading.usageSettingsKey !== usageSettingsKey)) {
+      const current = saved.filter((reading) => reading.usageSettingsKey === usageSettingsKey);
+      if (current.length === 0) readings.delete(id);
+      else readings.set(id, current);
+      changed = true;
+    }
+    if (failures.has(id) && failures.get(id)!.usageSettingsKey !== usageSettingsKey) {
+      failures.delete(id);
+      changed = true;
+    }
     if (!input.enabled) continue;
 
     const { window } = input;
-    const requestKey = requestKeyOf(window, environment, hidden);
+    const requestKey = requestKeyOf(window, hidden);
     const windowKey = usageWindowKey(window);
     let own = readings.get(id) ?? [];
     if (failures.get(id)?.requestKey !== undefined && failures.get(id)?.requestKey !== requestKey) {
@@ -273,6 +283,7 @@ export function settleUsageView(state: UsageViewState, input: UsageViewInput): U
         ...own.filter((reading) => reading !== at),
         {
           summary: answer,
+          usageSettingsKey,
           requestKey,
           window,
           complete,
@@ -303,7 +314,13 @@ export function settleUsageView(state: UsageViewState, input: UsageViewInput): U
         environment.isConnected &&
         (failure?.windowKey !== windowKey || failure.message !== environment.error)
       ) {
-        failures.set(id, { requestKey, window, windowKey, message: environment.error });
+        failures.set(id, {
+          usageSettingsKey,
+          requestKey,
+          window,
+          windowKey,
+          message: environment.error,
+        });
         changed = true;
       }
       if (summary !== null && !knownAtRequest(summary)) record(summary, true);
@@ -400,14 +417,12 @@ function chooseView(
       : NO_USAGE;
   }
 
-  const requestKeys = new Map(
-    members.map((environment) => [environment, requestKeyOf(window, environment, hidden)]),
-  );
+  const requestKey = requestKeyOf(window, hidden);
   const resolved = (environment: EnvironmentUsageStatus) => {
     const failure = state.failures.get(environment.environmentId);
     return (
       (failure !== undefined &&
-        failure.requestKey === requestKeys.get(environment) &&
+        failure.requestKey === requestKey &&
         failure.windowKey === windowKey) ||
       (!environment.isPending && environment.summary !== null && !compatible(environment.summary))
     );
@@ -415,20 +430,13 @@ function chooseView(
   const unresolved = (environment: EnvironmentUsageStatus) =>
     !own(environment).some(
       (reading) =>
-        reading.complete &&
-        reading.requestKey === requestKeys.get(environment) &&
-        reading.windowKey === windowKey,
+        reading.complete && reading.requestKey === requestKey && reading.windowKey === windowKey,
     ) && !resolved(environment);
-  const readingAt = (environment: EnvironmentUsageStatus, slot: string) => {
-    const candidates = own(environment).filter((reading) => reading.slot === slot);
-    return (
-      candidates.find((reading) => reading.requestKey === requestKeys.get(environment)) ??
-      newest(candidates)
-    );
-  };
+  // Every saved reading was read under its environment's current usage settings, and `record`
+  // keeps one reading per slot.
   const holdersAt = (slot: string) =>
     members.flatMap((environment) => {
-      const reading = readingAt(environment, slot);
+      const reading = own(environment).find((candidate) => candidate.slot === slot);
       return reading === undefined ? [] : [{ environment, reading }];
     });
 
@@ -460,10 +468,7 @@ function chooseView(
   const holders = holdersAt(chosen);
   const shown = holders[0]!.reading;
   const kept =
-    holders.some(
-      ({ environment, reading }) => reading.requestKey !== requestKeys.get(environment),
-    ) ||
-    (shown.windowKey !== windowKey && !members.some(unresolved));
+    shown.requestKey !== requestKey || (shown.windowKey !== windowKey && !members.some(unresolved));
   const reserved = reservedProviders(holders.map(({ reading }) => reading));
 
   if (

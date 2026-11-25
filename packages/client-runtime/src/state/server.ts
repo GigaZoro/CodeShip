@@ -21,6 +21,7 @@ import {
   WS_METHODS,
 } from "@t3tools/contracts";
 import { isCompatibleUsageContractVersion } from "@t3tools/shared/usageMerge";
+import { usageScanSettingsKey } from "@t3tools/shared/usageScanSettings";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
@@ -77,7 +78,7 @@ import type { RpcSession } from "../rpc/session.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 import { recordProviderMcpProblems } from "./providerMcpProblems.ts";
 import { cursorUsageAccess } from "./usage.ts";
-import { isUsageSummaryPartial } from "./usageProgress.ts";
+import { usageSummaryAwaitsRefresh } from "./usageProgress.ts";
 import {
   applyServerConfigProjection,
   reuseUnchanged,
@@ -1372,39 +1373,11 @@ export function createServerEnvironmentAtoms<R, E>(
         : (get(hiddenThreadTagsAtom(environmentId)) ?? NO_BLOCKED_THREAD_TAGS),
     ).pipe(Atom.withLabel(`environment-data:server:blocked-thread-tags:${environmentId}`)),
   );
-  const usagePricesAtom = Atom.family((environmentId: EnvironmentId) =>
-    Atom.make((get) => {
-      const overrides = get(settingsValueAtom(environmentId))?.usagePriceOverrides ?? {};
-      // Only changed prices should trigger another transcript scan. Settings
-      // snapshots can recreate the same mapping in a different property order.
-      return JSON.stringify(
-        Object.keys(overrides)
-          .sort()
-          .map((model) => {
-            const price = overrides[model]!;
-            return [
-              model,
-              price.inputCostPerMillionTokens,
-              price.outputCostPerMillionTokens,
-              price.cacheReadCostPerMillionTokens,
-              price.cacheWriteCostPerMillionTokens,
-            ];
-          }),
-      );
-    }).pipe(Atom.withLabel(`environment-data:server:usage-prices:${environmentId}`)),
-  );
-  const usageScanSettingsAtom = Atom.family((environmentId: EnvironmentId) =>
-    Atom.make((get) => {
-      const settings = get(settingsValueAtom(environmentId));
-      const aliases = settings?.usageModelAliases ?? {};
-      return JSON.stringify([
-        get(usagePricesAtom(environmentId)),
-        Object.keys(aliases)
-          .sort()
-          .map((model) => [model, aliases[model]]),
-        settings?.cursorKeychainUsageEnabled ?? false,
-      ]);
-    }).pipe(Atom.withLabel(`environment-data:server:usage-scan-settings:${environmentId}`)),
+  // The refresh trigger and the compatibility key of every retained Usage answer.
+  const usageScanSettingsKeyAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) => usageScanSettingsKey(get(settingsValueAtom(environmentId)))).pipe(
+      Atom.withLabel(`environment-data:server:usage-scan-settings:${environmentId}`),
+    ),
   );
   // Settings snapshots rebuild the filter object; only a changed filter should touch the Usage tab.
   const usageModelFilterAtom = Atom.family((environmentId: EnvironmentId) =>
@@ -1622,6 +1595,7 @@ export function createServerEnvironmentAtoms<R, E>(
     hiddenThreadTagsAtom,
     blockedThreadTagsAtom,
     usageModelFilterAtom,
+    usageScanSettingsKeyAtom,
     providersValueAtom,
     cursorUsageAccessAtom,
     providerAuthState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
@@ -1891,7 +1865,7 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:usage-summary",
       tag: WS_METHODS.serverGetUsageSummary,
       staleTimeMs: 60_000,
-      refreshTrigger: ({ environmentId }) => usageScanSettingsAtom(environmentId),
+      refreshTrigger: ({ environmentId }) => usageScanSettingsKeyAtom(environmentId),
       discardPreviousOnSignalChange: true,
       execute: Effect.fn("ServerEnvironment.readUsageSummary")(function* (input, emit, prior) {
         let previous: UsageSummary | undefined;
@@ -1911,14 +1885,14 @@ export function createServerEnvironmentAtoms<R, E>(
             return markUnrefreshedSources(previous);
           }
           const summary = result.success;
-          if (!isUsageSummaryPartial(summary)) return summary;
+          if (!usageSummaryAwaitsRefresh(summary)) return summary;
           previous = summary;
           yield* emit(summary);
         }
+        // The runtime passes `prior` only while the window and the usage settings key are unchanged.
         const fallback =
           previous ??
           (prior !== undefined &&
-          isUsageSummaryPartial(prior) &&
           isCompatibleUsageContractVersion(prior.contractVersion, USAGE_CONTRACT_VERSION)
             ? prior
             : undefined);

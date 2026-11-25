@@ -1,4 +1,9 @@
-import { EnvironmentId, USAGE_CONTRACT_VERSION, UsageDay } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  USAGE_CONTRACT_VERSION,
+  UsageDay,
+  type UsageSummary,
+} from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 
@@ -6,7 +11,25 @@ import { render } from "../../../test/render";
 import type { EnvironmentUsageStatus } from "../../state/usage";
 import { UsageEnvironmentFilter } from "./UsagePage";
 
-it("shows an incomplete status for settled scanTimedOut figures in the web selector", async () => {
+const unreadableTranscript: UsageSummary["sources"][number] = {
+  fingerprint: {
+    hostId: "fixture-host",
+    provider: "claude",
+    resolvedHomePath: "/home/fixture/.claude",
+    volumeId: "1:2",
+  },
+  status: "partial",
+  scannedFiles: 3,
+  skippedFiles: 1,
+  malformedRecords: 0,
+  distinctSessions: 2,
+  message: "One transcript could not be read.",
+};
+
+it.each([
+  ["settled scanTimedOut figures", { partialReason: "scanTimedOut" as const, sources: [] }],
+  ["a transcript the scan could not read", { sources: [unreadableTranscript] }],
+])("shows an incomplete status for %s in the web selector", async (_case, figures) => {
   const environments: readonly EnvironmentUsageStatus[] = [
     {
       environmentId: EnvironmentId.make("fixture"),
@@ -16,6 +39,7 @@ it("shows an incomplete status for settled scanTimedOut figures in the web selec
       canReadDiagnostics: true,
       error: null,
       needsCursorKeychainAccess: false,
+      usageSettingsKey: "settings",
       summary: {
         contractVersion: USAGE_CONTRACT_VERSION,
         readAt: "2026-11-21T12:00:00.000Z",
@@ -23,10 +47,9 @@ it("shows an incomplete status for settled scanTimedOut figures in the web selec
         sinceDay: UsageDay.make("2026-11-21"),
         untilDay: UsageDay.make("2026-11-21"),
         buckets: [],
-        sources: [],
         pricing: { status: "cached", source: "test", fetchedAt: null, knownModels: 0 },
         scanDurationMs: 30_000,
-        partialReason: "scanTimedOut",
+        ...figures,
       },
     },
   ];
@@ -37,10 +60,9 @@ it("shows an incomplete status for settled scanTimedOut figures in the web selec
       selectedEnvironmentIds={null}
       onSelectionChange={vi.fn()}
       showUsageStatus
-      refreshing={false}
-      isPartial={false}
+      refreshingEnvironmentIds={new Set()}
       duplicateSources={[]}
-      contractMismatches={[]}
+      coverage={null}
       onOpenModelPrices={vi.fn()}
     />,
   );

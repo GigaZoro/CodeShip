@@ -1,9 +1,33 @@
-import { EnvironmentId, USAGE_CONTRACT_VERSION, UsageDay } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  USAGE_CONTRACT_VERSION,
+  UsageDay,
+  type UsageSummary,
+} from "@t3tools/contracts";
 import { expect, it } from "vite-plus/test";
 
 import { usageEnvironmentStatus } from "./usageEnvironmentStatus";
 
-it("labels settled scanTimedOut figures as incomplete in the mobile selector", () => {
+const unreadableTranscript: UsageSummary["sources"][number] = {
+  fingerprint: {
+    hostId: "fixture-host",
+    provider: "claude",
+    resolvedHomePath: "/home/fixture/.claude",
+    volumeId: "1:2",
+  },
+  status: "partial",
+  scannedFiles: 3,
+  skippedFiles: 1,
+  malformedRecords: 0,
+  distinctSessions: 2,
+  message: "One transcript could not be read.",
+};
+
+it.each([
+  ["settled scanTimedOut figures", { partialReason: "scanTimedOut" as const, sources: [] }],
+  ["a transcript the scan could not read", { sources: [unreadableTranscript] }],
+  ["a source that failed", { sources: [{ ...unreadableTranscript, status: "failed" as const }] }],
+])("labels %s as incomplete in the mobile selector", (_case, figures) => {
   expect(
     usageEnvironmentStatus(
       {
@@ -14,6 +38,7 @@ it("labels settled scanTimedOut figures as incomplete in the mobile selector", (
         canReadDiagnostics: true,
         error: null,
         needsCursorKeychainAccess: false,
+        usageSettingsKey: "settings",
         summary: {
           contractVersion: USAGE_CONTRACT_VERSION,
           readAt: "2026-11-21T12:00:00.000Z",
@@ -21,10 +46,9 @@ it("labels settled scanTimedOut figures as incomplete in the mobile selector", (
           sinceDay: UsageDay.make("2026-11-21"),
           untilDay: UsageDay.make("2026-11-21"),
           buckets: [],
-          sources: [],
           pricing: { status: "cached", source: "test", fetchedAt: null, knownModels: 0 },
           scanDurationMs: 30_000,
-          partialReason: "scanTimedOut",
+          ...figures,
         },
       },
       false,

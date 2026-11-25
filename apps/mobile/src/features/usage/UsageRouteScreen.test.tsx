@@ -200,6 +200,7 @@ vi.mock("../../state/server", async () => {
   return {
     serverEnvironment: {
       usageModelFilterAtom: () => Atom.make(undefined),
+      usageScanSettingsKeyAtom: () => Atom.make("settings"),
       cursorUsageAccessAtom: (id: EnvironmentId) => Atom.make(cursorUsageAccess(cursorConfig(id))),
       usageSummary: ({
         environmentId,
@@ -366,6 +367,7 @@ it("keeps the mobile compatibility explanation in coverage and the short status 
     isConnected: true,
     canReadDiagnostics: true,
     needsCursorKeychainAccess: false,
+    usageSettingsKey: "settings",
     error: null,
     summary: null,
   };
@@ -447,6 +449,7 @@ function liveEnvironment(id: string, label: string): EnvironmentUsageStatus {
     isConnected: true,
     canReadDiagnostics: true,
     needsCursorKeychainAccess: false,
+    usageSettingsKey: "settings",
     error: null,
     summary: null,
   };

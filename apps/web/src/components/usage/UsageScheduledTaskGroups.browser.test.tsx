@@ -81,6 +81,7 @@ function groups(minutes: number, changed = false, withLaptop = false) {
     isPending: false,
     summary: null,
     needsCursorKeychainAccess: false,
+    usageSettingsKey: "settings",
   };
   const time = Date.parse("2026-11-21T12:00:00Z");
   return (

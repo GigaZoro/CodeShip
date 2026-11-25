@@ -1,5 +1,8 @@
 import {
+  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   USAGE_CONTRACT_VERSION,
   USAGE_MERGE_COMPATIBLE_SINCE,
   UsageDay,
@@ -8,6 +11,7 @@ import {
   type UsageSummaryInput,
 } from "@t3tools/contracts";
 import { usageWindowLabel } from "@t3tools/shared/usageFormat";
+import { usageScanSettingsKey } from "@t3tools/shared/usageScanSettings";
 import { DateTime } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -133,6 +137,7 @@ function status(
     summary: summary({ host: label }),
     canReadDiagnostics: true,
     needsCursorKeychainAccess: false,
+    usageSettingsKey: "settings",
     ...overrides,
   };
 }
@@ -655,22 +660,6 @@ describe("settleUsageView readings", () => {
     expect(shown(updated)).toMatchObject({ tokens: 90, window: nextWeek, kept: false });
   });
 
-  it("marks the previous totals as kept while a model filter changes the request", () => {
-    const desk = answered("Desk", 100);
-    const filter = { exclude: [{ model: "model" }] };
-    const kept = run([
-      { window: tick, environments: [desk] },
-      { window: tick, environments: [pending("Desk", { modelFilter: filter })] },
-    ]);
-    expect(shown(kept)).toMatchObject({ tokens: 100, kept: true });
-
-    const answeredFilter = status("Desk", { modelFilter: filter });
-    expect(shown(settle(kept, { window: tick, environments: [answeredFilter] }))).toMatchObject({
-      tokens: 0,
-      kept: false,
-    });
-  });
-
   it("never keeps an incompatible answer as figures", () => {
     const old = status("Old", {
       summary: summary({ contractVersion: USAGE_MERGE_COMPATIBLE_SINCE - 1 }),
@@ -732,6 +721,67 @@ describe("settleUsageView readings", () => {
       ],
     });
     expect(shown(back)).toMatchObject({ environments: ["Desk"], tokens: 100 });
+  });
+});
+
+describe("settleUsageView usage settings", () => {
+  const before = DEFAULT_SERVER_SETTINGS;
+  it.each([
+    [
+      "a price",
+      {
+        ...before,
+        usagePriceOverrides: {
+          model: { inputCostPerMillionTokens: 5, outputCostPerMillionTokens: 10 },
+        },
+      },
+    ],
+    ["a model alias", { ...before, usageModelAliases: { model: "gpt-5" } }],
+    ["the model filter", { ...before, usageModelFilter: { exclude: [{ model: "model" }] } }],
+    [
+      "Cursor Keychain access",
+      { ...before, cursorKeychainUsageEnabled: !before.cursorKeychainUsageEnabled },
+    ],
+    [
+      "a provider's transcript home",
+      {
+        ...before,
+        providerInstances: {
+          [ProviderInstanceId.make("claudeAgent")]: {
+            driver: ProviderDriverKind.make("claudeAgent"),
+            config: { homePath: "/accounts/work" },
+          },
+        },
+      },
+    ],
+  ] as const)("drops every figure and failure read before changing %s", (_setting, after) => {
+    const old = { usageSettingsKey: usageScanSettingsKey(before) };
+    const changed = { usageSettingsKey: usageScanSettingsKey(after) };
+    const saved = run([
+      {
+        window: tick,
+        environments: [
+          answered("Desk", 100, old),
+          pending("Laptop", { ...old, summary: summary({ tokens: 30, refreshing: ["cursor"] }) }),
+          { ...failed("Phone"), ...old },
+        ],
+      },
+    ]);
+    expect(shown(saved).environments).toEqual(["Desk", "Laptop"]);
+
+    const reloading: Step = {
+      window: tick,
+      environments: ["Desk", "Laptop", "Phone"].map((label) => pending(label, changed)),
+    };
+    const state = settle(saved, reloading);
+    expect(state.view).toEqual({ kind: "loading" });
+    expect(gaps(state, reloading)).toBeNull();
+    const idle = ["Desk", "Laptop", "Phone"].map((label) =>
+      status(label, { ...changed, summary: null }),
+    );
+    expect(settle(saved, { window: tick, environments: idle, enabled: false }).view).toEqual({
+      kind: "none",
+    });
   });
 });
 
