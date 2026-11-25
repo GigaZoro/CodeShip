@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - resume coverage writes, appends
 // to, and truncates real transcript files byte-exactly, mirroring the reader's
 // own deliberate node:fs usage.
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -100,6 +101,25 @@ describe("compressed transcripts", () => {
     );
     assert.deepStrictEqual(listed.failures, []);
     assert.isAbove(listed.files.find((file) => file.path === compressed)?.size ?? 0, 0);
+  });
+
+  it("leaves out a folder removed while the listing walks, without reporting it", async () => {
+    const removed = NodePath.join(dir, "removed");
+    await NodeFSP.mkdir(removed);
+    const kept = NodePath.join(dir, "kept.jsonl");
+    await NodeFSP.writeFile(kept, claudeLine(1, 5));
+    let walkedRoot = false;
+    const listed = await listTranscriptFiles(dir, 0, {
+      onProgress: () => {
+        if (walkedRoot) return;
+        walkedRoot = true;
+        NodeFS.rmdirSync(removed);
+      },
+    });
+    assert.deepStrictEqual(
+      { files: listed.files.map((file) => file.path), failures: listed.failures },
+      { files: [kept], failures: [] },
+    );
   });
 
   it.each([

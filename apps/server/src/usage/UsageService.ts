@@ -50,6 +50,7 @@ import {
 } from "./usagePricing.ts";
 import {
   listTranscriptFiles,
+  PathCallPendingError,
   readDirectoryVolumeId,
   readTranscriptRecords,
   STAT_CONCURRENCY,
@@ -881,16 +882,16 @@ export const make = Effect.gen(function* () {
   const ensureScanCacheLoaded = Effect.gen(function* () {
     if (savedUsageGaps.has(gapKey("load", storeDir)) || !(yield* scanCacheLoadDue)) return;
     let loading = true;
-    const ended = Effect.suspend(() => {
+    const ended = Effect.sync(() => {
       loading = false;
-      return recoverGap("load", storeDir);
+      clearGap("load", storeDir);
     });
     const load = yield* forkSync(loadScanCache.pipe(Effect.ensuring(ended)));
     const loaded = yield* Fiber.join(load).pipe(Effect.timeoutOption(SAVED_USAGE_LOAD_WAIT_MS));
     if (Option.isSome(loaded) || !loading) return;
     yield* reportGap("load", storeDir, "The saved usage sync did not finish in time.");
-    // The load can end while the gap is reported; its own recovery has then already run.
-    if (!loading) yield* recoverGap("load", storeDir);
+    // The load can end while the gap is reported; its own clear has then already run.
+    if (!loading) clearGap("load", storeDir);
   });
   const schedulePersist = forkSync(syncScanCache(true)).pipe(Effect.asVoid);
   const awaitPersisted = Effect.suspend(() => Fiber.awaitAll([...syncFibers])).pipe(Effect.asVoid);
@@ -1080,8 +1081,12 @@ export const make = Effect.gen(function* () {
     return { files, failures: [...cached.failures, ...updated.failures] };
   });
 
-  /** Paths each listing key logged as unreadable; a path logs again only after it reads or goes. */
-  const loggedUnreadable = new Map<string, ReadonlySet<string>>();
+  /**
+   * Paths each listing key logged as unreadable. A path logs again after it reads or goes, or when a
+   * real cause follows a pending call, whose own result reaches no caller.
+   */
+  type LoggedFailure = "pending" | "failed";
+  const loggedUnreadable = new Map<string, ReadonlyMap<string, LoggedFailure>>();
   const logUnreadablePaths = Effect.fn("UsageService.logUnreadablePaths")(function* (
     key: string,
     failures: readonly TranscriptPathFailure[],
@@ -1090,18 +1095,23 @@ export const make = Effect.gen(function* () {
   ) {
     const logged = loggedUnreadable.get(key);
     if (logged === undefined && failures.length === 0) return;
-    const unreadable = new Set<string>();
+    const unreadable = new Map<string, LoggedFailure>();
     for (const { path: failedPath, cause } of failures) {
-      if (!unreadable.has(failedPath) && logged?.has(failedPath) !== true) {
+      const before = unreadable.get(failedPath) ?? logged?.get(failedPath);
+      const now: LoggedFailure = cause instanceof PathCallPendingError ? "pending" : "failed";
+      if (before === undefined || (before === "pending" && now === "failed")) {
         yield* Effect.logError("Could not read transcript usage", { path: failedPath, cause });
       }
-      unreadable.add(failedPath);
+      unreadable.set(failedPath, before === "failed" ? before : now);
     }
     if (logged !== undefined) {
       // A listed file this scan did not try to read has not read again yet.
       const tried = new Set(read.map((file) => file.path));
       for (const file of listed) {
-        if (logged.has(file.path) && !tried.has(file.path)) unreadable.add(file.path);
+        const before = logged.get(file.path);
+        if (before !== undefined && !tried.has(file.path) && !unreadable.has(file.path)) {
+          unreadable.set(file.path, before);
+        }
       }
     }
     if (unreadable.size === 0) loggedUnreadable.delete(key);

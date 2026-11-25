@@ -62,7 +62,7 @@ import {
   SCAN_CACHE_DIRECTORY_NAME,
   USAGE_SCAN_CACHE_VERSION,
 } from "./usageScanCache.ts";
-import { PATH_CALL_PENDING, STAT_CONCURRENCY } from "./usageTranscriptReader.ts";
+import { PathCallPendingError, STAT_CONCURRENCY } from "./usageTranscriptReader.ts";
 
 vi.mock("node:fs/promises", { spy: true });
 vi.mock("../../../../packages/provider-muse/src/server/sdk.ts", async (importOriginal) => ({
@@ -5318,6 +5318,7 @@ describe("UsageService", () => {
       const release = Promise.withResolvers<void>();
       const closed = Promise.withResolvers<void>();
       let hangNextOpen = false;
+      let failNextOpen = false;
       let opens = 0;
       let stats = 0;
       let active = 0;
@@ -5327,6 +5328,10 @@ describe("UsageService", () => {
         return actual.stat(...args);
       });
       using _open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+        if (args[0] === transcript && failNextOpen) {
+          failNextOpen = false;
+          throw Object.assign(new Error("I/O error"), { code: "EIO" });
+        }
         const handle = await actual.open(...args);
         if (args[0] !== transcript) return handle;
         opens++;
@@ -5387,16 +5392,25 @@ describe("UsageService", () => {
           );
         }
         assert.deepStrictEqual({ opens, stats }, callsWhenHung);
+
+        release.resolve();
+        yield* Effect.promise(() => closed.promise);
+        failNextOpen = true;
+        yield* TestClock.adjust("5 seconds");
+        assert.strictEqual(claudeSource(yield* service.readSummary(WINDOW))?.status, "partial");
         assert.deepStrictEqual(
           logs
             .of("Error", "Could not read transcript usage")
             .map((fields) => fields as { path: string; cause: Error })
-            .map(({ path, cause }) => ({ path, cause: cause.message })),
-          [{ path: transcript, cause: PATH_CALL_PENDING }],
+            .map(({ path, cause }) => ({
+              path,
+              cause: cause instanceof PathCallPendingError ? "pending" : cause.message,
+            })),
+          [
+            { path: transcript, cause: "pending" },
+            { path: transcript, cause: "I/O error" },
+          ],
         );
-
-        release.resolve();
-        yield* Effect.promise(() => closed.promise);
         yield* TestClock.adjust("5 seconds");
         const healthy = yield* service.readSummary(WINDOW);
         assert.deepStrictEqual(

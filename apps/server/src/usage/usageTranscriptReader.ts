@@ -57,14 +57,22 @@ export interface TranscriptPathFailure {
   readonly cause: unknown;
 }
 
-export const PATH_CALL_PENDING = "An earlier file system call on this path has not returned.";
+/** Thrown instead of a new call on a path whose earlier call has not returned. */
+export class PathCallPendingError extends Error {
+  constructor() {
+    super("An earlier file system call on this path has not returned.");
+  }
+}
+
+const isGone = (cause: unknown) =>
+  cause instanceof Error && "code" in cause && cause.code === "ENOENT";
 
 // A call on a hung mount holds its descriptor and a libuv thread until the kernel returns,
 // so a path stays here until its own call settles, and no new call starts on it before then.
 const pendingPaths = new Set<string>();
 
 async function callUnlessPending<A>(path: string, call: () => Promise<A>): Promise<A> {
-  if (pendingPaths.has(path)) throw new Error(PATH_CALL_PENDING);
+  if (pendingPaths.has(path)) throw new PathCallPendingError();
   pendingPaths.add(path);
   try {
     return await call();
@@ -127,7 +135,7 @@ export async function listTranscriptFiles(
     try {
       entries = await callUnlessPending(dir, () => NodeFSP.readdir(dir, { withFileTypes: true }));
     } catch (cause) {
-      failures.push({ path: dir, cause });
+      if (!isGone(cause)) failures.push({ path: dir, cause });
       return;
     } finally {
       progress();
@@ -167,9 +175,7 @@ export async function statTranscriptFiles(
           found[index] = { path, size: stats.size, mtimeMs: stats.mtimeMs };
         }
       } catch (cause) {
-        if (!(cause instanceof Error && "code" in cause && cause.code === "ENOENT")) {
-          failures.push({ path, cause });
-        }
+        if (!isGone(cause)) failures.push({ path, cause });
       } finally {
         progress();
       }
