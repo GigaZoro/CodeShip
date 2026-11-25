@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Steps shared by the fork's release workflows, release-fork.yml and
-// release-fork-macos.yml. Plain CommonJS: their jobs run it without installing.
+// Steps shared by the fork's release workflows, release-fork.yml,
+// release-fork-macos.yml and release-fork-retry.yml. Plain CommonJS: their jobs
+// run it without installing.
 "use strict";
 
 const { execFileSync } = require("node:child_process");
@@ -16,6 +17,13 @@ const SAFE_CONFIG_VALUE = /^[A-Za-z0-9._:/-]+$/;
 const SAFE_TAG = /^[A-Za-z0-9._-]+$/;
 const CARRIED_PREFIX = "../";
 const FEED_FILE_LINE = /^(\s*(?:-\s+)?(?:url|path):\s*)(['"]?)([^'"\s]+)\2[ \t]*$/gm;
+const FULL_SHA = /^[0-9a-f]{40}$/;
+// The macOS build of the latest release: the first build, reruns and replacement dispatches
+// share these attempts. A failing run replaces itself up to MACOS_IMMEDIATE_ATTEMPTS, or up
+// to MACOS_MAX_ATTEMPTS when GitHub gave its failed jobs no runner; the schedule does the rest.
+const MACOS_IMMEDIATE_ATTEMPTS = 3;
+const MACOS_MAX_ATTEMPTS = 24;
+const MACOS_WORKFLOW = "release-fork-macos.yml";
 
 /**
  * The public T3 Connect identifiers that development builds read, as
@@ -92,7 +100,7 @@ function availableArtifact(repo, runId, name, api, now) {
 }
 
 function macosPublisherRun(tag, sha, { repository, defaultBranch, api = githubApi }) {
-  if (!repository || !defaultBranch || !SAFE_TAG.test(tag) || !/^[0-9a-f]{40}$/.test(sha)) {
+  if (!repository || !defaultBranch || !SAFE_TAG.test(tag) || !FULL_SHA.test(sha)) {
     throw new Error(
       "A repository, default branch, plain release tag and full release SHA are required.",
     );
@@ -242,6 +250,21 @@ function copiedPublishersBundle(preflight, publisher, repository, readLog) {
   );
 }
 
+// GitHub cancels a job it finds no runner for after about 15 minutes, before any step ran.
+function gotNoRunner(jobs) {
+  const failed = jobs.filter((job) =>
+    ["failure", "cancelled", "timed_out"].includes(job.conclusion),
+  );
+  return (
+    failed.length > 0 && failed.every((job) => !job.runner_id && (job.steps ?? []).length === 0)
+  );
+}
+
+/**
+ * How to get the macOS app of `tag` built: wait, rerun a failed run, or dispatch a new one.
+ * `currentRunId` and `currentAttempt` name the failing run that asks, still in progress:
+ * it cannot rerun itself. Without them, the scheduled catch-up asks.
+ */
 function recoverMacosRun(tag, sha, options) {
   const {
     repository,
@@ -249,17 +272,15 @@ function recoverMacosRun(tag, sha, options) {
     api = githubApi,
     now = Date.now(),
     readLog = readPreflightLog,
-    eventRunId,
-    eventAttempt,
-    immediateLimit,
-    maximum,
+    currentRunId,
+    currentAttempt,
     publishedAt,
   } = options;
   const repo = `repos/${repository}`;
   const title = `Release (fork) macOS ${tag}`;
   const runs = listPages(
     api,
-    `${repo}/actions/workflows/release-fork-macos.yml/runs?event=workflow_dispatch&head_sha=${sha}`,
+    `${repo}/actions/workflows/${MACOS_WORKFLOW}/runs?event=workflow_dispatch&head_sha=${sha}`,
     "workflow_runs",
   )
     .filter(
@@ -272,20 +293,34 @@ function recoverMacosRun(tag, sha, options) {
     )
     .sort((a, b) => b.id - a.id);
   const tagged = runs.filter((r) => r.head_branch === tag && r.display_title === title);
-  if (tagged.some((r) => r.status !== "completed" || r.conclusion === "success"))
-    return { action: "wait" };
-  if (
-    eventRunId &&
-    (!runs[0] || String(runs[0].id) !== eventRunId || runs[0].run_attempt !== eventAttempt)
-  )
+  // A rerun keeps its ID, so the active attempt may belong to an older run.
+  const current = tagged.find(
+    (r) =>
+      String(r.id) === currentRunId &&
+      r.run_attempt === currentAttempt &&
+      r.status === "in_progress",
+  );
+  if (currentRunId !== undefined && !current) return { action: "wait" };
+  const others = tagged.filter((r) => r !== current);
+  if (others.some((r) => r.status !== "completed" || r.conclusion === "success"))
     return { action: "wait" };
 
-  const attempts = runs.reduce((sum, r) => sum + r.run_attempt, 0);
-  if (!Number.isSafeInteger(attempts) || !(immediateLimit >= 1 && maximum >= immediateLimit))
-    throw new Error("Invalid macOS recovery attempt budget.");
-  if (attempts >= maximum)
-    throw new Error(`${tag} reached its ${maximum}-attempt limit across macOS runs.`);
-  if (eventRunId && attempts >= immediateLimit) return { action: "wait" };
+  const attempts = runs.reduce((sum, { run_attempt }) => {
+    if (!Number.isSafeInteger(run_attempt) || run_attempt < 1)
+      throw new Error("Invalid macOS recovery attempt budget.");
+    return sum + run_attempt;
+  }, 0);
+  if (attempts >= MACOS_MAX_ATTEMPTS)
+    throw new Error(`${tag} reached its ${MACOS_MAX_ATTEMPTS}-attempt limit across macOS runs.`);
+  if (
+    current &&
+    attempts >= MACOS_IMMEDIATE_ATTEMPTS &&
+    !gotNoRunner(
+      api(`${repo}/actions/runs/${current.id}/attempts/${current.run_attempt}/jobs?per_page=100`)
+        .jobs,
+    )
+  )
+    return { action: "wait" };
   const publisher = macosPublisherRun(tag, sha, { repository, defaultBranch, api });
   // Legacy preflight logs can take 30 seconds each. Read one only for an available
   // artifact being considered for a rerun, after cheaper checks have passed.
@@ -293,7 +328,7 @@ function recoverMacosRun(tag, sha, options) {
     availableArtifact(repo, id, name, api, now) &&
     copiedPublishersBundle(preflight, publisher, repository, readLog);
   const packagingRuns = [];
-  for (const run of tagged) {
+  for (const run of others) {
     const jobs = listPages(api, `${repo}/actions/runs/${run.id}/jobs?filter=all`, "jobs");
     // Rerunning failed jobs can leave the successful preflight and signed build in an earlier attempt.
     const latest = new Map();
@@ -303,7 +338,9 @@ function recoverMacosRun(tag, sha, options) {
     const preflight = latest.get("Preflight");
     if (preflight?.conclusion !== "success") continue;
     const failed = [...latest.values()].filter(
-      (j) => !["success", "skipped", "neutral"].includes(j.conclusion),
+      (j) =>
+        j.name !== "Recover the macOS build" &&
+        !["success", "skipped", "neutral"].includes(j.conclusion),
     );
     if (!failed.length) continue;
     if (failed.length === 1 && failed[0].name === "Attach to the release") {
@@ -325,13 +362,77 @@ function recoverMacosRun(tag, sha, options) {
     if (canReuse(id, "js-bundle", preflight)) return { action: "rerun", id };
   }
   if (!Number.isFinite(publishedAt)) throw new Error(`Release ${tag} has no publication time.`);
-  if (now - publishedAt < 600_000) return { action: "wait" };
+  // The release dispatches its own first build; give that dispatch time to appear.
+  if (!current && now - publishedAt < 600_000) return { action: "wait" };
   if (!availableArtifact(repo, publisher, "js-bundle", api, now)) {
     throw new Error(
       `No recoverable macOS artifact and no unique available js-bundle from publisher ${publisher} for ${tag}.`,
     );
   }
   return { action: "dispatch", id: publisher };
+}
+
+function readReleaseAsset(repository, id) {
+  return execFileSync(
+    "gh",
+    ["api", "-H", "Accept: application/octet-stream", `repos/${repository}/releases/assets/${id}`],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], timeout: 30_000 },
+  );
+}
+
+/**
+ * The macOS recovery of the latest release, with its tag: done once the release serves its
+ * own latest-mac.yml (until then it carries the previous release's), else recoverMacosRun's
+ * plan. Macs update only to the latest release, so older ones are left alone.
+ */
+function recoverLatestMacos(options) {
+  const { repository, api = githubApi } = options;
+  const readAsset = options.readAsset ?? ((id) => readReleaseAsset(repository, id));
+  const release = api(`repos/${repository}/releases/latest`);
+  const tag = release.tag_name;
+  const sha = release.target_commitish;
+  if (typeof tag !== "string" || !/^v[0-9]+\.[0-9]+\.[0-9]+$/.test(tag) || !FULL_SHA.test(sha)) {
+    throw new Error(`The latest release ${tag} at ${sha} is not a fork release.`);
+  }
+  const feed = (release.assets ?? []).find((asset) => asset.name === "latest-mac.yml");
+  if (
+    feed &&
+    readAsset(feed.id)
+      .split(/\r?\n/)
+      .includes(`version: ${tag.slice(1)}`)
+  ) {
+    return { action: "done", tag };
+  }
+  const plan = recoverMacosRun(tag, sha, {
+    ...options,
+    api,
+    publishedAt: Date.parse(release.published_at),
+  });
+  return { ...plan, tag };
+}
+
+/** The gh arguments that carry out a recovery plan, or null when it needs none. */
+function macosRecoveryCommand(plan, repository) {
+  if (plan.action === "rerun") {
+    return ["run", "rerun", String(plan.id), "--failed", "--repo", repository];
+  }
+  if (plan.action === "dispatch") {
+    return [
+      "workflow",
+      "run",
+      MACOS_WORKFLOW,
+      "--repo",
+      repository,
+      "--ref",
+      plan.tag,
+      "-f",
+      `version=${plan.tag.slice(1)}`,
+      "-f",
+      `bundle_run=${plan.id}`,
+    ];
+  }
+  if (plan.action === "done" || plan.action === "wait") return null;
+  throw new Error(`Unexpected macOS recovery decision ${plan.action}.`);
 }
 
 function main(argv) {
@@ -354,21 +455,24 @@ function main(argv) {
     process.stdout.write(`${run}\n`);
     return;
   }
-  if (command === "recover-macos" && args.length === 3) {
-    const plan = recoverMacosRun(args[0], args[1], {
-      repository: process.env.GITHUB_REPOSITORY,
+  if (command === "recover-macos" && args.length === 0) {
+    const repository = process.env.GITHUB_REPOSITORY;
+    if (!repository) throw new Error("GITHUB_REPOSITORY is required.");
+    const plan = recoverLatestMacos({
+      repository,
       defaultBranch: process.env.DEFAULT_BRANCH,
-      publishedAt: Date.parse(args[2]),
-      immediateLimit: Number(process.env.IMMEDIATE_ATTEMPTS),
-      maximum: Number(process.env.MAX_ATTEMPTS),
-      eventRunId: process.env.RUN_ID || undefined,
-      eventAttempt: Number(process.env.RUN_ATTEMPT),
+      currentRunId: process.env.RUN_ID || undefined,
+      currentAttempt: Number(process.env.RUN_ATTEMPT),
     });
-    process.stdout.write(`${plan.action} ${plan.id ?? ""}\n`);
+    process.stdout.write(
+      `${plan.tag}: ${plan.action}${plan.id === undefined ? "" : ` ${plan.id}`}\n`,
+    );
+    const ghArgs = macosRecoveryCommand(plan, repository);
+    if (ghArgs) execFileSync("gh", ghArgs, { stdio: "inherit", timeout: 60_000 });
     return;
   }
   throw new Error(
-    "Usage: fork-release.cjs public-config [.env.example] | carry-macos-feed <tag> <latest-mac.yml> | macos-bundle <tag> <sha> | recover-macos <tag> <sha> <published-at>",
+    "Usage: fork-release.cjs public-config [.env.example] | carry-macos-feed <tag> <latest-mac.yml> | macos-bundle <tag> <sha> | recover-macos",
   );
 }
 
@@ -381,4 +485,11 @@ if (require.main === module) {
   }
 }
 
-module.exports = { carryMacosFeed, macosBundleRun, publicConfig, recoverMacosRun };
+module.exports = {
+  carryMacosFeed,
+  macosBundleRun,
+  macosRecoveryCommand,
+  publicConfig,
+  recoverLatestMacos,
+  recoverMacosRun,
+};

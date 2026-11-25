@@ -1,9 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Reads the workflow files as plain text, like GitHub does.
-import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 
 import { fromYaml } from "@t3tools/shared/schemaYaml";
-import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Schema from "effect/Schema";
 import type { AppUpdater } from "electron-updater";
 import { ElectronHttpExecutor } from "electron-updater/out/electronHttpExecutor.js";
@@ -13,7 +11,16 @@ import { describe, expect, it } from "vite-plus/test";
 import { carryMacosFeed, publicConfig } from "../.github/scripts/fork-release.cjs";
 
 const WorkflowJob = Schema.Struct({
-  steps: Schema.optional(Schema.Array(Schema.Struct({ run: Schema.optional(Schema.String) }))),
+  if: Schema.optional(Schema.String),
+  permissions: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  steps: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        run: Schema.optional(Schema.String),
+        env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+      }),
+    ),
+  ),
   needs: Schema.optional(Schema.Union([Schema.String, Schema.Array(Schema.String)])),
   "runs-on": Schema.optional(Schema.String),
   uses: Schema.optional(Schema.String),
@@ -167,19 +174,30 @@ describe("fork release", () => {
     expect(retry).toContain("activity?ref=refs/heads/$DEFAULT_BRANCH");
   });
 
-  it("dispatches both macOS builds against the published tag after the default branch advances", () => {
-    for (const [file, tag] of [
-      ["release-fork.yml", "v$VERSION"],
-      ["release-fork-retry.yml", "$tag"],
-    ] as const) {
-      const commands = workflowSource(file)
-        .split("\n")
-        .filter((line) => line.includes("gh workflow run release-fork-macos.yml "));
-      expect(commands).toHaveLength(1);
-      expect(commands[0]).toContain(`--ref "${tag}"`);
-    }
+  it("dispatches the macOS build against the published tag after the default branch advances", () => {
+    const commands = workflowSource("release-fork.yml")
+      .split("\n")
+      .filter((line) => line.includes("gh workflow run release-fork-macos.yml "));
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toContain('--ref "v$VERSION"');
     expect(workflowSource("release-fork-macos.yml")).toContain('"$GITHUB_SHA" != "$sha"');
-    expect(workflowSource("release-fork-retry.yml")).toContain('"$RUN_SHA" != "$sha"');
+  });
+
+  it("recovers a failed macOS build from the build itself", () => {
+    const { jobs } = readWorkflow("release-fork-macos.yml");
+    const recover = jobs.recover!;
+    expect(new Set([recover.needs].flat())).toEqual(
+      new Set(Object.keys(jobs).filter((name) => name !== "recover")),
+    );
+    expect(recover.if).toContain("!cancelled()");
+    expect(recover.if).toContain("contains(needs.*.result, 'failure')");
+    expect(recover.if).toContain("contains(needs.*.result, 'cancelled')");
+    expect(recover["runs-on"]).toBe("ubuntu-24.04");
+    expect(recover.permissions?.actions).toBe("write");
+    const step = recover.steps!.find((candidate) => candidate.run?.includes("recover-macos"))!;
+    expect(step.run).toBe("node .github/scripts/fork-release.cjs recover-macos");
+    expect(step.env?.RUN_ID).toBe("${{ github.run_id }}");
+    expect(step.env?.RUN_ATTEMPT).toBe("${{ github.run_attempt }}");
   });
 
   it("recovers a Mac build only from a dispatch on its published tag", () => {
@@ -188,78 +206,11 @@ describe("fork release", () => {
     expect(workflowSource("release-fork.yml")).toContain("<!-- codeship-publisher-run: %s -->");
     expect(preflight).toContain("run-id: ${{ steps.bundle.outputs.run_id }}");
     expect(preflight).not.toContain("${{ inputs.bundle_run }}");
-    expect(retry).toContain('recover-macos "$tag" "$sha" "$published"');
+    expect(retry).toContain("node .github/scripts/fork-release.cjs recover-macos\n");
     expect(preflight).toContain(
       "name: Download JS bundle from publisher ${{ steps.bundle.outputs.run_id }}",
     );
     expect(workflowSource("release-fork-macos.yml")).toMatch(/^run-name:.*github\.ref_type/m);
-  });
-
-  describe.skipIf(isWindowsHost)("Mac release recovery", () => {
-    const tag = "v2026.1124.7";
-    const title = "Release (fork) macOS " + tag;
-    const script = readWorkflow("release-fork-retry.yml").jobs["catch-up-macos"]!.steps!.find(
-      (step) => step.run?.includes("releases/latest"),
-    )!.run!;
-    const stubs = `
-gh() {
-  case "$1 $2" in
-    "api repos/fixture/repo/releases/latest") echo "v2026.1124.7 abcd 2026-01-01T00:00:00Z false" ;;
-    "run rerun"|"workflow run") echo "WRITE $*" ;;
-    *) return 64 ;;
-  esac
-}
-node() {
-  [[ "$*" == ".github/scripts/fork-release.cjs recover-macos v2026.1124.7 abcd 2026-01-01T00:00:00Z" ]] || return 65
-  [[ "$PLAN" != error ]] || return 1
-  echo "$PLAN"
-}
-`;
-    const run = (env: Record<string, string> = {}) =>
-      NodeChildProcess.spawnSync("bash", ["-c", stubs + script], {
-        encoding: "utf8",
-        env: {
-          PATH: "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
-          GITHUB_REPOSITORY: "fixture/repo",
-          GITHUB_EVENT_NAME: "workflow_run",
-          RUN_TITLE: title,
-          RUN_SHA: "abcd",
-          RUN_ID: "502",
-          PLAN: "wait",
-          MAX_ATTEMPTS: "24",
-          IMMEDIATE_ATTEMPTS: "3",
-          ...env,
-        },
-      });
-    const writes = (env: Record<string, string>) => {
-      const result = run(env);
-      expect(result.status, result.stderr).toBe(0);
-      return result.stdout.split("\n").filter((line) => line.startsWith("WRITE "));
-    };
-
-    it("acts only on the validated tag and publisher plan on either trigger", () => {
-      for (const trigger of ["workflow_run", "schedule"]) {
-        expect(writes({ GITHUB_EVENT_NAME: trigger, PLAN: "dispatch 480" })).toEqual([
-          `WRITE workflow run release-fork-macos.yml --repo fixture/repo --ref ${tag} -f version=2026.1124.7 -f bundle_run=480`,
-        ]);
-        expect(writes({ GITHUB_EVENT_NAME: trigger, PLAN: "rerun 502" })).toEqual([
-          "WRITE run rerun 502 --failed --repo fixture/repo",
-        ]);
-        expect(writes({ GITHUB_EVENT_NAME: trigger, PLAN: "wait" })).toEqual([]);
-      }
-      const unavailable = run({ PLAN: "error" });
-      expect(unavailable.status).not.toBe(0);
-      expect(unavailable.stdout).not.toContain("WRITE ");
-    });
-    it("ignores failure of another release at the same SHA", () => {
-      expect(
-        writes({
-          RUN_TITLE: "Release (fork) macOS v2026.1124.6 (branch dispatch)",
-          PLAN: "dispatch 480",
-        }),
-      ).toEqual([]);
-      expect(writes({ RUN_SHA: "older", PLAN: "dispatch 480" })).toEqual([]);
-    });
   });
 
   it("populates the Mac package cache on main using the release tag's native recipe", () => {

@@ -1,3 +1,7 @@
+## 2026-11-26 — Fork macOS builds recover when GitHub gives them no runner
+
+- When GitHub gives a fork release no macOS runner, the build now requests another attempt as soon as GitHub reports the failure. Previously, Macs could stay on an older release for hours while the build waited for scheduled recovery.
+
 ## 2026-11-26 — Shared client code is checked for untranslated text
 
 - Text that web and mobile both show from the shared client package is now checked by the translation lint, so English that skips the translator is caught before it ships. Two labels it found, the working-agents count read by screen readers and the fallback workflow title, are now translated.

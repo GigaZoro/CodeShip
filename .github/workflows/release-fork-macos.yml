@@ -5,9 +5,10 @@ run-name: Release (fork) macOS v${{ inputs.version }}${{ github.ref_type == 'bra
 # attaches it with its update feed. It runs apart from that workflow because
 # GitHub runs short of hosted macOS runners for hours, and Windows and Linux do
 # not need one. Until it attaches, the release carries the previous release's
-# macOS feed, so Macs stay on that build. release-fork.yml starts it, and
-# release-fork-retry.yml reruns it while its release is the latest. See
-# "Releasing from a fork" in docs/operations/release.md.
+# macOS feed, so Macs stay on that build. release-fork.yml starts it. A failed
+# run reruns or replaces its build itself (job recover), and the schedule of
+# release-fork-retry.yml catches up the rest while its release is the latest.
+# See "Releasing from a fork" in docs/operations/release.md.
 
 on:
   workflow_dispatch:
@@ -22,7 +23,8 @@ on:
         type: string
 
 # A newer pending run replaces an older pending one: Macs only need the newest
-# release. release-fork-retry.yml matches runs to releases by the run name.
+# release. Recovery (fork-release.cjs recover-macos) matches runs to releases by
+# the run name.
 concurrency:
   group: release-fork-macos
   cancel-in-progress: false
@@ -182,3 +184,31 @@ jobs:
           ls -la
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber ./*.dmg ./*.zip ./*.blockmap
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber latest-mac.yml
+
+  # Bot-dispatched builds can finish without a workflow_run notification. While this
+  # run is still active, recovery can rerun another build or dispatch a replacement.
+  recover:
+    name: Recover the macOS build
+    needs: [preflight, metadata_mac, desktop_mac_arm64, attach]
+    if: >-
+      ${{ !cancelled() && github.ref_type == 'tag' &&
+      (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: /.github/scripts/fork-release.cjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Rerun or replace this build while its release is the latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: node .github/scripts/fork-release.cjs recover-macos

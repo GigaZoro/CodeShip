@@ -1,6 +1,11 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { macosBundleRun, recoverMacosRun } = require("./fork-release.cjs");
+const {
+  macosBundleRun,
+  macosRecoveryCommand,
+  recoverLatestMacos,
+  recoverMacosRun,
+} = require("./fork-release.cjs");
 
 const repository = "Example/Fork";
 const defaultBranch = "main";
@@ -162,14 +167,27 @@ const failedBuild = { id: 102, name: "Desktop macOS arm64 / Build", conclusion: 
 const failedAttach = { id: 103, name: "Attach to the release", conclusion: "failure" };
 const page = (field, items) => ({ total_count: items.length, [field]: items });
 const artifact = (id, name) => `actions/runs/${id}/artifacts?name=${name}&per_page=100&page=1`;
+const noRunner = {
+  id: 104,
+  name: "metadata_mac / build",
+  conclusion: "cancelled",
+  runner_id: 0,
+  steps: [],
+};
+const asking = { ...firstMac, status: "in_progress", conclusion: null };
+/** Recovery as the scheduled catch-up asks it, or as the failing run asks it with `fromRun`. */
 const recovery = ({
   runs = [firstMac],
   jobs = [preflight(publisherDownload), failedBuild],
   responses,
   readLog = () => "",
-  immediate = true,
-  eventAttempt = runs[0]?.run_attempt,
-  eventRunId = String(runs[0]?.id),
+  fromRun = false,
+  currentAttempt = runs[0]?.run_attempt,
+  currentRunId = String(runs[0]?.id),
+  currentJobs = [
+    preflight(publisherDownload),
+    { ...failedBuild, runner_id: 7, steps: [ok("Build")] },
+  ],
   elapsed = 600_001,
 } = {}) => {
   const apiInputs = {
@@ -177,6 +195,9 @@ const recovery = ({
     "actions/runs/42": run,
     [macRunsPath]: page("workflow_runs", runs),
     [jobsPath(502) + "1"]: page("jobs", jobs),
+    [`actions/runs/${currentRunId}/attempts/${currentAttempt}/jobs?per_page=100`]: {
+      jobs: currentJobs,
+    },
     ...responses,
   };
   return recoverMacosRun(tag, sha, {
@@ -184,10 +205,8 @@ const recovery = ({
     defaultBranch,
     now,
     readLog,
-    immediateLimit: 3,
-    maximum: 24,
     publishedAt: now - elapsed,
-    ...(immediate ? { eventRunId, eventAttempt } : {}),
+    ...(fromRun ? { currentRunId, currentAttempt } : {}),
     api: (endpoint) => {
       const path = endpoint.replace(`repos/${repository}/`, "");
       assert.ok(Object.hasOwn(apiInputs, path), `Unexpected API request ${path}`);
@@ -256,6 +275,7 @@ test("an attach-only rerun requires the signed artifact and a verified preflight
     preflight(oldDownload),
     { ...failedBuild, conclusion: "success", steps: [ok("Upload build artifacts")] },
     failedAttach,
+    { id: 105, name: "Recover the macOS build", conclusion: "failure" },
   ];
   assert.deepEqual(
     recovery({ jobs, readLog: () => legacyLog(42), responses: ready(502, "desktop-mac-arm64") }),
@@ -306,7 +326,6 @@ test("the final scheduled attempt attaches a signed build before retrying packag
   assert.deepEqual(
     recovery({
       runs,
-      immediate: false,
       responses: { ...responses, ...ready(501, "desktop-mac-arm64") },
     }),
     { action: "rerun", id: 501 },
@@ -314,7 +333,6 @@ test("the final scheduled attempt attaches a signed build before retrying packag
   assert.deepEqual(
     recovery({
       runs,
-      immediate: false,
       responses: { ...responses, ...missing(501, "desktop-mac-arm64") },
     }),
     { action: "rerun", id: 502 },
@@ -344,7 +362,6 @@ test("recovery reads only the qualifying legacy log when 23 runs have finished",
     const decision = recovery({
       runs,
       responses,
-      immediate: false,
       readLog: (_, job) => {
         assert.equal(job.id, chosen, "read a legacy log for a run that cannot be selected");
         logs.push(job.id);
@@ -379,9 +396,12 @@ test("an expired artifact never requires a legacy log download", () => {
 });
 
 test("immediate and scheduled recovery count every attempt and replacement for the release at both limits", () => {
+  assert.throws(
+    () => recovery({ runs: [{ ...firstMac, run_attempt: undefined }] }),
+    /Invalid macOS recovery attempt budget/,
+  );
   for (const legacySource of [false, true]) {
     const jobs = [preflight(legacySource ? oldDownload : publisherDownload), failedBuild];
-    const expected = legacySource ? { action: "dispatch", id: 42 } : { action: "rerun", id: 502 };
     for (const count of [2, 3, 23, 24]) {
       const runs = [
         firstMac,
@@ -398,27 +418,126 @@ test("immediate and scheduled recovery count every attempt and replacement for t
         jobs,
         responses: { ...ready(42, "js-bundle"), ...ready(502, "js-bundle") },
       };
-      for (const immediate of [false, true]) {
-        if (count >= 24) assert.throws(() => recovery({ ...opts, immediate }), /24-attempt limit/);
-        else
-          assert.deepEqual(
-            recovery({ ...opts, immediate }),
-            immediate && count >= 3 ? { action: "wait" } : expected,
-          );
-      }
+      const scheduled = legacySource
+        ? { action: "dispatch", id: 42 }
+        : { action: "rerun", id: 502 };
+      if (count >= 24) assert.throws(() => recovery(opts), /24-attempt limit/);
+      else assert.deepEqual(recovery(opts), scheduled);
+      // A run that asks is still in progress, so it cannot rerun itself: it is replaced.
+      const fromRun = { ...opts, runs: [asking, runs[1]], fromRun: true };
+      if (count >= 24) assert.throws(() => recovery(fromRun), /24-attempt limit/);
+      else
+        assert.deepEqual(
+          recovery(fromRun),
+          count >= 3 ? { action: "wait" } : { action: "dispatch", id: 42 },
+        );
     }
   }
-  const rejections = [firstMac, { ...firstMac, id: 501 }, { ...firstMac, id: 500 }];
-  assert.deepEqual(recovery({ runs: rejections }), { action: "wait" });
+  const rejections = [asking, { ...firstMac, id: 501 }, { ...firstMac, id: 500 }];
+  assert.deepEqual(recovery({ runs: rejections, fromRun: true }), { action: "wait" });
 });
 
-test("a pending build, stale event or newly published release does not create another build", () => {
+test("a pending build, superseded run or newly published release does not create another build", () => {
   assert.deepEqual(recovery({ runs: [{ ...firstMac, status: "queued" }] }), { action: "wait" });
-  assert.deepEqual(recovery({ eventRunId: "501" }), { action: "wait" });
-  assert.deepEqual(recovery({ eventAttempt: 2 }), { action: "wait" });
-  assert.deepEqual(recovery({ runs: [], immediate: false, elapsed: 599_999 }), { action: "wait" });
-  assert.deepEqual(recovery({ runs: [], immediate: false, responses: ready(42, "js-bundle") }), {
+  const pendingOther = [asking, { ...firstMac, id: 501, status: "queued" }];
+  assert.deepEqual(recovery({ runs: pendingOther, fromRun: true }), { action: "wait" });
+  const runs = [asking];
+  assert.deepEqual(recovery({ runs, fromRun: true, currentRunId: "501" }), { action: "wait" });
+  assert.deepEqual(recovery({ runs, fromRun: true, currentAttempt: 2 }), { action: "wait" });
+  assert.deepEqual(recovery({ runs: [], elapsed: 599_999 }), { action: "wait" });
+  assert.deepEqual(recovery({ runs: [], responses: ready(42, "js-bundle") }), {
     action: "dispatch",
     id: 42,
   });
+});
+
+test("a run GitHub gave no runner replaces itself at once, up to the attempt limit", () => {
+  // GitHub starts no workflow_run run for a run GITHUB_TOKEN dispatched, so nothing else
+  // hears of this failure until the schedule fires, hours later under load.
+  for (const count of [1, 3, 23, 24]) {
+    const runs = [{ ...asking, run_attempt: count }];
+    const call = () =>
+      recovery({
+        runs,
+        fromRun: true,
+        currentJobs: [
+          preflight(publisherDownload),
+          noRunner,
+          { name: "Recover", conclusion: null },
+        ],
+        responses: ready(42, "js-bundle"),
+        elapsed: 0,
+      });
+    if (count >= 24) assert.throws(call, /24-attempt limit/);
+    else assert.deepEqual(call(), { action: "dispatch", id: 42 });
+  }
+  // Rerunning failed jobs keeps the original run ID, even after a replacement has failed.
+  assert.deepEqual(
+    recovery({
+      runs: [firstMac, { ...asking, id: 501, run_attempt: 2 }],
+      fromRun: true,
+      currentRunId: "501",
+      currentAttempt: 2,
+      currentJobs: [noRunner],
+      responses: ready(502, "js-bundle"),
+    }),
+    { action: "rerun", id: 502 },
+  );
+});
+
+test("recovery of the latest release ends once it serves its own macOS feed", () => {
+  const feed = (version) => `version: ${version}\r\npath: T3-Code-${version}-arm64.zip\r\n`;
+  const latest = (assets) => ({ ...marked, assets });
+  const recoverWith = (assets, asset) =>
+    recoverLatestMacos({
+      repository,
+      defaultBranch,
+      now: now + 600_001,
+      readAsset: (id) => {
+        assert.equal(id, 7);
+        return asset;
+      },
+      api: (endpoint) => {
+        const path = endpoint.replace(`repos/${repository}/`, "");
+        if (path === "releases/latest") return latest(assets);
+        if (path === macRunsPath) return page("workflow_runs", []);
+        if (path === releasePath) return marked;
+        if (path === "actions/runs/42") return run;
+        if (path === artifact(42, "js-bundle")) return page("artifacts", [bundle]);
+        assert.fail(`Unexpected API request ${path}`);
+      },
+    });
+  const macFeed = [{ id: 7, name: "latest-mac.yml" }];
+  assert.deepEqual(recoverWith(macFeed, feed("2026.1124.3")), { action: "done", tag });
+  // A release carries the previous release's feed until its own build attaches.
+  const replacement = { action: "dispatch", id: 42, tag };
+  assert.deepEqual(recoverWith(macFeed, feed("2026.1124.2")), replacement);
+  assert.deepEqual(recoverWith([]), replacement);
+});
+
+test("a recovery plan dispatches the macOS build from the release tag or reruns failed jobs", () => {
+  assert.deepEqual(macosRecoveryCommand({ action: "dispatch", id: 42, tag }, repository), [
+    "workflow",
+    "run",
+    "release-fork-macos.yml",
+    "--repo",
+    repository,
+    "--ref",
+    tag,
+    "-f",
+    "version=2026.1124.3",
+    "-f",
+    "bundle_run=42",
+  ]);
+  assert.deepEqual(macosRecoveryCommand({ action: "rerun", id: 502, tag }, repository), [
+    "run",
+    "rerun",
+    "502",
+    "--failed",
+    "--repo",
+    repository,
+  ]);
+  assert.equal(macosRecoveryCommand({ action: "wait", tag }, repository), null);
+  assert.equal(macosRecoveryCommand({ action: "done", tag }, repository), null);
+  assert.throws(() => macosRecoveryCommand({ action: "other", tag }, repository), /Unexpected/);
 });
