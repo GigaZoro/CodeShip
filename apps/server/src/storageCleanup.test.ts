@@ -2331,6 +2331,52 @@ it.live(
     ),
 );
 
+it.live.skipIf(!isWindowsHost)(
+  "keeps a tracked NTFS stream written after the owner queues an ordinary release",
+  () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture(undefined, true);
+        fixture.disable();
+        const runId = RunId.make("finished");
+        const owner = shell({
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          status: "completed",
+          latestRunId: runId,
+          latestRunCompletedAt: at(0),
+        });
+        fixture.setThreads([owner]);
+        const { file } = yield* queueWorktreeRelease({
+          stateDir: fixture.config.stateDir,
+          threadId: owner.id,
+          runId,
+          worktreePath: fixture.worktree,
+          durableRef: "refs/heads/main",
+        });
+        const queued = yield* fixture.fs.readFileString(file);
+        const stream = NodePath.join(fixture.worktree, "tracked.txt:private");
+        yield* Effect.promise(() => NodeFSP.writeFile(stream, "owner data"));
+
+        const report = yield* fixture.service.runNow;
+        expect(report.entries.find((entry) => entry.threadId === owner.id)).toMatchObject({
+          outcome: "kept",
+          reason:
+            "Windows worktree contains data or filesystem entries that could not be verified (private-stream)",
+        });
+        expect(yield* Effect.promise(() => NodeFSP.readFile(stream, "utf8"))).toBe("owner data");
+        expect(yield* fixture.fs.readFileString(file)).toBe(queued);
+        expect(yield* fixture.fs.exists(file + ".released")).toBe(false);
+        const { stdout } = yield* fixture.command(fixture.repo, [
+          "worktree",
+          "list",
+          "--porcelain",
+        ]);
+        expect(stdout.split(/\r?\n/)).toContain("branch refs/heads/feature");
+      }),
+    ),
+);
+
 it.live("retains worktree-only history and rejects a release overtaken by a follow-up", () =>
   runCleanupTest(
     Effect.gen(function* () {
