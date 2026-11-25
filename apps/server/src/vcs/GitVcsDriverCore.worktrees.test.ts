@@ -15,6 +15,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { GitCommandError, type WorktreeSubmodules } from "@t3tools/contracts";
 import {
+  gitErrorLines,
   gitFailureFacts,
   makeGitVcsDriverCore,
   parseGitCheckoutProgressLine,
@@ -427,6 +428,43 @@ it.layer(layerTest)("Git worktree creation", (it) => {
         stdoutLength: 0,
         stderrLength: 0,
       });
+    }),
+  );
+
+  it.effect.each([
+    [
+      "fatal: '/w/secret' contains modified or untracked files, use --force to delete it",
+      "fatal: '…' contains modified or untracked files, use --force to delete it",
+    ],
+    [
+      "fatal: cannot remove a locked working tree, lock reason: secret\nuse 'remove -f -f' to override or unlock first",
+      "fatal: cannot remove a locked working tree, lock reason: …",
+    ],
+    [
+      "fatal: cannot remove a locked working tree;\nuse 'remove -f -f' to override or unlock first",
+      "fatal: cannot remove a locked working tree;",
+    ],
+    [
+      "fatal: working trees containing submodules cannot be moved or removed",
+      "fatal: working trees containing submodules cannot be moved or removed",
+    ],
+    ["fatal: '/w/secret' is a main working tree", "fatal: '…' is a main working tree"],
+    [
+      "fatal: validation failed, cannot remove working tree: '/w/secret/.git' does not exist",
+      "fatal: validation failed, cannot remove working tree: …",
+    ],
+    [
+      "fatal: failed to run 'git status' on '/w/secret'",
+      "fatal: failed to run 'git status' on '…'",
+    ],
+    [
+      "fatal: failed to run 'git status' on '/w/secret', code 128",
+      "fatal: failed to run 'git status' on '…', code …",
+    ],
+    ["error: failed to delete '/w/secret': Permission denied", "error: failed to delete '…': …"],
+  ] as const)("keeps why Git refused to remove a worktree: %s", ([stderr, shape]) =>
+    Effect.sync(() => {
+      assert.equal(gitErrorLines(stderr), shape);
     }),
   );
 
