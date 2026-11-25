@@ -334,6 +334,7 @@
 - The Windows check may run for 6 hours, so a large push that selects every test file finishes instead of failing at 1 hour with no failing test.
 - An attachment preview browser test no longer fails on Windows when it restores the source row in a million-line file. Its tolerance now allows for Chromium rounding the scroll position to whole pixels.
 - Web browser tests run with the en-US locale on every machine. They no longer fail where the system formats numbers differently, such as `1 000` for `1,000`.
+- A `check:changed` test that gives a second worktree its own install no longer fails on Windows. Its copy keeps linked packages as links, where Node's copy had turned each into a full folder.
 
 ## 2026-11-25 — Tests that link folders run on Windows without Developer Mode
 

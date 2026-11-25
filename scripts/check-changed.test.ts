@@ -1821,6 +1821,22 @@ const writeUnder = (root: string, file: string, content = "input") => {
   NodeFS.writeFileSync(path, content);
 };
 
+// On Windows cpSync copies a junction inside a folder as the folder it points to, verbatimSymlinks or not.
+const copyKeepingLinks = (from: string, to: string): void => {
+  NodeFS.mkdirSync(NodePath.dirname(to), { recursive: true });
+  const stat = NodeFS.lstatSync(from);
+  if (stat.isSymbolicLink()) {
+    NodeFS.symlinkSync(NodeFS.readlinkSync(from), to, "junction");
+  } else if (stat.isDirectory()) {
+    NodeFS.mkdirSync(to, { recursive: true });
+    for (const entry of NodeFS.readdirSync(from)) {
+      copyKeepingLinks(NodePath.join(from, entry), NodePath.join(to, entry));
+    }
+  } else {
+    NodeFS.copyFileSync(from, to);
+  }
+};
+
 // History A -> B -> C, with HEAD at C. Each remote's main points at A or B.
 function fixture(remotes: Record<string, "A" | "B">) {
   const root = NodeFS.realpathSync(
@@ -2410,10 +2426,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
       worktrees.push(checkout);
       git("worktree", "add", "--detach", checkout, "HEAD");
       for (const file of ["node_modules", ...files]) {
-        NodeFS.cpSync(NodePath.join(root, file), NodePath.join(checkout, file), {
-          recursive: true,
-          verbatimSymlinks: true,
-        });
+        copyKeepingLinks(NodePath.join(root, file), NodePath.join(checkout, file));
       }
       const modules = NodePath.join(checkout, "node_modules");
       // Windows copies a junction as a real folder, which loses the sibling packages that resolve
@@ -2432,10 +2445,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
         ["vitest", NodeFS.realpathSync(NodePath.join(NodePath.dirname(vitePlus), "vitest"))],
       ]);
       for (const [name, shared] of copies) {
-        NodeFS.cpSync(shared, NodePath.join(store(name), name), {
-          recursive: true,
-          verbatimSymlinks: true,
-        });
+        copyKeepingLinks(shared, NodePath.join(store(name), name));
         const dependencies = NodePath.dirname(shared);
         for (const entry of NodeFS.readdirSync(dependencies)) {
           for (const dependency of entry.startsWith("@")
