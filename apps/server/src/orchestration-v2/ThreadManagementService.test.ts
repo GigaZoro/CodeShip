@@ -194,12 +194,16 @@ it.effect.each([
               routedIn.push(input.projectId);
               return input.selection;
             }),
-          limits: Effect.succeed({
-            accounts: new Map(),
-            estimated: new Set<never>(),
-            models: new Map(),
-          }),
-          retryAccount: () => Effect.void,
+          limits: () =>
+            Effect.succeed({
+              accounts: new Map(),
+              estimated: new Set<never>(),
+              models: new Map(),
+              credits: new Map(),
+              grants: new Map(),
+            }),
+          retryAccount: () => Effect.succeed({}),
+          creditRefusal: () => Effect.succeed(null),
           holds: Effect.succeed([]),
           launchLimit: () => Effect.succeed(null),
           failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
@@ -321,12 +325,16 @@ it.effect.each([{ scheduled: false }, { scheduled: true }])(
               routeInputs.push(input);
               return { ...input.selection, instanceId: routed };
             }),
-          limits: Effect.succeed({
-            accounts: new Map(),
-            estimated: new Set<never>(),
-            models: new Map(),
-          }),
-          retryAccount: () => Effect.void,
+          limits: () =>
+            Effect.succeed({
+              accounts: new Map(),
+              estimated: new Set<never>(),
+              models: new Map(),
+              credits: new Map(),
+              grants: new Map(),
+            }),
+          retryAccount: () => Effect.succeed({}),
+          creditRefusal: () => Effect.succeed(null),
           holds: Effect.succeed([]),
           launchLimit: () => Effect.succeed(null),
           failoverLaunch: (input) =>
@@ -366,6 +374,7 @@ it.effect.each([{ scheduled: false }, { scheduled: true }])(
           currentInstanceId: null,
           started: false,
           scheduled,
+          requesterThreadId: threadId,
         },
       ]);
       expect(firstLaunchChecks).toHaveLength(scheduled ? 0 : 1);
@@ -400,12 +409,16 @@ it.effect("a buffered provider wake-up stays on its account when routing would m
             routeInputs.push(input);
             return { ...input.selection, instanceId: routed };
           }),
-        limits: Effect.succeed({
-          accounts: new Map(),
-          estimated: new Set<never>(),
-          models: new Map(),
-        }),
-        retryAccount: () => Effect.void,
+        limits: () =>
+          Effect.succeed({
+            accounts: new Map(),
+            estimated: new Set<never>(),
+            models: new Map(),
+            credits: new Map(),
+            grants: new Map(),
+          }),
+        retryAccount: () => Effect.succeed({}),
+        creditRefusal: () => Effect.succeed(null),
         holds: Effect.succeed([]),
         launchLimit: () => Effect.succeed(null),
         failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),

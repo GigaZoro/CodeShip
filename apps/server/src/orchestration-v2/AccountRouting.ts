@@ -5,10 +5,14 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
   ProviderDriverKind,
+  type ProviderCreditGrant,
+  type ProviderCreditUse,
   ProviderInstanceId,
+  type ProviderRetryUsageLimitResult,
   type ProviderUsageHold,
   type ServerProvider,
   type ServerSettings as ServerSettingsValue,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { mergedProviderInstanceEnvironmentName } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -21,6 +25,7 @@ import {
   supportsAccountFailover,
 } from "@t3tools/shared/serverSettings";
 import {
+  codexCreditStanding,
   exhaustedUsageWindow,
   isSubscriptionAccount,
   nextWeeklyResetMs,
@@ -35,12 +40,14 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
 import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as PrepaidCreditSpend from "./PrepaidCreditSpend.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
 export interface AccountRoutingContext {
@@ -61,6 +68,8 @@ export interface AccountRoutingContext {
     ReadonlyArray<ProjectionStore.RecordedUsageLimit>
   >;
   readonly nowMs: number;
+  /** Who asks and what is spent, for the prepaid credits the user allowed; absent: none spend. */
+  readonly creditAccess?: PrepaidCreditSpend.CreditAccess;
 }
 
 /**
@@ -139,28 +148,70 @@ function refusalEnds(
   });
 }
 
-/** When the used-up usage windows stop limiting `model` (null: account-wide), or null if none does. */
-function windowLimitEnd(provider: ServerProvider, nowMs: number, model: string | null) {
-  const window = exhaustedUsageWindow(provider, nowMs, model);
-  return window === undefined || provider.usageLimits === undefined
-    ? null
-    : {
-        end: usageWindowLimitEnd(provider.usageLimits, window),
-        estimated: window.resetsAt === undefined,
-      };
+const CODEX_DRIVER = ProviderDriverKind.make("codex");
+
+/** What a usage limit is judged from: refusals, the provider's readings, and each account's settings. */
+type LimitInput = Pick<
+  AccountRoutingContext,
+  "settings" | "recordedLimits" | "nowMs" | "creditAccess"
+>;
+
+const grantState = (provider: ServerProvider, input: LimitInput) =>
+  PrepaidCreditSpend.creditGrantState(
+    input.settings,
+    provider.instanceId,
+    input.creditAccess ?? PrepaidCreditSpend.NO_CREDIT_ACCESS,
+  );
+
+/** How an account's prepaid credits stand for new work; null without credits T3 could spend. */
+export function creditUse(provider: ServerProvider, input: LimitInput): ProviderCreditUse | null {
+  if (!isSubscriptionAccount(provider)) return null;
+  const standing = codexCreditStanding(provider, input.nowMs);
+  if (standing === null) return null;
+  if (standing === "used_up") return "used_up";
+  const grant = grantState(provider, input);
+  if (grant !== "granted") return grant;
+  return exhaustedUsageWindow(provider, input.nowMs, null) === undefined ? "standby" : "spending";
+}
+
+/** Whether new work on this account would spend its prepaid credits rather than its plan. */
+function runsOnCredits(provider: ServerProvider, input: LimitInput, model: string | null): boolean {
+  return (
+    codexCreditStanding(provider, input.nowMs) === "usable" &&
+    exhaustedUsageWindow(provider, input.nowMs, model) !== undefined &&
+    grantState(provider, input) === "granted"
+  );
+}
+
+/**
+ * When the used-up usage windows stop limiting `model` (null: account-wide), or null if none does,
+ * as when the user turned on spending the account's prepaid credits and some are left.
+ */
+function windowLimitEnd(provider: ServerProvider, input: LimitInput, model: string | null) {
+  const window = exhaustedUsageWindow(provider, input.nowMs, model);
+  if (window === undefined || provider.usageLimits === undefined) return null;
+  if (runsOnCredits(provider, input, model)) return null;
+  return {
+    end: usageWindowLimitEnd(provider.usageLimits, window),
+    estimated: window.resetsAt === undefined,
+  };
 }
 
 /** The last refusal or used-up window holding `model` (omitted: account-wide), or null if none does. */
 function accountLimitDetail(
   provider: ServerProvider,
-  recorded: AccountRoutingContext["recordedLimits"],
-  nowMs: number,
+  input: LimitInput,
   model?: string,
 ): LimitEnd | null {
   if (!isSubscriptionAccount(provider)) return null;
   const canonical = model === undefined ? null : canonicalModel(provider, model);
-  const ends = refusalEnds(provider, recorded.get(provider.instanceId) ?? [], nowMs, canonical);
-  const windowEnd = windowLimitEnd(provider, nowMs, canonical);
+  const ends = refusalEnds(
+    provider,
+    input.recordedLimits.get(provider.instanceId) ?? [],
+    input.nowMs,
+    canonical,
+  );
+  const windowEnd = windowLimitEnd(provider, input, canonical);
   if (windowEnd !== null) ends.push(windowEnd);
   return ends.length === 0 ? null : ends.reduce((last, end) => (end.end > last.end ? end : last));
 }
@@ -168,26 +219,43 @@ function accountLimitDetail(
 /** When the last refusal or used-up window holding `model` (omitted: account-wide) ends, or null if none does. */
 function accountLimitEnd(
   provider: ServerProvider,
-  recorded: AccountRoutingContext["recordedLimits"],
-  nowMs: number,
+  input: LimitInput,
   model?: string,
 ): number | null {
-  return accountLimitDetail(provider, recorded, nowMs, model)?.end ?? null;
+  return accountLimitDetail(provider, input, model)?.end ?? null;
 }
 
 function accountLimit(
   provider: ServerProvider,
-  recorded: AccountRoutingContext["recordedLimits"],
-  nowMs: number,
+  input: LimitInput,
   model?: string,
 ): LaunchLimit | null {
-  const end = accountLimitEnd(provider, recorded, nowMs, model);
-  return end === null
-    ? null
-    : {
-        instanceId: provider.instanceId,
-        limitedUntil: DateTime.formatIso(DateTime.makeUnsafe(end)),
-      };
+  const end = accountLimitEnd(provider, input, model);
+  if (end === null) return null;
+  const credits = creditUse(provider, input);
+  return {
+    instanceId: provider.instanceId,
+    limitedUntil: DateTime.formatIso(DateTime.makeUnsafe(end)),
+    ...(credits === null ? {} : { credits }),
+  };
+}
+
+/** Whether new work can start on an account now, judged as every launch and delegation judges it. */
+function accountAdmission(
+  provider: ServerProvider,
+  input: LimitInput,
+): ProviderRetryUsageLimitResult {
+  const limit = accountLimitDetail(provider, input);
+  const credits = creditUse(provider, input);
+  return {
+    ...(limit === null
+      ? {}
+      : {
+          limitedUntil: DateTime.formatIso(DateTime.makeUnsafe(limit.end)),
+          ...(limit.estimated ? { estimated: true as const } : {}),
+        }),
+    ...(credits === null ? {} : { credits }),
+  };
 }
 
 /**
@@ -196,17 +264,16 @@ function accountLimit(
  */
 function usageHolds(
   providers: ReadonlyArray<ServerProvider>,
-  recorded: AccountRoutingContext["recordedLimits"],
-  nowMs: number,
+  input: LimitInput,
 ): Array<ProviderUsageHold> {
   return providers.flatMap((provider) => {
-    if (!isSubscriptionAccount(provider) || windowLimitEnd(provider, nowMs, null) !== null)
+    if (!isSubscriptionAccount(provider) || windowLimitEnd(provider, input, null) !== null)
       return [];
-    const refusals = (recorded.get(provider.instanceId) ?? []).filter(
+    const refusals = (input.recordedLimits.get(provider.instanceId) ?? []).filter(
       (refusal) => refusal.modelScope === undefined,
     );
     const appCap = refusals.some((refusal) => refusal.appCap === true);
-    const last = refusalEnds(provider, refusals, nowMs, null).reduce<LimitEnd | null>(
+    const last = refusalEnds(provider, refusals, input.nowMs, null).reduce<LimitEnd | null>(
       (latest, end) => (latest === null || end.end > latest.end ? end : latest),
       null,
     );
@@ -269,10 +336,7 @@ export function modelWithRoom(
   input: AccountRoutingContext & { readonly projectId: ProjectId; readonly model: string },
 ): string | null {
   const model = usableModel(provider, input);
-  return model === null ||
-    accountLimitEnd(provider, input.recordedLimits, input.nowMs, model) !== null
-    ? null
-    : model;
+  return model === null || accountLimitEnd(provider, input, model) !== null ? null : model;
 }
 
 /**
@@ -303,7 +367,7 @@ export function recoveryRoomAt(
     )
   )
     return Infinity;
-  return accountLimitEnd(provider, input.recordedLimits, input.nowMs, model) ?? input.nowMs;
+  return accountLimitEnd(provider, input, model) ?? input.nowMs;
 }
 
 interface AccountSearch extends AccountRoutingContext {
@@ -315,14 +379,16 @@ interface AccountSearch extends AccountRoutingContext {
 }
 
 /**
- * Accounts of `driver` that can run `model` now, highest in the saved account order first, or with
- * `preferEarliestReset` the one whose weekly usage resets first, since room it leaves unused is lost
- * at its reset. An account that must sign in to an MCP server again comes after every account that
- * need not, since its agents would run without that server's tools.
+ * Accounts of `driver` that can run `model` now, in saved order or, with `preferEarliestReset`,
+ * soonest weekly reset first (unused room is lost at it). Plan usage comes before prepaid credits,
+ * which cost money; within each, accounts that must sign in to an MCP server again come last.
  */
-export function accountsWithRoom(
-  input: AccountSearch & McpSignIns,
-): ReadonlyArray<{ readonly instanceId: ProviderInstanceId; readonly model: string }> {
+export function accountsWithRoom(input: AccountSearch & McpSignIns): ReadonlyArray<{
+  readonly instanceId: ProviderInstanceId;
+  readonly model: string;
+  /** New work on it spends the prepaid credits the user allowed, not plan usage. */
+  readonly onCredits: boolean;
+}> {
   if (!supportsAccountFailover(input.driver)) return [];
   const eligible = input.providers.flatMap((provider) => {
     if (provider.driver !== input.driver) return [];
@@ -333,6 +399,7 @@ export function accountsWithRoom(
           {
             instanceId: provider.instanceId,
             model,
+            onCredits: runsOnCredits(provider, input, canonicalModel(provider, model)),
             resetAt: input.preferEarliestReset
               ? (nextWeeklyResetMs(provider, input.nowMs, model) ?? Infinity)
               : Infinity,
@@ -342,12 +409,15 @@ export function accountsWithRoom(
   const ordered = orderProviderInstancesForFailover(
     input.settings.providerInstanceFailoverOrder,
     eligible,
-  )
-    .toSorted((a, b) => (a.resetAt === b.resetAt ? 0 : a.resetAt - b.resetAt))
-    .map(({ instanceId, model }) => ({ instanceId, model }));
+  ).toSorted((a, b) => (a.resetAt === b.resetAt ? 0 : a.resetAt - b.resetAt));
   const signedIn = (account: { readonly instanceId: ProviderInstanceId }) =>
     pendingSignIns(input, account.instanceId).length === 0;
-  return [...ordered.filter(signedIn), ...ordered.filter((account) => !signedIn(account))];
+  return [false, true].flatMap((onCredits) => {
+    const tier = ordered.filter((account) => account.onCredits === onCredits);
+    return [...tier.filter(signedIn), ...tier.filter((account) => !signedIn(account))].map(
+      ({ instanceId, model }) => ({ instanceId, model, onCredits }),
+    );
+  });
 }
 
 /** Accounts of `driver` that could run `model` but for usage, each with when its limits on it end. */
@@ -357,7 +427,7 @@ function accountsByLimitEnd(input: AccountSearch) {
     if (provider.driver !== input.driver) return [];
     const model = usableModel(provider, input);
     if (model === null) return [];
-    const end = accountLimitEnd(provider, input.recordedLimits, input.nowMs, model);
+    const end = accountLimitEnd(provider, input, model);
     return [{ instanceId: provider.instanceId, model, end }];
   });
 }
@@ -417,10 +487,9 @@ export function resolveAutoRoute(
 }
 
 /**
- * Where an Auto selection runs: its provider's Auto model. With account switching on, a thread keeps
- * an account with room unless it must sign in to an MCP server again and the top one need not; else
- * the top one with room (for a scheduled run, the soonest weekly reset). With none, it keeps one that
- * can still run, else the signed-in one whose limit ends first. Off: as named.
+ * Where an Auto selection runs. With account switching on, a thread keeps an account with room
+ * unless the top one ranks above it (plan usage over credits, then no MCP sign-in); else the top one
+ * with room. With none, it keeps one that can still run, else the one whose limit ends first.
  */
 export function routeAutoAccount(
   input: AccountRoutingContext &
@@ -452,10 +521,18 @@ export function routeAutoAccount(
       const model = modelWithRoom(current, search);
       if (model !== null) {
         const keep = { instanceId: current.instanceId, model };
-        if (pendingSignIns(input, current.instanceId).length === 0) return keep;
-        // Accounts that need no sign-in come first, so the top one is the move or there is none.
+        const onCredits = runsOnCredits(current, input, canonicalModel(current, model));
+        const signedIn = pendingSignIns(input, current.instanceId).length === 0;
+        if (!onCredits && signedIn) return keep;
+        // Plan usage comes first, then no sign-in, so the top one is the move or there is none.
         const top = accountsWithRoom(search)[0];
-        return top !== undefined && pendingSignIns(input, top.instanceId).length === 0 ? top : keep;
+        if (top === undefined || top.instanceId === current.instanceId) return keep;
+        if (onCredits && !top.onCredits) return top;
+        return !signedIn &&
+          pendingSignIns(input, top.instanceId).length === 0 &&
+          (onCredits || !top.onCredits)
+          ? top
+          : keep;
       }
     }
     const withRoom = accountsWithRoom(search)[0];
@@ -513,26 +590,32 @@ function routeNamedLaunch(input: AccountRoutingContext & McpSignIns & LaunchInpu
   );
   if (current === undefined) return stay;
   const signedOut = current.enabled && current.auth.status === "unauthenticated";
-  const limited =
-    accountLimitEnd(current, input.recordedLimits, input.nowMs, input.selection.model) !== null;
+  const limited = accountLimitEnd(current, input, input.selection.model) !== null;
+  const onCredits =
+    !limited && runsOnCredits(current, input, canonicalModel(current, input.selection.model));
   const mcpServers = pendingSignIns(input, current.instanceId);
-  if (!signedOut && !limited && mcpServers.length === 0) return stay;
+  if (!signedOut && !limited && !onCredits && mcpServers.length === 0) return stay;
   const others = accountsWithRoom({
     ...input,
     driver: current.driver,
     model: input.selection.model,
     preferEarliestReset: input.scheduled === true,
   }).filter((account) => account.instanceId !== current.instanceId);
+  const onPlan = (account: (typeof others)[number]) => !account.onCredits;
+  const signedIn = (account: (typeof others)[number]) =>
+    pendingSignIns(input, account.instanceId).length === 0;
   const target =
     signedOut || limited
       ? others[0]
-      : others.find((account) => pendingSignIns(input, account.instanceId).length === 0);
+      : onCredits
+        ? (others.find(onPlan) ?? (mcpServers.length > 0 ? others.find(signedIn) : undefined))
+        : others.find((account) => signedIn(account) && onPlan(account));
   if (target !== undefined) {
     return {
       selection: { ...input.selection, instanceId: target.instanceId, model: target.model },
       failover: signedOut
         ? { reason: "signedOut" }
-        : limited
+        : limited || (onCredits && onPlan(target))
           ? { reason: "usageLimit" }
           : { reason: "mcpSignIn", mcpServers },
     };
@@ -612,7 +695,7 @@ export function failoverLimitedLaunch(
     const account = named ?? accounts[0];
     if (account !== undefined) {
       return {
-        selection: { ...selection, ...account },
+        selection: { ...selection, instanceId: account.instanceId, model: account.model },
         failover: { reason: "usageLimit", crossProviderFrom: primary.selection.instanceId },
       };
     }
@@ -633,8 +716,7 @@ function fallbackLaunch(
     return null;
   }
   const model = runnableModel(provider, { ...input, model: fallback.model });
-  return model === null ||
-    accountLimitEnd(provider, input.recordedLimits, input.nowMs, model) !== null
+  return model === null || accountLimitEnd(provider, input, model) !== null
     ? null
     : { ...fallback, model };
 }
@@ -643,6 +725,8 @@ export interface LaunchLimit {
   readonly instanceId: ProviderInstanceId;
   /** The provider's reset or T3's bounded hold end, as an ISO time. */
   readonly limitedUntil: string;
+  /** How the account's prepaid credits stand; omitted when it has none T3 could spend. */
+  readonly credits?: ProviderCreditUse;
 }
 
 export class UnknownAccountError extends Schema.TaggedError<UnknownAccountError>()(
@@ -690,7 +774,7 @@ function selectionWait(
       : [
           {
             instanceId: provider.instanceId,
-            end: accountLimitEnd(provider, input.recordedLimits, input.nowMs, model),
+            end: accountLimitEnd(provider, input, model),
           },
         ];
   });
@@ -725,7 +809,7 @@ function delegateWait(
         ? [
             {
               instanceId: provider.instanceId,
-              end: accountLimitEnd(provider, input.recordedLimits, input.nowMs),
+              end: accountLimitEnd(provider, input),
             },
           ]
         : [],
@@ -787,55 +871,91 @@ const usageHasRoom: ReadingFrees = (provider, nowMs) =>
   provider.usageLimits?.usageAllowed !== false &&
   exhaustedUsageWindow(provider, nowMs) === undefined;
 
+/** The thread new work is for, which decides whether the prepaid credits the user allowed apply. */
+interface CreditRequest {
+  readonly requesterThreadId?: ThreadId | undefined;
+}
+
+/** Why a turn may not start on an account: it would spend prepaid credits the user did not allow. */
+export interface CreditRefusal {
+  readonly credits: Exclude<PrepaidCreditSpend.CreditGrantState, "granted">;
+  /** When the plan usage it would run on comes back. */
+  readonly limitedUntil: string;
+}
+
 export class AccountRouting extends Context.Service<
   AccountRouting,
   {
     /** Resolves an Auto selection to the model and account its next turn runs on. */
-    readonly route: (input: {
-      readonly selection: ModelSelection;
-      readonly projectId: ProjectId;
-      readonly currentInstanceId: ProviderInstanceId | null;
-      readonly started: boolean;
-      readonly scheduled?: boolean;
-    }) => Effect.Effect<ModelSelection>;
+    readonly route: (
+      input: {
+        readonly selection: ModelSelection;
+        readonly projectId: ProjectId;
+        readonly currentInstanceId: ProviderInstanceId | null;
+        readonly started: boolean;
+        readonly scheduled?: boolean;
+      } & CreditRequest,
+    ) => Effect.Effect<ModelSelection>;
     /**
-     * Subscription accounts that can run this model, in failover order, with accounts that must
-     * sign in to an MCP server again last, and the servers each must sign in to. Lists the MCP
-     * servers of the provider's accounts first (bounded wait).
+     * Subscription accounts that can run this model, in failover order, with accounts that would
+     * spend prepaid credits after those with plan usage left, and within each the accounts that
+     * must sign in to an MCP server again last, with the servers each must sign in to. Lists the
+     * MCP servers of the provider's accounts first (bounded wait).
      */
-    readonly accountsWithRoom: (input: {
-      readonly driver: ProviderDriverKind;
-      readonly projectId: ProjectId;
-      readonly model: string;
-    }) => Effect.Effect<
+    readonly accountsWithRoom: (
+      input: {
+        readonly driver: ProviderDriverKind;
+        readonly projectId: ProjectId;
+        readonly model: string;
+      } & CreditRequest,
+    ) => Effect.Effect<
       ReadonlyArray<{
         readonly instanceId: ProviderInstanceId;
         readonly model: string;
         readonly mcpSignInsNeeded: ReadonlyArray<string>;
+        /** New work on it spends the prepaid credits the user turned on, not plan usage. */
+        readonly onCredits: boolean;
       }>
     >;
-    /** Account-wide usage limits, ending at the provider reset or T3 hold end. */
-    readonly limits: Effect.Effect<{
+    /** Account-wide usage limits for the requester's new work, ending at the provider reset or T3 hold end. */
+    readonly limits: (input?: CreditRequest) => Effect.Effect<{
       readonly accounts: ReadonlyMap<ProviderInstanceId, string>;
       /** Accounts in `accounts` whose end is T3's guess, not a reset the provider read. */
       readonly estimated: ReadonlySet<ProviderInstanceId>;
       readonly models: ReadonlyMap<ProviderInstanceId, ReadonlySet<string>>;
+      /** How each account's prepaid credits stand for this work; absent for accounts without any. */
+      readonly credits: ReadonlyMap<ProviderInstanceId, ProviderCreditUse>;
+      /** What the user allowed each account to spend of its prepaid credits, and what is left. */
+      readonly grants: ReadonlyMap<ProviderInstanceId, ProviderCreditGrant>;
     }>;
     /**
-     * Ends the recorded holds of an account, so its next turn tries it again. A refusal after this
-     * holds it again.
+     * Ends the recorded holds of an account, so its next turn tries it again, and says whether the
+     * requester's new work can start on it now: a used-up plan still holds it unless the work may
+     * spend the prepaid credits the user allowed. A refusal after this holds it again.
      */
     readonly retryAccount: (
       instanceId: ProviderInstanceId,
-    ) => Effect.Effect<void, UnknownAccountError>;
+      request?: CreditRequest,
+    ) => Effect.Effect<ProviderRetryUsageLimitResult, UnknownAccountError>;
+    /**
+     * Why a turn of this thread may not start on the account: its plan usage for `model` is used
+     * up, so it would spend prepaid credits the user did not allow it; null when it may start.
+     */
+    readonly creditRefusal: (input: {
+      readonly threadId: ThreadId;
+      readonly instanceId: ProviderInstanceId;
+      readonly model: string;
+    }) => Effect.Effect<CreditRefusal | null>;
     /** The accounts `retryAccount` can release, and the ones ChatGPT's app cap stopped. */
     readonly holds: Effect.Effect<ReadonlyArray<ProviderUsageHold>>;
     /** The usage-limited account a new thread on `selection` would start on, or null if it has room. */
-    readonly launchLimit: (input: {
-      readonly selection: ModelSelection;
-      readonly projectId: ProjectId;
-      readonly allowFailover?: boolean;
-    }) => Effect.Effect<LaunchLimit | null>;
+    readonly launchLimit: (
+      input: {
+        readonly selection: ModelSelection;
+        readonly projectId: ProjectId;
+        readonly allowFailover?: boolean;
+      } & CreditRequest,
+    ) => Effect.Effect<LaunchLimit | null>;
     /**
      * The account a new thread starts on when its named one is out of usage, signed out, or must
      * sign in to an MCP server again, and why it moved. Lists the MCP servers of the provider's
@@ -843,9 +963,10 @@ export class AccountRouting extends Context.Service<
      * Auto routes from those lists on its first turn unless this launch changes providers.
      */
     readonly failoverLaunch: (
-      input: LaunchInput & {
-        readonly discoverMcpSignIns?: boolean;
-      },
+      input: LaunchInput &
+        CreditRequest & {
+          readonly discoverMcpSignIns?: boolean;
+        },
     ) => Effect.Effect<LaunchRoute>;
     /**
      * `usageBlock` for a scheduled occurrence. The usage of each account in the way is read again
@@ -867,7 +988,6 @@ export class AccountRouting extends Context.Service<
   }
 >()("t3/orchestration-v2/AccountRouting") {}
 
-const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
 
 // The instance's own CODEX_HOME is the login home when no home path is set.
@@ -964,6 +1084,41 @@ export const layer = Layer.effect(
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const settingsChanges = yield* serverSettings.subscribeChanges;
     const platform = yield* HostProcess.Platform;
+    // Without a database nothing is counted against a cap, so no account spends prepaid credits.
+    const ledger = Option.getOrUndefined(yield* Effect.serviceOption(SqlClient.SqlClient));
+    const logCreditSpendFailure = Effect.catchCause((cause) =>
+      Effect.logWarning("orchestration-v2.account-routing.credit-spend-failed", { cause }),
+    );
+    // Forgets the count of every allowance the user removed, and counts a new one from now.
+    const settleCreditGrants = (settings: LimitInput["settings"]) =>
+      ledger === undefined
+        ? Effect.void
+        : PrepaidCreditSpend.forgetUngrantedSpend(ledger, settings).pipe(
+            Effect.andThen(providerRegistry.getProviders),
+            Effect.flatMap((providers) =>
+              PrepaidCreditSpend.recordCreditBalances(ledger, providers, settings),
+            ),
+            logCreditSpendFailure,
+          );
+    if (ledger !== undefined) {
+      // An allowance removed while the server was down starts again from zero.
+      yield* PrepaidCreditSpend.ensureCreditSpendTable(ledger).pipe(
+        Effect.andThen(serverSettings.getSettings),
+        Effect.flatMap(settleCreditGrants),
+        logCreditSpendFailure,
+      );
+      // Decisions count the reading they use; this counts the readings between them too.
+      yield* forkParked(
+        Stream.runForEach(providerRegistry.streamChanges, (providers) =>
+          serverSettings.getSettings.pipe(
+            Effect.flatMap((settings) =>
+              PrepaidCreditSpend.recordCreditBalances(ledger, providers, settings),
+            ),
+            logCreditSpendFailure,
+          ),
+        ),
+      );
+    }
     let instances = (yield* serverSettings.getSettings.pipe(Effect.orDie)).providerInstances;
     yield* forkParked(
       Stream.runForEach(settingsChanges, (settings) => {
@@ -982,8 +1137,42 @@ export const layer = Layer.effect(
               ),
             ),
           { discard: true },
-        );
+        ).pipe(Effect.andThen(settleCreditGrants(settings)));
       }),
+    );
+    const readCreditAccess = Effect.fn("AccountRouting.readCreditAccess")(
+      function* (
+        settings: LimitInput["settings"],
+        providers: ReadonlyArray<ServerProvider>,
+        requesterThreadId: ThreadId | undefined,
+      ) {
+        const grants = PrepaidCreditSpend.creditGrants(settings);
+        if (grants.size === 0 || ledger === undefined) return PrepaidCreditSpend.NO_CREDIT_ACCESS;
+        // The reading this decision is made from counts first, so the cap holds against it.
+        yield* PrepaidCreditSpend.recordCreditBalances(ledger, providers, settings);
+        const scoped = [...grants.values()].some((grant) => grant.threadIds !== undefined);
+        return {
+          spent: yield* PrepaidCreditSpend.readCreditSpend(ledger),
+          requesters:
+            requesterThreadId === undefined
+              ? []
+              : scoped
+                ? yield* PrepaidCreditSpend.requesterThreads(
+                    projections.getThreadShell,
+                    requesterThreadId,
+                  )
+                : [requesterThreadId],
+        } satisfies PrepaidCreditSpend.CreditAccess;
+      },
+      // Credits are money: when the count or the requester cannot be read, nothing spends them.
+      (effect) =>
+        effect.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("orchestration-v2.account-routing.credit-access-unavailable", {
+              cause,
+            }).pipe(Effect.as(PrepaidCreditSpend.NO_CREDIT_ACCESS)),
+          ),
+        ),
     );
     // Limits only steer and warn; a failed read leaves every account usable.
     const readLimits = (now: DateTime.Utc, providers: ReadonlyArray<ServerProvider>) =>
@@ -1007,12 +1196,15 @@ export const layer = Layer.effect(
       const now = yield* DateTime.now;
       const providers = yield* providerRegistry.getProviders;
       const recordedLimits = yield* readLimits(now, providers);
+      const settings = yield* serverSettings.getSettings;
+      // An occurrence has no thread yet, so only credits allowed to every thread let it run.
       const block = usageBlock({
         ...input,
-        settings: yield* serverSettings.getSettings,
+        settings,
         providers,
         recordedLimits,
         nowMs: DateTime.toEpochMillis(now),
+        creditAccess: yield* readCreditAccess(settings, providers, undefined),
       });
       return { block, providers, recordedLimits };
     });
@@ -1173,6 +1365,7 @@ export const layer = Layer.effect(
             recordedLimits: yield* readLimits(now, providers),
             mcpSignInsNeeded,
             nowMs: DateTime.toEpochMillis(now),
+            creditAccess: yield* readCreditAccess(settings, providers, input.requesterThreadId),
           }).map((account) => ({
             ...account,
             mcpSignInsNeeded: pendingSignIns({ mcpSignInsNeeded }, account.instanceId),
@@ -1187,15 +1380,35 @@ export const layer = Layer.effect(
             ),
           ),
       ),
-      limits: Effect.gen(function* () {
+      limits: Effect.fn("AccountRouting.limits")(function* (request?: CreditRequest) {
         const now = yield* DateTime.now;
         const providers = yield* providerRegistry.getProviders;
-        const recorded = yield* readLimits(now, providers);
+        const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+        const creditAccess = yield* readCreditAccess(
+          settings,
+          providers,
+          request?.requesterThreadId,
+        );
+        const input: LimitInput = {
+          settings,
+          recordedLimits: yield* readLimits(now, providers),
+          nowMs: DateTime.toEpochMillis(now),
+          creditAccess,
+        };
         const limited = new Map<ProviderInstanceId, string>();
         const estimated = new Set<ProviderInstanceId>();
         const models = new Map<ProviderInstanceId, ReadonlySet<string>>();
+        const credits = new Map<ProviderInstanceId, ProviderCreditUse>();
+        const grants = new Map<ProviderInstanceId, ProviderCreditGrant>();
+        for (const [instanceId, grant] of PrepaidCreditSpend.creditGrants(settings))
+          grants.set(
+            instanceId,
+            PrepaidCreditSpend.creditGrantReport(grant, creditAccess.spent.get(instanceId)),
+          );
         for (const provider of providers) {
-          const detail = accountLimitDetail(provider, recorded, DateTime.toEpochMillis(now));
+          const use = creditUse(provider, input);
+          if (use !== null) credits.set(provider.instanceId, use);
+          const detail = accountLimitDetail(provider, input);
           if (detail !== null) {
             limited.set(provider.instanceId, DateTime.formatIso(DateTime.makeUnsafe(detail.end)));
             if (detail.estimated) estimated.add(provider.instanceId);
@@ -1204,36 +1417,63 @@ export const layer = Layer.effect(
               provider.instanceId,
               new Set(
                 provider.models
-                  .filter(
-                    (model) =>
-                      accountLimitEnd(
-                        provider,
-                        recorded,
-                        DateTime.toEpochMillis(now),
-                        model.slug,
-                      ) !== null,
-                  )
+                  .filter((model) => accountLimitEnd(provider, input, model.slug) !== null)
                   .map((model) => model.slug),
               ),
             );
         }
-        return { accounts: limited, estimated, models };
+        return { accounts: limited, estimated, models, credits, grants };
       }),
-      retryAccount: Effect.fn("AccountRouting.retryAccount")(function* (instanceId) {
+      retryAccount: Effect.fn("AccountRouting.retryAccount")(function* (instanceId, request) {
         const providers = yield* providerRegistry.getProviders;
-        if (!providers.some((provider) => provider.instanceId === instanceId)) {
-          return yield* new UnknownAccountError({ instanceId });
-        }
+        const provider = providers.find((entry) => entry.instanceId === instanceId);
+        if (provider === undefined) return yield* new UnknownAccountError({ instanceId });
         yield* projections.liftUsageLimitHolds(instanceId, yield* DateTime.now).pipe(Effect.orDie);
+        // Judged from the same reads as every launch, so the report cannot promise what they refuse.
+        const now = yield* DateTime.now;
+        const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+        return accountAdmission(provider, {
+          settings,
+          recordedLimits: yield* readLimits(now, providers),
+          nowMs: DateTime.toEpochMillis(now),
+          creditAccess: yield* readCreditAccess(settings, providers, request?.requesterThreadId),
+        });
+      }),
+      creditRefusal: Effect.fn("AccountRouting.creditRefusal")(function* (input) {
+        const providers = yield* providerRegistry.getProviders;
+        const provider = providers.find((entry) => entry.instanceId === input.instanceId);
+        const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        if (provider?.usageLimits === undefined || !isSubscriptionAccount(provider)) return null;
+        const window = exhaustedUsageWindow(provider, nowMs, canonicalModel(provider, input.model));
+        // With plan usage left, or no credits to spend, the provider itself decides.
+        if (window === undefined || codexCreditStanding(provider, nowMs) !== "usable") return null;
+        const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+        const state = PrepaidCreditSpend.creditGrantState(
+          settings,
+          provider.instanceId,
+          yield* readCreditAccess(settings, providers, input.threadId),
+        );
+        return state === "granted"
+          ? null
+          : {
+              credits: state,
+              limitedUntil: DateTime.formatIso(
+                DateTime.makeUnsafe(usageWindowLimitEnd(provider.usageLimits, window)),
+              ),
+            };
       }),
       // Unlike routing, a list the user reads fails loudly rather than showing no holds.
       holds: Effect.gen(function* () {
         const now = yield* DateTime.now;
         const providers = yield* providerRegistry.getProviders;
-        const recorded = yield* projections
+        const recordedLimits = yield* projections
           .getUsageLimitedProviderInstances(now, runLiftsScope(providers))
           .pipe(Effect.orDie);
-        return usageHolds(providers, recorded, DateTime.toEpochMillis(now));
+        return usageHolds(providers, {
+          settings: yield* serverSettings.getSettings.pipe(Effect.orDie),
+          recordedLimits,
+          nowMs: DateTime.toEpochMillis(now),
+        });
       }).pipe(Effect.withSpan("AccountRouting.holds")),
       launchLimit: Effect.fn("AccountRouting.launchLimit")(
         function* (input) {
@@ -1249,6 +1489,7 @@ export const layer = Layer.effect(
             recordedLimits: limited,
             nowMs: DateTime.toEpochMillis(now),
             mcpSignInsNeeded: new Map(),
+            creditAccess: yield* readCreditAccess(settings, providers, input.requesterThreadId),
           };
           const routed =
             input.allowFailover === true
@@ -1259,9 +1500,7 @@ export const layer = Layer.effect(
               ? primaryLaunch(context).selection
               : routed;
           const provider = providers.find((entry) => entry.instanceId === selection.instanceId);
-          return provider === undefined
-            ? null
-            : accountLimit(provider, limited, DateTime.toEpochMillis(now), selection.model);
+          return provider === undefined ? null : accountLimit(provider, context, selection.model);
         },
         (effect) =>
           effect.pipe(
@@ -1299,6 +1538,7 @@ export const layer = Layer.effect(
             providers,
             recordedLimits: yield* readLimits(now, providers),
             nowMs: DateTime.toEpochMillis(now),
+            creditAccess: yield* readCreditAccess(settings, providers, input.requesterThreadId),
           };
           if (input.discoverMcpSignIns === false) {
             const mcpSignInsNeeded = yield* readMcpSignIns(mcp, { ...context, mode: "loaded" });
@@ -1350,6 +1590,7 @@ export const layer = Layer.effect(
               mode: "loaded",
             }),
             nowMs: DateTime.toEpochMillis(now),
+            creditAccess: yield* readCreditAccess(settings, providers, input.requesterThreadId),
           });
         },
         // Routing only improves where a turn starts; the selected account still runs without it.

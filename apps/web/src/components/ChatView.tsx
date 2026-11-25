@@ -2604,9 +2604,13 @@ export default function ChatView(props: ChatViewProps) {
                 onRetryAccount: async () => {
                   const result = await retryUsageLimit({
                     environmentId,
-                    input: { instanceId: activeRuntime.providerInstanceId },
+                    input: {
+                      instanceId: activeRuntime.providerInstanceId,
+                      threadId: activeThreadShell.id,
+                    },
                   });
                   if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+                  return result.value;
                 },
               }
             : {}),

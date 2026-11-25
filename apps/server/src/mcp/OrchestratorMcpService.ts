@@ -51,6 +51,8 @@ import {
   type OrchestratorMcpUpdateScheduledTaskInput,
   type OrchestratorMcpListScheduledTasksInput,
   type ProjectId,
+  type ProviderCreditGrant,
+  type ProviderCreditUse,
   type ProviderInstanceId,
   type OrchestratorMcpThreadDetail,
   type OrchestratorMcpThreadPullRequest,
@@ -160,7 +162,12 @@ import {
   taskPrompt,
 } from "./delegatedTaskModes.ts";
 import { isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
-import { providerUsageFields, publishesUsage, usageReadingStale } from "./orchestratorUsage.ts";
+import {
+  providerUsageFields,
+  publishesUsage,
+  usageLimitReason,
+  usageReadingStale,
+} from "./orchestratorUsage.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
@@ -576,6 +583,8 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
       readonly selection: ModelSelection;
       readonly projectId: ProjectId;
       readonly allowFailover?: boolean;
+      /** The thread a delegate is for, whose allowance of prepaid credits then applies. */
+      readonly requesterThreadId?: ThreadId;
     },
     routing: Option.Option<AccountRouting.AccountRouting["Service"]>,
   ) {
@@ -583,11 +592,15 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
     const limit = yield* routing.value.launchLimit(input);
     if (limit === null) return;
     const until = ` until ${limit.limitedUntil}`;
+    const reason =
+      limit.credits === undefined || limit.credits === "spending" || limit.credits === "standby"
+        ? ""
+        : ` (${usageLimitReason(limit.credits)})`;
     return yield* failure(
       "provider_unavailable",
       input.selection.autoAccount === true
-        ? `Auto would start on account ${limit.instanceId}, usage-limited${until}: no other account has room, or account switching is off in Settings. The thread was not created. Retry when usage is available, or name another provider's model.`
-        : `Account ${limit.instanceId} is usage-limited${until}, so the thread was not created. Pick an account without usageLimited or limitedUntil in orchestrator_capabilities, or retry when usage is available.`,
+        ? `Auto would start on account ${limit.instanceId}, usage-limited${until}${reason}: no other account has room, or account switching is off in Settings. The thread was not created. Retry when usage is available, or name another provider's model.`
+        : `Account ${limit.instanceId} is usage-limited${until}${reason}, so the thread was not created. Pick an account without usageLimited or limitedUntil in orchestrator_capabilities, or retry when usage is available.`,
     );
   },
 );
@@ -1747,20 +1760,24 @@ const make = Effect.gen(function* () {
           (yield* accountRouting.value.launchLimit({
             projectId: input.parent.thread.projectId,
             selection: { instanceId, model: driverModel },
+            requesterThreadId: input.parent.thread.id,
           })) === null;
         const withRoom = yield* accountRouting.value.accountsWithRoom({
           driver: requestedDriver,
           projectId: input.parent.thread.projectId,
           model: driverModel,
+          requesterThreadId: input.parent.thread.id,
         });
-        // A parent account that must sign in to an MCP server again would start the child without
-        // that server's tools, so it is left for an account with room and no sign-in to redo.
-        const parentSignIns =
-          withRoom.find((candidate) => candidate.instanceId === inherited.instanceId)
-            ?.mcpSignInsNeeded ?? [];
-        if (!parentCanRun || parentSignIns.length > 0) {
+        // A parent account that would spend prepaid credits, or must sign in to an MCP server again
+        // and so start the child without its tools, is left for an account that ranks above it:
+        // plan usage before credits, which cost money, then no sign-in to redo.
+        const rank = (candidate: (typeof withRoom)[number]) =>
+          (candidate.onCredits ? 2 : 0) + (candidate.mcpSignInsNeeded.length > 0 ? 1 : 0);
+        const parent = withRoom.find((candidate) => candidate.instanceId === inherited.instanceId);
+        const parentRank = parent === undefined ? 0 : rank(parent);
+        if (!parentCanRun || parentRank > 0) {
           for (const candidate of withRoom) {
-            if (parentCanRun && candidate.mcpSignInsNeeded.length > 0) continue;
+            if (parentCanRun && rank(candidate) >= parentRank) continue;
             if (!healthyCandidates.some((provider) => provider.instanceId === candidate.instanceId))
               continue;
             if (
@@ -3249,8 +3266,10 @@ const make = Effect.gen(function* () {
             accounts: new Map<ProviderInstanceId, string>(),
             estimated: new Set<ProviderInstanceId>(),
             models: new Map<ProviderInstanceId, ReadonlySet<string>>(),
+            credits: new Map<ProviderInstanceId, ProviderCreditUse>(),
+            grants: new Map<ProviderInstanceId, ProviderCreditGrant>(),
           }
-        : yield* accountRouting.value.limits;
+        : yield* accountRouting.value.limits({ requesterThreadId: parent?.thread.id });
       const redemptions =
         input.usage === true && Option.isSome(usageResetRedeemer)
           ? yield* usageResetRedeemer.value.lastRedemptions
@@ -3291,6 +3310,8 @@ const make = Effect.gen(function* () {
             constraints.push("Disabled for this project.");
           }
           const limitedUntil = availability.accounts.get(provider.instanceId);
+          const prepaidCredits = availability.credits.get(provider.instanceId);
+          const prepaidCreditGrant = availability.grants.get(provider.instanceId);
           const { listed, omitted } = listCapabilityModels({
             provider,
             preferences: settings.providerModelPreferences?.[provider.instanceId],
@@ -3334,8 +3355,15 @@ const make = Effect.gen(function* () {
             ...(limitedUntil != null && availability.estimated.has(provider.instanceId)
               ? { limitedUntilEstimated: true as const }
               : {}),
+            ...(prepaidCredits === undefined ? {} : { prepaidCredits }),
+            ...(prepaidCreditGrant === undefined ? {} : { prepaidCreditGrant }),
             ...(input.usage === true && publishesUsage(provider)
-              ? providerUsageFields(provider, limitedUntil !== undefined, redemptions)
+              ? providerUsageFields(
+                  provider,
+                  limitedUntil !== undefined,
+                  redemptions,
+                  prepaidCredits ?? null,
+                )
               : {}),
           };
         }),
@@ -3537,6 +3565,7 @@ const make = Effect.gen(function* () {
               selection: primaryTarget.modelSelection,
               projectId,
               discoverMcpSignIns: false,
+              requesterThreadId: parent.thread.id,
             })
           : null;
       const crossProviderFailoverFrom =
@@ -3555,6 +3584,7 @@ const make = Effect.gen(function* () {
           {
             selection: target.modelSelection,
             projectId,
+            requesterThreadId: parent.thread.id,
           },
           accountRouting,
         );

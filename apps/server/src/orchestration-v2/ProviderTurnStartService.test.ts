@@ -1,4 +1,5 @@
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as AccountRouting from "./AccountRouting.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import * as ProviderSkills from "../provider/ProviderSkills.ts";
@@ -380,6 +381,8 @@ function makeLocalCommandHarness(input: {
   readonly restartRetry?: RestartRetryDelivery;
   /** The thread's provider session was already running when this turn started. */
   readonly sessionLive?: boolean;
+  /** Account routing says this turn would spend prepaid credits the user did not allow it. */
+  readonly creditRefusal?: AccountRouting.CreditRefusal;
 }) {
   const settledRuns: Array<string> = [];
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
@@ -1107,6 +1110,11 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
           list: () => Effect.succeed([ProviderInstanceId.make("claude_work")]),
         }),
+        input.creditRefusal === undefined
+          ? Layer.empty
+          : Layer.mock(AccountRouting.AccountRouting)({
+              creditRefusal: () => Effect.succeed(input.creditRefusal ?? null),
+            }),
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
@@ -2558,6 +2566,31 @@ effectIt.effect(
       expect(projection.providerTurns).toEqual([]);
       expect(projection.checkpoints).toEqual([]);
     }),
+);
+
+effectIt.effect("refuses a turn that would spend prepaid credits the user did not allow", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Review the diff",
+      nativeTurn: true,
+      createdBy: "agent",
+      creditRefusal: { credits: "out_of_scope", limitedUntil: "2026-09-08T00:00:00.000Z" },
+    });
+
+    yield* harness.start;
+
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(harness.projection().turnItems).toMatchObject([
+      {
+        type: "error",
+        title: "Prepaid credits not allowed",
+        // A usage limit would hold the account for the threads the user did allow.
+        failure: { class: "permission_error", code: "prepaid_credits_not_allowed" },
+      },
+    ]);
+  }),
 );
 
 effectIt.effect("refuses a provider sign-out that an agent or scheduled task sent", () =>

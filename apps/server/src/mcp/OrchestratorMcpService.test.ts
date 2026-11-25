@@ -2603,7 +2603,9 @@ describe("OrchestratorMcpService provider resolution", () => {
             accountsWithRoom: () =>
               Ref.get(limit).pipe(
                 Effect.map((limited) =>
-                  limited === null ? [{ ...selection, mcpSignInsNeeded: [] }] : [],
+                  limited === null
+                    ? [{ ...selection, mcpSignInsNeeded: [], onCredits: false }]
+                    : [],
                 ),
               ),
           }),
@@ -3067,6 +3069,14 @@ describe("OrchestratorMcpService provider resolution", () => {
             selectedInstanceId: codexAltInstanceId,
             candidateDriver: driver,
           },
+          {
+            name: "inherited-on-prepaid-credits",
+            inheritedEnabled: true,
+            peerEnabled: true,
+            explicit: false,
+            selectedInstanceId: codexAltInstanceId,
+            candidateDriver: driver,
+          },
         ] as const;
 
         for (const testCase of cases) {
@@ -3138,6 +3148,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                           instanceId: codexAltInstanceId,
                           model: "codex-alt-model",
                           mcpSignInsNeeded: [],
+                          onCredits: false,
                         },
                       ]
                     : []),
@@ -3148,6 +3159,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                           model: "gpt-5.4",
                           mcpSignInsNeeded:
                             testCase.name === "inherited-needs-mcp-sign-in" ? ["threadpage"] : [],
+                          onCredits: testCase.name === "inherited-on-prepaid-credits",
                         },
                       ]
                     : []),

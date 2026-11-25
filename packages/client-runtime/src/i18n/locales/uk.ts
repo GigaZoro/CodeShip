@@ -2044,8 +2044,8 @@ const catalog: MessageCatalog = {
   },
   "About {name}": "Про {name}",
   Accent: "Акцент",
-  "Accent color": "Акцентний колір",
   "accent color": "акцентний колір",
+  "Accent color": "Акцентний колір",
   "Accent color hue": "Відтінок акцентного кольору",
   Accept: "Прийняти",
   "Accepted as {account}.": "Прийнято як {account}.",
@@ -2062,6 +2062,7 @@ const catalog: MessageCatalog = {
   "Account order": "Порядок облікових записів",
   "Account released": "Обліковий запис розблоковано",
   "Account removed": "Обліковий запис видалено",
+  "Account still limited": "Обліковий запис усе ще обмежено",
   "Account-specific home sharing the Codex state above.":
     "Домашня папка облікового запису, що ділить стан Codex зверху.",
   "Accounts are tried from the top, and a limited thread continues on the highest one with usage left.":
@@ -3813,12 +3814,12 @@ const catalog: MessageCatalog = {
   "Committed changes": "Зміни закомічено",
   "Committing...": "Створення коміту…",
   Compact: "Стиснути",
-  "Compact spacing": "Компактні відступи",
   "Compact {tokens} tokens of history before sending":
     "Стиснути {tokens} токенів історії перед надсиланням",
   "Compact and send": "Стиснути й надіслати",
   "compact idle threads": "стиснення неактивних чатів",
   "Compact idle threads": "Стискати неактивні чати",
+  "Compact spacing": "Компактні відступи",
   Compacting: "Ущільнення",
   "Compacting before the cache expires…": "Ущільнення перед завершенням терміну дії кешу…",
   "Compacting context": "Стиснення контексту",
@@ -6763,8 +6764,8 @@ const catalog: MessageCatalog = {
   "Interactive 3D iPhone Duo. Drag the screen to interact. Drag outside it or swipe with two fingers to turn. Pinch over the device to open or close its hinge.":
     "Інтерактивний 3D iPhone Duo. Перетягуйте екран, щоб взаємодіяти. Перетягуйте поза ним або проведіть двома пальцями, щоб повернути. Зведіть чи розведіть пальці над пристроєм, щоб відкрити або закрити шарнір.",
   Interface: "Інтерфейс",
-  "Interface density": "Щільність інтерфейсу",
   "interface density": "щільність інтерфейсу",
+  "Interface density": "Щільність інтерфейсу",
   "Interface font": "Шрифт інтерфейсу",
   "Interface font size": "Розмір шрифту інтерфейсу",
   interrupt: "перервати",
@@ -6873,6 +6874,11 @@ const catalog: MessageCatalog = {
   "Its own folder and thread. Nothing you have open moves.":
     "Власна тека й чат. Те, що у вас відкрито, не зміниться.",
   "Its plugins are listed under Available.": "Його плагіни перелічено в розділі «Доступні».",
+  "Its prepaid credits are allowed only for other threads' work.":
+    "Його передплачені кредити дозволено лише для роботи інших чатів.",
+  "Its prepaid credits are not used: Spend prepaid credits is off in Settings → Providers & models.":
+    "Його передплачені кредити не використовуються: «Витрачати передплачені кредити» вимкнено в «Налаштування → Провайдери й моделі».",
+  "Its prepaid credits are used up too.": "Його передплачені кредити теж вичерпано.",
   "its server is not connected, so its database cannot be checked":
     "його сервер не підключено, тому базу даних не можна перевірити",
   "its server predates database checks; update it on {from} first":
@@ -6884,6 +6890,10 @@ const catalog: MessageCatalog = {
   "Its thread data did not reach this client. Reconnect and try opening it from the thread list.":
     "Дані його чату не дійшли до цього клієнта. Перепідключіться й спробуйте відкрити його зі списку чатів.",
   "Its thread is not available yet": "Його чат ще недоступний",
+  "Its usage limit still holds it until {time}.":
+    "Ліміт використання все ще блокує його до {time}.",
+  "Its usage limit still holds it until about {time}.":
+    "Ліміт використання все ще блокує його приблизно до {time}.",
   "Its worktree could not be checked for changes that are not merged yet.":
     "Не вдалося перевірити його worktree на ще не злиті зміни.",
   "Its worktree has changes that are not merged yet: {summary}.":
@@ -9049,6 +9059,7 @@ const catalog: MessageCatalog = {
     other: "Premier · до {count} тунеля",
   },
   "Premium {amount}": "Преміум {amount}",
+  "Prepaid credits {name} may spend": "Передплачені кредити, які може витратити {name}",
   prepare: "підготувати",
   Prepared: "Підготовлено",
   Preparing: "Підготовка",
@@ -10796,6 +10807,8 @@ const catalog: MessageCatalog = {
   "Send a message to start the conversation.": "Надішліть повідомлення, щоб почати розмову.",
   "Send a message to try the account again.":
     "Надішліть повідомлення, щоб спробувати обліковий запис знову.",
+  "Send a message to try the account again. It runs on its prepaid credits.":
+    "Надішліть повідомлення, щоб спробувати обліковий запис знову. Він працюватиме за рахунок передплачених кредитів.",
   "Send activity from this environment to your mobile clients for push notifications and Live Activities.":
     "Надсилайте активність із цього середовища на мобільні клієнти для push-сповіщень і Live Activities.",
   "Send activity to mobile notifications and Live Activities without T3 Connect.":
@@ -11444,6 +11457,7 @@ const catalog: MessageCatalog = {
   "Speaker notes": "Нотатки доповідача",
   "Specific checkout": "Конкретна робоча копія",
   Speech: "Мовлення",
+  "Spend prepaid credits": "Витрачати передплачені кредити",
   Split: "Розділений",
   "Split diff view": "Розділений вигляд змін",
   "Split long work into new chats or hand it off.":
@@ -12165,6 +12179,8 @@ const catalog: MessageCatalog = {
     "Не вдалося зберегти захоплене вікно в чернетку.",
   "The captured window is too large to attach.": "Захоплене вікно завелике для додавання.",
   "The car’s microphone": "Мікрофон автомобіля",
+  "The chat continues on it within a minute, on its prepaid credits.":
+    "Чат продовжиться на ньому протягом хвилини, за рахунок його передплачених кредитів.",
   "The chat continues on it within a minute.": "Чат продовжиться на ньому протягом хвилини.",
   "The chat could not be started. Try again.": "Не вдалося запустити чат. Спробуйте ще раз.",
   "The chat goes back to before this message, and the message returns to the message box for you to change. Your files can stay as they are now, or go back to how they were before this message. Going back also undoes any changes you made to them yourself since then.":
@@ -12457,6 +12473,7 @@ const catalog: MessageCatalog = {
   "The photo library is unavailable right now.": "Бібліотека фото зараз недоступна.",
   "The plan still has room, and no ChatGPT setting lifts this limit. Try again, or sign the account in with Codex's own login. CodeShip tries it again by itself every hour.":
     "У тарифі ще є запас, а жоден параметр ChatGPT цей ліміт не знімає. Спробуйте ще раз або увійдіть в обліковий запис через власний вхід Codex. CodeShip сам пробує знову щогодини.",
+  "The prepaid credits you allowed it are spent.": "Дозволені вами передплачені кредити витрачено.",
   "The previous request may already be running. Check its thread first. Allow another send that could create a duplicate thread?":
     "Попередній запит, можливо, уже виконується. Спершу перевірте його чат. Дозволити ще одну відправку, яка може створити дубльований чат?",
   "the primary environment": "основне середовище",
@@ -13398,7 +13415,6 @@ const catalog: MessageCatalog = {
     "Назви чатів та інший згенерований текст на підключених пристроях із цим провайдером. Написання комітів і пул-реквестів та посібники з рев’ю використовують її, доки не оберуть власну.",
   "thread transfers {times}": "перенесення чатів {times}",
   "Thread unavailable": "Чат недоступний",
-  "Tighter thread rows on the home list.": "Щільніші рядки чатів у списку на головному екрані.",
   "Thread, {title}": "Чат, {title}",
   "thread.page does not let other sites embed it, so in a browser it opens in a new tab. The T3.CodeShip desktop app shows it right here.":
     "thread.page не дозволяє іншим сайтам вбудовувати його, тому в браузері він відкривається в новій вкладці. Настільний застосунок T3.CodeShip показує його прямо тут.",
@@ -13436,10 +13452,11 @@ const catalog: MessageCatalog = {
   "thumbs down": "палець униз",
   "thumbs up": "палець угору",
   Thursday: "Четвер",
-  time: "час",
-  Time: "Час",
   "Tighten spacing in the sidebar, the conversation, and settings.":
     "Зменшити відступи в бічній панелі, розмові та налаштуваннях.",
+  "Tighter thread rows on the home list.": "Щільніші рядки чатів у списку на головному екрані.",
+  time: "час",
+  Time: "Час",
   "Time between automatic updates": "Час між автоматичними оновленнями",
   "time format": "формат часу",
   "Time format": "Формат часу",
@@ -14539,6 +14556,10 @@ const catalog: MessageCatalog = {
     "Коли застосунок збоїть або натрапляє на помилку, він надсилає команді T3.CodeShip повідомлення про помилку, трасування стека, версію застосунку, модель пристрою та версію ОС. Кожен запуск також надсилає часові показники запуску. Звіти містять випадковий ID для цього встановлення.",
   "When the sidebar groups threads into folders, show them on two lines: the title, then the branch, pull request, and agent.":
     "Коли бічна панель групує чати в папки, показувати їх у два рядки: заголовок, потім гілка, пул-реквест і агент.",
+  "When this account's plan usage is used up, new work can still start on it and spend its prepaid credits, up to the cap you set. Leave the cap empty to keep them unspent.":
+    "Коли ліміт плану цього облікового запису вичерпано, нова робота все одно може запускатися на ньому й витрачати його передплачені кредити в межах установленого вами ліміту. Залиште ліміт порожнім, щоб кредити не витрачалися.",
+  "When this account's plan usage is used up, work of the threads you allowed and their delegates can spend its prepaid credits, up to the cap you set. Threads allowed: {count}. Leave the cap empty to keep them unspent.":
+    "Коли ліміт плану цього облікового запису вичерпано, робота дозволених вами чатів і їхніх делегатів може витрачати його передплачені кредити в межах установленого вами ліміту. Дозволено чатів: {count}. Залиште ліміт порожнім, щоб кредити не витрачалися.",
   "When to compact an idle Claude thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Each Claude provider can override this.":
     "Коли стискати неактивний чат Claude понад 200 000 токенів: після вашого повернення, безпосередньо перед закінченням строку дії кешу запиту або ніколи. Кожен провайдер Claude може це перевизначити.",
   "When you return": "Коли ви повернетеся",

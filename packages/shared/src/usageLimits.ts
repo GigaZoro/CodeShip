@@ -176,6 +176,32 @@ export function exhaustedUsageWindow(
   );
 }
 
+/** Codex's spend control: the most of its prepaid credits a workspace member may spend each month. */
+const CODEX_CREDIT_LIMIT_WINDOW_ID = "individual";
+
+/**
+ * Whether this Codex account's prepaid credits could pay for work past its plan: "used_up" when
+ * the balance or the monthly credit limit is spent, null for other providers and accounts without
+ * credits. A balance the reading leaves out or cannot be read as a number counts as usable.
+ */
+export function codexCreditStanding(
+  provider: ServerProvider,
+  now: number,
+): "usable" | "used_up" | null {
+  const limits = provider.usageLimits;
+  if (provider.driver !== "codex" || limits?.credits === undefined) return null;
+  const creditLimit = limits.windows.find((window) => window.id === CODEX_CREDIT_LIMIT_WINDOW_ID);
+  if (
+    creditLimit !== undefined &&
+    creditLimit.usedPercent >= 100 &&
+    usageWindowLimitEnd(limits, creditLimit) > now
+  )
+    return "used_up";
+  if (limits.credits.unlimited || limits.credits.balance === undefined) return "usable";
+  const balance = Number(limits.credits.balance);
+  return Number.isFinite(balance) && balance <= 0 ? "used_up" : "usable";
+}
+
 /**
  * Like `exhaustedUsageWindow`, counting only windows that leave the account's other models
  * usable, such as Claude's weekly Opus cap. Cursor's two pools back each other up, so neither counts.

@@ -742,12 +742,16 @@ it.effect.each([
               selection: { ...input.selection, instanceId: spare },
               failover,
             }),
-          limits: Effect.succeed({
-            accounts: new Map(),
-            estimated: new Set<never>(),
-            models: new Map(),
-          }),
-          retryAccount: () => Effect.void,
+          limits: () =>
+            Effect.succeed({
+              accounts: new Map(),
+              estimated: new Set<never>(),
+              models: new Map(),
+              credits: new Map(),
+              grants: new Map(),
+            }),
+          retryAccount: () => Effect.succeed({}),
+          creditRefusal: () => Effect.succeed(null),
           holds: Effect.succeed([]),
           launchLimit: () => Effect.succeed(null),
         }),

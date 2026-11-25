@@ -66,12 +66,14 @@ function EnvironmentHolds({
           {canRetry ? (
             <RetryAccountButton
               variant="outline"
+              formatTime={(isoDate) => formatUpcomingTimestamp(isoDate, timestampFormat)}
               onRetry={async () => {
                 const result = await retryUsageLimit({
                   environmentId,
                   input: { instanceId: hold.instanceId },
                 });
                 if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+                return result.value;
               }}
             />
           ) : null}

@@ -1,25 +1,43 @@
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
+import { describeRetryOutcome } from "@t3tools/client-runtime/usage-holds";
+import type { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
-import { t } from "../../lib/i18n";
+import { getFormattingLocale, t } from "../../lib/i18n";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 
-type Outcome = { readonly ok: true } | { readonly ok: false; readonly message: string };
+type Outcome =
+  | {
+      readonly ok: true;
+      readonly limited: boolean;
+      readonly title: string;
+      readonly message: string;
+    }
+  | { readonly ok: false; readonly message: string };
 
-/** Ends the account's hold so its next turn tries it again, and says how that went. */
+export const formatHoldEnd = (isoDate: string) =>
+  new Date(isoDate).toLocaleString(getFormattingLocale(), {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+
+/** Ends the account's hold so its next turn tries it again, and says whether it can run now. */
 export function RetryAccountButton({
   environmentId,
   instanceId,
+  threadId,
   resumes = false,
 }: {
   readonly environmentId: EnvironmentId;
   readonly instanceId: ProviderInstanceId;
+  /** The chat it is pressed in, whose allowance of prepaid credits the answer then reflects. */
+  readonly threadId?: ThreadId;
   /** The chat is set to resume, so the server continues it once the account has room. */
   readonly resumes?: boolean;
 }) {
@@ -32,10 +50,18 @@ export function RetryAccountButton({
   async function retry() {
     setPending(true);
     setOutcome(null);
-    const result = await retryUsageLimit({ environmentId, input: { instanceId } });
+    const result = await retryUsageLimit({
+      environmentId,
+      input: threadId === undefined ? { instanceId } : { instanceId, threadId },
+    });
     setPending(false);
     if (result._tag === "Success") {
-      setOutcome({ ok: true });
+      const { limited, title, description } = describeRetryOutcome(
+        result.value,
+        resumes,
+        formatHoldEnd,
+      );
+      setOutcome({ ok: true, limited, title, message: description });
       return;
     }
     const cause = squashAtomCommandFailure(result);
@@ -61,21 +87,19 @@ export function RetryAccountButton({
         >
           <Text
             className={
-              outcome.ok
-                ? "text-sm font-t3-medium text-foreground"
-                : "text-sm font-t3-medium text-destructive"
+              !outcome.ok
+                ? "text-sm font-t3-medium text-destructive"
+                : outcome.limited
+                  ? "text-sm font-t3-medium text-warning-foreground"
+                  : "text-sm font-t3-medium text-foreground"
             }
           >
-            {outcome.ok ? t("Account released") : t("Could not release the account")}
+            {outcome.ok ? outcome.title : t("Could not release the account")}
           </Text>
           <Text
             className={outcome.ok ? "text-sm text-foreground-muted" : "text-sm text-destructive"}
           >
-            {outcome.ok
-              ? resumes
-                ? t("The chat continues on it within a minute.")
-                : t("Send a message to try the account again.")
-              : outcome.message}
+            {outcome.message}
           </Text>
         </View>
       ) : null}

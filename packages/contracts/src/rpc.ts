@@ -75,7 +75,7 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   ProviderAuthCancelInput,
   ProviderAuthCompleteInput,
@@ -399,6 +399,7 @@ import {
   UsageLimitSourceError,
   ProviderConsumeResetCreditInput,
   ProviderConsumeResetCreditResult,
+  ProviderRetryUsageLimitResult,
   ProviderUsageHoldsResult,
 } from "./providerUsageLimits.ts";
 import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
@@ -809,8 +810,12 @@ const WsProviderConsumeResetCreditRpc = Rpc.make(WS_METHODS.providerConsumeReset
 });
 
 const WsProviderRetryUsageLimitRpc = Rpc.make(WS_METHODS.providerRetryUsageLimit, {
-  payload: Schema.Struct({ instanceId: ProviderInstanceId }),
-  success: Schema.Struct({}),
+  payload: Schema.Struct({
+    instanceId: ProviderInstanceId,
+    /** The chat Try again was chosen in; the report judges prepaid credits for its work. */
+    threadId: Schema.optional(ThreadId),
+  }),
+  success: ProviderRetryUsageLimitResult,
   error: Schema.Union([ProviderSetupError, EnvironmentAuthorizationError]),
 });
 

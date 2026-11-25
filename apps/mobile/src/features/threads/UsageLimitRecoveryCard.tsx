@@ -93,6 +93,7 @@ export function UsageLimitRecoveryCard({
               <RetryAccountButton
                 environmentId={environmentId}
                 instanceId={instanceId}
+                threadId={thread.id}
                 resumes={Boolean(scheduled) && !snoozed}
               />
               <Button

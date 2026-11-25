@@ -1,3 +1,9 @@
+## 2026-11-25 — Choose how much of a Codex account's prepaid credits work may spend
+
+- A Codex account whose plan usage is used up starts no turn on its prepaid credits until you set a cap under **Spend prepaid credits** for it in **Settings → Providers & models**. It is off by default and applies on that machine only. New work still prefers accounts whose plan has room, and once the account's balance has fallen by the cap, no new turn starts on it. The count survives restarts and starts again from zero when you clear the cap.
+- An allowance can be limited to chosen threads and the delegates they start; every other thread, scheduled task included, is refused when its turn would spend the credits.
+- **Try again** on a usage-limited account, on web, desktop and mobile, now says whether new work can start on it, and if not, until when and why, instead of reporting a release that the next launch would refuse. An agent that releases an account gets the same answer, and the account list agents read shows each Codex account's prepaid-credit state, cap, what is left of it, and the threads it covers.
+
 ## 2026-11-25 — `t3` follows a background service that updated itself
 
 - A background service that installed an update itself left the `t3` command on the release it replaced, so commands such as `t3 thread release-worktree` were missing and the old release stayed on disk. Once the service runs the new release, it moves each `t3` launcher of that install to it. A `t3` already on a newer release is left alone. The old release is then removed on the same start. `t3 update` and `t3 uninstall` also recognize a `t3` linked to the install through another path to its folder.

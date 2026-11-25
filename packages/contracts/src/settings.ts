@@ -14,6 +14,7 @@ import {
   ForwardCompatibleNullable,
   ForwardCompatibleOptional,
   OmittedWhenNull,
+  PositiveInt,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -811,6 +812,18 @@ const LoginGeneration = Schema.optionalKey(
   }).pipe(Schema.annotateKey({ providerSettingsForm: { hidden: true } })),
 );
 
+/**
+ * Lets new work start on a Codex account once its plan usage is used up, and spend its prepaid
+ * credits. Money: only the user sets it, per account, and it stays on this machine.
+ */
+export const CodexCreditSpending = Schema.Struct({
+  /** Credits the account may spend in all while this stays on; no new work starts past it. */
+  capCredits: PositiveInt,
+  /** The threads whose work, their delegates' included, may spend them; absent: any thread. */
+  threadIds: Schema.optionalKey(Schema.Array(ThreadId)),
+});
+export type CodexCreditSpending = typeof CodexCreditSpending.Type;
+
 export const CodexSettings = makeProviderSettingsSchema(
   {
     loginGeneration: LoginGeneration,
@@ -819,6 +832,9 @@ export const CodexSettings = makeProviderSettingsSchema(
     ),
     /** The built-in account signs in apart from this machine's Codex login, as added accounts do. */
     privateLogin: Schema.optionalKey(Schema.Boolean).pipe(
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    spendCredits: Schema.optionalKey(CodexCreditSpending).pipe(
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     enabled: Schema.Boolean.pipe(

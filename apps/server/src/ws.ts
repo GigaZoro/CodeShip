@@ -2571,8 +2571,7 @@ export const layerWsRpc = (
             return yield* resetCreditRedemption.redeem(input.instanceId);
           }),
         [WS_METHODS.providerRetryUsageLimit]: (input) =>
-          accountRouting.retryAccount(input.instanceId).pipe(
-            Effect.as({}),
+          accountRouting.retryAccount(input.instanceId, { requesterThreadId: input.threadId }).pipe(
             Effect.mapError(
               (error) =>
                 new ProviderSetupError({

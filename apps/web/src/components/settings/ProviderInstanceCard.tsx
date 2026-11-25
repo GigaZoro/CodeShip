@@ -865,6 +865,32 @@ export function ProviderInstanceCard({
     );
   };
 
+  const creditSpending =
+    instance.config !== null && typeof instance.config === "object"
+      ? (instance.config as { readonly spendCredits?: unknown }).spendCredits
+      : undefined;
+  const creditGrant =
+    typeof creditSpending === "object" && creditSpending !== null
+      ? (creditSpending as { readonly capCredits?: unknown; readonly threadIds?: unknown })
+      : undefined;
+  const creditCap =
+    typeof creditGrant?.capCredits === "number" && Number.isSafeInteger(creditGrant.capCredits)
+      ? creditGrant.capCredits
+      : undefined;
+  const creditScope = Array.isArray(creditGrant?.threadIds) ? creditGrant.threadIds.length : null;
+  // Credits are money, so no cap is ever filled in for the user; clearing it turns spending off.
+  const updateCreditCap = (draft: string) => {
+    const cap = Number.parseInt(draft, 10);
+    const allowed = Number.isSafeInteger(cap) && cap > 0;
+    const next = nextConfigBlobWithValue(
+      instance.config,
+      "spendCredits",
+      allowed ? { ...creditGrant, capCredits: cap } : undefined,
+    );
+    if (!allowed) delete next.spendCredits;
+    updateConfig(next);
+  };
+
   const updateCustomModels = useStableCallback((next: ReadonlyArray<CustomModelDefinition>) => {
     const nextConfig = nextConfigBlobWithValue(
       instance.config,
@@ -1308,6 +1334,41 @@ export function ProviderInstanceCard({
             </div>
           }
         />
+        {instance.driver === "codex" ? (
+          <SettingsRow
+            title={t("Spend prepaid credits")}
+            description={
+              creditScope === null
+                ? t(
+                    "When this account's plan usage is used up, new work can still start on it and spend its prepaid credits, up to the cap you set. Leave the cap empty to keep them unspent.",
+                  )
+                : t(
+                    "When this account's plan usage is used up, work of the threads you allowed and their delegates can spend its prepaid credits, up to the cap you set. Threads allowed: {count}. Leave the cap empty to keep them unspent.",
+                    { count: creditScope },
+                  )
+            }
+            control={
+              <ManagedControl
+                reason={
+                  instanceLocks?.configKeys.has("spendCredits") ? instanceLocks.reason : undefined
+                }
+              >
+                <DraftInput
+                  size="sm"
+                  className="w-28"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  value={creditCap === undefined ? "" : String(creditCap)}
+                  normalizeDraft={(_previous, next) => next.replace(/\D/g, "")}
+                  onCommit={updateCreditCap}
+                  disabled={readOnly}
+                  placeholder={t("Off")}
+                  aria-label={t("Prepaid credits {name} may spend", { name: displayName })}
+                />
+              </ManagedControl>
+            }
+          />
+        ) : null}
       </SettingsSection>
 
       {setup || environmentFields.length > 0 ? (

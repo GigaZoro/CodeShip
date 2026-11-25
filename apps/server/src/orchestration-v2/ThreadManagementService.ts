@@ -892,6 +892,8 @@ const make = Effect.gen(function* () {
           projectId,
           scheduled: input.scheduled,
           discoverMcpSignIns: false,
+          // The thread itself, or the parent a delegated task is for.
+          requesterThreadId: input.threadId,
         });
         if (launch.failover?.reason === "usageLimit") {
           const from = launch.failover.crossProviderFrom;
@@ -920,6 +922,7 @@ const make = Effect.gen(function* () {
             : thread.providerInstanceId,
         started: !input.newThread && thread.latestRunId !== null,
         scheduled: input.scheduled,
+        requesterThreadId: input.threadId,
       });
       return routed === selection ? command : { ...command, modelSelection: routed };
     });

@@ -5,19 +5,12 @@ import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
-import { getFormattingLocale, t } from "../../lib/i18n";
+import { t } from "../../lib/i18n";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { openSettings } from "../settings/settings-navigation";
-import { RetryAccountButton } from "./RetryAccountButton";
+import { formatHoldEnd, RetryAccountButton } from "./RetryAccountButton";
 import { describeUsageHold, heldAccountsForDriver } from "@t3tools/client-runtime/usage-holds";
-
-const formatHoldEnd = (isoDate: string) =>
-  new Date(isoDate).toLocaleString(getFormattingLocale(), {
-    weekday: "short",
-    hour: "numeric",
-    minute: "2-digit",
-  });
 
 /** The accounts of one driver that CodeShip skips after a usage refusal, on one machine. */
 function EnvironmentHolds({

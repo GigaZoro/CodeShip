@@ -2,8 +2,11 @@ import * as Schema from "effect/Schema";
 
 import {
   ForwardCompatibleArray,
+  ForwardCompatibleOptional,
   IsoDateTime,
   NonNegativeInt,
+  PositiveInt,
+  ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
@@ -202,6 +205,45 @@ export const ProviderConsumeResetCreditResult = Schema.Struct({
   warning: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProviderConsumeResetCreditResult = typeof ProviderConsumeResetCreditResult.Type;
+
+/**
+ * How a Codex account's prepaid credits stand for new work: `spending` (plan used up, allowed),
+ * `standby` (allowed, plan has room), `not_enabled`, `out_of_scope` (allowed for other threads),
+ * `cap_reached` (the allowed credits are spent), `used_up` (balance or monthly limit spent).
+ */
+export const ProviderCreditUse = Schema.Literals([
+  "spending",
+  "standby",
+  "not_enabled",
+  "out_of_scope",
+  "cap_reached",
+  "used_up",
+]);
+export type ProviderCreditUse = typeof ProviderCreditUse.Type;
+
+const NonNegativeNumber = Schema.Number.check(Schema.isGreaterThanOrEqualTo(0));
+
+/** What the user allowed a Codex account to spend of its prepaid credits, and what is left. */
+export const ProviderCreditGrant = Schema.Struct({
+  capCredits: PositiveInt,
+  /** How far the balance fell, from any use of the account, since spending was allowed. */
+  spentCredits: NonNegativeNumber,
+  remainingCredits: NonNegativeNumber,
+  /** The threads whose work, their delegates' included, may spend them; absent: any thread. */
+  threadIds: Schema.optional(Schema.Array(ThreadId)),
+});
+export type ProviderCreditGrant = typeof ProviderCreditGrant.Type;
+
+/** Whether new work can start on an account once Try again has lifted its holds. */
+export const ProviderRetryUsageLimitResult = Schema.Struct({
+  /** When new work can start on it again; absent when it can start now, and from older servers. */
+  limitedUntil: Schema.optional(IsoDateTime),
+  /** `limitedUntil` is CodeShip's guess, not a reset the provider reported. */
+  estimated: Schema.optional(Schema.Literal(true)),
+  /** Absent for an account without prepaid credits CodeShip could spend. */
+  credits: ForwardCompatibleOptional(ProviderCreditUse),
+});
+export type ProviderRetryUsageLimitResult = typeof ProviderRetryUsageLimitResult.Type;
 
 /** An account CodeShip skips after a usage refusal until the hold ends or Try again lifts it. */
 export const ProviderUsageHold = Schema.Struct({

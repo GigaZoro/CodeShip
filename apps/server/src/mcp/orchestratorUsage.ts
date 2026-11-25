@@ -4,11 +4,14 @@ import type {
   OrchestratorMcpProviderUsage,
   OrchestratorMcpUsageError,
   OrchestratorMcpUsageMeter,
+  ProviderCreditUse,
+  ProviderRetryUsageLimitResult,
   ServerProvider,
   ServerProviderResetCreditsError,
   ServerProviderResetKindUnknownReason,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
+
 /** How old a usage reading may be before `orchestrator_capabilities` with `usage` reads it again. */
 const USAGE_READING_MAX_AGE_MS = 10 * 60_000;
 
@@ -100,6 +103,42 @@ function usageError(provider: ServerProvider): OrchestratorMcpUsageError | undef
   return undefined;
 }
 
+/** Why new work cannot start on a usage-limited account, as an agent should act on it. */
+export function usageLimitReason(credits: ProviderCreditUse | null | undefined): string {
+  switch (credits) {
+    case "not_enabled":
+      return "a usage limit holds it, and spending its prepaid credits is off. That is the user's money: only the user turns it on, with Spend prepaid credits in Settings > Providers.";
+    case "out_of_scope":
+      return "a usage limit holds it, and the user allowed its prepaid credits only for other threads' work. That is the user's money: only the user widens it.";
+    case "cap_reached":
+      return "a usage limit holds it, and the prepaid credits the user allowed it are spent. That is the user's money: only the user raises the cap.";
+    case "used_up":
+      return "a usage limit holds it, and its prepaid credits or monthly credit limit are used up too.";
+    default:
+      return "a usage limit holds it.";
+  }
+}
+
+/** What `t3_provider_retry_usage_limit` reports: what admission does with the account next. */
+export function releaseReport(
+  instanceId: string,
+  admission: ProviderRetryUsageLimitResult,
+): { readonly message: string } {
+  if (admission.limitedUntil === undefined)
+    return {
+      message: `Released ${instanceId}. New work can start on it now.${
+        admission.credits === "spending"
+          ? " It runs on the prepaid credits the user allowed for this work."
+          : ""
+      }`,
+    };
+  return {
+    message: `Released ${instanceId}'s recorded refusals, but new work still cannot start on it until ${
+      admission.limitedUntil
+    }${admission.estimated ? " (T3's estimate)" : ""}: ${usageLimitReason(admission.credits)}`,
+  };
+}
+
 /**
  * The `usage` an enabled Claude or Codex account publishes in `orchestrator_capabilities`: its
  * meters, credits and banked resets, keyed by a hash of the account id. A provider's own error
@@ -110,6 +149,8 @@ export function providerUsageFields(
   limited: boolean,
   /** The redeemer's last claims by account key; only the account held now is published. */
   redemptions: ReadonlyMap<string, OrchestratorMcpLastRedemption> = new Map(),
+  /** How the account's prepaid credits stand; spending them lets it run past its plan. */
+  credits: ProviderCreditUse | null = null,
 ): {
   readonly usage: OrchestratorMcpProviderUsage | null;
   readonly usageError?: OrchestratorMcpUsageError;
@@ -145,7 +186,7 @@ export function providerUsageFields(
               weeklySessionAvailableAt: limits.resetPrograms.weeklySessionAvailableAt ?? null,
             },
           }),
-      usageAllowed: !limited && limits.usageAllowed !== false,
+      usageAllowed: !limited && (limits.usageAllowed !== false || credits === "spending"),
       lastRedemption:
         (limits.accountKey === undefined ? undefined : redemptions.get(limits.accountKey)) ?? null,
     },
