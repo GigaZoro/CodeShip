@@ -265,6 +265,31 @@ const awakeSeconds = Effect.fnUntraced(function* (seconds: number) {
 const awakeTimeoutOption = <A, E, R>(effect: Effect.Effect<A, E, R>, seconds: number) =>
   Effect.raceFirst(Effect.asSome(effect), Effect.as(awakeSeconds(seconds), Option.none<A>()));
 
+// Ticks are one second apart, so a gap this long between two is a sleep, not a busy machine.
+const SLEEP_GAP_MS = 10_000;
+
+/**
+ * Runs `effect` and reports whether the machine slept meanwhile. A timer armed before a Mac's sleep
+ * is already past on wake, so a Vitest test in flight then fails as timed out although it ran for
+ * seconds (AB#7184).
+ */
+export const noticingSleep = Effect.fn("checkChanged.noticingSleep")(function* <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+) {
+  let slept = false;
+  const ticks = Effect.gen(function* () {
+    let last = yield* Clock.currentTimeMillis;
+    for (;;) {
+      yield* Effect.sleep("1 second");
+      const now = yield* Clock.currentTimeMillis;
+      if (now - last > SLEEP_GAP_MS) slept = true;
+      last = now;
+    }
+  });
+  const value = yield* Effect.raceFirst(effect, ticks);
+  return { value, slept };
+});
+
 export interface Step<R> {
   readonly name: string;
   // Gets the number of budget slots the step holds, which is how many workers it may run.
@@ -1050,7 +1075,12 @@ export const runTestGroups = Effect.fn("checkChanged.runTestGroups")(function* (
   request: typeof TestRequest.Type,
   concurrency: number,
   platform: string,
-  run: (concurrency: number) => Effect.Effect<{ readonly ok: boolean; readonly output: string }>,
+  run: (concurrency: number) => Effect.Effect<{
+    readonly ok: boolean;
+    readonly output: string;
+    // The machine slept during the attempt, so its timeouts are not evidence of a hang.
+    readonly slept?: boolean;
+  }>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -1060,6 +1090,7 @@ export const runTestGroups = Effect.fn("checkChanged.runTestGroups")(function* (
   const completed: Array<string> = [];
   let output = "";
   let ok = true;
+  let sleepRetried = false;
   const killedExit = platform === "win32" ? undefined : 137;
   const summaries = Effect.gen(function* () {
     const versions = (yield* fs.exists(cache)) ? yield* fs.readDirectory(cache) : [];
@@ -1076,6 +1107,14 @@ export const runTestGroups = Effect.fn("checkChanged.runTestGroups")(function* (
     const result = yield* run(limit);
     output += result.output;
     if (result.ok) break;
+    // A failure after a sleep may be a timer that counted it. Run the attempt's groups once more,
+    // awake: a test that hangs awake fails again.
+    if (result.slept === true && !sleepRetried) {
+      sleepRetried = true;
+      output +=
+        "\ncheck:changed: the machine slept during the tests; running the failed groups again.\n";
+      continue;
+    }
     ok = false;
 
     // Vite+ 1.4 kills in-flight siblings after a failure. Leave those groups pending so they get a
@@ -1882,21 +1921,23 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             groups,
             platform,
             (limit) =>
-              spawnVp(
-                spawner,
-                platform,
-                [
-                  "run",
-                  "--remote-cache",
-                  "off",
-                  "--concurrency-limit",
-                  String(limit),
-                  "test-cache",
-                ],
-                root,
-                env,
-                collect,
-              ),
+              noticingSleep(
+                spawnVp(
+                  spawner,
+                  platform,
+                  [
+                    "run",
+                    "--remote-cache",
+                    "off",
+                    "--concurrency-limit",
+                    String(limit),
+                    "test-cache",
+                  ],
+                  root,
+                  env,
+                  collect,
+                ),
+              ).pipe(Effect.map(({ value, slept }) => ({ ...value, slept }))),
           );
           const changed = yield* finish;
           return changed.length === 0

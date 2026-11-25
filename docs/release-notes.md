@@ -12,6 +12,10 @@
 - Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
 - Codex usage and reset credits now follow the signed-in workspace, including when two workspaces share an email. A delayed update from a previous session can no longer replace the current workspace’s balance.
 
+## 2026-11-25 — A Mac's sleep no longer fails check:changed's tests
+
+- For people who work on T3.CodeShip: when a Mac sleeps while `vp run check:changed` runs its tests, a test failure now runs the failed test groups once more instead of ending the check, because a test's own time limit counts the sleep. A test that fails while the Mac stays awake still fails at once.
+
 ## 2026-11-25 — The metadata smoke test answers its child first and fails on a broken reply
 
 - For people who work on T3.CodeShip: the Codex metadata smoke test (`docs/operations/codex-metadata/smoke.py`) now answers the spawned child agent before it sends the parent its last reply. `codex exec` exits when the parent's turn ends and does not wait for the child, so a child reply sent after that hit a closed connection. On Linux, WSL included, the test then printed a `BrokenPipeError` traceback and still passed.

@@ -45,6 +45,7 @@ import {
   keepModuleCache,
   runSpawner,
   runSteps,
+  noticingSleep,
   runTestGroups,
   spawnVp,
   splitTests,
@@ -283,6 +284,71 @@ describe("check:changed", () => {
         assert.deepStrictEqual(attempts, []);
         assert.deepStrictEqual(result, { ok: false, output: expected });
       }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("runs the test groups again once after a failure the machine slept under", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* slotDirectory;
+      const cache = NodePath.join(directory, "cache");
+      const requestFile = NodePath.join(directory, "request.json");
+      yield* fs.makeDirectory(NodePath.join(cache, "v18"), { recursive: true });
+      const request = { files: ["packages/shared/a.test.ts"], groupSize: 1, uncached: [] };
+      const attempt = (slept: boolean) => ({
+        ok: false,
+        output: `attempt slept=${slept}\n`,
+        slept,
+      });
+      const attempts = [attempt(true), attempt(true)];
+      let runs = 0;
+      const result = yield* runTestGroups(cache, requestFile, request, 1, "linux", () =>
+        Effect.sync(() => attempts[runs++]!),
+      );
+      // The second sleep-marked failure is final: one retry per run.
+      assert.strictEqual(runs, 2);
+      assert.isFalse(result.ok);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("fails a test group that failed while the machine stayed awake at once", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* slotDirectory;
+      const cache = NodePath.join(directory, "cache");
+      yield* fs.makeDirectory(NodePath.join(cache, "v18"), { recursive: true });
+      let runs = 0;
+      const result = yield* runTestGroups(
+        cache,
+        NodePath.join(directory, "request.json"),
+        { files: ["packages/shared/a.test.ts"], groupSize: 1, uncached: [] },
+        1,
+        "linux",
+        () => Effect.sync(() => (runs++, { ok: false, output: "hung\n", slept: false })),
+      );
+      assert.strictEqual(runs, 1);
+      assert.isFalse(result.ok);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect.each([
+    { name: "notices a sleep", jump: 900_000, slept: true },
+    { name: "ignores a busy second", jump: 2_000, slept: false },
+  ])("$name as a wall clock that jumps while ticks stay a second apart", ({ jump, slept }) =>
+    Effect.gen(function* () {
+      const clock = yield* Clock.Clock;
+      let wall = 0;
+      const fiber = yield* noticingSleep(Effect.sleep("3 seconds").pipe(Effect.as("done"))).pipe(
+        Effect.provideService(Clock.Clock, {
+          ...clock,
+          currentTimeMillis: Effect.sync(() => wall),
+        }),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      wall += jump;
+      yield* TestClock.adjust("3 seconds");
+      assert.deepStrictEqual(yield* Fiber.join(fiber), { value: "done", slept });
+    }),
   );
 
   it.effect("seeds committed rows and publishes passes after success or interruption", () =>
