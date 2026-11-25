@@ -71,6 +71,8 @@ import {
   ProviderInstanceId,
   ProviderInteractionMode,
   ProviderRequestKind,
+  isOrchestrationV2TerminalRunStatus,
+  isReadOnlyGuestShare,
   isRuntimeModeAbove,
   resolveProviderInstanceEnabled,
   resolveProjectProviderInstanceEnabled,
@@ -90,6 +92,7 @@ import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
 import {
   backgroundWorkHoldsCompletion,
   derivePendingBackgroundWork,
+  isPullRequestWatchTask,
   pendingBackgroundTurnItems,
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Context from "effect/Context";
@@ -158,6 +161,8 @@ import {
   releasedGuestAttachmentIds,
   withoutGuestAttribution,
   decideGuestShareCommand,
+  READ_ONLY_SHARE_RUN_ACTIVE,
+  READ_ONLY_SHARE_UNSUPPORTED,
   type GuestShareCommand,
 } from "./GuestShareDecider.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -3407,23 +3412,62 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
-    const projection = yield* projectionStore
-      .getThreadRecords(command.threadId, [])
-      .pipe(
-        Effect.mapError(
-          (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
-        ),
-      );
-    const thread = projection.thread;
+    const projectionFailure = (cause: unknown) =>
+      new OrchestratorProjectionError({ threadId: command.threadId, cause });
+    const readRecords = <K extends ProjectionRecordField>(fields: ReadonlyArray<K>) =>
+      projectionStore
+        .getThreadRecords(command.threadId, fields)
+        .pipe(Effect.mapError(projectionFailure));
+    const { thread } = yield* readRecords([]);
     const now = yield* DateTime.now;
+    // Opening a read-only link restarts the thread's provider sessions, so a command or tool a
+    // session was allowed to run before cannot carry into the guest's turns. Turns already ran
+    // read-only under a read-only link, so replacing one restarts nothing.
+    const opensReadOnly =
+      command.type === "thread.guest-share.open" && command.access === "read-only";
+    const restartsSessions = opensReadOnly && !isReadOnlyGuestShare(thread.guestShare);
+    const { providerSessions } = restartsSessions
+      ? yield* readRecords(["providerSessions"])
+      : { providerSessions: [] };
+    const readOnlySupported =
+      !opensReadOnly ||
+      (yield* providerAdapters.get(thread.modelSelection.instanceId).pipe(
+        Effect.flatMap((adapter) => adapter.getCapabilities()),
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorProviderAdapterError({
+              commandId: command.commandId,
+              providerInstanceId: thread.modelSelection.instanceId,
+              cause,
+            }),
+        ),
+      )).runtimePolicy.readOnlySandbox;
+    // Read here, in the thread's serialized dispatch, so two guest messages cannot both find it idle.
+    // The provider's background work counts: a session restart would end it, and a guest's turn
+    // would race it. A watched pull request is the server's, and can wait for days.
+    const busy =
+      restartsSessions ||
+      (command.type === "thread.guest-message.submit" && isReadOnlyGuestShare(thread.guestShare))
+        ? yield* projectionStore.getThreadShell(command.threadId).pipe(
+            Effect.map(
+              (shell) =>
+                shell !== null &&
+                ((shell.status !== "idle" && !isOrchestrationV2TerminalRunStatus(shell.status)) ||
+                  (shell.pendingBackgroundTasks ?? []).some(
+                    (task) => !isPullRequestWatchTask(task),
+                  )),
+            ),
+            Effect.mapError(projectionFailure),
+          )
+        : false;
     const decided =
       thread.deletedAt !== null
         ? Result.fail(`Thread ${command.threadId} is deleted.`)
-        : decideGuestShareCommand({
-            thread,
-            command,
-            now,
-          });
+        : !readOnlySupported
+          ? Result.fail(READ_ONLY_SHARE_UNSUPPORTED)
+          : restartsSessions && busy
+            ? Result.fail(READ_ONLY_SHARE_RUN_ACTIVE)
+            : decideGuestShareCommand({ thread, command, now, runInProgress: busy });
     if (Result.isFailure(decided)) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -3443,6 +3487,34 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       payload: decided.success,
     });
     yield* releaseGuestAttachments(command, thread.guestShare, decided.success.guestShare, effects);
+    const reason = "Read-only guest link opened.";
+    for (const session of providerSessions) {
+      if (session.status === "stopped" || session.status === "error") continue;
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "provider-session.detached",
+        threadId: command.threadId,
+        driver: session.driver,
+        providerInstanceId: session.providerInstanceId,
+        occurredAt: now,
+        payload: { providerSessionId: session.id, detachedAt: now, reason },
+      });
+      yield* Ref.update(effects, (existing) => [
+        ...existing,
+        {
+          id: `effect:${command.commandId}:provider-session.detach:${session.id}`,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          request: {
+            type: "provider-session.detach",
+            providerSessionId: session.id,
+            detail: reason,
+          },
+        } satisfies PendingOrchestrationEffectV2,
+      ]);
+    }
   });
 
   // Emitted before the message so the send and the status change commit together, and so
@@ -6078,6 +6150,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       if (skipped !== null) return skipped.cancelUnsettledEffects;
     }
+    // A run started under a read-only guest link stays read-only after the link closes, and so does
+    // a run that continues its work.
+    const continuedRunId = automaticSourceRunId ?? command.manualContinuationOfRunId;
+    const readOnlyGuestRun =
+      isReadOnlyGuestShare(projection.thread.guestShare) ||
+      projection.runs.some((run) => run.id === continuedRunId && run.readOnlyGuestShare === true)
+        ? { readOnlyGuestShare: true as const }
+        : {};
     if (command.manualContinuationOfRunId !== undefined) {
       const source = projection.runs.find((run) => run.id === command.manualContinuationOfRunId);
       const stopped = latestRootProviderFailure(source ?? null, projection.turnItems);
@@ -6866,6 +6946,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? {}
           : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
+        ...readOnlyGuestRun,
       };
       const attempt: OrchestrationV2RunAttempt = {
         id: attemptId,
@@ -7217,6 +7298,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? { workspacePreparation: dispatchMode.workspaceStrategy }
           : {}),
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
+        ...readOnlyGuestRun,
         ...wakeWorkStartedAt(projection.runs, command),
         ...(dispatchMode.type === "defer_start"
           ? {}
@@ -7970,6 +8052,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? {}
         : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
       ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
+      ...readOnlyGuestRun,
       ...wakeWorkStartedAt(projection.runs, command),
       ...memoryAdmissionAfter(projection.runs, automaticSourceRunId, now),
     };

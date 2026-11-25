@@ -33,6 +33,7 @@ const view: GuestShareView = {
   expiresAt: "2026-10-24T00:00:00.000Z",
   messages: [],
   model: { driver: null, name: "gpt-5.4" },
+  access: "approve",
 };
 
 const projection = makeThreadProjectionFixture();

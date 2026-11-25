@@ -106,7 +106,8 @@ const isOpenSessionError = Schema.is(ProviderAdapter.ProviderAdapterOpenSessionE
 const isProtocolError = Schema.is(ProviderAdapter.ProviderAdapterProtocolError);
 
 const MuseProviderCapabilitiesV2 = {
-  runtimePolicy: { enforcement: "native" },
+  // Muse asks the owner instead of refusing a change.
+  runtimePolicy: { enforcement: "native", readOnlySandbox: false },
   sessions: {
     supportsMultipleProviderThreadsPerSession: false,
     supportsModelSwitchInSession: true,

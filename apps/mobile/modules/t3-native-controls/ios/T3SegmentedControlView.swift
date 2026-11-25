@@ -19,6 +19,7 @@ final class T3SegmentedControlView: ExpoView {
   var selectedColor: UIColor = .secondarySystemFill { didSet { if selectedColor != oldValue { control.selectedSegmentTintColor = selectedColor } } }
   var textColor: UIColor = .label { didSet { if textColor != oldValue { updateColors() } } }
   var mutedColor: UIColor = .secondaryLabel { didSet { if mutedColor != oldValue { updateColors() } } }
+  var enabled = true { didSet { control.isEnabled = enabled } }
   var appearance = "light" {
     didSet {
       guard appearance != oldValue else { return }

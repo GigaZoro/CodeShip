@@ -113,6 +113,7 @@ const view: GuestShareView = {
   expiresAt: "2026-10-24T10:00:00.000Z",
   messages: [],
   model: { driver: ProviderDriverKind.make("codex"), name: "GPT-5.4", shortName: "5.4" },
+  access: "approve",
 };
 
 /** The stream's opening, as the server sends it: the share, then the owner's snapshot. */

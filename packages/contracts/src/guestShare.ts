@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { ChatAttachment } from "./chatAttachment.ts";
@@ -11,11 +12,29 @@ import {
 } from "./baseSchemas.ts";
 
 /**
- * A guest share lets one unauthenticated browser watch a thread over T3 Connect and propose
- * messages the owner must send or dismiss. The thread projection holds this public state; the
- * credentials are derived from the share id with a server key and never stored.
+ * A guest share lets one unauthenticated browser watch a thread over T3 Connect and send it
+ * messages. The thread projection holds this public state; the credentials are derived from the
+ * share id with a server key and never stored.
  */
-export const GUEST_SHARE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * What a guest's messages do. "approve" waits for the owner to send or dismiss each one.
+ * "read-only" runs them straight away, while the thread stays in a read-only sandbox that never
+ * asks for approval, for as long as the link exists.
+ */
+export const GuestShareAccess = Schema.Literals(["approve", "read-only"]);
+export type GuestShareAccess = typeof GuestShareAccess.Type;
+
+export const GuestShareLifetime = Schema.Literals(["1h", "1d", "7d", "30d"]);
+export type GuestShareLifetime = typeof GuestShareLifetime.Type;
+export const GUEST_SHARE_LIFETIME_MS: Record<GuestShareLifetime, number> = {
+  "1h": 60 * 60 * 1000,
+  "1d": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  "30d": 30 * 24 * 60 * 60 * 1000,
+};
+export const DEFAULT_GUEST_SHARE_LIFETIME: GuestShareLifetime = "1d";
+
 export const GUEST_MESSAGE_MAX_LENGTH = 4_000;
 export const GUEST_NAME_MAX_LENGTH = 40;
 export const GUEST_PENDING_MESSAGE_LIMIT = 3;
@@ -49,13 +68,26 @@ export const ThreadGuestShare = Schema.Struct({
   /** Set once, when the guest redeems the link. */
   guestName: Schema.NullOr(TrimmedNonEmptyString),
   messages: Schema.Array(ThreadGuestMessage),
+  // Links made before access levels waited for the owner.
+  access: GuestShareAccess.pipe(Schema.withDecodingDefault(Effect.succeed("approve" as const))),
 });
 export type ThreadGuestShare = typeof ThreadGuestShare.Type;
+
+/** A read-only share keeps the thread read-only until the owner closes it, even once expired. */
+export const isReadOnlyGuestShare = (share: ThreadGuestShare | null | undefined): boolean =>
+  share?.access === "read-only";
 
 export const pendingGuestMessageCount = (share: ThreadGuestShare | null | undefined): number =>
   share?.messages.filter((message) => message.status === "pending").length ?? 0;
 
-export const GuestShareCreateInput = Schema.Struct({ threadId: ThreadId });
+// Clients older than access levels and lifetimes send only the thread.
+export const GuestShareCreateInput = Schema.Struct({
+  threadId: ThreadId,
+  access: GuestShareAccess.pipe(Schema.withDecodingDefault(Effect.succeed("approve" as const))),
+  lifetime: GuestShareLifetime.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_GUEST_SHARE_LIFETIME)),
+  ),
+});
 export type GuestShareCreateInput = typeof GuestShareCreateInput.Type;
 
 export const GuestShareCreateResult = Schema.Struct({
@@ -70,6 +102,10 @@ const GUEST_SHARE_CREATE_MESSAGES = {
   thread_unavailable: "This thread cannot be shared.",
   read_failed: "Failed to read the shared thread.",
   changed: "The guest link changed while it was being created.",
+  read_only_unsupported:
+    "This thread's provider cannot block file changes, so it cannot have a read-only guest link.",
+  run_active:
+    "Wait for the thread's run and background work to finish, or stop them, before you open a read-only guest link.",
 } as const;
 
 export class GuestShareCreateError extends Schema.TaggedError<GuestShareCreateError>()(
@@ -81,6 +117,8 @@ export class GuestShareCreateError extends Schema.TaggedError<GuestShareCreateEr
       "thread_unavailable",
       "read_failed",
       "changed",
+      "read_only_unsupported",
+      "run_active",
     ]),
   },
 ) {

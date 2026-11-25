@@ -7,6 +7,7 @@ import {
 import {
   AuthOrchestrationOperateScope,
   type ChatAttachment,
+  isReadOnlyGuestShare,
   type ScopedThreadRef,
   type ThreadGuestMessage,
   type ThreadGuestShare,
@@ -105,13 +106,19 @@ export function ThreadGuestShareBar(props: {
   return (
     <View className="flex-row items-center gap-2 px-4 pb-2">
       <SymbolView name="person.2" size={12} tintColorClassName="accent-foreground-muted" />
-      <Text className="min-w-0 flex-1 text-xs text-foreground-muted" numberOfLines={1}>
-        {expiredAt === share.expiresAt
-          ? t("Guest link expired")
-          : share.guestName === null
-            ? t("Guest link active")
-            : t("{name} is a guest", { name: share.guestName })}
-      </Text>
+      <View accessible className="min-w-0 flex-1 flex-row items-center">
+        <Text className="min-w-0 shrink text-xs text-foreground-muted" numberOfLines={1}>
+          {expiredAt === share.expiresAt
+            ? t("Guest link expired")
+            : share.guestName === null
+              ? t("Guest link active")
+              : t("{name} is a guest", { name: share.guestName })}
+        </Text>
+        {/* A long name truncates, not the access; an expired read-only link still binds until closed. */}
+        {isReadOnlyGuestShare(share) ? (
+          <Text className="shrink-0 text-xs text-foreground-muted">{` · ${t("Read-only")}`}</Text>
+        ) : null}
+      </View>
       <Button label={t("Stop sharing")} tone="text" disabled={disabled} onPress={stopSharing} />
     </View>
   );

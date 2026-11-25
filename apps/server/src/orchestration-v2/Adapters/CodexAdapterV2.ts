@@ -341,6 +341,8 @@ export const CodexProviderCapabilitiesV2 = {
   },
   runtimePolicy: {
     enforcement: "native",
+    // The OS sandbox refuses writes when approvals are off.
+    readOnlySandbox: true,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 

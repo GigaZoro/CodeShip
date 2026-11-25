@@ -4,6 +4,7 @@ import {
   CheckpointScopeId,
   CommandId,
   NodeId,
+  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -24,6 +25,7 @@ import * as Ref from "effect/Ref";
 
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
+import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
@@ -231,13 +233,17 @@ const lockedIndexMessage =
   "Git's index is locked. Wait for other Git operations to finish, then try again.";
 const rollbackCheckpointId = CheckpointId.make("checkpoint:effect-worker-rollback");
 const rollbackScopeId = CheckpointScopeId.make("checkpoint-scope:effect-worker-rollback");
-const restoreFailure = (detail: string) =>
+const rollbackFailure = (cause: unknown) =>
   new CheckpointRollbackService.CheckpointRollbackExecutionError({
     reason: "unexpected-failure",
     threadId,
     providerThreadId,
     checkpointId: rollbackCheckpointId,
-    cause: new CheckpointService.CheckpointRestoreError({
+    cause,
+  });
+const restoreFailure = (detail: string) =>
+  rollbackFailure(
+    new CheckpointService.CheckpointRestoreError({
       scopeId: rollbackScopeId,
       checkpointId: rollbackCheckpointId,
       cause: new VcsProcessExitError({
@@ -249,7 +255,11 @@ const restoreFailure = (detail: string) =>
         failureKind: "command-failed",
       }),
     }),
-  });
+  );
+const readOnlyUnsupported = new RuntimePolicy.RuntimePolicyReadOnlyUnsupportedError({
+  threadId,
+  providerInstanceId: ProviderInstanceId.make("cursor"),
+});
 
 it.effect.each([
   {
@@ -261,6 +271,11 @@ it.effect.each([
     name: "raw Git output",
     failure: restoreFailure("error: could not clean /private/repo/secret.txt"),
     message: CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
+  },
+  {
+    name: "a provider that cannot run a read-only guest link",
+    failure: rollbackFailure(readOnlyUnsupported),
+    message: readOnlyUnsupported.message,
   },
 ])("reports a rollback blocked by $name only after the last attempt", ({ failure, message }) =>
   Effect.gen(function* () {

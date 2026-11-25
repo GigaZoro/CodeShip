@@ -1908,6 +1908,8 @@ const catalog: MessageCatalog = {
   "⌘/Ctrl Enter to send": "⌘/Ctrl Enter, щоб надіслати",
   "0 bytes": "0 байт",
   "0 rows": "0 рядків",
+  "1 day": "1 день",
+  "1 hour": "1 година",
   "12-hour": "12-годинний",
   "15m": "15 хв",
   "1h": "1 год",
@@ -5422,6 +5424,8 @@ const catalog: MessageCatalog = {
     "Кожен ключ дедуплікації має містити коректний заповнювач запиту. Вікно об’єднання має бути цілим числом секунд від 10 до 3600 або порожнім.",
   "Each machine runs it at this time by its own clock.":
     "Кожен комп’ютер запускає його в цей час за власним годинником.",
+  "Each message the guest sends waits for you. It works once and expires {date}.":
+    "Кожне повідомлення гостя чекає на вас. Працює один раз і діє до {date}.",
   "Each model starts in its own worktree.": "Кожна модель починає у власному worktree.",
   "Each paragraph or code block appears as soon as it is complete.":
     "Кожен абзац або блок коду з’являється, щойно він готовий.",
@@ -5964,8 +5968,8 @@ const catalog: MessageCatalog = {
   "Failed to update network exposure.": "Не вдалося оновити мережевий доступ.",
   "Failed to update project": "Не вдалося оновити проєкт",
   "Failed to update project icon": "Не вдалося оновити значок проєкту",
-  "Failed to update thread tags": "Не вдалося оновити теги чату",
   "Failed to update thread preferences": "Не вдалося оновити налаштування чату",
+  "Failed to update thread tags": "Не вдалося оновити теги чату",
   "Failed to update WSL backend.": "Не вдалося оновити бекенд WSL.",
   "Failed to wake thread": "Не вдалося повернути чат",
   "Failed: {reason}": "Не вдалося: {reason}",
@@ -6327,6 +6331,7 @@ const catalog: MessageCatalog = {
   "Guest link active": "Гостьове посилання активне",
   "Guest link expired": "Гостьове посилання втратило чинність",
   "Guest links": "Гостьові посилання",
+  "Guest messages": "Повідомлення гостя",
   "Guest request": "Запит гостя",
   "Guest sharing": "Гостьовий доступ",
   Guide: "Посібник",
@@ -7043,10 +7048,10 @@ const catalog: MessageCatalog = {
   legal: "юридичне",
   Legal: "Правова інформація",
   "Less often": "Рідше",
-  "Let a guest watch a shared thread live and send messages you approve; turning it off ends every guest link.":
-    "Дозвольте гостю наживо стежити за спільним чатом і надсилати повідомлення, які ви схвалюєте; вимкнення завершує всі гостьові посилання.",
-  "Let a guest watch a shared thread live and send messages you approve. Sign in to T3 Connect to use it.":
-    "Дозвольте гостю наживо стежити за спільним чатом і надсилати повідомлення, які ви схвалюєте. Щоб користуватися цим, увійдіть у T3 Connect.",
+  "Let a guest watch a shared thread live and send it messages; turning it off ends every guest link.":
+    "Дозвольте гостю наживо стежити за спільним чатом і надсилати йому повідомлення; вимкнення завершує всі гостьові посилання.",
+  "Let a guest watch a shared thread live and send it messages. Sign in to T3 Connect to use it.":
+    "Дозвольте гостю наживо стежити за спільним чатом і надсилати йому повідомлення. Щоб користуватися цим, увійдіть у T3 Connect.",
   "Let agents here work on your other machines, and theirs here.":
     "Дозвольте агентам тут працювати на ваших інших комп’ютерах, а їм там – на цьому.",
   "Let agents on a machine work on your other machines, and theirs on it. Turn it on for each machine. While it is off, nothing new starts over a link; tasks already running finish.":
@@ -7120,6 +7125,8 @@ const catalog: MessageCatalog = {
   "Link created at {time}": "Посилання створено {time}",
   "Link date unavailable": "Дата зв’язування недоступна",
   "link environment": "пов’язати середовище",
+  "Link expires after": "Посилання діє",
+  "Link expires after {lifetime}": "Термін дії посилання: {lifetime}",
   "link machine": "пов’язати комп’ютер",
   "Link opening is unavailable.": "Відкриття посилань недоступне.",
   "Link pull request": "Прив’язати пул-реквест",
@@ -9517,6 +9524,9 @@ const catalog: MessageCatalog = {
   "Read-only access": "Доступ лише для читання",
   "Read-only connection. Unsaved edits are kept until write access returns.":
     "З’єднання лише для читання. Незбережені зміни зберігаються, доки не повернеться доступ на запис.",
+  "Read-only: the agent cannot change files": "Лише читання: агент не може змінювати файли",
+  "Read-only: the agent cannot change files. It works once and expires {date}.":
+    "Лише читання: агент не може змінювати файли. Працює один раз і діє до {date}.",
   "Read-only: the tasks it last reported to {machine}.":
     "Лише читання: завдання, які він востаннє передав на {machine}.",
   "Read-only. Up to 50 columns and 1,024 characters per cell. Blob contents are omitted.":
@@ -10832,8 +10842,7 @@ const catalog: MessageCatalog = {
   "Send crash reports": "Надсилати звіти про збої",
   "Send feedback to decline this request": "Надішліть відгук, щоб відхилити цей запит",
   "Send into the current turn": "Надіслати в поточний хід",
-  "Send it to one person. It works once and expires in 24 hours.":
-    "Надішліть одній людині. Працює один раз і спливає за 24 години.",
+  "Send it to one person.": "Надішліть його одній людині.",
   "Send it to your workspace admin.": "Надішліть його адміністратору вашого робочого простору.",
   "Send it when the current turn ends": "Надіслати, коли поточний хід завершиться",
   "send message": "надіслати повідомлення",
@@ -12353,8 +12362,10 @@ const catalog: MessageCatalog = {
     "Відгалуження створено, але дані його чату не дійшли до цього клієнта. Перепідключіться та спробуйте відкрити його з бічної панелі.",
   "The guest loses access and the link stops working.":
     "Гість втрачає доступ, а посилання перестає працювати.",
-  "The guest sees the thread as you do, including command output and the agent's reasoning. Each message they send waits for you.":
-    "Гість бачить чат так само, як і ви, зокрема вивід команд і міркування агента. Кожне його повідомлення чекає на ваше схвалення.",
+  "The guest sees the thread as you do, including command output and the agent's reasoning.":
+    "Гість бачить чат так само, як і ви, зокрема вивід команд і міркування агента.",
+  "The guest's messages run right away, and the agent cannot change files. Every turn on this thread stays read-only until you stop sharing.":
+    "Повідомлення гостя виконуються одразу, а агент не може змінювати файли. Кожен хід у цьому чаті лишається лише для читання, доки ви не припините спільний доступ.",
   "The host didn't answer. Try again in a moment.": "Хост не відповів. Спробуйте ще раз за мить.",
   "The host refused it. A rebase stops at the first commit that does not apply cleanly; updating with a merge commit may still work.":
     "Хост відхилив дію. Rebase зупиняється на першому коміті, який не застосовується чисто; оновлення через коміт злиття все ще може спрацювати.",
@@ -12429,8 +12440,7 @@ const catalog: MessageCatalog = {
     "У посиланні немає запиту на авторизацію. Знову виконайте `t3 connect` у терміналі та відкрийте нову надруковану URL-адресу.",
   "The link lets agents work there. Adding it here also shows the machine in the machine list and lets you open its threads.":
     "Зв’язок дозволяє агентам працювати там. Додавання тут також показує комп’ютер у списку комп’ютерів і дає відкривати його чати.",
-  "The link works once and expires in 24 hours.":
-    "Посилання працює один раз і втрачає чинність через 24 години.",
+  "The link works once.": "Посилання працює один раз.",
   "The local attachment file is missing.": "Локальний файл вкладення відсутній.",
   "The local environment is disabled.": "Локальне середовище вимкнено.",
   "The local file is unavailable.": "Локальний файл недоступний.",
@@ -12466,8 +12476,8 @@ const catalog: MessageCatalog = {
   "The original attachment is no longer available.": "Початкове вкладення більше недоступне.",
   "the other machine": "інший комп’ютер",
   "The owner approves each message": "Власник схвалює кожне повідомлення",
-  "The owner sees your name and approves each message before the agent gets it.":
-    "Власник бачить ваше ім’я та схвалює кожне повідомлення, перш ніж агент його отримає.",
+  "The owner sees your name and every message you send.":
+    "Власник бачить ваше ім’я та кожне повідомлення, яке ви надсилаєте.",
   "The owner stopped sharing this thread.": "Власник припинив спільний доступ до цього чату.",
   "The page asks for a file.": "Сторінка запитує файл.",
   "The page asks for files.": "Сторінка запитує файли.",
@@ -14421,6 +14431,7 @@ const catalog: MessageCatalog = {
   "Wait for file uploads before stashing this prompt":
     "Дочекайтеся завантаження файлів, перш ніж зберігати цей запит",
   "Wait for it to finish before the agent starts": "Дочекатися завершення перед стартом агента",
+  "Wait for me": "Чекати на мене",
   "Wait for memory before automated starts": "Чекати на пам’ять перед автоматичними запусками",
   "Wait for shared content to finish importing.":
     "Дочекайтеся завершення імпорту спільного вмісту.",
@@ -14767,6 +14778,8 @@ const catalog: MessageCatalog = {
   "You have control": "Ви керуєте",
   "You have uncommitted changes. They'll carry over to the other branch, or block the switch if they conflict.":
     "У вас є незакомічені зміни. Вони перенесуться на іншу гілку або заблокують перехід, якщо виникне конфлікт.",
+  "You send or dismiss each message the guest writes.":
+    "Ви надсилаєте або відхиляєте кожне повідомлення гостя.",
   "You stopped after {duration}": "Ви зупинили через {duration}",
   "You stopped this response": "Ви зупинили цю відповідь",
   "You:": "Ви:",

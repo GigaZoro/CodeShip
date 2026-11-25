@@ -1,6 +1,7 @@
 import {
   AUTHENTICATION_FAILED_FAILURE_CODE,
   countOlderSettledFolders,
+  isReadOnlyGuestShare,
   pendingGuestMessageCount,
   threadFolderKeyOf,
 } from "@t3tools/contracts";
@@ -53,6 +54,7 @@ import type {
   GuestShareId,
   ProviderThreadId,
   ProviderTurnId,
+  ThreadGuestShare,
 } from "@t3tools/contracts";
 import {
   ScheduledTaskSchedule,
@@ -905,6 +907,10 @@ export class ProjectionStoreV2 extends Context.Service<ProjectionStoreV2, Projec
 ) {}
 
 export const ORCHESTRATION_V2_PROJECTION_SCHEMA_VERSION = 2;
+
+// Absent unless set, so shells of the many threads without such a link stay as small as before.
+const readOnlyGuestShareField = (share: ThreadGuestShare | null | undefined) =>
+  isReadOnlyGuestShare(share) ? { readOnlyGuestShare: true as const } : {};
 
 function upsertById<T extends { readonly id: string }>(items: ReadonlyArray<T>, next: T): Array<T> {
   const index = items.findIndex((item) => item.id === next.id);
@@ -1837,6 +1843,7 @@ export function threadShellFromProjection(
     ),
     pendingRuntimeRequest,
     pendingGuestMessageCount: pendingGuestMessageCount(projection.thread.guestShare),
+    ...readOnlyGuestShareField(projection.thread.guestShare),
     // Thread detail owns message bodies. Keeping them out of shell rows makes
     // initial hydration and streaming updates independent of transcript size.
     latestVisibleMessage: null,
@@ -2125,6 +2132,7 @@ function shellFromState(input: {
     usageLimitResetAt: input.state.usageLimitResetAt,
     pendingRuntimeRequest: input.state.pendingRuntimeRequest,
     pendingGuestMessageCount: pendingGuestMessageCount(input.state.thread.guestShare),
+    ...readOnlyGuestShareField(input.state.thread.guestShare),
     latestVisibleMessage: null,
     latestUserMessageAt: input.state.latestUserMessageAt,
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,

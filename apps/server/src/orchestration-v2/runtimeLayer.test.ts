@@ -68,6 +68,7 @@ import * as ManagedEndpointRuntime from "../cloud/ManagedEndpointRuntime.ts";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
@@ -134,6 +135,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 const layerPlatformTest = Layer.mergeAll(
   ProviderSkillsTestkit.layer,
   NodeServices.layer,
+  Layer.mock(DocumentText.DocumentText)({}),
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
   }),

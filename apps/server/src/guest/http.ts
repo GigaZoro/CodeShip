@@ -9,7 +9,6 @@ import {
   GUEST_SHARE_PARAM,
   GUEST_MESSAGE_MAX_ATTACHMENT_BYTES,
   GUEST_MESSAGE_MAX_ATTACHMENTS,
-  GUEST_SHARE_TTL_MS,
   GuestRedeemRequest,
   GuestStreamEvent,
   GuestSubmitRequest,
@@ -145,14 +144,14 @@ const redeemRoute = HttpRouter.add(
     if (body._tag === "None") return yield* badRequest;
     const guestShares = yield* GuestShareService;
     return yield* guestShares.redeem(body.value).pipe(
-      Effect.flatMap(({ token, shareId }) =>
+      Effect.flatMap(({ token, shareId, expiresInMs }) =>
         HttpServerResponse.empty({ status: 204, headers: NO_STORE }).pipe(
           HttpServerResponse.setCookie(guestSessionCookieName(shareId), token, {
             httpOnly: true,
             secure: true,
             sameSite: "strict",
             path: GUEST_ROUTE_PREFIX,
-            maxAge: Duration.millis(GUEST_SHARE_TTL_MS),
+            maxAge: Duration.millis(expiresInMs),
           }),
         ),
       ),

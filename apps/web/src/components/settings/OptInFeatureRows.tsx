@@ -51,7 +51,7 @@ function GuestLinksRowWithSignIn() {
     <SettingsRow
       {...searchableSetting("guest-links")}
       description={t(
-        "Let a guest watch a shared thread live and send messages you approve. Sign in to T3 Connect to use it.",
+        "Let a guest watch a shared thread live and send it messages. Sign in to T3 Connect to use it.",
       )}
       control={
         <Button size="sm" variant="outline" onClick={openAuthPrompt}>
@@ -82,7 +82,7 @@ function GuestLinksRow() {
       // Turning guest links off still works without T3 Connect.
       managed={settings.guestSharingEnabled ? undefined : connectDenial}
       description={t(
-        "Let a guest watch a shared thread live and send messages you approve; turning it off ends every guest link.",
+        "Let a guest watch a shared thread live and send it messages; turning it off ends every guest link.",
       )}
       control={
         <ScopedSwitch

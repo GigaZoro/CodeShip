@@ -1,7 +1,8 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { GuestShareId, IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { ThreadGuestMessage } from "./guestShare.ts";
+import { GuestShareAccess, ThreadGuestMessage } from "./guestShare.ts";
 import { OrchestrationV2ThreadStreamItem } from "./orchestrationV2.ts";
 import { ProviderDriverKind } from "./providerInstance.ts";
 
@@ -26,6 +27,8 @@ export const GuestShareView = Schema.Struct({
   expiresAt: IsoDateTime,
   messages: Schema.Array(ThreadGuestMessage),
   model: GuestThreadModel,
+  // Servers older than access levels only had links that wait for the owner.
+  access: GuestShareAccess.pipe(Schema.withDecodingDefault(Effect.succeed("approve" as const))),
 });
 export type GuestShareView = typeof GuestShareView.Type;
 

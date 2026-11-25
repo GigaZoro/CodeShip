@@ -29,6 +29,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerHttp from "../http.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as McpToolAccessTestkit from "../mcp/McpToolAccess.testkit.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -129,6 +130,8 @@ export const servePeer = <E, R>(
           }),
         ),
         Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+        // Read tools check a calling thread; a linked environment calls with none.
+        Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
       ),
     ).pipe(
       Layer.provide(layerRecordBearers),

@@ -103,6 +103,10 @@
       "types": "./src/scheduledTaskDescription.ts",
       "default": "./src/scheduledTaskDescription.ts"
     },
+    "./guest-share-options": {
+      "types": "./src/guestShareOptions.ts",
+      "default": "./src/guestShareOptions.ts"
+    },
     "./scheduled-task-pins": {
       "types": "./src/scheduledTaskPins.ts",
       "default": "./src/scheduledTaskPins.ts"

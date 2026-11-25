@@ -1009,6 +1009,7 @@ it.effect.each([
             threadId,
             shareId,
             host: "env.t3.test",
+            access: "approve",
             expiresAt: DateTime.formatIso(DateTime.add(now, { hours: 24 })),
           });
           yield* orchestrator.dispatch({

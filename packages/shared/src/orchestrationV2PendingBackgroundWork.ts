@@ -340,6 +340,13 @@ export function derivePendingBackgroundWork(input: {
   return Array.from(byTaskId.values());
 }
 
+const PULL_REQUEST_WATCH_TASK_ID_PREFIX = "pull-request-watch:";
+
+/** A watched pull request: the server holds it, so a provider session restart does not end it. */
+export function isPullRequestWatchTask(task: Pick<PendingBackgroundWorkTask, "taskId">): boolean {
+  return task.taskId.startsWith(PULL_REQUEST_WATCH_TASK_ID_PREFIX);
+}
+
 function pullRequestWatchTasks(
   pullRequests: ReadonlyArray<PendingBackgroundWorkPullRequest> | undefined,
 ): Array<PendingBackgroundWorkTask> {
@@ -353,7 +360,7 @@ function pullRequestWatchTasks(
           {
             // Links store their normalized identity, and this id only has to be unique within the
             // thread, so it reads those fields instead of parsing the URL.
-            taskId: `pull-request-watch:${link.host.toLowerCase()}/${link.repository.toLowerCase()}#${link.number}`,
+            taskId: `${PULL_REQUEST_WATCH_TASK_ID_PREFIX}${link.host.toLowerCase()}/${link.repository.toLowerCase()}#${link.number}`,
             description: `Watching pull request #${link.number}`,
             kind: "monitor" as const,
             awaited: true as const,

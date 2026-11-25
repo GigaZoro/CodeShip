@@ -1,12 +1,14 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  EventId,
   GuestMessageId,
   GuestShareId,
   MessageId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -18,6 +20,8 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import * as EventSink from "./EventSink.ts";
+import { GUEST_FAILURE, READ_ONLY_SHARE_RUN_ACTIVE } from "./GuestShareDecider.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -69,6 +73,7 @@ const setup = Effect.gen(function* () {
     threadId,
     shareId,
     host: "env.t3.test",
+    access: "approve",
     expiresAt: DateTime.formatIso(DateTime.add(yield* DateTime.now, { hours: 24 })),
   });
   return orchestrator;
@@ -87,6 +92,20 @@ const sendGuestMessage = (orchestrator: Orchestrator.OrchestratorV2["Service"], 
     createdBy: "user",
     creationSource: "web",
   });
+
+const readOnlyShareId = GuestShareId.make("share:read-only");
+const openReadOnly = (orchestrator: Orchestrator.OrchestratorV2["Service"], id: string) =>
+  Effect.flatMap(DateTime.now, (now) =>
+    orchestrator.dispatch({
+      type: "thread.guest-share.open",
+      commandId: CommandId.make(id),
+      threadId,
+      shareId: readOnlyShareId,
+      host: "env.t3.test",
+      access: "read-only",
+      expiresAt: DateTime.formatIso(DateTime.add(now, { hours: 24 })),
+    }),
+  );
 
 it.effect("redeems a guest link once and sends each guest message once, with its turn", () =>
   Effect.gen(function* () {
@@ -340,4 +359,185 @@ it.effect("brings a settled thread back when its guest sends a request", () =>
     assert.isNull(thread.settledOverride);
     assert.isNull(thread.settledAt);
   }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("restarts the thread's provider session when a read-only link opens", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* setup;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const now = yield* DateTime.now;
+    const providerSessionId = ProviderSessionId.make("session:before-read-only");
+    yield* (yield* EventSink.EventSinkV2).write({
+      commandId: CommandId.make("attach-session"),
+      events: [
+        {
+          id: EventId.make("attach-session"),
+          type: "provider-session.attached",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: providerSessionId,
+            driver: ProviderDriverKind.make("codex"),
+            providerInstanceId: instanceId,
+            status: "ready",
+            cwd: process.cwd(),
+            model: "gpt-5.1-codex",
+            capabilities: CodexProviderCapabilitiesV2,
+            createdAt: now,
+            updatedAt: now,
+            lastError: null,
+          },
+        },
+      ],
+    });
+    // A watched pull request is the server's work, which a session restart leaves running.
+    yield* orchestrator.dispatch({
+      type: "thread.pull-request.watch",
+      commandId: CommandId.make("watch-pull-request"),
+      threadId,
+      host: "github.com",
+      repository: "pingdotgg/t3code",
+      number: 1,
+      watching: true,
+      link: { url: "https://github.com/pingdotgg/t3code/pull/1", source: "agent" },
+    });
+
+    yield* openReadOnly(orchestrator, "open-read-only");
+    assert.deepEqual(
+      (yield* outbox.listByCommandId(CommandId.make("open-read-only"))).map(
+        (effect) => effect.request,
+      ),
+      [
+        {
+          type: "provider-session.detach",
+          providerSessionId,
+          detail: "Read-only guest link opened.",
+        },
+      ],
+    );
+    assert.equal((yield* projections.getThread(threadId)).guestShare?.access, "read-only");
+    assert.isTrue((yield* projections.getThreadShell(threadId))?.readOnlyGuestShare);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("refuses a read-only link while a run is active", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* setup;
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("owner-run"),
+      threadId,
+      messageId: MessageId.make("owner-run"),
+      text: "Start",
+      attachments: [],
+      dispatchMode: { type: "defer_start" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const refused = yield* Effect.flip(openReadOnly(orchestrator, "open-while-running"));
+    assert.equal(
+      refused._tag === "OrchestratorDispatchError" ? refused.cause : refused._tag,
+      READ_ONLY_SHARE_RUN_ACTIVE,
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("takes one read-only guest message at a time", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* setup;
+    yield* openReadOnly(orchestrator, "open-read-only");
+    yield* orchestrator.dispatch({
+      type: "thread.guest-share.redeem",
+      commandId: CommandId.make("redeem"),
+      threadId,
+      shareId: readOnlyShareId,
+      guestName: "Sam",
+    });
+    const submit = (id: string) =>
+      orchestrator.dispatch({
+        type: "thread.guest-message.submit",
+        commandId: CommandId.make(id),
+        threadId,
+        shareId: readOnlyShareId,
+        guestMessageId: id === "submit" ? guestMessageId : GuestMessageId.make(id),
+        text: "Where is the cache?",
+      });
+    const refusal = (error: Orchestrator.OrchestratorV2Error) =>
+      error._tag === "OrchestratorDispatchError" ? error.cause : error._tag;
+
+    yield* submit("submit");
+    const whilePending = yield* Effect.flip(submit("submit-while-pending"));
+    yield* sendGuestMessage(orchestrator, "send");
+    const whileRunning = yield* Effect.flip(submit("submit-while-running"));
+
+    assert.deepEqual(
+      [refusal(whilePending), refusal(whileRunning)],
+      [GUEST_FAILURE.running, GUEST_FAILURE.running],
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "tells the agent a guest message came through a read-only link, and keeps its run read-only",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* setup;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      yield* openReadOnly(orchestrator, "open-read-only");
+      yield* orchestrator.dispatch({
+        type: "thread.guest-share.redeem",
+        commandId: CommandId.make("redeem"),
+        threadId,
+        shareId: readOnlyShareId,
+        guestName: "Sam",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.guest-message.submit",
+        commandId: CommandId.make("submit"),
+        threadId,
+        shareId: readOnlyShareId,
+        guestMessageId,
+        text: "Where is the cache?",
+      });
+      yield* sendGuestMessage(orchestrator, "send");
+      const sent = (yield* projections.getThreadProjection(threadId)).messages.find(
+        (message) => message.id === MessageId.make("send"),
+      );
+      assert.equal(
+        sent?.text,
+        "Message from guest Sam, through a read-only guest link:\n\nWhere is the cache?",
+      );
+
+      // The link closing must not let the run, or a continuation of its work, write.
+      yield* orchestrator.dispatch({
+        type: "thread.guest-share.close",
+        commandId: CommandId.make("close"),
+        threadId,
+      });
+      const guestRun = (yield* projections.getThreadProjection(threadId)).runs.find(
+        (run) => run.userMessageId === MessageId.make("send"),
+      );
+      assert.isTrue(guestRun?.readOnlyGuestShare);
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("continue"),
+        threadId,
+        messageId: MessageId.make("continue"),
+        text: "Continue",
+        attachments: [],
+        automaticContinuationOfRunId: guestRun!.id,
+        dispatchMode: { type: "defer_start" },
+        createdBy: "agent",
+        creationSource: "server",
+      });
+      const runs = (yield* projections.getThreadProjection(threadId)).runs;
+      assert.deepEqual(
+        runs.map((run) => [run.userMessageId, run.readOnlyGuestShare]),
+        [
+          [MessageId.make("send"), true],
+          [MessageId.make("continue"), true],
+        ],
+      );
+    }).pipe(Effect.provide(layerTest)),
 );

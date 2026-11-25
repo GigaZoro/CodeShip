@@ -165,6 +165,8 @@ export const CursorProviderCapabilitiesV2 = {
   },
   runtimePolicy: {
     enforcement: "native",
+    // Cursor's agent mode writes the workspace without asking.
+    readOnlySandbox: false,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 

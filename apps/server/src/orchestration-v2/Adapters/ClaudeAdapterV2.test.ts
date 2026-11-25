@@ -274,17 +274,20 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     ["--dangerously-skip-permissions", "bypassPermissions"],
     ["--dangerously-skip-permissions --permission-mode plan", "plan"],
   ])("folds %s into the SDK permission mode", (launchArgs, expected) => {
-    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
-      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-      nativeThreadId: "native-permission-override",
-      resume: false,
-      cwd: "/workspace",
-      permissionMode: "default",
-      settings: { ...AUTO_COMPACT_CLAUDE_SETTINGS, launchArgs },
-    });
+    const optionsWith = (permissionMode: "default" | "dontAsk") =>
+      ClaudeAdapterV2.makeClaudeQueryOptions({
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        nativeThreadId: "native-permission-override",
+        resume: false,
+        cwd: "/workspace",
+        permissionMode,
+        settings: { ...AUTO_COMPACT_CLAUDE_SETTINGS, launchArgs },
+      });
+    const options = optionsWith("default");
     assert.equal(options.permissionMode, expected);
     assert.isUndefined(options.extraArgs?.["permission-mode"]);
     assert.isUndefined(options.extraArgs?.["dangerously-skip-permissions"]);
+    assert.equal(optionsWith("dontAsk").permissionMode, "dontAsk");
   });
 
   it.each([

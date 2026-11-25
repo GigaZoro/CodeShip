@@ -1,18 +1,27 @@
 import { t, tn } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import {
+  guestShareAccessOptions,
+  guestShareCreatedText,
+  guestShareLifetimeOptions,
+} from "@t3tools/client-runtime/guest-share-options";
+import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
   AuthOrchestrationOperateScope,
   type ChatAttachment,
+  DEFAULT_GUEST_SHARE_LIFETIME,
   type GuestMessageId,
+  type GuestShareAccess,
+  type GuestShareLifetime,
+  isReadOnlyGuestShare,
   type ScopedThreadRef,
   type ThreadGuestShare,
 } from "@t3tools/contracts";
 import { CheckIcon, CopyIcon, UserIcon } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useNowMinute } from "~/hooks/useNowMinute";
@@ -35,6 +44,9 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { Label } from "../ui/label";
+import { Radio, RadioGroup } from "../ui/radio-group";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { useAssetUrls } from "~/assets/assetUrls";
 import { type ChatFileAttachment, isImageAttachment } from "../../types";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
@@ -61,7 +73,7 @@ export function GuestShareDialogHost() {
 type CreateState =
   | { readonly status: "idle" }
   | { readonly status: "creating" }
-  | { readonly status: "created"; readonly url: string }
+  | { readonly status: "created"; readonly url: string; readonly share: ThreadGuestShare }
   | { readonly status: "failed"; readonly message: string };
 
 function GuestShareDialog({
@@ -80,15 +92,20 @@ function GuestShareDialog({
   });
   const { copyToClipboard, isCopied } = useCopyToClipboard({ target: t("guest link") });
   const [state, setState] = useState<CreateState>({ status: "idle" });
+  const [access, setAccess] = useState<GuestShareAccess>("approve");
+  const [lifetime, setLifetime] = useState<GuestShareLifetime>(DEFAULT_GUEST_SHARE_LIFETIME);
+  const id = useId();
+  const creating = state.status === "creating";
+  const lifetimeOptions = guestShareLifetimeOptions();
 
   const create = async () => {
     setState({ status: "creating" });
     const result = await createGuestShare({
       environmentId: threadRef.environmentId,
-      input: { threadId: threadRef.threadId },
+      input: { threadId: threadRef.threadId, access, lifetime },
     });
     if (result._tag === "Success") {
-      setState({ status: "created", url: result.value.url });
+      setState({ status: "created", url: result.value.url, share: result.value.share });
       return;
     }
     if (isAtomCommandInterrupted(result)) {
@@ -106,7 +123,7 @@ function GuestShareDialog({
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open && state.status !== "creating") onClose();
+        if (!open && !creating) onClose();
       }}
     >
       <DialogPopup className="max-w-lg">
@@ -114,36 +131,109 @@ function GuestShareDialog({
           <DialogTitle>{t("Share with guest")}</DialogTitle>
           <DialogDescription>
             {t(
-              "The guest sees the thread as you do, including command output and the agent's reasoning. Each message they send waits for you.",
+              "The guest sees the thread as you do, including command output and the agent's reasoning.",
             )}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
-          {state.status === "created" ? (
-            <div className="flex items-center gap-2">
-              <Input
-                readOnly
-                aria-label={t("Guest link")}
-                value={state.url}
-                onFocus={(event) => event.currentTarget.select()}
-              />
-              <Button size="sm" variant="outline" onClick={() => copyToClipboard(state.url)}>
-                {isCopied ? <CheckIcon /> : <CopyIcon />}
-                {isCopied ? t("Copied") : t("Copy")}
-              </Button>
-            </div>
-          ) : (
-            <p className="text-muted-foreground text-sm">
-              {activeShare !== null
-                ? t("A new link ends the current one.")
-                : t("The link works once and expires in 24 hours.")}
-            </p>
-          )}
-          {state.status === "failed" ? (
-            <p role="alert" className="text-destructive-foreground text-xs">
-              {state.message}
-            </p>
-          ) : null}
+          <div className="flex flex-col gap-4">
+            {state.status === "created" ? (
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <Input
+                    readOnly
+                    aria-label={t("Guest link")}
+                    value={state.url}
+                    onFocus={(event) => event.currentTarget.select()}
+                  />
+                  <Button size="sm" variant="outline" onClick={() => copyToClipboard(state.url)}>
+                    {isCopied ? <CheckIcon /> : <CopyIcon />}
+                    {isCopied ? t("Copied") : t("Copy")}
+                  </Button>
+                </div>
+                <p className="text-muted-foreground text-xs">
+                  {guestShareCreatedText(state.share)}
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="flex flex-col gap-2">
+                  <span id={`${id}-access`} className="font-medium text-sm">
+                    {t("Guest messages")}
+                  </span>
+                  <RadioGroup
+                    aria-labelledby={`${id}-access`}
+                    value={access}
+                    disabled={creating}
+                    onValueChange={(value) => {
+                      if (value === "approve" || value === "read-only") setAccess(value);
+                    }}
+                  >
+                    {guestShareAccessOptions().map((option) => (
+                      <label
+                        key={option.value}
+                        className="flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-3 text-sm"
+                      >
+                        <span className="flex h-5 shrink-0 items-center">
+                          <Radio
+                            value={option.value}
+                            aria-labelledby={`${id}-access-${option.value}`}
+                            aria-describedby={`${id}-access-${option.value}-description`}
+                          />
+                        </span>
+                        <span className="flex min-w-0 flex-col gap-0.5">
+                          <span id={`${id}-access-${option.value}`} className="font-medium">
+                            {option.label}
+                          </span>
+                          <span
+                            id={`${id}-access-${option.value}-description`}
+                            className="text-muted-foreground text-xs"
+                          >
+                            {option.description}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                  </RadioGroup>
+                </div>
+                <Label className="flex flex-col items-stretch" htmlFor={`${id}-lifetime`}>
+                  {t("Link expires after")}
+                  <Select
+                    value={lifetime}
+                    disabled={creating}
+                    items={Object.fromEntries(
+                      lifetimeOptions.map((option) => [option.value, option.label]),
+                    )}
+                    onValueChange={(value) => {
+                      const option = lifetimeOptions.find((candidate) => candidate.value === value);
+                      if (option) setLifetime(option.value);
+                    }}
+                  >
+                    <SelectTrigger id={`${id}-lifetime`} className="min-w-0">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectPopup>
+                      {lifetimeOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectPopup>
+                  </Select>
+                </Label>
+                <p className="text-muted-foreground text-sm">
+                  {activeShare !== null
+                    ? t("A new link ends the current one.")
+                    : t("The link works once.")}
+                </p>
+              </>
+            )}
+            {state.status === "failed" ? (
+              <p role="alert" className="text-destructive-foreground text-xs">
+                {state.message}
+              </p>
+            ) : null}
+          </div>
         </DialogPanel>
         <DialogFooter>
           {state.status === "created" ? (
@@ -152,20 +242,11 @@ function GuestShareDialog({
             </Button>
           ) : (
             <>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onClose}
-                disabled={state.status === "creating"}
-              >
+              <Button variant="outline" size="sm" onClick={onClose} disabled={creating}>
                 {t("Cancel")}
               </Button>
-              <Button
-                size="sm"
-                onClick={() => void create()}
-                disabled={!canCreate || state.status === "creating"}
-              >
-                {state.status === "creating" ? t("Creating...") : t("Create link")}
+              <Button size="sm" onClick={() => void create()} disabled={!canCreate || creating}>
+                {creating ? t("Creating...") : t("Create link")}
               </Button>
             </>
           )}
@@ -209,12 +290,17 @@ export function GuestShareIndicator({ threadRef }: { readonly threadRef: ScopedT
 function GuestShareStatus({ share }: { readonly share: ThreadGuestShare }) {
   const nowMinute = useNowMinute();
   // The share stays on the thread after it expires, until the owner clears it.
-  if (share.expiresAt.slice(0, 16) <= nowMinute) return <span>{t("Guest link expired")}</span>;
+  const status =
+    share.expiresAt.slice(0, 16) <= nowMinute
+      ? t("Guest link expired")
+      : share.guestName !== null
+        ? t("{name} is a guest", { name: share.guestName })
+        : t("Guest link active");
+  if (!isReadOnlyGuestShare(share)) return <span>{status}</span>;
+  // An expired read-only link still keeps the thread read-only, so the label stays until it closes.
   return (
     <span>
-      {share.guestName !== null
-        ? t("{name} is a guest", { name: share.guestName })
-        : t("Guest link active")}
+      {status} · {t("Read-only")}
     </span>
   );
 }

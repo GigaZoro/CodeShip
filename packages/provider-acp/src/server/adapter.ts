@@ -649,6 +649,8 @@ export const AcpProviderCapabilitiesV2 = {
   },
   runtimePolicy: {
     enforcement: "client-boundary",
+    // The client policy denies every non-read tool call and terminal.
+    readOnlySandbox: true,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 

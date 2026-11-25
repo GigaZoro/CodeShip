@@ -200,6 +200,9 @@ const OpenCodeProviderCapabilitiesV2 = {
   },
   runtimePolicy: {
     enforcement: "native",
+    // Capabilities come from the last probe, which can name the other generation before a
+    // session opens, and OpenCode 2 has no read-only rules.
+    readOnlySandbox: false,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 

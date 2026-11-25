@@ -3,8 +3,11 @@ import { assert, it } from "@effect/vitest";
 import {
   ChatAttachmentId,
   CommandId,
+  DEFAULT_GUEST_SHARE_LIFETIME,
   EventId,
+  type GuestShareAccess,
   GuestShareId,
+  type GuestShareLifetime,
   type GuestStreamEvent,
   MessageId,
   type OrchestrationV2ThreadHistoryPage,
@@ -49,7 +52,9 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ResourceCleanupService from "../orchestration-v2/ResourceCleanupService.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
@@ -130,12 +135,23 @@ const layerAnalytics = Layer.effectContext(
     );
   }),
 );
+// A read-only guest's message goes out through thread management, straight to the orchestrator.
+const layerThreads = Layer.unwrap(
+  Effect.map(Orchestrator.OrchestratorV2, (orchestrator) =>
+    Layer.mock(ThreadManagement.ThreadManagementService)({
+      dispatch: orchestrator.dispatch,
+      getThreadSnapshotWindow: orchestrator.getThreadSnapshotWindow,
+    }),
+  ),
+);
 const layerTest = GuestShareService.layer.pipe(
+  Layer.provideMerge(layerThreads),
   Layer.provideMerge(
     CommandOutputHub.layer.pipe(
       Layer.provideMerge(layerOrchestration.pipe(Layer.provide(layerCleanup))),
     ),
   ),
+  Layer.provide(DocumentText.layer),
   Layer.provide(layerProviders),
   Layer.provideMerge(ServerSettings.layerTest({ guestSharingEnabled: true })),
   Layer.provide(layerConnect),
@@ -147,7 +163,19 @@ const layerTest = GuestShareService.layer.pipe(
 
 const threadId = ThreadId.make("thread:guest-share-service");
 
-const shareThreadFor = Effect.fn(function* (threadId: ThreadId) {
+const createInput = (
+  threadId: ThreadId,
+  options: { readonly access?: GuestShareAccess; readonly lifetime?: GuestShareLifetime } = {},
+) => ({
+  threadId,
+  access: options.access ?? "approve",
+  lifetime: options.lifetime ?? DEFAULT_GUEST_SHARE_LIFETIME,
+});
+
+const shareThreadFor = Effect.fn(function* (
+  threadId: ThreadId,
+  options?: Parameters<typeof createInput>[1],
+) {
   yield* Ref.set(hostname, "env.t3.test");
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   yield* orchestrator.dispatch({
@@ -165,7 +193,7 @@ const shareThreadFor = Effect.fn(function* (threadId: ThreadId) {
     creationSource: "web",
   });
   const guestShares = yield* GuestShareService.GuestShareService;
-  const { url } = yield* guestShares.create({ threadId });
+  const { url } = yield* guestShares.create(createInput(threadId, options));
   assert.isTrue(url.startsWith("https://env.t3.test/guest#"));
   const credential = url.slice(url.indexOf("#") + 1);
   return { orchestrator, guestShares, credential };
@@ -281,7 +309,7 @@ it.effect("starts a stream with the runs and items already in the thread", () =>
 it.effect("redeems only a short invite whose signature and share id are both current", () =>
   Effect.gen(function* () {
     const { guestShares, credential: replaced } = yield* shareThread;
-    const { url } = yield* guestShares.create({ threadId });
+    const { url } = yield* guestShares.create(createInput(threadId));
     const credential = url.slice(url.indexOf("#") + 1);
     assert.match(credential, /^[\w-]{22}\.[\w-]{22}$/);
 
@@ -345,7 +373,10 @@ it.effect("refuses new links and every guest request while the beta is off", () 
     // An open stream closes at the next access check.
     yield* TestClock.adjust("30 seconds");
     yield* Fiber.join(collecting);
-    assert.equal((yield* Effect.flip(guestShares.create({ threadId }))).reason, "disabled");
+    assert.equal(
+      (yield* Effect.flip(guestShares.create(createInput(threadId)))).reason,
+      "disabled",
+    );
     assert.equal((yield* Effect.flip(guestShares.check(session))).reason, "inactive");
     // Turning it back on lets the same guest back in.
     yield* settings.updateSettings({ guestSharingEnabled: true });
@@ -363,6 +394,37 @@ it.effect("ends an open guest stream when the link expires", () =>
     yield* TestClock.adjust("25 hours");
     const received = Array.from(yield* Fiber.join(collecting));
     assert.equal(received.at(-1)?.type, "ended");
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("keeps a link working for the lifetime the owner picked", () =>
+  Effect.gen(function* () {
+    const { guestShares, credential } = yield* shareThreadFor(threadId, { lifetime: "7d" });
+    const { token: session, expiresInMs } = yield* guestShares.redeem({ credential, name: "Sam" });
+    assert.equal(expiresInMs, 7 * 24 * 60 * 60 * 1000);
+    yield* TestClock.adjust("6 days");
+    assert.isTrue(Exit.isSuccess(yield* Effect.exit(guestShares.check(session))));
+    yield* TestClock.adjust("1 day");
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(guestShares.check(session))));
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("runs a read-only guest's message at once, one at a time", () =>
+  Effect.gen(function* () {
+    const { orchestrator, guestShares, credential } = yield* shareThreadFor(threadId, {
+      access: "read-only",
+    });
+    const { token: session, shareId } = yield* guestShares.redeem({ credential, name: "Sam" });
+    yield* guestShares.submit(session, { shareId, text: "Where is the cache?" }, []);
+    const { thread } = yield* orchestrator.getThreadRecords(threadId, []);
+    assert.deepEqual(
+      thread.guestShare?.messages.map((message) => message.status),
+      ["sent"],
+    );
+    const busy = yield* Effect.flip(
+      guestShares.submit(session, { shareId, text: "And the queue?" }, []),
+    );
+    assert.equal(busy.reason, "running");
   }).pipe(Effect.provide(layerTest)),
 );
 
@@ -1052,7 +1114,7 @@ it.effect("serves an image on the host only when an agent reply the guest sees s
       createdBy: "user",
       creationSource: "web",
     });
-    const { url } = yield* guestShares.create({ threadId: forkId });
+    const { url } = yield* guestShares.create(createInput(forkId));
     const { token: session } = yield* guestShares.redeem({
       credential: url.slice(url.indexOf("#") + 1),
       name: "Sam",
@@ -1218,7 +1280,7 @@ it.effect("keeps a connected guest's images while other shares come and go", () 
     }
 
     // A new link on the thread starts empty: its guest gets nothing the last guest was sent.
-    const { url } = yield* guestShares.create({ threadId });
+    const { url } = yield* guestShares.create(createInput(threadId));
     const next = yield* guestShares.redeem({
       credential: url.slice(url.indexOf("#") + 1),
       name: "Kim",

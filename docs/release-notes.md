@@ -1,3 +1,9 @@
+## 2026-11-25 — Guest links can last longer and run read-only
+
+- When you create a guest link, choose how long it works: 1 hour, 1 day, 7 days, or 30 days. New links last 1 day, and the guest's sign-in lasts as long as the link.
+- A new **Read-only** access level runs the guest's messages straight away, one at a time, without waiting for you, while the agent cannot change files. Every turn on that thread runs read-only and never asks for approval until you stop sharing, a run that started read-only stays read-only, and the agent cannot use T3.CodeShip's own tools there. It works with Codex, Claude, Grok, Antigravity, and fx. **Wait for me** keeps today's behaviour: you send or dismiss each message.
+- Web and mobile show the access level and the link's expiry, and the share bar marks a read-only link.
+
 ## 2026-11-25 — Low-priority load no longer holds every command waiting for CPU
 
 - `t3_command_run` no longer counts niced (low-priority) CPU time as saturation. A deliberately niced load, such as a flake soak, kept every new command queued for hours even though a normal-priority command takes the CPU ahead of it. On Linux, niced work at or above a command's own priority, such as other commands of this server, still counts, so commands cannot overcommit the machine. A command that waits for CPU now says how much of the load is low-priority work that gives way.

@@ -545,6 +545,8 @@ export const ClaudeProviderCapabilitiesV2 = {
   },
   runtimePolicy: {
     enforcement: "native",
+    // dontAsk with only the read tools loaded.
+    readOnlySandbox: true,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 
@@ -1678,14 +1680,18 @@ export function makeClaudeQueryOptions(input: {
       ? {}
       : { SessionStart: [{ matcher: "compact", hooks: [input.afterCompaction] }] }),
   };
+  // A never-ask policy's dontAsk is final: a launch flag must not let a read-only turn write.
+  const launchArgsMode =
+    input.permissionMode === "dontAsk"
+      ? undefined
+      : ((launchArgPermissionMode as PermissionMode | null | undefined) ??
+        (launchArgSkipPermissions === null || launchArgSkipPermissions === "true"
+          ? "bypassPermissions"
+          : undefined));
   const options: ClaudeAgentSdkQueryOptions = {
     model: compiledSelection.apiModelId,
     tools: claudeAgentSdkQueryToolsForSdk(selectedTools),
-    permissionMode:
-      (launchArgPermissionMode as PermissionMode | null | undefined) ??
-      (launchArgSkipPermissions === null || launchArgSkipPermissions === "true"
-        ? "bypassPermissions"
-        : (input.permissionMode ?? "default")),
+    permissionMode: launchArgsMode ?? input.permissionMode ?? "default",
     includePartialMessages: true,
     ...(compiledSelection.effort === undefined
       ? {}
@@ -2643,8 +2649,9 @@ function permissionModeForClaudeRuntimePolicy(
   if (runtimePolicy.interactionMode === "plan") {
     return "plan";
   }
+  const sandboxKind = sandboxPolicyKindForClaudeRuntimePolicy(runtimePolicy);
   if (runtimePolicy.approvalPolicy === "never") {
-    switch (sandboxPolicyKindForClaudeRuntimePolicy(runtimePolicy)) {
+    switch (sandboxKind) {
       case "readOnly":
         return "dontAsk";
       case "dangerFullAccess":
@@ -2663,7 +2670,7 @@ function permissionModeForClaudeRuntimePolicy(
     return "default";
   }
 
-  switch (sandboxPolicyKindForClaudeRuntimePolicy(runtimePolicy)) {
+  switch (sandboxKind) {
     case "readOnly":
       return "dontAsk";
     case "dangerFullAccess":

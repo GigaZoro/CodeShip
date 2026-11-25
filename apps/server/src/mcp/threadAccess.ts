@@ -137,6 +137,34 @@ export const isLiveCallerShell = (
     ) ??
       false));
 
+/**
+ * Nobody reviews a read-only guest's messages, so their turns get no T3 tool: one that writes
+ * would change the environment, and one that reads would show other threads, terminals or pages.
+ */
+export const assertNotReadOnlyGuestThread = (
+  shell: Pick<OrchestrationV2ThreadShell, "readOnlyGuestShare"> | null | undefined,
+) =>
+  shell?.readOnlyGuestShare === true
+    ? Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message:
+            "T3 tools are off while this thread has a read-only guest link. Its owner can close the link to use them.",
+        }),
+      )
+    : Effect.void;
+
+/** The calling thread's guard for tools that read, without the live-run checks writes need. */
+export const refuseReadOnlyGuestCaller = Effect.fn("mcp.refuseReadOnlyGuestCaller")(function* () {
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  if (scope.thread === undefined) return;
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const shell = yield* threads
+    .getThreadShell(scope.thread.threadId)
+    .pipe(Effect.mapError(unavailable));
+  yield* assertNotReadOnlyGuestThread(shell);
+});
+
 /** Thread callers need a live run or its background subagent in an unarchived thread. OAuth clients rely on their session and ceiling. */
 export function assertLiveCaller({ caller, scope }: Caller) {
   if (caller === undefined) return Effect.void;

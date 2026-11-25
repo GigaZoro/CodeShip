@@ -2,6 +2,7 @@ import { useState } from "react";
 import { I18nManager, Platform, Pressable, View } from "react-native";
 import Animated, { useAnimatedStyle, useReducedMotion, withTiming } from "react-native-reanimated";
 
+import { cn } from "../../lib/cn";
 import { segmentedControlColors } from "./segmentedControlColors";
 import { AppText } from "./AppText";
 import { useControlTheme } from "./useControlTheme";
@@ -33,7 +34,7 @@ export function SegmentedControl<Value extends string | number>(
   const minHeight = props.size === "compact" ? 32 : Platform.OS === "android" ? 40 : 36;
 
   return (
-    <View collapsable={false} className={props.className}>
+    <View collapsable={false} className={cn(props.disabled && "opacity-45", props.className)}>
       <View
         onLayout={(event) => setLayout(event.nativeEvent.layout)}
         className="flex-row rounded-full p-[3px]"
@@ -61,7 +62,8 @@ export function SegmentedControl<Value extends string | number>(
               key={`${typeof option.value}:${option.value}`}
               accessibilityRole={props.role ?? "button"}
               accessibilityLabel={option.accessibilityLabel ?? option.label}
-              accessibilityState={{ selected }}
+              accessibilityState={{ selected, disabled: props.disabled === true }}
+              disabled={props.disabled === true}
               onPress={() => props.onSelect(option.value)}
               className="flex-1 items-center justify-center rounded-full px-2 py-1 active:opacity-70"
               style={{ minHeight: minHeight - 6 }}

@@ -13,10 +13,12 @@ import { Tool, Toolkit } from "effect/ai";
 import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 import * as TestClock from "effect/testing/TestClock";
 
+import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import packageJson from "../../package.json" with { type: "json" };
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../mcp/McpToolAccess.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
@@ -26,12 +28,20 @@ const toolkit = Toolkit.make(
   Tool.make("probe", {
     description: "Returns this request's mode limits.",
     success: Result,
-    dependencies: [McpInvocationContext.McpInvocationContext],
+    failure: OrchestratorMcpFailure,
+    dependencies: [
+      McpInvocationContext.McpInvocationContext,
+      ThreadManagement.ThreadManagementService,
+    ],
   }),
   Tool.make("hold", {
     description: "Holds a tool request open.",
     success: Result,
-    dependencies: [McpInvocationContext.McpInvocationContext],
+    failure: OrchestratorMcpFailure,
+    dependencies: [
+      McpInvocationContext.McpInvocationContext,
+      ThreadManagement.ThreadManagementService,
+    ],
   }),
 );
 
@@ -274,7 +284,11 @@ it.effect("refuses arguments the peer's version does not take, listing its tools
             workspace: Schema.optionalKey(Schema.Struct({ type: Schema.String })),
           }),
           success: Result,
-          dependencies: [McpInvocationContext.McpInvocationContext],
+          failure: OrchestratorMcpFailure,
+          dependencies: [
+            McpInvocationContext.McpInvocationContext,
+            ThreadManagement.ThreadManagementService,
+          ],
         }),
       );
       const handlers = McpToolAccess.toLayer(older, {

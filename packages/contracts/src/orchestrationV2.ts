@@ -43,7 +43,7 @@ import {
 } from "./baseSchemas.ts";
 import { AuthMcpClientAccess } from "./auth.ts";
 import { ChatAttachment } from "./chatAttachment.ts";
-import { ThreadGuestShare } from "./guestShare.ts";
+import { GuestShareAccess, ThreadGuestShare } from "./guestShare.ts";
 import { StoredThreadFolder, ThreadFolder, threadFolderKeyOf } from "./threadFolders.ts";
 import { ThreadColor, ThreadNotificationLevel } from "./threadPreferences.ts";
 import { StoredThreadTags, ThreadTag } from "./threadTags.ts";
@@ -366,6 +366,11 @@ export type OrchestrationV2CheckpointCapabilities =
 
 export const OrchestrationV2RuntimePolicyCapabilities = Schema.Struct({
   enforcement: Schema.Literals(["native", "client-boundary"]),
+  /**
+   * The adapter refuses every change under approvalPolicy "never" with a read-only sandbox,
+   * instead of asking or writing. Read-only guest links need it.
+   */
+  readOnlySandbox: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
 export type OrchestrationV2RuntimePolicyCapabilities =
   typeof OrchestrationV2RuntimePolicyCapabilities.Type;
@@ -392,7 +397,9 @@ export const OrchestrationV2ProviderCapabilities = Schema.Struct({
   identity: OrchestrationV2IdentityCapabilities,
   // Replay defaults old events to the weaker client-boundary guarantee.
   runtimePolicy: OrchestrationV2RuntimePolicyCapabilities.pipe(
-    Schema.withDecodingDefault(Effect.succeed({ enforcement: "client-boundary" as const })),
+    Schema.withDecodingDefault(
+      Effect.succeed({ enforcement: "client-boundary" as const, readOnlySandbox: false }),
+    ),
   ),
 });
 export type OrchestrationV2ProviderCapabilities = typeof OrchestrationV2ProviderCapabilities.Type;
@@ -833,6 +840,8 @@ export const OrchestrationV2Run = Schema.Struct({
   delegatedCompletion: Schema.optional(OrchestrationV2DelegatedCompletionCohort),
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   memoryAdmission: Schema.optional(OrchestrationV2RunMemoryAdmission),
+  /** Started under a read-only guest link: it and its continuations stay read-only after it closes. */
+  readOnlyGuestShare: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestrationV2Run = typeof OrchestrationV2Run.Type;
 
@@ -2347,6 +2356,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   pendingRuntimeRequest: Schema.NullOr(OrchestrationV2PendingRuntimeRequestSummary),
   /** Guest messages waiting for the owner to send or dismiss. Absent from older servers. */
   pendingGuestMessageCount: Schema.optional(NonNegativeInt),
+  /** Set only while a read-only guest link keeps the thread from changing the environment. */
+  readOnlyGuestShare: Schema.optional(Schema.Literal(true)),
   latestVisibleMessage: Schema.NullOr(OrchestrationV2LatestVisibleMessageSummary),
   latestUserMessageAt: Schema.NullOr(Schema.DateTimeUtc),
   /** Excludes wakes and agent messages that advance latestUserMessageAt through the user role. */
@@ -3738,6 +3749,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
     shareId: GuestShareId,
     host: TrimmedNonEmptyString,
     expiresAt: IsoDateTime,
+    access: GuestShareAccess.pipe(Schema.withDecodingDefault(Effect.succeed("approve" as const))),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.redeem"),

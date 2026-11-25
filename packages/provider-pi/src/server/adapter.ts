@@ -89,7 +89,8 @@ const SETTLE_PROBE_MAX_ATTEMPTS = 3;
 const SETTLE_PROBE_RETRY_DELAY = Duration.millis(100);
 
 const PiProviderCapabilitiesV2 = {
-  runtimePolicy: { enforcement: "client-boundary" },
+  // Pi asks the owner instead of refusing a change.
+  runtimePolicy: { enforcement: "client-boundary", readOnlySandbox: false },
   sessions: {
     supportsMultipleProviderThreadsPerSession: false,
     supportsModelSwitchInSession: true,

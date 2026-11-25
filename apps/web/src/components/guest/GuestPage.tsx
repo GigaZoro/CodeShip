@@ -7,6 +7,7 @@ import {
   GUEST_SHARE_PARAM,
   GuestMessageId,
   type GuestRedeemRequest,
+  type GuestShareAccess,
   type GuestShareView,
   type GuestThreadModel,
   OrchestrationV2ThreadHistoryPage,
@@ -398,7 +399,7 @@ function NameForm({
         {t("Join")}
       </Button>
       <p className="text-xs text-muted-foreground">
-        {t("The owner sees your name and approves each message before the agent gets it.")}
+        {t("The owner sees your name and every message you send.")}
       </p>
     </form>
   );
@@ -416,7 +417,7 @@ const ignore = () => {};
  * revert, diffs, files, other threads, shell) is left out, so its control does not render.
  */
 function GuestThread({
-  view: { shareId, title, expiresAt, messages, model },
+  view: { shareId, title, expiresAt, messages, model, access },
   projection,
   awaitingRowIds,
   historyControls,
@@ -567,7 +568,7 @@ function GuestThread({
         ) : null}
       </div>
       <div className={cn(LANE, "shrink-0 pb-4")}>
-        <GuestComposer shareId={shareId} model={model} />
+        <GuestComposer shareId={shareId} model={model} access={access} />
       </div>
     </>
   );
@@ -675,9 +676,11 @@ function StagedImage({ file }: { readonly file: File }) {
 function GuestComposer({
   shareId,
   model,
+  access,
 }: {
   readonly shareId: GuestShareView["shareId"];
   readonly model: GuestThreadModel;
+  readonly access: GuestShareAccess;
 }) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<ReadonlyArray<StagedFile>>([]);
@@ -822,7 +825,9 @@ function GuestComposer({
           </p>
         ) : (
           <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-            {t("The owner approves each message")}
+            {access === "read-only"
+              ? t("Read-only: the agent cannot change files")
+              : t("The owner approves each message")}
           </p>
         )}
         <button

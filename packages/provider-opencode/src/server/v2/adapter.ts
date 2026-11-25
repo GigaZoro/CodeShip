@@ -179,7 +179,8 @@ const OpenCode2ProviderCapabilities = {
     nativeItemIds: "strong",
     nativeRequestIds: "strong",
   },
-  runtimePolicy: { enforcement: "native" },
+  // Its rules ignore the sandbox policy and keep earlier grants.
+  runtimePolicy: { enforcement: "native", readOnlySandbox: false },
 } satisfies OrchestrationV2ProviderCapabilities;
 
 type EventOf<T extends OpenCodeEvent["type"]> = Extract<OpenCodeEvent, { readonly type: T }>;

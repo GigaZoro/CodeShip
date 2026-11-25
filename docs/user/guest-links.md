@@ -2,7 +2,7 @@
 
 A guest link lets a teammate follow one thread in their browser and ask the agent questions, with no
 account. They see your messages and the agent's replies as they stream. Each message they send waits
-until you send or dismiss it.
+until you send or dismiss it, unless you make the link [read-only](#read-only-links).
 
 ## Share a thread
 
@@ -14,15 +14,43 @@ expired work again when you turn it back on.
 
 1. Right-click the thread in the sidebar and choose **Share with guest**. It is also in the thread
    menu and the command palette. In the mobile app, long-press the thread in the list.
-2. Copy the link and send it to one person. It works in one browser and expires after 24 hours.
-   Opening it again in that browser takes them back to the thread.
-3. When they send a message, it appears at the end of the thread and the sidebar shows **Request**.
-   Choose **Send** to run it as a normal turn, or **Dismiss**. Files they attached show with the
-   message, and **Send** includes them.
+2. Under **Guest messages**, choose **Wait for me** to send or dismiss each message yourself, or
+   **Read-only** to let them run at once (see below). Under **Link expires after**, choose 1 hour,
+   1 day, 7 days, or 30 days. New links last 1 day unless you pick another.
+3. Copy the link and send it to one person. It works in one browser until it expires. Opening it
+   again in that browser takes them back to the thread.
+4. On a **Wait for me** link, each message they send appears at the end of the thread and the
+   sidebar shows **Request**. Choose **Send** to run it as a normal turn, or **Dismiss**. Files they
+   attached show with the message, and **Send** includes them.
 
 Choose **Stop sharing** to end the link at once. Archiving the thread, creating a new link, or
 unlinking the machine from T3 Connect also ends it. The mobile app can send, dismiss, and stop
 sharing too.
+
+## Read-only links
+
+A read-only link lets the guest ask the agent to look at the project, for example to explain code
+or find the cause of a bug, without you sending each message. Their messages run straight away, and
+the agent cannot change files. While the agent works, the guest waits to send the next one.
+
+- While the link exists, every turn on the thread runs read-only and never asks for approval,
+  including yours, and plan mode is set aside. This lasts after the link expires: choose **Stop
+  sharing** to give the thread its usual permission mode back. The share bar shows **Read-only**
+  while it applies. A run that started read-only, and anything that continues it, stays read-only
+  after you stop sharing.
+- Opening a read-only link restarts the thread's agent session, so wait for the current run and
+  any background work to finish, or stop them first. A watched pull request does not hold it up.
+- Read-only links work with Codex, Claude, Grok, Antigravity, and fx. Threads on Cursor, OpenCode,
+  Pi, or Muse Code cannot have one, and switching a thread with a read-only link to one of those stops
+  its turns until you stop sharing.
+- On that thread the agent cannot use T3.CodeShip's own tools, including those that only read
+  other threads or projects, so the guest cannot reach the rest of your work through it.
+- Read-only does not hide anything: the agent can still read files outside the project, and the
+  guest sees whatever it reads. Other MCP servers you connected to the provider can still run:
+  Codex runs them, and Claude runs those you allowed without asking. Turn off any that can change
+  things before you share.
+- If a guest message cannot start, it waits for you to send or dismiss, as on a **Wait for me**
+  link.
 
 ## What the guest sees
 
@@ -45,5 +73,5 @@ send or dismiss some.
 Dismissing a message, ending the link, or archiving the thread deletes the files of messages that
 still wait. A sent message keeps its files, like any message in the thread.
 
-The guest's text and files run with the thread's current permission mode once you send them. Check
-them before you choose **Send**, as you would anything pasted from a chat.
+On a **Wait for me** link, the guest's text and files run with the thread's current permission mode
+once you send them. Check them before you choose **Send**, as you would anything pasted from a chat.

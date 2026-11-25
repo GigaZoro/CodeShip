@@ -30,6 +30,7 @@ public final class T3NativeControlsModule: Module {
       Prop("textColor") { (view: T3SegmentedControlView, value: UIColor) in view.textColor = value }
       Prop("mutedColor") { (view: T3SegmentedControlView, value: UIColor) in view.mutedColor = value }
       Prop("appearance") { (view: T3SegmentedControlView, value: String) in view.appearance = value }
+      Prop("enabled") { (view: T3SegmentedControlView, value: Bool) in view.enabled = value }
     }
 
     View(T3SidebarTabBarView.self) {

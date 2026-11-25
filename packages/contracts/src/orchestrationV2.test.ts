@@ -317,13 +317,16 @@ describe("orchestration V2 contracts", () => {
     };
 
     const decoded = decodeOrchestrationV2ProviderCapabilities(legacyCapabilities);
-    expect(decoded.runtimePolicy).toEqual({ enforcement: "client-boundary" });
+    expect(decoded.runtimePolicy).toEqual({
+      enforcement: "client-boundary",
+      readOnlySandbox: false,
+    });
 
     const explicit = decodeOrchestrationV2ProviderCapabilities({
       ...legacyCapabilities,
       runtimePolicy: { enforcement: "native" },
     });
-    expect(explicit.runtimePolicy).toEqual({ enforcement: "native" });
+    expect(explicit.runtimePolicy).toEqual({ enforcement: "native", readOnlySandbox: false });
   });
 
   it.each(["  indented prompt\n", "\n \t\n"])(
