@@ -745,9 +745,11 @@ export const uncachedTests = [
   "apps/server/src/htmlRender/HtmlRender.test.ts",
   "packages/shared/src/shell.test.ts",
   "scripts/install.test.ts",
-  // On macOS the file tracker runs every bash and sh as Vite+'s bundled Oils osh,
-  // which refuses bash's own flags such as --noprofile.
+  // On macOS the file tracker swaps system tools for bundled ones: bash and sh run as Oils
+  // osh, which refuses --noprofile, and ls refuses the -O that worktree release passes it.
   "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+  "apps/server/src/storageCleanup.test.ts",
+  "apps/server/src/workspace/worktreeRelease.test.ts",
   "scripts/release-desktop-workflow.test.ts",
   // These skip cases without a cgroup this process may join or delegate.
   "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",

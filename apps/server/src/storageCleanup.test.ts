@@ -1765,9 +1765,11 @@ it.live.each([
         reason:
           kind === "symlink" && isWindowsHost
             ? "Worktree metadata requires its owner (reparse-point)"
-            : kind === "active merge" || kind === "symlink" || kind === "oversized"
-              ? "Worktree metadata requires its owner"
-              : "Worktree has an unpreserved auto-merge tree",
+            : kind === "active merge"
+              ? "Worktree metadata MERGE_HEAD requires its owner"
+              : kind === "symlink" || kind === "oversized"
+                ? "Worktree metadata requires its owner"
+                : "Worktree has an unpreserved auto-merge tree",
       });
       expect(yield* fs.exists(marker)).toBe(true);
       expect(yield* fs.exists(worktree)).toBe(true);
