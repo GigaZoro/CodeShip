@@ -25,6 +25,7 @@ import {
   type TerminalSummary,
 } from "@t3tools/contracts";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { linkDirectory, symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as ServerConfig from "./config.ts";
@@ -874,7 +875,7 @@ it.live.each(["direct land", "no change"] as const)(
         );
         yield* fixture.fs.remove(insideGitlink);
         const alias = NodePath.join(fixture.repo, "alias");
-        yield* fixture.fs.symlink(NodePath.join(fixture.worktree, "vendor"), alias);
+        yield* linkDirectory(NodePath.join(fixture.worktree, "vendor"), alias);
         const admitted = yield* Deferred.make<void>();
         const finishStart = yield* Deferred.make<void>();
         const admission = yield* withWorkspaceProcessStart(
@@ -923,7 +924,7 @@ it.live(
         const sibling = fixture.worktree + "-sibling";
         yield* fixture.command(fixture.repo, ["worktree", "add", "-b", "sibling", sibling]);
         const alias = NodePath.join(fixture.repo, "directory-alias");
-        yield* fixture.fs.symlink(NodePath.join(fixture.worktree, "vendor"), alias);
+        yield* linkDirectory(NodePath.join(fixture.worktree, "vendor"), alias);
         const runId = RunId.make("delivered");
         const owner = shell({
           status: "completed",
@@ -1004,7 +1005,7 @@ it.live.each(["truncated", "incompatible", "mismatched"] as const)(
           latestRunCompletedAt: at(0),
         });
         const alias = NodePath.join(fixture.repo, "worktrees-alias");
-        yield* fixture.fs.symlink(NodePath.dirname(sibling), alias);
+        yield* linkDirectory(NodePath.dirname(sibling), alias);
         const other = shell({
           id: ThreadId.make("other"),
           branch: "other",
@@ -2148,7 +2149,7 @@ describe("orphan worktree reports", () => {
           const worktree = `${ancestor}/feature`;
           yield* fixture.command(fixture.repo, ["worktree", "add", "-b", "nested", worktree]);
           const alias = `${fixture.repo}/alias`;
-          if (platform === "canonical") yield* fixture.fs.symlink(worktree, alias);
+          if (platform === "canonical") yield* linkDirectory(worktree, alias);
           fixture.setStoredWorktreePaths([
             platform === "canonical"
               ? alias
@@ -2169,7 +2170,7 @@ describe("orphan worktree reports", () => {
         const fixture = yield* cleanupFixture();
         fixture.setThreads([]);
         const loop = `${fixture.repo}/loop`;
-        yield* fixture.fs.symlink(loop, loop);
+        yield* linkDirectory(loop, loop);
         fixture.setProjectRoots([fixture.repo, loop]);
         const orphan = underWorktrees(fixture, `repository/orphan`);
         yield* fixture.fs.makeDirectory(orphan, { recursive: true });
@@ -2198,8 +2199,8 @@ describe("orphan worktree reports", () => {
           );
           const outside = yield* fixture.fs.makeTempDirectoryScoped();
           yield* fixture.fs.writeFileString(`${outside}/external`, "outside data");
-          yield* fixture.fs.symlink(outside, `${orphan}/linked-directory`);
-          yield* fixture.fs.symlink(`${outside}/missing`, `${orphan}/dangling-link`);
+          yield* linkDirectory(outside, `${orphan}/linked-directory`);
+          yield* linkDirectory(`${outside}/missing`, `${orphan}/dangling-link`);
           yield* fixture.fs.utimes(orphan, 1, 1);
           const report = yield* fixture.service.runNow;
           expect(report.entries).toEqual([
@@ -2264,7 +2265,7 @@ describe("orphan worktree reports", () => {
           const worktreePath = underWorktrees(fixture, `repository/project-checkout`);
           yield* fixture.fs.makeDirectory(`${worktreePath}/nested`, { recursive: true });
           const alias = `${fixture.repo}/alias`;
-          if (location === "symlink") yield* fixture.fs.symlink(`${worktreePath}/nested`, alias);
+          if (location === "symlink") yield* linkDirectory(`${worktreePath}/nested`, alias);
           fixture.setProjectRoots([
             fixture.repo,
             location === "exact"
@@ -2291,7 +2292,7 @@ describe("orphan worktree reports", () => {
           yield* fixture.fs.makeDirectory(`${source}/nested/deep`, { recursive: true });
           const alias = underWorktrees(fixture, `project-alias`);
           if (location === "symlink") {
-            yield* fixture.fs.symlink(fixture.repo, alias);
+            yield* linkDirectory(fixture.repo, alias);
             fixture.setProjectRoots([alias]);
           }
           if (location === "contains") fixture.setProjectRoots([fixture.repo, `${source}/nested`]);
@@ -2313,9 +2314,9 @@ describe("orphan worktree reports", () => {
         yield* fixture.fs.makeDirectory(`${outside}/checkout`);
         const projectDirectory = underWorktrees(fixture, `repository`);
         yield* fixture.fs.makeDirectory(projectDirectory);
-        yield* fixture.fs.symlink(outside, underWorktrees(fixture, `linked-project`));
-        yield* fixture.fs.symlink(`${outside}/checkout`, `${projectDirectory}/linked-checkout`);
-        yield* fixture.fs.symlink(`${outside}/missing`, `${projectDirectory}/dangling-link`);
+        yield* linkDirectory(outside, underWorktrees(fixture, `linked-project`));
+        yield* linkDirectory(`${outside}/checkout`, `${projectDirectory}/linked-checkout`);
+        yield* linkDirectory(`${outside}/missing`, `${projectDirectory}/dangling-link`);
         expect((yield* fixture.service.runNow).entries).toEqual([]);
         const orphan = `${projectDirectory}/orphan`;
         yield* fixture.fs.makeDirectory(orphan);
@@ -2532,33 +2533,35 @@ describe("storage cleanup reports and local file policies", () => {
       ),
   );
 
-  it.live("reports allocated bytes of single-link files without following symlinks", () =>
-    runCleanupTest(
-      Effect.gen(function* () {
-        const { service, fs, worktree, setPolicy } = yield* cleanupFixture();
-        setPolicy("tracked-changes");
-        const sizes = yield* Effect.forEach(yield* fs.readDirectory(worktree), (name) =>
-          allocatedBytes(fs, `${worktree}/${name}`),
-        );
-        const outside = yield* fs.makeTempDirectoryScoped();
-        yield* fs.writeFileString(`${outside}/external`, "must not count");
-        yield* fs.writeFileString(`${outside}/store-file`, "shared ".repeat(10_000));
-        yield* fs.makeDirectory(`${worktree}/node_modules/nested`, { recursive: true });
-        yield* fs.writeFileString(`${worktree}/node_modules/nested/file`, "count me");
-        sizes.push(yield* allocatedBytes(fs, `${worktree}/node_modules/nested/file`));
-        yield* fs.link(`${outside}/store-file`, `${worktree}/node_modules/hardlinked`);
-        yield* fs.symlink(outside, `${worktree}/node_modules/directory-link`);
-        yield* fs.symlink(`${outside}/external`, `${worktree}/node_modules/file-link`);
-        yield* fs.symlink(`${outside}/missing`, `${worktree}/node_modules/dangling-link`);
-        const report = yield* service.runNow;
-        const bytes = sizes.reduce((sum, size) => sum + size, 0);
-        expect(report.entries[0]).toMatchObject({ outcome: "removed", bytes, files: null });
-        expect(report.bytesFreed).toBe(bytes);
-        expect(yield* fs.readFileString(`${outside}/external`)).toBe("must not count");
-        expect(yield* fs.readFileString(`${outside}/store-file`)).toBe("shared ".repeat(10_000));
-        expect(yield* fs.exists(worktree)).toBe(false);
-      }),
-    ),
+  it.live.skipIf(!symlinksSupported)(
+    "reports allocated bytes of single-link files without following symlinks",
+    () =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const { service, fs, worktree, setPolicy } = yield* cleanupFixture();
+          setPolicy("tracked-changes");
+          const sizes = yield* Effect.forEach(yield* fs.readDirectory(worktree), (name) =>
+            allocatedBytes(fs, `${worktree}/${name}`),
+          );
+          const outside = yield* fs.makeTempDirectoryScoped();
+          yield* fs.writeFileString(`${outside}/external`, "must not count");
+          yield* fs.writeFileString(`${outside}/store-file`, "shared ".repeat(10_000));
+          yield* fs.makeDirectory(`${worktree}/node_modules/nested`, { recursive: true });
+          yield* fs.writeFileString(`${worktree}/node_modules/nested/file`, "count me");
+          sizes.push(yield* allocatedBytes(fs, `${worktree}/node_modules/nested/file`));
+          yield* fs.link(`${outside}/store-file`, `${worktree}/node_modules/hardlinked`);
+          yield* linkDirectory(outside, `${worktree}/node_modules/directory-link`);
+          yield* fs.symlink(`${outside}/external`, `${worktree}/node_modules/file-link`);
+          yield* fs.symlink(`${outside}/missing`, `${worktree}/node_modules/dangling-link`);
+          const report = yield* service.runNow;
+          const bytes = sizes.reduce((sum, size) => sum + size, 0);
+          expect(report.entries[0]).toMatchObject({ outcome: "removed", bytes, files: null });
+          expect(report.bytesFreed).toBe(bytes);
+          expect(yield* fs.readFileString(`${outside}/external`)).toBe("must not count");
+          expect(yield* fs.readFileString(`${outside}/store-file`)).toBe("shared ".repeat(10_000));
+          expect(yield* fs.exists(worktree)).toBe(false);
+        }),
+      ),
   );
   it.live.each(["same-device", "other-device", "no-manifest"] as const)(
     "counts the pnpm virtual store only when its store forces copies (%s)",
@@ -3215,10 +3218,10 @@ describe("storage cleanup reports and local file policies", () => {
           const disk = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
           yield* fs.makeDirectory(`${disk}/real/logs`, { recursive: true });
           if (linked === "home") {
-            yield* fs.symlink(`${disk}/real`, `${disk}/home`);
+            yield* linkDirectory(`${disk}/real`, `${disk}/home`);
           } else {
             yield* fs.makeDirectory(`${disk}/home`);
-            yield* fs.symlink(`${disk}/real/logs`, `${disk}/home/logs`);
+            yield* linkDirectory(`${disk}/real/logs`, `${disk}/home/logs`);
           }
           yield* fs.writeFileString(`${disk}/real/logs/server.log.1`, "log");
           yield* fs.utimes(`${disk}/real/logs/server.log.1`, 1, 1);

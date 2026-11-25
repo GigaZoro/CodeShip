@@ -2192,15 +2192,17 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     export const probeHostCapabilities = async () =>
       JSON.parse(readFileSync(${JSON.stringify(capabilities)}, "utf8"));`,
   );
-  for (const name of ["effect", "@effect/platform-node", "@t3tools/shared", "vite-plus"]) {
-    const dest = NodePath.join(root, "node_modules", name);
+  const linkedPackages = ["effect", "@effect/platform-node", "@t3tools/shared", "vite-plus"];
+  const linkPackage = (modules: string, name: string) => {
+    const dest = NodePath.join(modules, name);
     NodeFS.mkdirSync(NodePath.dirname(dest), { recursive: true });
     NodeFS.symlinkSync(
       NodeFS.realpathSync(NodePath.join(import.meta.dirname, "node_modules", name)),
       dest,
       "junction",
     );
-  }
+  };
+  for (const name of linkedPackages) linkPackage(NodePath.join(root, "node_modules"), name);
   const git = (...args: Array<string>) =>
     NodeChildProcess.execFileSync("git", args, { cwd: root, stdio: "pipe", env });
   git("init");
@@ -2266,6 +2268,13 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
         });
       }
       const modules = NodePath.join(checkout, "node_modules");
+      // Windows copies a junction as a real folder, which loses the sibling packages that resolve
+      // beside its target, so the linked packages are linked again. Removing a link, or a copied
+      // folder, takes the same call.
+      for (const name of linkedPackages) {
+        NodeFS.rmSync(NodePath.join(modules, name), { recursive: true, force: true });
+        linkPackage(modules, name);
+      }
       const store = (name: string) => NodePath.join(modules, ".pnpm", name, "node_modules");
       const vitePlus = NodeFS.realpathSync(
         NodePath.join(import.meta.dirname, "node_modules/vite-plus"),
@@ -2299,7 +2308,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
           }
         }
       }
-      NodeFS.rmSync(NodePath.join(modules, "vite-plus"));
+      NodeFS.rmSync(NodePath.join(modules, "vite-plus"), { recursive: true, force: true });
       NodeFS.symlinkSync(
         NodePath.join(store("vite-plus"), "vite-plus"),
         NodePath.join(modules, "vite-plus"),

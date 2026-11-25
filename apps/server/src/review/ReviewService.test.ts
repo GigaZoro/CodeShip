@@ -13,6 +13,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as KnownWorkspaces from "../workspace/KnownWorkspaces.ts";
+import { linkDirectory } from "@t3tools/shared/testing/symlinks";
 import * as ReviewService from "./ReviewService.ts";
 
 function layer(input: {
@@ -143,7 +144,7 @@ describe("ReviewService", () => {
       assert.strictEqual(result.cwd, previous);
 
       const rootLink = `${baseDir}/root-link`;
-      yield* fs.symlink("/", rootLink);
+      yield* linkDirectory("/", rootLink);
       for (const worktreesDirectory of ["/", rootLink]) {
         const error = yield* Effect.gen(function* () {
           const review = yield* ReviewService.ReviewService;
@@ -241,7 +242,7 @@ describe("ReviewService", () => {
         yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-worktrees-" }),
       );
       const checkout = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-checkout-" });
-      yield* fs.symlink(checkout, `${managed}/feature`);
+      yield* linkDirectory(checkout, `${managed}/feature`);
 
       const result = yield* Effect.gen(function* () {
         const review = yield* ReviewService.ReviewService;

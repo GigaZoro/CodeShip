@@ -157,6 +157,10 @@
 - Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
 - Codex usage and reset credits now follow the signed-in workspace, including when two workspaces share an email. A delayed update from a previous session can no longer replace the current workspace’s balance.
 
+## 2026-11-25 — Tests that link folders run on Windows without Developer Mode
+
+- Maintainers: server tests that link a folder make a junction on Windows, which needs no special rights, and the few that need a real file symlink skip where the machine cannot make one. Before, on a Windows machine without Developer Mode, about twenty storage cleanup, settings, review, session scanner and uninstall tests failed before checking anything. The `check:changed` worktree reuse test also links its packages again in each checkout, because Windows copies a junction as a folder.
+
 ## 2026-11-25 — The metadata smoke test answers its child first and fails on a broken reply
 
 - For people who work on T3.CodeShip: the Codex metadata smoke test (`docs/operations/codex-metadata/smoke.py`) now answers the spawned child agent before it sends the parent its last reply. `codex exec` exits when the parent's turn ends and does not wait for the child, so a child reply sent after that hit a closed connection. On Linux, WSL included, the test then printed a `BrokenPipeError` traceback and still passed.
