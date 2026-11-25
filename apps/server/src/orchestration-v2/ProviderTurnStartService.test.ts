@@ -1775,8 +1775,9 @@ effectIt.live.each([
         "--base-dir",
         baseDir,
       ]).pipe(
-        Effect.provide(NetService.layer),
-        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+        Effect.provide(
+          Layer.merge(NetService.layer, ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+        ),
       );
       const file = path.join(
         stateDir,
