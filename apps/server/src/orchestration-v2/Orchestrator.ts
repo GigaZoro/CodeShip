@@ -151,7 +151,6 @@ import {
   isUndeliveredMailboxSteer,
   PROVIDER_TURNED_OFF_FOR_PROJECT,
 } from "./NotificationMailbox.ts";
-import type { RecoveryRequest } from "./StopDecisionEvidence.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import {
   decideGuestMessageSend,
@@ -449,7 +448,6 @@ export interface OrchestratorV2Shape {
   readonly awaitRestartContinuation: (run: OrchestrationV2Run) => Effect.Effect<void>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
-    recoveryRequest?: RecoveryRequest,
   ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
   readonly autoArmLimitRecovery: (input: {
     readonly commandId: CommandId;
@@ -15270,7 +15268,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const dispatchWithReceiptEffect = Effect.fn("orchestrationV2.dispatch.withReceipt")(function* (
     command: OrchestrationV2ServerCommand,
     sideChatIds: ReadonlyArray<ThreadId> = [],
-    recoveryRequest?: RecoveryRequest,
   ): Effect.fn.Return<OrchestratorV2DispatchResult, OrchestratorV2Error> {
     yield* Effect.annotateCurrentSpan({
       "orchestration_v2.command_id": command.commandId,
@@ -15459,7 +15456,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandId: command.commandId,
         threadId: commandThreadId(command),
         commandType: command.type,
-        ...(recoveryRequest && { recoveryRequest }),
         acceptedAt,
         events: plan.events,
         effects: plan.effects,
@@ -15526,13 +15522,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   }, withCommandMetrics);
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
-  const dispatchWithReceipt = Effect.fnUntraced(function* (
-    command: OrchestrationV2ServerCommand,
-    recoveryRequest?: RecoveryRequest,
-  ) {
+  const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
     const dispatch = threadDispatch.withLock(
       commandThreadId(command),
-      dispatchWithReceiptEffect(command, [], recoveryRequest),
+      dispatchWithReceiptEffect(command),
     );
     // A parent's lock comes before its side chats' locks, so a delete cascade and a side chat
     // fork or command never interleave. A fork from a side chat or onto an existing thread would

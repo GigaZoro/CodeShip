@@ -4335,7 +4335,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             AND (recovery_candidate OR (
               ${booleanInt(options.observeStops === true)}
               AND julianday(item.updated_at) >= julianday(${DateTime.formatIso(DateTime.subtract(options.now, { days: 1 }))})
-              AND julianday(item.updated_at) >= (SELECT julianday(created_at) FROM effect_sql_migrations WHERE migration_id = 102)
+              AND julianday(item.updated_at) >= (SELECT julianday(created_at) FROM effect_sql_migrations WHERE name = 'UsageStopDecisions')
             ))
             AND NOT EXISTS (
               SELECT 1 FROM orchestration_v2_projection_runtime_requests request

@@ -6,13 +6,7 @@ import {
   SourceControlProviderKind,
   orchestrationV2RunAwaitsMemory,
 } from "@t3tools/contracts";
-import {
-  evidenceKey,
-  recordStopDecision,
-  recordDispatchFailure,
-  recoveryRequestKey,
-  type RecordRoute,
-} from "./StopDecisionEvidence.ts";
+import { evidenceKey, makeDispatchRecorder } from "./StopDecisionEvidence.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import { AccountRouting, routeAutoAccount, runLiftsScope } from "./AccountRouting.ts";
 import { limitFailoverCommand, limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
@@ -11300,7 +11294,6 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         assert.isUndefined(resume.modelSelection);
         const sql = yield* SqlClient.SqlClient;
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-        const requestKey = recoveryRequestKey(resume);
         for (const enabled of [false, true]) {
           const instances = [
             modelSelection.instanceId,
@@ -11363,40 +11356,32 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
               ),
             ),
           );
-          const observe: RecordRoute = (selected, observations) =>
-            recordStopDecision(
-              {
-                source: run.id,
-                heldAttempt: undefined,
-                command: resume,
-                nowMs,
-                evidence: { reason: "reset_elapsed", candidates: [], omitted: 0, selected: null },
-              },
-              { selected, observations },
-            ).pipe(
-              Effect.provideService(SqlClient.SqlClient, sql),
-              Effect.orDie,
-              Effect.map((decisionKey) => ({ key: requestKey, decisionKey })),
-            );
+          const recorder = makeDispatchRecorder(
+            {
+              source: run.id,
+              heldAttempt: undefined,
+              command: resume,
+              nowMs,
+              evidence: { reason: "reset_elapsed", candidates: [], omitted: 0, selected: null },
+            },
+            sql,
+          );
           yield* Effect.gen(function* () {
             const threads = yield* ThreadManagementService.ThreadManagementService;
-            if (enabled) yield* threads.dispatch(resume, observe);
+            if (enabled) yield* threads.dispatch(resume, recorder);
             else {
-              const error = yield* Effect.flip(threads.dispatch(resume, observe));
+              const error = yield* Effect.flip(threads.dispatch(resume, recorder));
               assert.equal(error._tag, "ThreadManagementProviderInstanceDisabledError");
-              const [receipt] = yield* sql<{
-                decision_key: string;
-              }>`SELECT decision_key FROM usage_stop_decisions WHERE request_key = ${requestKey}`;
-              yield* recordDispatchFailure(receipt!.decision_key, "refused");
             }
           }).pipe(Effect.provide(dispatchLayer));
         }
         assert.deepEqual(
           yield* sql`SELECT selected_key, outcome, attempt_sequence IS NOT NULL AS started, json_array_length(snapshot,'$.dispatch.candidates') AS candidates FROM usage_stop_decisions WHERE source_key = ${evidenceKey(run.id)} ORDER BY rowid`,
           [
+            // The route is recorded before the guard refuses it; the worker marks the refusal.
             {
               selected_key: evidenceKey(alternateInstanceId),
-              outcome: "refused",
+              outcome: "planned",
               started: 0,
               candidates: 2,
             },

@@ -63,7 +63,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import { boundedCandidates, type RecordRoute, evidenceKey } from "./StopDecisionEvidence.ts";
+import { boundedCandidates, type DispatchRecorder, evidenceKey } from "./StopDecisionEvidence.ts";
 import * as AccountRouting from "./AccountRouting.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -368,7 +368,7 @@ export interface ThreadManagementServiceShape {
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
-    recordRoute?: RecordRoute,
+    recorder?: DispatchRecorder,
   ) => Effect.Effect<
     Orchestrator.OrchestratorV2DispatchResult,
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
@@ -958,23 +958,21 @@ const make = Effect.gen(function* () {
 
   const dispatch: ThreadManagementServiceShape["dispatch"] = Effect.fn(
     "ThreadManagementService.dispatch",
-  )(function* (sent, recordRoute) {
+  )(function* (sent, recorder) {
     const observations: Parameters<typeof boundedCandidates>[0] = [];
     const observe: AccountRouting.ObserveAccount = (instance, reason) => {
       observations.push({ id: evidenceKey(instance), reason });
     };
-    const command = yield* routeDispatchAccount(sent, recordRoute ? observe : undefined);
+    const command = yield* routeDispatchAccount(sent, recorder ? observe : undefined);
     const instance =
       command.type === "message.dispatch" ? command.modelSelection?.instanceId : undefined;
     const selected = instance ? evidenceKey(instance) : null;
-    const request = recordRoute
-      ? yield* recordRoute(selected, boundedCandidates(observations, selected))
-      : undefined;
+    if (recorder) yield* recorder.route(selected, boundedCandidates(observations, selected));
     yield* ensureCommandTranscripts(command);
     yield* assertDispatchTargetEnabled(command);
-    return yield* request
-      ? orchestrator.dispatch(command, request)
-      : orchestrator.dispatch(command);
+    const result = yield* orchestrator.dispatch(command);
+    if (recorder && result.replayed !== true) yield* recorder.committed(result.storedEvents);
+    return result;
   });
 
   const getProjectThreadRecords: ThreadManagementServiceShape["getProjectThreadRecords"] = (

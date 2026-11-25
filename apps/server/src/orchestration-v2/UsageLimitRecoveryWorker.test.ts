@@ -35,6 +35,12 @@ import { NO_CREDIT_ACCESS } from "./PrepaidCreditSpend.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { CONTINUE_PROMPT } from "./RestartContinuation.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
+import {
+  evidenceKey,
+  makeDispatchRecorder,
+  recordDispatchFailure,
+  recordStopDecision,
+} from "./StopDecisionEvidence.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import {
   limitFailoverCommand,
@@ -388,6 +394,7 @@ describe("limitRecoveryTarget", () => {
     limitRecovery: { runId, resetAt, autoResume: true },
   };
   const fableHold = { resetAt, refusedAt: "2026-10-29T11:00:00Z", modelScope: "fable" };
+  const autoRouted = ProviderInstanceId.make("claude_b");
   const named: ProjectionStore.ProjectionLimitRecoveryCandidate = {
     ...stopped,
     modelSelection: { instanceId: claudeAgent, model: "claude-fable-5-2" },
@@ -544,6 +551,8 @@ describe("limitRecoveryTarget", () => {
     readonly settings?: Partial<typeof DEFAULT_SERVER_SETTINGS>;
     readonly providers?: ReadonlyArray<ServerProvider>;
     readonly creditAccess?: AccountRouting.AccountRouting["Service"]["creditAccess"];
+    /** Thread management refuses the routed account as disabled after recording its route. */
+    readonly refuse?: boolean;
   }) =>
     UsageLimitRecoveryWorker.layer.pipe(
       Layer.provide(
@@ -563,8 +572,33 @@ describe("limitRecoveryTarget", () => {
             getLimitRecoveryWakeAt: () => Effect.succeed(Date.parse(resetAt)),
           }),
           Layer.mock(ThreadManagement.ThreadManagementService)({
-            dispatch: (command) =>
-              Queue.offer(input.dispatched, command).pipe(Effect.as({} as never)),
+            // Auto routing moves every continuation that names no account to `autoRouted`.
+            dispatch: (command, recorder) => {
+              const routed =
+                command.type === "message.dispatch"
+                  ? (command.modelSelection?.instanceId ?? autoRouted)
+                  : autoRouted;
+              return (
+                recorder === undefined
+                  ? Effect.void
+                  : recorder.route(evidenceKey(routed), {
+                      candidates: [{ id: evidenceKey(routed), reason: "eligible" }],
+                      omitted: 0,
+                    })
+              ).pipe(
+                Effect.andThen(Queue.offer(input.dispatched, command)),
+                Effect.andThen(
+                  input.refuse === true
+                    ? Effect.fail(
+                        new ThreadManagement.ThreadManagementProviderInstanceDisabledError({
+                          projectId: stopped.projectId,
+                          instanceId: routed,
+                        }),
+                      )
+                    : Effect.succeed({} as never),
+                ),
+              );
+            },
           }),
           Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.never }),
           Layer.mock(ServerSettings.ServerSettingsService)({
@@ -617,19 +651,74 @@ describe("limitRecoveryTarget", () => {
           yield* Queue.take(dispatched);
           const sql = yield* SqlClient.SqlClient;
           assert.deepEqual(
-            yield* sql`SELECT snapshot ->> 'reason' AS reason, selected_key = snapshot ->> 'selected' AS coherent,
-            EXISTS (SELECT 1 FROM json_each(snapshot,'$.candidates') WHERE value ->> 'id' = selected_key AND value ->> 'reason' = 'eligible') AS eligible
+            yield* sql`SELECT snapshot ->> 'reason' AS reason, snapshot ->> 'selected' AS planned,
+            selected_key = snapshot ->> '$.dispatch.selected' AS dispatched, selected_key, outcome
             FROM usage_stop_decisions WHERE request_key IS NOT NULL`,
             [
               {
                 reason,
-                coherent: reason === "reset_elapsed" ? null : 1,
-                eligible: reason === "reset_elapsed" ? 0 : 1,
+                // An elapsed reset cannot know its account until Auto routing picks one.
+                planned: reason === "reset_elapsed" ? null : evidenceKey(claudeAgent),
+                dispatched: 1,
+                // The record holds where the dispatch ran, not where the worker planned it.
+                selected_key: evidenceKey(
+                  reason === "early_resume_room" ? claudeAgent : autoRouted,
+                ),
+                outcome: "planned",
               },
             ],
           );
         }).pipe(Effect.provide(Layer.merge(layer, SqlitePersistence.layerMemory)));
       }),
+  );
+
+  it.effect("a failed evidence write never fails the continuation it describes", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DROP TABLE usage_stop_decisions`;
+      const input = {
+        source: runId,
+        heldAttempt: undefined,
+        command: null,
+        nowMs: now,
+        evidence: { reason: "reset_elapsed" as const, candidates: [], omitted: 0, selected: null },
+      };
+      assert.isUndefined(yield* recordStopDecision(input));
+      yield* recordDispatchFailure("missing", "refused");
+      const command = limitRecoveryCommand(stopped, true, Date.parse(resetAt));
+      assert(command?.type === "message.dispatch");
+      const recorder = makeDispatchRecorder({ ...input, command }, sql);
+      yield* recorder.route(null, { candidates: [], omitted: 0 });
+      assert.isUndefined(recorder.decisionKey());
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
+  it.effect("records a routed elapsed reset that thread management refuses as refused", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(resetAt));
+      const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+      const sweeps = yield* Queue.unbounded<number>();
+      const layer = sweepLayer({
+        candidate: stopped,
+        dispatched,
+        sweeps,
+        limits: () => new Map(),
+        refuse: true,
+      });
+      yield* Effect.gen(function* () {
+        yield* Queue.take(sweeps);
+        yield* Queue.take(dispatched);
+        // The next sweep starts only after this one has recorded its outcome.
+        yield* TestClock.adjust("1 minute");
+        yield* Queue.take(sweeps);
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepEqual(
+          yield* sql`SELECT selected_key, outcome FROM usage_stop_decisions
+            WHERE snapshot ->> 'reason' = 'reset_elapsed'`,
+          [{ selected_key: evidenceKey(autoRouted), outcome: "refused" }],
+        );
+      }).pipe(Effect.provide(Layer.merge(layer, SqlitePersistence.layerMemory)));
+    }),
   );
 
   it.effect("a sweep resumes it early with account switching off", () =>

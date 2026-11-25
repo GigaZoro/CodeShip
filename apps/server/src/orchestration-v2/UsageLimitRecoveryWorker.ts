@@ -40,9 +40,9 @@ import {
 } from "./AccountRouting.ts";
 import {
   boundedCandidates,
-  type RecordRoute,
-  recoveryRequestKey,
+  type DispatchRecorder,
   evidenceKey,
+  makeDispatchRecorder,
   recordStopDecision,
   recordDispatchFailure,
 } from "./StopDecisionEvidence.ts";
@@ -518,6 +518,8 @@ const makeSweep = Effect.gen(function* () {
       ),
     ),
   );
+  // Decisions already written, so a stop that looks the same every tick takes no write lock.
+  const recentDecisions = new Set<string>();
   return Effect.fn("UsageLimitRecoveryWorker.sweep")(function* () {
     const now = yield* DateTime.now;
     const nowMs = DateTime.toEpochMillis(now);
@@ -586,9 +588,9 @@ const makeSweep = Effect.gen(function* () {
     const dispatchContinuation = (
       command: DispatchCommand,
       failureMessage: string,
-      recordRoute?: RecordRoute,
+      recorder?: DispatchRecorder,
     ) =>
-      (recordRoute ? threads.dispatch(command, recordRoute) : threads.dispatch(command)).pipe(
+      (recorder ? threads.dispatch(command, recorder) : threads.dispatch(command)).pipe(
         Effect.as("dispatched" as const),
         // This exact command was refused on an earlier tick; warning again every tick adds nothing.
         // A snooze the person set meanwhile holds it until the thread wakes.
@@ -621,51 +623,50 @@ const makeSweep = Effect.gen(function* () {
     }
     for (const thread of candidates) {
       const routed = routingFor(thread);
-      // Another account with room comes first: it costs no banked credit.
       if (thread.latestRunId === null) continue;
       if (thread.observationOnly) {
-        yield* recordStopDecision({
-          source: thread.latestRunId,
-          heldAttempt: undefined,
-          command: null,
-          nowMs,
-          evidence: {
-            reason: switching ? "no_actionable_reset" : "switching_disabled",
-            candidates: [],
-            omitted: 0,
-            selected: null,
+        yield* recordStopDecision(
+          {
+            source: thread.latestRunId,
+            heldAttempt: undefined,
+            command: null,
+            nowMs,
+            evidence: {
+              reason: switching ? "no_actionable_reset" : "switching_disabled",
+              candidates: [],
+              omitted: 0,
+              selected: null,
+            },
           },
-        });
+          { recent: recentDecisions },
+        );
         continue;
       }
       if (routed === null) continue;
+      // Another account with room comes first: it costs no banked credit.
       const decision = limitFailoverDecision({ ...routed, thread }, switching);
       const continuation = decision.command ?? resetCreditResumeCommand({ ...routed, thread });
       const source = thread.latestRunId;
       const record = (command: DispatchCommand | null, evidence = decision.evidence) =>
-        recordStopDecision({ source, heldAttempt: thread.heldAttemptId, command, evidence, nowMs });
+        recordStopDecision(
+          { source, heldAttempt: thread.heldAttemptId, command, evidence, nowMs },
+          { recent: recentDecisions },
+        );
       const dispatchRecorded = Effect.fnUntraced(function* (
         command: DispatchCommand,
         evidence: typeof decision.evidence,
         message: string,
       ) {
         const sql = yield* SqlClient.SqlClient;
-        let decisionKey: string | undefined;
-        const outcome = yield* dispatchContinuation(command, message, (selected, observations) =>
-          recordStopDecision(
-            { source, heldAttempt: thread.heldAttemptId, command, evidence, nowMs },
-            { selected, observations },
-          ).pipe(
-            Effect.provideService(SqlClient.SqlClient, sql),
-            Effect.orDie,
-            Effect.map((key) => {
-              decisionKey = key;
-              return { key: recoveryRequestKey(command), decisionKey: key };
-            }),
-          ),
+        const recorder = makeDispatchRecorder(
+          { source, heldAttempt: thread.heldAttemptId, command, evidence, nowMs },
+          sql,
         );
-        if (!decisionKey) decisionKey = yield* record(command, evidence);
-        if (outcome !== "dispatched") yield* recordDispatchFailure(decisionKey, outcome);
+        const outcome = yield* dispatchContinuation(command, message, recorder);
+        // Thread management routes before recording; a dispatch that failed earlier still leaves one.
+        const decisionKey = recorder.decisionKey() ?? (yield* record(command, evidence));
+        if (outcome !== "dispatched" && decisionKey !== undefined)
+          yield* recordDispatchFailure(decisionKey, outcome);
         return outcome;
       });
       const resetEvidence = (

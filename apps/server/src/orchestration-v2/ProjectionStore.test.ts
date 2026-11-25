@@ -5882,9 +5882,11 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       );
       const observe = () =>
         store.getLimitRecoveryCandidates({ ...recoveryOptions, observeStops: true });
-      yield* sql`UPDATE effect_sql_migrations SET created_at = '2100-01-01' WHERE migration_id = 102`;
+      // An upgraded database applied earlier migrations long before this one.
+      yield* sql`UPDATE effect_sql_migrations SET created_at = '1900-01-01' WHERE name <> 'UsageStopDecisions'`;
+      yield* sql`UPDATE effect_sql_migrations SET created_at = '2100-01-01' WHERE name = 'UsageStopDecisions'`;
       assert.isUndefined((yield* observe()).find((row) => row.id === threadId));
-      yield* sql`UPDATE effect_sql_migrations SET created_at = ${DateTime.formatIso(DateTime.subtract(now, { seconds: 1 }))} WHERE migration_id = 102`;
+      yield* sql`UPDATE effect_sql_migrations SET created_at = ${DateTime.formatIso(DateTime.subtract(now, { seconds: 1 }))} WHERE name = 'UsageStopDecisions'`;
       assert.isTrue((yield* observe()).find((row) => row.id === threadId)?.observationOnly);
       const reset = DateTime.makeUnsafe(limitItem.failure.resetAt);
       assert.isDefined(
