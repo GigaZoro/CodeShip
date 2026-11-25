@@ -302,10 +302,10 @@ describe("check:changed", () => {
         NodeFS.writeFileSync(NodePath.join(shared, "v18", name), "");
       }
 
-      const stable = Effect.succeed("unchanged");
+      const stable = Effect.succeed([]);
       yield* Effect.scoped(
         Effect.gen(function* () {
-          yield* stageTestCache(shared, cache, "unchanged", stable);
+          yield* stageTestCache(shared, cache, stable);
           assert.deepStrictEqual(storedPasses(cache), ["earlier"]);
           assert.deepStrictEqual(NodeFS.readdirSync(NodePath.join(cache, "v18")), ["cache.db"]);
           storePass(cache, "success");
@@ -318,7 +318,7 @@ describe("check:changed", () => {
       const started = yield* Deferred.make<void>();
       const fiber = yield* Effect.scoped(
         Effect.gen(function* () {
-          yield* stageTestCache(shared, interrupted, "unchanged", stable);
+          yield* stageTestCache(shared, interrupted, stable);
           assert.deepStrictEqual(storedPasses(interrupted), ["earlier", "success"]);
           storePass(interrupted, "interrupted");
           yield* Deferred.succeed(started, undefined);
@@ -340,7 +340,7 @@ describe("check:changed", () => {
       storePass(shared, "earlier");
       yield* Effect.scoped(
         Effect.gen(function* () {
-          yield* stageTestCache(shared, cache, "before", Effect.succeed("after"));
+          yield* stageTestCache(shared, cache, Effect.succeed(["guard"]));
           storePass(cache, "unvalidated");
         }),
       );
@@ -358,7 +358,7 @@ describe("check:changed", () => {
         Effect.scoped(
           Effect.gen(function* () {
             const cache = NodePath.join(directory, key);
-            yield* stageTestCache(shared, cache, "unchanged", Effect.succeed("unchanged"));
+            yield* stageTestCache(shared, cache, Effect.succeed([]));
             assert.isFalse(NodeFS.existsSync(cacheDb(cache)));
             storePass(cache, key);
             yield* Deferred.succeed(ready, undefined);
@@ -382,7 +382,7 @@ describe("check:changed", () => {
       storePass(shared, "updated");
       yield* Effect.scoped(
         Effect.gen(function* () {
-          yield* stageTestCache(shared, cache, "stable", Effect.succeed("stable"));
+          yield* stageTestCache(shared, cache, Effect.succeed([]));
           storePass(shared, "untouched", "newer");
           storePass(cache, "updated", "changed");
         }),
@@ -417,7 +417,7 @@ describe("check:changed", () => {
         });
       yield* Effect.scoped(
         Effect.gen(function* () {
-          yield* stageTestCache(shared, cache, "stable", Effect.succeed("stable"));
+          yield* stageTestCache(shared, cache, Effect.succeed([]));
           assert.isFalse(NodeFS.existsSync(cacheDb(cache)));
           writer.exec("ROLLBACK");
           expect(seedTimeout).toBeLessThan(1000);
@@ -436,7 +436,7 @@ describe("check:changed", () => {
       storePass(shared, "earlier");
       yield* Effect.scoped(
         Effect.gen(function* () {
-          yield* stageTestCache(shared, cache, "unchanged", Effect.succeed("unchanged"));
+          yield* stageTestCache(shared, cache, Effect.succeed([]));
           storePass(cache, "new");
           using source = new NodeSqlite.DatabaseSync(cacheDb(cache));
           using destination = new NodeSqlite.DatabaseSync(cacheDb(shared));
@@ -1817,6 +1817,8 @@ const CALLER_SETTINGS = /^(?:CHECK_CHANGED_|T3_LANDING_TURN)/iu;
 const withoutCallerSettings = (from: Readonly<Record<string, string>>) =>
   Object.fromEntries(Object.entries(from).filter(([name]) => !CALLER_SETTINGS.test(name)));
 
+const summaryOf = (stdout: string) => stdout.slice(stdout.lastIndexOf("check:changed summary"));
+
 function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
   const root = NodeFS.realpathSync(
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3 checks & (fixture) ")),
@@ -1876,7 +1878,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     import { execFileSync, spawnSync } from 'node:child_process';
     import fs from 'node:fs';
     import path from 'node:path';
-    import { fileURLToPath } from 'node:url';
+    import { fileURLToPath, pathToFileURL } from 'node:url';
     const args = process.argv.slice(2);
     // Windows gives a finished step's pid to the next process at once, so a pid-named record could be replaced.
     const settings = Object.fromEntries(Object.entries(process.env).filter(([name]) => /^(?:CHECK_CHANGED_|T3_LANDING_TURN)/i.test(name)));
@@ -1886,6 +1888,10 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
       fs.appendFileSync(process.env.EDIT_FILE, "// edited\\n");
     }
     if (args[0] === 'test' || args.includes('test-cache')) {
+      // As knip and the tests load a config while the test step runs.
+      if (process.env.TEST_STEP_LOADS) {
+        await (await import(pathToFileURL(path.resolve(process.env.TEST_STEP_LOADS)).href)).default;
+      }
       if (process.env.MOVE_HEAD) {
         execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=', 'commit', '--allow-empty', '-m', 'move HEAD']);
       }
@@ -2739,7 +2745,38 @@ it("discards test results when an ignored runtime input changes", () => {
   expect(repeat.status, repeat.stdout + repeat.stderr).toBe(0);
   expect(repeat.stdout).toContain("pass  test (1 files)");
   expect(repeat.stdout).not.toContain("cache hit, replaying");
-  expect(first.stdout + first.stderr).toContain("runtime inputs or HEAD changed");
+  expect(summaryOf(first.stdout)).toContain("test results discarded");
+  expect(summaryOf(first.stdout)).toContain(".env.local (ignored input)");
+});
+
+// knip and a mobile test load Metro's config while the tests run, and loading it writes the generated
+// modules, ignored inputs of the tests, which a new checkout does not hold yet.
+it("passes the tests of a new checkout while a config that writes their inputs loads", () => {
+  using project = launcherFixture();
+  const config = "apps/mobile/metro.config.js";
+  project.write("apps/mobile/package.json", '{ "type": "commonjs" }\n');
+  project.write(
+    config,
+    `const fs = require("node:fs");
+    const path = require("node:path");
+    const file = path.join(__dirname, ".generated", "stream", "index.js");
+    const contents = "module.exports = 'stream';\\n";
+    module.exports = (async () => {
+      if (fs.existsSync(file) && fs.readFileSync(file, "utf8") === contents) return {};
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, contents);
+      return {};
+    })();`,
+  );
+  project.commit("mobile config");
+  project.write(
+    "fixture.test.ts",
+    `import { it } from "vite-plus/test";\nit("passes", () => {});\n`,
+  );
+
+  const result = project.run("", "", project.source, [], { TEST_STEP_LOADS: config });
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  expect(result.stdout).toContain("pass  test (1 files)");
 });
 
 it.skipIf(isWindowsHost)(
@@ -2758,7 +2795,7 @@ it.skipIf(isWindowsHost)(
 
     const result = project.run();
     expect(result.status, result.stdout + result.stderr).toBe(1);
-    expect(result.stdout + result.stderr).toContain("runtime inputs or HEAD changed");
+    expect(summaryOf(result.stdout)).toContain("the checkout's file modes or untracked names");
   },
 );
 
@@ -2787,7 +2824,7 @@ it("discards test results when HEAD moves to a different commit with the same tr
   expect(repeat.status, repeat.stdout + repeat.stderr).toBe(0);
   expect(repeat.stdout).toContain("pass  test (1 files)");
   expect(repeat.stdout).not.toContain("cache hit, replaying");
-  expect(first.stdout + first.stderr).toContain("runtime inputs or HEAD changed");
+  expect(summaryOf(first.stdout)).toContain("HEAD, which moved from");
 });
 
 it("reports failures from every selected test group", () => {

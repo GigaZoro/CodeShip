@@ -1,3 +1,8 @@
+## 2026-11-25 — check:changed no longer discards passing tests in a new worktree
+
+- For people who work on T3.CodeShip: `vp run check:changed` now writes the mobile app's generated modules before it starts its checks. In a new worktree, such as the one each landing uses, knip used to write them while the tests ran, and the run reported `FAIL test` with every test passing.
+- When test results are discarded because their inputs changed during the run, the summary now names each changed input under the test step, such as a file path, HEAD or the install.
+
 ## 2026-11-25 — Codex metadata requests read the repository on Ubuntu 23.10 and later
 
 - On Ubuntu 23.10 and later, AppArmor kept the bundled Codex metadata runtime from starting its read-only sandbox, so generated titles, commit messages and other text were written without reading the repository. `sudo t3 browser setup` now also installs an AppArmor profile that allows that sandbox, and the server log names the exact command when the profile is missing.

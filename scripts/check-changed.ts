@@ -35,6 +35,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
+import * as NodeURL from "node:url";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -271,7 +272,11 @@ export interface Step<R> {
   readonly run: (
     slots: number,
     collect: (chunk: string) => void,
-  ) => Effect.Effect<{ readonly ok: boolean; readonly output: string }, never, R>;
+  ) => Effect.Effect<
+    { readonly ok: boolean; readonly output: string; readonly note?: ReadonlyArray<string> },
+    never,
+    R
+  >;
   // The most workers the step can run in parallel. It starts once one slot is
   // free and takes as many free ones as it can use, so other runs never wait on it.
   readonly workers?: number;
@@ -323,7 +328,8 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
         yield* Console.log(`\n> vp ${step.name}  ${outcome}  ${time}`);
         const output = Option.isSome(result) ? result.value.output.trimEnd() : collected.trimEnd();
         if (output) yield* Console.log(output);
-        return { name: step.name, outcome, time };
+        const note = Option.isSome(result) ? (result.value.note ?? []) : [];
+        return { name: step.name, outcome, time, note };
       });
       const limited = Effect.scoped(
         admission
@@ -1246,6 +1252,96 @@ export const changedWhileCheckingMessage = (paths: ReadonlyArray<string>) =>
       : []),
   ].join("\n");
 
+// What the test step's results depend on beyond its test files: the bytes of the changed files, the
+// ignored files tests read, the install, the checkout's modes and names, and Git's environment.
+interface TestInputs {
+  readonly source: string;
+  readonly sources: ReadonlyMap<string, string>;
+  readonly ignored: ReadonlyMap<string, string>;
+  readonly install: string;
+  readonly state: string;
+  readonly git: string;
+}
+
+const differingFiles = (before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>) =>
+  [...new Set([...before.keys(), ...after.keys()])]
+    .filter((file) => before.get(file) !== after.get(file))
+    .sort();
+
+const testInputChanges = (before: TestInputs, after: TestInputs) => {
+  const sources = differingFiles(before.sources, after.sources);
+  return [
+    ...sources,
+    ...(sources.length === 0 && before.source !== after.source ? ["the checked tree"] : []),
+    ...differingFiles(before.ignored, after.ignored).map((file) => `${file} (ignored input)`),
+    ...(before.install !== after.install ? ["the installed dependencies"] : []),
+    ...(before.state !== after.state ? ["the checkout's file modes or untracked names"] : []),
+    ...(before.git !== after.git ? ["the Git environment"] : []),
+  ];
+};
+
+const discardedTestsNote = (changes: ReadonlyArray<string>) => [
+  "test results discarded, whatever the tests reported: these inputs changed while they ran or could",
+  "not be compared.",
+  "A path nobody edited is one a step or tool wrote. Run again. Changed:",
+  ...changes.slice(0, CHANGED_PATHS_SHOWN).map((change) => `  ${change}`),
+  ...(changes.length > CHANGED_PATHS_SHOWN
+    ? [`  and ${changes.length - CHANGED_PATHS_SHOWN} more`]
+    : []),
+];
+
+// Loading Metro's config writes the mobile app's generated modules, ignored files the test step reads
+// as inputs. knip and a mobile test load it while the tests run, so check:changed loads it before it
+// fingerprints the inputs, and those later loads find every module current.
+const INPUT_WRITING_CONFIGS = ["apps/mobile/metro.config.js"];
+const CONFIG_LOAD_SECONDS = 300;
+
+// A config that fails to load here fails again where knip or a test loads it, which reports why.
+const loadConfig = Effect.fn("checkChanged.loadConfig")(function* (
+  root: string,
+  platform: NodeJS.Platform,
+  file: string,
+) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const started = yield* Clock.currentTimeMillis;
+  const run = Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* endingWindowsTrees(spawner, platform, "always").spawn(
+        ChildProcess.make(
+          process.execPath,
+          [
+            "--input-type=module",
+            "-e",
+            "await (await import(process.env.CHECK_CHANGED_CONFIG)).default",
+          ],
+          {
+            cwd: root,
+            extendEnv: true,
+            env: { CHECK_CHANGED_CONFIG: NodeURL.pathToFileURL(NodePath.join(root, file)).href },
+            forceKillAfter: "5 seconds",
+          },
+        ),
+      );
+      const [output, exitCode] = yield* Effect.all([collectBytes(handle.all), handle.exitCode], {
+        concurrency: "unbounded",
+      });
+      return exitCode === 0 ? "" : `exited with ${exitCode}:\n${output.toString().trimEnd()}`;
+    }),
+  ).pipe(Effect.catch((error) => Effect.succeed(error.message)));
+  const failure = yield* awakeTimeoutOption(run, CONFIG_LOAD_SECONDS);
+  const seconds = (((yield* Clock.currentTimeMillis) - started) / 1000).toFixed(1);
+  if (Option.isNone(failure) || failure.value !== "") {
+    const reason = Option.isNone(failure)
+      ? `did not finish within ${CONFIG_LOAD_SECONDS}s`
+      : failure.value;
+    yield* Console.warn(
+      `check:changed: loading ${file} ${reason}\nknip or a mobile test may write its generated files while the tests run.`,
+    );
+    return;
+  }
+  yield* Console.log(`check:changed: loaded ${file} in ${seconds}s`);
+});
+
 const checkChanged = Effect.fn("checkChanged")(function* (input: {
   readonly ref: Option.Option<string>;
   readonly concurrency: Option.Option<number>;
@@ -1416,6 +1512,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     return yield* Effect.fail(`check:changed could not install pnpm-lock.yaml:\n${install.output}`);
   }
 
+  for (const config of INPUT_WRITING_CONFIGS) {
+    if (yield* fs.exists(inRoot(config))) yield* loadConfig(root, platform, config);
+  }
+
   const hostCapabilities = yield* Effect.promise(probeHostCapabilities);
   const testGit = gitEnvironment();
   const testRuntime = changedTestRuntime(
@@ -1471,13 +1571,23 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     return { hash, tree: current, bytes };
   });
   const installed = () => Effect.try({ try: () => installFingerprint(root), catch: String });
-  const testFingerprint = Effect.fn("checkChanged.testFingerprint")(function* (
-    head: string,
-    install: string,
-  ) {
-    const { hash } = yield* sourceFingerprint(head);
-    yield* addFiles(hash, (yield* ignoredInputs(root)).filter(isTestInput));
-    return hash.update(install).digest("hex");
+  const testInputs = Effect.fn("checkChanged.testInputs")(function* (head: string, git: string) {
+    const install = yield* installed();
+    const state = yield* checkoutState({ root, objects, head, tree: yield* checkedTree });
+    const { hash, bytes: sources } = yield* sourceFingerprint(head);
+    const ignored = yield* addFiles(
+      NodeCrypto.createHash("sha256"),
+      (yield* ignoredInputs(root)).filter(isTestInput),
+    );
+    const inputs: TestInputs = {
+      source: hash.digest("hex"),
+      sources,
+      ignored,
+      install,
+      state,
+      git,
+    };
+    return inputs;
   });
   const fingerprints = Effect.fn("checkChanged.fingerprints")(function* (against: string) {
     const { hash, tree: checked, bytes } = yield* sourceFingerprint(against);
@@ -1738,19 +1848,19 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
         Effect.gen(function* () {
           const temp = yield* fs.makeTempDirectoryScoped({ prefix: "t3-check-changed-tests-" });
           const head = yield* gitCommit(root, "HEAD");
-          const install = yield* installed();
-          const state = yield* checkoutState({ root, objects, head, tree: yield* checkedTree });
+          const started = yield* testInputs(head, testGit);
+          const { install, state } = started;
           const cache = path.join(temp, "cache");
           const { finish } = yield* stageTestCache(
             yield* testCachePartition(path.join(slotDirectory, "tests"), head),
             cache,
-            `${yield* testFingerprint(head, install)}\0${state}\0${testGit}`,
             Effect.gen(function* () {
-              if ((yield* gitCommit(root, "HEAD")) !== head) return "";
-              const fingerprint = yield* testFingerprint(head, yield* installed());
+              const current = yield* gitCommit(root, "HEAD");
+              if (current !== head) {
+                return [`HEAD, which moved from ${head.slice(0, 12)} to ${current.slice(0, 12)}`];
+              }
               const git = yield* Effect.try({ try: () => gitEnvironment(), catch: String });
-              const state = yield* checkoutState({ root, objects, head, tree: yield* checkedTree });
-              return `${fingerprint}\0${state}\0${git}`;
+              return testInputChanges(started, yield* testInputs(head, git));
             }),
           );
           const request = path.join(temp, "tests.json");
@@ -1788,7 +1898,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
                 collect,
               ),
           );
-          return (yield* finish) ? result : { ...result, ok: false };
+          const changed = yield* finish;
+          return changed.length === 0
+            ? result
+            : { ...result, ok: false, note: discardedTestsNote(changed) };
         }),
       ).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
@@ -1869,6 +1982,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const summary = ["check:changed summary"];
   for (const result of results) {
     summary.push(`  ${result.outcome}  ${result.name}  ${result.time}`);
+    for (const line of result.note) summary.push(`        ${line}`);
   }
   if (results.some((result) => result.outcome === "TIMEOUT")) {
     summary.push(
