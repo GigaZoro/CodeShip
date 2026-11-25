@@ -120,6 +120,93 @@ const layerOrchestratorServiceWithGit = (
 const layerOrchestratorService = layerOrchestratorServiceWithGit({});
 
 describe("OrchestratorMcpService", () => {
+  it.effect.each([
+    { prior: null, matchingProvider: true, recordsObservation: true },
+    { prior: "failed", matchingProvider: true, recordsObservation: true },
+    { prior: "completed", matchingProvider: true, recordsObservation: false },
+    { prior: "failed", matchingProvider: false, recordsObservation: false },
+  ] as const)(
+    "command task status records a later observation after $prior with matching provider $matchingProvider",
+    ({ prior, matchingProvider, recordsObservation }) =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make("thread:mcp-command-observer");
+        const taskId = NodeId.make("node:mcp-command-observer");
+        const previous = RunId.make("run:mcp-command-first-observer");
+        const current = RunId.make("run:mcp-command-next-observer");
+        const providerInstanceId = ProviderInstanceId.make("codex");
+        const observations = yield* Ref.make<ReadonlyArray<RunId | null>>([]);
+        const parent = {
+          thread: { id: threadId },
+          runs: [
+            ...(prior === null ? [] : [{ id: previous, status: prior, ordinal: 1, threadId }]),
+            { id: current, status: "running", ordinal: 2, providerInstanceId, threadId },
+          ],
+          subagents: [
+            {
+              id: taskId,
+              threadId,
+              childThreadId: null,
+              origin: "app_owned",
+              command: { command: "printf result", cwd: "/workspace", logPath: "/log" },
+              providerInstanceId,
+              status: "completed",
+              result: "command result",
+              completionDelivery: {
+                state: "acknowledged",
+                observedByRunId: prior === null ? null : previous,
+              },
+            },
+          ],
+        } as unknown as OrchestrationV2ThreadProjection;
+        const layerDependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: () => Effect.succeed(parent),
+            dispatch: (command) =>
+              Effect.gen(function* () {
+                assert.equal(command.type, "delegated_task.completion-delivery.acknowledge");
+                if (command.type === "delegated_task.completion-delivery.acknowledge") {
+                  assert.equal(command.parentThreadId, threadId);
+                  assert.equal(command.taskId, taskId);
+                  yield* Ref.update(observations, (ids) => [...ids, command.observedByRunId]);
+                }
+                return {} as never;
+              }),
+          }),
+          ServerSettings.layerTest(),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+            list: () => Effect.succeed([]),
+          }),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+        const scope: McpInvocationScope = {
+          environmentId: EnvironmentId.make("environment:mcp-command-observer"),
+          requestNamespace: "provider-session:mcp-command-observer",
+          thread: {
+            threadId,
+            providerSessionId: "provider-session:mcp-command-observer",
+            providerInstanceId: matchingProvider
+              ? providerInstanceId
+              : ProviderInstanceId.make("claude"),
+          },
+          client: undefined,
+          capabilities: new Set(["orchestration"]),
+          issuedAt: 1,
+        };
+
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const result = yield* service.taskStatus(scope, taskId);
+          assert.equal(result.summary, "command result");
+          assert.deepEqual(yield* Ref.get(observations), recordsObservation ? [current] : []);
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+      }),
+  );
+
   it.effect("retries terminal acknowledgement with a fresh command id", () =>
     Effect.gen(function* () {
       const parentThreadId = ThreadId.make("thread:mcp-ack-parent");

@@ -340,6 +340,7 @@ const cleanupFixture = (
     worktreeOnDelete: true,
   },
   managedLayout = false,
+  sqlOverride?: SqlClient.SqlClient,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -394,6 +395,8 @@ const cleanupFixture = (
     let terminalListener: ((event: TerminalMetadataStreamEvent) => Effect.Effect<void>) | undefined;
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
     const activated = yield* Deferred.make<void>();
+    const provideFixtureSql = (fallback: SqlClient.SqlClient) =>
+      Effect.provideService(SqlClient.SqlClient, sqlOverride ?? fallback);
     const context = yield* Layer.build(StorageCleanup.layer).pipe(
       Effect.provideService(GitVcsDriver.GitVcsDriver, {
         ...git,
@@ -478,7 +481,7 @@ const cleanupFixture = (
         streamDomainEvents: Stream.suspend(() => events),
         delegatedTaskResultPending: () => Effect.succeed(false),
       } as unknown as Orchestrator.OrchestratorV2["Service"]),
-      Effect.provideService(SqlClient.SqlClient, ((strings: TemplateStringsArray) =>
+      provideFixtureSql(((strings: TemplateStringsArray) =>
         Effect.sync(() =>
           strings.join("").includes('AS "deletedWorktree"')
             ? deletedThreads.map((thread) => ({
@@ -2100,6 +2103,125 @@ it.effect("requires the approved child's result and a completed parent run that 
     })}`;
     expect(yield* consumed()).toBe(false);
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each(["private delegate", "background command"] as const)(
+  "requires a completed result consumer to release the %s checkout",
+  (kind) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW_MS);
+        const sql = yield* SqlClient.SqlClient;
+        const fixture = yield* cleanupFixture(undefined, true, sql);
+        fixture.disable();
+        const child = kind === "private delegate";
+        const ownerId = ThreadId.make("thread-1");
+        const parentId = child ? ThreadId.make("parent") : ownerId;
+        const taskId = NodeId.make("node:delegated-task:result-consumer");
+        const childRun = RunId.make("child-run");
+        const laterRun = RunId.make("later-run");
+        const ownerRun = child ? childRun : laterRun;
+        const result = "Final task result";
+        const command = {
+          command: "echo result",
+          cwd: fixture.worktree,
+          logPath: "command.log",
+          timeoutMinutes: 1,
+        };
+        const reportedAt = DateTime.formatIso(at(-3 * DAY_MS));
+        const failedAt = DateTime.formatIso(at(-2 * DAY_MS));
+        const laterAt = DateTime.formatIso(at(-DAY_MS));
+        const owner = shell({
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          status: "completed",
+          latestRunId: ownerRun,
+          latestRunCompletedAt: child ? at(-3 * DAY_MS) : at(-DAY_MS),
+          ...(child && {
+            forkedFrom: { type: "node" as const, nodeId: taskId },
+            lineage: {
+              rootThreadId: parentId,
+              parentThreadId: parentId,
+              relationshipToParent: "subagent" as const,
+            },
+          }),
+        });
+        fixture.setThreads([owner]);
+        yield* sql`INSERT INTO orchestration_v2_projection_runs
+          (run_id, thread_id, ordinal, provider, status, requested_at, completed_at, payload_json)
+          VALUES ('spawner', ${parentId}, 1, 'test', 'completed', ${reportedAt}, ${reportedAt}, '{}'),
+            ('failed-reader', ${parentId}, 2, 'test', 'failed', ${reportedAt}, ${failedAt}, '{"userMessageId":"wake"}'),
+            (${laterRun}, ${parentId}, 3, 'test', 'completed', ${failedAt}, ${laterAt}, '{"userMessageId":"unrelated"}')`;
+        if (child) {
+          yield* sql`INSERT INTO orchestration_v2_projection_runs
+            (run_id, thread_id, ordinal, provider, status, requested_at, completed_at, payload_json)
+            VALUES (${childRun}, ${ownerId}, 1, 'test', 'completed', ${reportedAt}, ${reportedAt},
+              ${JSON.stringify({ delegatedTaskId: taskId })})`;
+          yield* sql`INSERT INTO orchestration_v2_projection_context_transfers
+            (context_transfer_id, source_thread_id, target_thread_id, target_run_id, type, status, updated_at, payload_json)
+            VALUES ('transfer', ${ownerId}, ${parentId}, 'spawner', 'subagent_result', 'consumed', ${reportedAt},
+              ${JSON.stringify({ sourcePoint: { runId: childRun } })})`;
+        } else {
+          yield* sql`INSERT INTO command_runs
+            (task_id, thread_id, run_id, command, cwd, directory, status, exit_code, started_at, deadline_at, ended_at, delivered_at)
+            VALUES (${taskId}, ${ownerId}, 'spawner', ${command.command}, ${fixture.worktree},
+              ${fixture.config.stateDir}, 'exited', 0, ${reportedAt}, ${failedAt}, ${reportedAt}, ${reportedAt})`;
+        }
+        yield* sql`INSERT INTO orchestration_v2_projection_subagents
+          (subagent_id, thread_id, run_id, parent_node_id, provider, child_thread_id, origin, status,
+           completed_at, updated_at, payload_json, completion_delivery_state)
+          VALUES (${taskId}, ${parentId}, 'spawner', 'root', 'test', ${child ? ownerId : null},
+            'app_owned', 'completed', ${reportedAt}, ${reportedAt},
+            ${JSON.stringify({ result, ...(child ? {} : { command }), completionDelivery: { state: "delivered", observedByRunId: null } })}, 'delivered')`;
+        const wake = {
+          createdBy: "agent",
+          creationSource: "server",
+          text: `${child ? "Delegated task" : "Command"} ${taskId} [completed]:\n${result}`,
+          delegatedCompletion: { parentRunId: "spawner", generation: 1, taskIds: [taskId] },
+        };
+        yield* sql`INSERT INTO orchestration_v2_projection_messages
+          (message_id, thread_id, run_id, role, streaming, created_at, updated_at, payload_json)
+          VALUES ('wake', ${parentId}, 'failed-reader', 'user', 0, ${reportedAt}, ${reportedAt}, ${JSON.stringify(wake)}),
+            ('unrelated', ${parentId}, ${laterRun}, 'user', 0, ${failedAt}, ${failedAt}, '{"text":"Unrelated work"}')`;
+        const { file } = yield* queueWorktreeRelease({
+          stateDir: fixture.config.stateDir,
+          threadId: ownerId,
+          runId: ownerRun,
+          worktreePath: fixture.worktree,
+          durableRef: "refs/heads/main",
+        });
+        const receipt = yield* fixture.fs.readFileString(file);
+        const expectKept = (evidence: string) =>
+          Effect.gen(function* () {
+            const entry = (yield* fixture.service.runNow).entries.find(
+              (row) => row.threadId === ownerId,
+            );
+            expect(entry?.outcome, `${evidence}: ${entry?.reason}`).toBe("kept");
+            expect(yield* fixture.fs.readFileString(file)).toBe(receipt);
+            expect(yield* fixture.fs.exists(file + ".released")).toBe(false);
+            expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
+          });
+        const acknowledge = (observedByRunId: string | null) => sql`
+          UPDATE orchestration_v2_projection_subagents
+          SET completion_delivery_state = 'acknowledged',
+            payload_json = json_set(payload_json, '$.completionDelivery',
+              json(${JSON.stringify({ state: "acknowledged", observedByRunId })}))
+          WHERE subagent_id = ${taskId}`;
+
+        yield* expectKept("failed wake followed by an unrelated completed run");
+        yield* acknowledge(null);
+        yield* expectKept("acknowledgement without an observer");
+        yield* acknowledge("failed-reader");
+        yield* expectKept("acknowledgement from a failed observer");
+        yield* acknowledge(laterRun);
+        const entry = (yield* fixture.service.runNow).entries.find(
+          (row) => row.threadId === ownerId,
+        );
+        expect(entry?.outcome, entry?.reason).toBe("removed");
+        expect(yield* fixture.fs.exists(file + ".released")).toBe(true);
+        expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+      }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+    ),
 );
 
 it.live("releases the bound family only after every member settles and delivers", () =>
