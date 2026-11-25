@@ -3747,7 +3747,7 @@ describe("UsageService", () => {
         assert.strictEqual(yield* outputTokensAfterRestart, 5);
         yield* fs.remove(transcript);
         yield* TestClock.adjust("93 days");
-        // No scan saw the deletion, so the write starts the row's retention instead of pruning it.
+        // No scan saw the deletion, so the write keeps the row for the next scan to find it gone.
         yield* shutDownWithoutScan;
         assert.strictEqual(yield* outputTokensAfterRestart, 5);
         const { document: missing } = yield* onlySnapshot(stateDir);
@@ -3790,9 +3790,56 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
-  it.live.each(["came back", "could not be listed"] as const)(
-    "starts the retention of a transcript that %s at its deletion",
-    (scenario) =>
+  it.live.each([
+    "came back",
+    "came back beside an unreadable folder",
+    "could not be listed",
+  ] as const)("starts the retention of a transcript that %s at its deletion", (scenario) =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      const writeTranscript = Effect.promise(async () => {
+        await NodeFSP.writeFile(transcript, claudeLine(1, 5));
+        await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+      });
+      yield* writeTranscript;
+      const projectDir = yield* Effect.promise(() =>
+        NodeFSP.realpath(NodePath.dirname(transcript)),
+      );
+      const siblingDir = NodePath.join(NodePath.dirname(projectDir), "sibling");
+      yield* Effect.promise(() => NodeFSP.mkdir(siblingDir));
+      const actual = yield* Effect.promise(() =>
+        vi.importActual<typeof NodeFSP>("node:fs/promises"),
+      );
+      let deniedDir: string | undefined;
+      using _readdir = vi.spyOn(NodeFSP, "readdir").mockImplementation(async (...args) => {
+        if (args[0] === deniedDir) throw new Error("permission denied");
+        return actual.readdir(...args);
+      });
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        if (scenario === "could not be listed") deniedDir = projectDir;
+        else yield* fs.remove(transcript);
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        yield* TestClock.adjust("50 days");
+        if (scenario !== "could not be listed") {
+          if (scenario === "came back beside an unreadable folder") deniedDir = siblingDir;
+          yield* writeTranscript;
+          assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        }
+        yield* fs.remove(transcript);
+        deniedDir = undefined;
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        yield* TestClock.adjust("43 days");
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+      }).pipe(Effect.provide(layerService({ prefix: "usage-returned-retention", home, settings })));
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live(
+    "keeps a restored transcript's usage until 92 days after it goes again in two writers",
+    () =>
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
         yield* TestClock.setTime(CURSOR_NOW);
@@ -3801,6 +3848,52 @@ describe("UsageService", () => {
           await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
         });
         yield* writeTranscript;
+        yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const writers = [yield* UsageService.make, yield* UsageService.make];
+          // Each save merges the other writer's latest snapshot, rows from before a restore included.
+          const scanInTurn = Effect.forEach(
+            writers,
+            (writer) =>
+              Effect.gen(function* () {
+                assert.strictEqual(totalOutputTokens(yield* writer.readSummary(WINDOW)), 5);
+                yield* writer.awaitPersisted;
+              }),
+            { discard: true },
+          );
+          yield* scanInTurn;
+          yield* fs.remove(transcript);
+          yield* TestClock.adjust("1 day");
+          yield* scanInTurn;
+          yield* TestClock.adjust("10 days");
+          yield* writeTranscript;
+          yield* scanInTurn;
+          yield* TestClock.adjust("69 days");
+          const deletedAgainAt = CURSOR_NOW + 80 * DAY_MS;
+          yield* fs.remove(transcript);
+          yield* scanInTurn;
+          yield* TestClock.setTime(deletedAgainAt + 92 * DAY_MS);
+          assert.strictEqual(yield* outputTokensAfterRestart, 5);
+          yield* TestClock.adjust("1 millis");
+          assert.strictEqual(yield* outputTokensAfterRestart, 0);
+          assert.isEmpty(yield* storedFileKeys(stateDir));
+        }).pipe(
+          Effect.provide(layerService({ prefix: "usage-two-writer-retention", home, settings })),
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live.each(["finishes", "does not finish"] as const)(
+    "counts a transcript an unreadable folder hid until 92 days after a check found it gone, when the first check %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        yield* Effect.promise(async () => {
+          await NodeFSP.writeFile(transcript, claudeLine(1, 5));
+          await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+        });
         const projectDir = yield* Effect.promise(() =>
           NodeFSP.realpath(NodePath.dirname(transcript)),
         );
@@ -3814,24 +3907,100 @@ describe("UsageService", () => {
         });
         yield* Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
           assert.strictEqual(yield* outputTokensAfterRestart, 5);
-          if (scenario === "came back") yield* fs.remove(transcript);
-          else denied = true;
-          assert.strictEqual(yield* outputTokensAfterRestart, 5);
-          yield* TestClock.adjust("50 days");
-          if (scenario === "came back") {
-            yield* writeTranscript;
-            assert.strictEqual(yield* outputTokensAfterRestart, 5);
-          }
+          denied = true;
           yield* fs.remove(transcript);
-          denied = false;
+          yield* TestClock.adjust("93 days");
+          if (scenario === "does not finish") {
+            const began = yield* Deferred.make<void>();
+            const service = yield* UsageService.make.pipe(
+              Effect.provideService(FileSystem.FileSystem, {
+                ...fs,
+                exists: (path) =>
+                  path === transcript
+                    ? Deferred.succeed(began, undefined).pipe(Effect.andThen(Effect.never))
+                    : fs.exists(path),
+              }),
+            );
+            const answer = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
+            yield* Deferred.await(began);
+            yield* TestClock.adjust("10 seconds");
+            assert.strictEqual(totalOutputTokens(yield* Fiber.join(answer)), 0);
+            yield* service.awaitPersisted;
+            assert.deepStrictEqual(yield* storedFileKeys(stateDir), [transcript]);
+          }
+          const checkedAt = yield* Clock.currentTimeMillis;
           assert.strictEqual(yield* outputTokensAfterRestart, 5);
-          yield* TestClock.adjust("43 days");
           assert.strictEqual(yield* outputTokensAfterRestart, 5);
+          yield* TestClock.setTime(checkedAt + 92 * DAY_MS);
+          assert.strictEqual(yield* outputTokensAfterRestart, 5);
+          yield* TestClock.adjust("1 millis");
+          assert.strictEqual(yield* outputTokensAfterRestart, 0);
+          assert.isEmpty(yield* storedFileKeys(stateDir));
         }).pipe(
-          Effect.provide(layerService({ prefix: "usage-returned-retention", home, settings })),
+          Effect.provide(layerService({ prefix: "usage-unchecked-retention", home, settings })),
         );
       }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live.each(["missing", "present"] as const)(
+    "counts a saved %s time ahead of the clock from now",
+    (field) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        yield* Effect.promise(async () => {
+          await NodeFSP.writeFile(transcript, claudeLine(1, 5));
+          await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+        });
+        yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          assert.strictEqual(yield* outputTokensAfterRestart, 5);
+          const { path, document: original } = yield* onlySnapshot(stateDir);
+          yield* fs.remove(transcript);
+          yield* TestClock.adjust("10 days");
+          const deletedAt = CURSOR_NOW + 10 * DAY_MS;
+          const ahead = {
+            ...original.files[transcript],
+            [field === "missing" ? "ms" : "ps"]: 1e15,
+          };
+          yield* fs.writeFileString(
+            path,
+            encodeUnknownJsonString({
+              ...original,
+              files: { ...original.files, [transcript]: ahead },
+            }),
+          );
+          assert.strictEqual(yield* outputTokensAfterRestart, 5);
+          // A peer's row for the file merges with the corrected one.
+          yield* seedSnapshot(stateDir, encodeUnknownJsonString(original));
+          yield* TestClock.setTime(deletedAt + 92 * DAY_MS);
+          assert.strictEqual(yield* outputTokensAfterRestart, 5);
+          yield* TestClock.adjust("1 millis");
+          assert.strictEqual(yield* outputTokensAfterRestart, 0);
+          assert.isEmpty(yield* storedFileKeys(stateDir));
+        }).pipe(Effect.provide(layerService({ prefix: "usage-future-presence", home, settings })));
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live("drops the saved row of a transcript still on disk past its last write's retention", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(transcript, claudeLine(1, 5));
+        await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+      });
+      yield* Effect.gen(function* () {
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        yield* TestClock.adjust("93 days");
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        assert.isEmpty(yield* storedFileKeys(stateDir));
+      }).pipe(Effect.provide(layerService({ prefix: "usage-live-retention", home, settings })));
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
   it.live("answers a warm scan while a sync is blocked on disk", () =>

@@ -57,6 +57,8 @@ export interface CachedFile {
   readonly observedAtMs: number;
   /** Wall-clock time the service first found the file gone; its retention counts from here. */
   readonly missingSinceMs?: number;
+  /** Wall-clock time a listing last found the file back after it went missing. */
+  readonly presentSinceMs?: number;
   readonly provider: UsageProviderKind;
   readonly records: readonly UsageRecord[];
   /** Unterminated tail records stay separate because incremental parsing rereads them. */
@@ -91,23 +93,38 @@ function pickScanEntry(held: CachedFile, incoming: CachedFile): CachedFile {
   return incoming.size > held.size ? incoming : held;
 }
 
+const latest = (...times: readonly (number | undefined)[]) => {
+  const known = times.filter((time) => time !== undefined);
+  return known.length === 0 ? undefined : Math.max(...known);
+};
+
 /**
- * A missing time says nothing about a file's contents, so it never picks the winning row. The
- * winner takes the latest one from a row read at the same time or found gone after its own read;
- * an earlier one predates a read that found the file back.
+ * Presence says nothing about a file's contents, so it never picks the winning row. The winner
+ * takes the latest missing time from a row read at the same time or found gone after its own
+ * read, unless a listing found the file back after it: an earlier one is stale. A listing does
+ * not change observedAtMs, so only the time it found the file back can show that.
  */
 export function mergeScanEntry(held: CachedFile, incoming: CachedFile): CachedFile {
   const winner = pickScanEntry(held, incoming);
-  const missingTimes = [held, incoming].flatMap(({ observedAtMs, missingSinceMs }) =>
-    missingSinceMs !== undefined &&
-    (observedAtMs === winner.observedAtMs || missingSinceMs > winner.observedAtMs)
-      ? [missingSinceMs]
-      : [],
+  const presentSinceMs = latest(held.presentSinceMs, incoming.presentSinceMs);
+  const missingSinceMs = latest(
+    ...[held, incoming].map(({ observedAtMs, missingSinceMs }) =>
+      missingSinceMs !== undefined &&
+      (observedAtMs === winner.observedAtMs || missingSinceMs > winner.observedAtMs) &&
+      missingSinceMs > (presentSinceMs ?? -Infinity)
+        ? missingSinceMs
+        : undefined,
+    ),
   );
-  const missingSinceMs = missingTimes.length === 0 ? undefined : Math.max(...missingTimes);
-  if (missingSinceMs === winner.missingSinceMs) return winner;
-  const { missingSinceMs: _, ...contents } = winner;
-  return missingSinceMs === undefined ? contents : { ...contents, missingSinceMs };
+  if (missingSinceMs === winner.missingSinceMs && presentSinceMs === winner.presentSinceMs) {
+    return winner;
+  }
+  const { missingSinceMs: _missing, presentSinceMs: _present, ...contents } = winner;
+  return {
+    ...contents,
+    ...(missingSinceMs === undefined ? {} : { missingSinceMs }),
+    ...(presentSinceMs === undefined ? {} : { presentSinceMs }),
+  };
 }
 
 export function mergeCachedSource(held: CachedSource, incoming: CachedSource): CachedSource {
@@ -140,6 +157,7 @@ interface SerializedFile {
   readonly m: number;
   readonly oa?: number;
   readonly ms?: number;
+  readonly ps?: number;
   readonly p: UsageProviderKind;
   readonly r: readonly SerializedRecord[];
   readonly t: readonly SerializedRecord[];
@@ -204,6 +222,7 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
     m: entry.mtimeMs,
     oa: entry.observedAtMs,
     ...(entry.missingSinceMs === undefined ? {} : { ms: entry.missingSinceMs }),
+    ...(entry.presentSinceMs === undefined ? {} : { ps: entry.presentSinceMs }),
     p: entry.provider,
     r: entry.records.map(serializeRecord),
     t: entry.tailRecords.map(serializeRecord),
@@ -399,9 +418,8 @@ export function decodeScanCache(
       ...(version < USAGE_SCAN_CACHE_VERSION || entry.lg === true ? { legacy: true } : {}),
       mtimeMs: entry.m,
       observedAtMs,
-      ...(typeof entry.ms === "number" && Number.isFinite(entry.ms)
-        ? { missingSinceMs: entry.ms }
-        : {}),
+      ...(isEpochMillis(entry.ms) ? { missingSinceMs: entry.ms } : {}),
+      ...(isEpochMillis(entry.ps) ? { presentSinceMs: entry.ps } : {}),
       provider,
       records,
       tailRecords,
@@ -419,6 +437,9 @@ export function decodeScanCache(
 
   return cache;
 }
+
+const isEpochMillis = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
 function makeStateValidators(
   formats: ReadonlyMap<UsageProviderKind, TranscriptUsageFormat<unknown>>,
