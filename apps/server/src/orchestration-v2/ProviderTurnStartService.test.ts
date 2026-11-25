@@ -24,6 +24,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
   ProjectId,
   type OrchestrationV2ProviderFailure,
   type OrchestrationV2ThreadProjection,
@@ -782,6 +783,28 @@ function makeLocalCommandHarness(input: {
           completedAt: input.previousTurn.turnStatus === "running" ? null : now,
         },
       ],
+      turnItems: [
+        ...projection.turnItems,
+        {
+          id: TurnItemId.make("previous-tool-call"),
+          type: "dynamic_tool",
+          threadId,
+          runId: previousRunId,
+          nodeId: NodeId.make("previous-root"),
+          providerThreadId: previousProviderThreadId,
+          providerTurnId: previousTurnId,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "running",
+          title: "Hand off to a worktree",
+          toolName: "mcp__t3-code__t3_worktree_handoff",
+          input: {},
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+        },
+      ],
     };
   }
   let providerBusy =
@@ -1456,6 +1479,10 @@ effectIt.effect("recovers an abandoned failed turn before continuing its native 
       status: "interrupted",
       completedAt: expect.anything(),
     });
+    // The restarted runtime can never report the end of the tool call the failed run left open.
+    expect(
+      harness.projection().turnItems.find((item) => item.id === "previous-tool-call"),
+    ).toMatchObject({ status: "interrupted", completedAt: expect.anything() });
     expect(harness.startRootRun).toHaveBeenCalledOnce();
     expect(harness.startRootRun.mock.calls[0]?.[0].providerThread.nativeThreadRef?.nativeId).toBe(
       "existing-native-conversation",

@@ -1,3 +1,8 @@
+## 2026-11-25 — A tool call a failed run left open no longer holds automatic updates
+
+- When T3.CodeShip has to stop a chat's provider itself, because it could not record the turn's output or found the turn still running when the next message started, it now also closes the tool calls that turn had open. Before, such a call stayed "running" for ever, and an automatic update waited on it as background work until the server restarted.
+- While an update waits on background work, its log line is written once each time that work changes instead of about once a second.
+
 ## 2026-11-25 — Scheduled runs report blocked work as failed
 
 - A scheduled run's agent can now report how its occurrence ended. If a required step could not be done, the run shows as failed in the schedule's history and status instead of succeeded. A run with nothing to do stays successful, and the first report of a run is final.

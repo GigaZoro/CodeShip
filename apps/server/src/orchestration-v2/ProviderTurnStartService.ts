@@ -1092,26 +1092,58 @@ export const layer: Layer.Layer<
             return;
           }
         }
+        const abandonedRuns = new Map(
+          abandonedTurns.map(({ run: failedRun }) => [failedRun.id, failedRun] as const),
+        );
+        const { turnItems: openTurnItems } = yield* projectionStore.getThreadRecords(
+          projection.thread.id,
+          ["turnItems"],
+          {
+            turnItemRunIds: [...abandonedRuns.keys()],
+            turnItemTypes: RunExecutionService.toolTurnItemTypes,
+            turnItemStatuses: ["pending", "running", "waiting"],
+          },
+        );
         const completedAt = yield* DateTime.now;
         const repaired = yield* eventSink.writeIfRunCurrent({
           threadId: projection.thread.id,
           runId: run.id,
           activeAttemptId: attempt.id,
           expectedStatus: "starting",
-          events: yield* Effect.forEach(abandonedTurns, ({ turn, run: failedRun }) =>
-            Effect.gen(function* () {
-              return {
-                id: yield* idAllocator.allocate.event(),
-                type: "provider-turn.updated" as const,
-                threadId: projection.thread.id,
-                runId: failedRun.id,
-                nodeId: turn.nodeId,
-                providerInstanceId: failedRun.providerInstanceId,
-                occurredAt: completedAt,
-                payload: { ...turn, status: "interrupted" as const, completedAt },
-              };
-            }),
-          ),
+          events: [
+            ...(yield* Effect.forEach(abandonedTurns, ({ turn, run: failedRun }) =>
+              Effect.gen(function* () {
+                return {
+                  id: yield* idAllocator.allocate.event(),
+                  type: "provider-turn.updated" as const,
+                  threadId: projection.thread.id,
+                  runId: failedRun.id,
+                  nodeId: turn.nodeId,
+                  providerInstanceId: failedRun.providerInstanceId,
+                  occurredAt: completedAt,
+                  payload: { ...turn, status: "interrupted" as const, completedAt },
+                };
+              }),
+            )),
+            // Its runtime is gone, so nothing else would record the end of its open tool calls.
+            ...(yield* Effect.forEach(
+              openTurnItems.flatMap((item) => {
+                const failedRun = item.runId === null ? undefined : abandonedRuns.get(item.runId);
+                return failedRun !== undefined && RunExecutionService.isOpenToolTurnItem(item)
+                  ? [{ item, failedRun }]
+                  : [];
+              }),
+              ({ item, failedRun }) =>
+                Effect.map(idAllocator.allocate.event(), (id) =>
+                  RunExecutionService.abandonedTurnItemEvent({
+                    id,
+                    item,
+                    providerInstanceId: failedRun.providerInstanceId,
+                    completedAt,
+                  }),
+                ),
+            )),
+          ],
         });
         if (!repaired.committed) return;
       }

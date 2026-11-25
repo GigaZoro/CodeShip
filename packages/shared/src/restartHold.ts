@@ -9,6 +9,27 @@ import * as Stream from "effect/Stream";
 const restartHoldWorkKey = (work: OrchestrationV2RestartHoldWork): string =>
   `${work.threadId}\u0000${work.id ?? `${work.kind}\u0000${work.label}`}`;
 
+/** Whether two lists name the same work the same way, so a wait reports each change once. */
+export function sameRestartHoldWork(
+  left: ReadonlyArray<OrchestrationV2RestartHoldWork>,
+  right: ReadonlyArray<OrchestrationV2RestartHoldWork>,
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((entry, index) => {
+      const other = right[index]!;
+      return (
+        entry.threadId === other.threadId &&
+        entry.threadTitle === other.threadTitle &&
+        entry.kind === other.kind &&
+        entry.label === other.label &&
+        entry.id === other.id &&
+        entry.turnCall === other.turnCall
+      );
+    })
+  );
+}
+
 interface ListedRestartHoldWork {
   /** Work the update has waited on. A call that outlives its turn stays listed as background work. */
   readonly keys: ReadonlySet<string>;
@@ -49,6 +70,8 @@ export function untilListedRestartHoldWorkEnds<E, R>(
         return [{ keys, callingThreads }, [waiting]] as const;
       },
     ),
+    // Other chats change the hold all the time; only a change of the listed work is news.
+    Stream.changesWith(sameRestartHoldWork),
     Stream.tap((work) => (work.length === 0 ? Effect.void : onWaiting(work))),
     Stream.filter((work) => work.length === 0),
     Stream.as("clear" as const),

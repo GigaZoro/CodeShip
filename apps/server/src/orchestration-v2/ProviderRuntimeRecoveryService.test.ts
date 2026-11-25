@@ -2353,9 +2353,13 @@ it.effect("records a background command once while its turn item still runs", ()
   );
 });
 
-// A rollback closed the process that ran the turn's work and left its row open.
+// A call can outlive its run, so only its settled row ends the hold: every place T3 stops a
+// runtime itself settles the calls it had open. A rollback closed that process and left its row open.
 it.effect.each([
   { status: "completed", held: 1, noted: 1 },
+  { status: "failed", held: 1, noted: 1 },
+  { status: "interrupted", held: 1, noted: 1 },
+  { status: "cancelled", held: 1, noted: 1 },
   { status: "rolled_back", held: 0, noted: 0 },
 ])("holds an update for and notes an open call of a $status turn: $held", (expected) => {
   const fixture = restartHoldFixture();

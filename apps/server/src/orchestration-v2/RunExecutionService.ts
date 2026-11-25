@@ -1,4 +1,5 @@
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
+import { executionTurnItemTypes } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   isOrchestrationV2WorkActive,
@@ -15,6 +16,7 @@ import {
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
+  type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
   type ProviderSessionId,
@@ -117,6 +119,43 @@ const backgroundCapableTurnItemTypes: ReadonlySet<OrchestrationV2TurnItem["type"
 
 function isSettledTurnItemStatus(status: OrchestrationV2TurnItem["status"]): boolean {
   return !isOrchestrationV2WorkActive(status);
+}
+
+/** Subagents settle through their own cascade; every other execution item is a tool call. */
+export const toolTurnItemTypes: ReadonlyArray<OrchestrationV2TurnItem["type"]> =
+  executionTurnItemTypes.filter((type) => type !== "subagent");
+
+export function isOpenToolTurnItem(item: OrchestrationV2TurnItem): boolean {
+  return toolTurnItemTypes.includes(item.type) && !isSettledTurnItemStatus(item.status);
+}
+
+/**
+ * When T3 stops a turn's runtime itself, no provider event will record the end of the tool calls
+ * that runtime had open; left open, they count as background work for ever.
+ */
+export function abandonedTurnItemEvent(input: {
+  readonly id: EventId;
+  readonly item: OrchestrationV2TurnItem;
+  readonly providerInstanceId: OrchestrationV2Run["providerInstanceId"];
+  readonly completedAt: DateTime.Utc;
+}) {
+  const { item, completedAt } = input;
+  const payload: OrchestrationV2TurnItem = {
+    ...item,
+    status: "interrupted",
+    completedAt,
+    updatedAt: completedAt,
+  };
+  return {
+    id: input.id,
+    type: "turn-item.updated" as const,
+    threadId: item.threadId,
+    ...(item.runId === null ? {} : { runId: item.runId }),
+    ...(item.nodeId === null ? {} : { nodeId: item.nodeId }),
+    providerInstanceId: input.providerInstanceId,
+    occurredAt: completedAt,
+    payload,
+  };
 }
 
 function isSettledRunEligibleForInheritedBackground(status: OrchestrationV2Run["status"]): boolean {
@@ -660,6 +699,8 @@ export const layer: Layer.Layer<
         readonly openRunOwnedSubagents?: OpenRunOwnedSubagentProjection;
         // Root turn snapshot written with the run when T3 ends the run itself.
         readonly abandonedProviderTurn?: OrchestrationV2ProviderTurn;
+        // Open tool calls of the runtime T3 stopped: nothing else can record their end.
+        readonly abandonedTurnItems?: ReadonlyArray<OrchestrationV2TurnItem>;
         readonly terminal: ProviderTerminalEvent;
         readonly completedAt?: DateTime.Utc;
         readonly failureItemPersisted: boolean;
@@ -799,6 +840,16 @@ export const layer: Layer.Layer<
                     payload: input.abandonedProviderTurn,
                   },
                 ]),
+            ...(yield* Effect.forEach(input.abandonedTurnItems ?? [], (item) =>
+              Effect.map(allocateEventId(), (id) =>
+                abandonedTurnItemEvent({
+                  id,
+                  item,
+                  providerInstanceId: input.run.providerInstanceId,
+                  completedAt,
+                }),
+              ),
+            )),
             {
               id: yield* allocateEventId(),
               type: "run-attempt.updated" as const,
@@ -1105,6 +1156,31 @@ export const layer: Layer.Layer<
           ReadonlySet<OrchestrationV2TurnItem["id"]>
         >(new Set(inheritedBackgroundTurnItemsById.keys()));
         const openRunOwnedSubagents = yield* Ref.make(emptyOpenRunOwnedSubagentProjection());
+        // Stored snapshots, so a terminal T3 writes itself can settle them as stored.
+        const openToolTurnItems = yield* Ref.make<ReadonlyMap<TurnItemId, OrchestrationV2TurnItem>>(
+          new Map(),
+        );
+        const trackOpenToolTurnItems = (storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>) =>
+          Effect.forEach(storedEvents, ({ event }) => {
+            if (event.type !== "turn-item.updated") return Effect.void;
+            const item = event.payload;
+            if (
+              item.threadId !== input.run.threadId ||
+              (item.runId !== input.run.id &&
+                (item.runId === null ||
+                  inheritedBackgroundTurnItemsById.get(item.id) !== item.runId))
+            ) {
+              return Effect.void;
+            }
+            const open = isOpenToolTurnItem(item);
+            return Ref.update(openToolTurnItems, (current) => {
+              if (!open && !current.has(item.id)) return current;
+              const next = new Map(current);
+              if (open) next.set(item.id, item);
+              else next.delete(item.id);
+              return next;
+            });
+          });
         const finalizeRootRun = Effect.fn("RunExecutionService.finalizeRootRun")(function* (
           terminal: ProviderTerminalEvent,
         ) {
@@ -1519,6 +1595,7 @@ export const layer: Layer.Layer<
                     : {}),
                 });
                 storedEventCount = storedEvents.length;
+                yield* trackOpenToolTurnItems(storedEvents);
                 if (
                   isRootProviderThreadUpdate &&
                   rootTerminalAlreadySeen &&
@@ -1648,6 +1725,7 @@ export const layer: Layer.Layer<
                     : null;
                 const latestItemOrdinal = yield* Ref.get(latestTurnItemOrdinal);
                 const openSubagents = yield* Ref.get(openRunOwnedSubagents);
+                const openToolItems = yield* Ref.get(openToolTurnItems);
                 const squashed = Cause.squash(cause);
                 let nextRetryWarningAt = completedAt;
                 yield* writeFinalRunEvents({
@@ -1661,7 +1739,9 @@ export const layer: Layer.Layer<
                     expectedStatus: "running",
                   },
                   openRunOwnedSubagents: openSubagents,
-                  ...(abandonedProviderTurn === null ? {} : { abandonedProviderTurn }),
+                  ...(abandonedProviderTurn === null
+                    ? {}
+                    : { abandonedProviderTurn, abandonedTurnItems: [...openToolItems.values()] }),
                   completedAt,
                   terminal: makeFailedTerminalEvent(
                     makeProviderFailure({

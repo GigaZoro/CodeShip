@@ -41,6 +41,7 @@ import {
   endRunlessRootTurns,
 } from "@t3tools/provider-core/server/subagentProjection";
 import { isExecutionTurnItemType } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { sameRestartHoldWork } from "@t3tools/shared/restartHold";
 import {
   awaitingProviderThreadId,
   backgroundWorkStoppedNotice,
@@ -366,18 +367,7 @@ function sameRestartHold(left: OrchestrationV2RestartHold, right: OrchestrationV
         turn.threadId === rightTurns[index]!.threadId &&
         turn.threadTitle === rightTurns[index]!.threadTitle,
     ) &&
-    left.work.length === right.work.length &&
-    left.work.every((entry, index) => {
-      const other = right.work[index]!;
-      return (
-        entry.threadId === other.threadId &&
-        entry.threadTitle === other.threadTitle &&
-        entry.kind === other.kind &&
-        entry.label === other.label &&
-        entry.id === other.id &&
-        entry.turnCall === other.turnCall
-      );
-    })
+    sameRestartHoldWork(left.work, right.work)
   );
 }
 
