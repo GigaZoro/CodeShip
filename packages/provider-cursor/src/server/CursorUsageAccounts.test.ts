@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -23,13 +24,15 @@ it.effect("gives no source for a valid Keychain login while Cursor's directory i
           return { accountKey: "account-a", records: [], missing: false, error: null };
         }),
     });
-    const accounts = yield* CursorUsageAccounts.CursorUsageAccounts.pipe(
-      Effect.provide(
-        CursorUsageAccounts.layer.pipe(
-          Layer.provide(reader),
-          Layer.provide(TestProviderHost.layer()),
-        ),
+    // Built in the test's scope: the service forks its account refreshes into its layer's scope,
+    // so the layer has to stay open while the scans below await them.
+    const accounts = yield* Layer.build(
+      CursorUsageAccounts.layer.pipe(
+        Layer.provide(reader),
+        Layer.provide(TestProviderHost.layer()),
       ),
+    ).pipe(
+      Effect.map((context) => Context.get(context, CursorUsageAccounts.CursorUsageAccounts)),
       Effect.provideService(HostProcess.Platform, "darwin"),
       Effect.provideService(HostProcess.Environment, { HOME: home }),
     );
