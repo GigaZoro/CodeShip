@@ -39,7 +39,9 @@
 ## 2026-11-25 — Release a completed family's shared checkout
 
 - A root chat can release its shared checkout once its subagents and side chats finish and their results arrive. A follow-up from the family or a new fork can recreate the checkout from the project's current base.
-- After a restart, a family can resume an intact checkout whose removal was interrupted. A follow-up can also recover a delivered task branch whose history diverged from the base.
+- After a restart, a family can resume an intact checkout whose removal was interrupted. CodeShip checks saved ignored files and installed dependencies before reopening it. If any are missing, it keeps the claim and the backup for recovery. A follow-up can also recover a delivered task branch whose history diverged from the base.
+- A new managed checkout gets a different directory when a released family still has a claim on its usual path. Follow-ups in an existing replacement checkout verify its new Git registration, project and branch before starting.
+- Family release checks that Git supports the post-checkout hook needed to recreate the checkout.
 - Windows release and follow-up recognize worktrees whose configured directory uses an NTFS short name. After an interrupted removal, CodeShip verifies that both the checkout and its Git registration are gone before confirming release.
 
 ## 2026-11-25 — The metadata smoke test answers its child first and fails on a broken reply

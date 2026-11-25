@@ -2,6 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as NodeURL from "node:url";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { linkDirectory } from "@t3tools/shared/testing/symlinks";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -21,8 +22,18 @@ import {
   parseGitCheckoutProgressLine,
 } from "./GitVcsDriverCore.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
-import { recoverInterruptedWorktree } from "../workspace/worktreeRelease.ts";
-import { runningFamilyCheckoutHook } from "./familyWorktreeCheckout.ts";
+import {
+  decodeReleaseRequest,
+  queueWorktreeRelease,
+  recoverInterruptedWorktree,
+} from "../workspace/worktreeRelease.ts";
+import * as ServerConfig from "../config.ts";
+import { existingWorkspacePath } from "../workspace/workspaceLease.ts";
+import {
+  familyCheckoutHook,
+  pendingFamilyCheckoutHook,
+  runningFamilyCheckoutHook,
+} from "./familyWorktreeCheckout.ts";
 import {
   layerServerConfig,
   layerTest,
@@ -159,6 +170,58 @@ it.layer(layerTest)("Git worktree creation", (it) => {
           `${"0".repeat(head.length)} ${head} 1\n`,
         );
         assert.equal(yield* git(worktreePath, ["status", "--short", "--untracked-files=no"]), "");
+      }),
+  );
+  it.effect(
+    "keeps a family checkout hook pending on older Git and retains a real hook failure",
+    () =>
+      Effect.gen(function* () {
+        const repo = yield* makeTmpDir();
+        yield* initRepoWithCommit(repo);
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const cwd = yield* existingWorkspacePath(repo);
+        const admin = path.join(cwd, ".git");
+        const head = yield* git(cwd, ["rev-parse", "HEAD"]);
+        const oldGit = (args: string[]) =>
+          args[0] === "--list-cmds=builtins"
+            ? Effect.succeed("checkout\r\nhook-helper\r\n")
+            : Effect.fail(
+                new GitCommandError({
+                  operation: "test.familyCheckoutHook",
+                  command: args.join(" "),
+                  cwd,
+                  detail: "git: 'hook' is not a git command",
+                }),
+              );
+        yield* familyCheckoutHook(cwd, admin, head, "prepare", oldGit);
+        const unavailable = yield* Effect.flip(
+          familyCheckoutHook(cwd, admin, head, "finish", oldGit),
+        );
+        assert.isTrue(yield* fs.exists(path.join(admin, pendingFamilyCheckoutHook)));
+        assert.isFalse(yield* fs.exists(path.join(admin, runningFamilyCheckoutHook)));
+        assert.match(
+          unavailable._tag === "GitCommandError" ? unavailable.detail : "",
+          /built-in hook.*Git 2\.36/,
+        );
+
+        const hook = path.join(admin, "hooks", "post-checkout");
+        yield* writeTextFile(
+          cwd,
+          ".git/hooks/post-checkout",
+          "#!/bin/sh\nprintf called >> hook-calls\nexit 19\n",
+        );
+        yield* fs.chmod(hook, 0o755);
+        const currentGit = (args: string[]) =>
+          driver
+            .execute({ operation: "test.familyCheckoutHook", cwd, args })
+            .pipe(Effect.map((result) => result.stdout));
+        yield* Effect.flip(familyCheckoutHook(cwd, admin, head, "finish", currentGit));
+        assert.isFalse(yield* fs.exists(path.join(admin, pendingFamilyCheckoutHook)));
+        assert.isTrue(yield* fs.exists(path.join(admin, runningFamilyCheckoutHook)));
+        yield* Effect.flip(familyCheckoutHook(cwd, admin, head, "finish", currentGit));
+        assert.equal(yield* fs.readFileString(path.join(cwd, "hook-calls")), "called");
       }),
   );
   it.effect(
@@ -593,6 +656,90 @@ it.layer(layerTest)("Git worktree creation", (it) => {
         .pipe(Effect.flip);
       assert.match(rootError.detail, /not a drive root/);
     }),
+  );
+
+  it.effect(
+    "allocates a separate managed directory when a family release reserves the default path",
+    () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const cwd = yield* existingWorkspacePath(yield* makeTmpDir());
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const base = yield* existingWorkspacePath(yield* makeTmpDir("managed-family-"));
+        const directory = path.join(base, "managed");
+        const alias = path.join(base, "alias");
+        yield* fs.makeDirectory(directory);
+        yield* linkDirectory(directory, alias);
+        const branch = "feature/" + "a".repeat(45);
+        const input = { cwd, refName: initialBranch, newRefName: branch, path: null };
+        const original = (yield* driver.createWorktree(input, { worktreesDirectory: directory }))
+          .worktree.path;
+        const { file } = yield* queueWorktreeRelease({
+          stateDir,
+          threadId: "original-owner",
+          runId: "finished",
+          worktreePath: original,
+          durableRef: "refs/heads/" + initialBranch,
+        });
+        const request = yield* decodeReleaseRequest(yield* fs.readFileString(file));
+        const family = ({ threadId: owner, runId }: typeof request) =>
+          [owner, owner + "-child"].map((threadId) => ({
+            threadId,
+            runId,
+            projectId: "project",
+            lineage: {
+              parentThreadId: threadId === owner ? null : owner,
+              relationshipToParent: threadId === owner ? null : "subagent",
+              rootThreadId: owner,
+            },
+          }));
+        const contents = JSON.stringify({ ...request, family: family(request) });
+        yield* fs.writeFileString(file, contents);
+        yield* fs.rename(file, file + ".released");
+        yield* git(cwd, ["worktree", "remove", original]);
+        yield* git(cwd, ["branch", "-d", branch]);
+        yield* fs.remove(path.dirname(original), { recursive: true });
+
+        const replacement = (yield* driver.createWorktree(input, { worktreesDirectory: alias }))
+          .worktree.path;
+        assert.notEqual(yield* existingWorkspacePath(replacement), original);
+        assert.isFalse(yield* fs.exists(original));
+        assert.equal(yield* git(replacement, ["symbolic-ref", "--short", "HEAD"]), branch);
+        assert.equal(yield* fs.readFileString(file + ".released"), contents);
+        assert.isAtMost(path.basename(replacement).length, 40);
+        const next = yield* queueWorktreeRelease({
+          stateDir,
+          threadId: "new-owner",
+          runId: "next",
+          worktreePath: replacement,
+          durableRef: "refs/heads/" + initialBranch,
+        });
+        assert.notEqual(next.file, file);
+        yield* git(cwd, ["worktree", "remove", replacement]);
+        const queued = yield* decodeReleaseRequest(yield* fs.readFileString(next.file));
+        yield* fs.writeFileString(next.file, JSON.stringify({ ...queued, family: family(queued) }));
+        yield* fs.rename(next.file, next.file + ".setup");
+        const subsequent = (yield* driver.createWorktree(
+          { cwd, refName: branch, path: null },
+          { worktreesDirectory: alias },
+        )).worktree.path;
+        assert.notEqual(subsequent, replacement);
+        yield* git(cwd, ["worktree", "remove", subsequent]);
+        yield* fs.writeFileString(subsequent, "local data");
+        const fresh = (yield* driver.createWorktree(
+          { cwd, refName: branch, path: null },
+          { worktreesDirectory: alias },
+        )).worktree.path;
+        assert.notEqual(fresh, subsequent);
+        assert.equal(yield* fs.readFileString(subsequent), "local data");
+        yield* git(cwd, ["worktree", "remove", fresh]);
+        const restored = yield* driver.createWorktree({ cwd, refName: branch, path: original });
+        assert.equal(restored.worktree.path, original);
+        assert.equal(yield* git(original, ["symbolic-ref", "--short", "HEAD"]), branch);
+      }),
   );
 
   it.effect("keeps generated worktree folders short without changing long branch names", () =>

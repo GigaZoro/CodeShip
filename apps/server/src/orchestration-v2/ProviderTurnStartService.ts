@@ -739,6 +739,9 @@ export const layer: Layer.Layer<
         const exists = yield* fileSystem.exists(input.worktreePath);
         const canonical = yield* releaseReceiptPath(input.worktreePath);
         const directory = path.join(config.stateDir, ServerConfig.WORKTREE_RELEASE_DIRECTORY);
+        const lookup = projects
+          .getById(input.thread.projectId)
+          .pipe(Effect.map(Option.getOrUndefined));
         const released = yield* releasedWorktree(
           fileSystem,
           directory,
@@ -746,6 +749,27 @@ export const layer: Layer.Layer<
           input.thread,
           projectionStore.getThreadShell,
           exists,
+          Effect.fnUntraced(function* (identity: string) {
+            const project = yield* lookup;
+            if (!project)
+              return yield* new WorktreeRecreateBlockedError({
+                worktreePath: canonical,
+                reason: "project",
+              });
+            yield* gitWorkflow
+              .recoverInterruptedWorktree(canonical, project.workspaceRoot, branch, {
+                replacementOf: identity,
+              })
+              .pipe(
+                Effect.mapError(
+                  () =>
+                    new WorktreeRecreateBlockedError({
+                      worktreePath: canonical,
+                      reason: "occupied",
+                    }),
+                ),
+              );
+          }),
         );
         const worktreePath = released?.request.family ? canonical : input.worktreePath;
         const restoring = restoringWorktreeFile(directory, canonical);
@@ -766,9 +790,6 @@ export const layer: Layer.Layer<
         )
           return yield* new WorktreeRecreateBlockedError({ worktreePath, reason: "occupied" });
 
-        const lookup = projects
-          .getById(input.thread.projectId)
-          .pipe(Effect.map(Option.getOrUndefined));
         const project = yield* released
           ? lookup
           : lookup.pipe(Effect.orElseSucceed(() => undefined));
@@ -817,7 +838,7 @@ export const layer: Layer.Layer<
           // Removal and turn start share this lease. An intact original may accept the new turn.
           yield* gitWorkflow
             .recoverInterruptedWorktree(worktreePath, cwd, branch, {
-              original: released.request,
+              original: { ...released.request, backupDirectory: directory },
             })
             .pipe(
               Effect.mapError(
@@ -825,7 +846,8 @@ export const layer: Layer.Layer<
               ),
             );
           if (released.request.savedFiles) {
-            // Keep the pointer to the private backup when the owner withdraws its removal.
+            // Older claims can be the only record associating this backup with its thread.
+            yield* rememberWorktreeBackup(fileSystem, directory, released.request);
             const withdrawalId = yield* randomUuidV4;
             yield* fileSystem.rename(
               released.receipt,

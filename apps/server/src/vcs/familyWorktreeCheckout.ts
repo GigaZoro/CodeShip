@@ -10,12 +10,23 @@ import { existingWorkspacePath } from "../workspace/workspaceLease.ts";
 export const pendingFamilyCheckoutHook = "codeship-family-checkout-pending";
 export const runningFamilyCheckoutHook = "codeship-family-checkout-hook.lock";
 
+export const familyHookUnavailable =
+  "Cannot verify Git's built-in hook command for family worktree recovery (requires Git 2.36 or later).";
+
+export const supportsFamilyCheckoutHook = <R>(
+  runGit: (args: string[]) => Effect.Effect<string, GitCommandError, R>,
+) =>
+  // Git lists these command names without localization, aliases or external git-* commands.
+  runGit(["--list-cmds=builtins"]).pipe(
+    Effect.match({ onFailure: () => false, onSuccess: (list) => /(?:^|\n)hook\r?\n/.test(list) }),
+  );
+
 export const familyCheckoutHook = Effect.fn("GitVcsDriver.familyCheckoutHook")(function* (
   cwd: string,
   admin: string,
   head: string,
   operation: "prepare" | "finish",
-  runGit: (args: string[]) => Effect.Effect<void, GitCommandError>,
+  runGit: (args: string[]) => Effect.Effect<string, GitCommandError>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -51,6 +62,8 @@ export const familyCheckoutHook = Effect.fn("GitVcsDriver.familyCheckoutHook")(f
   if (!(yield* matches(waiting)))
     return yield* refuse("The pending post-checkout hook record changed.");
   if (operation === "prepare") return;
+  // Git may have changed since release. Keep the pending record retryable until a hook can run.
+  if (!(yield* supportsFamilyCheckoutHook(runGit))) return yield* refuse(familyHookUnavailable);
   // The lease excludes other CodeShip starters. Any failed or interrupted hook retains
   // the running record, since its user-defined commands cannot safely be replayed.
   yield* fs.writeFileString(running, contents, { flag: "wx", mode: 0o600 });
