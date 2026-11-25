@@ -1,3 +1,8 @@
+## 2026-11-25 — Codex metadata runtime builds pass on Linux and Windows
+
+- The Linux metadata runtime is built on Ubuntu 24.04. Ubuntu 22.04's musl 1.2.2 linked a CLI that crashed on start. The build now stops early on an older musl and names the failing check when the built CLI does not start.
+- The Windows release check now reads its test repository through the read-only sandbox. It had used a Python temporary folder that grants access only to the folder's owner, which the sandbox cannot use. Real checkouts were not affected.
+
 ## 2026-11-25 — A tool call a failed run left open no longer holds automatic updates
 
 - When T3.CodeShip has to stop a chat's provider itself, because it could not record the turn's output or found the turn still running when the next message started, it now also closes the tool calls that turn had open. Before, such a call stayed "running" for ever, and an automatic update waited on it as background work until the server restarted.

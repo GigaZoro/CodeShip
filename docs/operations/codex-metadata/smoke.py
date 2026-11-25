@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import secrets
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,8 +14,12 @@ from threading import Event, Thread
 
 def smoke(binary):
     windows = os.name == "nt"
-    with tempfile.TemporaryDirectory() as temp:
-        root = Path(temp).resolve()
+    # On Windows, mkdtemp and (since Python 3.12.4) mkdir mode 0o700 grant the owner only through
+    # OWNER RIGHTS, which the Codex sandbox token cannot use. Mode 0o777 inherits the user's own
+    # entry, as a real checkout does.
+    root = Path(tempfile.gettempdir()).resolve() / f"codex-metadata-smoke-{secrets.token_hex(8)}"
+    root.mkdir(mode=0o777 if windows else 0o700)
+    try:
         home = root / "home"
         codex_home = home / ".codex"
         repo = root / "repo"
@@ -175,6 +180,12 @@ stream_max_retries = 0
         if len(child_inputs) != 1 or child_prompt not in child_inputs[0] or personal in child_inputs[0]:
             raise RuntimeError(f"Expected a metadata child with scoped instructions: {outputs}")
         print(f"{binary}: verified parent and child metadata scope, MCP suppression and a read-only code-mode read")
+    finally:
+        # A late handle or read-only file must not fail a passing run or replace its real error.
+        try:
+            shutil.rmtree(root)
+        except OSError as error:
+            print(f"warning: could not remove smoke workspace {root}: {error}", file=sys.stderr)
 
 
 if __name__ == "__main__":

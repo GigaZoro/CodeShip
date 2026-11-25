@@ -172,8 +172,8 @@ jobs:
     with:
       ref: ${{ github.sha }}
       target: x86_64-unknown-linux-musl
-      # Exercise the bundled bwrap on a standard runner permitting unprivileged namespaces.
-      runner: ubuntu-22.04
+      # Ubuntu 22.04's musl 1.2.2 links binaries that crash on start; 24.04's musl 1.2.4 works.
+      runner: ubuntu-24.04
 
   metadata_windows:
     needs: preflight

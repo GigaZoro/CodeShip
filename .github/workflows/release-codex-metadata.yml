@@ -123,7 +123,15 @@ jobs:
         if: runner.os == 'Linux'
         env:
           CODEX_MUSL_RELEASE_LINK_FLAGS: 1
-        run: bash .github/scripts/install-musl-build-tools.sh
+        run: |
+          set -euo pipefail
+          bash .github/scripts/install-musl-build-tools.sh
+          # musl 1.2.2 (Ubuntu 22.04) links Rust 1.99 static binaries that crash on start.
+          musl=$(dpkg-query -W -f='${Version}' musl-tools)
+          if ! dpkg --compare-versions "$musl" ge 1.2.4; then
+            echo "::error::musl-tools $musl links static binaries that crash on start; use a runner with musl 1.2.4 or newer"
+            exit 1
+          fi
 
       - uses: openai/codex/.github/actions/setup-msvc-env@3d86e43b075adeba2193ec5c22ac92f55afd82e6 # 0.172.0
         if: runner.os == 'Windows'
@@ -150,9 +158,23 @@ jobs:
           if [[ "$RUNNER_OS" == Windows ]]; then cli+=.exe; fi
           export CODEX_HOME="$RUNNER_TEMP/metadata-probe"
           mkdir -p "$CODEX_HOME"
-          test "$("$cli" --version)" = 'codex-cli 0.172.0'
-          "$cli" exec --help > help.txt
-          grep -E -- '^[[:space:]]*--codeship-metadata-no-mcp([[:space:]]|$)' help.txt
+          version=$("$cli" --version) || { echo "::error::$cli --version exited with status $?"; exit 1; }
+          if [[ "$version" != 'codex-cli 0.172.0' ]]; then
+            echo "::error::$cli --version printed '$version', expected 'codex-cli 0.172.0'"
+            exit 1
+          fi
+          "$cli" exec --help > help.txt || { echo "::error::$cli exec --help exited with status $?"; exit 1; }
+          if ! grep -E -- '^[[:space:]]*--codeship-metadata-no-mcp([[:space:]]|$)' help.txt; then
+            echo "::error::$cli exec --help does not list --codeship-metadata-no-mcp"
+            cat help.txt
+            exit 1
+          fi
+          restriction=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [[ "$RUNNER_ENVIRONMENT" == github-hosted && -f "$restriction" && "$(< "$restriction")" != 0 ]]; then
+            # The smoke test runs the bundled bwrap, which needs unprivileged user namespaces.
+            # Only on a disposable hosted runner: the setting outlives the job.
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
           python3 "$RECIPE/smoke.py" "$cli"
           tar -czf codex-metadata.tar.gz codex-metadata
           ls -lh codex-metadata.tar.gz

@@ -144,6 +144,13 @@ describe("fork release", () => {
     }
   });
 
+  it("builds the Linux metadata runtime where musl links working static binaries", () => {
+    // Ubuntu 22.04's musl 1.2.2 links Rust 1.99 binaries that crash on start; 24.04's musl
+    // 1.2.4 works. The build's own musl check stops an older musl before cargo runs.
+    const release = readWorkflow("release-fork.yml");
+    expect(release.jobs.metadata_linux?.with?.runner).toBe("ubuntu-24.04");
+  });
+
   it("treats only a run on the default branch as main's release run", () => {
     const release = readWorkflow("release-fork.yml");
     expect(release.concurrency?.group).toContain("github.ref");
