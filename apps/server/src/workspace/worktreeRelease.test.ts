@@ -297,11 +297,21 @@ it.live("retains unknown ignored build files without relinking installed depende
         expect(savedStamp.stdout).toBe(sourceStamp.stdout);
       }
       const acl = "everyone allow readattr";
-      yield* Effect.tryPromise(() => runFile("/bin/chmod", ["+a", acl, savedCache]));
+      // Select Apple's chmod even when the package runner supplies a portable binary.
+      const changeAcl = (operation: string) =>
+        runFile("/usr/bin/python3", [
+          "-I",
+          "-c",
+          "import os, sys; os.execv('/bin/chmod', ['chmod', *sys.argv[1:]])",
+          operation,
+          acl,
+          savedCache,
+        ]);
+      yield* Effect.tryPromise(() => changeAcl("+a"));
       expect(yield* releaseHold(request, project)).toBe(
         "ignored files have changed or lack a preserved copy",
       );
-      yield* Effect.tryPromise(() => runFile("/bin/chmod", ["-a", acl, savedCache]));
+      yield* Effect.tryPromise(() => changeAcl("-a"));
     }
     expect(yield* releaseHold(request, project)).toBeNull();
     const privateRefs = path.join(refs, "worktree");

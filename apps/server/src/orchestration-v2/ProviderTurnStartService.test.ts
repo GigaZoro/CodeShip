@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off -- The release CLI reads its thread bindings from SQLite.
+import * as NodeSqlite from "node:sqlite";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as AccountRouting from "./AccountRouting.ts";
 import { linkDirectory } from "@t3tools/shared/testing/symlinks";
@@ -32,7 +34,9 @@ import {
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import { AwakeSinceWake } from "@t3tools/shared/AwakeTime";
+import * as NetService from "@t3tools/shared/Net";
 import * as Cause from "effect/Cause";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -45,12 +49,16 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { Command } from "effect/cli";
 
+import { threadCommand } from "../cli/thread.ts";
 import * as ServerConfig from "../config.ts";
 import {
   decodeReleaseRequest,
   listWorktreeBackups,
   queueWorktreeRelease,
+  releaseHold,
+  releasePath,
   worktreeReleaseName,
 } from "../workspace/worktreeRelease.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
@@ -106,12 +114,13 @@ const layerWorktreeLocation = (
   worktreesDir = managedWorktreesDir,
   skillFailure?: ProviderSkills.ProviderSkillInvocationError,
   pathLayer: Layer.Layer<Path.Path> = Path.layer,
+  stateDir = `${worktreesDir}/../state`,
 ) =>
   Layer.mergeAll(
     pathLayer,
     Layer.mock(ServerConfig.ServerConfig)({
       worktreesDir,
-      stateDir: `${worktreesDir}/../state`,
+      stateDir,
     } as ServerConfig.ServerConfig["Service"]),
     ServerSettings.layerTest({
       providerInstances: {
@@ -346,6 +355,7 @@ function makeLocalCommandHarness(input: {
   readonly text: string;
   readonly worktreePath?: string;
   readonly worktreesDir?: string;
+  readonly stateDir?: string;
   readonly workspaceRoot?: string;
   readonly gitWorkflow?: GitWorkflow.GitWorkflowService["Service"];
   readonly runSetup?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"];
@@ -1089,7 +1099,12 @@ function makeLocalCommandHarness(input: {
             }),
         }),
         IdAllocator.layer,
-        layerWorktreeLocation(input.worktreesDir, input.skillFailure, NodePath.layer),
+        layerWorktreeLocation(
+          input.worktreesDir,
+          input.skillFailure,
+          NodePath.layer,
+          input.stateDir,
+        ),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed(
             input.otherAutoProvider
@@ -1591,6 +1606,179 @@ effectIt.live(
         );
         expect(harness.projection().runs.at(-1)?.status).toBe("running");
       }
+    }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
+
+effectIt.live.each([
+  "deleted branch",
+  "owner recreated the branch",
+  "legacy base setting",
+] as const)(
+  "preserves the recorded pull request base from CLI release through provider start: %s",
+  (scenario) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const gitWorkflow = yield* GitWorkflow.GitWorkflowService;
+      const root = yield* releasePath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-release-pr-base-" }),
+      );
+      const workspaceRoot = path.join(root, "project");
+      const baseDir = path.join(root, "server");
+      const { dbPath, stateDir, worktreesDir } = yield* ServerConfig.deriveServerPaths(
+        baseDir,
+        undefined,
+      );
+      const worktreePath = path.join(worktreesDir, "project", "feature-restore");
+      const branch = "feature/restore";
+      const base = "release/1.2";
+      const baseRef = "refs/remotes/upstream/" + base;
+      const archive = "refs/archive/pr-base-task";
+      const git = (cwd: string, args: string[]) =>
+        driver
+          .execute({ operation: "test.releasePrBase", cwd, args })
+          .pipe(Effect.map((result) => result.stdout.trim()));
+      const config = (key: string) => `branch.${branch}.${key}`;
+      const readBase = () =>
+        Effect.forEach(["t3-merge-base", "t3-merge-base-ref"], (key) =>
+          driver
+            .execute({
+              operation: "test.readPrBase",
+              cwd: workspaceRoot,
+              args: ["config", "--local", "--get-all", config(key)],
+              allowNonZeroExit: true,
+            })
+            .pipe(
+              Effect.map(({ exitCode, stdout }) => {
+                expect([0, 1]).toContain(exitCode);
+                return exitCode === 1 ? null : stdout.trim();
+              }),
+            ),
+        );
+      yield* git(root, ["init", "-b", "main", workspaceRoot]);
+      yield* git(workspaceRoot, ["config", "user.name", "Test"]);
+      yield* git(workspaceRoot, ["config", "user.email", "test@example.com"]);
+      yield* fs.writeFileString(path.join(workspaceRoot, "README"), "shared history\n");
+      yield* git(workspaceRoot, ["add", "README"]);
+      yield* git(workspaceRoot, ["commit", "-m", "common root"]);
+      const common = yield* git(workspaceRoot, ["rev-parse", "HEAD"]);
+      yield* git(root, ["init", "--bare", path.join(root, "upstream.git")]);
+      yield* git(workspaceRoot, ["remote", "add", "upstream", path.join(root, "upstream.git")]);
+      yield* git(workspaceRoot, ["switch", "-c", base]);
+      yield* git(workspaceRoot, ["commit", "--allow-empty", "-m", "release branch base"]);
+      yield* git(workspaceRoot, ["push", "upstream", base]);
+      yield* git(workspaceRoot, ["switch", "main"]);
+      yield* git(workspaceRoot, ["commit", "--allow-empty", "-m", "diverged default"]);
+      yield* gitWorkflow.createWorktree({
+        cwd: workspaceRoot,
+        refName: baseRef,
+        baseRefName: baseRef,
+        newRefName: branch,
+        path: worktreePath,
+      });
+      yield* git(worktreePath, ["commit", "--allow-empty", "-m", "archived pull request"]);
+      const tip = yield* git(worktreePath, ["rev-parse", "HEAD"]);
+      yield* git(workspaceRoot, ["update-ref", archive, tip]);
+      expect(yield* git(workspaceRoot, ["merge-base", "main", archive])).toBe(common);
+      expect(yield* readBase()).toEqual([base, baseRef]);
+      const legacy = scenario === "legacy base setting";
+      if (legacy) {
+        yield* git(workspaceRoot, ["config", "--unset", config("t3-merge-base")]);
+        yield* git(workspaceRoot, ["config", "--unset", config("t3-merge-base-ref")]);
+        yield* git(workspaceRoot, ["config", config("gh-merge-base"), base]);
+      }
+
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        workspaceRoot,
+        worktreePath,
+        worktreesDir,
+        stateDir,
+        fileSystem: fs,
+        gitWorkflow,
+        runSetup: () => Effect.succeed({ status: "no-script" as const }),
+      });
+      const { thread } = harness.projection();
+      yield* fs.makeDirectory(stateDir, { recursive: true });
+      const db = yield* Effect.acquireRelease(
+        Effect.sync(() => new NodeSqlite.DatabaseSync(dbPath)),
+        (db) => Effect.sync(() => db.close()),
+      );
+      db.exec(`
+      CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, project_id TEXT, payload_json TEXT, deleted_at TEXT);
+      CREATE TABLE orchestration_v2_projection_runs (thread_id TEXT, run_id TEXT, ordinal INTEGER);
+    `);
+      for (const id of [thread.id, "child"]) {
+        db.prepare("INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?, NULL)").run(
+          id,
+          thread.projectId,
+          JSON.stringify({
+            worktreePath,
+            branch,
+            lineage:
+              id === thread.id
+                ? thread.lineage
+                : {
+                    rootThreadId: thread.id,
+                    parentThreadId: thread.id,
+                    relationshipToParent: "subagent",
+                  },
+          }),
+        );
+        db.prepare("INSERT INTO orchestration_v2_projection_runs VALUES (?, ?, 1)").run(
+          id,
+          id + "-finished",
+        );
+      }
+      yield* Command.runWith(threadCommand, { version: "0.0.0" })([
+        "release-worktree",
+        thread.id,
+        "--run",
+        thread.id + "-finished",
+        "--worktree",
+        worktreePath,
+        "--durable-ref",
+        archive,
+        "--base-dir",
+        baseDir,
+      ]).pipe(
+        Effect.provide(NetService.layer),
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+      );
+      const file = path.join(
+        stateDir,
+        ServerConfig.WORKTREE_RELEASE_DIRECTORY,
+        worktreeReleaseName(worktreePath),
+      );
+      const request = yield* decodeReleaseRequest(yield* fs.readFileString(file));
+      expect(request.family).toHaveLength(2);
+      expect(yield* releaseHold(request, workspaceRoot)).toBeNull();
+      yield* fs.rename(file, file + ".releasing");
+      yield* git(workspaceRoot, ["worktree", "remove", worktreePath]);
+      yield* fs.rename(file + ".releasing", file + ".released");
+      yield* git(workspaceRoot, ["branch", "-D", branch]);
+      expect(yield* readBase()).toEqual([null, null]);
+      expect(yield* git(workspaceRoot, ["branch", "--list", branch])).toBe("");
+
+      const expectedBase =
+        scenario === "owner recreated the branch"
+          ? (["release/2.0", "refs/remotes/upstream/release/2.0"] as const)
+          : ([base, baseRef] as const);
+      if (scenario === "owner recreated the branch") {
+        yield* git(workspaceRoot, ["push", "upstream", "main:refs/heads/release/2.0"]);
+        yield* git(workspaceRoot, ["branch", branch, archive]);
+        yield* git(workspaceRoot, ["config", config("t3-merge-base"), expectedBase[0]]);
+        yield* git(workspaceRoot, ["config", config("t3-merge-base-ref"), expectedBase[1]]);
+      }
+      yield* harness.start;
+      expect(harness.open).toHaveBeenCalledOnce();
+      expect(yield* git(worktreePath, ["rev-parse", "HEAD"])).toBe(tip);
+      expect(yield* git(worktreePath, ["symbolic-ref", "--short", "HEAD"])).toBe(branch);
+      expect(yield* readBase()).toEqual(legacy ? [null, null] : expectedBase);
+      expect(yield* driver.readConfigValue(workspaceRoot, config("gh-merge-base"))).toBe(
+        legacy ? base : null,
+      );
     }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
 );
 

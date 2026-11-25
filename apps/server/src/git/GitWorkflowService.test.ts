@@ -91,6 +91,49 @@ const unmergedWorkRepo = Effect.gen(function* () {
 
 it.layer(NodeServices.layer)("GitWorkflowService", (it) => {
   it.effect(
+    "finishes a released branch configuration after an interruption without replacing a live base",
+    () =>
+      Effect.gen(function* () {
+        const { cwd, root, git, driver, workflow } = yield* unmergedWorkRepo;
+        const { commitSha: start } = yield* driver.resolveCommit({ cwd, revision: "HEAD" });
+        const name = "release/1.2";
+        const ref = "refs/remotes/upstream/" + name;
+        const receiptHash = "a".repeat(64);
+        const recordedBase = { name, ref, receiptHash };
+        // Git created the ref and the first setting before the interrupted restore stopped.
+        yield* git(cwd, [
+          "update-ref",
+          "--create-reflog",
+          "-m",
+          "CodeShip restored released branch " + receiptHash,
+          "refs/heads/task",
+          start,
+          "",
+        ]);
+        yield* git(cwd, ["config", "branch.task.t3-merge-base", name]);
+        const restore = () =>
+          workflow.createWorktree(
+            { cwd, path: root + "/resumed", refName: "task" },
+            {
+              releasedBranch: {
+                previousHead: start,
+                baseRef: "main",
+                durableRefs: ["refs/heads/main"],
+                recordedBase,
+              },
+            },
+          );
+        yield* restore();
+        assert.equal(yield* driver.readConfigValue(cwd, "branch.task.t3-merge-base-ref"), ref);
+        yield* git(cwd, ["worktree", "remove", root + "/resumed"]);
+        yield* git(cwd, ["config", "branch.task.t3-merge-base", "other"]);
+        yield* git(cwd, ["config", "--unset", "branch.task.t3-merge-base-ref"]);
+        yield* restore();
+        assert.equal(yield* driver.readConfigValue(cwd, "branch.task.t3-merge-base"), "other");
+        assert.isNull(yield* driver.readConfigValue(cwd, "branch.task.t3-merge-base-ref"));
+      }),
+  );
+  it.effect(
     "restores released branches at a fresh base, preserved task tip, or the owner’s moved tip",
     () =>
       Effect.gen(function* () {

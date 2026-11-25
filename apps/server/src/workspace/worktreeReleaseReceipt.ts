@@ -25,12 +25,20 @@ export const decodeReleaseMemberRow = Schema.decodeUnknownEffect(
     lineage: Schema.fromJsonString(OrchestrationV2AppThreadLineage),
   }),
 );
+const baseBranchName = Schema.NonEmptyString.check(Schema.isPattern(/^[^-]/));
 export const ReleaseRequest = Schema.Struct({
   threadId: ThreadId,
   runId: RunId,
   worktreePath: Schema.String,
   branch: Schema.String,
   family: Schema.optional(Schema.Array(ReleaseMember)),
+  branchBase: Schema.optional(
+    Schema.Struct({
+      name: Schema.NullOr(baseBranchName),
+      legacyName: Schema.optional(baseBranchName),
+      ref: Schema.NullOr(Schema.NonEmptyString.check(Schema.isPattern(/^refs\/remotes\//))),
+    }),
+  ),
   durableRef,
   alsoDurable: Schema.optional(Schema.Array(durableRef)),
   savedFiles: Schema.optional(Schema.String),
@@ -47,8 +55,9 @@ export const encodeRequest = Schema.encodeEffect(requestJson);
 export const decodeReleaseRequest = Schema.decodeUnknownEffect(requestJson, {
   onExcessProperty: "error",
 });
-export const worktreeReleaseName = (cwd: string) =>
-  NodeCrypto.createHash("sha256").update(cwd).digest("hex") + ".json";
+export const releaseDigest = (value: string) =>
+  NodeCrypto.createHash("sha256").update(value).digest("hex");
+export const worktreeReleaseName = (cwd: string) => releaseDigest(cwd) + ".json";
 export const releaseFile = (directory: string, cwd: string) =>
   NodePath.join(directory, worktreeReleaseName(cwd));
 

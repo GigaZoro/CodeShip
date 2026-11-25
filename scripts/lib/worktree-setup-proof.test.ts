@@ -4,6 +4,7 @@ import * as NodeUtil from "node:util";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { expect, it } from "vite-plus/test";
 import * as setup from "./worktree-setup-proof.ts";
 
@@ -54,7 +55,7 @@ it("reports a whole added cache subtree and rejects simultaneous edits to instal
   }
 });
 
-it.skipIf(NodeOS.platform() === "win32")(
+it.skipIf(isWindowsHost)(
   "requires current POSIX metadata evidence for installed files and setup markers",
   async () => {
     const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "setup-metadata-"));
@@ -95,7 +96,7 @@ it.skipIf(NodeOS.platform() === "win32")(
       const run = NodeUtil.promisify(NodeChildProcess.execFile);
       for (const target of [installed, modules, markerDir, done]) {
         const name = "user.codeship_test";
-        if (NodeOS.platform() === "darwin") {
+        if (isDarwinHost) {
           await run("/usr/bin/xattr", ["-w", name, "fixture", target]);
           expect(await inspect()).toBeNull();
           expect((await run("/usr/bin/xattr", ["-p", name, target])).stdout.trim()).toBe("fixture");
@@ -119,13 +120,26 @@ it.skipIf(NodeOS.platform() === "win32")(
         }
       }
       expect(await inspect()).toEqual([]);
-      if (NodeOS.platform() === "darwin") {
-        await run("/bin/chmod", ["+a", "everyone allow readattr", installed]);
+      if (isDarwinHost) {
+        // The task runner can substitute a portable chmod that lacks Darwin ACL operations.
+        const nativeTool = (executable: string, args: string[]) =>
+          run("/usr/bin/python3", [
+            "-I",
+            "-c",
+            "import os, sys; os.execv(sys.argv[1], sys.argv[1:])",
+            executable,
+            ...args,
+          ]);
+        const acl = "everyone allow readattr";
+        await nativeTool("/bin/chmod", ["+a", acl, installed]);
+        expect((await nativeTool("/bin/ls", ["-le", installed])).stdout).toContain(acl);
         expect(await inspect()).toBeNull();
-        await run("/bin/chmod", ["-N", installed]);
-        await run("/usr/bin/chflags", ["hidden", modules]);
+        await nativeTool("/bin/chmod", ["-a", acl, installed]);
+        expect((await nativeTool("/bin/ls", ["-le", installed])).stdout).not.toContain(acl);
+        expect(await inspect()).toEqual([]);
+        await nativeTool("/usr/bin/chflags", ["hidden", modules]);
         expect(await inspect()).toBeNull();
-        await run("/usr/bin/chflags", ["nohidden", modules]);
+        await nativeTool("/usr/bin/chflags", ["nohidden", modules]);
         const fork = installed + "/..namedfork/rsrc";
         await NodeFSP.writeFile(fork, "fixture");
         expect(await inspect()).toBeNull();
