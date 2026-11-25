@@ -1,3 +1,7 @@
+## 2026-11-25 — A failed task on a linked machine keeps its last real reply
+
+- A delegated task on a linked machine whose run failed without an error, and whose last reply was only blank lines in a long thread, reported that it ended without a reply. Its result is now the run's last reply with text, as for a task on this machine.
+
 ## 2026-11-25 — Empty leftovers no longer hold a worktree or blank a task's result
 
 - Storage cleanup kept a finished worktree with "Worktree has private reflogs" once Git had deleted a worktree-only ref and left its reflog's empty folders. Those worktrees are released; a reflog that still holds history keeps its worktree.

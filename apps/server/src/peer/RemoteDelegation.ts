@@ -646,10 +646,32 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const readWholeText = Effect.fn("RemoteDelegation.readWholeText")(function* (
+    scope: ThreadScope,
+    remote: OrchestrationV2RemoteTaskChild,
+    item: OrchestratorMcpThreadTimelineItem,
+  ) {
+    let text = item.text ?? "";
+    let textOffset = item.textTruncated ? (item.nextTextOffset ?? null) : null;
+    while (textOffset !== null) {
+      const rest = yield* forwarding.readThread(scope, remote.environmentId, {
+        threadId: remote.threadId,
+        itemId: item.itemId,
+        textOffset,
+        maxCharsPerItem: 50_000,
+      });
+      const part = rest.items[0];
+      if (part === undefined) break;
+      text += part.text ?? "";
+      textOffset = part.textTruncated ? (part.nextTextOffset ?? null) : null;
+    }
+    return text;
+  });
+
   /**
-   * The last reply `runId` gave on the task's thread there (a message or a proposed
-   * plan), which is its result, read whole however long it is. A failed run prefers
-   * its error from the activity view over an earlier reply, without taking another run's.
+   * The last reply with text `runId` gave on the task's thread there (a message or a
+   * proposed plan), which is its result, read whole however long it is. A failed run
+   * prefers its error from the activity view over an earlier reply, without taking another run's.
    */
   const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
     scope: ThreadScope,
@@ -658,16 +680,32 @@ const make = Effect.gen(function* () {
     failed = false,
     probeSuccess = true,
   ) {
-    let reply: OrchestratorMcpThreadTimelineItem | undefined;
+    interface ReplyScan {
+      readonly reply: OrchestratorMcpThreadTimelineItem | undefined;
+      readonly undecided: ReadonlyArray<OrchestratorMcpThreadTimelineItem>;
+    }
+    // A blank reply is no reply, as for a task here. A text cut short can look blank, so the
+    // replies after the last one shown with text stay undecided until read whole.
+    const scanReplies = (
+      from: ReplyScan,
+      items: ReadonlyArray<OrchestratorMcpThreadTimelineItem>,
+    ): ReplyScan => {
+      let reply = from.reply;
+      const undecided = [...from.undecided];
+      for (const item of items) {
+        if (!replyTypes.includes(item.type) || (runId !== null && item.runId !== runId)) continue;
+        if ((item.text ?? "").trim().length > 0) {
+          reply = item;
+          undecided.length = 0;
+        } else if (item.textTruncated) undecided.push(item);
+      }
+      return { reply, undecided };
+    };
+    let replies: ReplyScan = { reply: undefined, undecided: [] };
     let error: OrchestratorMcpThreadTimelineItem | undefined;
     let afterPosition: number | undefined;
     let remainingItems = 0;
     let tailProbed = false;
-    // A blank reply is no reply, as for a task here; one cut short by maxCharsPerItem still counts.
-    const isReply = (item: OrchestratorMcpThreadTimelineItem) =>
-      replyTypes.includes(item.type) &&
-      (runId === null || item.runId === runId) &&
-      (item.textTruncated || (item.text ?? "").trim().length > 0);
     while (true) {
       const read = yield* forwarding.readThread(scope, remote.environmentId, {
         threadId: remote.threadId,
@@ -678,7 +716,7 @@ const make = Effect.gen(function* () {
         ...(failed && remainingItems > 100 ? { maxCharsPerItem: 1 } : {}),
         ...(afterPosition === undefined ? {} : { afterPosition }),
       });
-      reply = read.items.findLast(isReply) ?? reply;
+      replies = scanReplies(replies, read.items);
       if (failed) {
         error =
           read.items.findLast(
@@ -696,9 +734,9 @@ const make = Effect.gen(function* () {
             limit: 100,
             afterPosition: tailPosition,
           });
-          const tailReply = tail.items.findLast(isReply);
-          if (!tail.hasMore && tailReply !== undefined) {
-            reply = tailReply;
+          const tailReplies = scanReplies({ reply: undefined, undecided: [] }, tail.items);
+          if (!tail.hasMore && tailReplies.reply !== undefined) {
+            replies = tailReplies;
             break;
           }
         }
@@ -706,23 +744,14 @@ const make = Effect.gen(function* () {
       afterPosition = read.nextPosition;
       remainingItems = read.thread.itemCount - afterPosition - 1;
     }
-    reply = error ?? reply;
-    if (reply === undefined) return undefined;
-    let text = reply.text ?? "";
-    let textOffset = reply.textTruncated ? (reply.nextTextOffset ?? null) : null;
-    while (textOffset !== null) {
-      const rest = yield* forwarding.readThread(scope, remote.environmentId, {
-        threadId: remote.threadId,
-        itemId: reply.itemId,
-        textOffset,
-        maxCharsPerItem: 50_000,
-      });
-      const part = rest.items[0];
-      if (part === undefined) break;
-      text += part.text ?? "";
-      textOffset = part.textTruncated ? (part.nextTextOffset ?? null) : null;
+    if (error !== undefined) return yield* readWholeText(scope, remote, error);
+    for (const item of replies.undecided.toReversed()) {
+      const text = yield* readWholeText(scope, remote, item);
+      if (text.trim().length > 0) return text;
     }
-    return text.trim().length > 0 ? text : undefined;
+    return replies.reply === undefined
+      ? undefined
+      : yield* readWholeText(scope, remote, replies.reply);
   });
 
   /**

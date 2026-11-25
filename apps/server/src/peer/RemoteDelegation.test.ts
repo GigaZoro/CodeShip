@@ -2624,11 +2624,12 @@ it.effect.each([
         const blank = scenario === "blank-fallback";
         const middle = scenario !== "tail-error";
         const ownType = scenario === "reply-fallback" || blank ? "assistant_message" : "error";
+        const historyText = "discarded history ".repeat(120);
         const history = (count: number, runId: RunId, prefix: string): Array<TimelineEntry> =>
           Array.from({ length: count }, (_, index) => ({
             id: TurnItemId.make(`${prefix}:${index}`),
             runId,
-            text: "discarded history ".repeat(120),
+            text: historyText,
             type: "assistant_message",
           }));
         yield* Ref.set(thread.timeline, [
@@ -2664,10 +2665,8 @@ it.effect.each([
         } else {
           expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
             status: "failed",
-            // A middle page shows the blank reply cut to one space, so only its full text shows it is blank.
-            result: blank
-              ? "(The thread in the linked environment ended without a reply.)"
-              : result,
+            // A middle page cuts the blank reply to one space; read whole, it gives way to the reply before it.
+            result: blank ? historyText : result,
           });
         }
         const pages = reads.filter((read) => read.itemId === undefined);
@@ -2675,7 +2674,8 @@ it.effect.each([
         expect(pages.map((read) => read.maxCharsPerItem)).toEqual([undefined, 1, 1, undefined]);
         const refills = reads.filter((read) => read.itemId !== undefined);
         expect(refills[0]).toMatchObject({ itemId: "selected", textOffset: middle ? 1 : 20_000 });
-        if (scenario !== "cancel-refill") expect(refills).toHaveLength(middle ? 2 : 1);
+        if (scenario !== "cancel-refill") expect(refills).toHaveLength(blank ? 3 : middle ? 2 : 1);
+        if (blank) expect(refills[2]).toMatchObject({ itemId: "before:149", textOffset: 1 });
       }),
     ).pipe(
       Effect.provide(NodeHttpServer.layerTest),
