@@ -3822,70 +3822,113 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
-  it.live.each(["replaced parent", "registration remains", "removed by Git"] as const)(
-    "reconciles a claimed release after interruption (%s)",
-    (state) =>
-      runCleanupTest(
-        Effect.gen(function* () {
-          const fixture = yield* cleanupFixture(undefined, true);
-          fixture.disable();
-          const runId = RunId.make("finished");
-          const owner = shell({
-            status: "completed",
-            branch: "feature",
-            worktreePath: fixture.worktree,
-            latestRunId: runId,
-            latestRunCompletedAt: at(-DAY_MS),
-            settledAt: at(-DAY_MS),
-          });
-          fixture.setThreads([owner]);
-          const { file } = yield* queueWorktreeRelease({
-            stateDir: fixture.config.stateDir,
-            threadId: owner.id,
-            runId,
-            worktreePath: fixture.worktree,
-            durableRef: "refs/heads/main",
-          });
-          const contents = yield* fixture.fs.readFileString(file);
-          yield* fixture.fs.rename(file, file + ".releasing");
-          const parent = NodePath.dirname(fixture.worktree);
-          if (state === "replaced parent") {
-            yield* fixture.fs.rename(
-              parent,
-              NodePath.join(fixture.repo, "original-checkout-parent"),
-            );
-            yield* fixture.fs.writeFileString(parent, "replacement");
-          } else if (state === "registration remains") {
-            yield* fixture.fs.rename(
-              fixture.worktree,
-              NodePath.join(fixture.repo, "original-checkout"),
-            );
-          } else {
-            yield* fixture.command(fixture.repo, ["worktree", "remove", "--", fixture.worktree]);
-          }
+  it.live.each([
+    "replaced parent",
+    "registration remains",
+    "branch moved",
+    "removed by Git",
+    "missing parent",
+    "withdrawn before receipt read",
+    "withdrawn before receipt rename",
+  ] as const)("reconciles a claimed release after interruption (%s)", (state) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        let claimed: string | undefined;
+        const fixture = yield* cleanupFixture(undefined, true).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            rename: (from, to) =>
+              state === "withdrawn before receipt rename" && from === claimed
+                ? fs.remove(from).pipe(Effect.andThen(fs.rename(from, to)))
+                : fs.rename(from, to),
+          }),
+        );
+        fixture.disable();
+        const runId = RunId.make("finished");
+        const owner = shell({
+          status: "completed",
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          latestRunId: runId,
+          latestRunCompletedAt: at(-DAY_MS),
+          settledAt: at(-DAY_MS),
+        });
+        fixture.setThreads([owner]);
+        const { file } = yield* queueWorktreeRelease({
+          stateDir: fixture.config.stateDir,
+          threadId: owner.id,
+          runId,
+          worktreePath: fixture.worktree,
+          durableRef: "refs/heads/main",
+        });
+        const contents = yield* fixture.fs.readFileString(file);
+        yield* fixture.fs.rename(file, file + ".releasing");
+        claimed = file + ".releasing";
+        const parent = NodePath.dirname(fixture.worktree);
+        const moved = NodePath.join(fixture.repo, "original-checkout");
+        if (state === "replaced parent") {
+          yield* fixture.fs.rename(parent, NodePath.join(fixture.repo, "original-checkout-parent"));
+          yield* fixture.fs.writeFileString(parent, "replacement");
+        } else if (state === "registration remains") {
+          yield* fixture.fs.rename(fixture.worktree, moved);
+        } else if (state === "branch moved") {
+          yield* fixture.command(fixture.repo, ["worktree", "move", "--", fixture.worktree, moved]);
+        } else {
+          yield* fixture.command(fixture.repo, ["worktree", "remove", "--", fixture.worktree]);
+          if (state === "missing parent") yield* fixture.fs.remove(parent);
+        }
+        if (state === "withdrawn before receipt read")
+          fixture.setBeforeRemoval(fs.remove(claimed, { force: true }).pipe(Effect.orDie));
 
-          const report = yield* fixture.service.runNow;
-          if (state === "removed by Git") {
-            expect(yield* fixture.fs.readFileString(file + ".released")).toBe(contents);
-            expect(yield* fixture.fs.exists(file + ".releasing")).toBe(false);
-            return;
-          }
-          expect(yield* fixture.fs.readFileString(file + ".releasing")).toBe(contents);
+        const report = yield* fixture.service.runNow;
+        if (state === "removed by Git" || state === "missing parent") {
+          expect(yield* fixture.fs.readFileString(file + ".released")).toBe(contents);
+          expect(yield* fixture.fs.exists(file + ".releasing")).toBe(false);
+          expect(report.entries).toEqual([]);
+          expect(report.counts).toEqual({ removed: 0, kept: 0, failed: 0 });
+          return;
+        }
+        if (
+          state === "withdrawn before receipt read" ||
+          state === "withdrawn before receipt rename"
+        ) {
+          expect(yield* fixture.fs.exists(file + ".releasing")).toBe(false);
           expect(yield* fixture.fs.exists(file + ".released")).toBe(false);
-          if (state === "replaced parent")
-            expect(yield* fixture.fs.readFileString(parent)).toBe("replacement");
           expect(report.entries).toMatchObject([
             {
-              threadId: owner.id,
               outcome: "kept",
-              reason:
-                state === "replaced parent"
-                  ? "Cannot resolve checkout for release request"
-                  : "Checkout is still registered with Git",
+              reason: "Owner withdrew or replaced the release request",
             },
           ]);
-        }),
-      ),
+          return;
+        }
+        expect(yield* fixture.fs.readFileString(file + ".releasing")).toBe(contents);
+        expect(yield* fixture.fs.exists(file + ".released")).toBe(false);
+        if (state === "replaced parent")
+          expect(yield* fixture.fs.readFileString(parent)).toBe("replacement");
+        if (state === "branch moved") {
+          expect((yield* fixture.command(moved, ["branch", "--show-current"])).stdout.trim()).toBe(
+            "feature",
+          );
+          expect(yield* fixture.fs.readFileString(NodePath.join(moved, "tracked.txt"))).toBe(
+            "original\n",
+          );
+        }
+        expect(report.entries).toMatchObject([
+          {
+            threadId: owner.id,
+            outcome: "kept",
+            reason:
+              state === "replaced parent"
+                ? "Cannot resolve checkout for release request"
+                : state === "branch moved"
+                  ? "Git lists the requested branch under a different path spelling. Check git worktree list --porcelain for a moved checkout or path alias"
+                  : "Git still lists the missing checkout path. Inspect its registration with git worktree list --porcelain",
+          },
+        ]);
+      }),
+    ),
   );
   it.live.each(["before-check", "while-measuring"] as const)(
     "keeps a worktree protected by a missing project root (%s)",

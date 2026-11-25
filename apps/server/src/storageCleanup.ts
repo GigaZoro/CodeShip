@@ -78,7 +78,7 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { isNetworkPath } from "@t3tools/shared/path";
-import { setupStageName } from "../../../scripts/lib/worktree-setup-proof.ts";
+import { missingSetupPath, setupStageName } from "../../../scripts/lib/worktree-setup-proof.ts";
 
 const decodeCleanupThread = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJson),
@@ -946,6 +946,14 @@ const make = Effect.gen(function* () {
   });
 
   const releaseDirectory = path.join(config.stateDir, ServerConfig.WORKTREE_RELEASE_DIRECTORY);
+  const withdrawn = "owner withdrew or replaced the release request";
+  const allowMissingRequest = <A>(effect: Effect.Effect<A, PlatformError>) =>
+    effect.pipe(
+      Effect.catchIf(
+        (error) => error.reason._tag === "NotFound",
+        () => Effect.succeed(null),
+      ),
+    );
   const pendingRequestFiles = Effect.gen(function* () {
     if (!(yield* fs.exists(releaseDirectory))) return [];
     return (yield* fs.readDirectory(releaseDirectory)).filter((name) =>
@@ -1060,9 +1068,11 @@ const make = Effect.gen(function* () {
       const key = name.replace(/\.releasing$/, "");
       const file = path.join(releaseDirectory, name);
       const loaded = yield* Effect.gen(function* () {
-        const stat = yield* Effect.tryPromise(() => NodeFSP.lstat(file));
+        const stat = yield* Effect.tryPromise(() => NodeFSP.lstat(file).catch(missingSetupPath));
+        if (!stat) return undefined;
         if (!stat.isFile() || stat.size > 1024 * 1024) return null;
-        const contents = yield* fs.readFileString(file);
+        const contents = yield* allowMissingRequest(fs.readFileString(file));
+        if (contents === null) return undefined;
         const request = yield* decodeReleaseRequest(contents);
         return worktreeReleaseName(request.worktreePath) === key
           ? { file, contents, request }
@@ -1071,6 +1081,7 @@ const make = Effect.gen(function* () {
         Effect.timeout("5 seconds"),
         Effect.orElseSucceed(() => null),
       );
+      if (loaded === undefined) continue;
       if (loaded === null) invalidRequests.add(key);
       else releases.set(key, loaded);
     }
@@ -1224,11 +1235,16 @@ const make = Effect.gen(function* () {
           if (release?.file.endsWith(".releasing")) {
             if (!project) return keep("project is unavailable");
             const hold = yield* interruptedRemovalHold(project.workspaceRoot, release.request);
+            if ((yield* allowMissingRequest(fs.readFileString(release.file))) !== release.contents)
+              return keep(withdrawn);
             if (hold) return keep(hold);
-            if ((yield* fs.readFileString(release.file)) !== release.contents)
-              return keep("owner withdrew or replaced the release request");
-            yield* fs.rename(release.file, release.file.replace(/\.releasing$/, ".released"));
-          } else if (release) yield* fs.remove(release.file);
+            if (
+              (yield* allowMissingRequest(
+                fs.rename(release.file, release.file.replace(/\.releasing$/, ".released")),
+              )) === null
+            )
+              return keep(withdrawn);
+          } else if (release) yield* allowMissingRequest(fs.remove(release.file));
           return;
         }
         if (
@@ -1577,11 +1593,8 @@ const make = Effect.gen(function* () {
               new Set(latestGroup.map((member) => member.id)),
             );
             if (activity !== null) return activity;
-            if (
-              !(yield* fs.exists(release.file)) ||
-              (yield* fs.readFileString(release.file)) !== release.contents
-            )
-              return "owner withdrew or replaced the release request";
+            if ((yield* allowMissingRequest(fs.readFileString(release.file))) !== release.contents)
+              return withdrawn;
           }
           // Sessions can outlive their run and can be shared across app threads.
           const sessionRows = yield* sql<{ payload_json: string }>`
@@ -1666,15 +1679,12 @@ const make = Effect.gen(function* () {
             const claimed = base + ".releasing";
             const won =
               release.file === claimed ||
-              (yield* fs.rename(release.file, claimed).pipe(
-                Effect.as(true),
-                Effect.catchIf(
-                  (error) => error.reason._tag === "NotFound",
-                  () => Effect.succeed(false),
-                ),
-              ));
-            if (!won || (yield* fs.readFileString(claimed)) !== release.contents)
-              return "owner withdrew or replaced the release request";
+              (yield* allowMissingRequest(fs.rename(release.file, claimed))) !== null;
+            if (
+              !won ||
+              (yield* allowMissingRequest(fs.readFileString(claimed))) !== release.contents
+            )
+              return withdrawn;
             yield* remove;
             yield* fs.rename(claimed, base + ".released");
             return null;

@@ -329,6 +329,27 @@ const readGit = Effect.fn("WorktreeRelease.readGit")(function* (
   return result.stdout;
 });
 
+// Branch deletion also removes the repository-local base settings, including the key used by older checkouts.
+export const readReleasedBranchBase = Effect.fn("WorktreeRelease.readBranchBase")(function* (
+  cwd: string,
+  branch: string,
+) {
+  const read = (property: string) =>
+    readGit(cwd, [
+      "config",
+      "--local",
+      "--default",
+      "",
+      "--get",
+      `branch.${branch}.${property}`,
+    ]).pipe(Effect.map((output) => output.trim() || null));
+  const [name, ref, legacyName] = yield* Effect.all(
+    [read("t3-merge-base"), read("t3-merge-base-ref"), read("gh-merge-base")],
+    { concurrency: "unbounded" },
+  );
+  return { name, ref, ...(legacyName ? { legacyName } : {}) };
+});
+
 // An interrupted Git removal is complete only when both the checkout and its registration are gone.
 export const interruptedRemovalHold = Effect.fn("WorktreeRelease.interruptedRemovalHold")(
   function* (projectRoot: string, request: ReleaseRequest) {
@@ -340,16 +361,17 @@ export const interruptedRemovalHold = Effect.fn("WorktreeRelease.interruptedRemo
     const listing = yield* readGit(projectRoot, ["worktree", "list", "--porcelain", "-z"]);
     const records = listing.split("\0\0").filter(Boolean);
     if (!records.length) return "cannot verify Git worktree registrations";
+    let branchRegistered = false;
     for (const record of records) {
       const [name, ...fields] = record.split("\0");
       if (!name?.startsWith("worktree ")) return "cannot verify Git worktree registrations";
-      if (
-        NodePath.relative(cwd, name.slice("worktree ".length)) === "" ||
-        fields.includes("branch refs/heads/" + request.branch)
-      )
-        return "checkout is still registered with Git";
+      if (NodePath.relative(cwd, name.slice("worktree ".length)) === "")
+        return "Git still lists the missing checkout path. Inspect its registration with git worktree list --porcelain";
+      if (fields.includes("branch refs/heads/" + request.branch)) branchRegistered = true;
     }
-    return null;
+    return branchRegistered
+      ? "Git lists the requested branch under a different path spelling. Check git worktree list --porcelain for a moved checkout or path alias"
+      : null;
   },
 );
 
@@ -817,21 +839,22 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
     });
   const directory = path.join(input.stateDir, WORKTREE_RELEASE_DIRECTORY);
   yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
+  const branch = branchRef.slice("refs/heads/".length);
   const family = input.dbPath
-    ? yield* observeFamily(
-        input.dbPath,
-        cwd,
-        input.threadId,
-        input.runId,
-        branchRef.slice("refs/heads/".length),
-      )
+    ? yield* observeFamily(input.dbPath, cwd, input.threadId, input.runId, branch)
     : undefined;
+  const branchBase = yield* readReleasedBranchBase(cwd, branch);
+  for (const name of [branchBase.name, branchBase.legacyName]) {
+    if (name) yield* readGit(cwd, ["check-ref-format", "refs/heads/" + name]);
+  }
+  if (branchBase.ref) yield* readGit(cwd, ["check-ref-format", branchBase.ref]);
   const request = yield* validateRequest({
     ...(family ? { family } : {}),
     threadId: input.threadId,
     runId: input.runId,
     worktreePath: cwd,
-    branch: branchRef.slice("refs/heads/".length),
+    branch,
+    ...(branchBase.name || branchBase.ref || branchBase.legacyName ? { branchBase } : {}),
     durableRef: input.durableRef,
     ...(input.alsoDurable?.length ? { alsoDurable: input.alsoDurable } : {}),
     head: (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim(),
@@ -1152,6 +1175,15 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   if (!registration) return "checkout registration changed";
   const { admin, common } = registration;
   if (yield* fs.exists(path.join(common, "info", "grafts"))) return "repository uses grafts";
+  if (request.branchBase) {
+    const current = yield* readReleasedBranchBase(cwd, request.branch);
+    if (
+      current.name !== request.branchBase.name ||
+      current.ref !== request.branchBase.ref ||
+      current.legacyName !== request.branchBase.legacyName
+    )
+      return "the recorded pull request base changed";
+  }
   const anchors: string[] = [];
   for (const ref of new Set([request.durableRef, ...(request.alsoDurable ?? [])])) {
     yield* readGit(cwd, ["check-ref-format", ref]);

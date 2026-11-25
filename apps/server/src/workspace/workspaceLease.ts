@@ -28,7 +28,7 @@ export const existingWorkspacePath = (target: string) =>
 export const resolveWorkspacePath = (cwd: string) =>
   Effect.tryPromise({
     try: async () => {
-      // A follow-up can arrive before Git recreates the checkout or any of its missing parents.
+      // Only existing ancestors can resolve aliases. Missing components keep their stored spelling.
       const absolute = NodePath.resolve(cwd);
       let ancestor = absolute;
       for (;;) {
