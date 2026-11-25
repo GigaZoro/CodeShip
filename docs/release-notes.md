@@ -7,6 +7,7 @@
 
 - Windows worktrees now keep the macOS and Linux recovery: a release keeps new build caches, ignored files and backups, and `t3 thread backups` lists them. A checkout whose dependencies were installed in place, or whose installed files you edited, stays with you.
 - A setup script that fails after dependencies install is retried from the saved proof instead of reinstalling, and the checkout can still be released afterwards on macOS and Linux.
+- Running setup again after a build or a source-only commit keeps the verified dependencies and the checkout stays releasable. Setup reinstalls when the files that drive the install change.
 
 ## 2026-11-25 — Choose how much of a Codex account's prepaid credits work may spend
 

@@ -16,7 +16,7 @@ const git = (cwd: string, ...args: string[]) =>
     maxBuffer: 8 * 1024 * 1024,
   }).trimEnd();
 
-export const setupStatus = (cwd: string, ...paths: string[]) =>
+const setupStatus = (cwd: string, ...paths: string[]) =>
   git(
     cwd,
     "--no-optional-locks",
@@ -160,7 +160,7 @@ const localWorkspaceManifests = (cwd: string) => {
 const localInstallOverrides = [".npmrc", ".pnpmfile.cjs", ".pnpmfile.mjs", ".pnpmfile.js"];
 const installManifests = ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"];
 
-export const windowsInstallInputsUnchanged = async (cwd: string, head: string) => {
+export const installInputsUnchanged = async (cwd: string, head: string) => {
   const manifests = await localWorkspaceManifests(cwd);
   if (!manifests) return false;
   const trackedInputs = [

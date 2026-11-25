@@ -11,8 +11,7 @@ import {
   installWorktreeDependencies,
   inspectWindowsInPlaceModules,
   setupCheckout,
-  setupStatus,
-  windowsInstallInputsUnchanged,
+  installInputsUnchanged,
   windowsInstallTargetsSafe,
 } from "./lib/install-worktree-dependencies.ts";
 import {
@@ -22,7 +21,6 @@ import {
 } from "./lib/windows-worktree-files.ts";
 import {
   hasSetupDone,
-  hasSetupOnlyStatus,
   matchesSetupFiles,
   readSetupProof,
   setupEnvFiles,
@@ -158,23 +156,30 @@ const installInPlace = async (verified: ReadonlySet<string>) => {
   }
 };
 
-const linkEnvFiles = async (project: string) => {
+// What was linked is recorded even when a later link fails, so a retry continues from the receipt.
+const linkEnvFiles = async (
+  project: string,
+  record: (links: ReadonlyArray<{ name: string; stamp: string }>) => Promise<void>,
+) => {
   const links: Array<{ name: string; stamp: string }> = [];
-  for (const name of setupEnvFiles) {
-    const source = await setupEnvTarget(project, name);
-    if (!source) continue;
-    const target = NodePath.join(worktree, name);
-    const parent = NodePath.dirname(target);
-    if ((await NodeFSP.realpath(parent).catch(() => null)) !== parent) continue;
-    try {
-      await NodeFSP.symlink(source, target, "file");
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "EEXIST") continue;
-      throw error;
+  try {
+    for (const name of setupEnvFiles) {
+      const source = await setupEnvTarget(project, name);
+      if (!source) continue;
+      const target = NodePath.join(worktree, name);
+      const parent = NodePath.dirname(target);
+      if ((await NodeFSP.realpath(parent).catch(() => null)) !== parent) continue;
+      try {
+        await NodeFSP.symlink(source, target, "file");
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "EEXIST") continue;
+        throw error;
+      }
+      links.push({ name, stamp: setupFileStamp(await NodeFSP.lstat(target, { bigint: true })) });
     }
-    links.push({ name, stamp: setupFileStamp(await NodeFSP.lstat(target, { bigint: true })) });
+  } finally {
+    await record(links);
   }
-  return links;
 };
 
 const warnAboutStore = () => {
@@ -311,17 +316,25 @@ const setup = async () => {
           });
         return matchesSetupFiles(priorProof, worktree, signal);
       })().catch(() => false);
-      const canReuse = isWindows
-        ? !priorProof.inPlace &&
-          (previousDone === priorProof.marker || (previousDone === undefined && canRecordProof)) &&
-          (await windowsInstallInputsUnchanged(worktree, priorProof.head))
-        : context.head === priorProof.head &&
-          hasSetupOnlyStatus(priorProof, setupStatus(worktree)) &&
-          !(await hasSetupEntry(staging));
+      // Build output and source edits do not call for a reinstall; changed install inputs do.
+      const canReuse =
+        !priorProof.inPlace &&
+        (isWindows
+          ? previousDone === priorProof.marker || (previousDone === undefined && canRecordProof)
+          : !(await hasSetupEntry(staging))) &&
+        (await installInputsUnchanged(worktree, priorProof.head));
       if (sameFiles && canReuse) {
         requireActive();
         if (previousDone === priorProof.marker) return;
-        // A run that failed in configure left the proof but no success marker.
+        // A run that failed in linking or configure left the proof but no success marker.
+        await linkEnvFiles(projectRoot, async (added) => {
+          if (added.length === 0) return;
+          await NodeFSP.unlink(NodePath.join(context.admin, setupProofName));
+          await writeSetupProof(context.admin, NodePath.join(claim, "proof"), {
+            ...priorProof,
+            links: [...priorProof.links, ...added],
+          });
+        });
         await configureWorktreePrepare(worktree);
         if (!(await hasSetupDone(doneMarker, priorProof.marker))) {
           if (previousDone !== undefined) NodeFS.unlinkSync(doneMarker);
@@ -354,23 +367,24 @@ const setup = async () => {
       verifiedModules.size === 0 &&
       (await installWorktreeDependencies(worktree, context.head, staging, claimName, install));
     if (!sealed) await installInPlace(verifiedModules);
-    // Once the dependencies are published, only the proof makes them releasable, so nothing that can
-    // fail or be cancelled runs between them and the proof.
-    const links = await linkEnvFiles(projectRoot);
-    const recorded =
-      sealed ||
-      (isWindows && canRecordProof && context
-        ? await inspectWindowsInPlaceModules(worktree).catch((error) => {
-            const reason =
-              error instanceof WindowsWorktreeInspectionError
-                ? error.message
-                : "In-place dependencies could not be verified";
-            process.stderr.write(`${reason}. Keeping the checkout.\n`);
-            return null;
-          })
-        : null);
-    const marker = context && recorded ? NodeCrypto.randomUUID() + "\n" : "";
-    if (context && recorded) {
+    // Once the dependencies are published, only the proof makes them releasable, so it is written
+    // even when linking fails, and nothing else that can fail or be cancelled runs before it.
+    let marker = "";
+    await linkEnvFiles(projectRoot, async (links) => {
+      const recorded =
+        sealed ||
+        (isWindows && canRecordProof && context
+          ? await inspectWindowsInPlaceModules(worktree).catch((error) => {
+              const reason =
+                error instanceof WindowsWorktreeInspectionError
+                  ? error.message
+                  : "In-place dependencies could not be verified";
+              process.stderr.write(`${reason}. Keeping the checkout.\n`);
+              return null;
+            })
+          : null);
+      if (!context || !recorded) return;
+      marker = NodeCrypto.randomUUID() + "\n";
       await writeSetupProof(context.admin, NodePath.join(claim, "proof"), {
         root: projectRoot,
         checkout,
@@ -380,7 +394,7 @@ const setup = async () => {
         ...(!sealed ? { inPlace: true as const } : {}),
         links,
       });
-    }
+    });
     requireActive();
     warnAboutStore();
     // The proof is already recorded, so a failure here is retried from it, not from a reinstall.

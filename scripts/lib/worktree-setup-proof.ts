@@ -440,8 +440,9 @@ const inspectSetupFiles = async (proof: SetupProof, cwd: string, signal: AbortSi
     : null;
 };
 
+// Build caches added since setup are not installed files, so they do not stop a setup retry.
 export const matchesSetupFiles = async (proof: SetupProof, cwd: string, signal: AbortSignal) =>
-  (await inspectSetupFiles(proof, cwd, signal))?.length === 0;
+  (await inspectSetupFiles(proof, cwd, signal)) !== null;
 
 export const hasSetupDone = async (marker: string, expected: string) => {
   const stat = await NodeFSP.lstat(marker).catch(missingSetupPath);

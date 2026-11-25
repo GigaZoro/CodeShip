@@ -971,6 +971,7 @@ describe("owned setup output", () => {
     "an interrupted install followed by two reruns",
     "an unrelated source edit on repeat",
     "a build cache added after setup",
+    "a failed env link followed by recovery",
   ] as const;
   const checkSetups = (
     title: string,
@@ -1022,7 +1023,7 @@ describe("owned setup output", () => {
           const worktree = yield* fs.realPath(fixture.worktree);
           yield* fs.writeFileString(
             NodePath.join(repo, ".gitignore"),
-            ".env\n.npmrc\nnode_modules/\n.t3/\n",
+            ".env\n.npmrc\nnode_modules/\n.t3/\ndist/\n",
           );
           yield* fs.makeDirectory(NodePath.join(repo, "scripts/lib"), { recursive: true });
           yield* fs.makeDirectory(NodePath.join(repo, "packages/shared/src"), { recursive: true });
@@ -1045,6 +1046,11 @@ describe("owned setup output", () => {
               NodePath.join(scripts, "release-notes.cjs"),
               "if (process.env.T3_TEST_FAIL_CONFIGURE) process.exit(19);\n",
             );
+          }
+          const linkFailure = scenario === "a failed env link followed by recovery";
+          if (linkFailure) {
+            yield* fs.makeDirectory(NodePath.join(repo, "infra/relay"), { recursive: true });
+            yield* fs.writeFileString(NodePath.join(repo, "infra/relay/config.txt"), "tracked");
           }
           for (const file of [
             "t3.json",
@@ -1279,7 +1285,19 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
             expect(yield* fs.exists(done)).toBe(false);
             expect(yield* fs.exists(proof)).toBe(true);
           }
-          const setup = yield* runSetup(configureFailure);
+          if (linkFailure) {
+            yield* fs.writeFileString(NodePath.join(repo, "infra/relay/.env"), "relay-value");
+            const relay = NodePath.join(worktree, "infra/relay");
+            yield* fs.chmod(relay, 0o555);
+            const failedSetup = yield* runSetup().pipe(
+              Effect.ensuring(Effect.orDie(fs.chmod(relay, 0o755))),
+            );
+            expect(failedSetup.success).toBe(false);
+            expect(failedSetup.output).toContain("EACCES");
+            expect(yield* fs.exists(done)).toBe(false);
+          }
+          const recovering = configureFailure || linkFailure;
+          const setup = yield* runSetup(recovering);
           expect(setup.success, setup.output).toBe(!race);
           if (race) expect(setup.output).toContain("setup destinations changed");
           if (stageStream) {
@@ -1287,7 +1305,11 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
             expect(setup.output).not.toContain("-EncodedCommand");
           }
           expect(yield* fs.exists(done)).toBe(!race);
-          if (configureFailure) {
+          if (linkFailure)
+            expect(yield* fs.readFileString(NodePath.join(worktree, "infra/relay/.env"))).toBe(
+              "relay-value",
+            );
+          if (recovering) {
             expect(yield* fs.exists(failed)).toBe(false);
             expect(yield* fs.readFileString(installLog)).toBe(
               isWindowsHost ? "stage\n" : "install\n",
@@ -1466,6 +1488,15 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
               const cache = NodePath.join(worktree, "node_modules/.vite-temp");
               yield* fs.makeDirectory(cache);
               yield* fs.writeFileString(NodePath.join(cache, "bundle.txt"), "built after setup");
+              yield* fs.makeDirectory(NodePath.join(worktree, "dist"));
+              yield* fs.writeFileString(NodePath.join(worktree, "dist/out.txt"), "build output");
+              // A later commit that changes nothing the install reads.
+              yield* fs.writeFileString(NodePath.join(repo, "notes.txt"), "source change");
+              yield* command(repo, ["add", "notes.txt"]);
+              yield* command(repo, ["commit", "-m", "Change source only"]);
+              yield* command(worktree, ["merge", "--ff-only", "main"]);
+              const repeated = yield* runSetup(true);
+              expect(repeated.success, repeated.output).toBe(true);
               break;
             }
             case "standard setup only":
@@ -1567,7 +1598,7 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
               : {}),
           });
           const released =
-            configureFailure ||
+            recovering ||
             scenario === "standard setup only" ||
             scenario === "a dead setup owner" ||
             scenario === "a build cache added after setup" ||
@@ -1607,6 +1638,10 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
           if (!isWindowsHost && scenario !== "a missing dotenv source") {
             expect(yield* fs.readFileString(mainEnv)).toBe("example-main-value");
           }
+          if (scenario === "a build cache added after setup")
+            expect(yield* fs.readFileString(NodePath.join(savedFiles!, "dist/out.txt"))).toBe(
+              "build output",
+            );
           if (scenario === "a build cache added after setup")
             expect(
               yield* fs.readFileString(
