@@ -5,6 +5,7 @@ import * as Path from "effect/Path";
 
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 
+import { resolveWorkspacePath } from "./workspace/workspaceLease.ts";
 import * as ServerConfig from "./config.ts";
 import * as ServerSettings from "./serverSettings.ts";
 
@@ -62,6 +63,10 @@ export const makeIsManagedWorktreePath = Effect.gen(function* () {
       }),
     );
 
+  const location =
+    path.sep === "\\" && (yield* HostProcess.isWindows)
+      ? (target: string) => resolveWorkspacePath(target).pipe(Effect.orElseSucceed(() => null))
+      : realLocation;
   return Effect.fn("worktreesDirectory.isManagedWorktreePath")(function* (worktreePath: string) {
     // git resolves a relative path against the project, not the server cwd.
     if (!path.isAbsolute(worktreePath)) return false;
@@ -80,11 +85,12 @@ export const makeIsManagedWorktreePath = Effect.gen(function* () {
         path,
         yield* HostProcess.HomeDirectory,
       ),
-      realLocation,
+      location,
     );
-    const candidate = yield* realLocation(worktreePath);
+    const candidate = yield* location(worktreePath);
+    if (candidate === null) return false;
     return roots.some((root) => {
-      if (isFilesystemRoot(root, path)) return false;
+      if (root === null || isFilesystemRoot(root, path)) return false;
       const relative = path.relative(root, candidate);
       const segments = relative.split(path.sep);
       return (

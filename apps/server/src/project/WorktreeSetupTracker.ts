@@ -20,6 +20,10 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import type {
+  ProjectSetupScriptRunner,
+  ProjectSetupScriptRunnerInput,
+} from "./ProjectSetupScriptRunner.ts";
 
 export class WorktreeSetupTracker extends Context.Service<
   WorktreeSetupTracker,
@@ -335,3 +339,49 @@ export const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(WorktreeSetupTracker, make);
+
+export const runTrackedSetupScript = Effect.fn("WorktreeSetupTracker.runScript")(function* (
+  tracker: WorktreeSetupTracker["Service"],
+  runner: ProjectSetupScriptRunner["Service"],
+  input: ProjectSetupScriptRunnerInput & { readonly threadId: ThreadId },
+  observe: boolean,
+) {
+  const { threadId } = input;
+  yield* tracker.stageStatus(threadId, "setup-script", "running");
+  const setup = yield* runner.runForThread({
+    ...input,
+    ...(observe
+      ? {
+          observeCompletion: {
+            onOutputLine: (line) => tracker.appendTail(threadId, "setup-script", line),
+          },
+        }
+      : {}),
+  });
+  if (setup.status !== "started") {
+    yield* tracker.stageStatus(threadId, "setup-script", "skipped");
+    return null;
+  }
+  yield* tracker.update(threadId, (snapshot) => ({
+    ...snapshot,
+    setupScript: {
+      name: setup.scriptName,
+      command: setup.scriptCommand,
+      terminalId: setup.terminalId,
+    },
+  }));
+  if (!setup.completion) yield* tracker.stageStatus(threadId, "setup-script", "done");
+  return {
+    ...setup,
+    completion: setup.completion?.pipe(
+      Effect.tap(({ exitCode }) =>
+        tracker.stageStatus(
+          threadId,
+          "setup-script",
+          exitCode === 0 ? "done" : "failed",
+          `exited with ${exitCode ?? "no exit code"}`,
+        ),
+      ),
+    ),
+  };
+});

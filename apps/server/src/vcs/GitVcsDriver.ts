@@ -163,6 +163,8 @@ export interface CreateWorktreeProgress {
 
 export interface CreateWorktreeOptions {
   readonly progress?: CreateWorktreeProgress;
+  /** A released family has a durable receipt for interrupted checkout recovery. */
+  readonly releasedFamily?: boolean;
   /** Null or omitted defers to the checkout's t3.json. */
   readonly submodules?: WorktreeSubmodules | null;
   readonly worktreesDirectory?: string;

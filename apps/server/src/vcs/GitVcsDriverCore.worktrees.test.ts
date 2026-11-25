@@ -21,6 +21,8 @@ import {
   parseGitCheckoutProgressLine,
 } from "./GitVcsDriverCore.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import { recoverInterruptedWorktree } from "../workspace/worktreeRelease.ts";
+import { runningFamilyCheckoutHook } from "./familyWorktreeCheckout.ts";
 import {
   layerServerConfig,
   layerTest,
@@ -118,6 +120,91 @@ it.layer(layerTest)("Git worktree creation", (it) => {
         );
       }
     }),
+  );
+  it.effect(
+    "materializes a released family outside Git's registration lock and calls the checkout hook once",
+    () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const path = yield* Path.Path;
+        const fs = yield* FileSystem.FileSystem;
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* writeTextFile(cwd, ".gitattributes", "asset.txt filter=restore\n");
+        yield* writeTextFile(cwd, "asset.txt", "original\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "filtered asset"]);
+        yield* git(cwd, ["config", "filter.restore.clean", "sed s/filtered/original/g"]);
+        yield* git(cwd, [
+          "config",
+          "filter.restore.smudge",
+          'if test -e "$(git rev-parse --git-path locked)"; then echo locked > lock-during-filter; fi; sed s/original/filtered/g',
+        ]);
+        yield* writeTextFile(
+          cwd,
+          ".git/hooks/post-checkout",
+          '#!/bin/sh\nprintf "%s %s %s\\n" "$1" "$2" "$3" >> hook-input\n',
+        );
+        yield* fs.chmod(path.join(cwd, ".git/hooks/post-checkout"), 0o755);
+        const worktreePath = path.join(yield* makeTmpDir("git-family-"), "restored");
+        yield* driver.createWorktree(
+          { cwd, path: worktreePath, refName: initialBranch, newRefName: "family" },
+          { releasedFamily: true },
+        );
+        assert.isFalse(yield* fs.exists(path.join(worktreePath, "lock-during-filter")));
+        assert.equal(yield* fs.readFileString(path.join(worktreePath, "asset.txt")), "filtered\n");
+        const head = yield* git(cwd, ["rev-parse", "HEAD"]);
+        assert.equal(
+          yield* fs.readFileString(path.join(worktreePath, "hook-input")),
+          `${"0".repeat(head.length)} ${head} 1\n`,
+        );
+        assert.equal(yield* git(worktreePath, ["status", "--short", "--untracked-files=no"]), "");
+      }),
+  );
+  it.effect(
+    "keeps explicit worktree locks, index writers and interrupted hooks during family recovery",
+    () =>
+      Effect.gen(function* () {
+        const repo = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(repo);
+        const path = yield* Path.Path;
+        const fs = yield* FileSystem.FileSystem;
+        const checkout = path.join(yield* fs.realPath(yield* makeTmpDir("git-family-")), "restore");
+        yield* git(repo, [
+          "worktree",
+          "add",
+          "--no-checkout",
+          "-b",
+          "family",
+          checkout,
+          initialBranch,
+        ]);
+        const admin = yield* git(checkout, ["rev-parse", "--absolute-git-dir"]);
+        const recover = recoverInterruptedWorktree(checkout, repo, "family");
+        for (const reason of ["operator's explicit lock", "initializing"]) {
+          yield* git(repo, ["worktree", "lock", "--reason", reason, "--", checkout]);
+          assert.isTrue(Result.isFailure(yield* Effect.result(recover)));
+          assert.equal(yield* fs.readFileString(path.join(admin, "locked")), reason + "\n");
+          yield* git(repo, ["worktree", "unlock", "--", checkout]);
+        }
+        for (const name of ["index.lock", runningFamilyCheckoutHook]) {
+          const file = path.join(admin, name);
+          yield* fs.writeFileString(file, "writer evidence");
+          assert.isTrue(Result.isFailure(yield* Effect.result(recover)));
+          assert.equal(yield* fs.readFileString(file), "writer evidence");
+          assert.isFalse(yield* fs.exists(path.join(admin, "index")));
+          yield* fs.remove(file);
+        }
+        yield* writeTextFile(
+          repo,
+          ".git/hooks/post-checkout",
+          "#!/bin/sh\nprintf called >> hook-called\n",
+        );
+        yield* fs.chmod(path.join(repo, ".git/hooks/post-checkout"), 0o755);
+        yield* recover;
+        yield* recover;
+        assert.equal(yield* fs.readFileString(path.join(checkout, "hook-called")), "called");
+      }),
   );
   it.effect.each(["commit", "short-commit", "tag", "revision"] as const)(
     "creates a worktree from a %s without recording it as a PR base",

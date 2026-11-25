@@ -28,6 +28,18 @@
 - Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
 - Codex usage and reset credits now follow the signed-in workspace, including when two workspaces share an email. A delayed update from a previous session can no longer replace the current workspace’s balance.
 
+## 2026-11-25 — Recover build output after a worktree release
+
+- Standard worktree setup records the installed dependencies and environment links on macOS, Linux and Windows. A finished chat can release its checkout when those files still match. A completed merge can release when Git’s leftover auto-merge tree matches the delivered commit.
+- The release preserves new build caches and other ignored output in a private backup. Run `t3 thread backups <thread-id>` to find the files and their retained allocation, including after a follow-up.
+- Follow-ups show setup progress in the recreated checkout. Interrupted setup can resume, and a failed configure step can retry using the dependencies already installed. CodeShip keeps checkouts with modified dependencies, in-place installs or directory metadata the backup cannot preserve. On macOS and Linux it also checks installed files and setup markers for extended attributes and access control lists.
+
+## 2026-11-25 — Release a completed family's shared checkout
+
+- A root chat can release its shared checkout once its subagents and side chats finish and their results arrive. A follow-up from the family or a new fork can recreate the checkout from the project's current base.
+- After a restart, a family can resume an intact checkout whose removal was interrupted. A follow-up can also recover a delivered task branch whose history diverged from the base.
+- Windows release and follow-up recognize worktrees whose configured directory uses an NTFS short name.
+
 ## 2026-11-25 — The metadata smoke test answers its child first and fails on a broken reply
 
 - For people who work on T3.CodeShip: the Codex metadata smoke test (`docs/operations/codex-metadata/smoke.py`) now answers the spawned child agent before it sends the parent its last reply. `codex exec` exits when the parent's turn ends and does not wait for the child, so a child reply sent after that hit a closed connection. On Linux, WSL included, the test then printed a `BrokenPipeError` traceback and still passed.

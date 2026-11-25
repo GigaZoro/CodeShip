@@ -699,74 +699,54 @@ const make = Effect.gen(function* () {
           })
           .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
       }
-      yield* setupTracker.stageStatus(threadId, "setup-script", "running");
+      if (worktreePath === null)
+        yield* setupTracker.stageStatus(threadId, "setup-script", "skipped");
       const setup =
         worktreePath === null
-          ? ({ status: "no-script" } as const)
-          : yield* setupScripts
-              .runForThread({
+          ? null
+          : yield* WorktreeSetupTracker.runTrackedSetupScript(
+              setupTracker,
+              setupScripts,
+              {
                 threadId,
                 projectId: input.projectId,
                 projectCwd: project.workspaceRoot,
                 worktreePath,
-                ...(tracked
-                  ? {
-                      observeCompletion: {
-                        onOutputLine: (line: string) =>
-                          setupTracker.appendTail(threadId, "setup-script", line),
-                      },
-                    }
-                  : {}),
                 project: {
                   id: project.id,
                   workspaceRoot: project.workspaceRoot,
                   scripts: project.scripts,
                 },
-              })
-              .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
+              },
+              tracked,
+            ).pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
 
       let awaitAsyncSetup = Effect.void;
-      if (setup.status === "started") {
+      if (setup) {
         setupTerminalId = setup.terminalId;
-        yield* setupTracker.update(threadId, (snapshot) => ({
-          ...snapshot,
-          setupScript: {
-            name: setup.scriptName,
-            command: setup.scriptCommand,
-            terminalId: setup.terminalId,
-          },
-        }));
         if (setup.completion) {
-          const awaitCompletion = Effect.gen(function* () {
-            const completion = yield* setup.completion!;
-            yield* setupTracker.stage(threadId, "setup-script", {
-              status: completion.exitCode === 0 ? "done" : "failed",
-              detail: `exited with ${completion.exitCode ?? "no exit code"}`,
-            });
-            if (completion.exitCode !== 0 && !setup.async)
+          if (setup.async) {
+            awaitAsyncSetup = setup.completion.pipe(
+              Effect.asVoid,
+              Effect.catchCause((cause) =>
+                setupTracker.stageStatus(
+                  threadId,
+                  "setup-script",
+                  "failed",
+                  failureDetail(Cause.squash(cause)),
+                ),
+              ),
+            );
+          } else {
+            const { exitCode } = yield* setup.completion;
+            if (exitCode !== 0)
               return yield* mapError(
                 input,
                 "run-setup-script",
                 threadId,
-              )(`Setup script exited with ${completion.exitCode ?? "no exit code"}.`);
-          });
-          if (setup.async) {
-            awaitAsyncSetup = awaitCompletion.pipe(
-              Effect.catchCause((cause) =>
-                setupTracker.stage(threadId, "setup-script", {
-                  status: "failed",
-                  detail: failureDetail(Cause.squash(cause)),
-                }),
-              ),
-            );
-          } else {
-            yield* awaitCompletion;
+              )(`Setup script exited with ${exitCode ?? "no exit code"}.`);
           }
-        } else {
-          yield* setupTracker.stageStatus(threadId, "setup-script", "done");
         }
-      } else {
-        yield* setupTracker.stageStatus(threadId, "setup-script", "skipped");
       }
       yield* setupTracker.markUncancellable(threadId);
       yield* setupTracker.stageStatus(threadId, "agent", "running");

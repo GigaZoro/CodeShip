@@ -158,6 +158,14 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
     [["acp", UNREAD], 2, "fake-fx: unsupported command acp " + UNREAD],
     [["--version", UNREAD], 2, "fake-fx: unsupported command --version " + UNREAD],
   ],
+  "./prove-family-release.ts": [
+    [[UNREAD], 1, unknownOption(UNREAD)],
+    [
+      ["--windows-short-paths", "--windows-short-paths"],
+      1,
+      "Pass --windows-short-paths at most once.",
+    ],
+  ],
   "./render-metrics.ts": [
     [["compare", "before.json", "after.json", UNREAD], 1, unknownOption(UNREAD)],
   ],

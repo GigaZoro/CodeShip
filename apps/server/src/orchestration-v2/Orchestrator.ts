@@ -1,3 +1,4 @@
+import { withWorkspaceProcessStart } from "../workspace/workspaceLease.ts";
 import type {
   GuestShareId,
   OrchestrationV2SearchThreadInput,
@@ -938,20 +939,28 @@ const DELEGATED_RESULT_INLINE_BYTES = 16_000;
 // Keeps a thread's hidden list from growing without bound; the oldest ids drop first.
 const MAX_HIDDEN_ARTIFACTS = 200;
 
-function delegatedCompletionWakeDetail(
+export function delegatedCompletionWakeDetail(
   taskIds: ReadonlyArray<string>,
-  tasks: ReadonlyArray<OrchestrationV2Subagent>,
+  tasks: ReadonlyArray<{
+    readonly id: string;
+    readonly status: string;
+    readonly title: string | null;
+    readonly result: string | null;
+    readonly command?: unknown;
+  }>,
+  inlineResults?: Set<string>,
 ): string {
   let remainingBytes = DELEGATED_RESULT_INLINE_BYTES;
   return taskIds
     .map((taskId) => {
       const task = tasks.find((candidate) => candidate.id === taskId);
-      const label = `${task?.command === undefined ? "Delegated task" : "Command"} ${taskId}${task?.title == null ? "" : ` (${task.title})`}${task === undefined ? " reached a terminal state" : ` [${task.status}]`}`;
+      const label = `${task?.command == null ? "Delegated task" : "Command"} ${taskId}${task?.title == null ? "" : ` (${task.title})`}${task === undefined ? " reached a terminal state" : ` [${task.status}]`}`;
       if (task?.result != null) {
         const detail = `${label}:\n${task.result}`;
         const bytes = Buffer.byteLength(detail);
         if (bytes <= remainingBytes) {
           remainingBytes -= bytes;
+          inlineResults?.add(taskId);
           return detail;
         }
       }
@@ -15698,6 +15707,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       commandThreadId(command),
       dispatchWithReceiptEffect(command),
     );
+    if (
+      (command.type === "thread.create" || command.type === "thread.metadata.update") &&
+      command.worktreePath
+    )
+      return yield* withWorkspaceProcessStart(dispatch, [command.worktreePath]);
+    if (command.type === "thread.fork" && command.sideChat !== true) {
+      const source = yield* findThread(command.sourceThreadId);
+      if (source?.worktreePath)
+        return yield* withWorkspaceProcessStart(dispatch, [source.worktreePath]);
+    }
     // A parent's lock comes before its side chats' locks, so a delete cascade and a side chat
     // fork or command never interleave. A fork from a side chat or onto an existing thread would
     // invert that order; dispatch rejects both, so they skip the source lock.
