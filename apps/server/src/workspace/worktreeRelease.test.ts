@@ -169,6 +169,14 @@ it.live("retains unknown ignored build files without relinking installed depende
             ]),
       );
     }
+    if (platform === "darwin") {
+      // ls marks a directory that has attributes with "@" even when it also has an ACL.
+      yield* Effect.tryPromise(() => runFile("/bin/chmod", ["+a", "everyone deny delete", cache]));
+      expect(yield* releaseHold(request, project)).toBe(
+        "ignored files have changed or lack a preserved copy",
+      );
+      yield* Effect.tryPromise(() => runFile("/bin/chmod", ["-N", cache]));
+    }
     expect(yield* releaseHold(request, project)).toBeNull();
     const privateRefs = path.join(refs, "worktree");
     yield* fs.makeDirectory(privateRefs);

@@ -265,7 +265,11 @@ async function verifyPlainDirectories(
     if (platform === "darwin") {
       // The mode suffix marks xattrs and ACLs. The flags column is "-" for an ordinary directory.
       const { stdout, stderr } = await runFile("/bin/ls", ["-ldnObe@", ...directories], options);
-      const entries = stdout.trimEnd().split("\n");
+      // macOS owns com.apple.provenance: it adds it itself and ignores writes and removal.
+      const entries = stdout
+        .trimEnd()
+        .replace(/^(d[rwxstST-]{9})@( .*)\n\tcom\.apple\.provenance\t *\d+ *$/gm, "$1 $2")
+        .split("\n");
       return (
         !stderr &&
         entries.length === directories.length &&
