@@ -884,10 +884,14 @@ export const make = Effect.gen(function* () {
     if (savedUsageGaps.has(gapKey("load", storeDir)) || !(yield* scanCacheLoadDue)) return;
     let ended: Exit.Exit<boolean> | undefined;
     // Only a load that outlived its wait, and so reported the gap, has no caller left to see its end.
+    // That end says only that the load ended; a list or read gap it left reports itself.
     const settleLateLoad = Effect.suspend(() => {
-      if (ended === undefined || !savedUsageGaps.has(gapKey("load", storeDir))) return Effect.void;
-      if (Exit.isSuccess(ended)) return recoverGap("load", storeDir);
-      clearGap("load", storeDir);
+      if (ended === undefined || !savedUsageGaps.delete(gapKey("load", storeDir))) {
+        return Effect.void;
+      }
+      if (Exit.isSuccess(ended)) {
+        return Effect.logInfo("Saved transcript usage finished loading", { path: storeDir });
+      }
       return Cause.hasInterruptsOnly(ended.cause)
         ? Effect.void
         : Effect.logError("Saved transcript usage failed to load", {
@@ -909,7 +913,18 @@ export const make = Effect.gen(function* () {
     // The load can end while the gap is reported, before there is a gap for it to settle.
     yield* settleLateLoad;
   });
-  const schedulePersist = forkSync(syncScanCache(true)).pipe(Effect.asVoid);
+  // A persist saves memory as it is when it gets the lock, so one still waiting covers every scan
+  // behind it, and a hung sync holds one waiting persist rather than one per scan.
+  let persistWaiting = false;
+  const schedulePersist = Effect.suspend(() => {
+    if (persistWaiting) return Effect.void;
+    persistWaiting = true;
+    const persist = Effect.suspend(() => {
+      persistWaiting = false;
+      return syncScanCache(true);
+    });
+    return forkSync(persist).pipe(Effect.asVoid);
+  });
   const awaitPersisted = Effect.suspend(() => Fiber.awaitAll([...syncFibers])).pipe(Effect.asVoid);
   // An interrupted sync loses nothing: the final sync writes whatever it left unsaved.
   yield* Effect.addFinalizer(() =>
@@ -1124,15 +1139,16 @@ export const make = Effect.gen(function* () {
       unreadable.set(failedPath, before === "failed" ? before : now);
     }
     if (logged !== undefined) {
-      // A path this scan did not try has not read again. It is gone only if a complete listing
-      // left it out, since a listing that could not read every path cannot tell.
+      // A path this scan did not try has not read again while it is listed, or while a failed path
+      // above it may have hidden it. Otherwise it is gone or, as a folder, read again.
       const tried = new Set(read.map((file) => file.path));
       const listed = new Set(listing.files.map((file) => file.path));
       for (const [loggedPath, before] of logged) {
         if (unreadable.has(loggedPath) || tried.has(loggedPath)) continue;
-        if (listed.has(loggedPath) || listing.failures.length > 0) {
-          unreadable.set(loggedPath, before);
-        }
+        const hidden = listing.failures.some(({ path: failedPath }) =>
+          isWithinDirectory(loggedPath, failedPath),
+        );
+        if (listed.has(loggedPath) || hidden) unreadable.set(loggedPath, before);
       }
     }
     if (unreadable.size === 0) loggedUnreadable.delete(key);

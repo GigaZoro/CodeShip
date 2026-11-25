@@ -2492,19 +2492,21 @@ describe("UsageService", () => {
         const folder = NodePath.dirname(transcript);
         const sourceDir = NodePath.dirname(folder);
         const unreadable = NodePath.join(folder, "other.jsonl");
+        const sibling = NodePath.join(sourceDir, "sibling");
         yield* TestClock.setTime(CURSOR_NOW);
         yield* Effect.promise(async () => {
           await NodeFSP.writeFile(transcript, claudeLine(1, 5));
           await NodeFSP.writeFile(unreadable, claudeLine(2, 7));
           await NodeFSP.chmod(unreadable, 0);
+          await NodeFSP.mkdir(sibling);
         });
         const actual = yield* Effect.promise(() =>
           vi.importActual<typeof NodeFSP>("node:fs/promises"),
         );
-        let folderDenied = false;
+        const denied = new Set<string>();
         let removeBeforeOpen = false;
         using _readdir = vi.spyOn(NodeFSP, "readdir").mockImplementation(async (...args) => {
-          if (folderDenied && args[0] === folder) {
+          if (typeof args[0] === "string" && denied.has(args[0])) {
             throw Object.assign(new Error("permission denied"), { code: "EACCES" });
           }
           return actual.readdir(...args);
@@ -2532,9 +2534,9 @@ describe("UsageService", () => {
           }
           assert.deepStrictEqual(failures(), [{ path: unreadable, code: "EACCES" }]);
 
-          folderDenied = true;
+          denied.add(folder);
           assert.strictEqual((yield* service.readSummary(WINDOW)).sources[0]?.status, "partial");
-          folderDenied = false;
+          denied.delete(folder);
           yield* TestClock.adjust("5 seconds");
           assert.strictEqual((yield* service.readSummary(WINDOW)).sources[0]?.status, "partial");
           assert.deepStrictEqual(failures(), [
@@ -2542,6 +2544,26 @@ describe("UsageService", () => {
             { path: folder, code: "EACCES" },
           ]);
           yield* TestClock.adjust("5 seconds");
+
+          // A sibling that still fails cannot hide the folder, so the folder read again, and its
+          // next failure is news.
+          const logCount = (failedPath: string) =>
+            failures().filter(({ path }) => path === failedPath).length;
+          for (const deniedNow of [[folder, sibling], [sibling], [folder, sibling]]) {
+            denied.clear();
+            for (const dir of deniedNow) denied.add(dir);
+            assert.strictEqual((yield* service.readSummary(WINDOW)).sources[0]?.status, "partial");
+            yield* TestClock.adjust("5 seconds");
+          }
+          denied.clear();
+          assert.deepStrictEqual(
+            {
+              unreadable: logCount(unreadable),
+              folder: logCount(folder),
+              sibling: logCount(sibling),
+            },
+            { unreadable: 1, folder: 3, sibling: 1 },
+          );
 
           yield* Effect.promise(() => NodeFSP.chmod(unreadable, 0o600));
           const healthy = yield* service.readSummary(WINDOW);
@@ -2555,7 +2577,7 @@ describe("UsageService", () => {
           });
           yield* TestClock.adjust("5 seconds");
           assert.strictEqual((yield* service.readSummary(WINDOW)).sources[0]?.status, "partial");
-          assert.lengthOf(failures(), 3);
+          assert.lengthOf(failures(), 6);
 
           yield* Effect.promise(() => NodeFSP.rename(sourceDir, `${sourceDir}-away`));
           yield* TestClock.adjust("5 seconds");
@@ -2563,12 +2585,12 @@ describe("UsageService", () => {
           yield* Effect.promise(() => NodeFSP.rename(`${sourceDir}-away`, sourceDir));
           yield* TestClock.adjust("5 seconds");
           assert.strictEqual((yield* service.readSummary(WINDOW)).sources[0]?.status, "partial");
-          assert.lengthOf(failures(), 4);
+          assert.lengthOf(failures(), 7);
 
           removeBeforeOpen = true;
           yield* TestClock.adjust("5 seconds");
           assert.strictEqual((yield* service.readSummary(WINDOW)).sources[0]?.status, "ok");
-          assert.lengthOf(failures(), 4);
+          assert.lengthOf(failures(), 7);
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
@@ -4209,12 +4231,15 @@ describe("UsageService", () => {
         const release = yield* Deferred.make<void>();
         let store: "denied" | "hung" | "ok" = "denied";
         let listsWhileHung = 0;
+        let listsOnceOk = 0;
         const service = yield* UsageService.make.pipe(
           Effect.provideService(FileSystem.FileSystem, {
             ...fs,
             readDirectory: (directory, options) =>
               Effect.suspend(() => {
-                if (directory !== storeDir || store === "ok") {
+                if (directory !== storeDir) return fs.readDirectory(directory, options);
+                if (store === "ok") {
+                  listsOnceOk++;
                   return fs.readDirectory(directory, options);
                 }
                 if (store === "denied") return Effect.fail(PERMISSION_DENIED("readDirectory"));
@@ -4265,16 +4290,16 @@ describe("UsageService", () => {
         store = "ok";
         yield* Deferred.succeed(release, undefined);
         yield* service.awaitPersisted;
+        // Both scans' persists waited behind the hung load; the one that ran covered both.
+        assert.strictEqual(listsOnceOk, 1);
         yield* TestClock.adjust("5 seconds");
         const loaded = yield* service.readSummary(WINDOW);
         assert.strictEqual(claudeSource(loaded)?.status, "ok");
         assert.isNull(claudeSource(loaded)?.message);
-        assert.deepStrictEqual(
-          logs
-            .of("Info", "Recovered saved transcript usage")
-            .map((fields) => (fields as { path: string }).path),
-          [storeDir, storeDir],
-        );
+        const pathsLogged = (message: string) =>
+          logs.of("Info", message).map((fields) => (fields as { path: string }).path);
+        assert.deepStrictEqual(pathsLogged("Recovered saved transcript usage"), [storeDir]);
+        assert.deepStrictEqual(pathsLogged("Saved transcript usage finished loading"), [storeDir]);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
