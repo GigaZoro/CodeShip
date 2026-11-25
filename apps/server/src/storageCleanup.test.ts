@@ -2404,6 +2404,93 @@ it.effect.each(["private delegate", "background command", "foreign background co
     ),
 );
 
+it.effect.each(
+  (["command", "delegate"] as const).flatMap((kind) =>
+    (
+      [
+        { status: "cancelled", result: "Cancelled.", payloadState: "disposed", outcome: "removed" },
+        { status: "cancelled", result: null, payloadState: "disposed", outcome: "removed" },
+        { status: "cancelled", result: "Cancelled.", payloadState: "delivered", outcome: "kept" },
+        { status: "completed", result: "Final output", payloadState: "disposed", outcome: "kept" },
+        { status: "failed", result: "Exited with 1", payloadState: "disposed", outcome: "kept" },
+        {
+          status: "interrupted",
+          result: "Partial output",
+          payloadState: "disposed",
+          outcome: "kept",
+        },
+      ] as const
+    ).map((row) => ({ kind, ...row })),
+  ),
+)(
+  "a disposed $status $kind result with payload state $payloadState leaves its owner $outcome",
+  ({ kind, status, result, payloadState, outcome }) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW_MS);
+        const sql = yield* SqlClient.SqlClient;
+        const fixture = yield* cleanupFixture(undefined, true, sql);
+        fixture.disable();
+        const ownerId = ThreadId.make("thread-1");
+        const ownerRun = RunId.make("owner-run");
+        const taskId = NodeId.make("node:delegated-task:disposed");
+        const stoppedAt = DateTime.formatIso(at(-2 * DAY_MS));
+        const finishedAt = DateTime.formatIso(at(-DAY_MS));
+        const command = {
+          command: "sleep 600",
+          cwd: fixture.worktree,
+          logPath: "command.log",
+          timeoutMinutes: 10,
+        };
+        fixture.setThreads([
+          shell({
+            branch: "feature",
+            worktreePath: fixture.worktree,
+            status: "completed",
+            latestRunId: ownerRun,
+            latestRunCompletedAt: at(-DAY_MS),
+          }),
+        ]);
+        yield* sql`INSERT INTO orchestration_v2_projection_runs
+          (run_id, thread_id, ordinal, provider, status, requested_at, completed_at, payload_json)
+          VALUES ('spawner', ${ownerId}, 1, 'test', 'cancelled', ${stoppedAt}, ${stoppedAt}, '{}'),
+            (${ownerRun}, ${ownerId}, 2, 'test', 'completed', ${stoppedAt}, ${finishedAt}, '{}')`;
+        if (kind === "command") {
+          yield* sql`INSERT INTO command_runs
+            (task_id, thread_id, run_id, command, cwd, directory, status, exit_code, started_at, deadline_at, ended_at, delivered_at)
+            VALUES (${taskId}, ${ownerId}, 'spawner', ${command.command}, ${command.cwd},
+              ${fixture.config.stateDir}, 'stopped', NULL, ${stoppedAt}, ${finishedAt}, ${stoppedAt}, ${stoppedAt})`;
+        }
+        yield* sql`INSERT INTO orchestration_v2_projection_subagents
+          (subagent_id, thread_id, run_id, parent_node_id, provider, child_thread_id, origin, status,
+           completed_at, updated_at, payload_json, completion_delivery_state)
+          VALUES (${taskId}, ${ownerId}, 'spawner', 'root', 'test',
+            ${kind === "delegate" ? "child-thread" : null}, 'app_owned', ${status}, ${stoppedAt}, ${stoppedAt},
+            ${JSON.stringify({
+              ...(result === null ? {} : { result }),
+              ...(kind === "command" ? { command } : {}),
+              completionDelivery: { state: payloadState, observedByRunId: null },
+            })}, 'disposed')`;
+        const { file } = yield* queueWorktreeRelease({
+          stateDir: fixture.config.stateDir,
+          threadId: ownerId,
+          runId: ownerRun,
+          worktreePath: fixture.worktree,
+          durableRef: "refs/heads/main",
+        });
+        const entry = (yield* fixture.service.runNow).entries.find(
+          (row) => row.threadId === ownerId,
+        );
+        expect(entry?.outcome, entry?.reason).toBe(outcome);
+        if (outcome === "kept") {
+          expect(entry?.reason).toContain("has no verified consumer in a completed run");
+        }
+        expect(yield* fixture.fs.exists(file + ".released")).toBe(outcome === "removed");
+        expect(yield* fixture.fs.exists(fixture.worktree)).toBe(outcome === "kept");
+      }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+    ),
+);
+
 it.live("releases the bound family only after every member settles and delivers", () =>
   runCleanupTest(
     Effect.gen(function* () {

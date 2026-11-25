@@ -41,6 +41,7 @@
 - If rollback finds a checkout awaiting release recovery, it directs you to send a follow-up in the owning chat. The follow-up restores the checkout before you retry rollback.
 - Recreating a deleted task branch restores the pull request base recorded at release, including its remote. An owner-recreated branch keeps the base its owner chose.
 - A root chat can release its shared checkout once its subagents and side chats finish and their results arrive. A follow-up from the family or a new fork can recreate the checkout from the project's current base.
+- A task you cancel, or one cut short when you stop its chat, no longer keeps the checkout. A finished task's result that the chat has not read still keeps it until the chat reads it.
 - After a restart, a family can resume an intact checkout whose removal was interrupted. CodeShip checks saved ignored files and installed dependencies before reopening it. If any are missing, it keeps the claim and the backup for recovery. A follow-up can also recover a delivered task branch whose history diverged from the base.
 - A new managed checkout gets a different directory when a released family still has a claim on its usual path. Follow-ups in an existing replacement checkout verify its new Git registration, project and branch before starting.
 - Family release checks that Git supports the post-checkout hook needed to recreate the checkout.

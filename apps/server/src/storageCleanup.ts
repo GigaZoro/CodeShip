@@ -316,15 +316,18 @@ const unstartedCommandEventSequence = (sql: SqlClient.SqlClient, phase: "complet
   )`;
 };
 
+// Only a cancel or Stop gives a task the cancelled status, so its disposed result, even a
+// "Cancelled." note or a child's partial reply, was abandoned on purpose and needs no reader.
+// Any other disposed result stays held until a completed parent run reads it.
 const taskRequiresResultCheck = (sql: SqlClient.SqlClient) => sql`
   NOT (${taskHasCompletedObserver(sql)})
   AND NOT (
-    CASE WHEN t.completion_delivery_state = 'disposed' THEN
-      (t.status = 'cancelled' AND json_extract(t.payload_json, '$.result') IS NULL)
+    CASE WHEN t.completion_delivery_state = 'disposed'
+      AND json_extract(t.payload_json, '$.completionDelivery.state') IS 'disposed' THEN
+      t.status = 'cancelled'
       OR (t.status IN ('failed','interrupted')
         AND json_type(t.payload_json, '$.command') IS 'object'
         AND json_type(t.payload_json, '$.result') IS 'text'
-        AND json_extract(t.payload_json, '$.completionDelivery.state') IS 'disposed'
         AND coalesce(${unstartedCommandEventSequence(sql, "complete")} < ${unstartedCommandEventSequence(sql, "dispose")}, 0))
     ELSE 0 END
   )
