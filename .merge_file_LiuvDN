@@ -1,3 +1,23 @@
+## 2026-11-25 — A tool call a failed run left open no longer holds automatic updates
+
+- When T3.CodeShip has to stop a chat's provider itself, because it could not record the turn's output or found the turn still running when the next message started, it now also closes the tool calls that turn had open. Before, such a call stayed "running" for ever, and an automatic update waited on it as background work until the server restarted.
+- While an update waits on background work, its log line is written once each time that work changes instead of about once a second.
+
+## 2026-11-25 — Scheduled runs report blocked work as failed
+
+- A scheduled run's agent can now report how its occurrence ended. If a required step could not be done, the run shows as failed in the schedule's history and status instead of succeeded. A run with nothing to do stays successful, and the first report of a run is final.
+
+## 2026-11-25 — Landings finish on a Mac left alone
+
+- A landing keeps a Mac from idle-sleeping until it ends, so checks no longer time out while a Mac on battery sleeps.
+- A landing no longer stops on a conflict in the agent tool-text size budget when main added tool text too.
+
+## 2026-11-25 — A Mac's sleep no longer times out checks or landings
+
+- For people who work on T3.CodeShip: `vp run check:changed` now counts its step and Git time limits in time the machine is awake. Before, a Mac that slept during a run came back to find healthy steps killed as `TIMEOUT`.
+- A landing's fetch or push of `main` that ran out of time because the Mac slept now runs again instead of ending the landing.
+- The short Git and Node version reads of a check or a push now run once more when they time out, so one the Mac slept under no longer fails the check.
+
 ## 2026-11-25 — Restore Codex metadata packaging for releases
 
 - Linux, Windows and macOS release builds now fetch the Codex metadata build files from the exact release commit. An unrelated vendored Git submodule had stopped packaging before the runtime could be built.
@@ -56,6 +76,12 @@
 
 - Storage cleanup kept a finished worktree with "Worktree has private reflogs" once Git had deleted a worktree-only ref and left its reflog's empty folders. Those worktrees are released; a reflog that still holds history keeps its worktree.
 - A delegated task on a linked machine whose last reply or plan was blank gave the chat that started it a blank result. Its result is now its last reply with text, as for a task on this machine.
+
+## 2026-11-24 — Usage figures follow every usage setting
+
+- Changing any setting the Usage page reads starts a new scan. The figures and scan errors from before the change are no longer shown while it runs, on web and mobile. This covers prices, model aliases, the model filter, Cursor Keychain access, and turning a provider on or off. It also covers a provider's home folder or environment variables.
+- Usage figures that include a transcript the scan could not read are labelled as possibly incomplete instead of "Ready" or "Usage up to date".
+- When a refresh times out, the page keeps the last figures it had for the same window and settings and marks them as possibly incomplete, instead of failing.
 
 ## 2026-11-24 — Shipping a branch with release checks pending
 
@@ -292,6 +318,17 @@
 
 - New owner requests and accepted guest messages receive a demand ID. Steering, failover, and final review retain the original demand. Delegated questions and completions use their recorded sources. On-return compaction shares the demand ID of the following message.
 
+## 2026-11-22 — Stopped usage scans end cleanly and slow compressed transcripts finish
+
+- Stopping a Usage scan while it checks where a transcript left off no longer crashes the server, and a stopped scan does no more reading.
+- A compressed (`.jsonl.zst`) transcript that produces no output for a while as it decompresses no longer makes the Usage scan give up as stalled and start again.
+
+## 2026-11-22 — Saved usage works with several T3 processes at once
+
+- Saved transcript usage is now kept as separate snapshot files. Several T3.CodeShip processes on one machine can add to it at the same time without taking a lock, so a Usage scan never waits for another process to finish saving.
+- If saved usage is damaged, can't be read, or comes from a newer version, the file is kept and the Usage page marks the figures as partial. They count in full again once the file can be read. The cache from an older version is moved in and merged once, even when several processes start together.
+- If saving fails at shutdown, the error log says how many transcript files were left unsaved. Saved rows older than 92 days are removed before every save.
+
 ## 2026-11-22 — A Windows command's folder is free as soon as it ends
 
 - On Windows, the hidden wrapper that runs a `t3_command_run` command now works in its own run folder and starts the command in its `cwd`. Before, the wrapper worked in the command's folder and outlived the command for a moment to record how it ended, so an agent that removed that folder, such as a worktree, as soon as the command's end reached it could be refused with "being used by another process".
@@ -342,6 +379,10 @@
 
 - A thread started in a new worktree from a pushed commit that none of the checkout's fetched branches reaches, such as one on a branch a single-branch clone does not fetch, now starts. The launch fetches the commit itself, from the primary remote first and then the project's other remotes. Before, it fetched only the primary remote's branches and refused the commit as missing.
 - `delegate_task` to a linked environment now fails with "Unable to read this thread's project." when your thread's project cannot be read, instead of asking for a `target.projectId` it does not need or starting a worktree helper from that project's default branch.
+
+## 2026-11-21 — Usage scans share one refresh
+
+- The Usage page shares one transcript scan with its slow-source refresh. If a scan runs past the request deadline, the page can show the figures already collected while the scan continues. New transcripts can take up to five seconds to appear.
 
 ## 2026-11-21 — Worktree helpers in another repository on a linked machine start from its default branch
 
