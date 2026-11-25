@@ -135,7 +135,6 @@ import {
 import {
   canRefreshDelegatedTaskObservation,
   disposedTaskResultFingerprint,
-  type OrchestratorV2Error,
 } from "../orchestration-v2/Orchestrator.ts";
 import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -1993,7 +1992,9 @@ const make = Effect.gen(function* () {
         active.threadId === scope.thread.threadId
           ? active
           : undefined;
-      const logObservationError = (error: OrchestratorV2Error) =>
+      const logObservationError = (
+        error: Effect.Error<ReturnType<typeof threadManagement.dispatch>>,
+      ) =>
         Effect.logError("orchestrator-mcp.task-result-observation-failed", {
           threadId: scope.thread.threadId,
           taskId: task.id,
