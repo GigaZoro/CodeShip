@@ -459,6 +459,20 @@ function makeStateValidators(
 export const isRetained = (entry: CachedFile, retentionCutoffMs: number): boolean =>
   (entry.missingSinceMs ?? entry.mtimeMs) >= retentionCutoffMs;
 
+/**
+ * mergeScanEntry keeps a missing time only when it is after the presence time, so each mark
+ * stays after the other even when the clock steps back or both come in the same millisecond.
+ */
+export const markMissing = (entry: CachedFile, nowMs: number): CachedFile => ({
+  ...entry,
+  missingSinceMs: Math.max(nowMs, (entry.presentSinceMs ?? -1) + 1),
+});
+
+export const markPresent = (entry: CachedFile, nowMs: number): CachedFile => {
+  const { missingSinceMs, ...seen } = entry;
+  return { ...seen, presentSinceMs: Math.max(nowMs, missingSinceMs ?? -1) };
+};
+
 /** Mutates seen; share it across incremental line/tail batches to deduplicate the whole file. */
 export function dedupeWithinFile(
   records: readonly UsageRecord[],

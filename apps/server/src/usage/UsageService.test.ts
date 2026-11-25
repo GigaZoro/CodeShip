@@ -62,6 +62,7 @@ import {
   SCAN_CACHE_DIRECTORY_NAME,
   USAGE_SCAN_CACHE_VERSION,
 } from "./usageScanCache.ts";
+import { STAT_CONCURRENCY } from "./usageTranscriptReader.ts";
 
 vi.mock("node:fs/promises", { spy: true });
 vi.mock("../../../../packages/provider-muse/src/server/sdk.ts", async (importOriginal) => ({
@@ -3914,21 +3915,36 @@ describe("UsageService", () => {
           yield* TestClock.adjust("93 days");
           if (scenario === "does not finish") {
             const began = yield* Deferred.make<void>();
+            let hangs = true;
+            let checks = 0;
             const service = yield* UsageService.make.pipe(
               Effect.provideService(FileSystem.FileSystem, {
                 ...fs,
                 exists: (path) =>
-                  path === transcript
-                    ? Deferred.succeed(began, undefined).pipe(Effect.andThen(Effect.never))
-                    : fs.exists(path),
+                  path !== transcript
+                    ? fs.exists(path)
+                    : Effect.suspend(() => {
+                        checks += 1;
+                        return hangs
+                          ? Deferred.succeed(began, undefined).pipe(Effect.andThen(Effect.never))
+                          : fs.exists(path);
+                      }),
               }),
             );
             const answer = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
             yield* Deferred.await(began);
-            yield* TestClock.adjust("10 seconds");
+            yield* TestClock.adjust("5 seconds");
             assert.strictEqual(totalOutputTokens(yield* Fiber.join(answer)), 0);
             yield* service.awaitPersisted;
             assert.deepStrictEqual(yield* storedFileKeys(stateDir), [transcript]);
+            hangs = false;
+            yield* TestClock.adjust("59 minutes");
+            assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 0);
+            assert.strictEqual(checks, 1);
+            yield* TestClock.adjust("1 minute");
+            assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
+            assert.strictEqual(checks, 2);
+            yield* service.awaitPersisted;
           }
           const checkedAt = yield* Clock.currentTimeMillis;
           assert.strictEqual(yield* outputTokensAfterRestart, 5);
@@ -3941,6 +3957,65 @@ describe("UsageService", () => {
         }).pipe(
           Effect.provide(layerService({ prefix: "usage-unchecked-retention", home, settings })),
         );
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live(
+    "answers at the check time limit when more expired files hang than are checked at once",
+    () =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        const projectDir = yield* Effect.promise(() =>
+          NodeFSP.realpath(NodePath.dirname(transcript)),
+        );
+        const transcripts = Array.from({ length: STAT_CONCURRENCY + 1 }, (_, index) =>
+          NodePath.join(projectDir, `session-${index}.jsonl`),
+        );
+        yield* Effect.promise(() =>
+          Promise.all(
+            transcripts.map(async (file, index) => {
+              await NodeFSP.writeFile(file, claudeLine(index, 5));
+              await NodeFSP.utimes(file, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+            }),
+          ),
+        );
+        const actual = yield* Effect.promise(() =>
+          vi.importActual<typeof NodeFSP>("node:fs/promises"),
+        );
+        let denied = false;
+        using _readdir = vi.spyOn(NodeFSP, "readdir").mockImplementation(async (...args) => {
+          if (denied && args[0] === projectDir) throw new Error("permission denied");
+          return actual.readdir(...args);
+        });
+        yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          assert.strictEqual(yield* outputTokensAfterRestart, 5 * transcripts.length);
+          denied = true;
+          yield* TestClock.adjust("93 days");
+          const allBegan = yield* Deferred.make<void>();
+          let checks = 0;
+          const hung = new Set(transcripts);
+          const service = yield* UsageService.make.pipe(
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              exists: (path) =>
+                hung.has(path)
+                  ? Effect.suspend(() => {
+                      checks += 1;
+                      return checks === STAT_CONCURRENCY
+                        ? Deferred.succeed(allBegan, undefined)
+                        : Effect.void;
+                    }).pipe(Effect.andThen(Effect.never))
+                  : fs.exists(path),
+            }),
+          );
+          const answer = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
+          yield* Deferred.await(allBegan);
+          yield* TestClock.adjust("5 seconds");
+          assert.strictEqual(totalOutputTokens(yield* Fiber.join(answer)), 0);
+          assert.strictEqual(checks, STAT_CONCURRENCY);
+        }).pipe(Effect.provide(layerService({ prefix: "usage-hung-checks", home, settings })));
       }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
