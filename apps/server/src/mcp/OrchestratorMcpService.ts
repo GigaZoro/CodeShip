@@ -2000,6 +2000,7 @@ const make = Effect.gen(function* () {
           taskId: task.id,
           source,
           error: error._tag,
+          cause: error,
         });
       if (task.completionDelivery?.state === "disposed") {
         if (

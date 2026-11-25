@@ -175,16 +175,52 @@ const receiptStamp = (file: string) =>
     Effect.timeout("5 seconds"),
   );
 
+const flipCase = (value: string) =>
+  [...value]
+    .map((char) => (char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase()))
+    .join("");
+
+// A released checkout no longer exists, so its own spellings cannot be compared. A lookup in its
+// nearest existing folder shows whether that volume folds case: only then are two spellings one
+// checkout. A volume that offers nothing to test is assumed to fold, which keeps the refusal.
+const volumeFoldsCase = async (missing: string) => {
+  for (let folder = NodePath.dirname(missing); ; folder = NodePath.dirname(folder)) {
+    const found = await NodeFSP.stat(folder, { bigint: true }).catch(missingSetupPath);
+    if (found?.isDirectory()) {
+      // The iterator closes the folder when the loop ends or returns.
+      for await (const entry of await NodeFSP.opendir(folder)) {
+        const flipped = flipCase(entry.name);
+        if (flipped === entry.name) continue;
+        const one = await NodeFSP.lstat(NodePath.join(folder, entry.name), { bigint: true }).catch(
+          missingSetupPath,
+        );
+        if (!one) continue;
+        const other = await NodeFSP.lstat(NodePath.join(folder, flipped), { bigint: true }).catch(
+          missingSetupPath,
+        );
+        return (
+          other !== undefined &&
+          (one.ino === 0n || (one.dev === other.dev && one.ino === other.ino))
+        );
+      }
+    }
+    if (NodePath.dirname(folder) === folder) return true;
+  }
+};
+
 const sameCheckout = (canonical: string, original: string) =>
   Effect.tryPromise(async () => {
     const current = await NodeFSP.stat(canonical, { bigint: true }).catch(missingSetupPath);
-    if (!current || current.ino === 0n) return true;
+    if (!current) return volumeFoldsCase(canonical);
+    // Volumes without file numbers (FAT, exFAT, SMB shares) fold case.
+    if (current.ino === 0n) return true;
     const prior = await NodeFSP.stat(original, { bigint: true }).catch(missingSetupPath);
     if (prior && (prior.ino === 0n || (current.dev === prior.dev && current.ino === prior.ino)))
       return true;
     // A removal between the two stats can make a single directory look like two spellings.
     const after = await NodeFSP.stat(canonical, { bigint: true }).catch(missingSetupPath);
-    return !after || setupFileStamp(current) !== setupFileStamp(after);
+    if (!after) return volumeFoldsCase(canonical);
+    return setupFileStamp(current) !== setupFileStamp(after);
   }).pipe(Effect.timeout("5 seconds"));
 
 export const findCaseVariantReleaseReceipt = Effect.fn("WorktreeRelease.findCaseVariantReceipt")(

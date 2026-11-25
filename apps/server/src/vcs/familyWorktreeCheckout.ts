@@ -28,7 +28,7 @@ export const familyHookOperation = "GitVcsDriver.familyCheckoutHook";
 const hookError = (cwd: string, detail: string) =>
   new GitCommandError({ operation: familyHookOperation, command: "git hook run", cwd, detail });
 
-export const unconfirmedFamilyHook = (cwd: string, running: string) =>
+const unconfirmedFamilyHook = (cwd: string, running: string) =>
   hookError(
     cwd,
     `Git did not confirm the post-checkout hook's exit in ${cwd}. Check for a live hook and inspect its effects. Recovery is held by ${running}.`,
@@ -44,6 +44,46 @@ const readRecord = Effect.fn("GitVcsDriver.readFamilyCheckoutHook")(function* (
   if (stat.type !== "File" || Number(stat.size) > Buffer.byteLength(contents) + 21) return null;
   return yield* fs.readFileString(file);
 });
+
+// A failed hook leaves its exit code and the time it failed after this checkout's record.
+const failureRecord = (contents: string, record: string | null) => {
+  const failure =
+    record?.startsWith(contents) &&
+    /^\0([1-9]\d{0,2})\0(\d{1,16})$/.exec(record.slice(contents.length));
+  if (
+    !failure ||
+    contents + failure[0] !== record ||
+    Number(failure[1]) >= 128 ||
+    !Number.isSafeInteger(Number(failure[2]))
+  )
+    return null;
+  return { code: Number(failure[1]), failedAt: Number(failure[2]) };
+};
+
+// Both records remain when a stop fell between writing one and removing the other: before the
+// hook started, the pending record is still this checkout's own; after the hook exited, it holds
+// that exit. Either way no hook is running, so the active record goes. An active record alone
+// means the hook may have run partway, which only its owner can judge.
+export const settleFamilyCheckoutHook = Effect.fn("GitVcsDriver.settleFamilyCheckoutHook")(
+  function* (cwd: string, admin: string, head: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const files = yield* fs.readDirectory(admin);
+    if (!files.includes(runningFamilyCheckoutHook)) return files;
+    const running = path.join(admin, runningFamilyCheckoutHook);
+    if (!files.includes(pendingFamilyCheckoutHook))
+      return yield* unconfirmedFamilyHook(cwd, running);
+    const contents = head + "\n" + (yield* existingWorkspacePath(cwd));
+    const waiting = path.join(admin, pendingFamilyCheckoutHook);
+    const record = yield* readRecord(waiting, contents);
+    if (record !== contents && failureRecord(contents, record) === null)
+      return yield* hookError(cwd, `The pending post-checkout hook record changed at ${waiting}.`);
+    if ((yield* readRecord(running, contents)) !== contents)
+      return yield* hookError(cwd, `The active post-checkout hook record changed at ${running}.`);
+    yield* fs.remove(running);
+    return files.filter((file) => file !== runningFamilyCheckoutHook);
+  },
+);
 
 export const requireUnstartedFamilyHook = Effect.fn("GitVcsDriver.requireUnstartedFamilyHook")(
   function* (cwd: string, waiting: string, head: string) {
@@ -74,8 +114,7 @@ export const familyCheckoutHook = Effect.fn(familyHookOperation)(function* (
       cwd,
       `Git post-checkout exited with ${code} in ${cwd}. Inspect the hook and its changes before sending a new follow-up to retry it. The pending record is ${waiting}.`,
     );
-  const files = yield* fs.readDirectory(admin);
-  if (files.includes(runningFamilyCheckoutHook)) return yield* unconfirmedFamilyHook(cwd, running);
+  const files = yield* settleFamilyCheckoutHook(cwd, admin, head);
   if (files.includes("locked") || files.some((file) => file.endsWith(".lock")))
     return yield* hookError(cwd, "The restored checkout is locked.");
   if (!files.includes(pendingFamilyCheckoutHook)) {
@@ -85,22 +124,15 @@ export const familyCheckoutHook = Effect.fn(familyHookOperation)(function* (
   }
   const record = yield* readRecord(waiting, contents);
   if (record !== contents) {
-    const failure =
-      record?.startsWith(contents) &&
-      /^\0([1-9]\d{0,2})\0(\d{1,16})$/.exec(record.slice(contents.length));
-    if (
-      !failure ||
-      contents + failure[0] !== record ||
-      Number(failure[1]) >= 128 ||
-      !Number.isSafeInteger(Number(failure[2]))
-    )
+    const failure = failureRecord(contents, record);
+    if (failure === null)
       return yield* hookError(cwd, `The pending post-checkout hook record changed at ${waiting}.`);
     if (
       !Number.isSafeInteger(followUpAt) ||
       followUpAt === undefined ||
-      followUpAt <= Number(failure[2])
+      followUpAt <= failure.failedAt
     )
-      return yield* failed(Number(failure[1]));
+      return yield* failed(failure.code);
   }
   if (operation === "prepare") return;
   if (!(yield* supportsFamilyCheckoutHook(runGit)))

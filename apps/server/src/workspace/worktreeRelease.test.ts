@@ -34,6 +34,9 @@ import {
 import { releaseReservesWorktree } from "./worktreeReleaseReceipt.ts";
 
 const runFile = NodeUtil.promisify(NodeChildProcess.execFile);
+// A held checkout names the metadata check that failed.
+const metadataHold =
+  /^ignored files have changed or lack a preserved copy \(Ignored directory metadata cannot be preserved: \S.*\)$/;
 
 it.effect("holds a valid case-variant receipt without spreading damage to other paths", () =>
   Effect.gen(function* () {
@@ -44,6 +47,16 @@ it.effect("holds a valid case-variant receipt without spreading damage to other 
     );
     const original = path.join(root, "Checkout");
     const variant = path.join(root, "checkout");
+    // A released checkout is gone, so only a volume that folds case makes two spellings one path.
+    const folds = yield* Effect.tryPromise(async () => {
+      const [actual, flipped] = await Promise.all([
+        NodeFSP.stat(root, { bigint: true }),
+        NodeFSP.stat(path.join(path.dirname(root), path.basename(root).toUpperCase()), {
+          bigint: true,
+        }).catch(() => null),
+      ]);
+      return flipped !== null && flipped.dev === actual.dev && flipped.ino === actual.ino;
+    });
     const owner = ThreadId.make("owner");
     const projectId = ProjectId.make("project");
     const lineage = { parentThreadId: null, relationshipToParent: null, rootThreadId: owner };
@@ -118,7 +131,7 @@ it.effect("holds a valid case-variant receipt without spreading damage to other 
       _tag: "WorktreeReleaseReceiptError",
       receipt: repairMarker,
     });
-    expect(yield* releaseReservesWorktree(fs, root, repairedVariant)).toBe(true);
+    expect(yield* releaseReservesWorktree(fs, root, repairedVariant)).toBe(folds);
 
     const started = yield* Deferred.make<void>();
     let waiting = 0;
@@ -143,11 +156,13 @@ it.effect("holds a valid case-variant receipt without spreading damage to other 
       { _tag: "Failure", failure: { _tag: "WorktreeReleaseReceiptError" } },
     ]);
 
-    expect(yield* releaseReservesWorktree(fs, root, variant)).toBe(true);
-    expect(yield* Effect.flip(lookup(false))).toMatchObject({
-      _tag: "GitCommandError",
-      detail: expect.stringContaining(marker(original)),
-    });
+    expect(yield* releaseReservesWorktree(fs, root, variant)).toBe(folds);
+    if (folds)
+      expect(yield* Effect.flip(lookup(false))).toMatchObject({
+        _tag: "GitCommandError",
+        detail: expect.stringContaining(marker(original)),
+      });
+    else expect(yield* lookup(false)).toBeNull();
     const unrelated = path.join(root, "unrelated");
     expect(yield* releaseReservesWorktree(fs, root, unrelated)).toBe(false);
     yield* fs.makeDirectory(variant);
@@ -323,6 +338,10 @@ it.live("holds a newly set pull request base after an absent base was queued", (
     expect(yield* releaseHold(request, fixture.project)).toBe(
       "the recorded pull request base changed",
     );
+    const { branchBase: _branchBase, ...unrecorded } = request;
+    expect(yield* releaseHold(unrecorded, fixture.project)).toBe(
+      "the release receipt predates base recording; queue the release again",
+    );
   }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
 );
 
@@ -481,9 +500,7 @@ it.live("retains unknown ignored build files without relinking installed depende
               cache,
             ]),
       );
-      expect(yield* releaseHold(request, project)).toBe(
-        "ignored files have changed or lack a preserved copy",
-      );
+      expect(yield* releaseHold(request, project)).toMatch(metadataHold);
       yield* Effect.tryPromise(() =>
         platform === "darwin"
           ? runFile("/usr/bin/xattr", ["-d", "com.example.codeship", cache])
@@ -519,9 +536,7 @@ it.live("retains unknown ignored build files without relinking installed depende
           savedCache,
         ]);
       yield* Effect.tryPromise(() => changeAcl("+a"));
-      expect(yield* releaseHold(request, project)).toBe(
-        "ignored files have changed or lack a preserved copy",
-      );
+      expect(yield* releaseHold(request, project)).toMatch(metadataHold);
       yield* Effect.tryPromise(() => changeAcl("-a"));
     }
     expect(yield* releaseHold(request, project)).toBeNull();
