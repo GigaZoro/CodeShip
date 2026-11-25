@@ -928,6 +928,7 @@ const make = Effect.gen(function* () {
         scheduled: input.scheduled,
         requesterThreadId: input.threadId,
       });
+      // A recorded continuation pins the account it was routed to, so the evidence names where it ran.
       return routed === selection && !(observe && input.selection === undefined)
         ? command
         : { ...command, modelSelection: routed };
@@ -964,10 +965,12 @@ const make = Effect.gen(function* () {
       observations.push({ id: evidenceKey(instance), reason });
     };
     const command = yield* routeDispatchAccount(sent, recorder ? observe : undefined);
-    const instance =
-      command.type === "message.dispatch" ? command.modelSelection?.instanceId : undefined;
-    const selected = instance ? evidenceKey(instance) : null;
-    if (recorder) yield* recorder.route(selected, boundedCandidates(observations, selected));
+    if (recorder) {
+      const instance =
+        command.type === "message.dispatch" ? command.modelSelection?.instanceId : undefined;
+      const selected = instance ? evidenceKey(instance) : null;
+      yield* recorder.route(selected, boundedCandidates(observations, selected));
+    }
     yield* ensureCommandTranscripts(command);
     yield* assertDispatchTargetEnabled(command);
     const result = yield* orchestrator.dispatch(command);

@@ -675,7 +675,6 @@ describe("limitRecoveryTarget", () => {
   it.effect("a failed evidence write never fails the continuation it describes", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`DROP TABLE usage_stop_decisions`;
       const input = {
         source: runId,
         heldAttempt: undefined,
@@ -683,13 +682,19 @@ describe("limitRecoveryTarget", () => {
         nowMs: now,
         evidence: { reason: "reset_elapsed" as const, candidates: [], omitted: 0, selected: null },
       };
-      assert.isUndefined(yield* recordStopDecision(input));
-      yield* recordDispatchFailure("missing", "refused");
       const command = limitRecoveryCommand(stopped, true, Date.parse(resetAt));
       assert(command?.type === "message.dispatch");
-      const recorder = makeDispatchRecorder({ ...input, command }, sql);
-      yield* recorder.route(null, { candidates: [], omitted: 0 });
-      assert.isUndefined(recorder.decisionKey());
+      const routed = makeDispatchRecorder({ ...input, command }, sql);
+      yield* routed.route(null, { candidates: [], omitted: 0 });
+      assert.isDefined(routed.decisionKey());
+      yield* sql`DROP TABLE usage_stop_decisions`;
+      // The continuation already committed; its outcome update must not fail it.
+      yield* routed.committed([]);
+      assert.isUndefined(yield* recordStopDecision(input));
+      yield* recordDispatchFailure("missing", "refused");
+      const unrecorded = makeDispatchRecorder({ ...input, command }, sql);
+      yield* unrecorded.route(null, { candidates: [], omitted: 0 });
+      assert.isUndefined(unrecorded.decisionKey());
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
   );
 

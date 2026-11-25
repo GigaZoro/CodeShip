@@ -1,3 +1,7 @@
+## 2026-11-25 — Record usage-limit routing decisions
+
+- Usage-limit stops now retain opaque account choices, exclusion reasons and the account selected when a continuation starts.
+
 ## 2026-11-25 — A slow `--version` on a busy machine no longer takes a provider offline
 
 - When a provider CLI does not answer `--version` in time, for example on a machine short of memory, T3.CodeShip now checks the account with the version that CLI last reported instead of marking the provider unable to run. Before, a busy machine could make Claude report "installed but failed to run. Timed out while running command." and leave the account unavailable for up to an hour, even though the CLI worked. This applies to Claude, Grok, fx, Muse Code, Pi and OpenCode.
@@ -114,10 +118,6 @@
 
 - Storage cleanup kept a finished worktree with "Worktree has private reflogs" once Git had deleted a worktree-only ref and left its reflog's empty folders. Those worktrees are released; a reflog that still holds history keeps its worktree.
 - A delegated task on a linked machine whose last reply or plan was blank gave the chat that started it a blank result. Its result is now its last reply with text, as for a task on this machine.
-
-## 2026-11-24 — Record usage-limit routing decisions
-
-- Usage-limit stops now retain opaque account choices, exclusion reasons and the account selected when a continuation starts.
 
 ## 2026-11-24 — Daily wake usage report
 
