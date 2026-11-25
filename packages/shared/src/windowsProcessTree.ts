@@ -162,13 +162,17 @@ export interface WindowsProcessTreeRoot {
   readonly pid: number;
   /** Nothing in the tree started before this. */
   readonly since: number;
-  /** When the root started; a process holding its pid outside this window is another process. */
-  readonly created?: { readonly from: number; readonly to: number };
+  /**
+   * When the root started; a process holding its pid outside this window is another process.
+   * "unknown" trusts any holder of the pid, for a root whose start was never recorded.
+   */
+  readonly created: { readonly from: number; readonly to: number } | "unknown";
   /**
    * When the root's spawner first reported its exit. A process the walk then finds holding the
-   * root's pid is another one, and the root started nothing after this.
+   * root's pid is another one, and the root started nothing after this. "running" is for a caller
+   * that has not seen the root exit.
    */
-  readonly ended?: number;
+  readonly ended: number | "running";
 }
 
 /**
@@ -188,8 +192,8 @@ export const WINDOWS_STOP_TREE_ARGS: ReadonlyArray<string> = [
 const stopTreeCall = (root: WindowsProcessTreeRoot): Array<string | number> => [
   root.pid,
   root.since,
-  ...(root.created === undefined ? [] : [root.created.from, root.created.to]),
-  ...(root.ended === undefined ? [] : ["-ended", root.ended]),
+  ...(root.created === "unknown" ? [] : [root.created.from, root.created.to]),
+  ...(root.ended === "running" ? [] : ["-ended", root.ended]),
 ];
 
 const stopTreeArgs = (call: ReadonlyArray<string | number>): Array<string> =>
@@ -207,7 +211,7 @@ export const windowsStopTreeArgs = (root: WindowsProcessTreeRoot): Array<string>
  */
 export const windowsTreeRootFromNow = (): ((pid: number) => WindowsProcessTreeRoot) => {
   const since = Date.now();
-  return (pid) => ({ pid, since, created: { from: since, to: Date.now() } });
+  return (pid) => ({ pid, since, created: { from: since, to: Date.now() }, ended: "running" });
 };
 
 /** The root of a process whose spawner reported its exit just now, as on Node's `exit` event. */

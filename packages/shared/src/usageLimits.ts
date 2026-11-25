@@ -176,6 +176,32 @@ export function exhaustedUsageWindow(
   );
 }
 
+/** Codex's spend control: the most of its prepaid credits a workspace member may spend each month. */
+const CODEX_CREDIT_LIMIT_WINDOW_ID = "individual";
+
+/**
+ * Whether this Codex account's prepaid credits could pay for work past its plan: "used_up" when
+ * the balance or the monthly credit limit is spent, null for other providers and accounts without
+ * credits. A balance the reading leaves out or cannot be read as a number counts as usable.
+ */
+export function codexCreditStanding(
+  provider: ServerProvider,
+  now: number,
+): "usable" | "used_up" | null {
+  const limits = provider.usageLimits;
+  if (provider.driver !== "codex" || limits?.credits === undefined) return null;
+  const creditLimit = limits.windows.find((window) => window.id === CODEX_CREDIT_LIMIT_WINDOW_ID);
+  if (
+    creditLimit !== undefined &&
+    creditLimit.usedPercent >= 100 &&
+    usageWindowLimitEnd(limits, creditLimit) > now
+  )
+    return "used_up";
+  if (limits.credits.unlimited || limits.credits.balance === undefined) return "usable";
+  const balance = Number(limits.credits.balance);
+  return Number.isFinite(balance) && balance <= 0 ? "used_up" : "usable";
+}
+
 /**
  * Like `exhaustedUsageWindow`, counting only windows that leave the account's other models
  * usable, such as Claude's weekly Opus cap. Cursor's two pools back each other up, so neither counts.
@@ -488,27 +514,81 @@ const nativeReport = (provider: ServerProvider): AccountReport => ({
   usageLimits: provider.usageLimits,
 });
 
-// Include every enabled login, even unreadable workspaces.
-function accountKeyResolver(reports: Iterable<AccountReport>) {
+type AccountWorkspace = readonly [login: string, workspace: string];
+
+export interface LimitAccountWorkspaces {
+  readonly byLogin: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly byHub: ReadonlyMap<string, readonly AccountWorkspace[]>;
+  readonly byNative: ReadonlyMap<string, readonly AccountWorkspace[]>;
+}
+
+function accountWorkspace(report: AccountReport): AccountWorkspace[] {
+  const login = accountKey(report.driver, report.email, report.usageLimits);
+  return login && report.workspaceId ? [[login, report.workspaceId]] : [];
+}
+
+function accountWorkspaces(evidence: Iterable<AccountWorkspace>) {
   const workspaces = new Map<string, Set<string>>();
-  for (const report of reports) {
-    const key = accountKey(report.driver, report.email, report.usageLimits);
-    if (key && report.workspaceId) {
-      workspaces.set(key, (workspaces.get(key) ?? new Set()).add(report.workspaceId));
+  for (const [login, workspace] of evidence) {
+    const known = workspaces.get(login);
+    if (known === undefined) workspaces.set(login, new Set([workspace]));
+    else known.add(workspace);
+  }
+  return workspaces;
+}
+
+export function limitAccountWorkspaces(
+  presentations: LimitPresentations,
+  previous?: LimitAccountWorkspaces,
+): LimitAccountWorkspaces {
+  const byHub = new Map<string, readonly AccountWorkspace[]>();
+  const byNative = new Map<string, readonly AccountWorkspace[]>();
+  for (const [environmentId, { serverConfig }] of presentations) {
+    for (const source of serverConfig?.usageLimitSources ?? []) {
+      const key = JSON.stringify([environmentId, source.id]);
+      // A successful read replaces evidence, including an empty result. Removed hubs have no entry.
+      byHub.set(
+        key,
+        source.error !== undefined
+          ? (previous?.byHub.get(key) ?? [])
+          : source.accounts.flatMap(accountWorkspace),
+      );
+    }
+    for (const provider of serverConfig?.providers ?? []) {
+      if (!provider.enabled) continue;
+      const key = JSON.stringify([environmentId, provider.instanceId]);
+      const unavailable =
+        provider.auth.status === "unknown" ||
+        provider.usageLimits?.unavailable?.reason === "probeFailed";
+      byNative.set(
+        key,
+        unavailable
+          ? (previous?.byNative.get(key) ?? accountWorkspace(nativeReport(provider)))
+          : accountWorkspace(nativeReport(provider)),
+      );
     }
   }
+  return {
+    byLogin: accountWorkspaces([...byNative.values(), ...byHub.values()].flat()),
+    byHub,
+    byNative,
+  };
+}
+
+function accountKeyResolver(workspaces: LimitAccountWorkspaces["byLogin"]) {
   return (report: AccountReport): string | null => {
     const key = accountKey(report.driver, report.email, report.usageLimits);
     if (!key) return null;
-    if (report.workspaceId) return `${key}:${report.workspaceId}`;
     const known = workspaces.get(key);
-    if (!known) return key;
+    if (report.workspaceId) return `${key}:${report.workspaceId}`;
+    if (!known || known.size === 0) return key;
     return known.size === 1 ? `${key}:${[...known][0]}` : null;
   };
 }
 
 export interface LimitAccount {
   readonly key: string;
+  readonly identity?: string | undefined;
   readonly driver: ServerProvider["driver"];
   readonly displayName: string | null;
   readonly email: string | undefined;
@@ -528,7 +608,10 @@ export interface LimitAccount {
   readonly limits: ServerProviderUsageLimits;
 }
 
-export function collectLimitAccounts(presentations: LimitPresentations): readonly LimitAccount[] {
+export function collectLimitAccounts(
+  presentations: LimitPresentations,
+  workspaces = limitAccountWorkspaces(presentations),
+): readonly LimitAccount[] {
   const accounts = new Map<string, LimitAccount>();
   const creditSources = new Map<string, LimitAccount>();
   const hubRedeems = new Map<string, LimitAccount>();
@@ -593,20 +676,16 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
       },
     });
   };
-  const resolveKey = accountKeyResolver(
-    [...presentations.values()].flatMap((presentation) => [
-      ...(presentation.serverConfig?.providers ?? [])
-        .filter((provider) => provider.enabled)
-        .map(nativeReport),
-      ...(presentation.serverConfig?.usageLimitSources ?? []).flatMap((source) => source.accounts),
-    ]),
-  );
+  const resolveKey = accountKeyResolver(workspaces.byLogin);
   for (const [environmentId, presentation] of presentations) {
     const label = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
       if (!provider.usageLimits || limitsNotice(provider.usageLimits) !== null) continue;
-      merge(resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`, {
-        key: `${environmentId}:${provider.instanceId}`,
+      const identity = resolveKey(nativeReport(provider)) ?? undefined;
+      const key = identity ?? `${environmentId}:${provider.instanceId}`;
+      merge(key, {
+        key,
+        identity,
         driver: provider.driver,
         displayName: provider.displayName?.trim() || null,
         email: provider.auth.email,
@@ -629,9 +708,13 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         : source.label;
       for (const account of source.accounts) {
         if (limitsNotice(account.usageLimits) !== null) continue;
-        const key = `${source.id}:${account.id}${account.workspaceId ? `:${account.workspaceId}` : ""}`;
-        merge(resolveKey(account) ?? key, {
+        const identity = resolveKey(account) ?? undefined;
+        const key =
+          identity ??
+          `${source.id}:${account.id}${account.workspaceId ? `:${account.workspaceId}` : ""}`;
+        merge(key, {
           key,
+          identity,
           driver: account.driver,
           displayName: account.email ? null : account.id.replace(/\.json$/i, ""),
           email: account.email,
@@ -774,10 +857,12 @@ export function displayLimitWindows(pool: LimitPool) {
  * The window closest to running out across providers. Session and weekly allowances gate work, so a
  * provider's monthly spend cap or one-off quota counts only when it reports neither.
  */
-export function tightestLimitWindow(pools: readonly LimitPool[]) {
+export function tightestLimitWindow(pools: readonly LimitPool[], now = -Infinity) {
   let tightest: { readonly pool: LimitPool; readonly window: LimitPoolWindow } | null = null;
   for (const pool of pools) {
-    const windows = displayLimitWindows(pool);
+    const windows = displayLimitWindows(pool).filter(({ members }) =>
+      members.some(({ window }) => (resetMillis(window) ?? Infinity) > now),
+    );
     const gating = windows.filter(
       (window) => window.kind === "session" || window.kind === "weekly",
     );
@@ -808,21 +893,8 @@ export function collectLimitPools(
     else byDriver.set(account.driver, [account]);
   }
   return [...byDriver].map(([driver, members]) => {
-    const orderWindow = members
-      .flatMap((account) => account.limits.windows)
-      .sort((left, right) => WINDOW_KIND_ORDER[left.kind] - WINDOW_KIND_ORDER[right.kind])[0];
-    const orderReset = (account: LimitAccount) => {
-      const window = account.limits.windows.find(
-        (window) => orderWindow && poolKey(driver, window) === poolKey(driver, orderWindow),
-      );
-      return (
-        (window ? resetMillis(poolMember(account, window, now).window) : null) ??
-        Number.POSITIVE_INFINITY
-      );
-    };
     const sorted = [...members].sort(
       (left, right) =>
-        orderReset(left) - orderReset(right) ||
         accountSortName(left).localeCompare(accountSortName(right)) ||
         left.key.localeCompare(right.key),
     );
@@ -830,8 +902,42 @@ export function collectLimitPools(
   });
 }
 
+/** Every pool shows a relative "checked … ago" label besides any countdown, so either needs the minute clock. */
+export function showsRelativeLimitTimes(accounts: readonly LimitAccount[]): boolean {
+  return accounts.length > 0;
+}
+
+export function findLimitAccountWindow(
+  pools: readonly LimitPool[],
+  accountKey: string,
+  windowId: string,
+  kind: LimitPoolWindow["kind"],
+) {
+  for (const pool of pools) {
+    for (const window of displayLimitWindows(pool)) {
+      if (window.kind !== kind) continue;
+      const member = window.members.find(
+        ({ account, window: reading }) =>
+          account.key === accountKey && (window.id === windowId || reading.id === windowId),
+      );
+      if (member !== undefined)
+        return {
+          account: member.account,
+          window: member.window,
+          reset: window.resets.find(({ member }) => member.account.key === accountKey),
+        };
+    }
+  }
+  return null;
+}
+
 function accountSortName(account: LimitAccount): string {
-  return (account.displayName ?? account.email ?? account.key).toLowerCase();
+  return (
+    account.identity?.slice(account.driver.length + 1) ??
+    account.displayName ??
+    account.email ??
+    account.key
+  ).toLowerCase();
 }
 
 // Codex ids name slots, so pool by kind; other drivers' ids identify distinct allowances.
@@ -952,6 +1058,23 @@ export function remainingPercent(window: ServerProviderUsageWindow): number {
   return Math.round(100 - Math.max(0, Math.min(100, window.usedPercent)));
 }
 
+export function limitResetTimes(presentations: LimitPresentations): number[] {
+  const resets: number[] = [];
+  for (const { serverConfig } of presentations.values()) {
+    const reports = [
+      ...providersWithLimits(serverConfig?.providers ?? []),
+      ...(serverConfig?.usageLimitSources ?? []).flatMap(({ accounts }) => accounts),
+    ];
+    for (const report of reports) {
+      for (const window of report.usageLimits?.windows ?? []) {
+        const reset = resetMillis(window);
+        if (reset !== null) resets.push(reset);
+      }
+    }
+  }
+  return resets;
+}
+
 function resetMillis(window: ServerProviderUsageWindow): number | null {
   if (window.resetsAt === undefined) return null;
   const at = Date.parse(window.resetsAt);
@@ -989,8 +1112,10 @@ function paceOfShares(usedPercent: number, elapsed: number): LimitPace {
   return "on";
 }
 
+/** A time left under a minute reads "<1m", so every countdown and expiry keeps its own sentence. */
 export function formatDuration(ms: number): string {
   const remaining = Math.max(0, ms);
+  if (remaining < MINUTE) return t("<1m");
   const days = Math.floor(remaining / DAY);
   const hours = Math.floor((remaining % DAY) / HOUR);
   const minutes = Math.floor((remaining % HOUR) / MINUTE);
@@ -1015,7 +1140,6 @@ export function formatResetsIn(
   if (resetsAt <= now) {
     return form === "after" ? t("now") : form === "sentence" ? t("Resets now") : t("resets now");
   }
-  if (resetsAt - now < MINUTE) return t("Resets momentarily");
   const duration = formatDuration(resetsAt - now);
   switch (form) {
     case "duration":
@@ -1044,7 +1168,7 @@ export function poolResetSummary(
     const text = window ? formatResetsIn(window, now, "sentence") : null;
     return window?.resetsAt && text ? { text, resetsAt: window.resetsAt } : null;
   }
-  const next = pool.resets.find((reset) => reset.restoresPercent > 0);
+  const next = pool.resets.find((reset) => reset.at > now && reset.restoresPercent > 0);
   const when = next ? formatResetsIn(next.member.window, now, "after") : null;
   return next && when
     ? {
@@ -1129,10 +1253,14 @@ export function collectProviderUsageLimits(
 ): UsageLimitsReport | null {
   const selected = providers.find((provider) => provider.instanceId === instanceId);
   if (!selected || !hasProviderUsageLimits(selected.driver, providers, sources)) return null;
-  const resolveKey = accountKeyResolver([
-    ...providers.filter((provider) => provider.enabled).map(nativeReport),
-    ...sources.flatMap((source) => source.accounts),
-  ]);
+  const resolveKey = accountKeyResolver(
+    accountWorkspaces(
+      [
+        ...providers.filter((provider) => provider.enabled).map(nativeReport),
+        ...sources.flatMap((source) => source.accounts),
+      ].flatMap(accountWorkspace),
+    ),
+  );
   type NativeSnapshot = { provider: ServerProvider; limits: ServerProviderUsageLimits };
   const nativeByAccount = new Map<
     string,

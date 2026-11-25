@@ -1,4 +1,5 @@
 import {
+  EnvironmentId,
   USAGE_CONTRACT_VERSION,
   UsageDay,
   type UsageProviderKind,
@@ -6,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { usageEnvironmentProgress, usageLoadingState, usageProgress } from "./usageProgress.ts";
+import { usageEnvironmentProgress, usageProgress } from "./usageProgress.ts";
 
 function summary(refreshing: readonly UsageProviderKind[] = []): UsageSummary {
   return {
@@ -42,6 +43,7 @@ function environment(
 ) {
   return {
     label,
+    environmentId: EnvironmentId.make(label),
     isConnected: true,
     isPending: false,
     error: null as string | null,
@@ -53,28 +55,28 @@ function environment(
 const options = { providerLabel: (provider: UsageProviderKind) => `${provider} label` };
 
 describe("usageProgress", () => {
-  it("undims once one device answers and names the slow one", () => {
+  it("names the environments that are still updating", () => {
     const waiting = [environment("a", { isPending: true }), environment("b", { isPending: true })];
     expect(usageProgress(waiting, options)).toEqual({
-      dimmed: true,
+      announcement: null,
       label: "Updating 2 environments…",
     });
     expect(
       usageProgress([environment("a"), ...waiting.slice(1), environment("c")], options),
-    ).toEqual({ dimmed: false, label: "Updating b…" });
+    ).toEqual({ announcement: null, label: "Updating b…" });
     expect(
       usageProgress(
         [environment("a"), environment("b", { summary: null, isPending: true })],
         options,
       ),
-    ).toEqual({ dimmed: false, label: "Updating b…" });
+    ).toEqual({ announcement: null, label: "Updating b…" });
   });
 
-  it("names a slow source without dimming once its environment answers from cache", () => {
+  it("names a slow source once its environment answers from cache", () => {
     const partway = environment("a", { isPending: true, summary: summary(["cursor"]) });
     expect(usageEnvironmentProgress(partway)).toEqual({ phase: "partway", providers: ["cursor"] });
     expect(usageProgress([partway, environment("b")], options)).toEqual({
-      dimmed: false,
+      announcement: null,
       label: "Updating cursor label…",
     });
     expect(
@@ -82,9 +84,9 @@ describe("usageProgress", () => {
         [partway, environment("b", { isPending: true, summary: summary(["cursor", "grok"]) })],
         options,
       ),
-    ).toEqual({ dimmed: false, label: "Updating 2 providers…" });
+    ).toEqual({ announcement: null, label: "Updating 2 providers…" });
     expect(usageProgress([{ ...partway, isPending: false }], options)).toEqual({
-      dimmed: false,
+      announcement: null,
       label: null,
     });
   });
@@ -95,7 +97,7 @@ describe("usageProgress", () => {
       environment("failed", { error: "Offline", summary: null }),
     ];
     expect(usageProgress([environment("a"), ...ignored], options)).toEqual({
-      dimmed: false,
+      announcement: null,
       label: null,
     });
     expect(
@@ -103,18 +105,30 @@ describe("usageProgress", () => {
         [environment("a"), ...ignored, environment("slow", { summary: null, isPending: true })],
         options,
       ),
-    ).toEqual({ dimmed: false, label: "Updating slow…" });
+    ).toEqual({ announcement: null, label: "Updating slow…" });
     expect(usageEnvironmentProgress(ignored[0]!)).toEqual({ phase: "inactive" });
   });
 });
 
-describe("usageLoadingState", () => {
-  it("ignores environments that cannot answer and settles once all have", () => {
-    const state = usageLoadingState([
-      environment("a"),
-      environment("b", { summary: null, isConnected: false }),
-      environment("c", { summary: null, error: "Offline" }),
-    ]);
-    expect(state).toEqual({ partial: false, everyProvider: false, providers: new Set() });
-  });
+it("keeps two consecutive background refetches quiet and announces a manual refresh", () => {
+  const ready = environment("Desk");
+  const refetching = { ...ready, isPending: true };
+  const progress = [ready, refetching, ready, refetching, ready].map((entry) =>
+    usageProgress([entry], options),
+  );
+
+  expect(progress.map(({ label }) => label)).toEqual([null, "Updating…", null, "Updating…", null]);
+  expect(progress.map(({ announcement }) => announcement)).toEqual([null, null, null, null, null]);
+  expect(
+    usageProgress([ready], {
+      ...options,
+      refreshingEnvironmentIds: new Set([EnvironmentId.make("other")]),
+    }).announcement,
+  ).toBeNull();
+  expect(
+    usageProgress([refetching], {
+      ...options,
+      refreshingEnvironmentIds: new Set([refetching.environmentId]),
+    }).announcement,
+  ).toBe("Updating…");
 });

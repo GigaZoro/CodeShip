@@ -1,6 +1,7 @@
 import { getFormattingLocale, t } from "../../lib/i18n";
 import { providerLoginExpiryText } from "@t3tools/client-runtime/providerLoginExpiryText";
 import { providerAuthMethodText } from "@t3tools/client-runtime/providerAuthMethodText";
+import { creditGrantLeftText } from "@t3tools/client-runtime/usage-holds";
 import { providerLoginExpiry } from "@t3tools/shared/providerLoginExpiry";
 import * as Dialog from "../../components/ui/Dialog";
 import {
@@ -11,6 +12,7 @@ import {
 import {
   AuthProvidersManageScope,
   isManagedDriverAllowed,
+  type EnvironmentId,
   type ProviderAuthResponse,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -132,6 +134,13 @@ export function SettingsProviderAccountsRouteScreen({ route }: Props) {
                               ]
                             }
                             managedPolicy={environment.serverConfig.managedPolicy}
+                          />
+                        ) : null}
+                        {provider.driver === "codex" &&
+                        environment.serverConfig.environment.capabilities.creditGrants === true ? (
+                          <CodexCreditsLeft
+                            environmentId={environment.environmentId}
+                            instanceId={provider.instanceId}
                           />
                         ) : null}
                       </Fragment>
@@ -581,6 +590,30 @@ export function ProviderAccount({
           }}
         />
       ) : null}
+    </View>
+  );
+}
+
+/** What is left of the prepaid credits the user allowed this Codex account, and whose work may spend them. */
+function CodexCreditsLeft({
+  environmentId,
+  instanceId,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly instanceId: ServerProvider["instanceId"];
+}) {
+  const grants = useEnvironmentQuery(serverEnvironment.creditGrants({ environmentId, input: {} }));
+  const grant = grants.data?.grants.find((entry) => entry.instanceId === instanceId);
+  if (grant === undefined) return null;
+  const scope =
+    grant.threadIds === undefined
+      ? t("Any thread may spend them")
+      : t("Threads allowed: {count}", { count: grant.threadIds.length });
+  return (
+    <View className="border-t border-border-subtle px-4 py-3">
+      <Text textRole="footnote" className="text-foreground-muted">
+        {`${creditGrantLeftText(grant)} · ${scope}`}
+      </Text>
     </View>
   );
 }

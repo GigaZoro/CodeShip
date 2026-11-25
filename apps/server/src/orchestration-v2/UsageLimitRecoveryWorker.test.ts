@@ -24,10 +24,12 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { codexRateLimitsToLimits } from "../provider/codexUsageLimits.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as AccountRouting from "./AccountRouting.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import { NO_CREDIT_ACCESS } from "./PrepaidCreditSpend.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { CONTINUE_PROMPT } from "./RestartContinuation.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
@@ -505,6 +507,9 @@ describe("limitRecoveryTarget", () => {
     readonly dispatched: Queue.Queue<OrchestrationV2ServerCommand>;
     readonly sweeps?: Queue.Queue<number>;
     readonly signedOut?: ReadonlyArray<ProjectionStore.ProjectionSignedOutCandidate>;
+    readonly settings?: Partial<typeof DEFAULT_SERVER_SETTINGS>;
+    readonly providers?: ReadonlyArray<ServerProvider>;
+    readonly creditAccess?: AccountRouting.AccountRouting["Service"]["creditAccess"];
   }) =>
     UsageLimitRecoveryWorker.layer.pipe(
       Layer.provide(
@@ -534,22 +539,28 @@ describe("limitRecoveryTarget", () => {
               autoModeModels: { [claude]: { model: "claude-opus-5-5" } },
               autoResumeLimitedThreads: true,
               failoverLimitedThreads: false,
+              ...input.settings,
             }),
             streamChanges: Stream.never,
           }),
           Layer.mock(ProviderMcp.ProviderMcp)({ listLoaded: () => Effect.succeedNone }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
-            getProviders: Effect.succeed([
-              provider("claudeAgent", {
-                models: [
-                  model("claude-fable-5-2", "Claude Fable 5.2"),
-                  model("claude-opus-5-5", "Claude Opus 5.5"),
-                ],
-              }),
-            ]),
+            getProviders: Effect.succeed(
+              input.providers ?? [
+                provider("claudeAgent", {
+                  models: [
+                    model("claude-fable-5-2", "Claude Fable 5.2"),
+                    model("claude-opus-5-5", "Claude Opus 5.5"),
+                  ],
+                }),
+              ],
+            ),
             streamChanges: Stream.never,
           }),
-          Layer.mock(AccountRouting.AccountRouting)({ releaseAllowedHolds: Effect.succeed(false) }),
+          Layer.mock(AccountRouting.AccountRouting)({
+            releaseAllowedHolds: Effect.succeed(false),
+            creditAccess: input.creditAccess ?? (() => Effect.succeed(NO_CREDIT_ACCESS)),
+          }),
         ),
       ),
     );
@@ -612,6 +623,107 @@ describe("limitRecoveryTarget", () => {
       }).pipe(Effect.provide(layer));
     }),
   );
+
+  describe("a thread the user allowed prepaid credits", () => {
+    const codexDriver = ProviderDriverKind.make("codex");
+    const paid = ProviderInstanceId.make("codex_paid");
+    const spare = ProviderInstanceId.make("codex_spare");
+    const gpt = "gpt-5.5";
+    // Codex stopped it mid-turn when the plan ran out; Try again has since lifted that hold.
+    const onPaid: ProjectionStore.ProjectionLimitRecoveryCandidate = {
+      ...named,
+      providerInstanceId: paid,
+      latestRunProviderInstanceId: paid,
+      modelSelection: { instanceId: paid, model: gpt },
+      latestRunModel: gpt,
+    };
+    const planUsedUp = (instanceId: ProviderInstanceId) =>
+      provider(instanceId, {
+        driver: codexDriver,
+        models: [model(gpt, "GPT-5.5")],
+        usageLimits: codexRateLimitsToLimits({
+          checkedAt: "2026-10-29T11:59:00.000Z",
+          read: {
+            rateLimits: {
+              planType: "plus",
+              primary: { usedPercent: 10, windowDurationMins: 300 },
+              secondary: {
+                usedPercent: 100,
+                windowDurationMins: 10_080,
+                resetsAt: Date.parse(resetAt) / 1000,
+              },
+              credits: { balance: "25.00", hasCredits: true, unlimited: false },
+            },
+            ordinaryUsageAllowed: false,
+          },
+        }),
+      });
+    const allowedOnBoth = (failoverLimitedThreads: boolean) => ({
+      failoverLimitedThreads,
+      providerInstanceFailoverOrder: [paid, spare],
+      providerInstances: Object.fromEntries(
+        [paid, spare].map((id) => [
+          id,
+          {
+            driver: codexDriver,
+            config: { spendCredits: { capCredits: 3000, threadIds: [onPaid.id] } },
+          },
+        ]),
+      ),
+    });
+
+    it.effect.each([
+      {
+        name: "resumes it on them where it stopped, before the plan resets",
+        switching: false,
+        providers: [planUsedUp(paid)],
+        limits: new Map(),
+        expected: {
+          commandId: `limit-resume:${onPaid.id}:${runId}:${Date.parse(resetAt)}:legacy:${paid}:${gpt}`,
+          instanceId: paid,
+        },
+      },
+      {
+        name: "moves it to another account it may spend them on while its own stays held",
+        switching: true,
+        providers: [planUsedUp(paid), planUsedUp(spare)],
+        limits: new Map([[paid, [{ resetAt, refusedAt: "2026-10-29T11:00:00Z" }]]]),
+        expected: {
+          commandId: `limit-failover:${onPaid.id}:${runId}:${spare}`,
+          instanceId: spare,
+        },
+      },
+    ] as const)("a sweep $name", ({ switching, providers, limits, expected }) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(now);
+        const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+        const layer = sweepLayer({
+          candidate: onPaid,
+          limits: () => limits,
+          dispatched,
+          settings: allowedOnBoth(switching),
+          providers,
+          // As the ledger reads it: nothing spent yet, and the asking thread is the requester.
+          creditAccess: (requesterThreadId) =>
+            Effect.succeed({
+              spent: new Map([
+                [paid, 0],
+                [spare, 0],
+              ]),
+              requesters: [requesterThreadId],
+            }),
+        });
+        yield* Effect.gen(function* () {
+          const command = yield* Queue.take(dispatched);
+          assert(command.type === "message.dispatch");
+          assert.deepEqual<{ readonly commandId: string; readonly instanceId: string | undefined }>(
+            { commandId: command.commandId, instanceId: command.modelSelection?.instanceId },
+            expected,
+          );
+        }).pipe(Effect.provide(layer));
+      }),
+    );
+  });
 
   it("never resumes a thread moved to another account since its stop", () => {
     const moved = { ...stopped, providerInstanceId: ProviderInstanceId.make("claude_first") };
@@ -831,7 +943,10 @@ it.effect.each([
             ]),
             streamChanges: Stream.never,
           }),
-          Layer.mock(AccountRouting.AccountRouting)({ releaseAllowedHolds: Effect.succeed(false) }),
+          Layer.mock(AccountRouting.AccountRouting)({
+            releaseAllowedHolds: Effect.succeed(false),
+            creditAccess: () => Effect.succeed(NO_CREDIT_ACCESS),
+          }),
         ),
       ),
     );

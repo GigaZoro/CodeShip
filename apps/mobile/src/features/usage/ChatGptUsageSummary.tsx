@@ -9,8 +9,10 @@ import { t } from "../../lib/i18n";
 
 export function ChatGptUsageSummary({
   selectedEnvironmentIds,
+  disabled = false,
 }: {
   selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
+  disabled?: boolean;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
   const selected =
@@ -28,6 +30,8 @@ export function ChatGptUsageSummary({
         </View>
         <Pressable
           accessibilityRole="link"
+          accessibilityState={{ disabled }}
+          disabled={disabled}
           className="min-h-11 justify-center"
           onPress={() => void Linking.openURL(usage.url).catch(() => undefined)}
         >

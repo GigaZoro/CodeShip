@@ -1,5 +1,5 @@
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
-import { runLiftsScope } from "./AccountRouting.ts";
+import { AccountRouting, type CreditRefusal, runLiftsScope } from "./AccountRouting.ts";
 import { autoCoordinatorBriefInput } from "./autoCoordinatorAccount.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -327,6 +327,20 @@ export class ProviderTurnStartServiceV2 extends Context.Service<
   ProviderTurnStartServiceV2Shape
 >()("t3/orchestration-v2/ProviderTurnStartService/ProviderTurnStartServiceV2") {}
 
+const PREPAID_CREDITS_REFUSED_CODE = "prepaid_credits_not_allowed";
+
+function creditRefusalMessage(refusal: CreditRefusal): string {
+  const used = `This account's plan usage is used up until ${refusal.limitedUntil}, and a turn now would spend its prepaid credits.`;
+  switch (refusal.credits) {
+    case "not_enabled":
+      return `${used} Spending them is off. Only you can turn it on, with Spend prepaid credits in Settings → Providers & models.`;
+    case "out_of_scope":
+      return `${used} You allowed them only for other threads' work.`;
+    case "cap_reached":
+      return `${used} The credits you allowed it are spent. Only you can raise the cap, in Settings → Providers & models.`;
+  }
+}
+
 export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   never,
@@ -374,6 +388,7 @@ export const layer: Layer.Layer<
     const providerAdapters = yield* Effect.serviceOption(
       ProviderAdapterRegistry.ProviderAdapterRegistryV2,
     );
+    const accountRouting = yield* Effect.serviceOption(AccountRouting);
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
     const awakeSinceWake = yield* AwakeSinceWake;
 
@@ -1064,6 +1079,42 @@ export const layer: Layer.Layer<
           });
           return;
         }
+      }
+      // Codex spends prepaid credits by itself once plan usage is used up, so every path that
+      // starts a turn stops here unless the user allowed this thread's work to spend them.
+      const creditRefusal = Option.isNone(accountRouting)
+        ? null
+        : yield* accountRouting.value.creditRefusal({
+            threadId: projection.thread.id,
+            instanceId: run.providerInstanceId,
+            model: run.modelSelection.model,
+          });
+      if (creditRefusal !== null) {
+        const now = yield* DateTime.now;
+        yield* settleRunBeforeStart({
+          signal: "prepaid-credits-refused",
+          status: "failed",
+          now,
+          startedAt: now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "Prepaid credits not allowed",
+            // Not a usage limit: that would hold the account for the threads allowed to spend.
+            failure: makeProviderFailure({
+              class: "permission_error",
+              code: PREPAID_CREDITS_REFUSED_CODE,
+              message: creditRefusalMessage(creditRefusal),
+            }),
+          },
+          providerThreadUpdate: {
+            ...providerThread,
+            status: providerThread.nativeThreadRef === null ? "not_loaded" : "idle",
+            updatedAt: now,
+          },
+        });
+        return;
       }
       const { worktreePath, branch } = projection.thread;
       if (worktreePath !== null && branch !== null) {

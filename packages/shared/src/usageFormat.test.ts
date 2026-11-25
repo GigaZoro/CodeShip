@@ -7,7 +7,9 @@ import {
   enumerateHourStarts,
   formatDateTimeShort,
   formatHourShort,
+  formatRelativeHourShort,
   makeWindow,
+  usageWindowLabel,
   usageSourceMessages,
 } from "./usageFormat.ts";
 
@@ -140,9 +142,11 @@ describe("hourly usage formatting", () => {
     const instant = "2026-08-11T12:37:00.000Z";
     for (const zone of ["UTC", "America/New_York", "Asia/Kathmandu", "UTC"]) {
       expect(formatHourShort(instant, zone)).toBe(
-        new Intl.DateTimeFormat("en-US", { timeZone: zone, hour: "numeric" }).format(
-          new Date(instant),
-        ),
+        new Intl.DateTimeFormat("en-US", {
+          timeZone: zone,
+          hour: "numeric",
+          minute: "2-digit",
+        }).format(new Date(instant)),
       );
     }
     expect(() => formatHourShort(instant, "Etc/Unknown")).toThrow(RangeError);
@@ -150,25 +154,52 @@ describe("hourly usage formatting", () => {
   });
 
   it("disambiguates repeated hours during a fall-back transition", () => {
-    expect(formatHourShort("2026-11-01T05:37:00.000Z", "America/New_York")).toBe("1 AM EDT");
-    expect(formatHourShort("2026-11-01T06:37:00.000Z", "America/New_York")).toBe("1 AM EST");
+    expect(formatHourShort("2026-11-01T05:37:00.000Z", "America/New_York")).toBe("1:37 AM EDT");
+    expect(formatHourShort("2026-11-01T06:37:00.000Z", "America/New_York")).toBe("1:37 AM EST");
     expect(formatHourShort("2026-11-01T05:37:00.000Z", "America/New_York", false)).toBe(
-      "01:00 EDT",
+      "01:37 EDT",
     );
     expect(formatHourShort("2026-11-01T06:37:00.000Z", "America/New_York", false)).toBe(
-      "01:00 EST",
+      "01:37 EST",
     );
   });
 
   it("includes the zone in dated labels for repeated fall-back hours", () => {
     expect(formatDateTimeShort("2026-11-01T05:37:00.000Z", "America/New_York")).toBe(
-      "Nov 1, 1 AM EDT",
+      "Nov 1, 1:37 AM EDT",
     );
     expect(formatDateTimeShort("2026-11-01T06:37:00.000Z", "America/New_York")).toBe(
-      "Nov 1, 1 AM EST",
+      "Nov 1, 1:37 AM EST",
     );
     expect(formatDateTimeShort("2026-11-01T06:37:00.000Z", "America/New_York", false)).toBe(
-      "Nov 1, 01:00 EST",
+      "Nov 1, 01:37 EST",
+    );
+  });
+
+  it.each([1, 7])("covers the exact %i-day range with buckets anchored to the request", (days) => {
+    const now = new Date("2026-08-11T12:45:00.000Z");
+    const window = makeWindow(days, now, "hour");
+    const boundaryDay = days === 1 ? "2026-08-10" : "2026-08-04";
+    const records = [
+      `${boundaryDay}T12:44:59.999Z`,
+      `${boundaryDay}T12:50:00.000Z`,
+      "2026-08-11T12:20:00.000Z",
+      "2026-08-11T12:45:00.000Z",
+    ];
+    const [since, until] = [Date.parse(window.sinceTime!), Date.parse(window.untilTime!)];
+    expect(
+      records.filter((record) => since <= Date.parse(record) && Date.parse(record) < until),
+    ).toEqual([records[1], records[2]]);
+    expect(until - since).toBe(days * 24 * 60 * 60 * 1000);
+    const starts = enumerateHourStarts(window.sinceTime!, window.untilTime!);
+    expect(starts).toHaveLength(days * 24);
+    expect(starts[0]).toBe(`${boundaryDay}T12:45:00.000Z`);
+    expect(starts.at(-1)).toBe("2026-08-11T11:45:00.000Z");
+    expect(usageWindowLabel({ ...window, timeZone: "UTC" }, false)).toBe(
+      `Aug ${days === 1 ? 10 : 4}, 12:45 to Aug 11, 12:45`,
+    );
+    expect(makeWindow(days, new Date("2026-08-11T12:46:00.000Z"), "hour").untilTime).toBe(
+      "2026-08-11T12:46:00.000Z",
     );
   });
 
@@ -180,18 +211,26 @@ describe("hourly usage formatting", () => {
         formatDateTimeShort(instant, "UTC", true),
         formatDateTimeShort(instant, "UTC"),
         formatHourShort(instant, "UTC"),
-      ]).toEqual(["20 Nov, 5 pm", "20 Nov, 17", "17"]);
+        usageWindowLabel({ ...makeWindow(1, new Date(instant), "hour"), timeZone: "UTC" }, true),
+        usageWindowLabel({ ...makeWindow(1, new Date(instant), "hour"), timeZone: "UTC" }),
+      ]).toEqual([
+        "20 Nov, 5:47 pm",
+        "20 Nov, 17:47",
+        "17:47",
+        "19 Nov, 5:47 pm to 20 Nov, 5:47 pm",
+        "19 Nov, 17:47 to 20 Nov, 17:47",
+      ]);
     } finally {
       activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined });
     }
   });
 
-  it("builds an exact minute-aligned 24-hour request", () => {
-    const window = makeWindow(1, new Date("2026-08-11T12:37:42.123Z"), "hour");
-
-    expect(window.resolution).toBe("hour");
-    expect(window.sinceTime).toBe("2026-08-10T12:37:00.000Z");
-    expect(window.untilTime).toBe("2026-08-11T12:37:00.000Z");
+  it("labels the last bucket today at 23:45 UTC", () => {
+    const window = makeWindow(1, new Date("2026-08-11T23:45:00.000Z"), "hour");
+    const starts = enumerateHourStarts(window.sinceTime!, window.untilTime!);
+    expect(formatRelativeHourShort(starts.at(-1)!, window.untilTime!, "UTC", false)).toBe(
+      "22:45 today",
+    );
   });
 
   it("builds a seven-day hourly request across a daylight-saving transition", () => {

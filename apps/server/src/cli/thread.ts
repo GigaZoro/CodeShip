@@ -775,6 +775,7 @@ const releaseWorktreeCommand = Command.make("release-worktree", {
   durableRef: Flag.String("durable-ref"),
   alsoDurable: Flag.String("also-durable-ref").pipe(Flag.atLeast(0)),
   saveIgnored: Flag.Boolean("save-ignored").pipe(
+    Flag.withDefault(false),
     Flag.withDescription(
       "Keep every ignored file, including verified setup output, in a private hard-link backup.",
     ),

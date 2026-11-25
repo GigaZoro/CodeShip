@@ -30,6 +30,7 @@ const provider = (
   ({
     instanceId,
     driver: ProviderDriverKind.make(driver),
+    enabled: true,
     displayName,
     models: [{ slug: model, name: model.toUpperCase(), isCustom: false, capabilities: null }],
   }) as unknown as ServerProvider;
@@ -122,16 +123,29 @@ describe("finalReviewCommand", () => {
     assert.strictEqual(command?.creationSource, "server");
     assert.strictEqual(command?.demandSourceRunId, runId);
     const text = command?.text ?? "";
+    // With Auto mode off, a reviewer set to Auto runs on its saved model, as Settings shows it.
     assert.include(
       text,
-      `GPT-6-ASTRA (Codex): {"providerInstanceId":"codex","model":"gpt-6-astra"}`,
+      `GPT-6-ASTRA (Codex): {"target":{"providerInstanceId":"codex","model":"gpt-6-astra"}}`,
     );
     assert.include(
       text,
-      `CLAUDE-OPUS-5-5 (Claude work): {"providerInstanceId":"claude_work","model":"claude-opus-5-5","options":{"effort":"high"}}`,
+      `CLAUDE-OPUS-5-5 (Claude work): {"target":{"providerInstanceId":"claude_work","model":"claude-opus-5-5","options":{"effort":"high"}}}`,
     );
     assert.include(text, "`git diff refs/t3/before refs/t3/after` (1 file: src/a.ts)");
     assert.include(text, "Project review instructions:\nCheck tenant boundaries.");
+  });
+
+  // A target names an account, and a child that names one runs there, so Auto is asked for by name.
+  it("asks for a reviewer set to Auto as Auto mode while Auto can run", () => {
+    const text =
+      review({}, { ...settings, autoModeProvider: ProviderDriverKind.make("codex") })?.text ?? "";
+    assert.include(text, `- Auto mode: {"auto":true}`);
+    assert.notInclude(text, `"providerInstanceId":"codex"`);
+    assert.include(
+      text,
+      `CLAUDE-OPUS-5-5 (Claude work): {"target":{"providerInstanceId":"claude_work"`,
+    );
   });
 
   it("follows the default when the thread has no choice of its own", () => {

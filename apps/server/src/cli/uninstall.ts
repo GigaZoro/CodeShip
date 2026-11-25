@@ -6,17 +6,12 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { Command, Flag, GlobalFlag, Prompt } from "effect/cli";
 
 import * as BootService from "../cloud/bootService.ts";
-import {
-  launcherOwnsVersionsDir,
-  pinnedRuntimeVersionsDir,
-  windowsShimTarget,
-} from "../cloud/pinnedRuntime.ts";
+import { ownedLauncherVersion, pinnedRuntimeVersionsDir } from "../cloud/pinnedRuntime.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import * as CliService from "./service.ts";
 import { findWindowsShim, resolveLauncherPath } from "./update.ts";
@@ -42,23 +37,13 @@ export const findOwnedLauncher = Effect.fn("cli.uninstall.find_launcher")(functi
   readonly launchedAs: string | undefined;
   readonly versionsDir: string;
 }) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
   if (input.launchedAs === undefined) return undefined;
-  if (platform === "win32") {
-    const shimPath = yield* findWindowsShim(input.launchedAs);
-    if (shimPath === undefined) return undefined;
-    const contents = yield* fs.readFileString(shimPath).pipe(Effect.option);
-    const target = Option.isSome(contents) ? windowsShimTarget(contents.value) : undefined;
-    return target !== undefined && launcherOwnsVersionsDir(path, input.versionsDir, target)
-      ? shimPath
-      : undefined;
-  }
-  const linkTarget = yield* fs.readLink(input.launchedAs).pipe(Effect.option);
-  if (Option.isNone(linkTarget)) return undefined;
-  const resolved = path.resolve(path.dirname(input.launchedAs), linkTarget.value);
-  return launcherOwnsVersionsDir(path, input.versionsDir, resolved) ? input.launchedAs : undefined;
+  const launcher =
+    platform === "win32" ? yield* findWindowsShim(input.launchedAs) : input.launchedAs;
+  if (launcher === undefined) return undefined;
+  const version = yield* ownedLauncherVersion({ launcher, versionsDir: input.versionsDir });
+  return version === undefined ? undefined : launcher;
 });
 
 // cmd.exe needs verbatim quoting and a literal path, with delayed expansion disabled.

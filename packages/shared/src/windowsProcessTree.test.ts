@@ -22,6 +22,7 @@ import {
   endingWindowsTrees,
   type WindowsProcessTreeRoot,
   type WindowsTreeEnding,
+  windowsStopTreeArgs,
   windowsTreeRootFromNow,
   withoutWindowsTreeEnding,
 } from "./windowsProcessTree.ts";
@@ -872,7 +873,13 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       stamps = runPowerShell(
         `foreach ($id in ${roots.map(({ pid }) => pid).join(", ")}) { Ms (Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $id)).CreationDate }`,
         ...roots.map(({ pid, since, created }) =>
-          ["Stop-T3ProcessTree", pid, since, created?.from, created?.to, "-running"].join(" "),
+          [
+            "Stop-T3ProcessTree",
+            pid,
+            since,
+            ...(created === "unknown" ? [] : [created.from, created.to]),
+            "-running",
+          ].join(" "),
         ),
       );
     } finally {
@@ -1044,4 +1051,36 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       yield* leftover.ended;
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+});
+
+describe("windowsStopTreeArgs", () => {
+  const callOf = (root: WindowsProcessTreeRoot) =>
+    windowsStopTreeArgs(root).at(-1)?.split("\n").at(-1);
+
+  it("names the root's end only when the caller saw it exit", () => {
+    const created = { from: 5, to: 6 };
+    assert.strictEqual(
+      callOf({ pid: 1, since: 4, created, ended: "running" }),
+      "Stop-T3ProcessTree 1 4 5 6",
+    );
+    assert.strictEqual(
+      callOf({ pid: 1, since: 4, created, ended: 9 }),
+      "Stop-T3ProcessTree 1 4 5 6 -ended 9",
+    );
+    assert.strictEqual(
+      callOf({ pid: 1, since: 4, created: "unknown", ended: 9 }),
+      "Stop-T3ProcessTree 1 4 -ended 9",
+    );
+  });
+
+  it("requires every caller to state the root's creation window and end", () => {
+    // Compile-time only: the calls sit in a function nothing runs.
+    const rejected = () => {
+      // @ts-expect-error a root with no creation window would trust any holder of its pid
+      callOf({ pid: 1, since: 4, ended: "running" });
+      // @ts-expect-error a root with no end would let a later holder's children count as its own
+      callOf({ pid: 1, since: 4, created: "unknown" });
+    };
+    assert.isFunction(rejected);
+  });
 });

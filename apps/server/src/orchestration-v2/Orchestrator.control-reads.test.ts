@@ -4,6 +4,7 @@ import {
   CheckpointRef,
   CheckpointScopeId,
   CommandId,
+  DEFAULT_SERVER_SETTINGS,
   MessageId,
   EventId,
   NodeId,
@@ -1045,6 +1046,7 @@ it.effect.each([false, true])(
         },
         runId: owner.id,
         settings: {
+          ...DEFAULT_SERVER_SETTINGS,
           finalReviewByDefault: true,
           finalReviewModelSelections: [modelSelection],
           finalReviewInstructions: "",

@@ -1110,6 +1110,42 @@ describe("Auto mode", () => {
     ).toEqual({ instanceId, model: "claude-opus-5-5", autoAccount: true });
   });
 
+  it.each([
+    ["drops a saved option value its model no longer offers", ["low", "high"], []],
+    ["keeps a saved option value its model offers", ["low", "max"], max],
+    ["keeps saved options while the model's options are unknown", undefined, max],
+  ] as const)("Auto's pick %s", (_, efforts, options) => {
+    const model = {
+      ...opus,
+      ...(efforts === undefined
+        ? {}
+        : {
+            capabilities: {
+              optionDescriptors: [
+                {
+                  id: "effort",
+                  label: "Effort",
+                  type: "select" as const,
+                  options: efforts.map((id) => ({ id, label: id })),
+                },
+              ],
+            },
+          }),
+    };
+    expect(
+      autoModePick({
+        settings,
+        accounts: [account("claude_first", claude, [model])],
+        projectId: null,
+      }),
+    ).toEqual({
+      instanceId: "claude_first",
+      model: "claude-opus-5-5",
+      ...(options.length === 0 ? {} : { options }),
+      autoAccount: true,
+    });
+  });
+
   it("runs a provider with no Auto model on its default model", () => {
     expect(resolve(auto("claude_second"), false, { autoModeModels: {} })).toEqual({
       instanceId: "claude_first",

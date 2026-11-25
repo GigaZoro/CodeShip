@@ -1,4 +1,5 @@
-import { formatPercent } from "@t3tools/shared/usageFormat";
+import { formatPercent, usageEmptyMessage } from "@t3tools/shared/usageFormat";
+import type { MergedUsage } from "@t3tools/shared/usageMerge";
 import type { ReactNode } from "react";
 
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -15,15 +16,18 @@ export function UsageShareBar({
   segments,
   format,
   aside,
+  recordedUsage,
+  metric,
 }: {
   readonly label: string;
   readonly segments: readonly ShareSegment[];
   readonly format: (value: number) => string;
   readonly aside?: ReactNode;
+  readonly recordedUsage: Pick<MergedUsage, "records" | "costQuality" | "totalTokens" | "costUsd">;
+  readonly metric: "tokens" | "cost";
 }) {
   const visible = segments.filter((segment) => segment.value > 0);
   const total = visible.reduce((sum, segment) => sum + segment.value, 0);
-  if (total <= 0) return null;
 
   return (
     <div className="flex min-w-0 flex-col gap-2.5">
@@ -31,47 +35,58 @@ export function UsageShareBar({
         <h3 className="text-sm font-medium text-foreground">{label}</h3>
         {aside}
       </div>
-      <div
-        role="img"
-        aria-label={t("{label}: {segments}", {
-          label,
-          segments: visible
-            .map((segment) =>
-              t("{label} {value}", { label: segment.label, value: format(segment.value) }),
-            )
-            .join(", "),
-        })}
-        className="flex h-2 gap-0.5"
-      >
-        {visible.map((segment) => (
-          <Tooltip key={segment.label}>
-            <TooltipTrigger
-              render={
-                <div
-                  className="h-full min-w-1 rounded-xs first:rounded-l-full last:rounded-r-full"
-                  style={{ flex: `${segment.value} 1 0`, backgroundColor: segment.color }}
+      {total <= 0 ? (
+        <>
+          <div aria-hidden className="h-2 rounded-full bg-muted" />
+          <p className="text-xs text-muted-foreground">
+            {usageEmptyMessage(recordedUsage, metric)}
+          </p>
+        </>
+      ) : (
+        <>
+          <div
+            role="img"
+            aria-label={t("{label}: {segments}", {
+              label,
+              segments: visible
+                .map((segment) =>
+                  t("{label} {value}", { label: segment.label, value: format(segment.value) }),
+                )
+                .join(", "),
+            })}
+            className="flex h-2 gap-0.5"
+          >
+            {visible.map((segment) => (
+              <Tooltip key={segment.label}>
+                <TooltipTrigger
+                  render={
+                    <div
+                      className="h-full min-w-1 rounded-xs first:rounded-l-full last:rounded-r-full"
+                      style={{ flex: `${segment.value} 1 0`, backgroundColor: segment.color }}
+                    />
+                  }
                 />
-              }
-            />
-            <TooltipPopup>
-              {segment.label} · {format(segment.value)} · {formatPercent(segment.value / total)}
-            </TooltipPopup>
-          </Tooltip>
-        ))}
-      </div>
-      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-        {visible.map((segment) => (
-          <span key={segment.label} className="flex items-center gap-1.5">
-            <span
-              aria-hidden
-              className="size-2 rounded-xs"
-              style={{ backgroundColor: segment.color }}
-            />
-            <span className="text-muted-foreground">{segment.label}</span>
-            <span className="text-foreground tabular-nums">{format(segment.value)}</span>
-          </span>
-        ))}
-      </div>
+                <TooltipPopup>
+                  {segment.label} · {format(segment.value)} · {formatPercent(segment.value / total)}
+                </TooltipPopup>
+              </Tooltip>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+            {visible.map((segment) => (
+              <span key={segment.label} className="flex items-center gap-1.5">
+                <span
+                  aria-hidden
+                  className="size-2 rounded-xs"
+                  style={{ backgroundColor: segment.color }}
+                />
+                <span className="text-muted-foreground">{segment.label}</span>
+                <span className="text-foreground tabular-nums">{format(segment.value)}</span>
+              </span>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

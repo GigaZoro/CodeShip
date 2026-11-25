@@ -240,6 +240,7 @@ type DelegateTaskInput = {
   };
   title?: string;
   role?: "implementation" | "research" | "review" | "design" | "test" | "general";
+  auto?: boolean;
   mode?: "async" | "wait";
   timeoutMs?: number;
   clientRequestId?: string;
@@ -256,15 +257,32 @@ when unavailable. Selecting a different provider without a model uses that
 provider's first advertised model.
 
 A child on its parent's provider instance and model, named by slug or alias,
-inherits the parent's options, and given `options` override them one by one
-(`[]` or `{}` clears them; an option given twice fails the call). An alias can
-name another model in a linked environment, so a child there inherits them only
-on the parent's model named by its slug in this environment, and an omitted
-model is sent as that slug. A child on an Auto model would run the options
-saved for Auto instead, so a target that gives options runs on that model as
-named, not as Auto; without options it stays Auto. A role's model whose account
-is gone, or no longer offers it, falls back to the parent's; one that rejects
-the given options fails the call.
+inherits the parent's options that model still offers, and given `options`
+override them one by one (`[]` or `{}` clears them; an option given twice fails
+the call). An alias can name another model in a linked environment, so a child
+there inherits them only on the parent's model named by its slug in this
+environment, and an omitted model is sent as that slug. A role's model whose
+account is gone, or no longer offers it, falls back to the parent's; one that
+rejects the given options fails the call.
+
+A child whose target names no provider, model or options runs as its parent
+does, or on its role's model from Settings, and stays Auto when that selection
+is Auto. A role's model set to Auto starts where Auto mode starts a new chat,
+and on its saved model while Auto mode cannot run, as the Settings picker shows
+it. Auto picks its own provider, account, model and options when a child
+starts, so a target that names any of them runs exactly as named instead, even
+in an Auto chat. Auto's saved options keep only the values the child's model
+still offers. `auto: true` starts the child on Auto mode's pick, as for
+`create_threads`; it cannot be combined with `target` and fails with
+`auto_mode_unavailable` while Auto mode is off. `auto: false` turns Auto off
+for the inherited selection: the child starts on that account and leaves it, as
+any child that is not Auto does, only when usage-limit failover moves it to an
+account with room, possibly on the other provider. A child in another project's
+worktree uses that project's accounts and Auto settings. A child of an Auto
+chat on a linked machine, whose target names only where it runs, stays Auto
+there on that machine's Auto settings; while Auto mode is off there, the
+refused launch made no thread, so the same request starts it on the parent's
+model.
 
 A provider runs a runtime mode it does not offer as `approval-required`, so a
 child would ask for approval on every command. `orchestrator_capabilities`
@@ -440,7 +458,9 @@ type CreateThreadsInput = {
       providerInstanceId?: string;
       driverKind?: string;
       model?: string;
+      options?: Record<string, string | boolean>;
     };
+    auto?: boolean;
     runtimeMode?: "inherit" | "approval-required" | "auto-accept-edits" | "full-access";
     interactionMode?: "inherit" | "plan" | "default";
   }>;
@@ -650,6 +670,11 @@ thread_not_sendable
 thread_not_interruptible
 invalid_request
 orchestration_error
+thread_credential_required
+target_required
+memory_short
+auto_mode_unavailable
+version_mismatch
 ```
 
 ## Code Ownership

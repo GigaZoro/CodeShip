@@ -9,6 +9,7 @@ import {
   type ProviderInstanceId,
   type RunId,
   type ServerSettings as ServerSettingsValue,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { limitRecoveryDeclined, snoozeHoldsStop } from "@t3tools/shared/orchestrationV2ThreadError";
 import { canAccountRun } from "@t3tools/shared/serverSettings";
@@ -523,7 +524,21 @@ const makeSweep = Effect.gen(function* () {
             }),
             nowMs,
           };
-    const failover = switching ? routing : null;
+    // Each stopped thread is the requester its prepaid credits are judged for, as at dispatch.
+    const routings = new Map(
+      routing === null
+        ? []
+        : yield* Effect.forEach([...signedOut, ...candidates], (thread) =>
+            accountRouting
+              .creditAccess(thread.id)
+              .pipe(
+                Effect.map((creditAccess) => [thread.id, { ...routing, creditAccess }] as const),
+              ),
+          ),
+    );
+    const routingFor = (thread: { readonly id: ThreadId }) => routings.get(thread.id) ?? null;
+    const failoverFor = (thread: { readonly id: ThreadId }) =>
+      switching ? routingFor(thread) : null;
     const dispatchContinuation = (command: DispatchCommand, failureMessage: string) =>
       threads.dispatch(command).pipe(
         Effect.as("dispatched" as const),
@@ -543,9 +558,11 @@ const makeSweep = Effect.gen(function* () {
     let targetRoomAt = Infinity;
     for (const thread of signedOut) {
       // Moving needs the account still signed out, resuming it signed in, so at most one applies.
+      const failover = failoverFor(thread);
+      const routed = routingFor(thread);
       const command =
         (failover === null ? null : signedOutFailoverCommand({ ...failover, thread })) ??
-        (routing === null ? null : signedInResumeCommand({ ...routing, thread }));
+        (routed === null ? null : signedInResumeCommand({ ...routed, thread }));
       if (command === null) continue;
       const outcome = yield* dispatchContinuation(
         command,
@@ -554,10 +571,12 @@ const makeSweep = Effect.gen(function* () {
       if (outcome !== "refused") acted = true;
     }
     for (const thread of candidates) {
+      const failover = failoverFor(thread);
+      const routed = routingFor(thread);
       // Another account with room comes first: it costs no banked credit.
       const continuation =
         (failover === null ? null : limitFailoverCommand({ ...failover, thread })) ??
-        (routing === null ? null : resetCreditResumeCommand({ ...routing, thread }));
+        (routed === null ? null : resetCreditResumeCommand({ ...routed, thread }));
       if (continuation !== null) {
         const outcome = yield* dispatchContinuation(
           continuation,
@@ -568,7 +587,7 @@ const makeSweep = Effect.gen(function* () {
         if (outcome === "dispatched") continue;
         // A refused or failed one falls through, so the stop still arms its reset-time resume.
       }
-      const target = routing === null ? null : limitRecoveryTarget({ ...routing, thread });
+      const target = routed === null ? null : limitRecoveryTarget({ ...routed, thread });
       const recover = (room: LimitRecoveryTarget | null) =>
         limitRecoveryCommand(
           thread,
@@ -611,18 +630,22 @@ const makeSweep = Effect.gen(function* () {
       .getLimitRecoveryWakeAt(now, { waiting: switching || resetting })
       .pipe(NodeSqliteClient.inBackground);
     // A waiting or signed-out thread can move to another account the moment its limit ends.
-    const accountRoomAt =
-      failover === null
-        ? Infinity
-        : Math.min(
-            ...[
-              ...candidates.map((thread) => failoverSearch({ ...failover, thread })),
-              ...signedOut.map((thread) => signedOutSearch({ ...failover, thread })),
-            ].flatMap((search) => {
-              const at = search === null ? null : nextAccountRoomAt(search);
-              return at === null ? [] : [at];
-            }),
-          );
+    const searches = [
+      ...candidates.map((thread) => {
+        const failover = failoverFor(thread);
+        return failover === null ? null : failoverSearch({ ...failover, thread });
+      }),
+      ...signedOut.map((thread) => {
+        const failover = failoverFor(thread);
+        return failover === null ? null : signedOutSearch({ ...failover, thread });
+      }),
+    ];
+    const accountRoomAt = Math.min(
+      ...searches.flatMap((search) => {
+        const at = search === null ? null : nextAccountRoomAt(search);
+        return at === null ? [] : [at];
+      }),
+    );
     yield* due.record(
       readVersion,
       Math.min(wakeAt ?? Infinity, accountRoomAt, targetRoomAt),

@@ -18,7 +18,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
-import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -208,16 +207,12 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
   };
 });
 
-function settledSummary<E>(
+function settledUsage<E>(
   registry: AtomRegistry.AtomRegistry,
   atom: Atom.Atom<AsyncResult.AsyncResult<UsageSummary, E>>,
 ) {
   return AtomRegistry.toStream(registry, atom).pipe(
-    Stream.filterMap((result) =>
-      AsyncResult.isSuccess(result) && !result.waiting
-        ? Result.succeed(result.value)
-        : Result.failVoid,
-    ),
+    Stream.filter((result) => result._tag !== "Initial" && !result.waiting),
     Stream.runHead,
     Effect.map(Option.getOrThrow),
   );
@@ -283,18 +278,56 @@ it.effect("restarts a pending usage read after a price change", () =>
   ),
 );
 
+it.effect("publishes the first usage answer while the slow follow-up is pending", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const finish = yield* Deferred.make<void>();
+      const harness = yield* makeRefreshingHarness(Deferred.await(finish));
+      const summary = harness.summary();
+      const unmount = harness.registry.mount(summary);
+      yield* Deferred.await(harness.followUpStarted);
+
+      const initial = harness.registry.get(summary);
+      expect(AsyncResult.isSuccess(initial) && initial.waiting).toBe(true);
+      if (!AsyncResult.isSuccess(initial)) throw new Error("Expected the first usage answer");
+      expect(initial.value.buckets[0]?.totals.uncachedInputTokens).toBe(1_000_000);
+      expect(initial.value.sources).toEqual([cursorSource(true)]);
+
+      yield* Deferred.succeed(finish, undefined);
+      const result = yield* settledUsage(harness.registry, summary);
+      expect(AsyncResult.isSuccess(result) && result.value.sources).toEqual([cursorSource(false)]);
+      unmount();
+    }),
+  ),
+);
+
 it.effect("keeps the cached usage summary when the awaited refresh fails", () =>
   Effect.scoped(
     Effect.gen(function* () {
+      const finish = yield* Deferred.make<void>();
       const harness = yield* makeRefreshingHarness(
-        Effect.fail(new UsageReadError({ reason: "scanFailed", detail: "Cursor is down" })),
+        Deferred.await(finish).pipe(
+          Effect.andThen(
+            Effect.fail(new UsageReadError({ reason: "scanFailed", detail: "Cursor is down" })),
+          ),
+        ),
       );
       const summary = harness.summary();
       const unmount = harness.registry.mount(summary);
-      expect((yield* settledSummary(harness.registry, summary)).sources).toEqual([
-        cursorSource(true),
-      ]);
+      yield* Deferred.await(harness.followUpStarted);
       expect(AsyncResult.isSuccess(harness.registry.get(summary))).toBe(true);
+      yield* Deferred.succeed(finish, undefined);
+      const result = yield* settledUsage(harness.registry, summary);
+      expect(result._tag).toBe("Success");
+      if (result._tag !== "Success") throw new Error("Expected saved usage");
+      expect(result.value.buckets).toHaveLength(1);
+      expect(result.value.sources).toEqual([
+        {
+          ...cursorSource(false),
+          status: "partial",
+          message: "Could not refresh this usage source. Showing its last values.",
+        },
+      ]);
       expect(harness.requests()).toBe(2);
       unmount();
     }),

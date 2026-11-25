@@ -5,12 +5,11 @@ import { Atom, type AtomRegistry } from "effect/reactivity";
 
 import { serverEnvironment } from "../../state/server";
 
-/**
- * Whether the last finished limits refresh for an environment failed. Not kept
- * alive: the limits view mounts it, and leaving the view forgets old failures.
- */
+const limitsRefreshPendingAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make(false).pipe(Atom.keepAlive, Atom.withLabel(`mobile:limits-pending:${environmentId}`)),
+);
 const limitsRefreshFailedAtom = Atom.family((environmentId: EnvironmentId) =>
-  Atom.make(false).pipe(Atom.withLabel(`mobile:limits-refresh-failed:${environmentId}`)),
+  Atom.make(false).pipe(Atom.withLabel(`mobile:limits-failed:${environmentId}`)),
 );
 
 export async function refreshEnvironmentLimits(
@@ -20,20 +19,26 @@ export async function refreshEnvironmentLimits(
 ): Promise<void> {
   // One refresh runs per environment at a time, so results land in the order
   // they were started and the newest outcome always wins.
-  const result = await refreshUsageLimits(
+  await refreshUsageLimits(
     environmentId,
-    () =>
-      runAtomCommand(
-        registry,
-        serverEnvironment.refreshProviders,
-        { environmentId, input: {} },
-        { reportFailure: false },
-      ),
+    async () => {
+      const pending = limitsRefreshPendingAtom(environmentId);
+      registry.set(pending, true);
+      try {
+        const result = await runAtomCommand(
+          registry,
+          serverEnvironment.refreshProviders,
+          { environmentId, input: {} },
+          { reportFailure: false },
+        );
+        registry.set(limitsRefreshFailedAtom(environmentId), result._tag === "Failure");
+      } finally {
+        registry.set(pending, false);
+      }
+    },
     options.automatic,
     options.afterPending,
   );
-  if (result === undefined) return;
-  registry.set(limitsRefreshFailedAtom(environmentId), result._tag === "Failure");
 }
 
 // Mounting starts an automatic refresh, which refreshUsageLimits throttles to
@@ -66,5 +71,16 @@ export const limitsRefreshFailuresAtom = Atom.family((environmentIds: string) =>
     splitEnvironmentIds(environmentIds).filter((environmentId) =>
       get(limitsRefreshFailedAtom(environmentId)),
     ),
+  ),
+);
+
+export const limitsRefreshingEnvironmentIdsAtom = Atom.family((environmentIds: string) =>
+  Atom.make(
+    (get) =>
+      new Set(
+        splitEnvironmentIds(environmentIds).filter((environmentId) =>
+          get(limitsRefreshPendingAtom(environmentId)),
+        ),
+      ),
   ),
 );

@@ -44,7 +44,11 @@ import {
   ScheduledTaskUpsertSchedule,
 } from "./scheduledTask.ts";
 import { ProviderInteractionMode, ProviderRequestKind, RuntimeMode } from "./providerPolicy.ts";
-import { ServerProviderResetKind } from "./providerUsageLimits.ts";
+import {
+  ProviderCreditGrant,
+  ProviderCreditUse,
+  ServerProviderResetKind,
+} from "./providerUsageLimits.ts";
 import { PullRequestState } from "./pullRequest.ts";
 import {
   ThreadLinkedPullRequest,
@@ -157,6 +161,11 @@ export const OrchestratorMcpInteractionMode = Schema.Union([
 ]);
 export type OrchestratorMcpInteractionMode = typeof OrchestratorMcpInteractionMode.Type;
 
+const OrchestratorMcpAuto = Schema.Boolean.annotate({
+  description:
+    "true: Auto mode, on the model and account Settings pick. Not with `target`. Omit to inherit.",
+});
+
 export const OrchestratorMcpTaskRole = DelegatedTaskRole;
 export type OrchestratorMcpTaskRole = DelegatedTaskRole;
 
@@ -185,6 +194,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   target: Schema.optional(OrchestratorMcpTarget),
   title: Schema.optional(OrchestratorMcpTitle),
   role: Schema.optional(OrchestratorMcpTaskRole),
+  auto: Schema.optional(OrchestratorMcpAuto),
   isolation: Schema.optional(
     Schema.Literals(["shared", "worktree"]).annotate({
       description:
@@ -319,12 +329,7 @@ export const OrchestratorMcpCreateThreadRequest = Schema.Struct({
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),
   target: Schema.optional(OrchestratorMcpTarget),
-  auto: Schema.optional(
-    Schema.Boolean.annotate({
-      description:
-        "true: Auto mode, on the model and account Settings pick. Not with `target`. Omit to inherit.",
-    }),
-  ),
+  auto: Schema.optional(OrchestratorMcpAuto),
   runtimeMode: Schema.optional(OrchestratorMcpRuntimeMode),
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
 });
@@ -749,7 +754,10 @@ export const OrchestratorMcpProviderUsage = Schema.Struct({
       weeklySessionAvailableAt: Schema.NullOr(Schema.String),
     }),
   ),
-  /** False while the account is usageLimited or its provider says it may not run (Codex). */
+  /**
+   * False while the account is usageLimited, or its provider says its plan may not run (Codex)
+   * and it is not spending prepaid credits the user turned on.
+   */
   usageAllowed: Schema.Boolean,
   /** The last banked reset this server claimed for the account; null when it has claimed none. */
   lastRedemption: Schema.NullOr(OrchestratorMcpLastRedemption),
@@ -796,6 +804,18 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
   usageLimited: Schema.optional(
     Schema.Literal(true).annotate({
       description: "Usage-limited until limitedUntil (provider reset or T3 hold).",
+    }),
+  ),
+  prepaidCredits: Schema.optional(
+    ProviderCreditUse.annotate({
+      description:
+        "Codex prepaid credits, for work this thread starts or delegates. spending: plan usage is used up and new work runs on the credits the user allowed. standby: allowed, unused while the plan has room. not_enabled: the user has not allowed spending them, so a used-up plan holds the account; only the user allows it (Settings > Providers > Spend prepaid credits). out_of_scope: allowed only for other threads and their delegates. cap_reached: the account has spent the credits the user allowed. used_up: the balance or monthly credit limit is spent.",
+    }),
+  ),
+  prepaidCreditGrant: Schema.optional(
+    ProviderCreditGrant.annotate({
+      description:
+        "What the user allowed this Codex account to spend of its prepaid credits: capCredits, spentCredits counted since then, remainingCredits, and threadIds, the threads whose work and delegates may spend them (absent: any thread). Running turns can pass the cap a little.",
     }),
   ),
   /** With `usage`, for an enabled Claude or Codex account; null when `usageError` says why. */
@@ -1384,6 +1404,8 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "thread_credential_required",
       "target_required",
       "memory_short",
+      /** Auto mode is off where the thread would start, or its provider has no enabled account there. */
+      "auto_mode_unavailable",
       /** A linked environment answered, but its version answers in a way this one cannot read. */
       "version_mismatch",
     ]),

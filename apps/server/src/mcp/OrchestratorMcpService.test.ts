@@ -16,6 +16,7 @@ import {
   OrchestratorMcpProviderCapability,
   OrchestratorMcpModelOption,
   OrchestratorMcpTarget,
+  PlanId,
   type OrchestrationV2ThreadShell,
   type ScheduledTask,
   ScheduledTaskId,
@@ -28,6 +29,7 @@ import {
   ProviderTurnId,
   RunId,
   ThreadId,
+  TurnItemId,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
@@ -1219,6 +1221,65 @@ describe("OrchestratorMcpService", () => {
       });
     }),
   );
+});
+
+describe("OrchestratorMcpService.pageIncludesTerminalTaskResult", () => {
+  const parentThreadId = ThreadId.make("thread:ack-parent");
+  const childThreadId = ThreadId.make("thread:ack-child");
+  const runId = RunId.make("run:ack-child");
+  const delivered = {
+    id: TurnItemId.make("turn-item:ack-delivered"),
+    runId,
+    ordinal: 0,
+    type: "assistant_message" as const,
+    messageId: MessageId.make("message:ack-delivered"),
+    text: "The answer the parent received.",
+  };
+  const laterPlan = {
+    id: TurnItemId.make("turn-item:ack-later-plan"),
+    runId,
+    ordinal: 1,
+    type: "proposed_plan" as const,
+    planId: PlanId.make("plan:ack-later"),
+    markdown: "1. A plan the result would pick now.",
+  };
+
+  it.each([
+    ["the item the transfer delivered", delivered, true],
+    ["a later item the run's result would pick now", laterPlan, false],
+  ] as const)("acknowledges a page that holds %s", (_, item, acknowledged) => {
+    assert.equal(
+      OrchestratorMcpService.pageIncludesTerminalTaskResult({
+        parent: {
+          thread: { id: parentThreadId },
+          contextTransfers: [
+            {
+              type: "subagent_result",
+              sourceThreadId: childThreadId,
+              targetThreadId: parentThreadId,
+              sourcePoint: { threadId: childThreadId, runId, turnItemId: delivered.id },
+            },
+          ],
+        } as never,
+        page: [{ sourceThreadId: childThreadId, sourceItemId: item.id, item } as never],
+        task: {
+          id: NodeId.make("node:ack-task"),
+          threadId: parentThreadId,
+          childThreadId,
+          origin: "app_owned",
+        } as never,
+        target: {
+          thread: { id: childThreadId },
+          runs: [{ id: runId, ordinal: 1, status: "completed" }],
+          contextTransfers: [],
+          messages: [],
+          turnItems: [delivered, laterPlan],
+        } as never,
+        maxChars: 20_000,
+      }),
+      acknowledged,
+    );
+  });
 });
 
 describe("OrchestratorMcpService provider resolution", () => {
@@ -2542,7 +2603,9 @@ describe("OrchestratorMcpService provider resolution", () => {
             accountsWithRoom: () =>
               Ref.get(limit).pipe(
                 Effect.map((limited) =>
-                  limited === null ? [{ ...selection, mcpSignInsNeeded: [] }] : [],
+                  limited === null
+                    ? [{ ...selection, mcpSignInsNeeded: [], onCredits: false }]
+                    : [],
                 ),
               ),
           }),
@@ -3006,6 +3069,14 @@ describe("OrchestratorMcpService provider resolution", () => {
             selectedInstanceId: codexAltInstanceId,
             candidateDriver: driver,
           },
+          {
+            name: "inherited-on-prepaid-credits",
+            inheritedEnabled: true,
+            peerEnabled: true,
+            explicit: false,
+            selectedInstanceId: codexAltInstanceId,
+            candidateDriver: driver,
+          },
         ] as const;
 
         for (const testCase of cases) {
@@ -3077,6 +3148,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                           instanceId: codexAltInstanceId,
                           model: "codex-alt-model",
                           mcpSignInsNeeded: [],
+                          onCredits: false,
                         },
                       ]
                     : []),
@@ -3087,6 +3159,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                           model: "gpt-5.4",
                           mcpSignInsNeeded:
                             testCase.name === "inherited-needs-mcp-sign-in" ? ["threadpage"] : [],
+                          onCredits: testCase.name === "inherited-on-prepaid-credits",
                         },
                       ]
                     : []),
@@ -5468,10 +5541,11 @@ describe("OrchestratorMcpService provider resolution", () => {
             expected: { ...inherited, options: [...override, inherited.options[1]] },
           },
           {
+            // Auto picks its own model when a child starts, so a model the target names runs as named.
             name: "an Auto parent's model",
             parent: { ...inherited, autoAccount: true },
             target: { model: inherited.model },
-            expected: { ...inherited, autoAccount: true },
+            expected: inherited,
           },
           {
             // Auto would run the options saved for Auto in place of the given ones.
@@ -5707,17 +5781,19 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
-  it.effect.each(["gpt-5.4", "gpt"])(
-    "accepts the inherited options it reports back as a delegate target, from a parent on %s",
-    (parentModel) =>
+  // t3_thread_launch keeps a model selection as given, so a thread can hold a model alias, and an
+  // option or a value its model lacks.
+  it.effect.each(["gpt-5.4", "sol"] as const)(
+    "accepts the inherited options it reports back as a delegate target, on a parent model stored as %s",
+    (storedModel) =>
       Effect.gen(function* () {
-        // A thread made before launches checked options can hold one its model lacks.
         const inherited = {
           instanceId: codexInstanceId,
-          model: parentModel,
+          model: storedModel,
           options: [
             { id: "reasoningEffort", value: "low" },
             { id: "fastMode", value: false },
+            { id: "serviceTier", value: "priority" },
           ],
         } as const;
         const commands: Array<{ readonly modelSelection?: unknown }> = [];
@@ -5761,8 +5837,8 @@ describe("OrchestratorMcpService provider resolution", () => {
               models: [
                 {
                   slug: "gpt-5.4",
-                  name: "gpt-5.4",
-                  aliases: ["gpt"],
+                  name: "GPT-5.4",
+                  aliases: ["sol"],
                   isCustom: false,
                   capabilities: {
                     optionDescriptors: [
@@ -5770,7 +5846,16 @@ describe("OrchestratorMcpService provider resolution", () => {
                         id: "reasoningEffort",
                         label: "Reasoning",
                         type: "select",
-                        options: [{ id: "low", label: "Low" }],
+                        options: [
+                          { id: "low", label: "Low" },
+                          { id: "high", label: "High" },
+                        ],
+                      },
+                      {
+                        id: "serviceTier",
+                        label: "Service tier",
+                        type: "select",
+                        options: [{ id: "flex", label: "Flex" }],
                       },
                     ],
                   },
@@ -5791,11 +5876,31 @@ describe("OrchestratorMcpService provider resolution", () => {
             task: "Review the change.",
             target: yield* decodeTarget({ options: inheritedOptions }),
             mode: "async",
+            clientRequestId: "reported",
           });
-          assert.deepEqual(commands[0]?.modelSelection, {
-            ...inherited,
-            options: [inherited.options[0]],
+          // Options the agent names join the inherited ones the model still offers.
+          yield* service.delegateTask(scope, {
+            task: "Review the change.",
+            target: yield* decodeTarget({ options: { reasoningEffort: "high" } }),
+            mode: "async",
+            clientRequestId: "named",
           });
+          // A target that names only the parent's account still inherits its model and options.
+          yield* service.delegateTask(scope, {
+            task: "Review the change.",
+            target: yield* decodeTarget({ providerInstanceId: codexInstanceId }),
+            mode: "async",
+            clientRequestId: "account",
+          });
+          assert.deepEqual(inheritedOptions, [inherited.options[0]]);
+          assert.deepEqual(
+            commands.map((command) => command.modelSelection),
+            [
+              { ...inherited, options: [inherited.options[0]] },
+              { ...inherited, options: [{ id: "reasoningEffort", value: "high" }] },
+              { ...inherited, options: [inherited.options[0]] },
+            ],
+          );
         }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
       }),
   );
@@ -5922,7 +6027,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             ["implementation", undefined],
             ["implementation", { model: "gpt-5.4" }],
             ["review", undefined],
-            // A reviewer named by account keeps the Auto its setting chose.
+            // A reviewer named by account runs there, though a setting picks it with Auto.
             ["review", { providerInstanceId: claudeInstanceId, model: "claude-opus" }],
             // Given options run as named, on the role's model or the reviewer's account.
             ["implementation", { options: { effort: "max" } }],
@@ -5964,7 +6069,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             // A model the agent names wins over the role's.
             { instanceId: codexInstanceId, model: "gpt-5.4" },
             { instanceId: codexInstanceId, model: "gpt-5.4" },
-            { instanceId: claudeInstanceId, model: "claude-opus", autoAccount: true },
+            { instanceId: claudeInstanceId, model: "claude-opus" },
             { instanceId: claudeInstanceId, model: "claude-opus", options: [maxEffort] },
             { instanceId: claudeInstanceId, model: "claude-opus", options: [maxEffort] },
             { instanceId: codexInstanceId, model: "gpt-5.4", options: [maxEffort] },
@@ -5973,6 +6078,236 @@ describe("OrchestratorMcpService provider resolution", () => {
         );
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
     }),
+  );
+
+  // A Claude Auto thread reviewing on its own account while Codex is out of usage: Auto would pick
+  // the child's provider, account and options again, so a child that names any of them runs as named.
+  it.effect.each(["codex", "claudeAgent"] as const)(
+    "runs a child as its target names, and on Auto only when asked, while Auto starts on %s",
+    (active) =>
+      Effect.gen(function* () {
+        const claudeInstanceId = ProviderInstanceId.make("claude_work");
+        const commands: Array<{ readonly modelSelection?: unknown }> = [];
+        const task = {
+          id: taskId,
+          threadId: parentThreadId,
+          origin: "app_owned",
+          childThreadId,
+          providerInstanceId: claudeInstanceId,
+          model: "claude-opus",
+          status: "running",
+          result: null,
+        };
+        const parentSelection = {
+          instanceId: claudeInstanceId,
+          model: "claude-opus",
+          autoAccount: true,
+        };
+        const dependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            assertProviderInstanceEnabled: () => Effect.void,
+            isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+            getThreadRecords: (threadId) =>
+              Effect.succeed(
+                threadId === parentThreadId
+                  ? parentProjection(commands.length > 0 ? [task] : [], parentSelection)
+                  : childProjection,
+              ),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                commands.push(command as { readonly modelSelection?: unknown });
+                return {
+                  sequence: 1,
+                  storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
+                } as never;
+              }),
+          }),
+          ServerSettings.layerTest({
+            providerInstances: {
+              [claudeInstanceId]: { driver: ProviderDriverKind.make("claudeAgent") },
+              [codexInstanceId]: { driver: ProviderDriverKind.make("codex") },
+            },
+            autoModeProvider: ProviderDriverKind.make(active),
+            autoModeModels: {
+              [ProviderDriverKind.make("claudeAgent")]: { model: "claude-opus" },
+              [ProviderDriverKind.make("codex")]: { model: "gpt-5.4" },
+            },
+          }),
+          providerRegistryLayer([
+            providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: "gpt-5.4",
+            }),
+            providerSnapshot({
+              instanceId: claudeInstanceId,
+              driver: ProviderDriverKind.make("claudeAgent"),
+              model: "claude-opus",
+            }),
+          ]),
+          adapterRegistryLayer([codexInstanceId, claudeInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const settings = yield* ServerSettings.ServerSettingsService;
+          const delegate = (
+            clientRequestId: string,
+            request: { readonly auto?: boolean; readonly target?: Record<string, unknown> },
+          ) =>
+            Effect.gen(function* () {
+              return yield* service.delegateTask(scope, {
+                task: "Review the diff.",
+                role: "review",
+                ...(request.auto === undefined ? {} : { auto: request.auto }),
+                ...(request.target === undefined
+                  ? {}
+                  : { target: yield* decodeTarget(request.target).pipe(Effect.orDie) }),
+                mode: "async",
+                clientRequestId: `${active}:${clientRequestId}`,
+              });
+            });
+          yield* delegate("inherit", {});
+          yield* delegate("account", {
+            target: { providerInstanceId: claudeInstanceId, model: "claude-opus" },
+          });
+          yield* delegate("options", { target: { options: { effort: "high" } } });
+          yield* delegate("auto", { auto: true });
+          yield* delegate("pinned", { auto: false });
+          assert.deepEqual(
+            commands.map((command) => command.modelSelection),
+            [
+              parentSelection,
+              { instanceId: claudeInstanceId, model: "claude-opus" },
+              {
+                instanceId: claudeInstanceId,
+                model: "claude-opus",
+                options: [{ id: "effort", value: "high" }],
+              },
+              active === "codex"
+                ? { instanceId: codexInstanceId, model: "gpt-5.4", autoAccount: true }
+                : parentSelection,
+              { instanceId: claudeInstanceId, model: "claude-opus" },
+            ],
+          );
+
+          const both = yield* delegate("both", {
+            auto: true,
+            target: { providerInstanceId: claudeInstanceId },
+          }).pipe(Effect.flip);
+          assert.equal(both.code, "invalid_request");
+          yield* settings.updateSettings({ autoModeProvider: null });
+          const off = yield* delegate("off", { auto: true }).pipe(Effect.flip);
+          assert.equal(off.code, "auto_mode_unavailable");
+          assert.include(off.message, "Auto mode is off");
+          assert.equal(commands.length, 5);
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provideMerge(dependencies))));
+      }),
+  );
+
+  it.effect(
+    "starts a role set to Auto where Auto mode starts, and on its saved model while Auto is off",
+    () =>
+      Effect.gen(function* () {
+        const claudeInstanceId = ProviderInstanceId.make("claude_work");
+        const commands: Array<{ readonly modelSelection?: unknown }> = [];
+        const task = {
+          id: taskId,
+          threadId: parentThreadId,
+          origin: "app_owned",
+          childThreadId,
+          providerInstanceId: codexInstanceId,
+          model: "gpt-5.4",
+          status: "running",
+          result: null,
+        };
+        const parentSelection = { instanceId: claudeInstanceId, model: "claude-opus" };
+        const dependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            assertProviderInstanceEnabled: () => Effect.void,
+            isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+            getThreadRecords: (threadId) =>
+              Effect.succeed(
+                threadId === parentThreadId
+                  ? parentProjection(commands.length > 0 ? [task] : [], parentSelection)
+                  : childProjection,
+              ),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                commands.push(command as { readonly modelSelection?: unknown });
+                return {
+                  sequence: 1,
+                  storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
+                } as never;
+              }),
+          }),
+          ServerSettings.layerTest({
+            providerInstances: {
+              [claudeInstanceId]: { driver: ProviderDriverKind.make("claudeAgent") },
+              [codexInstanceId]: { driver: ProviderDriverKind.make("codex") },
+            },
+            autoModeProvider: ProviderDriverKind.make("codex"),
+            autoModeModels: { [ProviderDriverKind.make("codex")]: { model: "gpt-5.4" } },
+            // Saved while its account was signed in; the account is gone now.
+            delegatedTaskModelSelections: {
+              review: {
+                instanceId: ProviderInstanceId.make("claude_removed"),
+                model: "claude-opus",
+                autoAccount: true,
+              },
+            },
+          }),
+          providerRegistryLayer([
+            providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: "gpt-5.4",
+            }),
+            providerSnapshot({
+              instanceId: claudeInstanceId,
+              driver: ProviderDriverKind.make("claudeAgent"),
+              model: "claude-opus",
+            }),
+          ]),
+          adapterRegistryLayer([codexInstanceId, claudeInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const settings = yield* ServerSettings.ServerSettingsService;
+          const delegate = (clientRequestId: string, auto?: boolean) =>
+            service.delegateTask(scope, {
+              task: "Review the diff.",
+              role: "review",
+              ...(auto === undefined ? {} : { auto }),
+              mode: "async",
+              clientRequestId,
+            });
+          yield* delegate("auto-on");
+          // Not Auto: the saved model, whose account is gone, so the parent's.
+          yield* delegate("pinned", false);
+          yield* settings.updateSettings({ autoModeProvider: null });
+          yield* delegate("auto-off");
+          assert.deepEqual(
+            commands.map((command) => command.modelSelection),
+            [
+              { instanceId: codexInstanceId, model: "gpt-5.4", autoAccount: true },
+              parentSelection,
+              parentSelection,
+            ],
+          );
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provideMerge(dependencies))));
+      }),
   );
 
   it.effect("creates a thread in Auto mode on auto:true, and none while Auto is off", () =>
@@ -6050,7 +6385,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         const off = yield* service
           .createThreads(scope, { threads: [{ auto: true }], clientRequestId: "off" })
           .pipe(Effect.flip);
-        assert.equal(off.code, "invalid_request");
+        assert.equal(off.code, "auto_mode_unavailable");
         assert.include(off.message, "Auto mode is off");
         assert.equal(created.length, 2);
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provideMerge(dependencies))));

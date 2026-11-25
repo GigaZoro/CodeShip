@@ -9,6 +9,7 @@ import {
   ThreadId,
   type ScheduledTask,
 } from "@t3tools/contracts";
+import { useSyncExternalStore } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -42,13 +43,45 @@ const task: ScheduledTask = {
   runCount: 0,
 };
 
+// Saved where the target supported checks and prompt files; the test target supports neither.
+const checkedTask: ScheduledTask = {
+  ...task,
+  runCondition: { command: "node ~/has-work.mjs", timeoutSeconds: 90 },
+  promptFile: { path: "prompts/nightly.md", lastRead: null },
+};
+
 // Stands in for the thread family read the editor makes when the shell lacks the bound thread.
 const threadFamilyRead = {
   snapshotSequence: 1,
   threads: [{ id: task.threadId, title: "Fix login bug" }],
 };
 
-const state = vi.hoisted(() => ({ connected: true, tasksLoaded: true, secondary: false }));
+const state = vi.hoisted(() => ({
+  connected: true,
+  tasksLoaded: true,
+  secondary: false,
+  checked: false,
+  describes: false,
+}));
+// The web build runs the React Compiler, so a memoized form re-renders only when a hook it calls
+// changes. The environment mocks read the connection through this store, as the real hooks
+// subscribe to theirs; a plain flag and a rerender would leave the form showing the old target.
+const connection = vi.hoisted(() => {
+  const listeners = new Set<() => void>();
+  return {
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    set: (connected: boolean) => {
+      state.connected = connected;
+      for (const listener of listeners) listener();
+    },
+  };
+});
+const useConnected = () => useSyncExternalStore(connection.subscribe, () => state.connected);
 const secondaryId = EnvironmentId.make("secondary");
 const permissions = new Map<string, Atom.Writable<boolean>>();
 const savedFolders = Atom.family((_id: EnvironmentId) => Atom.make<ReadonlyArray<string>>([]));
@@ -57,6 +90,8 @@ function setup() {
   state.connected = true;
   state.tasksLoaded = true;
   state.secondary = false;
+  state.checked = false;
+  state.describes = false;
   permissions.clear();
   permissions.set(environmentId, Atom.make(true));
   permissions.set(secondaryId, Atom.make(true));
@@ -80,6 +115,7 @@ function environment() {
               oneTimeSchedules: true,
               scheduledTaskGroups: true,
               threadFolders: true,
+              ...(state.describes ? { scheduledTaskDescriptions: true } : {}),
             },
           },
         }
@@ -89,6 +125,7 @@ function environment() {
 
 vi.mock(import("./SettingsScopeContext"), async (original) => {
   const scope = () => {
+    useConnected();
     const entry = environment();
     return {
       scope: { kind: "all", label: "All", members: [], environmentIds: [environmentId] },
@@ -149,7 +186,7 @@ vi.mock(import("../../state/query"), async (original) => ({
     data:
       request === null || request === threadFamilyRead
         ? request
-        : { tasks: state.tasksLoaded ? [task] : [] },
+        : { tasks: state.tasksLoaded ? [state.checked ? checkedTask : task] : [] },
     error: null,
     isPending: false,
     refresh: vi.fn(),
@@ -157,8 +194,10 @@ vi.mock(import("../../state/query"), async (original) => ({
 }));
 vi.mock(import("../../state/environments"), async (original) => ({
   ...(await original()),
-  useEnvironment: ((id: EnvironmentId) =>
-    id === secondaryId ? secondaryEnvironment() : environment()) as never,
+  useEnvironment: ((id: EnvironmentId) => {
+    useConnected();
+    return id === secondaryId ? secondaryEnvironment() : environment();
+  }) as never,
 }));
 vi.mock(import("../../state/entities"), async (original) => ({
   ...(await original()),
@@ -228,20 +267,77 @@ describe("ScheduledTasksSettings", () => {
 
   it("keeps a linked task's unsaved edits across a disconnect and reconnect", async () => {
     setup();
-    await using screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+    await using _screen = await render(<ScheduledTasksSettings taskId={task.id} />);
     await expect.element(page.getByRole("dialog").getByText("Fix login bug")).toBeVisible();
     const name = page.getByRole("dialog").getByRole("textbox", { name: "Name" });
     await expect.element(name).toHaveValue("Review issues");
     await userEvent.fill(name, "Review stale issues");
+    const save = page.getByRole("dialog").getByRole("button", { name: "Save task" });
+    await expect.element(save).toBeEnabled();
 
-    state.connected = false;
-    await screen.rerender(<ScheduledTasksSettings taskId={task.id} />);
+    await act(() => connection.set(false));
 
+    await expect.element(save).toBeDisabled();
     await expect.element(name).toHaveValue("Review stale issues");
 
-    state.connected = true;
-    await screen.rerender(<ScheduledTasksSettings taskId={task.id} />);
+    await act(() => connection.set(true));
+    await expect.element(save).toBeEnabled();
     await expect.element(name).toHaveValue("Review stale issues");
+  });
+
+  it("says a target is older only while its config is known", async () => {
+    setup();
+    state.checked = true;
+    await using _screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+    const dialog = page.getByRole("dialog");
+    await expect
+      .element(dialog.getByText(/Laptop runs an older T3.CodeShip that cannot run checks/))
+      .toBeVisible();
+    await expect
+      .element(
+        dialog.getByText(/Laptop runs an older T3.CodeShip that cannot read prompts from files/),
+      )
+      .toBeVisible();
+
+    await act(() => connection.set(false));
+
+    await expect.element(dialog.getByRole("button", { name: "Save task" })).toBeDisabled();
+    await expect
+      .element(dialog.getByRole("textbox", { name: "Name" }))
+      .toHaveValue("Review issues");
+    await expect.element(dialog.getByText(/older T3.CodeShip/)).not.toBeInTheDocument();
+    await expect
+      .element(dialog.getByRole("textbox", { name: "Prompt", exact: true }))
+      .toHaveValue("prompts/nightly.md");
+
+    await act(() => connection.set(true));
+    await expect
+      .element(dialog.getByText(/Laptop runs an older T3.CodeShip that cannot run checks/))
+      .toBeVisible();
+  });
+
+  it("keeps an unsaved description without a verdict while the target is unknown", async () => {
+    setup();
+    state.describes = true;
+    await using _screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+    const dialog = page.getByRole("dialog");
+    const description = dialog.getByRole("textbox", { name: "Description (optional)" });
+    await userEvent.fill(description, "Nightly review");
+    await expect
+      .element(dialog.getByText("A short summary shown in the scheduled task list."))
+      .toBeVisible();
+
+    await act(() => connection.set(false));
+
+    await expect.element(dialog.getByRole("button", { name: "Save task" })).toBeDisabled();
+    await expect.element(description).toHaveValue("Nightly review");
+    await expect.element(dialog.getByText(/cannot save descriptions/)).not.toBeInTheDocument();
+
+    // A known target without description support still gets the verdict for the same edit.
+    state.describes = false;
+    await act(() => connection.set(true));
+    await expect.element(dialog.getByText(/Laptop cannot save descriptions/)).toBeVisible();
+    await expect.element(description).toHaveValue("Nightly review");
   });
 
   it("keeps an editor the user opened when the linked task loads later", async () => {

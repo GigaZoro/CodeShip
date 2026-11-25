@@ -2571,8 +2571,7 @@ export const layerWsRpc = (
             return yield* resetCreditRedemption.redeem(input.instanceId);
           }),
         [WS_METHODS.providerRetryUsageLimit]: (input) =>
-          accountRouting.retryAccount(input.instanceId).pipe(
-            Effect.as({}),
+          accountRouting.retryAccount(input.instanceId, { requesterThreadId: input.threadId }).pipe(
             Effect.mapError(
               (error) =>
                 new ProviderSetupError({
@@ -2585,6 +2584,12 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.providerUsageHolds]: () =>
           accountRouting.holds.pipe(Effect.map((holds) => ({ holds }))),
+        [WS_METHODS.providerCreditGrants]: () =>
+          accountRouting.limits().pipe(
+            Effect.map(({ grants }) => ({
+              grants: [...grants].map(([instanceId, grant]) => ({ instanceId, ...grant })),
+            })),
+          ),
         [WS_METHODS.providerAuthStart]: (input) => providerAuth.start(input, currentSessionId),
         [WS_METHODS.providerAuthRespond]: (input) =>
           Effect.annotateCurrentSpan({ instanceId: input.instanceId }).pipe(

@@ -121,6 +121,32 @@ that reads the account's limits, so choose **Read limits** for the account under
 When a thread hits a usage limit**. A stopped thread moves to an account with room or resumes
 at the reset.
 
+### Keep working on prepaid credits
+
+When an account's plan usage is used up but it still has prepaid credits, T3.CodeShip starts no
+turn on it, because that turn would spend your money. To allow it, enter how many credits it may
+spend under **Spend prepaid credits** for the account in **Settings → Providers & models**, on
+each machine that runs its threads. New work still goes first to an account whose plan has room,
+and runs on this account's credits only when none has.
+
+T3.CodeShip counts how far the account's balance falls from then on, from any use of the account,
+and starts no new turn on credits once it has fallen by the cap. Turns already running finish, so
+the count can pass the cap a little. The count survives restarts; clearing the cap turns spending
+off and the next cap counts from zero. Spending also stops when the credits, or the monthly credit
+limit you set in ChatGPT, run out. What is left of the cap shows under it in Settings, and on the
+account in the mobile app's provider settings.
+
+A thread that may spend the credits and was stopped by the plan's usage limit continues on them,
+or moves to another account it may spend them on, without waiting for the reset, when stopped
+threads resume or switch accounts for you (**Settings → Threads → When a thread hits a usage
+limit**).
+
+To let only some threads spend the credits, add their ids to the account's `spendCredits` entry
+in `settings.json`, as `"spendCredits": { "capCredits": 3000, "threadIds": ["<thread id>"] }`.
+The delegates those threads start may spend them too; forks, side chats and other threads may
+not. Agents can see each account's cap, what is left of it, and the threads it covers, but only
+you can set it.
+
 ### ChatGPT's app limit
 
 ChatGPT can also stop an account you connected with ChatGPT while its plan still has room: a

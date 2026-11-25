@@ -183,6 +183,15 @@ const gitFileIdentity = (file: string) =>
     return [stat.dev, stat.ino, stat.birthtimeNs, stat.ctimeNs].join("/");
   });
 
+const holdsOnlyFolders = (folder: string) =>
+  Effect.tryPromise(
+    async () =>
+      (await NodeFSP.lstat(folder)).isDirectory() &&
+      (await NodeFSP.readdir(folder, { recursive: true, withFileTypes: true })).every((entry) =>
+        entry.isDirectory(),
+      ),
+  );
+
 const readGit = Effect.fn("WorktreeRelease.readGit")(function* (
   cwd: string,
   args: string[],
@@ -729,13 +738,10 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
       continue;
     }
     let file = path.join(admin, name);
+    // Git keeps the emptied folders of a deleted worktree-only ref (refs/worktree, refs/bisect)
+    // and of its reflog under logs/refs.
     if (name === "refs") {
-      // Git 2.56 initializes an empty refs directory for a new linked worktree.
-      if (
-        !(yield* Effect.tryPromise(() => NodeFSP.lstat(file))).isDirectory() ||
-        (yield* fs.readDirectory(file)).length !== 0
-      )
-        return "worktree has private refs";
+      if (!(yield* holdsOnlyFolders(file))) return "worktree has private refs";
       continue;
     }
     if (name === "AUTO_MERGE") {
@@ -748,10 +754,13 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
     }
     if (name === "logs") {
       const logs = yield* fs.readDirectory(file);
-      if (logs.length !== 1 || logs[0] !== "HEAD") return "worktree has private reflogs";
+      for (const log of logs)
+        if (log !== "HEAD" && (log !== "refs" || !(yield* holdsOnlyFolders(path.join(file, log)))))
+          return "worktree has private reflogs";
+      if (!logs.includes("HEAD")) continue;
       file = path.join(file, "HEAD");
     } else if (!["ORIG_HEAD", "FETCH_HEAD", "COMMIT_EDITMSG"].includes(name))
-      return "worktree metadata requires its owner";
+      return `worktree metadata ${name} requires its owner`;
     const stat = yield* Effect.tryPromise(() => NodeFSP.lstat(file));
     if (stat.size > 4 * 1024 * 1024 || !stat.isFile())
       return "worktree metadata exceeds inspection limit";

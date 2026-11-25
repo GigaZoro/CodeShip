@@ -1,16 +1,20 @@
+import { describeRetryOutcome } from "@t3tools/client-runtime/usage-holds";
+import type { ProviderRetryUsageLimitResult } from "@t3tools/contracts";
 import { useState } from "react";
 
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { t } from "~/i18n";
 
-/** Ends an account's usage hold so its next turn tries it again. */
+/** Ends an account's usage hold so its next turn tries it again, and says whether it can run now. */
 export function RetryAccountButton({
   onRetry,
+  formatTime,
   variant = "ghost",
   resumes = false,
 }: {
-  readonly onRetry: () => Promise<void>;
+  readonly onRetry: () => Promise<ProviderRetryUsageLimitResult>;
+  readonly formatTime: (isoDate: string) => string;
   readonly variant?: "ghost" | "outline";
   /** The chat is set to resume, so the server continues it once the account has room. */
   readonly resumes?: boolean;
@@ -24,15 +28,14 @@ export function RetryAccountButton({
       onClick={() => {
         setPending(true);
         onRetry()
-          .then(() =>
+          .then((result) => {
+            const outcome = describeRetryOutcome(result, resumes, formatTime);
             toastManager.add({
-              type: "success",
-              title: t("Account released"),
-              description: resumes
-                ? t("The chat continues on it within a minute.")
-                : t("Send a message to try the account again."),
-            }),
-          )
+              type: outcome.limited ? "warning" : "success",
+              title: outcome.title,
+              description: outcome.description,
+            });
+          })
           .catch((cause: unknown) =>
             toastManager.add({
               type: "error",

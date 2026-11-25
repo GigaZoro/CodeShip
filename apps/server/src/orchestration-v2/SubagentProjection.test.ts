@@ -7,9 +7,11 @@ import {
   RunAttemptId,
   MessageId,
   EventId,
+  PlanId,
   TurnItemId,
   type OrchestrationV2Run,
   type OrchestrationV2AppThread,
+  type OrchestrationV2TurnItem,
   ProjectId,
   ProviderInstanceId,
   ProviderThreadId,
@@ -378,7 +380,7 @@ it("exposes the provider failure rather than a progress message from the failed 
   assert.isNull(result.messageId);
 });
 
-it("orders a task's assistant messages by turn item, not by timestamps", () => {
+it("orders a task's assistant messages and proposed plans by turn item, not by timestamps", () => {
   const { projection, run } = taskFixture();
   const at = DateTime.makeUnsafe("2026-07-24T10:05:00.000Z");
   const message = (id: string, text: string, ordinal: number) => {
@@ -413,6 +415,33 @@ it("orders a task's assistant messages by turn item, not by timestamps", () => {
   assert.equal(result.text, "All steps passed.");
   assert.equal(result.messageId, report.message.id);
   assert.equal(result.turnItemId, report.turnItem.id);
+
+  // A plan-mode child can end with only a proposed plan, as Codex does; the plan is what it delivers.
+  const plan = {
+    ...report.turnItem,
+    id: TurnItemId.make("plan"),
+    type: "proposed_plan",
+    planId: PlanId.make("plan"),
+    markdown: "1. Read the brief.",
+    streaming: false,
+    ordinal: 3,
+  } as OrchestrationV2TurnItem;
+  const results = [
+    { messages: [], turnItems: [plan] },
+    { messages: [progress.message, report.message], turnItems: [report.turnItem, plan] },
+    {
+      messages: [progress.message, report.message],
+      turnItems: [report.turnItem, { ...plan, ordinal: 0 }],
+    },
+  ].map((items) => {
+    const found = subagentResultForRun({ ...projection, ...items }, run);
+    return [found.text, found.messageId, found.turnItemId];
+  });
+  assert.deepEqual(results, [
+    ["1. Read the brief.", null, plan.id],
+    ["1. Read the brief.", null, plan.id],
+    ["All steps passed.", report.message.id, report.turnItem.id],
+  ]);
 });
 
 it.effect("ends an orphaned native subagent's node when only its record already ended", () =>

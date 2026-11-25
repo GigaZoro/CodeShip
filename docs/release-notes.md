@@ -1,14 +1,99 @@
+## 2026-11-25 — Stopped threads continue on the prepaid credits you allowed them
+
+- A thread allowed to spend a Codex account's prepaid credits that the plan's usage limit stopped waited for the plan to reset. It now continues on the credits, or moves to another account it may spend them on, as soon as the sweep sees it, when stopped threads resume or switch accounts for you.
+- **Settings → Providers & models** shows what is left of each Codex account's prepaid-credit cap under it, and the mobile app's provider settings show it with the threads the allowance covers.
+
+## 2026-11-25 — Release worktrees on every platform with the same safeguards
+
+- Windows worktrees now keep the macOS and Linux recovery: a release keeps new build caches, ignored files and backups, and `t3 thread backups` lists them. A checkout whose dependencies were installed in place, or whose installed files you edited, stays with you.
+- A setup script that fails after dependencies install is retried from the saved proof instead of reinstalling, and the checkout can still be released afterwards on macOS and Linux.
+
+## 2026-11-25 — Choose how much of a Codex account's prepaid credits work may spend
+
+- A Codex account whose plan usage is used up starts no turn on its prepaid credits until you set a cap under **Spend prepaid credits** for it in **Settings → Providers & models**. It is off by default and applies on that machine only. New work still prefers accounts whose plan has room, and once the account's balance has fallen by the cap, no new turn starts on it. The count survives restarts and starts again from zero when you clear the cap.
+- An allowance can be limited to chosen threads and the delegates they start; every other thread, scheduled task included, is refused when its turn would spend the credits.
+- **Try again** on a usage-limited account, on web, desktop and mobile, now says whether new work can start on it, and if not, until when and why, instead of reporting a release that the next launch would refuse. An agent that releases an account gets the same answer, and the account list agents read shows each Codex account's prepaid-credit state, cap, what is left of it, and the threads it covers.
+
+## 2026-11-25 — `t3` follows a background service that updated itself
+
+- A background service that installed an update itself left the `t3` command on the release it replaced, so commands such as `t3 thread release-worktree` were missing and the old release stayed on disk. Once the service runs the new release, it moves each `t3` launcher of that install to it. A `t3` already on a newer release is left alone. The old release is then removed on the same start. `t3 update` and `t3 uninstall` also recognize a `t3` linked to the install through another path to its folder.
+
+## 2026-11-25 — Linked-machine task result test coverage
+
+- Remote delegation tests now check that a failed task's reply which starts with a blank line is still its result, not the reply before it.
+
+## 2026-11-25 — A failed task on a linked machine keeps its last real reply
+
+- A delegated task on a linked machine whose run failed without an error, and whose last reply was only blank lines in a long thread, reported that it ended without a reply. Its result is now the run's last reply with text, as for a task on this machine.
+
+## 2026-11-25 — Empty leftovers no longer hold a worktree or blank a task's result
+
+- Storage cleanup kept a finished worktree with "Worktree has private reflogs" once Git had deleted a worktree-only ref and left its reflog's empty folders. Those worktrees are released; a reflog that still holds history keeps its worktree.
+- A delegated task on a linked machine whose last reply or plan was blank gave the chat that started it a blank result. Its result is now its last reply with text, as for a task on this machine.
+
+## 2026-11-24 — Finished worktrees are released again
+
+- Storage cleanup kept every finished worktree whose Git metadata had a `refs` folder, which Git 2.56 creates for each worktree, with "Worktree metadata requires its owner". Those worktrees are released again unless they hold refs of their own, and the reason now names the metadata it found.
+
+## 2026-11-24 — A delegated task in plan mode returns its plan
+
+- A delegated task that ran in plan mode and ended with a proposed plan reported "Child task completed without an assistant result" to the chat that started it. Its result is now the proposed plan, also when the task runs on a linked machine.
+
+## 2026-11-24 — Usage stays visible while it updates
+
+- Usage keeps the last complete totals while a new period or filter loads. Background refreshes leave current figures at full opacity.
+- Usage periods advance automatically. Limit countdowns and pace marks update on the Usage screen and sidebar, and account bars keep their order across resets.
+- When an environment's scan fails, Usage keeps the figures every selected environment last shared and names their exact time range, on web and mobile. An environment that loses access never brings its old figures back, and a failed scan's notice names the period it was for.
+- A Mac with a saved Cursor login but no Cursor app no longer counts as reading the Cursor account, so other machines keep their **Enable Cursor usage** prompt. On mobile, an account's details count a reset credit's expiry down each minute.
+
+## 2026-11-24 — Commands wait for a saturated CPU
+
+- `t3_command_run` now also holds a new command while the machine's CPUs are saturated (busy at or over 0.95 per core), as it already does when memory is short. Before, 18 commands, mostly test suites and pushes, could start together on a 12-core machine, run many times slower and fail their guarded timeouts. A held command waits in the same queue, `task_status` says it is waiting for CPU, its time limit counts from when it starts, and it is never refused. When none of this server's commands is running, the first queued command starts whatever the reading, so a machine loaded by other programs still runs commands.
+
+## 2026-11-24 — Shell tests run the Mac's real bash in check:changed
+
+- On macOS, `vp run check:changed` now runs the setup-script and desktop-release signing tests outside Vite+'s file tracker, which swaps every `bash` and `sh` for its bundled Oils shell. They no longer fail with `osh usage error: got invalid flag '--noprofile'`, and a new test that starts bash with bash's own flags must be listed the same way. No change to the app.
+
+## 2026-11-24 — Release a finished worktree
+
+- `t3 thread release-worktree` now accepts the documented command with `--save-ignored` omitted. Ignored files keep the checkout in place by default.
+
+## 2026-11-24 — Auto reviews on one provider when the other cannot run
+
+- Auto mode asks for an independent review from the other provider only while one of its accounts can run that provider's Auto model. When none can (out of usage, signed out or turned off), or that reviewer fails to start, the independent review runs on the coordinator's own provider's Auto model in a fresh chat instead of being reported as incomplete. When no account can run a reviewer at all, the coordinator's own review is the only one, and its report says so.
+- A delegated task whose target names an account, provider, model or options now runs exactly as named. Before, a child of an Auto chat could be moved to another account or to Auto's other provider, with Auto's saved options in place of the named ones, so a reviewer named on Claude while Codex was out of usage went to Codex and failed. A child that names nothing still follows its Auto parent, and `delegate_task` takes `auto: true` to start a child on Auto mode's pick; Final review asks for a reviewer set to Auto that way while Auto mode can run. Options a child inherits, also from a model saved by an alias, and Auto mode's saved options drop values the model no longer offers.
+- A delegated task whose role model in Settings is set to Auto starts where Auto mode starts a new chat, and on its saved model while Auto mode cannot run. Before, it started on the saved account, or on the parent's model when that account was signed out.
+- A delegated task in another project's worktree uses that project's accounts and Auto settings, so an account turned off there no longer takes it.
+- A task an Auto chat hands to a linked machine without naming a model stays Auto there, on that machine's Auto settings, and runs on the chat's model while Auto mode is off there. A request for Auto mode while it is off is now refused with the code `auto_mode_unavailable`.
+- A review target uses the model id the account lists and keeps only the saved options that model still offers, so a stale effort level or a primary saved by its display name no longer stops the reviewer from starting. A primary the catalog now marks legacy still counts as a reviewer.
+
+## 2026-11-24 — check:changed leaves a split index intact
+
+- With `core.splitIndex` on, the copy of git's index that `vp run check:changed` hashes the working tree through could write a new shared index into the repository and remove the one the repository's own index still used, leaving that index unreadable. The copy no longer writes or removes shared indexes. No change to the app.
+
+## 2026-11-24 — A landing waits through a Mac's sleep
+
+- A landing waiting in main's landing queue ends its wait when origin stays unreachable for 10 minutes, and a landing giving its turn back tries for as long. On macOS that limit counted the time the Mac slept, so a landing left on a closed laptop gave up during a brief wake without a network, or left main's turn held until its lease expired. It now counts only the time the machine is awake. No change to the app.
+
+## 2026-11-24 — Library upgrade instructions corrected
+
+- The weekly library upgrade's instructions now say that its landing step takes only a full commit id. No change to the app.
+
+## 2026-11-24 — Restart tests of delegated runs no longer hang
+
+- Maintainers: the restart tests of delegated runs drive the server until the delegated run ends, so they pass whichever restarted run starts first instead of hanging about one run in five.
+
+## 2026-11-24 — New projects keep the default model they are given
+
+- A project created with a default model, by an agent's `t3_project_create` or through the server's project API, now starts with that model instead of with none.
+- `t3_project_create` with only a title, which makes a new repository, now takes a default model too.
+
 ## 2026-11-24 — Chats queued during a sleep start after the computer wakes
 
 - A queued chat that fails to start in the first two minutes after the computer wakes, while the network and sign-ins come back, now starts again on its own, as it does after a network error (**Retry threads after network errors**, on by default), instead of failing with "The provider could not start this turn". The same applies when the computer sleeps or the server stalls while a provider starts the turn, when that start loses its connection, and when Claude's MCP tools do not finish registering right after a wake. This covers every provider while its session opens; once the message is on its way, only a start that CodeShip knows failed before the message was sent starts again, because otherwise it cannot tell whether the message arrived and will not risk sending it twice. Failures the provider explains, such as a needed sign-in, an account the provider turns away, a usage limit or a setup error, still stop the chat, even right after a wake.
 - Several Claude chats on one account that start together after a wake no longer race to renew an expired MCP sign-in, which could sign that MCP server out. Each waits for the renewal in progress, and a start that outlasts the wait starts again on its own. A renewal that fails is tried again before the chat starts, up to three times a minute apart; after that the chat starts anyway, so an MCP server that stays down does not hold every chat.
 - A start failure whose message is generic keeps the types of its underlying errors with the run, without their text, so it can be diagnosed after the logs rotate. The server log records the redacted cause of every start failure.
 - A chat whose provider turn fails as soon as it starts, or that is stopped before its provider turn starts, including while CodeShip prepares context from other chats, no longer leaves its browser tab marked as in use by the agent, or keeps collecting that provider session's events, until the server restarts.
-
-## 2026-11-24 — Release worktrees on every platform with the same safeguards
-
-- Windows worktrees now keep the macOS and Linux recovery: a release keeps new build caches, ignored files and backups, and `t3 thread backups` lists them. A checkout whose dependencies were installed in place, or whose installed files you edited, stays with you.
-- A setup script that fails after dependencies install is retried from the saved proof instead of reinstalling, and the checkout can still be released afterwards on macOS and Linux.
 
 ## 2026-11-24 — Release worktrees after standard Windows setup
 
@@ -367,6 +452,10 @@
 ## 2026-11-21 — Use 1Password tokens for MCP servers
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
+
+## 2026-11-20 — Stopping a Windows command's process tree always says when its first process started and ended
+
+- When T3.CodeShip stops a command on Windows together with what it started, a process that took the first process's id after that process ended was in some cases still taken for it, and its children ended. This happened when the command's process had been seen to exit but the stop did not pass that moment on, and when the stop could not read when the first process had started. The command runner and the process worker now pass the moment they saw the first process exit, and every stop must state both when the first process started (or that this is unknown) and whether it ended, so a new caller can no longer leave either out.
 
 ## 2026-11-20 — The server test suite runs on Windows in CI
 

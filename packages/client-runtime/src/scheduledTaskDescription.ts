@@ -5,14 +5,19 @@ export function scheduledTaskPreview(task: Pick<ScheduledTask, "description" | "
   return task.description?.trim() || task.prompt;
 }
 
+/**
+ * The description change to send, or `null` when the target cannot store it. `supported` is `null`
+ * until the target's config arrives: a missing config says nothing about its version, so the
+ * change is kept until the target is known.
+ */
 export function scheduledTaskDescriptionField(input: {
-  readonly supported: boolean;
+  readonly supported: boolean | null;
   readonly description: string;
   readonly savedDescription: string;
 }): Pick<ScheduledTaskUpsertInput, "description"> | null {
   const description = input.description.trim();
   if (description === input.savedDescription.trim()) return {};
-  return input.supported ? { description: description || null } : null;
+  return input.supported === false ? null : { description: description || null };
 }
 
 export function scheduledTaskDescriptionUnsupported(machine: string): string {

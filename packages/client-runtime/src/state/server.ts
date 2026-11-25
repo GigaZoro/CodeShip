@@ -72,6 +72,7 @@ import {
 import type { RpcSession } from "../rpc/session.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 import { recordProviderMcpProblems } from "./providerMcpProblems.ts";
+import { cursorUsageAccess } from "./usage.ts";
 import {
   applyServerConfigProjection,
   reuseUnchanged,
@@ -1391,6 +1392,12 @@ export function createServerEnvironmentAtoms<R, E>(
       Atom.withLabel(`environment-data:server:providers:${environmentId}`),
     ),
   );
+  const cursorUsageAccessAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) => cursorUsageAccess(get(configValueAtom(environmentId)))).pipe(
+      Atom.withEquality<ReturnType<typeof cursorUsageAccess>>((a, b) => a.history === b.history),
+      Atom.withLabel(`environment-data:server:cursor-usage-access:${environmentId}`),
+    ),
+  );
   const welcomeStateFamily = Atom.family((environmentId: EnvironmentId) =>
     runtime
       .atom(serverWelcomeStateChanges(environmentId), { initialValue: null })
@@ -1497,6 +1504,13 @@ export function createServerEnvironmentAtoms<R, E>(
     staleTimeMs: 30_000,
     refreshIntervalMs: 60_000,
   });
+  // Spending shows here within the minute of the balance reading it is counted from.
+  const creditGrants = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:provider:credit-grants",
+    tag: WS_METHODS.providerCreditGrants,
+    staleTimeMs: 30_000,
+    refreshIntervalMs: 60_000,
+  });
   const databaseStorage = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
     label: "environment-data:server:database-storage",
     tag: WS_METHODS.serverGetDatabaseStorage,
@@ -1583,6 +1597,7 @@ export function createServerEnvironmentAtoms<R, E>(
     blockedThreadTagsAtom,
     usageModelFilterAtom,
     providersValueAtom,
+    cursorUsageAccessAtom,
     providerAuthState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:provider:auth-state",
       tag: WS_METHODS.providerAuthSubscribe,
@@ -1863,7 +1878,26 @@ export function createServerEnvironmentAtoms<R, E>(
                 Effect.catch((error) =>
                   Effect.logWarning("Could not refresh slow usage sources.").pipe(
                     Effect.annotateLogs({ ...safeErrorLogAttributes(error) }),
-                    Effect.as(summary),
+                    Effect.as({
+                      ...summary,
+                      sources: summary.sources.map(({ refreshing, ...source }) =>
+                        refreshing !== true
+                          ? source
+                          : {
+                              ...source,
+                              status:
+                                source.status === "failed"
+                                  ? ("failed" as const)
+                                  : ("partial" as const),
+                              message: [
+                                t("Could not refresh this usage source. Showing its last values."),
+                                source.message,
+                              ]
+                                .filter(Boolean)
+                                .join(" "),
+                            },
+                      ),
+                    }),
                   ),
                 ),
               ),
@@ -1911,6 +1945,7 @@ export function createServerEnvironmentAtoms<R, E>(
       },
     }),
     usageHolds,
+    creditGrants,
     retryUsageLimit: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:retry-usage-limit",
       tag: WS_METHODS.providerRetryUsageLimit,

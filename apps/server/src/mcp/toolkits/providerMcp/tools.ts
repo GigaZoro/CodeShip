@@ -48,7 +48,7 @@ const ProviderRetryUsageLimitTool = Tool.make("t3_provider_retry_usage_limit", {
     AccountRouting.AccountRouting,
   ],
   description:
-    "Releases T3's hold on a usage-limited account (`usageLimited` in `orchestrator_capabilities`), so its next turn tries it; a new refusal holds it again. For a limit lifted early, such as ChatGPT's app cap. Needs a full-access caller.",
+    "Releases T3's hold on a usage-limited account (`usageLimited` in `orchestrator_capabilities`), so its next turn tries it; a new refusal holds it again. For a limit lifted early, such as ChatGPT's app cap. The message says whether new work can start on it now, and if not, until when and why: a used-up plan still holds it. Needs a full-access caller.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     instanceId: ProviderInstanceId,

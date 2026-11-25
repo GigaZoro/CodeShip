@@ -1,4 +1,6 @@
 import {
+  AuthSettingsWriteScope,
+  AuthDiagnosticsReadScope,
   EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -16,9 +18,11 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentPresentation } from "../connection/presentation.ts";
 import {
   cursorKeychainAccessEnvironments,
-  needsCursorKeychainAccess,
+  cursorUsageAccess,
+  resolveCursorUsageAccess,
   refreshUsage,
   refreshUsageLimits,
+  usageRefreshingEnvironmentIdsAtom,
 } from "./usage.ts";
 
 const input = {
@@ -93,7 +97,7 @@ function harness(ids = ["a"], modelFilters: Record<string, UsageModelFilter> = {
       presentationAtom: (environmentId: EnvironmentId) => get(environmentId).presentation,
     },
   } satisfies Parameters<typeof refreshUsage>[0];
-  return { registry, environments, requested, refresh: () => refreshUsage(options) };
+  return { registry, environments, requested, options, refresh: () => refreshUsage(options) };
 }
 
 describe("manual usage refresh", () => {
@@ -135,6 +139,32 @@ describe("manual usage refresh", () => {
       { environmentId: "filtered", input: { ...input, modelFilter } },
       { environmentId: "plain", input },
     ]);
+  });
+
+  it("tracks each manual Usage refresh through its own rescan", async () => {
+    const { registry, environments, refresh } = harness(["desk", "laptop"]);
+    const [desk, laptop] = environments;
+    const onlyLaptop = Promise.withResolvers<void>();
+    const unmount = registry.mount(usageRefreshingEnvironmentIdsAtom);
+    const unsubscribe = registry.subscribe(usageRefreshingEnvironmentIdsAtom, (ids) => {
+      if (ids.size === 1 && ids.has(laptop!.environmentId)) onlyLaptop.resolve();
+    });
+    const refreshing = refresh();
+    expect(registry.get(usageRefreshingEnvironmentIdsAtom)).toEqual(
+      new Set(environments.map((env) => env.environmentId)),
+    );
+    for (const entry of environments) entry.rates.resolve(AsyncResult.success(pricing));
+    await Promise.all(environments.map((env) => env.scanStarted.promise));
+    desk!.scan.resolve(summary);
+    await onlyLaptop.promise;
+    expect(registry.get(usageRefreshingEnvironmentIdsAtom)).toEqual(
+      new Set([laptop!.environmentId]),
+    );
+    laptop!.scan.resolve(summary);
+    await refreshing;
+    expect(registry.get(usageRefreshingEnvironmentIdsAtom).size).toBe(0);
+    unsubscribe();
+    unmount();
   });
 
   it("settles when an environment disconnects during the rescan", async () => {
@@ -213,28 +243,11 @@ describe("limits refresh cooldown", () => {
   });
 });
 
-describe("needsCursorKeychainAccess", () => {
-  const cursorPrompt: UsageSummary = {
-    ...summary,
-    sources: [
-      {
-        fingerprint: {
-          hostId: "host",
-          provider: "cursor",
-          resolvedHomePath: "/Users/me/.cursor/auth.json",
-          volumeId: "volume",
-        },
-        status: "ok",
-        scannedFiles: 0,
-        skippedFiles: 0,
-        malformedRecords: 0,
-        distinctSessions: 0,
-        message: "Cursor account usage is off on this environment.",
-        action: "enableCursorKeychain",
-      },
-    ],
-  };
-  const cursor = (status: ServerProvider["status"]): ServerProvider => ({
+describe("Cursor account usage access", () => {
+  const cursor = (
+    status: ServerProvider["status"],
+    cursorAccountHistory?: ServerProvider["cursorAccountHistory"],
+  ): ServerProvider => ({
     instanceId: ProviderInstanceId.make("cursor"),
     driver: ProviderDriverKind.make("cursor"),
     enabled: status !== "disabled",
@@ -246,44 +259,75 @@ describe("needsCursorKeychainAccess", () => {
     models: [],
     slashCommands: [],
     skills: [],
+    ...(cursorAccountHistory === undefined ? {} : { cursorAccountHistory }),
   });
 
-  it("offers access only when Cursor is ready on that environment", () => {
-    expect(needsCursorKeychainAccess(cursorPrompt, [cursor("ready")])).toBe(true);
-    expect(needsCursorKeychainAccess(cursorPrompt, [cursor("error")])).toBe(false);
-    expect(needsCursorKeychainAccess(cursorPrompt, [cursor("disabled")])).toBe(false);
-    expect(needsCursorKeychainAccess(cursorPrompt, [])).toBe(false);
-    expect(needsCursorKeychainAccess(cursorPrompt, null)).toBe(false);
-    expect(needsCursorKeychainAccess(summary, [cursor("ready")])).toBe(false);
+  const access = (...providers: ServerProvider[]) =>
+    resolveCursorUsageAccess({
+      access: cursorUsageAccess({ providers }),
+      isConnected: true,
+      session: { authenticated: true, scopes: [AuthDiagnosticsReadScope, AuthSettingsWriteScope] },
+    });
+
+  it("uses explicit keychainOff even if the enabled Cursor provider is in error", () => {
+    expect(access(cursor("error", "keychainOff")).needsCursorKeychainAccess).toBe(true);
   });
 
-  it("stops offering access once any environment reads the Cursor account", () => {
-    const off = { summary: cursorPrompt, needsCursorKeychainAccess: true };
-    const account: UsageSummary = {
-      ...summary,
-      sources: [
-        {
-          fingerprint: {
-            hostId: "cursor.com",
-            provider: "cursor",
-            resolvedHomePath: "cursor-account:abc",
-            volumeId: "abc",
-          },
-          status: "ok",
-          scannedFiles: 1,
-          skippedFiles: 0,
-          malformedRecords: 0,
-          distinctSessions: 1,
-          message: null,
-        },
-      ],
-    };
-    expect(cursorKeychainAccessEnvironments([off, off])).toEqual([off, off]);
-    expect(
-      cursorKeychainAccessEnvironments([
-        off,
-        { summary: account, needsCursorKeychainAccess: false },
-      ]),
-    ).toEqual([]);
+  it("gives no reader and no action for a server that reports no history status", () => {
+    expect(cursorUsageAccess({ providers: [cursor("ready")] })).toEqual({ history: "unavailable" });
+    expect(access(cursor("ready"))).toEqual({
+      readsCursorAccount: false,
+      needsCursorKeychainAccess: false,
+    });
   });
+
+  it("keeps a Mac's action beside an environment whose only Cursor instance is disabled", () => {
+    const disabled = cursor("disabled", "unavailable");
+    expect(cursorUsageAccess({ providers: [disabled] })).toEqual({ history: "unavailable" });
+    const other = access(disabled);
+    const mac = access(cursor("ready", "keychainOff"));
+    expect(other.readsCursorAccount).toBe(false);
+    expect(cursorKeychainAccessEnvironments([other, mac])).toEqual([mac]);
+  });
+
+  it("hides the action only while another environment reads the account", () => {
+    const off = access(cursor("ready", "keychainOff"));
+    expect(cursorKeychainAccessEnvironments([off, access(cursor("ready", "reading"))])).toEqual([]);
+    expect(cursorKeychainAccessEnvironments([off, access(cursor("ready", "unavailable"))])).toEqual(
+      [off],
+    );
+  });
+});
+
+it("keeps overlapping Usage refresh counts through unmount and remount", async () => {
+  const tasks = new Set<() => void>();
+  const registry = AtomRegistry.make({
+    scheduleTask: (task) => {
+      tasks.add(task);
+      return () => tasks.delete(task);
+    },
+  });
+  registries.push(registry);
+  const atom = usageRefreshingEnvironmentIdsAtom;
+  const old = harness();
+  const newer = harness();
+  const stop = registry.mount(atom);
+  const first = refreshUsage({ ...old.options, registry });
+  stop();
+  for (const task of tasks) {
+    tasks.delete(task);
+    task();
+  }
+  const unmount = registry.mount(atom);
+  expect([...registry.get(atom)]).toEqual(["a"]);
+  const second = refreshUsage({ ...newer.options, registry });
+  old.environments[0]!.rates.resolve(AsyncResult.success(pricing));
+  old.environments[0]!.scan.resolve(summary);
+  await first;
+  expect([...registry.get(atom)]).toEqual(["a"]);
+  newer.environments[0]!.rates.resolve(AsyncResult.success(pricing));
+  newer.environments[0]!.scan.resolve(summary);
+  await second;
+  expect(registry.get(atom).size).toBe(0);
+  unmount();
 });

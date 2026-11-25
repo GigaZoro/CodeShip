@@ -4,11 +4,11 @@ import {
   type SessionGrantInput,
 } from "@t3tools/contracts";
 
-import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
+import type { EnvironmentConnectionPresentation } from "../connection/presentation.ts";
 import { t } from "@t3tools/shared/i18n";
 
 export function resolveUsageAccess(input: {
-  readonly connectionPhase: EnvironmentConnectionPhase;
+  readonly connection: Pick<EnvironmentConnectionPresentation, "phase" | "error">;
   readonly session: SessionGrantInput | null;
   readonly hasSessionError: boolean;
 }) {
@@ -20,12 +20,11 @@ export function resolveUsageAccess(input: {
     };
   }
   if (input.session === null) {
-    // An unprepared offline connection cannot finish its session check. Keep
-    // it out of pending totals until the connection starts another attempt.
+    // An attempt that already failed cannot block totals while it retries.
+    const { phase, error } = input.connection;
     const isPending =
-      input.connectionPhase === "connected" ||
-      input.connectionPhase === "connecting" ||
-      input.connectionPhase === "reconnecting";
+      error === null &&
+      (phase === "connected" || phase === "connecting" || phase === "reconnecting");
     return {
       canReadDiagnostics: false,
       isPending,

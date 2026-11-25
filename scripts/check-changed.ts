@@ -734,6 +734,29 @@ export const docReaderTests = (files: ReadonlyArray<string>) =>
     ? ["apps/server/src/cloud/ConnectReachability.test.ts"]
     : [];
 
+export const uncachedTests = [
+  "apps/server/integration/transferBudgetV2.integration.test.ts",
+  // No input covers the programs these run: one a variable names (CC, ComSpec,
+  // T3CODE_TEST_HEADLESS_SHELL, T3_TEST_NU_PATH), or the shell tools of the
+  // machine or its WSL distribution, without which they skip cases.
+  "apps/desktop/scripts/browser-secret-native.test.mjs",
+  "apps/desktop/src/wsl/DesktopWslEnvironment.test.ts",
+  "apps/server/src/cli/uninstall.test.ts",
+  "apps/server/src/htmlRender/HtmlRender.test.ts",
+  "packages/shared/src/shell.test.ts",
+  "scripts/install.test.ts",
+  // On macOS the file tracker runs every bash and sh as Vite+'s bundled Oils osh,
+  // which refuses bash's own flags such as --noprofile.
+  "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+  "scripts/release-desktop-workflow.test.ts",
+  // These skip cases without a cgroup this process may join or delegate.
+  "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
+  "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
+  // These fixtures start their own Vite+ task cache and file tracker.
+  "scripts/check-changed.test.ts",
+  "scripts/lib/cached-tests.test.ts",
+];
+
 // Output is piped, so keep the colors a terminal would get.
 const spawnVp = (
   spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
@@ -1537,26 +1560,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             {
               files: vitestTests,
               groupSize: 16,
-              uncached: keepProviderEnv
-                ? vitestTests
-                : [
-                    "apps/server/integration/transferBudgetV2.integration.test.ts",
-                    // No input covers the programs these run: one a variable names (CC, ComSpec,
-                    // T3CODE_TEST_HEADLESS_SHELL, T3_TEST_NU_PATH), or the shell tools of the
-                    // machine or its WSL distribution, without which they skip cases.
-                    "apps/desktop/scripts/browser-secret-native.test.mjs",
-                    "apps/desktop/src/wsl/DesktopWslEnvironment.test.ts",
-                    "apps/server/src/cli/uninstall.test.ts",
-                    "apps/server/src/htmlRender/HtmlRender.test.ts",
-                    "packages/shared/src/shell.test.ts",
-                    "scripts/install.test.ts",
-                    // These skip cases without a cgroup this process may join or delegate.
-                    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
-                    "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
-                    // These fixtures start their own Vite+ task cache and file tracker.
-                    "scripts/check-changed.test.ts",
-                    "scripts/lib/cached-tests.test.ts",
-                  ],
+              uncached: keepProviderEnv ? vitestTests : uncachedTests,
             },
             groups,
             platform,

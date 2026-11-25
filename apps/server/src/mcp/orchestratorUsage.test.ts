@@ -286,6 +286,27 @@ describe("providerUsageFields", () => {
   });
 
   it.each([
+    { credits: "spending", allowed: true },
+    { credits: "not_enabled", allowed: false },
+    { credits: "used_up", allowed: false },
+  ] as const)(
+    "allows a Codex account its plan refuses only while it is $credits prepaid credits",
+    ({ credits, allowed }) => {
+      const codex = provider("codex", {
+        usageLimits: {
+          checkedAt: "2026-09-03T11:55:00.000Z",
+          windows: [],
+          usageAllowed: false,
+          credits: { balance: "25.00", unlimited: false },
+        },
+      });
+      expect(providerUsageFields(codex, false, new Map(), credits).usage?.usageAllowed).toBe(
+        allowed,
+      );
+    },
+  );
+
+  it.each([
     ["signed out", { auth: { status: "unauthenticated" as const } }, "signed_out"],
     ["never read", {}, "not_read"],
     [

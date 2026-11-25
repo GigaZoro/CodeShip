@@ -1,7 +1,9 @@
 import {
   ProviderDriverKind,
   ProviderSetupError,
+  type ServerProvider,
   type ServerProviderModel,
+  type ServerSettings,
 } from "@t3tools/contracts";
 import { CursorSettings } from "../settings.ts";
 import * as Effect from "effect/Effect";
@@ -9,10 +11,12 @@ import * as Crypto from "effect/Crypto";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/http/HttpClient";
 import { readCursorUsageLimits } from "./usageLimits.ts";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { makeCursorTextGeneration } from "./textGeneration.ts";
 import { makeCursorAdapterV2, type CursorAdapterV2DriverEnv } from "./adapter.ts";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
@@ -27,11 +31,7 @@ import {
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "@t3tools/provider-core/server/maintenanceResolver";
-import {
-  haveProviderSnapshotSettingsChanged,
-  makeProviderSnapshotSettingsSource,
-  type ProviderSnapshotSettings,
-} from "@t3tools/provider-core/server/snapshotSettings";
+import { haveProviderSnapshotSettingsChanged } from "@t3tools/provider-core/server/snapshotSettings";
 import { probeCursorSkills } from "./skills.ts";
 import { makeCursorAuth } from "./auth.ts";
 import * as CursorCredentialStore from "./credentialStore.ts";
@@ -39,6 +39,7 @@ import * as CursorAgentSdk from "./CursorAgentSdk.ts";
 import * as CursorSdk from "./CursorSdk.ts";
 import * as CursorKeychain from "./CursorKeychain.ts";
 import * as CursorUsageAccounts from "./CursorUsageAccounts.ts";
+import { checkCursorHistoryAccess } from "./accountUsage.ts";
 
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 const isSdkRunnerError = Schema.is(CursorAgentSdk.CursorAgentSdkRunnerError);
@@ -103,6 +104,29 @@ export const CursorDriver: ProviderDriver<
     const keychain = yield* CursorKeychain.CursorKeychain;
     const sdkRunner = yield* CursorAgentSdk.CursorAgentSdkRunner;
     const processEnv = yield* mergeProviderInstanceEnvironment(environment);
+    const platform = yield* HostProcess.Platform;
+    const hostEnvironment = yield* HostProcess.Environment;
+    const home = yield* HostProcess.HomeDirectory;
+    const readHistoryState = Effect.fn("CursorDriver.readHistoryState")(
+      function* (keychainEnabled: boolean) {
+        if (!enabled) return "unavailable" as const;
+        const source = yield* CursorUsageAccounts.resolveCursorHistorySource({
+          platform,
+          environment: hostEnvironment,
+          home,
+          keychainUsageEnabled: keychainEnabled,
+        });
+        if (source.state === "keychainOff") return "keychainOff" as const;
+        if (source.state !== "source") return "unavailable" as const;
+        const accepted = yield* checkCursorHistoryAccess(
+          typeof source.credential === "string" ? source.credential : keychain,
+        );
+        return accepted ? ("reading" as const) : ("unavailable" as const);
+      },
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+    );
     const continuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,
       instanceId,
@@ -163,9 +187,13 @@ export const CursorDriver: ProviderDriver<
         ),
       onChanged: (): Effect.Effect<void> => snapshot.refresh.pipe(Effect.asVoid),
     });
-    const stampSnapshot: typeof stampIdentity = (draft) =>
+    const stampSnapshot = (
+      draft: Parameters<typeof stampIdentity>[0],
+      cursorAccountHistory: NonNullable<ServerProvider["cursorAccountHistory"]>,
+    ) =>
       stampIdentity({
         ...draft,
+        cursorAccountHistory,
         setup: { canAuthenticate: !auth.usesApiKey, canInstall: false },
         auth: {
           ...draft.auth,
@@ -222,62 +250,71 @@ export const CursorDriver: ProviderDriver<
       auth.withAccess,
     );
 
-    const checkProvider = auth.readApiKey.pipe(
-      Effect.orElseSucceed(() => undefined),
-      Effect.flatMap((apiKey) =>
-        checkCursorProviderStatus(
-          effectiveConfig,
-          {
-            ...processEnv,
-            CURSOR_API_KEY: apiKey,
-          },
-          auth.usesApiKey ? "api-key" : "browser",
-        ).pipe(
-          Effect.filterOrElse(
-            (snapshot) =>
-              !(
-                effectiveConfig.enabled &&
-                snapshot.installed &&
-                snapshot.auth.status === "authenticated"
-              ),
-            (snapshot) =>
-              host.settings.get.pipe(
-                Effect.flatMap((settings) =>
+    const checkProvider = host.settings.get.pipe(
+      Effect.flatMap((settings) =>
+        auth.readApiKey.pipe(
+          Effect.orElseSucceed(() => undefined),
+          Effect.flatMap((apiKey) =>
+            checkCursorProviderStatus(
+              effectiveConfig,
+              {
+                ...processEnv,
+                CURSOR_API_KEY: apiKey,
+              },
+              auth.usesApiKey ? "api-key" : "browser",
+            ).pipe(
+              Effect.filterOrElse(
+                (snapshot) =>
+                  !(
+                    effectiveConfig.enabled &&
+                    snapshot.installed &&
+                    snapshot.auth.status === "authenticated"
+                  ),
+                (snapshot) =>
                   readCursorUsageLimits(
                     effectiveConfig,
                     { ...processEnv, CURSOR_API_KEY: apiKey },
                     settings.cursorKeychainUsageEnabled,
-                  ),
-                ),
-                Effect.map((usageLimits) => ({ ...snapshot, usageLimits })),
+                  ).pipe(Effect.map((usageLimits) => ({ ...snapshot, usageLimits }))),
               ),
+            ),
           ),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(CursorKeychain.CursorKeychain, keychain),
+          Effect.flatMap((draft) =>
+            readHistoryState(settings.cursorKeychainUsageEnabled).pipe(
+              Effect.map((history) => stampSnapshot(draft, history)),
+            ),
+          ),
+          Effect.tap((provider) =>
+            Effect.sync(() => {
+              // A failed check lists only custom models, so keep the last loaded catalog.
+              if (provider.models.some((model) => !model.isCustom)) {
+                catalogModels = provider.models;
+              }
+            }),
+          ),
+          Effect.provide(CursorSdkCatalog.layer),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
         ),
       ),
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-      Effect.provideService(CursorKeychain.CursorKeychain, keychain),
-      Effect.map(stampSnapshot),
-      Effect.tap((provider) =>
-        Effect.sync(() => {
-          // A failed check lists only custom models, so keep the last loaded catalog.
-          if (provider.models.some((model) => !model.isCustom)) {
-            catalogModels = provider.models;
-          }
-        }),
-      ),
-      Effect.provide(CursorSdkCatalog.layer),
-      Effect.provideService(HttpClient.HttpClient, httpClient),
     );
 
-    const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
-    const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<CursorSettings>>({
+    const snapshotSettings = (settings: ServerSettings) => ({
+      provider: effectiveConfig,
+      enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+      cursorKeychainUsageEnabled: settings.cursorKeychainUsageEnabled,
+    });
+    const snapshot = yield* makeManagedServerProvider<ReturnType<typeof snapshotSettings>>({
       resolveMaintenance: () => Effect.succeed(MAINTENANCE_CAPABILITIES),
-      getSettings: snapshotSettings.getSettings,
-      streamSettings: snapshotSettings.streamSettings,
+      getSettings: host.settings.get.pipe(Effect.map(snapshotSettings)),
+      streamSettings: host.settings.changes.pipe(Stream.map(snapshotSettings)),
       haveSettingsChanged: haveProviderSnapshotSettingsChanged,
       initialSnapshot: (settings) =>
-        buildInitialCursorProviderSnapshot(settings.provider).pipe(Effect.map(stampSnapshot)),
+        buildInitialCursorProviderSnapshot(settings.provider).pipe(
+          Effect.map((draft) => stampSnapshot(draft, "unavailable")),
+        ),
       checkProvider,
     }).pipe(
       Effect.mapError(

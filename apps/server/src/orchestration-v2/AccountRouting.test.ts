@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as TestClock from "effect/testing/TestClock";
@@ -6,7 +7,13 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import type * as SqlClient from "effect/sql/SqlClient";
 import * as AccountRouting from "./AccountRouting.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { codexRateLimitsToLimits } from "../provider/codexUsageLimits.ts";
@@ -20,11 +27,14 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type CodexCreditSpending,
   type ServerProvider,
   type ServerSettings as ServerSettingsValue,
+  ThreadId,
 } from "@t3tools/contracts";
 
 import {
+  type AccountRoutingContext,
   accountsWithRoom,
   failoverLimitedLaunch,
   routeAutoAccount,
@@ -593,7 +603,7 @@ it.effect.each([
         limited ? expected : null,
       );
       assert.deepEqual(
-        [...(yield* routing.limits).accounts],
+        [...(yield* routing.limits()).accounts],
         accountWide ? [[primary, resetsAt ?? "2026-11-08T05:00:00.000Z"]] : [],
       );
     }).pipe(
@@ -681,7 +691,7 @@ it.effect.each([
   Effect.gen(function* () {
     yield* TestClock.setTime(Date.parse(row.at));
     const routing = yield* AccountRouting.AccountRouting;
-    const limits = yield* routing.limits;
+    const limits = yield* routing.limits();
     assert.deepEqual([...limits.accounts], row.until === undefined ? [] : [[primary, row.until]]);
     assert.deepEqual([...limits.estimated], row.estimated ? [primary] : []);
     assert.deepEqual(
@@ -1572,7 +1582,7 @@ it.effect.each([
         // The lift ends at the reading, so a refusal after it still holds.
         assert.equal(yield* Ref.get(lifted), freed ? "2026-11-03T12:14:00.000Z" : null);
         // A freed account is one routing may send work to again.
-        assert.equal((yield* routing.limits).accounts.has(codexAccount), !freed);
+        assert.equal((yield* routing.limits()).accounts.has(codexAccount), !freed);
       }).pipe(Effect.provide(layer));
     }),
 );
@@ -1602,6 +1612,458 @@ describe("accountsWithRoom", () => {
   ] as const)("%s", (_, needingSignIn, expected) => {
     assert.deepEqual(room(needingSignIn), expected);
   });
+});
+
+describe("prepaid Codex credits", () => {
+  const codexDriver = ProviderDriverKind.make("codex");
+  const paid = ProviderInstanceId.make("codex_paid");
+  const spare = ProviderInstanceId.make("codex_spare");
+  const model = "gpt-5.5";
+  const weeklyReset = "2026-11-06T00:00:00.000Z";
+  const epochSeconds = (iso: string) => Date.parse(iso) / 1000;
+  // What Codex's app-server answers for an account: by default the one that was refused child
+  // tasks, its weekly window used up and ordinary usage refused, with credits left.
+  const codexAccount = (
+    instanceId: ProviderInstanceId,
+    read: {
+      readonly weeklyUsed?: number;
+      /** Null: the account has no credits. */
+      readonly balance?: string | null;
+      readonly creditLimitLeft?: number;
+    } = {},
+  ) =>
+    provider(instanceId, {
+      driver: codexDriver,
+      models: [{ ...provider(primary).models[0]!, slug: model, aliases: [] }],
+      usageLimits: codexRateLimitsToLimits({
+        checkedAt: "2026-11-03T11:59:00.000Z",
+        read: {
+          rateLimits: {
+            planType: "plus",
+            primary: { usedPercent: 10, windowDurationMins: 300 },
+            secondary: {
+              usedPercent: read.weeklyUsed ?? 100,
+              windowDurationMins: 10_080,
+              resetsAt: epochSeconds(weeklyReset),
+            },
+            ...(read.creditLimitLeft === undefined
+              ? {}
+              : {
+                  individualLimit: {
+                    remainingPercent: read.creditLimitLeft,
+                    resetsAt: epochSeconds("2026-12-01T00:00:00.000Z"),
+                  },
+                }),
+            credits:
+              read.balance === null
+                ? { hasCredits: false, unlimited: false }
+                : { balance: read.balance ?? "25.00", hasCredits: true, unlimited: false },
+          },
+          ordinaryUsageAllowed: (read.weeklyUsed ?? 100) < 100,
+        },
+      }),
+    });
+  const allowed = ThreadId.make("thread:allowed");
+  const delegate = ThreadId.make("thread:allowed-delegate");
+  const fork = ThreadId.make("thread:allowed-fork");
+  const other = ThreadId.make("thread:other");
+  const cap: CodexCreditSpending = { capCredits: 3000 };
+  const scopedCap: CodexCreditSpending = { capCredits: 3000, threadIds: [allowed] };
+  const instancesFor = (
+    optedIn: ReadonlyArray<ProviderInstanceId>,
+    allowance: CodexCreditSpending = cap,
+  ) =>
+    Object.fromEntries(
+      [paid, spare].map((id) => [
+        id,
+        {
+          driver: codexDriver,
+          ...(optedIn.includes(id) ? { config: { spendCredits: allowance } } : {}),
+        },
+      ]),
+    );
+  const settingsFor = (
+    optedIn: ReadonlyArray<ProviderInstanceId>,
+    allowance: CodexCreditSpending = cap,
+  ) => ({
+    ...DEFAULT_SERVER_SETTINGS,
+    providerInstances: instancesFor(optedIn, allowance),
+    providerInstanceFailoverOrder: [paid, spare],
+    failoverLimitedThreads: true,
+    autoModeProvider: codexDriver,
+    autoModeModels: { codex: { model } },
+  });
+  /** Both accounts counted from their current balance, with no thread asking. */
+  const counted = {
+    spent: new Map([
+      [paid, 0],
+      [spare, 0],
+    ]),
+    requesters: [],
+  };
+  const context = (
+    providers: ReadonlyArray<ServerProvider>,
+    optedIn: ReadonlyArray<ProviderInstanceId>,
+    creditAccess: AccountRoutingContext["creditAccess"] = counted,
+    allowance: CodexCreditSpending = cap,
+  ) => ({
+    projectId,
+    providers,
+    settings: settingsFor(optedIn, allowance),
+    recordedLimits: new Map(),
+    mcpSignInsNeeded: signIns(),
+    nowMs,
+    creditAccess,
+  });
+
+  it.each([
+    { name: "refuses an account at its weekly limit without the opt-in", optedIn: [], read: {} },
+    { name: "admits it once spending its credits is on", optedIn: [paid], read: {}, room: true },
+    { name: "refuses it when its credits are used up", optedIn: [paid], read: { balance: "0.00" } },
+    {
+      name: "refuses it at its monthly credit limit",
+      optedIn: [paid],
+      read: { creditLimitLeft: 0 },
+    },
+    { name: "refuses it when it has no credits", optedIn: [paid], read: { balance: null } },
+    {
+      name: "refuses it once the cap is spent",
+      optedIn: [paid],
+      read: {},
+      access: { spent: new Map([[paid, 3000]]), requesters: [] },
+    },
+    {
+      name: "refuses it before any balance is counted against the cap",
+      optedIn: [paid],
+      read: {},
+      access: { spent: new Map(), requesters: [] },
+    },
+    {
+      name: "refuses it to a thread outside the allowed ones",
+      optedIn: [paid],
+      read: {},
+      allowance: scopedCap,
+      access: { ...counted, requesters: [other] },
+    },
+    {
+      name: "refuses it to work no thread asked for when the allowance names threads",
+      optedIn: [paid],
+      read: {},
+      allowance: scopedCap,
+    },
+    {
+      name: "admits a delegate of an allowed thread",
+      optedIn: [paid],
+      read: {},
+      allowance: scopedCap,
+      access: { ...counted, requesters: [delegate, allowed] },
+      room: true,
+    },
+  ] as const)("$name", ({ optedIn, read, room, ...credits }) => {
+    assert.deepEqual(
+      accountsWithRoom({
+        ...context(
+          [codexAccount(paid, read)],
+          optedIn,
+          "access" in credits ? credits.access : counted,
+          "allowance" in credits ? credits.allowance : cap,
+        ),
+        driver: codexDriver,
+        model,
+      }).map((account) => account.instanceId),
+      room === true ? [paid] : [],
+    );
+  });
+
+  it.each([
+    { name: "spending once plan usage is used up", optedIn: [paid], read: {}, use: "spending" },
+    {
+      name: "standby while the plan has room",
+      optedIn: [paid],
+      read: { weeklyUsed: 30 },
+      use: "standby",
+    },
+    { name: "not_enabled without the opt-in", optedIn: [], read: {}, use: "not_enabled" },
+    {
+      name: "out_of_scope for a thread the allowance leaves out",
+      optedIn: [paid],
+      read: {},
+      allowance: scopedCap,
+      access: { ...counted, requesters: [other] },
+      use: "out_of_scope",
+    },
+    {
+      name: "cap_reached once the cap is spent",
+      optedIn: [paid],
+      read: {},
+      access: { spent: new Map([[paid, 3000]]), requesters: [] },
+      use: "cap_reached",
+    },
+    {
+      name: "used_up with no balance left",
+      optedIn: [paid],
+      read: { balance: "0" },
+      use: "used_up",
+    },
+    {
+      name: "used_up at the monthly credit limit",
+      optedIn: [],
+      read: { creditLimitLeft: 0 },
+      use: "used_up",
+    },
+    { name: "null without credits", optedIn: [paid], read: { balance: null }, use: null },
+  ] as const)("credit use is $name", ({ optedIn, read, use, ...credits }) => {
+    assert.equal(
+      AccountRouting.creditUse(codexAccount(paid, read), {
+        settings: settingsFor(optedIn, "allowance" in credits ? credits.allowance : cap),
+        recordedLimits: new Map(),
+        nowMs,
+        creditAccess: "access" in credits ? credits.access : counted,
+      }),
+      use,
+    );
+  });
+
+  it("leaves Claude's extra usage out", () => {
+    const extraUsage = provider(primary, {
+      usageLimits: {
+        checkedAt: "2026-11-03T11:59:00.000Z",
+        windows: [{ id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 100 }],
+        credits: { balance: "453.69", currency: "USD", unlimited: false },
+      },
+    });
+    assert.isNull(
+      AccountRouting.creditUse(extraUsage, {
+        settings: settings([primary]),
+        recordedLimits: new Map(),
+        nowMs,
+      }),
+    );
+  });
+
+  it("sends new work to an account with plan usage left before one on credits", () => {
+    const input = context([codexAccount(paid), codexAccount(spare, { weeklyUsed: 30 })], [paid]);
+    const named = { instanceId: paid, model };
+    assert.deepEqual(
+      {
+        room: accountsWithRoom({ ...input, driver: codexDriver, model }).map(
+          (account) => account.instanceId,
+        ),
+        named: failoverLimitedLaunch({ ...input, selection: named }),
+        thread: routeAutoAccount({
+          ...input,
+          selection: { ...named, autoAccount: true },
+          currentInstanceId: paid,
+          started: true,
+        }).instanceId,
+      },
+      {
+        room: [spare, paid],
+        named: { selection: { ...named, instanceId: spare }, failover: { reason: "usageLimit" } },
+        thread: spare,
+      },
+    );
+  });
+
+  it("keeps work with plan usage left off credits for an MCP sign-in", () => {
+    const input = {
+      ...context([codexAccount(spare, { weeklyUsed: 30 }), codexAccount(paid)], [paid]),
+      mcpSignInsNeeded: signIns([spare]),
+    };
+    const named = { instanceId: spare, model };
+    assert.deepEqual(failoverLimitedLaunch({ ...input, selection: named }), {
+      selection: named,
+      failover: null,
+    });
+  });
+
+  const shell = (lineage: {
+    readonly parentThreadId: ThreadId | null;
+    readonly relationshipToParent: "fork" | "subagent" | null;
+  }) => ({ lineage: { ...lineage, rootThreadId: allowed } }) as never;
+  const shells = new Map([
+    [allowed, shell({ parentThreadId: null, relationshipToParent: null })],
+    [delegate, shell({ parentThreadId: allowed, relationshipToParent: "subagent" })],
+    [fork, shell({ parentThreadId: allowed, relationshipToParent: "fork" })],
+    [other, shell({ parentThreadId: null, relationshipToParent: null })],
+  ]);
+  /** The routing layer over one account whose balance reading the test moves. */
+  const routingLayer = (input: {
+    readonly optedIn: ReadonlyArray<ProviderInstanceId>;
+    readonly reading: Ref.Ref<ServerProvider>;
+    readonly allowance?: CodexCreditSpending;
+    readonly held?: Ref.Ref<boolean>;
+    readonly database?: Layer.Layer<SqlClient.SqlClient>;
+  }) =>
+    AccountRouting.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ProviderMcp.ProviderMcp)({}),
+          ServerSettings.layerTest({
+            providerInstances: instancesFor(input.optedIn, input.allowance),
+          }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getUsageLimitedProviderInstances: () =>
+              (input.held === undefined ? Effect.succeed(false) : Ref.get(input.held)).pipe(
+                Effect.map(
+                  (refused) =>
+                    new Map(
+                      refused
+                        ? [[paid, [{ refusedAt: "2026-11-03T11:00:00.000Z", resetAt: null }]]]
+                        : [],
+                    ),
+                ),
+              ),
+            liftUsageLimitHolds: () =>
+              input.held === undefined ? Effect.void : Ref.set(input.held, false),
+            getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Ref.get(input.reading).pipe(Effect.map((reading) => [reading])),
+            streamChanges: Stream.empty,
+          }),
+          input.database ?? SqlitePersistence.layerMemory,
+        ),
+      ),
+    );
+  const launchOnPaid = (requesterThreadId?: ThreadId) =>
+    AccountRouting.AccountRouting.use((routing) =>
+      routing.launchLimit({
+        projectId,
+        selection: { instanceId: paid, model },
+        ...(requesterThreadId === undefined ? {} : { requesterThreadId }),
+      }),
+    );
+
+  it.effect.each([
+    {
+      name: "refused until its weekly reset without the opt-in",
+      optedIn: [],
+      read: {},
+      expected: { limitedUntil: weeklyReset, credits: "not_enabled" },
+    },
+    {
+      name: "admitted on its prepaid credits with the opt-in",
+      optedIn: [paid],
+      read: {},
+      expected: { credits: "spending" },
+    },
+    {
+      name: "refused to a thread the allowance leaves out",
+      optedIn: [paid],
+      read: {},
+      allowance: scopedCap,
+      requester: other,
+      expected: { limitedUntil: weeklyReset, credits: "out_of_scope" },
+    },
+    {
+      name: "admitted to a delegate of an allowed thread",
+      optedIn: [paid],
+      read: {},
+      allowance: scopedCap,
+      requester: delegate,
+      expected: { credits: "spending" },
+    },
+    {
+      name: "admitted with plan usage left",
+      optedIn: [],
+      read: { weeklyUsed: 30, balance: null },
+      expected: {},
+    },
+  ] as const)(
+    "a release reports what admission does next: $name",
+    ({ optedIn, read, expected, ...credits }) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(nowMs);
+        const requesterThreadId = "requester" in credits ? credits.requester : undefined;
+        const layer = routingLayer({
+          optedIn,
+          reading: yield* Ref.make(codexAccount(paid, read)),
+          held: yield* Ref.make(true),
+          ...("allowance" in credits ? { allowance: credits.allowance } : {}),
+        });
+        yield* Effect.gen(function* () {
+          const routing = yield* AccountRouting.AccountRouting;
+          const report = yield* routing.retryAccount(paid, { requesterThreadId });
+          const refusal = yield* launchOnPaid(requesterThreadId);
+          assert.deepEqual(report, expected);
+          assert.equal(refusal?.limitedUntil, report.limitedUntil);
+        }).pipe(Effect.provide(layer));
+      }),
+  );
+
+  it.effect("stops admitting once the balance has fallen by the cap, counting no top-up", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      const reading = yield* Ref.make(codexAccount(paid));
+      yield* Effect.gen(function* () {
+        // 25 to 22 spends 3; the top-up to 40 spends nothing; 40 to 38 spends the last 2.
+        const launches = yield* Effect.forEach(["25.00", "22.00", "40.00", "38.00"], (balance) =>
+          Ref.set(reading, codexAccount(paid, { balance })).pipe(
+            Effect.andThen(launchOnPaid()),
+            Effect.map((limit) => limit?.credits ?? "admitted"),
+          ),
+        );
+        const grant = (yield* AccountRouting.AccountRouting.use((routing) =>
+          routing.limits(),
+        )).grants.get(paid);
+        assert.deepEqual(
+          { launches, grant },
+          {
+            launches: ["admitted", "admitted", "admitted", "cap_reached"],
+            grant: { capCredits: 5, spentCredits: 5, remainingCredits: 0 },
+          },
+        );
+      }).pipe(
+        Effect.provide(routingLayer({ optedIn: [paid], reading, allowance: { capCredits: 5 } })),
+      );
+    }),
+  );
+
+  it.effect("keeps counting against the cap across a restart", () => {
+    const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-credit-spend-"));
+    const database = () =>
+      SqlitePersistence.layerFromPath(NodePath.join(tempDir, "state.sqlite")).pipe(
+        Layer.provide(NodeServices.layer),
+      );
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      const reading = yield* Ref.make(codexAccount(paid, { balance: "9880" }));
+      const boot = () =>
+        routingLayer({ optedIn: [paid], reading, database: Layer.orDie(database()) });
+      yield* launchOnPaid().pipe(Effect.provide(boot()));
+      yield* Ref.set(reading, codexAccount(paid, { balance: "9500" }));
+      yield* launchOnPaid().pipe(Effect.provide(boot()));
+      const grant = yield* AccountRouting.AccountRouting.use((routing) => routing.limits()).pipe(
+        Effect.map((limits) => limits.grants.get(paid)),
+        Effect.provide(boot()),
+      );
+      assert.deepEqual(grant, { capCredits: 3000, spentCredits: 380, remainingCredits: 2620 });
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
+    );
+  });
+
+  it.effect.each([
+    { name: "spends for a delegate of an allowed thread", threadId: delegate, refused: undefined },
+    { name: "refuses a fork of an allowed thread", threadId: fork, refused: "out_of_scope" },
+  ] as const)("a turn on credits $name", ({ threadId, refused }) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      const refusal = yield* AccountRouting.AccountRouting.use((routing) =>
+        routing.creditRefusal({ threadId, instanceId: paid, model }),
+      ).pipe(
+        Effect.provide(
+          routingLayer({
+            optedIn: [paid],
+            reading: yield* Ref.make(codexAccount(paid)),
+            allowance: scopedCap,
+          }),
+        ),
+      );
+      assert.equal(refusal?.credits, refused);
+    }),
+  );
 });
 
 describe("MCP sign-ins in the layer", () => {

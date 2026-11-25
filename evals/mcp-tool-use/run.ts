@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off
+import {
+  offeredOptionSelections,
+  resolveSelectableModel,
+  type SelectableModelOption,
+} from "@t3tools/shared/model";
 import { autoModeModelFor } from "@t3tools/shared/serverSettings";
 /**
  * Replays small fake threads on a Claude or Codex model to check T3's MCP tool use. A trimmed
@@ -20,6 +25,7 @@ import {
   DeviceSummary,
   OrchestratorMcpTaskRole,
   ProviderInstanceId,
+  type ProviderOptionDescriptor,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -308,6 +314,7 @@ export const McpToolUseCase = Schema.Struct({
             Schema.Struct({
               slug: Schema.String,
               name: Schema.String,
+              aliases: Schema.optionalKey(Schema.Array(Schema.String)),
               effort: Schema.optionalKey(
                 Schema.Struct({ id: Schema.String, values: Schema.Array(Schema.String) }),
               ),
@@ -1014,37 +1021,63 @@ export const buildMessages = (sample: Sample) => {
       },
     })),
   }));
-  const otherPrimary = autoModeModelFor(
-    autoSettings,
-    ProviderDriverKind.make(driver === "codex" ? "claudeAgent" : "codex"),
-  );
-  const reviewer = otherProviders.find((provider) =>
-    provider.models.some((model) => model.slug === otherPrimary?.model),
-  );
+  const otherDriver = ProviderDriverKind.make(driver === "codex" ? "claudeAgent" : "codex");
+  const otherPrimary = autoModeModelFor(autoSettings, otherDriver);
+  const primary = autoModeModelFor(autoSettings, ProviderDriverKind.make(driver));
+  const ownModels = (
+    PROVIDERS.find((provider) => provider.providerInstanceId === driver)?.models ?? []
+  ).map((model) => ({
+    slug: model.id,
+    name: model.id,
+    aliases: driver === "claudeAgent" ? [model.id.split("-")[1]!] : [],
+    capabilities: {
+      optionDescriptors: model.options.map((option) => ({
+        id: option.id,
+        label: "Effort",
+        type: "select" as const,
+        options: option.values.map((id) => ({ id, label: id })),
+      })),
+    },
+  }));
+  // Like the server, a reviewer runs the id its account lists for the saved model, found by id,
+  // name or alias, with only the saved options that model still offers.
+  const reviewerOn = (
+    providerInstanceId: string,
+    providerDriver: ProviderDriverKind,
+    models: ReadonlyArray<
+      SelectableModelOption & {
+        readonly capabilities: {
+          readonly optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
+        };
+      }
+    >,
+    auto: typeof primary,
+  ) => {
+    const slug = auto === null ? null : resolveSelectableModel(providerDriver, auto.model, models);
+    const model = models.find((candidate) => candidate.slug === slug);
+    return model === undefined || auto === null
+      ? undefined
+      : {
+          model: model.slug,
+          providerInstanceId,
+          options: offeredOptionSelections(model.capabilities.optionDescriptors, auto.options),
+        };
+  };
+  const otherReviewer = otherProviders
+    .map((provider) =>
+      reviewerOn(provider.providerInstanceId, otherDriver, provider.models, otherPrimary),
+    )
+    .find((candidate) => candidate !== undefined);
+  const ownReviewer = reviewerOn(driver, ProviderDriverKind.make(driver), ownModels, primary);
   const autoBrief = testCase.setup.autoMode
     ? autoCoordinatorInstructions({
         driver: ProviderDriverKind.make(driver),
         model: base.model,
-        primary: autoModeModelFor(autoSettings, ProviderDriverKind.make(driver)),
+        primary,
         otherProviders,
-        ...(reviewer === undefined || otherPrimary === null
-          ? {}
-          : { otherPrimary: { ...otherPrimary, providerInstanceId: reviewer.providerInstanceId } }),
-        models: (
-          PROVIDERS.find((provider) => provider.providerInstanceId === driver)?.models ?? []
-        ).map((model) => ({
-          slug: model.id,
-          name: model.id,
-          aliases: driver === "claudeAgent" ? [model.id.split("-")[1]!] : [],
-          capabilities: {
-            optionDescriptors: model.options.map((option) => ({
-              id: option.id,
-              label: "Effort",
-              type: "select" as const,
-              options: option.values.map((id) => ({ id, label: id })),
-            })),
-          },
-        })),
+        ...(otherReviewer === undefined ? {} : { otherReviewer }),
+        ...(ownReviewer === undefined ? {} : { ownReviewer }),
+        models: ownModels,
       })
     : null;
   const sideChatContext =

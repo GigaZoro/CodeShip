@@ -684,8 +684,11 @@ fails. A limit on one model family excludes only that family. Each model uses th
 account in failover order that can run it; native subagents use the coordinator's
 own account. The short model list points the agent to the full catalog when needed.
 After implementation, the coordinator reviews the diff itself and requests an independent
-review from the other provider. Both use their provider's Auto model and effort from Settings.
-If the other provider's Auto model cannot run, the coordinator reports that review as incomplete.
+review in a fresh chat. Each review uses its provider's Auto model and effort from Settings,
+with the options that model still offers. The independent review runs on the other provider
+while one of its accounts can run that provider's Auto model, and on the coordinator's own
+provider when none can, or when the other's reviewer fails to start. When no account can run a
+reviewer, the coordinator's own review is the only one, and its report says so.
 When the other provider cannot run, it delegates routine work to cheaper models of
 its own provider.
 
@@ -702,7 +705,9 @@ from the thread's menu on web and desktop, or its settings sheet on mobile. Afte
 a request you send changes files, the thread's agent starts one read-only review
 task per reviewer, then checks their findings and fixes the ones that hold up.
 Those fixes are not reviewed again. **Review instructions** are added to every
-reviewer's brief. Reviews use turns on the reviewers' accounts.
+reviewer's brief. Reviews use turns on the reviewers' accounts. A reviewer set to
+Auto runs where Auto mode starts a new chat, and on its saved model while Auto mode
+is off.
 
 On web and desktop, use **Agents** to follow work delegated to subagents.
 On mobile, open a subagent from its conversation card or **Agents**. On iOS

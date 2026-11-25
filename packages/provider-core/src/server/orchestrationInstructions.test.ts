@@ -167,24 +167,27 @@ describe("autoCoordinatorInstructions", () => {
     expect(brief).not.toContain("extra-5");
     expect(brief).toContain("More accounts and models: call `orchestrator_capabilities`");
   });
-  it.each([
-    { driver: "claudeAgent", otherAvailable: false },
-    { driver: "claudeAgent", otherAvailable: true },
-    { driver: "codex", otherAvailable: false },
-    { driver: "codex", otherAvailable: true },
-  ])(
-    "reviews on both configured primaries with $driver coordinating (other available: $otherAvailable)",
-    ({ driver, otherAvailable }) => {
+  it.each(
+    ["claudeAgent", "codex"].flatMap((driver) =>
+      [true, false].flatMap((other) => [true, false].map((own) => ({ driver, other, own }))),
+    ),
+  )(
+    "reviews on both providers only while both can run, $driver coordinating (other: $other, own: $own)",
+    ({ driver, other, own }) => {
       const claude = driver === "claudeAgent";
       const primary = claude
         ? { model: "custom-opus", options: [{ id: "effort", value: "xhigh" }] }
         : { model: "custom-astra", options: [{ id: "reasoningEffort", value: "ultra" }] };
-      const otherPrimary = {
+      const otherReviewer = {
         providerInstanceId: claude ? "codex_review" : "claude_review",
         model: "custom-review-model",
         options: claude
           ? [{ id: "reasoningEffort", value: "max" }]
           : [{ id: "effort", value: "xhigh" }],
+      };
+      const ownReviewer = {
+        ...primary,
+        providerInstanceId: claude ? "claude_spare" : "codex_spare",
       };
       const brief = autoCoordinatorInstructions({
         ...input,
@@ -192,27 +195,36 @@ describe("autoCoordinatorInstructions", () => {
         model: primary.model,
         primary,
         models: [{ slug: primary.model, name: "Custom Primary", aliases: claude ? ["opus"] : [] }],
-        ...(otherAvailable ? { otherPrimary } : {}),
+        ...(other ? { otherReviewer } : {}),
+        ...(own ? { ownReviewer } : {}),
+      })!;
+      const asTarget = (reviewer: typeof otherReviewer) => ({
+        ...reviewer,
+        options: Object.fromEntries(reviewer.options.map(({ id, value }) => [id, value])),
       });
       expect(brief).toContain("review the diff yourself on your Settings primary, Custom Primary");
       expect(brief).toContain(claude ? "effort xhigh" : "reasoningEffort ultra");
       expect(brief).not.toContain("fresh native subagent");
       expect(brief).toContain("choose the best model for each task from either Claude or Codex");
-      if (otherAvailable) {
-        const target = brief?.match(/role "review", target `([^`]+)`/)?.[1];
-        expect(target).toBeDefined();
-        expect(JSON.parse(target!)).toEqual({
-          ...otherPrimary,
-          options: Object.fromEntries(otherPrimary.options.map(({ id, value }) => [id, value])),
-        });
-        expect(brief).toContain(
-          "Also obtain an independent review from the other provider's Settings primary",
-        );
-        expect(brief).not.toContain("both for big or risky changes");
-      } else {
-        expect(brief).not.toContain("delegate_task");
-        expect(brief).toContain("Report the independent review as incomplete");
-      }
+      expect(brief).not.toContain("incomplete");
+      // The other provider's reviewer comes first, and this provider's takes over when it cannot run.
+      expect(
+        [...brief.matchAll(/target `(\{[^`]+\})`/g)].map((match) => JSON.parse(match[1]!)),
+      ).toEqual([...(other ? [otherReviewer] : []), ...(own ? [ownReviewer] : [])].map(asTarget));
+      expect(brief.includes('`delegate_task` role "review"')).toBe(other || own);
+      expect(brief.includes("Also obtain an independent review from the other provider")).toBe(
+        other,
+      );
+      expect(brief.includes("The other provider's Settings primary cannot run now")).toBe(
+        !other && own,
+      );
+      expect(brief).toContain(
+        other && own
+          ? "if neither can run, your own review is the only one: say so in your report."
+          : other || own
+            ? "If it cannot run, your own review is the only one: say so in your report."
+            : "No account can run an independent reviewer now, so your own review is the only one",
+      );
     },
   );
 });

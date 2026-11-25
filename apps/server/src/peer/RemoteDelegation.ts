@@ -1,6 +1,7 @@
 import {
   CommandId,
   type EnvironmentId,
+  type ModelSelection,
   NodeId,
   OrchestratorMcpFailure,
   type OrchestratorMcpDelegateTaskInput,
@@ -19,6 +20,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { derive } from "@t3tools/provider-core/server/IdAllocator";
+import { SUBAGENT_REPLY_TURN_ITEM_TYPES } from "@t3tools/provider-core/server/subagentProjection";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -56,6 +58,8 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 
+/** The reply types `subagentResultForRun` takes a run's result from, read here off the thread there. */
+const replyTypes: ReadonlyArray<string> = SUBAGENT_REPLY_TURN_ITEM_TYPES;
 /** How long one follow of a remote task waits on its thread there before checking again. */
 const FOLLOW_WAIT_MS = 10 * 60 * 1_000;
 /** A linked environment that stops answering is retried, backing off to this. */
@@ -350,6 +354,15 @@ const make = Effect.gen(function* () {
       const inheritedOptionIds = (options ?? [])
         .map((option) => option.id)
         .filter((id) => given?.some((option) => option.id === id) !== true);
+      // A target that names only where the task runs keeps an Auto parent's child on Auto, there
+      // on that environment's Auto settings, as a child here stays Auto on this one's.
+      const staysAuto =
+        inherited.autoAccount === true &&
+        input.auto !== false &&
+        target.providerInstanceId === undefined &&
+        target.driverKind === undefined &&
+        target.model === undefined &&
+        target.options === undefined;
       // Modes asked for are checked against this thread. Omitted ones are left
       // to the other side, which inherits this thread's modes capped by the
       // link's access, so a narrower link still takes the task.
@@ -442,21 +455,28 @@ const make = Effect.gen(function* () {
                 message: "The delegated task was not recorded.",
               });
             }
-            const launched = yield* forwarding
-              .call(
+            const clientRequestId = yield* composedKey("delegate", scope.thread.threadId, key);
+            const launch = (
+              selection:
+                | { readonly auto: true }
+                | {
+                    readonly modelSelection: ModelSelection;
+                    readonly inheritedOptionIds: ReadonlyArray<string>;
+                  },
+            ) =>
+              forwarding.call(
                 scope,
                 ProjectToolkit.tools.t3_thread_launch,
                 remoteChild.environmentId,
                 {
                   ...where,
                   title: input.title ?? parent.thread.title,
-                  modelSelection,
-                  inheritedOptionIds,
+                  ...selection,
                   ...(runtimeMode === undefined ? {} : { runtimeMode }),
                   ...(interactionMode === undefined ? {} : { interactionMode }),
                   ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
                   message: task,
-                  clientRequestId: yield* composedKey("delegate", scope.thread.threadId, key),
+                  clientRequestId,
                   launchId: remoteThreadId,
                   // The thread there shows it is this thread's subagent, with a way back.
                   delegatedFrom: {
@@ -467,50 +487,61 @@ const make = Effect.gen(function* () {
                 },
                 // A peer that predates it checks no option, so it runs them all as before.
                 ["inheritedOptionIds"],
-              )
-              .pipe(
-                Effect.filterOrElse(
-                  (result) => result.threadId === remoteThreadId,
-                  // A peer that predates the chosen id launched a thread nothing here follows.
-                  (result) => {
-                    const orphan = { ...remoteChild, threadId: result.threadId };
-                    return stopThere(followScope(scope.thread, orphan), orphan, "stop").pipe(
-                      Effect.ignoreCause({ log: true }),
-                      Effect.andThen(
-                        Effect.fail(
-                          new OrchestratorMcpFailure({
-                            code: "orchestration_error",
-                            message:
-                              "The linked environment is too old to launch a delegated task. Update it.",
-                          }),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-                Effect.tapError((error) =>
-                  // The task stays on record so a launch whose reply was lost is followed. It is
-                  // failed here only once nothing is left to stop there.
-                  stopThere(followScope(scope.thread, remoteChild), remoteChild, "stop").pipe(
-                    Effect.as(true),
-                    Effect.catch((stopError) =>
-                      Effect.succeed(stopError.code === "thread_not_found"),
-                    ),
-                    Effect.flatMap((nothingThere) =>
-                      nothingThere
-                        ? complete(
-                            scope.thread.threadId,
-                            taskId,
-                            "failed",
-                            `The task could not be started in ${remoteChild.label}: ${error.message}`,
-                            "stopped",
-                          )
-                        : Effect.void,
-                    ),
-                    Effect.ignoreCause({ log: true }),
-                  ),
-                ),
               );
+            const launched = yield* (
+              staysAuto
+                ? launch({ auto: true }).pipe(
+                    // Auto mode off there refuses before it makes the thread, so the same key
+                    // then starts it on the parent's model.
+                    Effect.catchIf(
+                      (error) => error.code === "auto_mode_unavailable",
+                      () => launch({ modelSelection, inheritedOptionIds }),
+                    ),
+                  )
+                : launch({ modelSelection, inheritedOptionIds })
+            ).pipe(
+              Effect.filterOrElse(
+                (result) => result.threadId === remoteThreadId,
+                // A peer that predates the chosen id launched a thread nothing here follows.
+                (result) => {
+                  const orphan = { ...remoteChild, threadId: result.threadId };
+                  return stopThere(followScope(scope.thread, orphan), orphan, "stop").pipe(
+                    Effect.ignoreCause({ log: true }),
+                    Effect.andThen(
+                      Effect.fail(
+                        new OrchestratorMcpFailure({
+                          code: "orchestration_error",
+                          message:
+                            "The linked environment is too old to launch a delegated task. Update it.",
+                        }),
+                      ),
+                    ),
+                  );
+                },
+              ),
+              Effect.tapError((error) =>
+                // The task stays on record so a launch whose reply was lost is followed. It is
+                // failed here only once nothing is left to stop there.
+                stopThere(followScope(scope.thread, remoteChild), remoteChild, "stop").pipe(
+                  Effect.as(true),
+                  Effect.catch((stopError) =>
+                    Effect.succeed(stopError.code === "thread_not_found"),
+                  ),
+                  Effect.flatMap((nothingThere) =>
+                    nothingThere
+                      ? complete(
+                          scope.thread.threadId,
+                          taskId,
+                          "failed",
+                          `The task could not be started in ${remoteChild.label}: ${error.message}`,
+                          "stopped",
+                        )
+                      : Effect.void,
+                  ),
+                  Effect.ignoreCause({ log: true }),
+                ),
+              ),
+            );
             // The follower waits on this run once it knows it; a failure here leaves it on the
             // thread's latest run, which is the run it launched.
             if (launched.runId !== null) {
@@ -615,10 +646,32 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const readWholeText = Effect.fn("RemoteDelegation.readWholeText")(function* (
+    scope: ThreadScope,
+    remote: OrchestrationV2RemoteTaskChild,
+    item: OrchestratorMcpThreadTimelineItem,
+  ) {
+    let text = item.text ?? "";
+    let textOffset = item.textTruncated ? (item.nextTextOffset ?? null) : null;
+    while (textOffset !== null) {
+      const rest = yield* forwarding.readThread(scope, remote.environmentId, {
+        threadId: remote.threadId,
+        itemId: item.itemId,
+        textOffset,
+        maxCharsPerItem: 50_000,
+      });
+      const part = rest.items[0];
+      if (part === undefined) break;
+      text += part.text ?? "";
+      textOffset = part.textTruncated ? (part.nextTextOffset ?? null) : null;
+    }
+    return text;
+  });
+
   /**
-   * The last reply `runId` gave on the task's thread there, which is its
-   * result, read whole however long it is. A failed run prefers its error
-   * from the activity view over an earlier reply, without taking another run's.
+   * The last reply with text `runId` gave on the task's thread there (a message or a
+   * proposed plan), which is its result, read whole however long it is. A failed run
+   * prefers its error from the activity view over an earlier reply, without taking another run's.
    */
   const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
     scope: ThreadScope,
@@ -627,7 +680,28 @@ const make = Effect.gen(function* () {
     failed = false,
     probeSuccess = true,
   ) {
-    let reply: OrchestratorMcpThreadTimelineItem | undefined;
+    interface ReplyScan {
+      readonly reply: OrchestratorMcpThreadTimelineItem | undefined;
+      readonly undecided: ReadonlyArray<OrchestratorMcpThreadTimelineItem>;
+    }
+    // A blank reply is no reply, as for a task here. A text cut short can look blank, so the
+    // replies after the last one shown with text stay undecided until read whole.
+    const scanReplies = (
+      from: ReplyScan,
+      items: ReadonlyArray<OrchestratorMcpThreadTimelineItem>,
+    ): ReplyScan => {
+      let reply = from.reply;
+      const undecided = [...from.undecided];
+      for (const item of items) {
+        if (!replyTypes.includes(item.type) || (runId !== null && item.runId !== runId)) continue;
+        if ((item.text ?? "").trim().length > 0) {
+          reply = item;
+          undecided.length = 0;
+        } else if (item.textTruncated) undecided.push(item);
+      }
+      return { reply, undecided };
+    };
+    let replies: ReplyScan = { reply: undefined, undecided: [] };
     let error: OrchestratorMcpThreadTimelineItem | undefined;
     let afterPosition: number | undefined;
     let remainingItems = 0;
@@ -642,10 +716,7 @@ const make = Effect.gen(function* () {
         ...(failed && remainingItems > 100 ? { maxCharsPerItem: 1 } : {}),
         ...(afterPosition === undefined ? {} : { afterPosition }),
       });
-      reply =
-        read.items.findLast(
-          (item) => item.type === "assistant_message" && (runId === null || item.runId === runId),
-        ) ?? reply;
+      replies = scanReplies(replies, read.items);
       if (failed) {
         error =
           read.items.findLast(
@@ -663,11 +734,9 @@ const make = Effect.gen(function* () {
             limit: 100,
             afterPosition: tailPosition,
           });
-          const tailReply = tail.items.findLast(
-            (item) => item.type === "assistant_message" && (runId === null || item.runId === runId),
-          );
-          if (!tail.hasMore && tailReply !== undefined) {
-            reply = tailReply;
+          const tailReplies = scanReplies({ reply: undefined, undecided: [] }, tail.items);
+          if (!tail.hasMore && tailReplies.reply !== undefined) {
+            replies = tailReplies;
             break;
           }
         }
@@ -675,23 +744,14 @@ const make = Effect.gen(function* () {
       afterPosition = read.nextPosition;
       remainingItems = read.thread.itemCount - afterPosition - 1;
     }
-    reply = error ?? reply;
-    if (reply === undefined) return undefined;
-    let text = reply.text ?? "";
-    let textOffset = reply.textTruncated ? (reply.nextTextOffset ?? null) : null;
-    while (textOffset !== null) {
-      const rest = yield* forwarding.readThread(scope, remote.environmentId, {
-        threadId: remote.threadId,
-        itemId: reply.itemId,
-        textOffset,
-        maxCharsPerItem: 50_000,
-      });
-      const part = rest.items[0];
-      if (part === undefined) break;
-      text += part.text ?? "";
-      textOffset = part.textTruncated ? (part.nextTextOffset ?? null) : null;
+    if (error !== undefined) return yield* readWholeText(scope, remote, error);
+    for (const item of replies.undecided.toReversed()) {
+      const text = yield* readWholeText(scope, remote, item);
+      if (text.trim().length > 0) return text;
     }
-    return text;
+    return replies.reply === undefined
+      ? undefined
+      : yield* readWholeText(scope, remote, replies.reply);
   });
 
   /**

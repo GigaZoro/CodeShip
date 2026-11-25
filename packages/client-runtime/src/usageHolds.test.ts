@@ -1,7 +1,12 @@
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { describeUsageHold, heldAccountsForDriver } from "./usageHolds.ts";
+import {
+  creditGrantLeftText,
+  describeRetryOutcome,
+  describeUsageHold,
+  heldAccountsForDriver,
+} from "./usageHolds.ts";
 
 const codex = ProviderDriverKind.make("codex");
 const provider = (instanceId: string, driver = codex) =>
@@ -27,6 +32,14 @@ describe("heldAccountsForDriver", () => {
   });
 });
 
+describe("creditGrantLeftText", () => {
+  it("rounds a part credit down, so it never shows more than is left", () => {
+    expect(creditGrantLeftText({ capCredits: 3000, remainingCredits: 2399.99 })).toBe(
+      "Prepaid credits left: 2,399 of 3,000",
+    );
+  });
+});
+
 describe("describeUsageHold", () => {
   const instanceId = ProviderInstanceId.make("codex");
   it.each([
@@ -45,5 +58,29 @@ describe("describeUsageHold", () => {
     ],
   ])("describes %j", (hold, text) => {
     expect(describeUsageHold(hold, formatTime)).toBe(text);
+  });
+});
+
+describe("describeRetryOutcome", () => {
+  it.each([
+    [{}, false, "Account released", "Send a message to try the account again."],
+    [
+      { credits: "spending" as const },
+      true,
+      "Account released",
+      "The chat continues on it within a minute, on its prepaid credits.",
+    ],
+    [
+      {
+        limitedUntil: "2026-11-27T00:00:00.000Z",
+        estimated: true as const,
+        credits: "not_enabled" as const,
+      },
+      true,
+      "Account still limited",
+      "Its usage limit still holds it until about at 2026-11-27T00:00:00.000Z. Its prepaid credits are not used: Spend prepaid credits is off in Settings → Providers & models.",
+    ],
+  ])("reports what admission does with %j", (result, resumes, title, description) => {
+    expect(describeRetryOutcome(result, resumes, formatTime)).toMatchObject({ title, description });
   });
 });

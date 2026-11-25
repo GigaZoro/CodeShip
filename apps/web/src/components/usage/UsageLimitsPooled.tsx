@@ -6,6 +6,7 @@ import {
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
+  findLimitAccountWindow,
   cursorUsageWindowDetails,
   displayLimitWindows,
   type ExternalUsageLink,
@@ -60,7 +61,7 @@ import {
   resetCreditsSummary,
   useResetCredit,
 } from "./UsageLimits";
-import { AccountFailoverNotice, LimitsFreshness, useCheckedAgo } from "./UsageLimitsStatus";
+import { AccountFailoverNotice, LimitsFreshness, formatCheckedAgo } from "./UsageLimitsStatus";
 import { CodexLimitsSignIn } from "./CodexLimitsSignIn";
 import { ProviderHolds } from "./UsageHolds";
 import { t, tn } from "~/i18n";
@@ -172,7 +173,7 @@ function SegmentPopover({
   const where = limitAccountLocations(account).join(", ");
   const credits =
     redeem && account.limits.resetCredits?.availableCount ? account.limits.resetCredits : null;
-  const checkedAgo = useCheckedAgo(account.limits.checkedAt);
+  const checkedAgo = formatCheckedAgo(account.limits.checkedAt, now);
   return (
     <div className="flex w-72 max-w-[calc(100vw-3rem)] flex-col gap-2.5 text-xs">
       <div className="flex min-w-0 flex-col gap-0.5">
@@ -268,17 +269,13 @@ function ActiveSegmentPopover({
   readonly pools: readonly LimitPool[];
   readonly now: number;
 }) {
-  const available = pools.some((pool) =>
-    displayLimitWindows(pool).some((window) =>
-      window.members.some(
-        (member) =>
-          member.account.key === payload.account.key &&
-          member.window.id === payload.window.id &&
-          member.window.kind === payload.window.kind &&
-          Boolean(member.account.redeem) === Boolean(payload.redeem),
-      ),
-    ),
+  const current = findLimitAccountWindow(
+    pools,
+    payload.account.key,
+    payload.window.id,
+    payload.window.kind,
   );
+  const available = current !== null;
   // The trigger is gone, so the popup has nothing to anchor to: an exit transition would
   // slide it to the viewport origin. Unmount it outright, which also clears Base UI's
   // active-trigger bookkeeping so the segment can open again when it comes back.
@@ -288,14 +285,21 @@ function ActiveSegmentPopover({
     handle.close();
     actions.current?.unmount();
   }, [available, handle, actions]);
+  if (!available) return null;
+  const redeem =
+    JSON.stringify(current.account.redeem) === JSON.stringify(payload.account.redeem)
+      ? payload.redeem
+      : null;
   return (
     <PopoverPopup side="top" sideOffset={6}>
       <SegmentPopover
         {...payload}
+        {...current}
+        redeem={redeem}
         now={now}
         onRedeem={() => {
           handle.close();
-          payload.redeem?.setConfirming(true);
+          redeem?.setConfirming(true);
         }}
       />
     </PopoverPopup>
@@ -319,23 +323,11 @@ function PoolSegment({
   readonly index: number;
   readonly showAccountName: boolean;
 }) {
-  return account.redeem ? (
-    <RedeemableSegment account={account} redeemAt={account.redeem} {...props} />
-  ) : (
-    <SegmentTriggers account={account} redeem={null} {...props} />
-  );
-}
-
-function RedeemableSegment({
-  redeemAt,
-  ...props
-}: Omit<Parameters<typeof SegmentTriggers>[0], "redeem"> & {
-  readonly redeemAt: NonNullable<LimitAccount["redeem"]>;
-}) {
-  const redeem = useResetCredit(redeemAt.environmentId, redeemAt.input);
+  const redeemAt = account.redeem;
+  const redeem = useResetCredit(redeemAt?.environmentId ?? null, redeemAt?.input ?? null);
   return (
     <>
-      <SegmentTriggers redeem={redeem} {...props} />
+      <SegmentTriggers account={account} redeem={redeemAt === null ? null : redeem} {...props} />
       <ResetCreditDialog
         open={redeem.confirming}
         onOpenChange={redeem.setConfirming}
@@ -345,7 +337,7 @@ function RedeemableSegment({
       {/* The popover closed before the confirm, so progress and the outcome need a home outside it. */}
       {redeem.busy || redeem.status ? (
         <span role="status" className="col-span-full text-xs text-muted-foreground">
-          <AccountName account={props.account} className="font-medium text-foreground" />{" "}
+          <AccountName account={account} className="font-medium text-foreground" />{" "}
           {redeem.busy ? t("Using reset credit…") : redeem.status}
         </span>
       ) : null}
@@ -823,7 +815,7 @@ function ProviderSection({
             />
             {label}
           </h2>
-          {pool ? <LimitsFreshness freshness={limitsFreshness(pool.accounts)} /> : null}
+          {pool ? <LimitsFreshness now={now} freshness={limitsFreshness(pool.accounts)} /> : null}
         </div>
         <AccountFailoverNotice
           entries={failover.filter((entry) => entry.driver === driver)}
@@ -857,21 +849,24 @@ function ProviderSection({
 
 export function UsageLimitsPooled({
   presentations,
+  workspaces,
   now,
-  failover = [],
+  getFailover,
   cursorPrompt,
   emptyMessage = t("No provider on the selected environments reports subscription limits."),
 }: {
   readonly presentations: Parameters<typeof collectLimitAccounts>[0];
+  readonly workspaces?: Parameters<typeof collectLimitAccounts>[1];
   readonly now: number;
-  /** Account switching per environment and provider, shown under each provider's limits. */
-  readonly failover?: readonly AccountFailoverEntry[];
+  readonly getFailover?: (now: number) => readonly AccountFailoverEntry[];
   readonly cursorPrompt?: ReactNode;
   readonly emptyMessage?: string;
 }) {
   const [segmentPopover] = useState(() => PopoverCreateHandle<SegmentPayload>());
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
-  const pools = collectLimitPools(collectLimitAccounts(presentations), now);
+  const accounts = collectLimitAccounts(presentations, workspaces);
+  const pools = collectLimitPools(accounts, now);
+  const failover = getFailover?.(now) ?? [];
   const notices = collectLimitNotices(presentations);
   const externalLinks = collectExternalUsageLinks(presentations);
   const environments = new Map(

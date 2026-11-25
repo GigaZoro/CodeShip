@@ -21,13 +21,13 @@ import * as BootService from "../cloud/bootService.ts";
 import * as ReleaseIndex from "../cloud/releaseIndex.ts";
 import {
   ensurePinnedRuntimeInstalled,
-  launcherOwnsVersionsDir,
+  ownedLauncherVersion,
   pinnedRuntimeCommand,
   PinnedRuntimeInstallError,
   pinnedRuntimePaths,
   pinnedRuntimeVersionsDir,
   prunePinnedRuntimes,
-  recordPinnedRuntimeLauncher,
+  repointPinnedRuntimeLauncher,
   windowsShimTarget,
 } from "../cloud/pinnedRuntime.ts";
 import { compareExactServiceVersions, isExactServiceVersion } from "../cloud/serviceProtocol.ts";
@@ -58,58 +58,29 @@ export const resolveNewestVersion = Effect.fn("cli.update.resolve_newest")(funct
 
 /**
  * Only a launcher that already points into this home's `runtime/versions` tree is touched; a
- * plain copy of the executable, or a launcher for some other install, is left alone. It is
- * recorded before it moves, so prune never meets a repointed launcher it does not know about.
+ * plain copy of the executable, or a launcher for some other install, is left alone.
  */
 export const repointLauncher = Effect.fn("cli.update.repoint_launcher")(function* (input: {
   readonly launchedAs: string | undefined;
   readonly baseDir: string;
   readonly targetEntryPath: string;
 }) {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
   if (input.launchedAs === undefined) return Option.none<string>();
+  const launcher =
+    platform === "win32" ? yield* findWindowsShim(input.launchedAs) : input.launchedAs;
+  if (launcher === undefined) return Option.none<string>();
   const versionsDir = pinnedRuntimeVersionsDir(path, input.baseDir);
-  const ownsTarget = (candidate: string) => launcherOwnsVersionsDir(path, versionsDir, candidate);
-  const remember = (launcher: string) =>
-    recordPinnedRuntimeLauncher({ baseDir: input.baseDir, launcher }).pipe(
-      Effect.mapError(
-        () => new CliUpdateError({ reason: `Could not record the t3 launcher at ${launcher}.` }),
-      ),
-    );
-
-  if (platform === "win32") {
-    const shimPath = yield* findWindowsShim(input.launchedAs);
-    if (shimPath === undefined) return Option.none<string>();
-    const current = yield* fs.readFileString(shimPath).pipe(Effect.option);
-    const quoted = Option.isSome(current) ? windowsShimTarget(current.value) : undefined;
-    if (quoted === undefined || !ownsTarget(quoted)) return Option.none<string>();
-    yield* remember(shimPath);
-    yield* fs
-      .writeFileString(shimPath, `@echo off\r\n"${input.targetEntryPath}" %*`)
-      .pipe(
-        Effect.mapError(
-          () => new CliUpdateError({ reason: `Could not rewrite the t3 launcher at ${shimPath}.` }),
-        ),
-      );
-    return Option.some(shimPath);
+  if ((yield* ownedLauncherVersion({ launcher, versionsDir })) === undefined) {
+    return Option.none<string>();
   }
-
-  const linkTarget = yield* fs.readLink(input.launchedAs).pipe(Effect.option);
-  if (Option.isNone(linkTarget)) return Option.none<string>();
-  const resolvedTarget = path.resolve(path.dirname(input.launchedAs), linkTarget.value);
-  if (!ownsTarget(resolvedTarget)) return Option.none<string>();
-  yield* remember(input.launchedAs);
-  const tempLink = `${input.launchedAs}.${process.pid}.tmp`;
-  yield* fs.symlink(input.targetEntryPath, tempLink).pipe(
-    Effect.andThen(fs.rename(tempLink, input.launchedAs)),
-    Effect.mapError(
-      () =>
-        new CliUpdateError({ reason: `Could not repoint the t3 launcher at ${input.launchedAs}.` }),
-    ),
-  );
-  return Option.some(input.launchedAs);
+  yield* repointPinnedRuntimeLauncher({
+    baseDir: input.baseDir,
+    launcher,
+    targetEntryPath: input.targetEntryPath,
+  }).pipe(Effect.mapError((error) => new CliUpdateError({ reason: error.message })));
+  return Option.some(launcher);
 });
 
 /** Node preserves argv0's spelling; resolve bare names on PATH to find the launcher symlink. */

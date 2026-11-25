@@ -33,6 +33,7 @@ import { databaseMigrationHead } from "../persistence/databaseMigrationHead.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { managedUpdateRefusal } from "../policy/managedUpdates.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as ServerActivation from "../serverActivation.ts";
 import {
   ensurePinnedRuntimeInstalled,
   pinnedRuntimeCommand,
@@ -40,6 +41,7 @@ import {
   pinnedRuntimePaths,
   PinnedRuntimePreflightBlockedError,
   prunePinnedRuntimes,
+  repointPinnedRuntimeLaunchers,
 } from "./pinnedRuntime.ts";
 import { decodeServicePreflightResult } from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
@@ -142,12 +144,34 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   );
   const inFlight = yield* Ref.make(false);
 
-  yield* pruneRuntimesOnStart({ baseDir: serverConfig.baseDir, managed: launcher.managed }).pipe(
-    Effect.forkScoped,
-  );
-
+  const pruneOnStart = pruneRuntimesOnStart({
+    baseDir: serverConfig.baseDir,
+    managed: launcher.managed,
+  });
   const capability: ServerSelfUpdateCapability | null =
     serverConfig.mode === "desktop" ? "desktop-managed" : launcher.managed ? "boot-service" : null;
+  if (capability === "boot-service") {
+    // Parked until the launcher commits this version, so a trial that rolls back moves nothing.
+    // Prune follows, so the runtimes the moved launchers named can go on this start.
+    yield* ServerActivation.forkParked(
+      repointPinnedRuntimeLaunchers({
+        baseDir: serverConfig.baseDir,
+        version: packageJson.version,
+      }).pipe(
+        Effect.tap((launchers) =>
+          launchers.length === 0
+            ? Effect.void
+            : Effect.logInfo("Moved t3 launchers to the running runtime.", {
+                launchers,
+                version: packageJson.version,
+              }),
+        ),
+        Effect.andThen(pruneOnStart),
+      ),
+    );
+  } else {
+    yield* pruneOnStart.pipe(Effect.forkScoped);
+  }
   const failWith = (reason: string, cause?: unknown) =>
     cause === undefined
       ? new ServerSelfUpdateError({ reason })

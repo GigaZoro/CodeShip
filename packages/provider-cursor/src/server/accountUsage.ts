@@ -1,4 +1,5 @@
 import type { UsageRecord } from "@t3tools/provider-core/server/usage";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -49,6 +50,29 @@ const invalid = (reason: string) => Effect.fail(new CursorAccountUsageInvalidErr
 
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
+const readFileAccessToken = Effect.fn("CursorAccountUsage.readFileAccessToken")(function* (
+  path: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.readFileString(path).pipe(
+    Effect.flatMap(decodeJson),
+    Effect.map((credentials) => object(credentials).accessToken),
+  );
+});
+
+const cursorAccountSubject = Effect.fn("CursorAccountUsage.accountSubject")(function* (
+  accessToken: string,
+) {
+  const payload = Base64Url.decodeString(accessToken.split(".")[1] ?? "");
+  if (Result.isFailure(payload)) return yield* invalid("Invalid authentication");
+  const subject = object(
+    yield* decodeJson(payload.success).pipe(Effect.catch(() => invalid("Invalid authentication"))),
+  ).sub;
+  if (typeof subject !== "string" || !subject || !subject.split("|").at(-1))
+    return yield* invalid("Invalid authentication");
+  return subject;
+});
+
 const pageRequestBody = (page: number, pageSize: number, sinceMs: number, endDate: number) =>
   JSON.stringify({ page, pageSize, startDate: String(sinceMs), endDate: String(endDate) });
 
@@ -89,6 +113,82 @@ const DASHBOARD_USAGE_URL = "https://cursor.com/api/dashboard/get-filtered-usage
 /** The session cookie must never follow a redirect off cursor.com. */
 const NO_REDIRECT: RequestInit = { redirect: "error" };
 
+const historyPage = Effect.fn("CursorAccountUsage.historyPage")(function* (
+  userId: string,
+  accessToken: string,
+  page: number,
+  pageSize: number,
+  sinceMs: number,
+  endDate: number,
+) {
+  const httpClient = yield* HttpClient.HttpClient;
+  const response = yield* httpClient
+    .execute(
+      HttpClientRequest.post(DASHBOARD_USAGE_URL).pipe(
+        HttpClientRequest.setHeaders({
+          Origin: "https://cursor.com",
+          Cookie: `WorkosCursorSessionToken=${encodeURIComponent(`${userId}::${accessToken}`)}`,
+        }),
+        HttpClientRequest.bodyText(
+          pageRequestBody(page, pageSize, sinceMs, endDate),
+          "application/json",
+        ),
+      ),
+    )
+    .pipe(
+      Effect.provideService(FetchHttpClient.RequestInit, NO_REDIRECT),
+      Effect.mapError(
+        () => new CursorAccountUsageInvalidError({ reason: "Account usage request failed" }),
+      ),
+    );
+
+  if (response.status === 401 || response.status === 403) return null;
+  if (response.status < 200 || response.status >= 300)
+    return yield* invalid("Account usage request failed");
+  const parsed: unknown = yield* response.json.pipe(
+    Effect.mapError(
+      () => new CursorAccountUsageInvalidError({ reason: "Invalid account usage page" }),
+    ),
+  );
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return yield* invalid("Invalid account usage page");
+  }
+  const body = object(parsed);
+  const keys = Object.keys(body);
+  if ("error" in body || "message" in body || "code" in body)
+    return yield* invalid("Account usage error response");
+  const count = keys.length === 0 ? 0 : body.totalUsageEventsCount;
+  const events =
+    keys.length === 0 || (keys.length === 1 && keys[0] === "totalUsageEventsCount")
+      ? []
+      : body.usageEventsDisplay;
+  if (
+    (count !== undefined &&
+      (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0)) ||
+    !Array.isArray(events) ||
+    events.length > pageSize ||
+    (count === undefined && !Array.isArray(body.usageEventsDisplay))
+  ) {
+    return yield* invalid("Inconsistent account usage page");
+  }
+  return { count, events: events as unknown[] };
+});
+
+export const checkCursorHistoryAccess = Effect.fn("CursorAccountUsage.checkAccess")(
+  function* (credential: string | CursorKeychain.CursorKeychain["Service"]) {
+    const token = yield* typeof credential === "string"
+      ? readFileAccessToken(credential)
+      : credential.accessToken;
+    if (typeof token !== "string" || !token) return false;
+    const subject = yield* cursorAccountSubject(token);
+    const now = yield* Clock.currentTimeMillis;
+    return (yield* historyPage(subject.split("|").at(-1)!, token, 1, 1, now, now)) !== null;
+  },
+  Effect.scoped,
+  Effect.timeout("10 seconds"),
+  Effect.orElseSucceed(() => false),
+);
+
 export const readCursorAccountUsage = Effect.fn("readCursorAccountUsage")(function* (
   credentialSource: string | { readonly kind: "keychain" },
   sinceMs: number,
@@ -104,8 +204,6 @@ export const readCursorAccountUsage = Effect.fn("readCursorAccountUsage")(functi
   never,
   FileSystem.FileSystem | Crypto.Crypto | HttpClient.HttpClient
 > {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const httpClient = yield* HttpClient.HttpClient;
   const credential = yield* Effect.result<
     unknown,
     | PlatformError.PlatformError
@@ -113,15 +211,8 @@ export const readCursorAccountUsage = Effect.fn("readCursorAccountUsage")(functi
     | CursorKeychain.CursorKeychainTimeoutError
     | CursorKeychain.CursorKeychainReadError
     | CursorAccountUsageInvalidError,
-    never
-  >(
-    typeof credentialSource === "string"
-      ? fileSystem.readFileString(credentialSource).pipe(
-          Effect.flatMap(decodeJson),
-          Effect.map((credentials) => object(credentials).accessToken),
-        )
-      : keychainToken,
-  );
+    FileSystem.FileSystem
+  >(typeof credentialSource === "string" ? readFileAccessToken(credentialSource) : keychainToken);
   if (Result.isFailure(credential)) {
     const cause = credential.failure;
     const missing =
@@ -155,16 +246,8 @@ export const readCursorAccountUsage = Effect.fn("readCursorAccountUsage")(functi
   }
   let accountKey: string | null = null;
   const read = Effect.gen(function* () {
-    const payload = Base64Url.decodeString(accessToken.split(".")[1] ?? "");
-    if (Result.isFailure(payload)) return yield* invalid("Invalid authentication");
-    const subject = object(
-      yield* decodeJson(payload.success).pipe(
-        Effect.catch(() => invalid("Invalid authentication")),
-      ),
-    ).sub;
-    if (typeof subject !== "string" || !subject) return yield* invalid("Invalid authentication");
-    const userId = subject.split("|").at(-1);
-    if (!userId) return yield* invalid("Invalid authentication");
+    const subject = yield* cursorAccountSubject(accessToken);
+    const userId = subject.split("|").at(-1)!;
     accountKey = yield* accountHash(subject);
     if (!Number.isFinite(sinceMs) || !Number.isFinite(endDate) || sinceMs < 0 || sinceMs > endDate)
       return yield* invalid("Invalid date window");
@@ -181,26 +264,8 @@ export const readCursorAccountUsage = Effect.fn("readCursorAccountUsage")(functi
         if (page > (total === undefined ? 1000 : Math.ceil(total / pageSize) * 2 + 1)) {
           return yield* invalid("Account usage page limit exceeded");
         }
-        const response = yield* httpClient
-          .execute(
-            HttpClientRequest.post(DASHBOARD_USAGE_URL).pipe(
-              HttpClientRequest.setHeaders({
-                Origin: "https://cursor.com",
-                Cookie: `WorkosCursorSessionToken=${encodeURIComponent(`${userId}::${accessToken}`)}`,
-              }),
-              HttpClientRequest.bodyText(
-                pageRequestBody(page, pageSize, sinceMs, endDate),
-                "application/json",
-              ),
-            ),
-          )
-          .pipe(
-            Effect.provideService(FetchHttpClient.RequestInit, NO_REDIRECT),
-            Effect.mapError(
-              () => new CursorAccountUsageInvalidError({ reason: "Account usage request failed" }),
-            ),
-          );
-        if (response.status === 401 || response.status === 403) {
+        const result = yield* historyPage(userId, accessToken, page, pageSize, sinceMs, endDate);
+        if (result === null) {
           return {
             accountKey,
             records: [],
@@ -208,37 +273,9 @@ export const readCursorAccountUsage = Effect.fn("readCursorAccountUsage")(functi
             error: "Sign in to Cursor again to read account usage.",
           } satisfies CursorAccountUsageReadResult;
         }
-        if (response.status < 200 || response.status >= 300)
-          return yield* invalid("Account usage request failed");
-        const parsed: unknown = yield* response.json.pipe(
-          Effect.mapError(
-            () => new CursorAccountUsageInvalidError({ reason: "Invalid account usage page" }),
-          ),
-        );
-        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-          return yield* invalid("Invalid account usage page");
-        }
-        const body = object(parsed);
-        const keys = Object.keys(body);
-        if ("error" in body || "message" in body || "code" in body)
-          return yield* invalid("Account usage error response");
-        const count = keys.length === 0 ? 0 : body.totalUsageEventsCount;
-        const events =
-          keys.length === 0 || (keys.length === 1 && keys[0] === "totalUsageEventsCount")
-            ? []
-            : body.usageEventsDisplay;
-        if (
-          (count !== undefined &&
-            (typeof count !== "number" ||
-              !Number.isSafeInteger(count) ||
-              count < 0 ||
-              (total !== undefined && count !== total))) ||
-          !Array.isArray(events) ||
-          events.length > pageSize ||
-          (count === undefined && !Array.isArray(body.usageEventsDisplay))
-        ) {
+        const { count, events } = result;
+        if (typeof count === "number" && total !== undefined && count !== total)
           return yield* invalid("Inconsistent account usage page");
-        }
         if (typeof count === "number") total = count;
         return events as unknown[];
       },

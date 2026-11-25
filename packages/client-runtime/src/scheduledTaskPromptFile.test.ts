@@ -85,6 +85,12 @@ describe("promptUpsertFields", () => {
       effectivePromptSource({ supportsPromptFiles: false, draft: { promptSource: "file" } }),
     ).toBe("text");
   });
+
+  it("keeps a file draft's source while the target's config has not arrived", () => {
+    expect(
+      effectivePromptSource({ supportsPromptFiles: null, draft: { promptSource: "file" } }),
+    ).toBe("file");
+  });
 });
 
 describe("promptFileLostOnTarget", () => {
@@ -93,6 +99,7 @@ describe("promptFileLostOnTarget", () => {
     ["a file draft on a server with prompt files", true, false, "file", false],
     ["a text draft on a server without prompt files", false, false, "text", false],
     ["a webhook, whose prompt comes from each request", false, true, "file", false],
+    ["a file draft while the target's config has not arrived", null, false, "file", false],
   ] as const)("%s", (_name, supportsPromptFiles, isWebhook, promptSource, lost) => {
     expect(
       promptFileLostOnTarget({ supportsPromptFiles, isWebhook, draft: { promptSource } }),
