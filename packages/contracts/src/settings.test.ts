@@ -667,6 +667,7 @@ describe("shouldRecommendDatabaseCompaction", () => {
     fragmentedBytes: 0,
     incrementalVacuumEnabled: true,
     compactCommand: "t3 doctor",
+    dailyGrowthBytes: null,
     ...patch,
   });
 

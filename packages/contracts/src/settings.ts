@@ -1362,6 +1362,10 @@ export const DatabaseStorageStatus = Schema.Struct({
   incrementalVacuumEnabled: Schema.Boolean,
   /** Run on the host while offline. */
   compactCommand: Schema.String,
+  /** Average change in `databaseBytes` per day over the past week; null until a day of samples. */
+  dailyGrowthBytes: Schema.NullOr(Schema.Number).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
 });
 export type DatabaseStorageStatus = typeof DatabaseStorageStatus.Type;
 

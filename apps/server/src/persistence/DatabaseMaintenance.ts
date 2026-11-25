@@ -84,7 +84,7 @@ export class DatabaseMaintenance extends Context.Service<
       },
       DatabaseMissingError | DatabaseInspectError
     >;
-    /** Removes tool output older than `toolOutputAfterDays` (null keeps it), compacts history, then VACUUMs into incremental auto_vacuum. Refuses while a server has it open. */
+    /** Removes superseded events of idle chats and tool output older than `toolOutputAfterDays` (null keeps it), compacts history, then VACUUMs into incremental auto_vacuum. Refuses while a server has it open. */
     readonly compact: (
       databasePath: string,
       options: { readonly toolOutputAfterDays: number | null },
@@ -190,9 +190,14 @@ const make = Effect.gen(function* () {
         if (!(yield* maintenance.verify).valid) {
           return yield* new DatabaseProjectionsInvalidError({ path: databasePath });
         }
-        // The server's retention rule, so the rebuilt file never keeps output the server would remove.
+        // The server's retention rules, so the rebuilt file never keeps what the server would remove.
+        const history = yield* ProjectionMaintenance.compactIdleThreadHistory();
         yield* ProjectionMaintenance.pruneToolOutputAfterDays(options.toolOutputAfterDays);
-        const summary = yield* maintenance.compactEventStore();
+        const store = yield* maintenance.compactEventStore();
+        const summary = {
+          ...store,
+          deletedEventCount: store.deletedEventCount + history.deletedEventCount,
+        };
         if (!(yield* maintenance.verify).valid) {
           return yield* new DatabaseProjectionsInvalidError({ path: databasePath });
         }

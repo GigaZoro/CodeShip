@@ -1002,9 +1002,11 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
           ),
         );
       // Bound stored and projected payload bytes separately; neither bounds process memory.
+      // Clients place an entity where they first see it, so a replay with gaps reorders them.
       if (
         stats.eventCount > THREAD_RESUME_MAX_REPLAY_EVENTS ||
-        !isThreadReplayRawPayloadSafe(stats.rawPayloadBytes)
+        !isThreadReplayRawPayloadSafe(stats.rawPayloadBytes) ||
+        stats.historyCompacted
       ) {
         return yield* snapshotThenLive();
       }

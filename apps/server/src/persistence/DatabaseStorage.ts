@@ -23,6 +23,9 @@ import * as Settings from "../serverSettings.ts";
 // Bound each reclaim pass to one minute of churn.
 const RECLAIM_PAGES_PER_PASS = 1024;
 const COMPACTION_INTERVAL = Duration.hours(6);
+const SIZE_SAMPLE_INTERVAL_MS = Duration.toMillis(Duration.days(1));
+// Eight daily samples span the past week.
+const SIZE_SAMPLE_WINDOW_MS = SIZE_SAMPLE_INTERVAL_MS * 8;
 
 export class DatabaseStorage extends Context.Service<
   DatabaseStorage,
@@ -68,6 +71,43 @@ const make = Effect.gen(function* () {
           return layout;
         }),
   );
+  // Samples survive restarts, which come several times a day. Growth is read between samples
+  // only, so the status stays equal, and unsent, until the next daily sample.
+  const dailyGrowthBytes = Effect.fn("DatabaseStorage.dailyGrowthBytes")(function* (
+    databaseBytes: number,
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    type Sample = { readonly sampled_at: number; readonly database_bytes: number };
+    let [newest] = yield* sql<Sample>`
+      SELECT sampled_at, database_bytes FROM database_size_samples
+      ORDER BY sampled_at DESC LIMIT 1
+    `;
+    if (newest === undefined || now - newest.sampled_at >= SIZE_SAMPLE_INTERVAL_MS) {
+      yield* sql.withTransaction(
+        sql`
+          INSERT OR REPLACE INTO database_size_samples (sampled_at, database_bytes)
+          VALUES (${now}, ${databaseBytes})
+        `.pipe(
+          Effect.andThen(
+            sql`DELETE FROM database_size_samples WHERE sampled_at < ${now - SIZE_SAMPLE_WINDOW_MS}`,
+          ),
+        ),
+      );
+      newest = { sampled_at: now, database_bytes: databaseBytes };
+    }
+    const [oldest] = yield* sql<Sample>`
+      SELECT sampled_at, database_bytes FROM database_size_samples
+      ORDER BY sampled_at LIMIT 1
+    `;
+    if (oldest === undefined || newest.sampled_at - oldest.sampled_at < SIZE_SAMPLE_INTERVAL_MS) {
+      return null;
+    }
+    return Math.round(
+      ((newest.database_bytes - oldest.database_bytes) * SIZE_SAMPLE_INTERVAL_MS) /
+        (newest.sampled_at - oldest.sampled_at),
+    );
+  });
+
   // Counting it reads every page, so it is measured once per compaction pass, not per status publish.
   let fragmentedBytes = 0;
   const publishStatus = Effect.gen(function* () {
@@ -75,12 +115,14 @@ const make = Effect.gen(function* () {
     const { pageSize, incrementalVacuum } = yield* readLayout;
     const pages = yield* sql<{ readonly page_count: number }>`PRAGMA page_count`;
     const free = yield* sql<{ readonly freelist_count: number }>`PRAGMA freelist_count`;
+    const databaseBytes = (pages[0]?.page_count ?? 0) * pageSize;
     const next: DatabaseStorageStatus = {
-      databaseBytes: (pages[0]?.page_count ?? 0) * pageSize,
+      databaseBytes,
       reclaimableBytes: (free[0]?.freelist_count ?? 0) * pageSize,
       fragmentedBytes,
       incrementalVacuumEnabled: incrementalVacuum,
       compactCommand,
+      dailyGrowthBytes: yield* dailyGrowthBytes(databaseBytes),
     };
     // Every set reaches each open Storage page; most passes change nothing.
     if (!Equal.equals(yield* SubscriptionRef.get(statusRef), next)) {
@@ -116,6 +158,18 @@ const make = Effect.gen(function* () {
     Effect.catch((cause) => Effect.logWarning("Old tool output removal failed", { cause })),
   );
 
+  const compactIdleHistory = Effect.fn("DatabaseStorage.compactIdleHistory")(
+    function* (betweenPages: Effect.Effect<void>) {
+      const result = yield* ProjectionMaintenance.compactIdleThreadHistory(betweenPages).pipe(
+        Effect.provideService(ProjectionMaintenance.ProjectionMaintenanceV2, maintenance),
+      );
+      if (result.deletedEventCount > 0) {
+        yield* Effect.logInfo("Removed superseded events from idle chats", result);
+      }
+    },
+    Effect.catch((cause) => Effect.logWarning("Idle chat history compaction failed", { cause })),
+  );
+
   // Even a pass that deletes nothing scans the event store. Persist completion
   // so restarting does not trigger another scan before the six-hour interval.
   const compactedAtPath = path.join(path.dirname(config.dbPath), "compacted-at");
@@ -128,6 +182,7 @@ const make = Effect.gen(function* () {
       yield* Effect.sleep((Number(elapsed) / 1_000_000) * 9);
       sliceStarted = yield* Clock.monotonicTimeNanos;
     });
+    yield* compactIdleHistory(betweenPages);
     yield* pruneToolOutput(betweenPages);
     const result = yield* maintenance.compactEventStore(betweenPages);
     const completedAt = yield* Clock.currentTimeMillis;

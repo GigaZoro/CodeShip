@@ -1,6 +1,7 @@
 import { t } from "../../../lib/i18n";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
+import { describeDatabaseChange } from "@t3tools/client-runtime/host-resources";
 import { offlineVacuumBytes } from "@t3tools/contracts";
 import { formatBytes } from "@t3tools/shared/formatBytes";
 
@@ -12,7 +13,7 @@ import { ListActionRow as SettingsActionRow } from "../../../components/ui/ListA
 import { SettingsRow } from "./SettingsRow";
 import { SettingsSection } from "./SettingsSection";
 
-/** Shows each machine's database size, and suggests `t3 doctor` where it still holds at least 1 GiB of freed pages. */
+/** Shows each machine's database size and daily growth, and suggests `t3 doctor` where it still holds at least 1 GiB of freed pages. */
 export function DatabaseStorageNotice({
   targets,
 }: {
@@ -39,14 +40,8 @@ export function DatabaseStorageNotice({
           key={environmentId}
           icon="internaldrive"
           label={targets.find((target) => target.environmentId === environmentId)?.label ?? ""}
-          value={
-            status.reclaimableBytes + status.fragmentedBytes > 0
-              ? t("{size} ({reclaimable} can be reclaimed)", {
-                  size: formatBytes(status.databaseBytes),
-                  reclaimable: formatBytes(status.reclaimableBytes + status.fragmentedBytes),
-                })
-              : formatBytes(status.databaseBytes)
-          }
+          value={[formatBytes(status.databaseBytes), ...describeDatabaseChange(status)].join(" · ")}
+          valuePosition="below"
         />
       ))}
     </SettingsSection>

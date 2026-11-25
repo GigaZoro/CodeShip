@@ -1,3 +1,8 @@
+## 2026-11-25 — Bound the database of finished chats
+
+- After a day idle, settled and archived chats keep only the latest state of each message, step and turn, so their history stops growing the database. Their content and timeline stay the same. The freed space returns to disk while the server runs, and `t3 doctor` applies the same cleanup.
+- Settings → Maintenance & about → Storage & cleanup shows how much each machine's database grew or shrank a day over the past week.
+
 ## 2026-11-25 — Codex turns stop at the prepaid credit cap
 
 - A turn running on a Codex account's prepaid credits kept going after the count reached the cap you set, or after the plan ran out for work the credits were not allowed for. It now stops as soon as a reading shows that, with the same explanation a refused turn gives, and so do turns running on credits when you clear the cap or narrow it to other threads.

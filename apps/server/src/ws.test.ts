@@ -1008,10 +1008,10 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
   ),
 );
 
-// Compaction keeps the oldest and newest event per message, so a cursor older
-// than the deleted rows still replays each message where the client would
-// first have seen it (reducers append on first sight) and reaches the same
-// final state. No snapshot fallback is needed.
+// Event-store compaction keeps the oldest and newest event per message, so a cursor
+// older than the deleted rows still replays each message where the client would
+// first have seen it (reducers append on first sight) and reaches the same final
+// state. Cold-history compaction keeps only the newest, so older cursors get a snapshot.
 it.effect("thread resume across compacted history keeps message order and final state", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -1089,6 +1089,36 @@ it.effect("thread resume across compacted history keeps message order and final 
         ["synchronized"],
       ],
     );
+
+    // Cold-history compaction keeps only the newest event per message, so the same cursor
+    // now gets a snapshot; a cursor at the mark still replays.
+    yield* sql`
+      INSERT INTO orchestration_v2_thread_history_compaction (thread_id, compacted_through_sequence)
+      VALUES (${threadId}, ${head!.sequence})
+    `;
+    const firstItem = (afterSequence: number) =>
+      subscribeOrchestrationV2Thread({
+        threadId,
+        afterSequence,
+        requestCompletionMarker: true,
+      }).pipe(
+        Effect.flatMap((stream) => stream.pipe(Stream.take(1), Stream.runCollect)),
+        Effect.map(([item]) => item?.kind),
+        Effect.provideService(ThreadManagement.ThreadManagementService, {
+          ensureLegacyTranscript: () => Effect.void,
+          streamStoredEventsFrom: () => Stream.never,
+          getThreadSnapshot: () =>
+            Effect.succeed({
+              snapshotSequence: head!.sequence,
+              projection: ProjectionStore.emptyProjection({
+                payload: { id: threadId },
+                occurredAt: now,
+              } as never),
+            }),
+        } as unknown as ThreadManagement.ThreadManagementService["Service"]),
+      );
+    assert.equal(yield* firstItem(first!.sequence - 1), "snapshot");
+    assert.equal(yield* firstItem(head!.sequence), "synchronized");
   }).pipe(
     Effect.provide(
       ProjectionMaintenance.layer.pipe(

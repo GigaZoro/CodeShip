@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   EventId,
+  MessageId,
   NodeId,
   PlanId,
   type OrchestrationV2AppThread,
@@ -11,6 +12,9 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderThreadId,
+  ProviderTurnId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -953,5 +957,352 @@ it.effect("stops pruning a chat that reopens mid-pass and keeps events newer tha
     assert.deepEqual(yield* marks, [{ thread_id: thread.id }]);
     assert.isTrue((yield* maintenance.rebuild).valid);
     assert.deepEqual(yield* stored, after);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+const historyEntities = ["node", "message", "plan", "request", "provider-turn", "item"] as const;
+
+// `revisions` updates of every entity whose projection row is replaced whole. Only the second
+// provider-turn update reports token usage, which the projection keeps from then on.
+function historyEvents(
+  thread: OrchestrationV2AppThread,
+  revisions: number,
+): ReadonlyArray<OrchestrationV2DomainEvent> {
+  const threadId = thread.id;
+  const at = thread.updatedAt;
+  const nodeId = NodeId.make(`${threadId}:node`);
+  const providerTurnId = ProviderTurnId.make(`${threadId}:provider-turn`);
+  const { command } = retentionItems(threadId, at);
+  return Array.from({ length: revisions }, (_, revision) => {
+    const done = revision === revisions - 1;
+    const event = (key: (typeof historyEntities)[number]) => ({
+      id: EventId.make(`event:history:${threadId}:${key}:${revision}`),
+      threadId,
+      occurredAt: at,
+    });
+    return [
+      {
+        ...event("node"),
+        type: "node.updated",
+        payload: {
+          id: nodeId,
+          threadId,
+          runId: null,
+          parentNodeId: null,
+          rootNodeId: nodeId,
+          kind: "root_turn",
+          status: done ? "completed" : "running",
+          countsForRun: true,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          runtimeRequestId: null,
+          checkpointScopeId: null,
+          startedAt: at,
+          completedAt: done ? at : null,
+        },
+      },
+      {
+        ...event("message"),
+        type: "message.updated",
+        payload: {
+          id: MessageId.make(`${threadId}:message`),
+          threadId,
+          runId: null,
+          nodeId,
+          role: "assistant",
+          text: `Answer ${revision}`,
+          attachments: [],
+          streaming: !done,
+          createdBy: "agent",
+          creationSource: "provider",
+          createdAt: at,
+          updatedAt: at,
+        },
+      },
+      {
+        ...event("plan"),
+        type: "plan.updated",
+        payload: {
+          id: PlanId.make(`${threadId}:plan`),
+          threadId,
+          runId: null,
+          nodeId,
+          status: done ? "completed" : "active",
+          kind: "proposed_plan",
+          markdown: `Plan ${revision}`,
+        },
+      },
+      {
+        ...event("request"),
+        type: "runtime-request.updated",
+        payload: {
+          id: RuntimeRequestId.make(`${threadId}:request`),
+          nodeId,
+          providerTurnId,
+          nativeRequestRef: null,
+          kind: "command",
+          status: done ? "resolved" : "pending",
+          responseCapability: { type: "message" },
+          createdAt: at,
+          resolvedAt: done ? at : null,
+        },
+      },
+      {
+        ...event("provider-turn"),
+        type: "provider-turn.updated",
+        payload: {
+          id: providerTurnId,
+          providerThreadId: ProviderThreadId.make(`${threadId}:provider-thread`),
+          nodeId,
+          runAttemptId: null,
+          nativeTurnRef: null,
+          ordinal: 1,
+          status: done ? "completed" : "running",
+          startedAt: at,
+          completedAt: done ? at : null,
+          ...(revision === 1
+            ? { tokenUsage: { usedTokens: 1_200, updatedAt: DateTime.formatIso(at) } }
+            : {}),
+        },
+      },
+      {
+        ...event("item"),
+        type: "turn-item.updated",
+        payload: { ...command, output: `out ${revision}` },
+      },
+    ] satisfies ReadonlyArray<OrchestrationV2DomainEvent>;
+  }).flat();
+}
+
+// A commanded first revision of the item, which a duplicate command replays, then the history,
+// then subagent events, whose order the subagent prompt history needs.
+const writeHistoryThread = Effect.fnUntraced(function* (
+  thread: OrchestrationV2AppThread,
+  revisions: number,
+) {
+  const sink = yield* EventSink.EventSinkV2;
+  const at = thread.updatedAt;
+  const subagentId = NodeId.make(`${thread.id}:subagent`);
+  const ownSubagent = (event: OrchestrationV2DomainEvent): OrchestrationV2DomainEvent => {
+    const id = EventId.make(`${event.id}:${thread.id}`);
+    if (event.type === "subagent.updated") {
+      return { ...event, id, payload: { ...event.payload, id: subagentId } };
+    }
+    if (event.type === "turn-item.updated" && event.payload.type === "subagent") {
+      const payload = {
+        ...event.payload,
+        id: TurnItemId.make(`${thread.id}:subagent`),
+        subagentId,
+      };
+      return { ...event, id, payload };
+    }
+    return event;
+  };
+  yield* writeRetentionThread(thread, at, []);
+  yield* sink.write({
+    commandId: CommandId.make(`command:history:${thread.id}`),
+    events: [
+      {
+        id: EventId.make(`event:history:${thread.id}:commanded`),
+        type: "turn-item.updated",
+        threadId: thread.id,
+        occurredAt: at,
+        payload: retentionItems(thread.id, at).command,
+      },
+    ],
+  });
+  yield* sink.write({ events: historyEvents(thread, revisions) });
+  yield* sink.write({
+    events: [0, 1].flatMap((revision) => subagentEvents(thread.id, at, revision).map(ownSubagent)),
+  });
+});
+
+const keptHistoryEventIds = (threadId: ThreadId, revisions: number) => [
+  `event:retention:${threadId}:created`,
+  `event:history:${threadId}:commanded`,
+  `event:history:${threadId}:provider-turn:1`,
+  ...historyEntities.map((key) => `event:history:${threadId}:${key}:${revisions - 1}`),
+  ...[0, 1].flatMap((revision) => [
+    `event:turn-item-compaction:subagent:${revision}:${threadId}`,
+    `event:turn-item-compaction:subagent-item:${revision}:${threadId}`,
+  ]),
+];
+
+// Every entity loses all but its newest event, and the provider turn also keeps its usage event.
+const supersededHistoryEventCount = (revisions: number) =>
+  historyEntities.length * (revisions - 1) - 1;
+
+const historyEventIds = Effect.fnUntraced(function* (threadId: ThreadId) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ readonly event_id: string }>`
+    SELECT event_id FROM orchestration_events WHERE stream_id = ${threadId} ORDER BY sequence
+  `;
+  return rows.map((row) => row.event_id);
+});
+
+it.effect(
+  "bounds the event log of cold chats to one event per entity, whatever its revisions",
+  () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+      const brief = retentionThread("history-brief", longAgo, {
+        settledOverride: "settled",
+        settledAt: longAgo,
+      });
+      const long = retentionThread("history-long", longAgo, { archivedAt: longAgo });
+      yield* writeHistoryThread(brief, 3);
+      yield* writeHistoryThread(long, 40);
+      const projected = Effect.forEach([brief, long], (thread) =>
+        projections.getThreadProjection(thread.id),
+      );
+      const before = yield* projected;
+
+      assert.deepEqual(yield* maintenance.compactColdThreadHistory({ idleBefore }), {
+        threadCount: 2,
+        deletedEventCount: supersededHistoryEventCount(3) + supersededHistoryEventCount(40),
+      });
+      assert.deepEqual(yield* historyEventIds(brief.id), keptHistoryEventIds(brief.id, 3));
+      assert.deepEqual(yield* historyEventIds(long.id), keptHistoryEventIds(long.id, 40));
+      assert.deepEqual(yield* projected, before);
+      assert.isTrue((yield* maintenance.verify).valid);
+      assert.isTrue((yield* maintenance.rebuild).valid);
+      assert.deepEqual(yield* projected, before);
+
+      // The mark skips a compacted chat until it has new events.
+      assert.deepEqual(yield* maintenance.compactColdThreadHistory({ idleBefore }), {
+        threadCount: 0,
+        deletedEventCount: 0,
+      });
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("event:history:brief:visited"),
+            type: "thread.visited",
+            threadId: brief.id,
+            occurredAt: longAgo,
+            payload: brief,
+          },
+        ],
+      });
+      assert.deepEqual(yield* maintenance.compactColdThreadHistory({ idleBefore }), {
+        threadCount: 1,
+        deletedEventCount: 0,
+      });
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("keeps every event of chats whose family is open, pinned or recently active", () =>
+  Effect.gen(function* () {
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const settled = { settledOverride: "settled", settledAt: longAgo } as const;
+    const openSource = retentionThread("history-open-source", longAgo);
+    const threads = [
+      openSource,
+      retentionThread("history-open-fork", longAgo, {
+        ...settled,
+        lineage: {
+          rootThreadId: openSource.id,
+          parentThreadId: openSource.id,
+          relationshipToParent: "fork",
+        },
+      }),
+      retentionThread("history-pinned", longAgo, { ...settled, pinnedAt: longAgo }),
+      retentionThread("history-recent", recently, {
+        settledOverride: "settled",
+        settledAt: recently,
+      }),
+    ];
+    for (const thread of threads) yield* writeHistoryThread(thread, 3);
+    const eventIds = Effect.forEach(threads, (thread) => historyEventIds(thread.id));
+    const before = yield* eventIds;
+
+    assert.deepEqual(yield* maintenance.compactColdThreadHistory({ idleBefore }), {
+      threadCount: 0,
+      deletedEventCount: 0,
+    });
+    assert.deepEqual(yield* eventIds, before);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("stops compacting when the family reopens mid-pass and finishes once it is cold", () =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const settled = { settledOverride: "settled", settledAt: longAgo } as const;
+    // The source sorts first, so the pass pauses inside its history before reaching the fork.
+    const source = retentionThread("history-family-a", longAgo, settled);
+    const fork = retentionThread("history-family-b", longAgo, {
+      ...settled,
+      lineage: { rootThreadId: source.id, parentThreadId: source.id, relationshipToParent: "fork" },
+    });
+    // More than a page of events, so the pass pauses inside the source.
+    yield* writeHistoryThread(source, 20);
+    yield* writeRetentionThread(fork, longAgo, []);
+    const before = yield* projections.getThreadProjection(source.id);
+    const forkEvent = (type: "thread.unsettled" | "thread.settled", payload: typeof fork) =>
+      sink
+        .write({
+          events: [
+            {
+              id: EventId.make(`event:history:fork:${type}`),
+              type,
+              threadId: fork.id,
+              occurredAt: longAgo,
+              payload,
+            },
+          ],
+        })
+        .pipe(Effect.asVoid, Effect.orDie);
+    let paused = false;
+    const reopenForkOnFirstPause = Effect.suspend(() => {
+      if (paused) return Effect.void;
+      paused = true;
+      return forkEvent("thread.unsettled", { ...fork, settledOverride: null, settledAt: null });
+    });
+
+    // The first page of 50 events goes: the subagent events and 46 newer history events, 40 of
+    // them superseded.
+    assert.deepEqual(
+      yield* maintenance.compactColdThreadHistory({
+        idleBefore,
+        betweenPages: reopenForkOnFirstPause,
+      }),
+      { threadCount: 0, deletedEventCount: 40 },
+    );
+    const total = 1 + 1 + historyEntities.length * 20 + 4;
+    assert.lengthOf(yield* historyEventIds(source.id), total - 40);
+
+    // Only the fork changes, yet the source comes back because its mark covers only what went.
+    yield* forkEvent("thread.settled", fork);
+    assert.deepEqual(yield* maintenance.compactColdThreadHistory({ idleBefore }), {
+      threadCount: 2,
+      deletedEventCount: supersededHistoryEventCount(20) - 40,
+    });
+    assert.deepEqual(yield* historyEventIds(source.id), keptHistoryEventIds(source.id, 20));
+    assert.isTrue((yield* maintenance.rebuild).valid);
+    assert.deepEqual(yield* projections.getThreadProjection(source.id), before);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("compacts the history of chats idle for a day, whatever the tool output retention", () =>
+  Effect.gen(function* () {
+    const thread = retentionThread("history-day", recently, {
+      settledOverride: "settled",
+      settledAt: recently,
+    });
+    yield* writeHistoryThread(thread, 3);
+    const compact = ProjectionMaintenance.compactIdleThreadHistory();
+
+    yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.add(recently, { hours: 23 })));
+    assert.equal((yield* compact).threadCount, 0);
+    yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.add(recently, { hours: 25 })));
+    assert.deepEqual(yield* compact, {
+      threadCount: 1,
+      deletedEventCount: supersededHistoryEventCount(3),
+    });
   }).pipe(Effect.provide(layerTest)),
 );

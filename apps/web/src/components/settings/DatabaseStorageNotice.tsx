@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { describeDatabaseChange } from "@t3tools/client-runtime/host-resources";
 import { formatBytes } from "@t3tools/shared/formatBytes";
 import { offlineVacuumBytes, type EnvironmentId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -12,7 +13,7 @@ import { t } from "~/i18n";
 
 const DismissedEnvironmentIds = Schema.Array(Schema.String);
 
-/** Shows each machine's database size, and suggests `t3 doctor` where it still holds at least 1 GiB of freed pages. */
+/** Shows each machine's database size and daily growth, and suggests `t3 doctor` where it still holds at least 1 GiB of freed pages. */
 export function DatabaseStorageNotice({
   environments,
 }: {
@@ -44,13 +45,7 @@ export function DatabaseStorageNotice({
         <SettingsRow
           key={`size-${environmentId}`}
           title={t("Database on {environment}", { environment: labelOf(environmentId) })}
-          description={
-            status.reclaimableBytes + status.fragmentedBytes > 0
-              ? t("{size} can be reclaimed", {
-                  size: formatBytes(status.reclaimableBytes + status.fragmentedBytes),
-                })
-              : undefined
-          }
+          description={describeDatabaseChange(status).join(" · ") || undefined}
           control={
             <span className="text-sm tabular-nums">{formatBytes(status.databaseBytes)}</span>
           }
