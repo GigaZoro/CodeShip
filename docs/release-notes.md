@@ -1,3 +1,7 @@
+## 2026-11-25 — Deleting a transcript no longer shrinks past usage early
+
+- Usage keeps the saved figures of a deleted transcript for 92 days after T3.CodeShip first finds it gone. Before, they expired 92 days after the file's last write, so deleting an old transcript could drop its usage from a past window within days. If the file comes back, it counts as a live transcript again.
+
 ## 2026-11-25 — A Mac's sleep no longer times out checks or landings
 
 - For people who work on T3.CodeShip: `vp run check:changed` now counts its step and Git time limits in time the machine is awake. Before, a Mac that slept during a run came back to find healthy steps killed as `TIMEOUT`.

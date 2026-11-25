@@ -92,6 +92,7 @@ describe("scan cache round trip", () => {
       malformedRecords: 2,
       mtimeMs: 300,
       observedAtMs: 350,
+      missingSinceMs: 500,
       provider: "grok",
       records: [
         record({ provider: "grok", model: "grok-4.5-build", dedupeKey: "s:p:grok-4.5-build" }),
@@ -380,6 +381,33 @@ describe("scan cache merge", () => {
   it("keeps the held row when nothing tells two rows apart", () => {
     const held = row();
     expect(mergeScanEntry(held, row())).toBe(held);
+  });
+
+  it.each([
+    [
+      "a missing time found after the winning read",
+      row({ observedAtMs: 2_001 }),
+      row({ missingSinceMs: 3_000 }),
+      3_000,
+    ],
+    [
+      "no missing time from before the winning read",
+      row({ observedAtMs: 4_000 }),
+      row({ missingSinceMs: 3_000 }),
+      undefined,
+    ],
+    [
+      "the later of two missing times for one read",
+      row({ missingSinceMs: 3_000 }),
+      row({ missingSinceMs: 5_000 }),
+      5_000,
+    ],
+  ])("gives the winning row %s in either order", (_name, left, right, missingSinceMs) => {
+    const observedAtMs = Math.max(left.observedAtMs, right.observedAtMs);
+    for (const merged of [mergeScanEntry(left, right), mergeScanEntry(right, left)]) {
+      expect(merged.missingSinceMs).toBe(missingSinceMs);
+      expect(merged.observedAtMs).toBe(observedAtMs);
+    }
   });
 
   it("keeps the later source and fills its volume from the same directory", () => {
