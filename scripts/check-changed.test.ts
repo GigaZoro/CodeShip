@@ -1725,7 +1725,14 @@ const providerEnv = NodePath.join(
   "../packages/shared/src/testing/providerEnv.ts",
 );
 
-function launcherFixture() {
+// The run under test reads none of the settings of the check:changed run or landing turn running
+// these tests, such as a landing's test step limit, so its steps run the same for whoever runs
+// them. Windows reads environment names in any case, so they are left out whatever their case.
+const CALLER_SETTINGS = /^(?:CHECK_CHANGED_|T3_LANDING_TURN)/iu;
+const withoutCallerSettings = (from: Readonly<Record<string, string>>) =>
+  Object.fromEntries(Object.entries(from).filter(([name]) => !CALLER_SETTINGS.test(name)));
+
+function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
   const root = NodeFS.realpathSync(
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3 checks & (fixture) ")),
   );
@@ -1787,7 +1794,8 @@ function launcherFixture() {
     import { fileURLToPath } from 'node:url';
     const args = process.argv.slice(2);
     // Windows gives a finished step's pid to the next process at once, so a pid-named record could be replaced.
-    fs.writeFileSync(path.join(process.env.RECORDS, randomUUID() + '.json'), JSON.stringify({ args, cwd: process.cwd() }), { flag: 'wx' });
+    const settings = Object.fromEntries(Object.entries(process.env).filter(([name]) => /^(?:CHECK_CHANGED_|T3_LANDING_TURN)/i.test(name)));
+    fs.writeFileSync(path.join(process.env.RECORDS, randomUUID() + '.json'), JSON.stringify({ args, cwd: process.cwd(), settings }), { flag: 'wx' });
     const edit = args[0] === process.env.EDIT_STEP || args.includes(process.env.EDIT_STEP);
     if (edit && !args.includes('test-cache')) {
       fs.appendFileSync(process.env.EDIT_FILE, "// edited\\n");
@@ -1868,9 +1876,17 @@ function launcherFixture() {
     "fixture",
   );
   const records = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-check-records-"));
+  const recorded = (): Array<{
+    args: Array<string>;
+    cwd: string;
+    settings: Record<string, string>;
+  }> =>
+    NodeFS.readdirSync(records).map((file) =>
+      JSON.parse(NodeFS.readFileSync(NodePath.join(records, file), "utf8")),
+    );
   // `vp run check:changed` puts the checkout's bin folder first.
   const checkEnv = (checkout: string, extraEnv: Record<string, string> = {}) => ({
-    ...env,
+    ...withoutCallerSettings({ ...env, ...caller }),
     TEMP: NodeOS.tmpdir(),
     [pathKey]: [
       NodePath.join(checkout, "node_modules/.bin"),
@@ -1977,9 +1993,8 @@ function launcherFixture() {
       );
     },
     calls: (): Array<{ args: Array<string>; cwd: string }> =>
-      NodeFS.readdirSync(records).map((file) =>
-        JSON.parse(NodeFS.readFileSync(NodePath.join(records, file), "utf8")),
-      ),
+      recorded().map(({ args, cwd }) => ({ args, cwd })),
+    settings: (): Array<Record<string, string>> => recorded().map(({ settings }) => settings),
     [Symbol.dispose]() {
       NodeFS.rmSync(root, { recursive: true, force: true });
       NodeFS.rmSync(records, { recursive: true, force: true });
@@ -1989,8 +2004,14 @@ function launcherFixture() {
   };
 }
 
-it("checks changed source paths through the Windows launcher", () => {
-  using project = launcherFixture();
+// Its caller's check:changed and landing-turn settings, in either case, reach no step.
+it("checks changed source paths through the Windows launcher with a fixed step budget", () => {
+  using project = launcherFixture({
+    check_changed_concurrency: "1",
+    CHECK_CHANGED_BASE: "origin/main",
+    t3_landing_turn: "turn",
+    T3_LANDING_TURN_MAIN: "main",
+  });
   project.write(project.source, "export const value = 2;\n");
   const result = project.run();
   expect(result.status, result.stdout + result.stderr).toBe(0);
@@ -2007,6 +2028,7 @@ it("checks changed source paths through the Windows launcher", () => {
   ]);
   expect(result.stdout).toContain("fixture stdout: lint");
   expect(result.stdout).toContain("fixture stderr: lint");
+  for (const step of project.settings()) expect(step).toEqual({});
 });
 
 it("routes a manifest-only change to the repository command guard through the launcher", () => {
