@@ -14,7 +14,8 @@ export const isWindowsRenameLock = (error: PlatformError.PlatformError) => {
   return code === "EBUSY" || code === "EPERM" || code === "EACCES";
 };
 
-// Bound denial delays to about two seconds because settings saves hold their write lock.
+// Bound denial delays to about two seconds: settings saves hold their write lock, and usage saves
+// run at shutdown.
 const LOCKED_RENAME_RETRIES = 20;
 const LOCKED_RENAME_RETRY_DELAY = "100 millis";
 

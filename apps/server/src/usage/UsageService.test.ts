@@ -4714,7 +4714,7 @@ describe("UsageService", () => {
         );
         yield* service.readSummary(WINDOW);
         yield* Deferred.await(locked);
-        yield* TestClock.adjust("100 millis");
+        yield* TestClock.adjust("2 seconds");
         yield* service.awaitPersisted;
 
         const { path, document } = yield* onlySnapshot(stateDir);
