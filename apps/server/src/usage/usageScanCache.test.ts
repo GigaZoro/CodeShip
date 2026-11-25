@@ -448,6 +448,11 @@ describe("scan cache merge", () => {
       row({ tailRecords: [record()] }),
       row({ tailRecords: [record({ unresolvedServiceTierTurnId: "turn-b" })] }),
     ],
+    [
+      "one of two reads that each resolved a different speed tier",
+      row({ records: [record({ unresolvedServiceTierTurnId: "turn-a" })] }),
+      row({ records: [record({ unresolvedServiceTierTurnId: "turn-b" })] }),
+    ],
   ])("keeps %s in either order", (_name, winner, loser) => {
     expect(mergeScanEntry(winner, loser)).toBe(winner);
     expect(mergeScanEntry(loser, winner)).toBe(winner);

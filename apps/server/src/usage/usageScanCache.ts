@@ -80,19 +80,21 @@ export interface CachedSource {
 
 const isCurrentRow = (entry: CachedFile) => entry.legacy === undefined && !entry.needsReparse;
 
-const unresolvedTiers = (entry: CachedFile) => {
-  let count = 0;
+const unresolvedTurns = (entry: CachedFile) => {
+  const turns: string[] = [];
   for (const records of [entry.records, entry.tailRecords]) {
-    for (const record of records) if (record.unresolvedServiceTierTurnId !== undefined) count += 1;
+    for (const { unresolvedServiceTierTurnId: turn } of records) {
+      if (turn !== undefined) turns.push(turn);
+    }
   }
-  return count;
+  return turns;
 };
 
 /**
  * Every place rows for one transcript meet uses this order, so any merge order of the same
  * snapshots gives the same rows: the later observation, then a current-format row, then the
  * larger file, then fewer unresolved speed tiers (resolving one keeps the read time), then the
- * row already held.
+ * lower list of unresolved turns, then the row already held.
  */
 function pickScanEntry(held: CachedFile, incoming: CachedFile): CachedFile {
   if (incoming.observedAtMs !== held.observedAtMs) {
@@ -101,7 +103,13 @@ function pickScanEntry(held: CachedFile, incoming: CachedFile): CachedFile {
   const heldCurrent = isCurrentRow(held);
   if (heldCurrent !== isCurrentRow(incoming)) return heldCurrent ? held : incoming;
   if (incoming.size !== held.size) return incoming.size > held.size ? incoming : held;
-  return unresolvedTiers(incoming) < unresolvedTiers(held) ? incoming : held;
+  const heldTurns = unresolvedTurns(held);
+  if (heldTurns.length === 0) return held;
+  const incomingTurns = unresolvedTurns(incoming);
+  if (incomingTurns.length !== heldTurns.length) {
+    return incomingTurns.length < heldTurns.length ? incoming : held;
+  }
+  return incomingTurns.join("\n") < heldTurns.join("\n") ? incoming : held;
 }
 
 const latest = (...times: readonly (number | undefined)[]) => {
