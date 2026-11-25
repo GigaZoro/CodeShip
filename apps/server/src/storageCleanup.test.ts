@@ -1150,7 +1150,21 @@ it.live("retains worktree-only history and rejects a release overtaken by a foll
         "rev-parse",
         "--absolute-git-dir",
       ])).stdout.trim();
+      yield* fixture.fs.makeDirectory(`${admin}/logs/refs/worktree`, { recursive: true });
+      yield* fixture.fs.writeFileString(`${admin}/logs/refs/worktree/review`, "");
+      expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+        "Worktree has private reflogs",
+      );
+      // Deleting a worktree-only ref and its reflog leaves their emptied folders.
+      yield* fixture.command(fixture.worktree, [
+        "update-ref",
+        "--create-reflog",
+        privateRef,
+        unique,
+      ]);
+      yield* fixture.command(fixture.worktree, ["update-ref", "-d", privateRef]);
       yield* fixture.fs.makeDirectory(`${admin}/refs/worktree`, { recursive: true });
+      yield* fixture.fs.makeDirectory(`${admin}/logs/refs/worktree`, { recursive: true });
       expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("removed");
     }),
   ),

@@ -663,8 +663,11 @@ const make = Effect.gen(function* () {
     let afterPosition: number | undefined;
     let remainingItems = 0;
     let tailProbed = false;
+    // A blank reply is no reply, as for a task here; one cut short by maxCharsPerItem still counts.
     const isReply = (item: OrchestratorMcpThreadTimelineItem) =>
-      replyTypes.includes(item.type) && (runId === null || item.runId === runId);
+      replyTypes.includes(item.type) &&
+      (runId === null || item.runId === runId) &&
+      (item.textTruncated || (item.text ?? "").trim().length > 0);
     while (true) {
       const read = yield* forwarding.readThread(scope, remote.environmentId, {
         threadId: remote.threadId,
@@ -719,7 +722,7 @@ const make = Effect.gen(function* () {
       text += part.text ?? "";
       textOffset = part.textTruncated ? (part.nextTextOffset ?? null) : null;
     }
-    return text;
+    return text.trim().length > 0 ? text : undefined;
   });
 
   /**

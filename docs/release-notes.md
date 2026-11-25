@@ -1,3 +1,8 @@
+## 2026-11-25 — Empty leftovers no longer hold a worktree or blank a task's result
+
+- Storage cleanup kept a finished worktree with "Worktree has private reflogs" once Git had deleted a worktree-only ref and left its reflog's empty folders. Those worktrees are released; a reflog that still holds history keeps its worktree.
+- A delegated task on a linked machine whose last reply or plan was blank gave the chat that started it a blank result. Its result is now its last reply with text, as for a task on this machine.
+
 ## 2026-11-24 — Finished worktrees are released again
 
 - Storage cleanup kept every finished worktree whose Git metadata had a `refs` folder, which Git 2.56 creates for each worktree, with "Worktree metadata requires its owner". Those worktrees are released again unless they hold refs of their own, and the reason now names the metadata it found.
