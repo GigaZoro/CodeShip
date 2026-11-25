@@ -8,6 +8,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodePath from "node:path";
 import { GitCommandError, type OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -316,7 +317,9 @@ export const checkoutActivityFloor = (identity: string) => {
   const birth = /^\d+\/[1-9]\d*\/([1-9]\d*)\/\d+$/.exec(identity)?.[1];
   return birth === undefined
     ? null
-    : new Date(Number(BigInt(birth) / 1_000_000n) - CHECKOUT_CLOCK_SKEW_MS).toISOString();
+    : DateTime.formatIso(
+        DateTime.makeUnsafe(Number(BigInt(birth) / 1_000_000n) - CHECKOUT_CLOCK_SKEW_MS),
+      );
 };
 
 const holdsOnlyFolders = (folder: string) =>
@@ -850,14 +853,24 @@ const SETUP_OUTPUT_HOLD = "standard setup output changed or could not be verifie
 
 // Effect wraps a rejected check in an error that only says a promise failed, so follow the causes
 // to the ones that say what failed, and to a failed command's own complaint.
-const failureText = (error: unknown) => {
+// Bounds a runaway output line. It fits a full macOS path with its error, and a cut keeps both
+// ends: the error code leads the line and the file it names closes it.
+const FAILURE_LINE_LIMIT = 1024;
+const FAILURE_LINE_HEAD = 256;
+
+const boundedLine = (line: string) =>
+  line.length <= FAILURE_LINE_LIMIT
+    ? line
+    : `${line.slice(0, FAILURE_LINE_HEAD)}…${line.slice(line.length - (FAILURE_LINE_LIMIT - FAILURE_LINE_HEAD - 1))}`;
+
+export const failureText = (error: unknown) => {
   const parts: string[] = [];
   const add = (text: unknown) => {
-    const line = (Buffer.isBuffer(text) ? text.toString() : typeof text === "string" ? text : "")
+    const first = (Buffer.isBuffer(text) ? text.toString() : typeof text === "string" ? text : "")
       .split("\n")
       .map((value) => value.trim())
-      .find(Boolean)
-      ?.slice(0, 200);
+      .find(Boolean);
+    const line = first && boundedLine(first);
     if (line && !parts.includes(line)) parts.push(line);
   };
   for (let current = error, depth = 0; current instanceof Object && depth < 8; depth++) {

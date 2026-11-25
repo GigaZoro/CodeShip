@@ -45,8 +45,8 @@
 - When cleanup keeps a checkout because a check failed, the reason names the check and its error, or says that it timed out.
 - A family checkout no longer stays held when CodeShip stopped between the two steps that start or finish its post-checkout hook. The next follow-up clears the stale step and runs or reports the hook as usual.
 - A release queued before CodeShip recorded pull request bases asks you to release the checkout again, instead of reporting that the base changed.
-- On a case-sensitive volume, a checkout whose path differs from a released one only in letter case is no longer treated as the released checkout.
-- Release checks read only command results recorded since the checkout was created, instead of every command result in the history.
+- On a case-sensitive volume, a checkout whose path differs from a released one only in letter case is no longer treated as the released checkout. On a volume that ignores letter case, a neighboring folder named with letters such as the Turkish dotless ı no longer makes CodeShip treat the volume as case-sensitive.
+- Release checks open the command results of unfinished tasks and of tasks updated after the checkout was created. They skip the contents of older finished tasks.
 - After a restart, a family can resume an intact checkout whose removal was interrupted. CodeShip checks saved ignored files and installed dependencies before reopening it. If any are missing, it keeps the claim and the backup for recovery. A follow-up can also recover a delivered task branch whose history diverged from the base.
 - A new managed checkout gets a different directory when a released family still has a claim on its usual path. Follow-ups in an existing replacement checkout verify its new Git registration, project and branch before starting.
 - Family release checks that Git supports the post-checkout hook needed to recreate the checkout.

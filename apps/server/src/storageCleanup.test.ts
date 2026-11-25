@@ -2195,13 +2195,15 @@ it.effect.each(["private delegate", "background command", "foreign background co
         const failedAt = DateTime.formatIso(at(-2 * DAY_MS));
         const laterAt = DateTime.formatIso(at(-DAY_MS));
         // Only work recorded after the checkout's Git pointer was written can concern it.
-        const checkoutBorn = new Date(
-          Number(
-            (yield* Effect.promise(() =>
-              NodeFSP.stat(NodePath.join(fixture.worktree, ".git"), { bigint: true }),
-            )).birthtimeNs / 1_000_000n,
+        const checkoutBorn = DateTime.formatIso(
+          DateTime.makeUnsafe(
+            Number(
+              (yield* Effect.promise(() =>
+                NodeFSP.stat(NodePath.join(fixture.worktree, ".git"), { bigint: true }),
+              )).birthtimeNs / 1_000_000n,
+            ),
           ),
-        ).toISOString();
+        );
         const insertCommandRun = () => sql`INSERT INTO command_runs
           (task_id, thread_id, run_id, command, cwd, directory, status, exit_code, started_at, deadline_at, ended_at, delivered_at)
           VALUES (${taskId}, ${parentId}, 'spawner', ${command.command}, ${cwd},
