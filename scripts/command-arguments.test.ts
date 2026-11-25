@@ -29,6 +29,10 @@ const landingUsage =
 const metadataPackageUsage = "Usage: node package.mjs <helpers|verify> <directory> <rust-target>";
 const metadataSigningUsage = "Usage: node scripts/sign-macos.ts --verify-codex-metadata";
 const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
+  "../.github/scripts/bounded-git.cjs": [
+    [[UNREAD, "status"], 2, "usage: bounded-git.cjs <timeoutMs> <git args…>"],
+    [["1000"], 2, "usage: bounded-git.cjs <timeoutMs> <git args…>"],
+  ],
   "./lib/run-cached-test-group.ts": [
     [[], 1, "A cached test group requires at least one test file"],
     [[UNREAD], 1, "Unknown option"],

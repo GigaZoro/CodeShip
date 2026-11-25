@@ -4,6 +4,7 @@
 const { spawn, spawnSync } = require("node:child_process");
 
 const TIMED_OUT_STATUS = 124;
+const USAGE = "usage: bounded-git.cjs <timeoutMs> <git args…>";
 
 function signal(pid, name) {
   try {
@@ -39,6 +40,12 @@ function stopTree(root) {
 }
 
 function main([timeoutMs, ...args]) {
+  // A limit that is no positive number would stop git at once.
+  if (!(Number(timeoutMs) > 0) || args.length === 0) {
+    console.error(USAGE);
+    process.exitCode = 2;
+    return;
+  }
   const child = spawn("git", args, { stdio: "inherit", windowsHide: true });
   let timedOut = false;
   const timer = setTimeout(() => {
