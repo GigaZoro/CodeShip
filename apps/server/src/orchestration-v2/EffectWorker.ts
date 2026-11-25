@@ -479,36 +479,39 @@ export const layerExecutor: Layer.Layer<
                   : { restoreFiles: effect.request.restoreFiles }),
               })
               .pipe(
-                Effect.catchCause((cause) => {
-                  const failure = Cause.findErrorOption(cause);
-                  const requiresRecovery =
-                    Option.isSome(failure) && failure.value.reason === "worktree-recovery-required";
-                  if (Cause.hasInterruptsOnly(cause) || (willRetry && !requiresRecovery))
-                    return Effect.failCause(cause);
-                  const recordFailure = threads
-                    .dispatch({
-                      type: "checkpoint.rollback.fail",
-                      commandId: CommandId.make(`${effect.commandId}:rollback-failed`),
-                      threadId: effect.threadId,
-                      requestId: effect.commandId,
-                      message: Option.match(failure, {
-                        onNone: () => CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
-                        onSome: CheckpointRollbackService.rollbackFailureClientMessage,
-                      }),
-                    })
-                    .pipe(Effect.asVoid);
-                  // Once the owner starts recovery, a delayed rollback could undo that new turn.
-                  if (requiresRecovery) return recordFailure;
-                  return recordFailure.pipe(
-                    Effect.catchCause((recordCause) =>
-                      Effect.logWarning("Failed to record rollback failure", {
-                        effectId: effect.id,
-                        cause: recordCause,
-                      }),
-                    ),
-                    Effect.andThen(Effect.failCause(cause)),
-                  );
-                }),
+                Effect.catchCause((cause) =>
+                  Effect.gen(function* () {
+                    const failure = Cause.findErrorOption(cause);
+                    const requiresRecovery =
+                      Option.isSome(failure) &&
+                      failure.value.reason === "worktree-recovery-required";
+                    if (Cause.hasInterruptsOnly(cause) || (willRetry && !requiresRecovery))
+                      return yield* Effect.failCause(cause);
+                    const recordFailure = threads
+                      .dispatch({
+                        type: "checkpoint.rollback.fail",
+                        commandId: CommandId.make(`${effect.commandId}:rollback-failed`),
+                        threadId: effect.threadId,
+                        requestId: effect.commandId,
+                        message: Option.match(failure, {
+                          onNone: () => CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
+                          onSome: CheckpointRollbackService.rollbackFailureClientMessage,
+                        }),
+                      })
+                      .pipe(Effect.asVoid);
+                    // Once the owner starts recovery, a delayed rollback could undo that new turn.
+                    if (requiresRecovery) return yield* recordFailure;
+                    yield* recordFailure.pipe(
+                      Effect.catchCause((recordCause) =>
+                        Effect.logWarning("Failed to record rollback failure", {
+                          effectId: effect.id,
+                          cause: recordCause,
+                        }),
+                      ),
+                    );
+                    return yield* Effect.failCause(cause);
+                  }),
+                ),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationEffectExecutionError({
