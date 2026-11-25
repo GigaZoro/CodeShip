@@ -507,13 +507,11 @@ it.effect.each(
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("clears a failed attempt's reported result when its retry reopens the run", () => {
+it.effect("keeps a delivered run's reported result when its occurrence is dispatched again", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {
     const threads = yield* ThreadManagement.ThreadManagementService;
-    const launches = yield* ThreadLaunch.ThreadLaunchService;
     const sql = yield* SqlClient.SqlClient;
-    let attempts = 0;
     const scheduler = ScheduledTasks.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
@@ -523,16 +521,6 @@ it.effect("clears a failed attempt's reported result when its retry reopens the 
           ManagedPolicy.layerTest(),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-          Layer.succeed(ThreadManagement.ThreadManagementService, threads),
-          Layer.succeed(ThreadLaunch.ThreadLaunchService, {
-            ...launches,
-            launch: (input) =>
-              Effect.suspend(() =>
-                ++attempts === 1
-                  ? Effect.die("transient failure before receipt")
-                  : launches.launch(input),
-              ),
-          }),
         ),
       ),
     );
@@ -582,17 +570,6 @@ it.effect("clears a failed attempt's reported result when its retry reopens the 
           return (yield* tasks.list()).tasks[0]!;
         }).pipe(Effect.provide(scheduler));
       });
-    yield* cursor();
-    assert.equal((yield* poll(slot)).lastRunStatus, "failed");
-    // As when the failed attempt's chat opened but its prompt did not arrive: the failed run keeps that chat, where
-    // its agent can still report before the retry.
-    const failedChat = (yield* launches.launch(
-      launchInput({ command: "failed-attempt", thread: "thread:failed-attempt" }),
-    )).threadId;
-    yield* sql`UPDATE scheduled_task_runs SET thread_id = ${failedChat} WHERE task_id = ${id}`;
-    yield* report(failedChat, "incomplete", "The prompt never arrived.");
-    yield* cursor();
-    assert.equal((yield* poll(slot + 8000)).lastRunStatus, "succeeded");
     const history = () =>
       sql<{
         outcome: string;
@@ -600,22 +577,35 @@ it.effect("clears a failed attempt's reported result when its retry reopens the 
         reported_outcome: string | null;
         reported_summary: string | null;
       }>`SELECT outcome, thread_id, reported_outcome, reported_summary FROM scheduled_task_runs WHERE task_id = ${id}`;
-    const [retried] = yield* history();
-    assert.notEqual(retried?.thread_id, failedChat);
-    assert.deepInclude(retried, {
-      outcome: "succeeded",
-      reported_outcome: null,
-      reported_summary: null,
-    });
-    yield* report(ThreadId.make(retried!.thread_id!), "completed", "Checked.");
+    yield* cursor();
+    assert.equal((yield* poll(slot)).lastRunStatus, "succeeded");
+    const [delivered] = yield* history();
+    const chat = ThreadId.make(delivered!.thread_id!);
+    const blocked = "Blocked: the market API was down.";
+    yield* report(chat, "incomplete", blocked);
+    // As a replay does: the cursor names the delivered occurrence again, so it dispatches under the same run id.
+    yield* cursor();
+    const replayed = yield* poll(slot + 8000);
+    assert.equal(replayed.lastRunStatus, "failed");
+    assert.equal(replayed.lastRunError, blocked);
     assert.deepEqual(yield* history(), [
       {
-        outcome: "succeeded",
-        thread_id: retried!.thread_id,
-        reported_outcome: "completed",
-        reported_summary: "Checked.",
+        outcome: "failed",
+        thread_id: chat,
+        reported_outcome: "incomplete",
+        reported_summary: blocked,
       },
     ]);
+    const shells = yield* threads.listProjectThreads({ projectId, includeSubagents: false });
+    const projections = yield* Effect.forEach(shells, (shell) =>
+      threads.getThreadProjection(shell.id),
+    );
+    assert.lengthOf(
+      projections.flatMap((p) => p.messages),
+      1,
+    );
+    const refused = yield* Effect.flip(report(chat, "completed", "Checked."));
+    assert.equal(refused.message, "This run already reported its result.");
   }).pipe(Effect.provide(harness.layer));
 });
 

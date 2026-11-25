@@ -2248,12 +2248,13 @@ export const layer = Layer.effect(
           ${record.usageLimit === undefined ? null : encodeRunUsageLimitJson(record.usageLimit)},
           ${record.memory === undefined ? null : encodeRunMemoryJson(record.memory)}
         WHERE EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${record.taskId})
-        -- A retry is a new attempt: nothing the failed one recorded, its chat's report included, describes it.
+        -- A retry reopens only an attempt that kept no chat. A failed run keeps its chat only once its
+        -- prompt arrived (its chat reported it incomplete, or it stalled), and that result stays.
         ON CONFLICT (run_id) DO UPDATE SET
           outcome = 'running', started_at = excluded.started_at, completed_at = NULL,
-          error = NULL, thread_id = NULL, chat_folder = NULL, check_json = excluded.check_json,
-          reported_outcome = NULL, reported_summary = NULL
-        WHERE scheduled_task_runs.outcome = 'failed' AND excluded.outcome = 'running'
+          error = NULL, chat_folder = NULL, check_json = excluded.check_json
+        WHERE scheduled_task_runs.outcome = 'failed' AND scheduled_task_runs.thread_id IS NULL
+          AND excluded.outcome = 'running'
       `.pipe(
         Effect.andThen(sql`
           DELETE FROM scheduled_task_runs WHERE run_id IN (
@@ -2310,6 +2311,20 @@ export const layer = Layer.effect(
           WHERE run_id = ${id} AND outcome = 'running'
         `,
         taskId,
+      );
+
+    // Run history is bookkeeping: when it cannot be read, the attempt's own result stands.
+    const settledRunResult = (taskId: ScheduledTaskId, id: string) =>
+      sql<{ readonly outcome: "succeeded" | "failed"; readonly error: string | null }>`
+        SELECT outcome, error FROM scheduled_task_runs
+        WHERE run_id = ${id} AND outcome IN ('succeeded', 'failed')
+      `.pipe(
+        Effect.map(([run]) => run ?? null),
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not read schedule task run history", { taskId, cause }).pipe(
+            Effect.as(null),
+          ),
+        ),
       );
 
     // Before the launch, so startup still finds the chat when a restart cuts the run after it.
@@ -2798,6 +2813,11 @@ export const layer = Layer.effect(
           const [row] = yield* getRows(task.id);
           const current = row === undefined ? null : yield* decodeRow(row, origin);
           const scheduleSource = current ?? task;
+          // A replay of an occurrence whose prompt already arrived finds its run settled, which
+          // finishRunRecord leaves as it is: that result, a reported `incomplete` included, is the task's.
+          const settled = yield* settledRunResult(task.id, runRecordId);
+          const status = settled?.outcome ?? lastRunStatus;
+          const error = settled === null ? lastRunError : settled.error;
           const completed: ScheduledTask = {
             ...scheduleSource,
             updatedAt: iso(completedAt),
@@ -2807,8 +2827,8 @@ export const layer = Layer.effect(
               scheduleSource,
               scheduleSource.schedule.type === "once" ? startedAt : completedAt,
             ),
-            lastRunStatus,
-            lastRunError,
+            lastRunStatus: status,
+            lastRunError: error,
             runCount: scheduleSource.runCount + 1,
             ...(threadId === null ? {} : { lastRunThreadId: threadId }),
           };
@@ -2835,8 +2855,8 @@ export const layer = Layer.effect(
             id: task.id,
             completedAtIso: completed.updatedAt,
             nextRunAtIso: completed.nextRunAt,
-            status: lastRunStatus,
-            error: lastRunError,
+            status,
+            error,
             startedAtIso,
           });
           let written = false;
