@@ -126,8 +126,21 @@ const REMOTE_LACKS_OBJECT = /upload-pack: not our ref [0-9a-f]+/;
  * advertise, whether it has the object or not.
  */
 const REMOTE_REFUSES_UNADVERTISED_OBJECT = /Server does not allow request for unadvertised object/;
-/** Fetches read what they fetched from refs under here, one prefix per fetch, then delete them. */
+/**
+ * Fetches read what they fetched from refs under here, one prefix per fetch, then delete them.
+ * A prefix is named `<epoch ms>-<uuid>` from when its fetch started.
+ */
 const SCRATCH_FETCH_REF_ROOT = "refs/t3code/fetch";
+/**
+ * Far past any fetch's timeout: a prefix this old outlived its fetch, which a restart cut or whose
+ * delete failed, and nothing else would ever delete it.
+ */
+const SCRATCH_FETCH_REF_MAX_AGE_MS = Duration.toMillis(Duration.hours(1));
+/** A prefix without a start time was named before prefixes carried one, so it is left over too. */
+const isLeftoverScratchRef = (ref: string, now: number): boolean => {
+  const startedAt = /^(\d+)-/.exec(ref.slice(SCRATCH_FETCH_REF_ROOT.length + 1))?.[1];
+  return startedAt === undefined || now - Number(startedAt) > SCRATCH_FETCH_REF_MAX_AGE_MS;
+};
 const pickPrimaryRemoteName = (remoteNames: ReadonlyArray<string>): string | null =>
   remoteNames.includes("origin") ? "origin" : (remoteNames[0] ?? null);
 const GIT_LIST_BRANCHES_DEFAULT_LIMIT = 100;
@@ -697,8 +710,9 @@ const GIT_MESSAGE_SHAPES = [
   "cannot remove a locked working tree;",
   "working trees containing submodules cannot be moved or removed",
   "validation failed, cannot remove working tree: …",
+  // Git prints these two through die_errno, which appends `: <strerror>`.
   "failed to run 'git status' on '…', code …",
-  "failed to run 'git status' on '…'",
+  "failed to run 'git status' on '…': …",
   "failed to delete '…': …",
   "a branch named '…' already exists",
   "'…' is already checked out at '…'",
@@ -4858,9 +4872,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     });
 
   /**
-   * Runs `use` with a ref prefix of its own and deletes every ref under it afterwards. A fetch
-   * reads what it fetched from there: FETCH_HEAD is the whole checkout's, and another fetch, such
-   * as the status poll, can rewrite it between the fetch and the read.
+   * Runs `use` with a ref prefix of its own and deletes every ref under it afterwards, along with
+   * any an earlier fetch left behind. A fetch reads what it fetched from there: FETCH_HEAD is the
+   * whole checkout's, and another fetch, such as the status poll, can rewrite it between the fetch
+   * and the read.
    */
   const withScratchRefs = <A, E, R>(
     cwd: string,
@@ -4869,7 +4884,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   ) =>
     Effect.acquireUseRelease(
       crypto.randomUUIDv4().pipe(
-        Effect.map((id) => `${SCRATCH_FETCH_REF_ROOT}/${id}`),
+        Effect.zipWith(
+          Clock.currentTimeMillis,
+          (id, now) => `${SCRATCH_FETCH_REF_ROOT}/${now}-${id}`,
+        ),
         Effect.mapError(
           (cause) =>
             new GitCommandError({
@@ -4883,21 +4901,27 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ),
       use,
       (prefix) =>
-        runGitStdout(`${operation}.listScratchRefs`, cwd, [
-          "for-each-ref",
-          "--format=%(refname)",
-          `${prefix}/`,
-        ]).pipe(
-          Effect.flatMap((stdout) => {
-            const refs = stdout.split("\n").filter((ref) => ref.length > 0);
-            return refs.length === 0
-              ? Effect.void
-              : executeGit(`${operation}.deleteScratchRefs`, cwd, ["update-ref", "--stdin"], {
-                  stdin: refs.map((ref) => `delete ${ref}\n`).join(""),
-                  fallbackErrorDetail: "git failed to delete the fetch's scratch refs",
-                });
-          }),
-          // The fetch's answer stands; a ref left under the scratch root only keeps objects alive.
+        Effect.gen(function* () {
+          const stdout = yield* runGitStdout(`${operation}.listScratchRefs`, cwd, [
+            "for-each-ref",
+            "--format=%(refname)",
+            `${SCRATCH_FETCH_REF_ROOT}/`,
+          ]);
+          const now = yield* Clock.currentTimeMillis;
+          const refs = stdout
+            .split("\n")
+            .filter(
+              (ref) =>
+                ref.length > 0 && (ref.startsWith(`${prefix}/`) || isLeftoverScratchRef(ref, now)),
+            );
+          if (refs.length === 0) return;
+          yield* executeGit(`${operation}.deleteScratchRefs`, cwd, ["update-ref", "--stdin"], {
+            stdin: refs.map((ref) => `delete ${ref}\n`).join(""),
+            fallbackErrorDetail: "git failed to delete the fetch's scratch refs",
+          });
+        }).pipe(
+          // The fetch's answer stands; a ref left under the scratch root only keeps objects alive
+          // until a later fetch deletes it.
           Effect.catch((cause) =>
             Effect.logWarning("could not delete a fetch's scratch refs", { prefix, cause }),
           ),

@@ -1,3 +1,8 @@
+## 2026-11-25 — Worktree removal names Git's failed status check
+
+- When removing a worktree fails because Git could not run `git status` in it, the error now says so, as "failed to run 'git status' on '…'", with the path and Git's reason hidden. Before, Git's line ended with a reason the error did not expect, so it showed "(message withheld)".
+- Refs that a fetch keeps for itself while it reads the fetched commit are now removed by the next fetch when a restart or a failed delete left them behind. Before, they stayed in the repository and kept the fetched objects from being cleaned up.
+
 ## 2026-11-25 — Usage follows secret setting changes and keeps newer reads
 
 - Changing a secret environment value of a provider instance, such as an API key, now refreshes Usage on every connected client. Clients only ever see such a value hidden, so before they kept showing figures read with the old value. The server now sends clients a key it derives from its settings with a secret of its own, which changes with the value but does not reveal it.

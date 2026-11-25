@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - these fixtures observe native filesystem paths or Node child process behavior directly.
 import * as NodeFS from "node:fs";
 import { assert, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -776,6 +777,39 @@ it.layer(layerTest)("Git remote worktree bases", (it) => {
       });
       assert.equal(yield* fileSystem.readFileString(fetchHead), otherFetch);
       assert.equal(yield* git(cwd, ["for-each-ref", "refs/t3code/"]), "");
+    }),
+  );
+
+  // A restart between a fetch and its cleanup, or a delete that failed, leaves a prefix behind.
+  it.effect("deletes the scratch refs earlier fetches left, keeping a running fetch's", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      const remote = yield* makeTmpDir("git-remote-");
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const { initialBranch } = yield* initRepoWithCommit(cwd);
+      yield* git(remote, ["init", "--bare"]);
+      yield* git(cwd, ["remote", "add", "origin", remote]);
+      yield* git(cwd, ["push", "origin", `HEAD:refs/heads/${initialBranch}`]);
+      const head = yield* git(cwd, ["rev-parse", "HEAD"]);
+      yield* TestClock.adjust("1 day");
+      const now = yield* Clock.currentTimeMillis;
+      const running = `refs/t3code/fetch/${now - 60_000}-b2c4e6a8-1d3f-4a5b-8c7d-9e0f1a2b3c4d/ref`;
+      for (const ref of [
+        // Named before prefixes carried their start time.
+        "refs/t3code/fetch/5f0c2a8e-9b1d-4c3e-8a7f-2d6b4e1c9a03/heads/main",
+        `refs/t3code/fetch/${now - 2 * 60 * 60_000}-7a9c1e3f-5b2d-4e6a-9c8b-0d1f2e3a4b5c/ref`,
+        running,
+      ]) {
+        yield* git(cwd, ["update-ref", ref, head]);
+      }
+
+      assert.deepEqual(yield* driver.fetchRefCommit({ cwd, ref: `refs/heads/${initialBranch}` }), {
+        commitSha: head,
+      });
+      assert.equal(
+        yield* git(cwd, ["for-each-ref", "--format=%(refname)", "refs/t3code/"]),
+        running,
+      );
     }),
   );
 

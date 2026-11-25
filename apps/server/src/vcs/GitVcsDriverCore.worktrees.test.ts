@@ -453,12 +453,13 @@ it.layer(layerTest)("Git worktree creation", (it) => {
       "fatal: validation failed, cannot remove working tree: '/w/secret/.git' does not exist",
       "fatal: validation failed, cannot remove working tree: …",
     ],
+    // die_errno appends `: <strerror>` to both.
     [
-      "fatal: failed to run 'git status' on '/w/secret'",
-      "fatal: failed to run 'git status' on '…'",
+      "fatal: failed to run 'git status' on '/w/secret': No such file or directory",
+      "fatal: failed to run 'git status' on '…': …",
     ],
     [
-      "fatal: failed to run 'git status' on '/w/secret', code 128",
+      "fatal: failed to run 'git status' on '/w/secret', code 128: No such file or directory",
       "fatal: failed to run 'git status' on '…', code …",
     ],
     ["error: failed to delete '/w/secret': Permission denied", "error: failed to delete '…': …"],
