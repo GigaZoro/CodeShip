@@ -1339,7 +1339,7 @@ effectIt.live(
           tip: threadTip,
           file: "thread.txt",
           upstream: null,
-          base: null,
+          base: "",
         },
         "released-async": { tip: projectTip, file: "project.txt", upstream: null, base: "" },
         deleted: { tip: projectTip, file: "project.txt", upstream: null, base: "project-current" },
@@ -1465,8 +1465,8 @@ effectIt.live(
                         durationMs: 0,
                       }),
                 } as const;
-              }).pipe(Effect.orDie),
-            ),
+              }),
+            ).pipe(Effect.orDie),
         });
         const open = harness.open.getMockImplementation()!;
         harness.open.mockImplementation(() =>
@@ -1487,8 +1487,8 @@ effectIt.live(
                 yield* git(worktreePath, ["rev-parse", "--symbolic-full-name", "@{upstream}"]),
               ).toBe(expected.upstream);
             }
-            if (expected.base !== null)
-              expect(yield* branchConfig("t3-merge-base")).toBe(expected.base);
+            expect(yield* branchConfig("t3-merge-base")).toBe(expected.base);
+            if (archived) expect(yield* branchConfig("t3-merge-base-ref")).toBe("");
             return yield* open();
           }).pipe(Effect.orDie),
         );
