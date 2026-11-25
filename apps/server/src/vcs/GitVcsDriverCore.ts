@@ -4909,8 +4909,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
    * nothing else ever would. Each prefix is a transaction of its own, so one that Git cannot
    * delete, such as one a stale lock holds, keeps only itself.
    */
-  const deleteLeftoverScratchRefs = (operation: string, cwd: string) =>
-    Effect.gen(function* () {
+  const deleteLeftoverScratchRefs = Effect.fn("GitVcsDriver.deleteLeftoverScratchRefs")(
+    function* (operation: string, cwd: string) {
       const refs = yield* listScratchRefs(
         `${operation}.listLeftoverScratchRefs`,
         cwd,
@@ -4936,11 +4936,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }
       if (deleted > 0)
         yield* Effect.logInfo("deleted the scratch refs earlier fetches left", { refs: deleted });
-    }).pipe(
-      Effect.catch((cause) =>
-        Effect.logWarning("could not list the scratch refs earlier fetches left", { cause }),
-      ),
-    );
+    },
+    Effect.catch((cause) =>
+      Effect.logWarning("could not list the scratch refs earlier fetches left", { cause }),
+    ),
+  );
 
   /**
    * Runs `use` with a ref prefix of its own and deletes every ref under it afterwards, then any an

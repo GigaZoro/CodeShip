@@ -781,6 +781,8 @@ it.layer(layerTest)("Git remote worktree bases", (it) => {
   );
 
   // A restart between a fetch and its cleanup, or a delete that failed, leaves a prefix behind.
+  // Each is deleted on its own: one that Git cannot delete would otherwise keep every later
+  // fetch's refs too.
   it.effect("deletes the scratch refs earlier fetches left, keeping a running fetch's", () =>
     Effect.gen(function* () {
       const cwd = yield* makeTmpDir();
@@ -793,43 +795,16 @@ it.layer(layerTest)("Git remote worktree bases", (it) => {
       const head = yield* git(cwd, ["rev-parse", "HEAD"]);
       yield* TestClock.adjust("1 day");
       const now = yield* Clock.currentTimeMillis;
+      const cutAt = now - 2 * 60 * 60_000;
       const running = `refs/t3code/fetch/${now - 60_000}-b2c4e6a8-1d3f-4a5b-8c7d-9e0f1a2b3c4d/ref`;
+      const stuck = `refs/t3code/fetch/${cutAt}-0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e/ref`;
       for (const ref of [
         // Named before prefixes carried their start time.
         "refs/t3code/fetch/5f0c2a8e-9b1d-4c3e-8a7f-2d6b4e1c9a03/heads/main",
-        `refs/t3code/fetch/${now - 2 * 60 * 60_000}-7a9c1e3f-5b2d-4e6a-9c8b-0d1f2e3a4b5c/ref`,
+        `refs/t3code/fetch/${cutAt}-7a9c1e3f-5b2d-4e6a-9c8b-0d1f2e3a4b5c/ref`,
         running,
+        stuck,
       ]) {
-        yield* git(cwd, ["update-ref", ref, head]);
-      }
-
-      assert.deepEqual(yield* driver.fetchRefCommit({ cwd, ref: `refs/heads/${initialBranch}` }), {
-        commitSha: head,
-      });
-      assert.equal(
-        yield* git(cwd, ["for-each-ref", "--format=%(refname)", "refs/t3code/"]),
-        running,
-      );
-    }),
-  );
-
-  // In one transaction with the others, a leftover Git cannot delete would keep every later
-  // fetch's own refs too.
-  it.effect("deletes its own scratch refs when an earlier fetch's cannot be deleted", () =>
-    Effect.gen(function* () {
-      const cwd = yield* makeTmpDir();
-      const remote = yield* makeTmpDir("git-remote-");
-      const driver = yield* GitVcsDriver.GitVcsDriver;
-      const { initialBranch } = yield* initRepoWithCommit(cwd);
-      yield* git(remote, ["init", "--bare"]);
-      yield* git(cwd, ["remote", "add", "origin", remote]);
-      yield* git(cwd, ["push", "origin", `HEAD:refs/heads/${initialBranch}`]);
-      const head = yield* git(cwd, ["rev-parse", "HEAD"]);
-      yield* TestClock.adjust("1 day");
-      const cutAt = (yield* Clock.currentTimeMillis) - 2 * 60 * 60_000;
-      const stuck = `refs/t3code/fetch/${cutAt}-0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e/ref`;
-      const deletable = `refs/t3code/fetch/${cutAt}-1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e5f/ref`;
-      for (const ref of [stuck, deletable]) {
         yield* git(cwd, ["update-ref", ref, head]);
       }
       // A delete killed between locking a ref and removing it leaves the lock behind.
@@ -839,10 +814,8 @@ it.layer(layerTest)("Git remote worktree bases", (it) => {
       assert.deepEqual(yield* driver.fetchRefCommit({ cwd, ref: `refs/heads/${initialBranch}` }), {
         commitSha: head,
       });
-      assert.equal(
-        yield* git(cwd, ["for-each-ref", "--format=%(refname)", "refs/t3code/"]),
-        stuck,
-      );
+      const left = yield* git(cwd, ["for-each-ref", "--format=%(refname)", "refs/t3code/"]);
+      assert.deepEqual(left.split("\n").sort(), [running, stuck].sort());
     }),
   );
 
