@@ -12,6 +12,12 @@
 - Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
 - Codex usage and reset credits now follow the signed-in workspace, including when two workspaces share an email. A delayed update from a previous session can no longer replace the current workspace’s balance.
 
+## 2026-11-25 — The metadata smoke test answers its child first and fails on a broken reply
+
+- For people who work on T3.CodeShip: the Codex metadata smoke test (`docs/operations/codex-metadata/smoke.py`) now answers the spawned child agent before it sends the parent its last reply. `codex exec` exits when the parent's turn ends and does not wait for the child, so a child reply sent after that hit a closed connection. On Linux, WSL included, the test then printed a `BrokenPipeError` traceback and still passed.
+- The test now fails, with the error, when its stand-in model cannot answer a request or the child reply misses its 15-second deadline. Before, a crashed handler only printed a traceback, and the test could still report that it verified the child's metadata scope.
+- Changing this test invalidates the metadata package cache for each platform. A cold build takes about one to two hours per runner. Later releases can reuse the cached package.
+
 ## 2026-11-25 — Antigravity 1.4.5 is no longer marked incompatible
 
 - Settings no longer marks the managed Antigravity runtime, 1.4.5, as incompatible or offers an update it cannot install. T3.CodeShip checked T3 Code's provider compatibility rules against its own release number, such as 2026.1125.11, so it took on a rule meant for T3 Code 0.1.10 and later, which needs Antigravity 1.5. Each release now keeps the T3 Code version it is built from and checks the rules against that version.
