@@ -33,10 +33,14 @@ export const resolveWorkspacePath = (cwd: string) =>
       let ancestor = absolute;
       for (;;) {
         try {
-          return NodePath.join(
-            await NodeFSP.realpath(ancestor),
-            NodePath.relative(ancestor, absolute),
-          );
+          const real = await NodeFSP.realpath(ancestor);
+          // Windows also reports ENOENT when an intermediate component is a regular file.
+          if (!(await NodeFSP.stat(real)).isDirectory())
+            throw Object.assign(new Error(`Workspace component is not a directory: ${ancestor}`), {
+              code: "ENOTDIR",
+              path: ancestor,
+            });
+          return NodePath.join(real, NodePath.relative(ancestor, absolute));
         } catch (error) {
           const parent = NodePath.dirname(ancestor);
           if (
@@ -51,11 +55,7 @@ export const resolveWorkspacePath = (cwd: string) =>
             if (cause.code !== "ENOENT") throw cause;
             return null;
           });
-          if (entry)
-            return NodePath.join(
-              await NodeFSP.realpath(ancestor),
-              NodePath.relative(ancestor, absolute),
-            );
+          if (entry) throw error;
           ancestor = parent;
         }
       }

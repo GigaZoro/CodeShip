@@ -678,6 +678,8 @@ Once it has moved to `.releasing`, wait for the result before reusing the checko
 **Storage & cleanup** shows the reason a checkout was kept. After an interrupted family
 removal, a follow-up can resume the original checkout once CodeShip verifies its identity,
 branch, commit and tracked files. A partially removed original stays available for inspection.
+If a file replaces the checkout's parent directory, or Git still lists a missing checkout,
+the release stays pending. Storage & cleanup shows which check needs attention.
 
 A follow-up starts from the project's current base when that base contains the delivered
 commit. If the histories diverged, CodeShip can restore the delivered commit from a

@@ -203,14 +203,7 @@ export const listWorktreeBackups = Effect.fn("WorktreeRelease.listBackups")(func
 
 // Use on-disk spelling for aliases, including Windows short names. A removed checkout still has a receipt.
 export const releasePath = (cwd: string) =>
-  existingWorkspacePath(cwd).pipe(
-    Effect.catchIf(
-      (error) =>
-        error.cause instanceof Error && "code" in error.cause && error.cause.code === "ENOENT",
-      () => Effect.succeed(cwd),
-    ),
-    Effect.timeout("5 seconds"),
-  );
+  resolveWorkspacePath(cwd).pipe(Effect.timeout("5 seconds"));
 
 export const hasNonDirectoryParent = (error: { readonly cause?: unknown }) =>
   error.cause instanceof Error && "code" in error.cause && error.cause.code === "ENOTDIR";
@@ -344,6 +337,30 @@ const readGit = Effect.fn("WorktreeRelease.readGit")(function* (
     });
   return result.stdout;
 });
+
+// An interrupted Git removal is complete only when both the checkout and its registration are gone.
+export const interruptedRemovalHold = Effect.fn("WorktreeRelease.interruptedRemovalHold")(
+  function* (projectRoot: string, request: ReleaseRequest) {
+    const cwd = request.worktreePath;
+    const resolved = yield* releasePath(cwd);
+    if (NodePath.relative(cwd, resolved) !== "") return "checkout path changed during removal";
+    const fs = yield* FileSystem.FileSystem;
+    if (yield* fs.exists(cwd)) return "checkout path reappeared during removal";
+    const listing = yield* readGit(projectRoot, ["worktree", "list", "--porcelain", "-z"]);
+    const records = listing.split("\0\0").filter(Boolean);
+    if (!records.length) return "cannot verify Git worktree registrations";
+    for (const record of records) {
+      const [name, ...fields] = record.split("\0");
+      if (!name?.startsWith("worktree ")) return "cannot verify Git worktree registrations";
+      if (
+        NodePath.relative(cwd, name.slice("worktree ".length)) === "" ||
+        fields.includes("branch refs/heads/" + request.branch)
+      )
+        return "checkout is still registered with Git";
+    }
+    return null;
+  },
+);
 
 const worktreeStatus = (cwd: string) =>
   readGit(cwd, [

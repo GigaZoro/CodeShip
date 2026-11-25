@@ -60,6 +60,7 @@ import { removeLinkedWorktree } from "./vcs/worktreeRemoval.ts";
 import {
   decodeReleaseRequest,
   hasNonDirectoryParent,
+  interruptedRemovalHold,
   observedCheckoutPath,
   worktreeReleaseName,
   worktreeOwner,
@@ -1220,9 +1221,14 @@ const make = Effect.gen(function* () {
           ),
         );
         if (!exists) {
-          if (release?.file.endsWith(".releasing"))
+          if (release?.file.endsWith(".releasing")) {
+            if (!project) return keep("project is unavailable");
+            const hold = yield* interruptedRemovalHold(project.workspaceRoot, release.request);
+            if (hold) return keep(hold);
+            if ((yield* fs.readFileString(release.file)) !== release.contents)
+              return keep("owner withdrew or replaced the release request");
             yield* fs.rename(release.file, release.file.replace(/\.releasing$/, ".released"));
-          else if (release) yield* fs.remove(release.file);
+          } else if (release) yield* fs.remove(release.file);
           return;
         }
         if (

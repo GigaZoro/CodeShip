@@ -3760,47 +3760,70 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
-  it.live("retains a claimed release when the checkout parent is replaced by a regular file", () =>
-    runCleanupTest(
-      Effect.gen(function* () {
-        const fixture = yield* cleanupFixture(undefined, true);
-        fixture.disable();
-        const runId = RunId.make("finished");
-        const owner = shell({
-          status: "completed",
-          branch: "feature",
-          worktreePath: fixture.worktree,
-          latestRunId: runId,
-          latestRunCompletedAt: at(-DAY_MS),
-          settledAt: at(-DAY_MS),
-        });
-        fixture.setThreads([owner]);
-        const { file } = yield* queueWorktreeRelease({
-          stateDir: fixture.config.stateDir,
-          threadId: owner.id,
-          runId,
-          worktreePath: fixture.worktree,
-          durableRef: "refs/heads/main",
-        });
-        const contents = yield* fixture.fs.readFileString(file);
-        yield* fixture.fs.rename(file, file + ".releasing");
-        const parent = NodePath.dirname(fixture.worktree);
-        yield* fixture.fs.rename(parent, NodePath.join(fixture.repo, "original-checkout-parent"));
-        yield* fixture.fs.writeFileString(parent, "replacement");
-
-        const report = yield* fixture.service.runNow;
-        expect(report.entries).toMatchObject([
-          {
+  it.live.each(["replaced parent", "registration remains", "removed by Git"] as const)(
+    "reconciles a claimed release after interruption (%s)",
+    (state) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const fixture = yield* cleanupFixture(undefined, true);
+          fixture.disable();
+          const runId = RunId.make("finished");
+          const owner = shell({
+            status: "completed",
+            branch: "feature",
+            worktreePath: fixture.worktree,
+            latestRunId: runId,
+            latestRunCompletedAt: at(-DAY_MS),
+            settledAt: at(-DAY_MS),
+          });
+          fixture.setThreads([owner]);
+          const { file } = yield* queueWorktreeRelease({
+            stateDir: fixture.config.stateDir,
             threadId: owner.id,
-            outcome: "kept",
-            reason: "Cannot resolve checkout for release request",
-          },
-        ]);
-        expect(yield* fixture.fs.readFileString(file + ".releasing")).toBe(contents);
-        expect(yield* fixture.fs.exists(file + ".released")).toBe(false);
-        expect(yield* fixture.fs.readFileString(parent)).toBe("replacement");
-      }),
-    ),
+            runId,
+            worktreePath: fixture.worktree,
+            durableRef: "refs/heads/main",
+          });
+          const contents = yield* fixture.fs.readFileString(file);
+          yield* fixture.fs.rename(file, file + ".releasing");
+          const parent = NodePath.dirname(fixture.worktree);
+          if (state === "replaced parent") {
+            yield* fixture.fs.rename(
+              parent,
+              NodePath.join(fixture.repo, "original-checkout-parent"),
+            );
+            yield* fixture.fs.writeFileString(parent, "replacement");
+          } else if (state === "registration remains") {
+            yield* fixture.fs.rename(
+              fixture.worktree,
+              NodePath.join(fixture.repo, "original-checkout"),
+            );
+          } else {
+            yield* fixture.command(fixture.repo, ["worktree", "remove", "--", fixture.worktree]);
+          }
+
+          const report = yield* fixture.service.runNow;
+          if (state === "removed by Git") {
+            expect(yield* fixture.fs.readFileString(file + ".released")).toBe(contents);
+            expect(yield* fixture.fs.exists(file + ".releasing")).toBe(false);
+            return;
+          }
+          expect(yield* fixture.fs.readFileString(file + ".releasing")).toBe(contents);
+          expect(yield* fixture.fs.exists(file + ".released")).toBe(false);
+          if (state === "replaced parent")
+            expect(yield* fixture.fs.readFileString(parent)).toBe("replacement");
+          expect(report.entries).toMatchObject([
+            {
+              threadId: owner.id,
+              outcome: "kept",
+              reason:
+                state === "replaced parent"
+                  ? "Cannot resolve checkout for release request"
+                  : "Checkout is still registered with Git",
+            },
+          ]);
+        }),
+      ),
   );
   it.live.each(["before-check", "while-measuring"] as const)(
     "keeps a worktree protected by a missing project root (%s)",
