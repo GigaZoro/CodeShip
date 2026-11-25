@@ -2489,12 +2489,32 @@ describe("UsageService", () => {
     () =>
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
-        const unreadable = NodePath.join(NodePath.dirname(transcript), "other.jsonl");
+        const folder = NodePath.dirname(transcript);
+        const sourceDir = NodePath.dirname(folder);
+        const unreadable = NodePath.join(folder, "other.jsonl");
         yield* TestClock.setTime(CURSOR_NOW);
         yield* Effect.promise(async () => {
           await NodeFSP.writeFile(transcript, claudeLine(1, 5));
           await NodeFSP.writeFile(unreadable, claudeLine(2, 7));
           await NodeFSP.chmod(unreadable, 0);
+        });
+        const actual = yield* Effect.promise(() =>
+          vi.importActual<typeof NodeFSP>("node:fs/promises"),
+        );
+        let folderDenied = false;
+        let removeBeforeOpen = false;
+        using _readdir = vi.spyOn(NodeFSP, "readdir").mockImplementation(async (...args) => {
+          if (folderDenied && args[0] === folder) {
+            throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+          }
+          return actual.readdir(...args);
+        });
+        using _open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+          if (removeBeforeOpen && args[0] === unreadable) {
+            removeBeforeOpen = false;
+            await actual.rm(unreadable);
+          }
+          return actual.open(...args);
         });
         const logs = captureLogs();
         const failures = () =>
@@ -2512,6 +2532,17 @@ describe("UsageService", () => {
           }
           assert.deepStrictEqual(failures(), [{ path: unreadable, code: "EACCES" }]);
 
+          folderDenied = true;
+          assert.strictEqual((yield* service.readSummary(WINDOW)).sources[0]?.status, "partial");
+          folderDenied = false;
+          yield* TestClock.adjust("5 seconds");
+          assert.strictEqual((yield* service.readSummary(WINDOW)).sources[0]?.status, "partial");
+          assert.deepStrictEqual(failures(), [
+            { path: unreadable, code: "EACCES" },
+            { path: folder, code: "EACCES" },
+          ]);
+          yield* TestClock.adjust("5 seconds");
+
           yield* Effect.promise(() => NodeFSP.chmod(unreadable, 0o600));
           const healthy = yield* service.readSummary(WINDOW);
           assert.strictEqual(totalOutputTokens(healthy), 12);
@@ -2524,7 +2555,20 @@ describe("UsageService", () => {
           });
           yield* TestClock.adjust("5 seconds");
           assert.strictEqual((yield* service.readSummary(WINDOW)).sources[0]?.status, "partial");
-          assert.lengthOf(failures(), 2);
+          assert.lengthOf(failures(), 3);
+
+          yield* Effect.promise(() => NodeFSP.rename(sourceDir, `${sourceDir}-away`));
+          yield* TestClock.adjust("5 seconds");
+          yield* service.readSummary(WINDOW);
+          yield* Effect.promise(() => NodeFSP.rename(`${sourceDir}-away`, sourceDir));
+          yield* TestClock.adjust("5 seconds");
+          assert.strictEqual((yield* service.readSummary(WINDOW)).sources[0]?.status, "partial");
+          assert.lengthOf(failures(), 4);
+
+          removeBeforeOpen = true;
+          yield* TestClock.adjust("5 seconds");
+          assert.strictEqual((yield* service.readSummary(WINDOW)).sources[0]?.status, "ok");
+          assert.lengthOf(failures(), 4);
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
@@ -4225,6 +4269,12 @@ describe("UsageService", () => {
         const loaded = yield* service.readSummary(WINDOW);
         assert.strictEqual(claudeSource(loaded)?.status, "ok");
         assert.isNull(claudeSource(loaded)?.message);
+        assert.deepStrictEqual(
+          logs
+            .of("Info", "Recovered saved transcript usage")
+            .map((fields) => (fields as { path: string }).path),
+          [storeDir, storeDir],
+        );
       }).pipe(
         Effect.provide(
           Layer.mergeAll(

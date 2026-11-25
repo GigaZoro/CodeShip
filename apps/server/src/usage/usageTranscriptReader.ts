@@ -64,7 +64,7 @@ export class PathCallPendingError extends Error {
   }
 }
 
-const isGone = (cause: unknown) =>
+export const isGone = (cause: unknown) =>
   cause instanceof Error && "code" in cause && cause.code === "ENOENT";
 
 // A call on a hung mount holds its descriptor and a libuv thread until the kernel returns,

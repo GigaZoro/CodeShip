@@ -3,6 +3,7 @@
 - When one transcript sits on a disk that stops answering, the refresh that first meets it still waits up to 5 minutes, and every later refresh answers on time with the other transcripts' figures. Usage marks that source as partial and keeps counting what it had already read from the stuck file. Before, every later refresh waited behind it.
 - When saved usage takes more than 20 seconds to load, for example from a stuck network disk, Usage answers with what it has and notes that saved usage has not finished loading. The note clears once the load finishes.
 - A transcript that cannot be read is now logged as an error with its path and the reason, once until it reads again. A transcript on a disk that stopped answering is logged again with the real error once the disk returns one.
+- A transcript deleted while Usage reads it no longer marks the source as partial.
 
 ## 2026-11-25 — Replay usage-limit recovery receipts
 

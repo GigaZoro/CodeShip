@@ -49,6 +49,7 @@ import {
   type RateTable,
 } from "./usagePricing.ts";
 import {
+  isGone,
   listTranscriptFiles,
   PathCallPendingError,
   readDirectoryVolumeId,
@@ -881,17 +882,32 @@ export const make = Effect.gen(function* () {
   // persist saves what the load merged. A late load keeps running, and scans skip it until it ends.
   const ensureScanCacheLoaded = Effect.gen(function* () {
     if (savedUsageGaps.has(gapKey("load", storeDir)) || !(yield* scanCacheLoadDue)) return;
-    let loading = true;
-    const ended = Effect.sync(() => {
-      loading = false;
+    let ended: Exit.Exit<boolean> | undefined;
+    // Only a load that outlived its wait, and so reported the gap, has no caller left to see its end.
+    const settleLateLoad = Effect.suspend(() => {
+      if (ended === undefined || !savedUsageGaps.has(gapKey("load", storeDir))) return Effect.void;
+      if (Exit.isSuccess(ended)) return recoverGap("load", storeDir);
       clearGap("load", storeDir);
+      return Cause.hasInterruptsOnly(ended.cause)
+        ? Effect.void
+        : Effect.logError("Saved transcript usage failed to load", {
+            path: storeDir,
+            cause: ended.cause,
+          });
     });
-    const load = yield* forkSync(loadScanCache.pipe(Effect.ensuring(ended)));
+    const load = yield* forkSync(
+      loadScanCache.pipe(
+        Effect.onExit((exit) => {
+          ended = exit;
+          return settleLateLoad;
+        }),
+      ),
+    );
     const loaded = yield* Fiber.join(load).pipe(Effect.timeoutOption(SAVED_USAGE_LOAD_WAIT_MS));
-    if (Option.isSome(loaded) || !loading) return;
+    if (Option.isSome(loaded) || ended !== undefined) return;
     yield* reportGap("load", storeDir, "The saved usage sync did not finish in time.");
-    // The load can end while the gap is reported; its own clear has then already run.
-    if (!loading) clearGap("load", storeDir);
+    // The load can end while the gap is reported, before there is a gap for it to settle.
+    yield* settleLateLoad;
   });
   const schedulePersist = forkSync(syncScanCache(true)).pipe(Effect.asVoid);
   const awaitPersisted = Effect.suspend(() => Fiber.awaitAll([...syncFibers])).pipe(Effect.asVoid);
@@ -965,16 +981,19 @@ export const make = Effect.gen(function* () {
 
     const read = yield* Effect.tryPromise({
       try: (signal) => readTranscriptRecords(filePath, format, resumeFrom, { signal, onProgress }),
-      catch: (cause) => cause,
+      catch: (cause): TranscriptPathFailure => ({ path: filePath, cause }),
     }).pipe(Effect.result);
     // A read failure is not an empty transcript: caching it under this
     // (size, mtime) would silently drop the file's usage until it changes.
-    if (read._tag === "Failure")
-      return {
+    if (read._tag === "Failure") {
+      const kept = {
         records: cached?.provider === provider ? [...cached.records, ...cached.tailRecords] : [],
         malformedRecords: cached?.provider === provider ? cached.malformedRecords : 0,
-        failure: { path: filePath, cause: read.failure },
       };
+      // A file removed since the listing is gone, not unreadable; the next listing marks it missing.
+      if (isGone(read.failure.cause)) return kept;
+      return { ...kept, failure: read.failure };
+    }
     const parsed = read.success;
 
     if (parsed.resumed && cached !== undefined && cached.tailRecords.length > 0) {
@@ -1090,7 +1109,7 @@ export const make = Effect.gen(function* () {
   const logUnreadablePaths = Effect.fn("UsageService.logUnreadablePaths")(function* (
     key: string,
     failures: readonly TranscriptPathFailure[],
-    listed: Listing["files"],
+    listing: Listing,
     read: readonly { readonly path: string }[],
   ) {
     const logged = loggedUnreadable.get(key);
@@ -1105,12 +1124,14 @@ export const make = Effect.gen(function* () {
       unreadable.set(failedPath, before === "failed" ? before : now);
     }
     if (logged !== undefined) {
-      // A listed file this scan did not try to read has not read again yet.
+      // A path this scan did not try has not read again. It is gone only if a complete listing
+      // left it out, since a listing that could not read every path cannot tell.
       const tried = new Set(read.map((file) => file.path));
-      for (const file of listed) {
-        const before = logged.get(file.path);
-        if (before !== undefined && !tried.has(file.path) && !unreadable.has(file.path)) {
-          unreadable.set(file.path, before);
+      const listed = new Set(listing.files.map((file) => file.path));
+      for (const [loggedPath, before] of logged) {
+        if (unreadable.has(loggedPath) || tried.has(loggedPath)) continue;
+        if (listed.has(loggedPath) || listing.failures.length > 0) {
+          unreadable.set(loggedPath, before);
         }
       }
     }
@@ -1165,6 +1186,7 @@ export const make = Effect.gen(function* () {
       listings.delete(key);
       // A failed check says nothing about the files, so only a directory known gone marks them.
       if (exists === false) {
+        loggedUnreadable.delete(key);
         recordMissing(provider, dir, new Set(), yield* Clock.currentTimeMillis);
       }
       return { provider, dir, volumeId, files: null } satisfies ScannedDir;
@@ -1205,7 +1227,7 @@ export const make = Effect.gen(function* () {
       ...listing.failures,
       ...read.flatMap(({ failure }) => (failure === undefined ? [] : [failure])),
     ];
-    yield* logUnreadablePaths(key, failures, listing.files, read);
+    yield* logUnreadablePaths(key, failures, listing, read);
     const unread = failures.length;
     return {
       provider,
