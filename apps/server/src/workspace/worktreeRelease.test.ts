@@ -35,6 +35,7 @@ import { releaseReservesWorktree } from "./worktreeReleaseReceipt.ts";
 
 const runFile = NodeUtil.promisify(NodeChildProcess.execFile);
 // A held checkout names the metadata check that failed.
+const ignoredHold = /^ignored files have changed or lack a preserved copy \(\S.*\)$/;
 const metadataHold =
   /^ignored files have changed or lack a preserved copy \(Ignored directory metadata cannot be preserved: \S.*\)$/;
 
@@ -478,15 +479,13 @@ it.live("retains unknown ignored build files without relinking installed depende
     expect(yield* releaseHold(request, project)).toBeNull();
     const lateCache = path.join(modules, ".vite");
     yield* fs.makeDirectory(lateCache);
-    expect(yield* releaseHold(request, project)).toBe(
-      "ignored files have changed or lack a preserved copy",
-    );
+    const missingCopy = yield* releaseHold(request, project);
+    expect(missingCopy).toMatch(ignoredHold);
+    expect(missingCopy).toContain(path.join(saved, "node_modules", ".vite"));
     yield* Effect.tryPromise(() => NodeFSP.rmdir(lateCache));
     const lateChange = path.join(cache, "created-after-request.txt");
     yield* fs.writeFileString(lateChange, "new local data");
-    expect(yield* releaseHold(request, project)).toBe(
-      "ignored files have changed or lack a preserved copy",
-    );
+    expect(yield* releaseHold(request, project)).toMatch(ignoredHold);
     expect(yield* fs.readFileString(lateChange)).toBe("new local data");
     yield* fs.remove(lateChange);
     // Windows keeps its extra data in alternate streams, which the setup scenarios cover.
