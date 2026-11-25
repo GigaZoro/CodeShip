@@ -210,10 +210,15 @@ const layerUnusedScheduledTaskStub = Layer.succeed(
 
 describe("orchestrator MCP toolkit", () => {
   it.live.each([
-    { label: "distinct", result: queuedFollowupResult, latestSummary: queuedFollowupResult },
-    { label: "identical", result: delegatedResult, latestSummary: null },
-    { label: "emoji", result: "😀", latestSummary: "😀" },
-  ])("reports $label child results", ({ result, latestSummary }) =>
+    {
+      label: "distinct",
+      result: queuedFollowupResult,
+      latestSummary: queuedFollowupResult,
+      disposedRead: "task_status",
+    },
+    { label: "identical", result: delegatedResult, latestSummary: null, disposedRead: null },
+    { label: "emoji", result: "😀", latestSummary: "😀", disposedRead: "t3_thread_read" },
+  ])("reports $label child results", ({ result, latestSummary, disposedRead }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("delegated-task-status");
@@ -687,45 +692,92 @@ describe("orchestrator MCP toolkit", () => {
           expect(
             messageReads.filter((query) => !query.includes("$.notification.source.kind")),
           ).toHaveLength(1);
-          const parentlessRead = yield* invoke(
-            "t3_thread_read",
-            {
-              threadId: delegated.childThreadId,
-              limit: 100,
-              maxCharsPerItem: result === "😀" ? 1 : 20_000,
-            },
-            { ...invocation, thread: undefined },
-          ).pipe(Effect.withTracer(tracer));
+          const followupTaskId = followupTasks[1]!.id;
+          const followupTask = (projection: typeof finishedParent) =>
+            projection.subagents.find((task) => task.id === followupTaskId);
+          const resultItemId = finalProjection.visibleTurnItems.find(
+            (row) =>
+              row.sourceThreadId === delegated.childThreadId &&
+              row.item.runId === queuedFollowup.runId &&
+              row.item.type === "assistant_message",
+          )?.sourceItemId;
+          const readInput = {
+            threadId: delegated.childThreadId,
+            limit: 100,
+            maxCharsPerItem: result === "😀" ? 1 : 20_000,
+            ...(disposedRead === null ? {} : { itemId: resultItemId }),
+          };
+          if (disposedRead !== null) {
+            expect(resultItemId).toBeDefined();
+            const cancel = yield* invoke("task_cancel", {
+              taskId: followupTaskId,
+              clientRequestId: "cancel-completed-followup",
+            });
+            expect(cancel.structuredContent).toMatchObject({
+              taskId: followupTaskId,
+              status: "completed",
+            });
+          }
+          const parentlessRead = yield* invoke("t3_thread_read", readInput, {
+            ...invocation,
+            thread: undefined,
+          }).pipe(Effect.withTracer(tracer));
           expect(parentlessRead.isError).not.toBe(true);
           expect(transferReads).toHaveLength(0);
           const afterParentlessRead = yield* orchestrator.getThreadProjection(parentThreadId);
-          expect(
-            afterParentlessRead.subagents.find((task) => task.id === queuedFollowup.taskId)
-              ?.completionDelivery?.state,
-          ).toBe("claimed");
-
-          yield* orchestrator.dispatch({
-            type: "delegated_task.completion-delivery.acknowledge",
-            commandId: CommandId.make("command:mcp-replay:unattributed-acknowledge"),
-            parentThreadId,
-            taskId: queuedFollowup.taskId!,
+          const expectedState = disposedRead === null ? "acknowledged" : "disposed";
+          expect(followupTask(afterParentlessRead)?.completionDelivery).toEqual({
+            state: disposedRead === null ? "claimed" : "disposed",
             observedByRunId: null,
           });
           const observingRun = afterParentlessRead.runs.find((run) => run.status === "running");
           expect(observingRun).toBeDefined();
-          const read = yield* invoke("t3_thread_read", {
-            threadId: delegated.childThreadId,
-            limit: 100,
-            maxCharsPerItem: result === "😀" ? 1 : 20_000,
-          }).pipe(Effect.withTracer(tracer));
+          const expectedDelivery = { state: expectedState, observedByRunId: observingRun?.id };
+
+          if (disposedRead === null) {
+            yield* orchestrator.dispatch({
+              type: "delegated_task.completion-delivery.acknowledge",
+              commandId: CommandId.make("command:mcp-replay:unattributed-acknowledge"),
+              parentThreadId,
+              taskId: followupTaskId,
+              observedByRunId: null,
+            });
+          } else {
+            const firstPage = yield* invoke("t3_thread_read", {
+              threadId: delegated.childThreadId,
+              limit: 1,
+            });
+            expect(firstPage.isError).not.toBe(true);
+            const afterFirstPage = yield* orchestrator.getThreadProjection(parentThreadId);
+            expect(followupTask(afterFirstPage)?.completionDelivery).toEqual({
+              state: "disposed",
+              observedByRunId: null,
+            });
+
+            if (disposedRead === "task_status") {
+              const status = yield* invoke("task_status", { taskId: followupTaskId });
+              expect(status.structuredContent).toMatchObject({
+                status: "completed",
+                summary: result,
+              });
+              const afterStatus = yield* orchestrator.getThreadProjection(parentThreadId);
+              expect(followupTask(afterStatus)?.completionDelivery).toEqual(expectedDelivery);
+            }
+          }
+
+          const read = yield* invoke("t3_thread_read", readInput).pipe(Effect.withTracer(tracer));
           expect(read.isError).not.toBe(true);
           expect(transferReads.length).toBeGreaterThan(0);
           expect(read.structuredContent).toEqual(parentlessRead.structuredContent);
           const afterRead = yield* orchestrator.getThreadProjection(parentThreadId);
-          expect(
-            afterRead.subagents.find((task) => task.id === queuedFollowup.taskId)
-              ?.completionDelivery,
-          ).toEqual({ state: "acknowledged", observedByRunId: observingRun?.id });
+          expect(followupTask(afterRead)?.completionDelivery).toEqual(expectedDelivery);
+          if (disposedRead !== null) {
+            expect(afterRead.runs).toEqual(afterParentlessRead.runs);
+            expect(afterRead.messages).toEqual(afterParentlessRead.messages);
+            expect(afterRead.subagents.filter((task) => task.id !== followupTaskId)).toEqual(
+              afterParentlessRead.subagents.filter((task) => task.id !== followupTaskId),
+            );
+          }
 
           const messageReadsBeforeCapabilities = messageReads.length;
           const capabilities = yield* invoke("orchestrator_capabilities", {}).pipe(

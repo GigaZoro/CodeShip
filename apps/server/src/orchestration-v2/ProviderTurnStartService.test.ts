@@ -1459,7 +1459,7 @@ effectIt.live(
                   true,
                 );
                 setupCalls++;
-                if (asyncSetup || archived || setupCalls > 1) {
+                if (asyncSetup || archived || setupCalls > 2) {
                   yield* fileSystem.writeFileString(path.join(worktreePath, "setup-ran"), "ready");
                 }
                 return {
@@ -1473,7 +1473,7 @@ effectIt.live(
                   completion: asyncSetup
                     ? Deferred.await(setupResult)
                     : Effect.succeed({
-                        exitCode: !archived && setupCalls === 1 ? 2 : 0,
+                        exitCode: !archived && setupCalls <= 2 ? 2 : 0,
                         durationMs: 0,
                       }),
                 } as const;
@@ -1527,12 +1527,22 @@ effectIt.live(
               );
               expect(Option.getOrUndefined(snapshot)).toMatchObject({
                 phase: "failed",
-                error: "Setup script exited with 2.",
+                error: expect.stringContaining("Install exited with 2"),
+                setupScript: expect.objectContaining({ name: "Install", command: "install" }),
                 stages: [
                   { id: "setup-script", status: "failed" },
                   { id: "agent", status: "done" },
                 ],
               });
+              const diagnostic = Option.getOrUndefined(snapshot)?.error;
+              for (const detail of [
+                worktreePath,
+                "feature/restore",
+                receipt + ".setup",
+                "Actions",
+                "follow-up",
+              ])
+                expect(diagnostic).toContain(detail);
               expect(yield* fileSystem.exists(receipt + ".setup")).toBe(true);
               yield* git(worktreePath, ["switch", "-c", "user-branch"]);
               for (const branch of ["user-branch", ""]) {
@@ -1540,6 +1550,16 @@ effectIt.live(
                 harness.setProjection(original);
                 yield* start;
                 expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+                const item = harness
+                  .projection()
+                  .turnItems.findLast((item) => item.type === "error");
+                for (const detail of [
+                  branch || "detached HEAD",
+                  "feature/restore",
+                  worktreePath,
+                  receipt + ".setup",
+                ])
+                  expect(item?.failure?.message).toContain(detail);
                 expect(yield* git(worktreePath, ["branch", "--show-current"])).toBe(branch);
                 expect(yield* git(worktreePath, ["rev-parse", "HEAD"])).toBe(projectTip);
                 expect(yield* fileSystem.exists(receipt + ".setup")).toBe(true);
@@ -1574,13 +1594,20 @@ effectIt.live(
             "retain on retry",
           );
           harness.setProjection(original);
+          yield* harness.startWithRetry;
+          expect(setupCalls).toBe(2);
+          expect(yield* fileSystem.exists(receipt + ".setup")).toBe(true);
+          const item = harness.projection().turnItems.findLast((item) => item.type === "error");
+          expect(item?.failure?.message).toContain(receipt + ".setup");
+          expect(harness.open).not.toHaveBeenCalled();
+          harness.setProjection(original);
         }
         yield* harness.start;
         if (scenario === "released") {
           expect(yield* fileSystem.readFileString(path.join(worktreePath, "local.txt"))).toBe(
             "retain on retry",
           );
-          expect(setupCalls).toBe(2);
+          expect(setupCalls).toBe(3);
           expect(yield* fileSystem.exists(receipt + ".setup")).toBe(false);
           const backups = yield* listWorktreeBackups(path.join(root, "state"));
           expect(backups).toEqual([
@@ -1610,6 +1637,9 @@ effectIt.live.each([
   "deleted branch",
   "owner recreated the branch",
   "legacy base setting",
+  "singleton deleted branch",
+  "singleton owner recreated the branch",
+  "local base ref",
 ] as const)(
   "preserves the recorded pull request base from CLI release through provider start: %s",
   (scenario) =>
@@ -1630,7 +1660,8 @@ effectIt.live.each([
       const worktreePath = path.join(worktreesDir, "project", "feature-restore");
       const branch = "feature/restore";
       const base = "release/1.2";
-      const baseRef = "refs/remotes/upstream/" + base;
+      const baseRef =
+        scenario === "local base ref" ? "refs/heads/" + base : "refs/remotes/upstream/" + base;
       const archive = "refs/archive/pr-base-task";
       const git = (cwd: string, args: string[]) =>
         driver
@@ -1678,6 +1709,8 @@ effectIt.live.each([
       const tip = yield* git(worktreePath, ["rev-parse", "HEAD"]);
       yield* git(workspaceRoot, ["update-ref", archive, tip]);
       expect(yield* git(workspaceRoot, ["merge-base", "main", archive])).toBe(common);
+      if (scenario === "local base ref")
+        yield* git(workspaceRoot, ["config", config("t3-merge-base-ref"), baseRef]);
       expect(yield* readBase()).toEqual([base, baseRef]);
       const legacy = scenario === "legacy base setting";
       if (legacy) {
@@ -1707,7 +1740,8 @@ effectIt.live.each([
       CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, project_id TEXT, payload_json TEXT, deleted_at TEXT);
       CREATE TABLE orchestration_v2_projection_runs (thread_id TEXT, run_id TEXT, ordinal INTEGER);
     `);
-      for (const id of [thread.id, "child"]) {
+      const singleton = scenario.startsWith("singleton ");
+      for (const id of singleton ? [thread.id] : [thread.id, "child"]) {
         db.prepare("INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?, NULL)").run(
           id,
           thread.projectId,
@@ -1750,7 +1784,8 @@ effectIt.live.each([
         worktreeReleaseName(worktreePath),
       );
       const request = yield* decodeReleaseRequest(yield* fs.readFileString(file));
-      expect(request.family).toHaveLength(2);
+      if (singleton) expect(request.family).toBeUndefined();
+      else expect(request.family).toHaveLength(2);
       expect(yield* releaseHold(request, workspaceRoot)).toBeNull();
       yield* fs.rename(file, file + ".releasing");
       yield* git(workspaceRoot, ["worktree", "remove", worktreePath]);
@@ -1759,11 +1794,10 @@ effectIt.live.each([
       expect(yield* readBase()).toEqual([null, null]);
       expect(yield* git(workspaceRoot, ["branch", "--list", branch])).toBe("");
 
-      const expectedBase =
-        scenario === "owner recreated the branch"
-          ? (["release/2.0", "refs/remotes/upstream/release/2.0"] as const)
-          : ([base, baseRef] as const);
-      if (scenario === "owner recreated the branch") {
+      const expectedBase = scenario.endsWith("owner recreated the branch")
+        ? (["release/2.0", "refs/remotes/upstream/release/2.0"] as const)
+        : ([base, baseRef] as const);
+      if (scenario.endsWith("owner recreated the branch")) {
         yield* git(workspaceRoot, ["push", "upstream", "main:refs/heads/release/2.0"]);
         yield* git(workspaceRoot, ["branch", branch, archive]);
         yield* git(workspaceRoot, ["config", config("t3-merge-base"), expectedBase[0]]);
@@ -2251,6 +2285,212 @@ effectIt.effect(
     }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
 );
 
+effectIt.effect.each([
+  {
+    name: "resumes the claimant after an intact removal interruption",
+    state: "intact",
+    owner: true,
+    allowsStart: true,
+  },
+  {
+    name: "holds the claimant after a partial removal",
+    state: "partial",
+    owner: true,
+    allowsStart: false,
+  },
+  {
+    name: "holds an unrelated chat while removal is claimed",
+    state: "intact",
+    owner: false,
+    allowsStart: false,
+  },
+  {
+    name: "recovers a missing checkout for its recorded owner",
+    state: "missing",
+    owner: true,
+    allowsStart: true,
+  },
+  {
+    name: "holds an unrelated chat at the missing path",
+    state: "missing",
+    owner: false,
+    allowsStart: false,
+  },
+  {
+    name: "holds the former owner when a replacement occupies the path",
+    state: "replacement",
+    owner: true,
+    allowsStart: false,
+  },
+  {
+    name: "allows the unrelated owner of a complete replacement",
+    state: "replacement",
+    owner: false,
+    allowsStart: true,
+  },
+  {
+    name: "holds an unrelated owner of a checkout without an index",
+    state: "no-index",
+    owner: false,
+    allowsStart: false,
+  },
+  {
+    name: "holds setup before Git writes its index",
+    state: "setup without index",
+    owner: true,
+    allowsStart: false,
+  },
+  {
+    name: "holds setup during Git's initializing lock",
+    state: "setup locked",
+    owner: true,
+    allowsStart: false,
+  },
+  {
+    name: "holds setup with an index but missing tracked files",
+    state: "setup missing file",
+    owner: true,
+    allowsStart: false,
+  },
+  {
+    name: "retries setup with modified and untracked files",
+    state: "setup retry",
+    owner: true,
+    allowsStart: true,
+  },
+] as const)("singleton release $name", ({ state, owner, allowsStart }) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const gitWorkflow = yield* GitWorkflow.GitWorkflowService;
+    const root = yield* fs.realPath(
+      yield* fs.makeTempDirectoryScoped({ prefix: "t3-singleton-restore-" }),
+    );
+    const workspaceRoot = path.join(root, "project");
+    const worktreesDir = path.join(root, "worktrees");
+    const worktreePath = path.join(worktreesDir, "project", "restore");
+    const tracked = path.join(worktreePath, "tracked");
+    const remaining = path.join(worktreePath, "remaining");
+    const oldBranch = "feature/restore";
+    const newBranch = "feature-restore";
+    const git = (cwd: string, args: string[]) =>
+      driver.execute({ operation: "test.singletonRestore", cwd, args });
+    yield* fs.makeDirectory(workspaceRoot);
+    yield* git(workspaceRoot, ["init", "-b", "main"]);
+    yield* git(workspaceRoot, ["config", "user.name", "Test"]);
+    yield* git(workspaceRoot, ["config", "user.email", "test@example.com"]);
+    yield* fs.writeFileString(path.join(workspaceRoot, "tracked"), "original");
+    yield* fs.writeFileString(path.join(workspaceRoot, "remaining"), "preserved");
+    yield* git(workspaceRoot, ["add", "."]);
+    yield* git(workspaceRoot, ["commit", "-m", "base"]);
+    yield* git(workspaceRoot, ["worktree", "add", "-b", oldBranch, worktreePath]);
+    const isSetup = state.startsWith("setup ");
+    if (isSetup) {
+      yield* fs.writeFileString(path.join(workspaceRoot, ".git/info/exclude"), "private.txt\n");
+      yield* fs.writeFileString(path.join(worktreePath, "private.txt"), "saved private data");
+    }
+    const runSetup = vi.fn(() => Effect.succeed({ status: "no-script" as const }));
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      nativeTurn: true,
+      workspaceRoot,
+      worktreesDir,
+      worktreePath,
+      fileSystem: fs,
+      gitWorkflow,
+      runSetup,
+    });
+    const { file, savedFiles } = yield* queueWorktreeRelease({
+      threadId: owner ? harness.projection().thread.id : "old-owner",
+      runId: "finished",
+      worktreePath,
+      durableRef: "refs/heads/main",
+      stateDir: path.join(root, "state"),
+      saveIgnored: isSetup,
+    });
+    const contents = yield* fs.readFileString(file);
+    expect((yield* decodeReleaseRequest(contents)).family).toBeUndefined();
+    const removing = state === "intact" || state === "partial";
+    const receipt = file + (removing ? ".releasing" : isSetup ? ".setup" : ".released");
+    yield* fs.rename(file, receipt);
+    let lock: string | undefined;
+    if (removing) {
+      if (state === "partial") yield* fs.remove(tracked);
+    } else {
+      yield* git(workspaceRoot, ["worktree", "remove", "--force", worktreePath]);
+      if (state !== "missing") {
+        yield* git(workspaceRoot, [
+          "worktree",
+          "add",
+          ...(state === "no-index" || state === "setup without index" ? ["--no-checkout"] : []),
+          ...(isSetup ? [] : ["-b", newBranch]),
+          worktreePath,
+          ...(isSetup ? [oldBranch] : []),
+        ]);
+        if (isSetup) {
+          const admin = (yield* git(worktreePath, [
+            "rev-parse",
+            "--absolute-git-dir",
+          ])).stdout.trim();
+          expect(yield* fs.exists(path.join(admin, "index"))).toBe(state !== "setup without index");
+          yield* fs.writeFileString(
+            path.join(worktreePath, "setup.local"),
+            "retain local setup output",
+          );
+          if (state === "setup locked") {
+            lock = path.join(admin, "locked");
+            yield* fs.writeFileString(lock, "initializing\n");
+          }
+          if (state === "setup missing file") yield* fs.remove(tracked);
+          if (state === "setup retry") yield* fs.writeFileString(tracked, "tracked setup edit");
+        }
+        if (state === "replacement") yield* fs.writeFileString(tracked, "new owner's edit");
+        if (!owner) {
+          const projection = harness.projection();
+          harness.setProjection({
+            ...projection,
+            thread: { ...projection.thread, branch: newBranch },
+          });
+        }
+      }
+    }
+
+    yield* harness.start;
+
+    expect(harness.open).toHaveBeenCalledTimes(allowsStart ? 1 : 0);
+    expect(harness.startTurn).toHaveBeenCalledTimes(allowsStart ? 1 : 0);
+    expect(runSetup).toHaveBeenCalledTimes(allowsStart && (state === "missing" || isSetup) ? 1 : 0);
+    if (allowsStart && owner) expect(yield* fs.exists(receipt)).toBe(false);
+    else expect(yield* fs.readFileString(receipt)).toBe(contents);
+    expect(yield* fs.exists(worktreePath)).toBe(state !== "missing" || allowsStart);
+    if (state === "replacement") expect(yield* fs.readFileString(tracked)).toBe("new owner's edit");
+    if (
+      state === "partial" ||
+      state === "no-index" ||
+      state === "setup without index" ||
+      state === "setup missing file"
+    )
+      expect(yield* fs.exists(tracked)).toBe(false);
+    if (removing) expect(yield* fs.readFileString(remaining)).toBe("preserved");
+    if (isSetup) {
+      if (savedFiles === undefined) return yield* Effect.die("Expected a private backup.");
+      expect(yield* fs.readFileString(path.join(savedFiles, "private.txt"))).toBe(
+        "saved private data",
+      );
+      expect(yield* listWorktreeBackups(path.join(root, "state"))).toMatchObject([
+        { savedFiles, threadId: harness.projection().thread.id, runId: "finished" },
+      ]);
+      expect(yield* fs.readFileString(path.join(worktreePath, "setup.local"))).toBe(
+        "retain local setup output",
+      );
+      if (lock !== undefined) expect(yield* fs.readFileString(lock)).toBe("initializing\n");
+      if (state === "setup retry")
+        expect(yield* fs.readFileString(tracked)).toBe("tracked setup edit");
+    }
+  }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
+
 effectIt.effect(
   "holds a damaged release receipt before setup and settles the start without retrying",
   () =>
@@ -2301,12 +2541,26 @@ effectIt.effect("cancels recovered synchronous setup and unblocks the awaiting r
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-recovered-setup-cancel-" });
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const gitWorkflow = yield* GitWorkflow.GitWorkflowService;
+    const root = yield* fs.realPath(
+      yield* fs.makeTempDirectoryScoped({ prefix: "t3-recovered-setup-cancel-" }),
+    );
+    const project = path.join(root, "project");
     const worktreesDir = path.join(root, "worktrees");
     const checkout = path.join(worktreesDir, "project", "checkout");
     const receipts = path.join(root, "state", ServerConfig.WORKTREE_RELEASE_DIRECTORY);
+    const git = (args: string[]) =>
+      driver.execute({ operation: "test.setupCancellation", cwd: project, args });
+    yield* fs.makeDirectory(project);
+    yield* git(["init", "-b", "main"]);
+    yield* git(["config", "user.name", "Test"]);
+    yield* git(["config", "user.email", "test@example.com"]);
+    yield* fs.writeFileString(path.join(project, "tracked"), "base");
+    yield* git(["add", "tracked"]);
+    yield* git(["commit", "-m", "base"]);
+    yield* git(["worktree", "add", "-b", "feature/restore", checkout]);
     yield* fs.makeDirectory(receipts, { recursive: true });
-    yield* fs.makeDirectory(checkout, { recursive: true });
     const worktreePath = yield* fs.realPath(checkout);
     const receipt = path.join(receipts, worktreeReleaseName(worktreePath) + ".setup");
     yield* fs.writeFileString(
@@ -2327,6 +2581,8 @@ effectIt.effect("cancels recovered synchronous setup and unblocks the awaiting r
       fileSystem: fs,
       worktreesDir,
       worktreePath,
+      workspaceRoot: project,
+      gitWorkflow,
       runSetup: () =>
         Effect.succeed({
           status: "started",
@@ -2362,7 +2618,7 @@ effectIt.effect("cancels recovered synchronous setup and unblocks the awaiting r
         expect(yield* fs.exists(worktreePath)).toBe(true);
       }),
     );
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
 );
 
 effectIt.effect(

@@ -33,11 +33,14 @@ import * as ServerConfig from "./config.ts";
 import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import { withWorkspaceProcessStart } from "./workspace/workspaceLease.ts";
 import { queueWorktreeRelease } from "./workspace/worktreeRelease.ts";
+import { decodeReleaseRequest, encodeRequest } from "./workspace/worktreeReleaseReceipt.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as Settings from "./serverSettings.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
+import * as EventSink from "./orchestration-v2/EventSink.ts";
+import * as EventStore from "./orchestration-v2/EventStore.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -46,6 +49,7 @@ import { CodexProviderCapabilitiesV2 } from "./orchestration-v2/Adapters/CodexAd
 import { ServerActivation } from "./serverActivation.ts";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  CommandId,
   EventId,
   NodeId,
   ProjectId,
@@ -56,6 +60,7 @@ import {
   RuntimeRequestId,
   ThreadId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2Subagent,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -2105,7 +2110,7 @@ it.effect("requires the approved child's result and a completed parent run that 
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
-it.effect.each(["private delegate", "background command"] as const)(
+it.effect.each(["private delegate", "background command", "foreign background command"] as const)(
   "requires a completed result consumer to release the %s checkout",
   (kind) =>
     runCleanupTest(
@@ -2115,16 +2120,29 @@ it.effect.each(["private delegate", "background command"] as const)(
         const fixture = yield* cleanupFixture(undefined, true, sql);
         fixture.disable();
         const child = kind === "private delegate";
+        const foreign = kind === "foreign background command";
         const ownerId = ThreadId.make("thread-1");
-        const parentId = child ? ThreadId.make("parent") : ownerId;
+        const parentId = child
+          ? ThreadId.make("parent")
+          : foreign
+            ? ThreadId.make("foreign")
+            : ownerId;
         const taskId = NodeId.make("node:delegated-task:result-consumer");
         const childRun = RunId.make("child-run");
         const laterRun = RunId.make("later-run");
-        const ownerRun = child ? childRun : laterRun;
+        const ownerRun = child ? childRun : foreign ? RunId.make("owner-finished") : laterRun;
         const result = "Final task result";
+        const cwd = foreign
+          ? NodePath.join(fixture.config.stateDir, "command-alias")
+          : fixture.worktree;
+        if (foreign) {
+          yield* Effect.promise(() =>
+            NodeFSP.symlink(fixture.worktree, cwd, isWindowsHost ? "junction" : "dir"),
+          );
+        }
         const command = {
           command: "echo result",
-          cwd: fixture.worktree,
+          cwd,
           logPath: "command.log",
           timeoutMinutes: 1,
         };
@@ -2151,7 +2169,8 @@ it.effect.each(["private delegate", "background command"] as const)(
           (run_id, thread_id, ordinal, provider, status, requested_at, completed_at, payload_json)
           VALUES ('spawner', ${parentId}, 1, 'test', 'completed', ${reportedAt}, ${reportedAt}, '{}'),
             ('failed-reader', ${parentId}, 2, 'test', 'failed', ${reportedAt}, ${failedAt}, '{"userMessageId":"wake"}'),
-            (${laterRun}, ${parentId}, 3, 'test', 'completed', ${failedAt}, ${laterAt}, '{"userMessageId":"unrelated"}')`;
+            (${laterRun}, ${parentId}, 3, 'test', 'completed', ${failedAt}, ${laterAt}, '{"userMessageId":"unrelated"}'),
+            ('foreign-reader', 'another-parent', 1, 'test', 'completed', ${failedAt}, ${laterAt}, '{}')`;
         if (child) {
           yield* sql`INSERT INTO orchestration_v2_projection_runs
             (run_id, thread_id, ordinal, provider, status, requested_at, completed_at, payload_json)
@@ -2162,9 +2181,14 @@ it.effect.each(["private delegate", "background command"] as const)(
             VALUES ('transfer', ${ownerId}, ${parentId}, 'spawner', 'subagent_result', 'consumed', ${reportedAt},
               ${JSON.stringify({ sourcePoint: { runId: childRun } })})`;
         } else {
+          if (foreign) {
+            yield* sql`INSERT INTO orchestration_v2_projection_runs
+              (run_id, thread_id, ordinal, provider, status, requested_at, completed_at, payload_json)
+              VALUES (${ownerRun}, ${ownerId}, 1, 'test', 'completed', ${failedAt}, ${laterAt}, '{}')`;
+          }
           yield* sql`INSERT INTO command_runs
             (task_id, thread_id, run_id, command, cwd, directory, status, exit_code, started_at, deadline_at, ended_at, delivered_at)
-            VALUES (${taskId}, ${ownerId}, 'spawner', ${command.command}, ${fixture.worktree},
+            VALUES (${taskId}, ${parentId}, 'spawner', ${command.command}, ${cwd},
               ${fixture.config.stateDir}, 'exited', 0, ${reportedAt}, ${failedAt}, ${reportedAt}, ${reportedAt})`;
         }
         yield* sql`INSERT INTO orchestration_v2_projection_subagents
@@ -2201,26 +2225,147 @@ it.effect.each(["private delegate", "background command"] as const)(
             expect(yield* fixture.fs.exists(file + ".released")).toBe(false);
             expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
           });
-        const acknowledge = (observedByRunId: string | null) => sql`
+        const recordDelivery = (
+          state: "acknowledged" | "disposed",
+          observedByRunId: string | null,
+        ) => sql`
           UPDATE orchestration_v2_projection_subagents
-          SET completion_delivery_state = 'acknowledged',
+          SET completion_delivery_state = ${state},
             payload_json = json_set(payload_json, '$.completionDelivery',
-              json(${JSON.stringify({ state: "acknowledged", observedByRunId })}))
+              json(${JSON.stringify({ state, observedByRunId })}))
           WHERE subagent_id = ${taskId}`;
 
         yield* expectKept("failed wake followed by an unrelated completed run");
-        yield* acknowledge(null);
+        if (foreign) {
+          yield* sql`DELETE FROM command_runs WHERE task_id = ${taskId}`;
+          yield* expectKept("foreign unread command in an aliased cwd after command-run pruning");
+          yield* sql`INSERT INTO command_runs
+            (task_id, thread_id, run_id, command, cwd, directory, status, exit_code, started_at, deadline_at, ended_at, delivered_at)
+            VALUES (${taskId}, ${parentId}, 'spawner', ${command.command}, ${cwd},
+              ${fixture.config.stateDir}, 'exited', 0, ${reportedAt}, ${failedAt}, ${reportedAt})`;
+        }
+        yield* recordDelivery("acknowledged", null);
         yield* expectKept("acknowledgement without an observer");
-        yield* acknowledge("failed-reader");
+        yield* recordDelivery("acknowledged", "failed-reader");
         yield* expectKept("acknowledgement from a failed observer");
-        yield* acknowledge(laterRun);
+        yield* recordDelivery("disposed", null);
+        yield* expectKept("completion delivery disposed without being read");
+        yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'failed-reader'`;
+        yield* expectKept("disposed result in an otherwise valid wake");
+        yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'failed' WHERE run_id = 'failed-reader'`;
+        yield* recordDelivery("acknowledged", laterRun);
+        yield* sql`UPDATE orchestration_v2_projection_subagents
+          SET completion_delivery_state = 'disposed' WHERE subagent_id = ${taskId}`;
+        yield* expectKept("disposed delivery column without a matching payload state");
+        yield* recordDelivery("disposed", "foreign-reader");
+        yield* expectKept("disposed result with an observer on another thread");
+        yield* recordDelivery("disposed", "failed-reader");
+        yield* expectKept("disposed result with a failed observer");
+        yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'running', completed_at = NULL WHERE run_id = ${laterRun}`;
+        yield* recordDelivery("disposed", laterRun);
+        yield* expectKept("disposed result read by a parent run that is still running");
+        yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'completed', completed_at = ${laterAt} WHERE run_id = ${laterRun}`;
+        if (!child) {
+          yield* sql`UPDATE command_runs SET run_id = 'wrong-spawner' WHERE task_id = ${taskId}`;
+          yield* expectKept("command belongs to a different run than its projected task");
+          yield* sql`UPDATE command_runs SET run_id = 'spawner' WHERE task_id = ${taskId}`;
+        }
+        if (foreign) {
+          yield* sql`UPDATE orchestration_v2_projection_subagents
+            SET payload_json = json_set(payload_json, '$.command.cwd', ${fixture.repo})
+            WHERE subagent_id = ${taskId}`;
+          yield* expectKept("command cwd disagrees with its projected task");
+          yield* sql`UPDATE orchestration_v2_projection_subagents
+            SET payload_json = json_set(payload_json, '$.command.cwd', ${cwd})
+            WHERE subagent_id = ${taskId}`;
+          yield* sql`DELETE FROM command_runs WHERE task_id = ${taskId}`;
+        }
+        if (!child && !foreign) {
+          const sink = yield* EventSink.EventSinkV2;
+          const completedAt = at(-3 * DAY_MS);
+          const task = {
+            id: NodeId.make("unstarted"),
+            threadId: parentId,
+            runId: RunId.make("spawner"),
+            parentNodeId: NodeId.make("root"),
+            origin: "app_owned",
+            createdBy: "agent",
+            driver: ProviderDriverKind.make("codex"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            providerThreadId: null,
+            childThreadId: null,
+            nativeTaskRef: null,
+            prompt: command.command,
+            command,
+            title: null,
+            model: null,
+            status: "failed",
+            result: "Could not start the command: launcher unavailable",
+            startedAt: null,
+            completedAt,
+            updatedAt: completedAt,
+          } satisfies OrchestrationV2Subagent;
+          const disposed = {
+            ...task,
+            completionDelivery: { state: "disposed" as const, observedByRunId: null },
+          };
+          const record = (
+            commandId: string,
+            commandType: string,
+            payload: OrchestrationV2Subagent,
+          ) =>
+            sink.commitCommand({
+              commandId: CommandId.make(commandId),
+              commandType,
+              threadId: parentId,
+              acceptedAt: completedAt,
+              effects: [],
+              events: [
+                {
+                  type: "subagent.updated",
+                  id: EventId.make(`event:${commandId}`),
+                  threadId: parentId,
+                  runId: task.runId,
+                  nodeId: task.id,
+                  occurredAt: completedAt,
+                  payload,
+                },
+              ],
+            });
+          const completeId = `command:command-task-unstarted:${task.id}`;
+          const disposeId = `command:command-task-unstarted-dispose:${task.id}`;
+          yield* record(completeId, "delegated_task.command.complete", task);
+          yield* record(
+            "unrelated-disposal",
+            "delegated_task.completion-delivery.dispose",
+            disposed,
+          );
+          yield* expectKept("an unrelated disposal after an unstarted command");
+          yield* record(disposeId, "delegated_task.completion-delivery.dispose", disposed);
+          yield* sql`UPDATE orchestration_command_receipts SET command_type = 'subagent.stop'
+            WHERE command_id = ${completeId}`;
+          yield* expectKept("another command type used the unstarted completion id");
+          yield* sql`UPDATE orchestration_command_receipts SET command_type = 'delegated_task.command.complete'
+            WHERE command_id = ${completeId}`;
+          yield* record("later-result", "delegated_task.command.complete", {
+            ...disposed,
+            result: "Later command output",
+          });
+          yield* expectKept("a different terminal result after the failed launch");
+          yield* record("restore-fixture-result", "delegated_task.command.complete", disposed);
+        }
         const entry = (yield* fixture.service.runNow).entries.find(
           (row) => row.threadId === ownerId,
         );
         expect(entry?.outcome, entry?.reason).toBe("removed");
         expect(yield* fixture.fs.exists(file + ".released")).toBe(true);
         expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
-      }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+      }).pipe(
+        Effect.provide(
+          EventSink.layer.pipe(Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer))),
+        ),
+        Effect.provide(SqlitePersistence.layerMemory),
+      ),
     ),
 );
 
@@ -3893,6 +4038,95 @@ describe("orphan worktree reports", () => {
   );
 });
 
+it.live.each(["new receipt", "legacy receipt"] as const)(
+  "keeps a queued checkout when its pull request base is set later (%s), then releases after requeue",
+  (kind) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture(undefined, true);
+        fixture.disable();
+        const runId = RunId.make("finished");
+        const owner = shell({
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          status: "completed",
+          latestRunId: runId,
+          latestRunCompletedAt: at(-DAY_MS),
+          settledAt: at(-DAY_MS),
+          settledOverride: "settled",
+        });
+        fixture.setThreads([owner]);
+        const input = {
+          stateDir: fixture.config.stateDir,
+          threadId: owner.id,
+          runId,
+          worktreePath: fixture.worktree,
+          durableRef: "refs/heads/main",
+        };
+        const { file } = yield* queueWorktreeRelease(input);
+        if (kind === "legacy receipt") {
+          const request = yield* decodeReleaseRequest(yield* fixture.fs.readFileString(file));
+          const { branchBase, ...legacy } = request;
+          void branchBase;
+          yield* fixture.fs.writeFileString(file, yield* encodeRequest(legacy));
+        }
+        yield* fixture.command(fixture.repo, [
+          "config",
+          "--local",
+          "branch.feature.t3-merge-base",
+          "main",
+        ]);
+        const held = yield* fixture.service.runNow;
+        expect(held.entries.find((entry) => entry.threadId === owner.id)).toMatchObject({
+          outcome: "kept",
+          reason: "The recorded pull request base changed",
+        });
+        expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
+        yield* queueWorktreeRelease(input);
+        const released = yield* fixture.service.runNow;
+        expect(released.entries.find((entry) => entry.threadId === owner.id)).toMatchObject({
+          outcome: "removed",
+        });
+        expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+      }),
+    ),
+);
+
+it.live("releases a legacy receipt when no pull request base exists", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fixture = yield* cleanupFixture(undefined, true);
+      fixture.disable();
+      const runId = RunId.make("finished");
+      const owner = shell({
+        branch: "feature",
+        worktreePath: fixture.worktree,
+        status: "completed",
+        latestRunId: runId,
+        latestRunCompletedAt: at(-DAY_MS),
+        settledAt: at(-DAY_MS),
+        settledOverride: "settled",
+      });
+      fixture.setThreads([owner]);
+      const { file } = yield* queueWorktreeRelease({
+        stateDir: fixture.config.stateDir,
+        threadId: owner.id,
+        runId,
+        worktreePath: fixture.worktree,
+        durableRef: "refs/heads/main",
+      });
+      const request = yield* decodeReleaseRequest(yield* fixture.fs.readFileString(file));
+      const { branchBase, ...legacy } = request;
+      void branchBase;
+      yield* fixture.fs.writeFileString(file, yield* encodeRequest(legacy));
+      expect(
+        (yield* fixture.service.runNow).entries.find((entry) => entry.threadId === owner.id),
+      ).toMatchObject({ outcome: "removed" });
+      expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+    }),
+  ),
+);
+
 describe("storage cleanup reports and local file policies", () => {
   it.effect("automatically removes an eligible archived thread checkout", () =>
     runCleanupTest(
@@ -3998,7 +4232,7 @@ describe("storage cleanup reports and local file policies", () => {
           yield* fixture.command(fixture.repo, ["worktree", "move", "--", fixture.worktree, moved]);
         } else {
           yield* fixture.command(fixture.repo, ["worktree", "remove", "--", fixture.worktree]);
-          if (state === "missing parent") yield* fixture.fs.remove(parent);
+          if (state === "missing parent") yield* Effect.promise(() => NodeFSP.rmdir(parent));
         }
         if (state === "withdrawn before receipt read")
           fixture.setBeforeRemoval(fs.remove(claimed, { force: true }).pipe(Effect.orDie));

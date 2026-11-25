@@ -49,7 +49,7 @@ import * as GitVcsDriver from "./GitVcsDriver.ts";
 import { existingWorkspacePath, withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   directoryEntryExists,
-  familyReservesWorktree,
+  releaseReservesWorktree,
 } from "../workspace/worktreeReleaseReceipt.ts";
 import { familyCheckoutHook } from "./familyWorktreeCheckout.ts";
 import { countGitSpawn } from "./GitSpawnBudget.ts";
@@ -4641,11 +4641,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             cwd,
             detail: "The new checkout contains local files.",
           });
-        yield* familyCheckoutHook(cwd, admin, head, "prepare", runCheckoutGit);
+        yield* familyCheckoutHook(cwd, admin, head, "prepare", runCheckoutGit, options.followUpAt);
         // Unlike an ordinary add, Git's transient "initializing" lock is gone before any
         // filters run. read-tree protects the materialization with Git's own index.lock.
         yield* runCheckoutGit(["read-tree", "-m", "-u", head]);
-        yield* familyCheckoutHook(cwd, admin, head, "finish", runCheckoutGit);
+        yield* familyCheckoutHook(cwd, admin, head, "finish", runCheckoutGit, options.followUpAt);
       }).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
@@ -4815,7 +4815,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const leaf =
         directoryName.slice(0, 40 - suffix.length).replace(/[\uD800-\uDBFF]$/, "") + suffix;
       const candidate = path.join(parentDir, repoName, leaf);
-      const reserved = familyReservesWorktree(fileSystem, receipts, candidate);
+      const reserved = releaseReservesWorktree(fileSystem, receipts, candidate);
       const created = yield* Effect.gen(function* () {
         if ((yield* directoryEntryExists(candidate)) && (number > 1 || (yield* reserved)))
           return null;

@@ -16,6 +16,7 @@ import { existingWorkspacePath, resolveWorkspacePath } from "./workspaceLease.ts
 import {
   decodeReleaseMemberRow,
   encodeRequest,
+  findCaseVariantReleaseReceipt,
   gitObjectIdPattern as oid,
   readReleaseFile,
   releaseFile,
@@ -48,7 +49,9 @@ import {
   familyHookUnavailable,
   pendingFamilyCheckoutHook,
   runningFamilyCheckoutHook,
+  requireUnstartedFamilyHook,
   supportsFamilyCheckoutHook,
+  unconfirmedFamilyHook,
 } from "../vcs/familyWorktreeCheckout.ts";
 
 /** Only a complete subagent or side chat chain within this worktree shares ownership. */
@@ -81,6 +84,7 @@ export function worktreeOwner<T extends Pick<OrchestrationV2ThreadShell, "id" | 
 }
 
 export interface CheckoutRecoveryOptions {
+  readonly followUpAt?: number;
   /** A claimed removal may resume the original checkout only after a read-only verification. */
   readonly original?: Pick<
     ReleaseRequest,
@@ -211,6 +215,14 @@ export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(functio
   verifyReplacement: (identity: string) => Effect.Effect<void, E2>,
 ) {
   if (!(yield* fs.exists(directory))) return null;
+  const variant = yield* findCaseVariantReleaseReceipt(fs, directory, canonical, releaseStages);
+  if (variant !== null)
+    return yield* new GitCommandError({
+      operation: "WorktreeRelease.readReceipt",
+      command: "restore",
+      cwd: canonical,
+      detail: `A release receipt reserves this checkout under another path spelling: ${variant}`,
+    });
   const file = releaseFile(directory, canonical);
   const setupReceipt = file + ".setup";
   for (const suffix of releaseStages) {
@@ -218,9 +230,6 @@ export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(functio
     const loaded = yield* readReleaseFile(receipt, canonical);
     if (loaded === null) continue;
     const { contents, request } = loaded;
-    // Ordinary singleton starts only resume setup when their checkout already exists.
-    if (checkoutExists && !request.family && (suffix === ".releasing" || suffix === ".released"))
-      continue;
     const result = { request, contents, receipt, setupReceipt };
     if (request.branch === thread.branch) {
       if (!request.family) {
@@ -256,28 +265,36 @@ export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(functio
         }
       }
     }
-    if (request.family) {
+    if (
+      suffix === ".released" &&
+      checkoutExists &&
+      thread.id !== request.threadId &&
+      thread.lineage.rootThreadId !== request.threadId &&
+      !request.family?.some(
+        (member) =>
+          member.threadId === thread.id || member.threadId === thread.lineage.parentThreadId,
+      )
+    ) {
       if (
-        suffix === ".released" &&
-        checkoutExists &&
-        thread.lineage.rootThreadId !== request.threadId &&
-        !request.family.some(
-          (member) =>
-            member.threadId === thread.id || member.threadId === thread.lineage.parentThreadId,
-        ) &&
-        (request.branch !== thread.branch ||
-          request.family.every((member) => member.projectId !== thread.projectId))
+        request.branch !== thread.branch ||
+        (request.family
+          ? request.family.every((member) => member.projectId !== thread.projectId)
+          : yield* getParent(request.threadId).pipe(
+              Effect.map(
+                (owner) => owner?.id === request.threadId && owner.projectId !== thread.projectId,
+              ),
+            ))
       ) {
         yield* verifyReplacement(request.identity);
         continue;
       }
-      return yield* new GitCommandError({
-        operation: "WorktreeRelease.readReceipt",
-        command: "restore",
-        cwd: canonical,
-        detail: "This thread does not own the released checkout.",
-      });
     }
+    return yield* new GitCommandError({
+      operation: "WorktreeRelease.readReceipt",
+      command: "restore",
+      cwd: canonical,
+      detail: "This thread does not own the released checkout.",
+    });
   }
   return null;
 });
@@ -334,15 +351,51 @@ export const readReleasedBranchBase = Effect.fn("WorktreeRelease.readBranchBase"
   cwd: string,
   branch: string,
 ) {
-  const read = (property: string) =>
-    readGit(cwd, [
-      "config",
-      "--local",
-      "--default",
-      "",
-      "--get",
-      `branch.${branch}.${property}`,
-    ]).pipe(Effect.map((output) => output.trim() || null));
+  const read = Effect.fn("WorktreeRelease.readBaseConfig")(function* (property: string) {
+    const git = yield* GitVcsDriver.GitVcsDriver;
+    const key = `branch.${branch}.${property}`;
+    const result = yield* git.execute({
+      operation: "WorktreeRelease.readBranchBase",
+      cwd,
+      args: [
+        "--no-optional-locks",
+        "--no-replace-objects",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+        "config",
+        "--local",
+        "--null",
+        "--get-all",
+        key,
+      ],
+      maxOutputBytes: 4 * 1024 * 1024,
+      allowNonZeroExit: true,
+    });
+    if (
+      result.stdoutTruncated ||
+      result.stderrTruncated ||
+      result.stderr.trim() ||
+      (result.exitCode !== 0 && result.exitCode !== 1)
+    )
+      return yield* new GitCommandError({
+        operation: "WorktreeRelease.readBranchBase",
+        cwd,
+        command: "git config",
+        detail: `Could not read ${key}.`,
+      });
+    if (result.exitCode === 1 && result.stdout === "") return null;
+    const values = result.stdout.split("\0");
+    if (result.exitCode !== 0 || values.pop() !== "" || values.length !== 1 || !values[0])
+      return yield* new GitCommandError({
+        operation: "WorktreeRelease.readBranchBase",
+        cwd,
+        command: "git config",
+        detail: `${key} must have exactly one nonempty value.`,
+      });
+    return values[0]!;
+  });
   const [name, ref, legacyName] = yield* Effect.all(
     [read("t3-merge-base"), read("t3-merge-base-ref"), read("gh-merge-base")],
     { concurrency: "unbounded" },
@@ -844,17 +897,44 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
     ? yield* observeFamily(input.dbPath, cwd, input.threadId, input.runId, branch)
     : undefined;
   const branchBase = yield* readReleasedBranchBase(cwd, branch);
-  for (const name of [branchBase.name, branchBase.legacyName]) {
-    if (name) yield* readGit(cwd, ["check-ref-format", "refs/heads/" + name]);
+  for (const [property, value, reference] of [
+    ["t3-merge-base", branchBase.name, branchBase.name && "refs/heads/" + branchBase.name],
+    [
+      "gh-merge-base",
+      branchBase.legacyName,
+      branchBase.legacyName && "refs/heads/" + branchBase.legacyName,
+    ],
+    ["t3-merge-base-ref", branchBase.ref, branchBase.ref],
+  ] as const) {
+    if (!value || !reference) continue;
+    const key = `branch.${branch}.${property}`;
+    if (property === "t3-merge-base-ref" && !/^refs\/(?:heads|remotes)\//.test(value))
+      return yield* new GitCommandError({
+        operation: "WorktreeRelease.queue",
+        cwd,
+        command: "git check-ref-format",
+        detail: `${key} must name a local or remote ref.`,
+      });
+    yield* readGit(cwd, ["check-ref-format", reference]).pipe(
+      Effect.mapError(
+        (cause) =>
+          new GitCommandError({
+            operation: "WorktreeRelease.queue",
+            cwd,
+            command: "git check-ref-format",
+            detail: `${key} contains an invalid ref.`,
+            cause,
+          }),
+      ),
+    );
   }
-  if (branchBase.ref) yield* readGit(cwd, ["check-ref-format", branchBase.ref]);
   const request = yield* validateRequest({
     ...(family ? { family } : {}),
     threadId: input.threadId,
     runId: input.runId,
     worktreePath: cwd,
     branch,
-    ...(branchBase.name || branchBase.ref || branchBase.legacyName ? { branchBase } : {}),
+    branchBase,
     durableRef: input.durableRef,
     ...(input.alsoDurable?.length ? { alsoDurable: input.alsoDurable } : {}),
     head: (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim(),
@@ -1043,30 +1123,63 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
   const { admin } = registration;
   const adminFiles = yield* fs.readDirectory(admin);
   if (adminFiles.includes(runningFamilyCheckoutHook))
-    return yield* refuse(
-      "The previous post-checkout hook may still be running. Its outcome needs verification.",
-    );
+    return yield* unconfirmedFamilyHook(cwd, path.join(admin, runningFamilyCheckoutHook));
   if (adminFiles.includes("locked") || adminFiles.some((entry) => entry.endsWith(".lock")))
     return yield* refuse("The restored checkout is locked.");
+  const verifyVisibleTrackedFiles = readGit(cwd, ["ls-files", "-v", "-z"], {
+    maxOutputBytes: 64 * 1024 * 1024,
+  }).pipe(
+    Effect.flatMap((tracked) =>
+      tracked.split("\0").some((entry) => entry && !entry.startsWith("H "))
+        ? Effect.fail(refuse("The restored checkout hides tracked files."))
+        : Effect.void,
+    ),
+  );
+  const trackedStatus = readGit(cwd, [
+    "status",
+    "--porcelain=v1",
+    "-z",
+    "--untracked-files=no",
+    "--ignore-submodules=none",
+    "--no-renames",
+  ]);
   if (options.setup || options.replacementOf !== undefined) {
     if (adminFiles.includes(pendingFamilyCheckoutHook))
       return yield* refuse("The restored checkout has an unfinished post-checkout hook.");
-    if (options.replacementOf !== undefined && !adminFiles.includes("index"))
-      return yield* refuse("The new checkout has no working tree index.");
+    if (!adminFiles.includes("index"))
+      return yield* refuse("The restored checkout has no working tree index.");
+    if (options.setup) {
+      yield* verifyVisibleTrackedFiles;
+      // Setup can edit files. Missing tracked paths can also mean Git never finished the checkout.
+      const changes = yield* trackedStatus;
+      if (changes.split("\0").some((entry) => entry[0] === "D" || entry[1] === "D"))
+        return yield* refuse("The restored checkout has missing tracked files.");
+    }
     return;
   }
   const index = path.join(admin, "index");
   const hasIndex = yield* fs.exists(index);
   const pendingHook =
     !options.original && (!hasIndex || adminFiles.includes(pendingFamilyCheckoutHook));
+  const verifyRepair = Effect.fnUntraced(function* () {
+    if (!adminFiles.includes(pendingFamilyCheckoutHook)) return;
+    const head = (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
+    yield* requireUnstartedFamilyHook(cwd, path.join(admin, pendingFamilyCheckoutHook), head);
+  });
   const hook = Effect.fnUntraced(function* (stage: "prepare" | "finish") {
     if (!pendingHook) return;
     const head = (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
     const git = yield* GitVcsDriver.GitVcsDriver;
-    yield* familyCheckoutHook(cwd, admin, head, stage, (args) =>
-      git
-        .execute({ operation: "WorktreeRelease.recoverCheckout", cwd, timeoutMs: null, args })
-        .pipe(Effect.map((result) => result.stdout)),
+    yield* familyCheckoutHook(
+      cwd,
+      admin,
+      head,
+      stage,
+      (args) =>
+        git
+          .execute({ operation: "WorktreeRelease.recoverCheckout", cwd, timeoutMs: null, args })
+          .pipe(Effect.map((result) => result.stdout)),
+      options.followUpAt,
     );
   });
   if (!hasIndex) {
@@ -1074,24 +1187,14 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
     // A no-checkout registration has no index. A one-tree merge checks for obstructing user files.
     if ((yield* fs.readDirectory(cwd)).some((name) => name !== ".git"))
       return yield* refuse("Interrupted checkout contains local files.");
+    yield* verifyRepair();
     yield* hook("prepare");
     yield* readGit(cwd, ["read-tree", "-m", "-u", "HEAD"]);
   }
   if (!(yield* fs.exists(index))) return yield* refuse("The restored checkout has no index.");
   yield* readGit(cwd, ["diff-index", "--cached", "--quiet", "HEAD", "--"]);
-  const tracked = yield* readGit(cwd, ["ls-files", "-v", "-z"], {
-    maxOutputBytes: 64 * 1024 * 1024,
-  });
-  if (tracked.split("\0").some((entry) => entry && !entry.startsWith("H ")))
-    return yield* refuse("The restored checkout hides tracked files.");
-  const trackedStatus = readGit(cwd, [
-    "status",
-    "--porcelain=v1",
-    "-z",
-    "--untracked-files=no",
-    "--ignore-submodules=none",
-  ]);
-  const finish = Effect.gen(function* () {
+  yield* verifyVisibleTrackedFiles;
+  const finish = Effect.fnUntraced(function* () {
     if (!pendingHook) return;
     const before = (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
     yield* hook("finish");
@@ -1137,18 +1240,20 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
         return yield* refuse("The original checkout no longer matches its saved files.");
     }
   }
-  if (!changes) return yield* finish;
+  if (!changes) return yield* finish();
   if (!options.original && changes.endsWith("\0")) {
     const entries = changes.slice(0, -1).split("\0");
     if (
       entries.every((entry) => entry.startsWith(" D ") && !entry.includes("\uFFFD")) &&
       !(yield* readGit(cwd, ["ls-files", "--killed", "-z"]))
     ) {
+      // A failed hook may itself have removed these files. Repair is only safe before its first run.
+      yield* verifyRepair();
       // The index still matches HEAD. Write only its missing paths and never replace existing files.
       yield* readGit(cwd, ["checkout-index", "-z", "--stdin"], {
         stdin: entries.map((entry) => entry.slice(3) + "\0").join(""),
       });
-      if (!(yield* trackedStatus)) return yield* finish;
+      if (!(yield* trackedStatus)) return yield* finish();
     }
   }
   return yield* refuse("The restored checkout has incomplete or changed tracked files.");
@@ -1175,12 +1280,14 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   if (!registration) return "checkout registration changed";
   const { admin, common } = registration;
   if (yield* fs.exists(path.join(common, "info", "grafts"))) return "repository uses grafts";
-  if (request.branchBase) {
+  {
     const current = yield* readReleasedBranchBase(cwd, request.branch);
+    // Legacy receipts did not record absence; requeue if any base now exists.
+    const recorded = request.branchBase ?? { name: null, ref: null, legacyName: undefined };
     if (
-      current.name !== request.branchBase.name ||
-      current.ref !== request.branchBase.ref ||
-      current.legacyName !== request.branchBase.legacyName
+      current.name !== recorded.name ||
+      current.ref !== recorded.ref ||
+      current.legacyName !== recorded.legacyName
     )
       return "the recorded pull request base changed";
   }

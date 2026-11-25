@@ -103,6 +103,7 @@ const ORPHAN_WORKTREE_GRACE_MS = 60 * 60 * 1_000;
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 const REPORT_ENTRY_LIMIT = 200;
 const isGitCommandError = Schema.is(GitCommandError);
+const encodeMemberIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 
 function cleanupFailureReason(error: { readonly message: string }) {
   return isGitCommandError(error)
@@ -269,6 +270,74 @@ export class StorageCleanup extends Context.Service<
   }
 >()("t3/storageCleanup") {}
 
+const RESULT_CHECK_PAGE_SIZE = 128;
+
+interface TaskResultCandidate {
+  readonly id: string;
+  readonly threadId: OrchestrationV2ThreadShell["id"];
+  readonly spawningRun: string | null;
+  readonly delivery: string | null;
+  readonly canCheckWake: number | null;
+}
+
+const taskHasCompletedObserver = (sql: SqlClient.SqlClient) => sql`
+  CASE WHEN (t.completion_delivery_state = 'acknowledged' OR (
+      t.completion_delivery_state = 'disposed'
+      AND json_extract(t.payload_json, '$.completionDelivery.state') = 'disposed'
+    )) AND t.status IN ('completed','failed','cancelled','interrupted')
+  THEN EXISTS (
+    SELECT 1 FROM orchestration_v2_projection_runs observer
+    WHERE observer.run_id = json_extract(t.payload_json, '$.completionDelivery.observedByRunId')
+      AND observer.thread_id = t.thread_id AND observer.status = 'completed'
+  ) AND json_type(t.payload_json, '$.result') IS 'text'
+  ELSE 0 END
+`;
+
+// Both server commands must attest to the same terminal result the projection still holds.
+const unstartedCommandEventSequence = (sql: SqlClient.SqlClient, phase: "complete" | "dispose") => {
+  const dispose = phase === "dispose";
+  return sql`(
+    SELECT e.sequence
+    FROM orchestration_events e INDEXED BY idx_orch_events_command_id
+    JOIN orchestration_command_receipts r ON r.command_id = e.command_id
+      AND r.aggregate_kind = 'thread' AND r.aggregate_id = e.stream_id AND r.status = 'accepted'
+    WHERE e.command_id = ${dispose ? "command:command-task-unstarted-dispose:" : "command:command-task-unstarted:"} || t.subagent_id
+      AND r.command_type = ${dispose ? "delegated_task.completion-delivery.dispose" : "delegated_task.command.complete"}
+      AND e.application_event_version = 2 AND e.aggregate_kind = 'thread'
+      AND e.stream_id = t.thread_id AND e.actor_kind = 'server' AND e.event_type = 'subagent.updated'
+      AND json_extract(e.metadata_json, '$.nodeId') = t.subagent_id
+      AND json_extract(e.payload_json, '$.id') = t.subagent_id
+      AND json_extract(e.payload_json, '$.runId') = t.run_id
+      AND json_extract(e.payload_json, '$.status') = t.status
+      AND json_extract(e.payload_json, '$.completedAt') = t.completed_at
+      AND json_extract(e.payload_json, '$.result') = json_extract(t.payload_json, '$.result')
+      ${dispose ? sql`AND json_extract(e.payload_json, '$.completionDelivery.state') = 'disposed'` : sql``}
+    LIMIT 1
+  )`;
+};
+
+const taskRequiresResultCheck = (sql: SqlClient.SqlClient) => sql`
+  NOT (${taskHasCompletedObserver(sql)})
+  AND NOT (
+    CASE WHEN t.completion_delivery_state = 'disposed' THEN
+      (t.status = 'cancelled' AND json_extract(t.payload_json, '$.result') IS NULL)
+      OR (t.status IN ('failed','interrupted')
+        AND json_type(t.payload_json, '$.command') IS 'object'
+        AND json_type(t.payload_json, '$.result') IS 'text'
+        AND json_extract(t.payload_json, '$.completionDelivery.state') IS 'disposed'
+        AND coalesce(${unstartedCommandEventSequence(sql, "complete")} < ${unstartedCommandEventSequence(sql, "dispose")}, 0))
+    ELSE 0 END
+  )
+`;
+
+const taskResultCandidate = (sql: SqlClient.SqlClient) => sql`
+  t.subagent_id AS id, t.thread_id AS threadId, t.run_id AS spawningRun,
+  t.completion_delivery_state AS delivery,
+  (t.status IN ('completed','failed','cancelled','interrupted')
+    AND t.completion_delivery_state IN ('acknowledged','delivered')
+    AND json_type(t.payload_json, '$.result') = 'text') AS canCheckWake
+`;
+
 export const familyDelegateResultConsumed = Effect.fn(
   "StorageCleanup.familyDelegateResultConsumed",
 )(function* (
@@ -278,109 +347,135 @@ export const familyDelegateResultConsumed = Effect.fn(
 ) {
   const parentId = child.lineage.parentThreadId;
   const originalTaskId = child.forkedFrom?.type === "node" ? child.forkedFrom.nodeId : null;
-  const [task] = yield* sql<{
-    id: string;
-    spawningRun: string;
-    delivery: string;
-    acknowledged: number;
-  }>`
-      SELECT task.subagent_id AS id, task.run_id AS spawningRun, task.completion_delivery_state AS delivery,
-        EXISTS (
-          SELECT 1 FROM orchestration_v2_projection_runs observer
-          WHERE task.completion_delivery_state = 'acknowledged'
-            AND observer.run_id = json_extract(task.payload_json, '$.completionDelivery.observedByRunId')
-            AND observer.thread_id = task.thread_id AND observer.status = 'completed'
-        ) AS acknowledged
+  if (parentId === null) return false;
+  const [task] = yield* sql<TaskResultCandidate & { verifiedObserver: number }>`
+      SELECT ${taskResultCandidate(sql)}, (${taskHasCompletedObserver(sql)}) AS verifiedObserver
       FROM orchestration_v2_projection_runs child_run
-      JOIN orchestration_v2_projection_subagents task
-        ON task.subagent_id = coalesce(json_extract(child_run.payload_json, '$.delegatedTaskId'), ${originalTaskId})
+      JOIN orchestration_v2_projection_subagents t
+        ON t.subagent_id = coalesce(json_extract(child_run.payload_json, '$.delegatedTaskId'), ${originalTaskId})
       WHERE child_run.run_id = ${childRunId} AND child_run.thread_id = ${child.id} AND child_run.status = 'completed'
-        AND task.thread_id = ${parentId} AND task.child_thread_id = child_run.thread_id
-        AND task.origin = 'app_owned' AND task.status = 'completed'
-        AND task.completion_delivery_state IN ('acknowledged', 'delivered')
-        AND json_type(task.payload_json, '$.result') = 'text'
+        AND t.thread_id = ${parentId} AND t.child_thread_id = child_run.thread_id
+        AND t.origin = 'app_owned' AND t.status = 'completed'
         AND EXISTS (
           SELECT 1 FROM orchestration_v2_projection_context_transfers result
-          WHERE result.source_thread_id = child_run.thread_id AND result.target_thread_id = task.thread_id
+          WHERE result.source_thread_id = child_run.thread_id AND result.target_thread_id = t.thread_id
             AND result.type = 'subagent_result' AND result.status = 'consumed'
-            AND result.target_run_id = task.run_id
+            AND result.target_run_id = t.run_id
             AND json_extract(result.payload_json, '$.sourcePoint.runId') = child_run.run_id
         )
     `.pipe(NodeSqliteClient.readOnly);
-  if (task === undefined) return false;
-  if (task.acknowledged) return true;
-  const wakes = yield* sql<{
-    text: string;
-    taskIds: string;
-    taskCount: number;
-    status: string;
-    primaryInput: number;
-  }>`
-      SELECT json_extract(m.payload_json, '$.text') AS text,
-        json_extract(m.payload_json, '$.delegatedCompletion.taskIds') AS taskIds,
-        json_array_length(m.payload_json, '$.delegatedCompletion.taskIds') AS taskCount,
-        consumer.status, (json_extract(consumer.payload_json, '$.userMessageId') = m.message_id) AS primaryInput
-      FROM orchestration_v2_projection_messages m
-      JOIN orchestration_v2_projection_runs consumer ON consumer.run_id = m.run_id
-      WHERE m.thread_id = ${parentId} AND m.role = 'user'
-        AND consumer.thread_id = m.thread_id AND consumer.status != 'cancelled'
-        AND json_extract(m.payload_json, '$.createdBy') = 'agent'
-        AND json_extract(m.payload_json, '$.creationSource') = 'server'
-        AND json_extract(m.payload_json, '$.delegatedCompletion.parentRunId') = ${task.spawningRun}
-        AND EXISTS (SELECT 1 FROM json_each(m.payload_json, '$.delegatedCompletion.taskIds') WHERE value = ${task.id})
-    `.pipe(NodeSqliteClient.readOnly);
-  for (const wake of wakes) {
-    // A live steer is not the run's primary input. Only an accepted steer or a non-cancelled
-    // wake run marks the task delivered, so a sole such message identifies its consumer.
-    if (
-      wake.status !== "completed" ||
-      (!wake.primaryInput && (task.delivery !== "delivered" || wakes.length !== 1))
-    )
-      continue;
-    // A batched wake can contain the whole result for one task and only a read instruction for another.
-    const members = yield* sql<{
-      id: string;
+  return task !== undefined && (!!task.verifiedObserver || (yield* taskWakeConsumed(sql, task)));
+});
+
+const taskWakeConsumed = Effect.fn("StorageCleanup.taskWakeConsumed")(function* (
+  sql: SqlClient.SqlClient,
+  task: TaskResultCandidate,
+) {
+  if (!task.canCheckWake) return false;
+  let after = "";
+  let soleWake = false;
+  for (;;) {
+    const wakes = yield* sql<{
+      messageId: string;
+      text: string | null;
+      taskIds: string;
+      taskCount: number;
       status: string;
-      title: string | null;
-      result: string | null;
-      command: string | null;
+      primaryInput: number;
     }>`
-        SELECT t.subagent_id AS id, t.status, json_extract(t.payload_json, '$.title') AS title,
-          json_extract(t.payload_json, '$.result') AS result, json_extract(t.payload_json, '$.command') AS command
-        FROM json_each(${wake.taskIds}) member
-        JOIN orchestration_v2_projection_subagents t ON t.subagent_id = member.value
-        WHERE t.thread_id = ${parentId} AND t.run_id = ${task.spawningRun}
-        ORDER BY member.key
-      `.pipe(NodeSqliteClient.readOnly);
-    if (members.length !== wake.taskCount) continue;
-    const inline = new Set<string>();
-    const text = Orchestrator.delegatedCompletionWakeDetail(
-      members.map((member) => member.id),
-      members,
-      inline,
-    );
-    if (text === wake.text && inline.has(task.id)) return true;
-    // Migration 091 compacted structured IDs but left the original notification text intact.
-    const member = members[0];
-    if (
-      !wake.primaryInput ||
-      task.delivery !== "delivered" ||
-      wakes.length !== 1 ||
-      members.length !== 1 ||
-      member?.id !== task.id
-    )
-      continue;
-    const displayedId = /^Delegated task (node:\S+) /.exec(wake.text)?.[1];
-    if (!displayedId || displayedId === task.id || compactLegacyId(displayedId) !== task.id)
-      continue;
-    const originalText = Orchestrator.delegatedCompletionWakeDetail(
-      [displayedId],
-      [{ ...member, id: displayedId }],
-      inline,
-    );
-    if (originalText === wake.text && inline.has(displayedId)) return true;
+        SELECT m.message_id AS messageId, json_extract(m.payload_json, '$.text') AS text,
+          json_extract(m.payload_json, '$.delegatedCompletion.taskIds') AS taskIds,
+          json_array_length(m.payload_json, '$.delegatedCompletion.taskIds') AS taskCount,
+          consumer.status, (json_extract(consumer.payload_json, '$.userMessageId') = m.message_id) AS primaryInput
+        FROM orchestration_v2_projection_messages m
+        JOIN orchestration_v2_projection_runs consumer ON consumer.run_id = m.run_id
+        WHERE m.thread_id = ${task.threadId} AND m.role = 'user'
+          AND m.message_id > ${after}
+          AND consumer.thread_id = m.thread_id AND consumer.status != 'cancelled'
+          AND json_extract(m.payload_json, '$.createdBy') = 'agent'
+          AND json_extract(m.payload_json, '$.creationSource') = 'server'
+          AND json_extract(m.payload_json, '$.delegatedCompletion.parentRunId') = ${task.spawningRun}
+          AND EXISTS (SELECT 1 FROM json_each(m.payload_json, '$.delegatedCompletion.taskIds') WHERE value = ${task.id})
+        ORDER BY m.message_id LIMIT ${RESULT_CHECK_PAGE_SIZE}
+      `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
+    if (after === "") soleWake = wakes.length === 1;
+    for (const wake of wakes) {
+      // A live steer is not the run's primary input. Only an accepted steer or a non-cancelled
+      // wake run marks the task delivered, so a sole such message identifies its consumer.
+      if (
+        wake.status !== "completed" ||
+        (!wake.primaryInput && (task.delivery !== "delivered" || !soleWake))
+      )
+        continue;
+      // A batched wake can contain the whole result for one task and only a read instruction for another.
+      const members = yield* sql<{
+        id: string;
+        status: string;
+        title: string | null;
+        result: string | null;
+        command: string | null;
+      }>`
+          SELECT t.subagent_id AS id, t.status, json_extract(t.payload_json, '$.title') AS title,
+            json_extract(t.payload_json, '$.result') AS result, json_extract(t.payload_json, '$.command') AS command
+          FROM json_each(${wake.taskIds}) member
+          JOIN orchestration_v2_projection_subagents t ON t.subagent_id = member.value
+          WHERE t.thread_id = ${task.threadId} AND t.run_id = ${task.spawningRun}
+          ORDER BY member.key
+        `.pipe(NodeSqliteClient.readOnly);
+      if (members.length !== wake.taskCount) continue;
+      const inline = new Set<string>();
+      const text = Orchestrator.delegatedCompletionWakeDetail(
+        members.map((member) => member.id),
+        members,
+        inline,
+      );
+      if (text === wake.text && inline.has(task.id)) return true;
+      // Migration 091 compacted structured IDs but left the original notification text intact.
+      const member = members[0];
+      if (
+        !wake.primaryInput ||
+        task.delivery !== "delivered" ||
+        !soleWake ||
+        members.length !== 1 ||
+        member?.id !== task.id
+      )
+        continue;
+      if (wake.text === null) continue;
+      const displayedId = /^(?:Delegated task|Command) (node:\S+) /.exec(wake.text)?.[1];
+      if (!displayedId || displayedId === task.id || compactLegacyId(displayedId) !== task.id)
+        continue;
+      const originalText = Orchestrator.delegatedCompletionWakeDetail(
+        [displayedId],
+        [{ ...member, id: displayedId }],
+        inline,
+      );
+      if (originalText === wake.text && inline.has(displayedId)) return true;
+    }
+    if (wakes.length < RESULT_CHECK_PAGE_SIZE) return false;
+    after = wakes.at(-1)!.messageId;
   }
-  return false;
+});
+
+/** Every app-owned result belongs to its parent, including commands with no child thread. */
+const ownerTaskResultsConsumed = Effect.fn("StorageCleanup.ownerTaskResultsConsumed")(function* (
+  sql: SqlClient.SqlClient,
+  parentId: OrchestrationV2ThreadShell["id"],
+) {
+  let after = "";
+  for (;;) {
+    const tasks = yield* sql<TaskResultCandidate>`
+      SELECT ${taskResultCandidate(sql)}
+      FROM orchestration_v2_projection_subagents t
+      WHERE t.thread_id = ${parentId} AND t.subagent_id > ${after}
+        AND t.origin = 'app_owned' AND ${taskRequiresResultCheck(sql)}
+      ORDER BY t.subagent_id LIMIT ${RESULT_CHECK_PAGE_SIZE}
+    `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
+    for (const task of tasks) {
+      if (!(yield* taskWakeConsumed(sql, task))) return false;
+    }
+    if (tasks.length < RESULT_CHECK_PAGE_SIZE) return true;
+    after = tasks.at(-1)!.id;
+  }
 });
 
 const make = Effect.gen(function* () {
@@ -1009,19 +1104,13 @@ const make = Effect.gen(function* () {
       )
     `.pipe(NodeSqliteClient.readOnly);
     if (pending.length) return "run, task delivery or durable effect is pending";
-    if (request.family && shell.lineage.relationshipToParent === "subagent") {
-      if (!(yield* familyDelegateResultConsumed(sql, shell, request.runId)))
-        return "parent has not received this delegate's result";
-    } else if (shell.lineage.relationshipToParent === "subagent") {
-      const delivered = yield* sql`
-        SELECT 1 FROM orchestration_v2_projection_subagents
-        WHERE child_thread_id = ${shell.id} AND thread_id = ${shell.lineage.parentThreadId}
-          AND status = 'completed' AND completion_delivery_state IN ('acknowledged','delivered')
-          AND completed_at >= ${DateTime.formatIso(shell.latestRunCompletedAt)}
-        LIMIT 1
-      `.pipe(NodeSqliteClient.readOnly);
-      if (!delivered.length) return "parent has not received this delegate's result";
-    }
+    if (
+      shell.lineage.relationshipToParent === "subagent" &&
+      !(yield* familyDelegateResultConsumed(sql, shell, request.runId))
+    )
+      return "parent has not received this delegate's result";
+    if (!(yield* ownerTaskResultsConsumed(sql, shell.id)))
+      return "a task result has no verified consumer in a completed run";
     return null;
   });
 
@@ -1029,12 +1118,65 @@ const make = Effect.gen(function* () {
     checkout: string,
     memberIds: ReadonlySet<string>,
   ) {
-    const commands = yield* sql<{ cwd: string; thread_id: string }>`
-      SELECT cwd, thread_id FROM command_runs WHERE status IN ('queued','running') OR delivered_at IS NULL
-    `.pipe(NodeSqliteClient.readOnly);
-    for (const row of commands) {
-      if (memberIds.has(row.thread_id) || (yield* usesReleasePath(checkout, row.cwd)))
-        return "command or command delivery is pending";
+    const overlapsByCwd = new Map<string, boolean>();
+    const overlaps = Effect.fn("StorageCleanup.commandOverlapsCheckout")(function* (cwd: string) {
+      const prior = overlapsByCwd.get(cwd);
+      if (prior !== undefined) return prior;
+      const matches = yield* usesReleasePath(checkout, cwd);
+      overlapsByCwd.set(cwd, matches);
+      return matches;
+    });
+    let after = "";
+    for (;;) {
+      const commands = yield* sql<{
+        id: string;
+        cwd: string;
+        threadId: string;
+        pending: number;
+      }>`
+        SELECT c.task_id AS id, c.cwd, c.thread_id AS threadId,
+          (c.status IN ('queued','running') OR c.delivered_at IS NULL) AS pending
+        FROM command_runs c
+        WHERE c.task_id > ${after} AND (
+          c.status IN ('queued','running') OR c.delivered_at IS NULL OR NOT EXISTS (
+            SELECT 1 FROM orchestration_v2_projection_subagents t
+            WHERE t.subagent_id = c.task_id AND t.thread_id = c.thread_id AND t.run_id = c.run_id
+              AND t.origin = 'app_owned' AND json_type(t.payload_json, '$.command') = 'object'
+              AND json_extract(t.payload_json, '$.command.cwd') = c.cwd
+          )
+        )
+        ORDER BY c.task_id LIMIT ${RESULT_CHECK_PAGE_SIZE}
+      `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
+      for (const command of commands) {
+        if (memberIds.has(command.threadId) || (yield* overlaps(command.cwd)))
+          return command.pending
+            ? "command or command delivery is pending"
+            : "command result is missing its matching task record";
+      }
+      if (commands.length < RESULT_CHECK_PAGE_SIZE) break;
+      after = commands.at(-1)!.id;
+    }
+
+    // CommandRunner prunes command_runs while task results remain in the durable projection.
+    const memberIdsJson = encodeMemberIds([...memberIds]);
+    after = "";
+    for (;;) {
+      const candidates = yield* sql<TaskResultCandidate & { cwd: string }>`
+        SELECT ${taskResultCandidate(sql)}, json_extract(t.payload_json, '$.command.cwd') AS cwd
+        FROM orchestration_v2_projection_subagents t
+        WHERE t.subagent_id > ${after} AND t.origin = 'app_owned'
+          AND t.thread_id NOT IN (SELECT value FROM json_each(${memberIdsJson}))
+          AND json_type(t.payload_json, '$.command') = 'object'
+          AND json_type(t.payload_json, '$.command.cwd') = 'text'
+          AND ${taskRequiresResultCheck(sql)}
+        ORDER BY t.subagent_id LIMIT ${RESULT_CHECK_PAGE_SIZE}
+      `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
+      for (const task of candidates) {
+        if ((yield* overlaps(task.cwd)) && !(yield* taskWakeConsumed(sql, task)))
+          return "a workspace command result has no verified consumer in a completed run";
+      }
+      if (candidates.length < RESULT_CHECK_PAGE_SIZE) break;
+      after = candidates.at(-1)!.id;
     }
     for (const cwd of yield* providerSessions.occupiedWorkspaces) {
       if (yield* usesReleasePath(checkout, cwd))

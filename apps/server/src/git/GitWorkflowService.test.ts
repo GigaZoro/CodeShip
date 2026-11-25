@@ -131,7 +131,7 @@ it.layer(NodeServices.layer)("GitWorkflowService", (it) => {
         yield* restore();
         assert.equal(yield* driver.readConfigValue(cwd, "branch.task.t3-merge-base"), "other");
         assert.isNull(yield* driver.readConfigValue(cwd, "branch.task.t3-merge-base-ref"));
-      }),
+      }).pipe(Effect.scoped, Effect.provide(layerUnmergedWork())),
   );
   it.effect(
     "restores released branches at a fresh base, preserved task tip, or the owner’s moved tip",

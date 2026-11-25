@@ -45,14 +45,21 @@ it("reports a whole added cache subtree and rejects simultaneous edits to instal
     await NodeFSP.mkdir(cache);
     await NodeFSP.writeFile(NodePath.join(cache, "personal.txt"), "keep this");
     expect(await inspect()).toEqual(["node_modules/.vite-temp"]);
+    // Read a saved four-slot proof as the release service would after an upgrade.
+    const admin = NodePath.join(cwd, ".git");
+    await NodeFSP.mkdir(admin);
+    await setup.writeSetupProof(admin, NodePath.join(admin, "pending"), {
+      ...proof,
+      cacheSlots: { node_modules: proof.cacheSlots.node_modules! & 15 },
+    });
+    const oldProof = await setup.readSetupProof(admin, cwd, proof.checkout);
+    if (!oldProof) throw new Error("Expected the saved four-slot setup proof");
+    expect(await setup.inspectSetupProof(oldProof, cwd, status, signal)).toEqual([
+      "node_modules/.vite-temp",
+    ]);
     const astro = NodePath.join(cwd, "node_modules", ".astro");
     await NodeFSP.mkdir(astro);
     expect(await inspect()).toEqual(["node_modules/.astro", "node_modules/.vite-temp"]);
-    // Older proofs could only attest to the first four cache names being absent.
-    const oldProof = {
-      ...proof,
-      cacheSlots: { node_modules: proof.cacheSlots.node_modules! & 15 },
-    };
     expect(await setup.inspectSetupProof(oldProof, cwd, status, signal)).toBeNull();
     const installedCache = {
       ...proof,

@@ -7,9 +7,12 @@ import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { linkDirectory } from "@t3tools/shared/testing/symlinks";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as TestClock from "effect/testing/TestClock";
 import {
   sealSetupMarkers,
   sealSetupTrees,
@@ -28,8 +31,135 @@ import {
   releasedWorktree,
   worktreeReleaseName,
 } from "./worktreeRelease.ts";
+import { releaseReservesWorktree } from "./worktreeReleaseReceipt.ts";
 
 const runFile = NodeUtil.promisify(NodeChildProcess.execFile);
+
+it.effect("holds a valid case-variant receipt without spreading damage to other paths", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.realPath(
+      yield* fs.makeTempDirectoryScoped({ prefix: "t3-receipt-case-" }),
+    );
+    const original = path.join(root, "Checkout");
+    const variant = path.join(root, "checkout");
+    const owner = ThreadId.make("owner");
+    const projectId = ProjectId.make("project");
+    const lineage = { parentThreadId: null, relationshipToParent: null, rootThreadId: owner };
+    const thread = {
+      id: ThreadId.make("stranger"),
+      projectId,
+      lineage,
+      branch: "feature",
+      worktreePath: variant,
+    };
+    const request = {
+      threadId: owner,
+      runId: "finished",
+      branch: thread.branch,
+      worktreePath: original,
+      identity: "original",
+      head: "1".repeat(40),
+      durableRef: "refs/heads/main",
+      family: [{ threadId: owner, projectId, lineage, runId: "finished" }],
+    };
+    const marker = (name: string) => path.join(root, worktreeReleaseName(name) + ".released");
+    yield* fs.writeFileString(marker(path.join(root, "other")), "unreadable historical receipt");
+    yield* fs.writeFileString(marker(path.join(root, "wrong-digest")), JSON.stringify(request));
+    const lookup = (checkoutExists: boolean, system = fs) =>
+      releasedWorktree(
+        system,
+        root,
+        variant,
+        thread,
+        () => Effect.die("folded lookup must not consult lineage"),
+        checkoutExists,
+        () => Effect.die("folded lookup must not authorize a replacement"),
+      );
+    expect(yield* releaseReservesWorktree(fs, root, variant)).toBe(false);
+    expect(yield* lookup(false)).toBeNull();
+
+    let published = false;
+    const publishing = {
+      ...fs,
+      readDirectory: Effect.fnUntraced(function* (directory: string) {
+        const names = yield* fs.readDirectory(directory);
+        if (!published) {
+          published = true;
+          yield* fs.writeFileString(marker(original), JSON.stringify(request));
+        }
+        return names;
+      }),
+    };
+    expect(yield* Effect.flip(releaseReservesWorktree(publishing, root, variant))).toMatchObject({
+      _tag: "WorktreeReleaseReceiptError",
+    });
+
+    const repaired = path.join(root, "Repaired");
+    const repairMarker = marker(repaired);
+    yield* fs.writeFileString(repairMarker, "damaged");
+    let reads = 0;
+    const repairing = {
+      ...fs,
+      readDirectory: Effect.fnUntraced(function* (directory: string) {
+        if (++reads === 2)
+          yield* fs.writeFileString(
+            repairMarker,
+            JSON.stringify({ ...request, worktreePath: repaired }),
+          );
+        return yield* fs.readDirectory(directory);
+      }),
+    };
+    const repairedVariant = path.join(root, "repaired");
+    expect(
+      yield* Effect.flip(releaseReservesWorktree(repairing, root, repairedVariant)),
+    ).toMatchObject({
+      _tag: "WorktreeReleaseReceiptError",
+      receipt: repairMarker,
+    });
+    expect(yield* releaseReservesWorktree(fs, root, repairedVariant)).toBe(true);
+
+    const started = yield* Deferred.make<void>();
+    let waiting = 0;
+    const slow = {
+      ...fs,
+      readDirectory: Effect.fnUntraced(function* () {
+        if (++waiting === 2) yield* Deferred.succeed(started, undefined);
+        return yield* Effect.never;
+      }),
+    };
+    const timed = yield* Effect.all(
+      [
+        Effect.result(releaseReservesWorktree(slow, root, variant)),
+        Effect.result(lookup(false, slow)),
+      ],
+      { concurrency: 2 },
+    ).pipe(Effect.forkScoped);
+    yield* Deferred.await(started);
+    yield* TestClock.adjust("6 seconds");
+    expect(yield* Fiber.join(timed)).toMatchObject([
+      { _tag: "Failure", failure: { _tag: "WorktreeReleaseReceiptError" } },
+      { _tag: "Failure", failure: { _tag: "WorktreeReleaseReceiptError" } },
+    ]);
+
+    expect(yield* releaseReservesWorktree(fs, root, variant)).toBe(true);
+    expect(yield* Effect.flip(lookup(false))).toMatchObject({
+      _tag: "GitCommandError",
+      detail: expect.stringContaining(marker(original)),
+    });
+    const unrelated = path.join(root, "unrelated");
+    expect(yield* releaseReservesWorktree(fs, root, unrelated)).toBe(false);
+    yield* fs.makeDirectory(variant);
+    const aliasesExisting = yield* fs.exists(original);
+    if (!aliasesExisting) yield* fs.makeDirectory(original);
+    expect(yield* releaseReservesWorktree(fs, root, variant)).toBe(aliasesExisting);
+    const result = yield* Effect.result(lookup(true));
+    if (aliasesExisting) expect(result._tag).toBe("Failure");
+    else expect(result).toMatchObject({ _tag: "Success", success: null });
+    expect(yield* fs.readFileString(marker(original))).toBe(JSON.stringify(request));
+  }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
 
 it.live(
   "holds the highest-priority damaged release marker and accepts a valid one-MiB receipt",
@@ -178,6 +308,81 @@ const queueRelease = (fixture: { root: string; checkout: string }, runId = "fini
       durableRef: "refs/heads/main",
     });
   });
+
+it.live("holds a newly set pull request base after an absent base was queued", () =>
+  Effect.gen(function* () {
+    const fixture = yield* sealedCheckout();
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const release = yield* queueRelease(fixture);
+    const request = yield* decodeReleaseRequest(yield* fixture.fs.readFileString(release.file));
+    yield* driver.execute({
+      operation: "test.setBase",
+      cwd: fixture.project,
+      args: ["config", "--local", "branch.feature.t3-merge-base", "main"],
+    });
+    expect(yield* releaseHold(request, fixture.project)).toBe(
+      "the recorded pull request base changed",
+    );
+  }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
+
+it.live.each(["refs/heads/main", "refs/remotes/origin/main"] as const)(
+  "queues an explicit local or remote base ref: %s",
+  (ref) =>
+    Effect.gen(function* () {
+      const fixture = yield* sealedCheckout();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* driver.execute({
+        operation: "test.setBase",
+        cwd: fixture.project,
+        args: ["config", "--local", "branch.feature.t3-merge-base-ref", ref],
+      });
+      const release = yield* queueRelease(fixture);
+      const request = yield* decodeReleaseRequest(yield* fixture.fs.readFileString(release.file));
+      expect(request.branchBase?.ref).toBe(ref);
+      expect(yield* releaseHold(request, fixture.project)).toBeNull();
+    }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
+
+it.live.each([
+  { name: "invalid base name", property: "t3-merge-base", value: "bad..name" },
+  { name: "invalid legacy name", property: "gh-merge-base", value: "bad..legacy" },
+  { name: "wrong ref prefix", property: "t3-merge-base-ref", value: "refs/tags/main" },
+  { name: "invalid local ref", property: "t3-merge-base-ref", value: "refs/heads/bad..name" },
+] as const)("names invalid branch configuration: $name", ({ property, value }) =>
+  Effect.gen(function* () {
+    const fixture = yield* sealedCheckout();
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const key = `branch.feature.${property}`;
+    yield* driver.execute({
+      operation: "test.invalidBase",
+      cwd: fixture.project,
+      args: ["config", "--local", key, value],
+    });
+    const error = yield* Effect.flip(queueRelease(fixture));
+    expect(error).toMatchObject({ _tag: "GitCommandError", detail: expect.stringContaining(key) });
+  }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
+
+it.live.each(["empty", "multiple"] as const)("rejects %s branch base configuration", (mode) =>
+  Effect.gen(function* () {
+    const fixture = yield* sealedCheckout();
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const command = (value: string) =>
+      driver.execute({
+        operation: "test.setBase",
+        cwd: fixture.project,
+        args: ["config", "--local", "--add", "branch.feature.t3-merge-base", value],
+      });
+    yield* command(mode === "empty" ? "" : "main");
+    if (mode === "multiple") yield* command("other");
+    const error = yield* Effect.flip(queueRelease(fixture));
+    expect(error).toMatchObject({
+      _tag: "GitCommandError",
+      detail: expect.stringContaining("exactly one nonempty value"),
+    });
+  }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
 
 it.live.each(["saved cache", "installed dependency", "setup proof"] as const)(
   "keeps an interrupted removal claimed after losing its %s",
