@@ -54,6 +54,7 @@ import {
   readTranscriptRecords,
   STAT_CONCURRENCY,
   statTranscriptFiles,
+  type TranscriptPathFailure,
 } from "./usageTranscriptReader.ts";
 import {
   claimedLegacyScanCacheName,
@@ -94,6 +95,9 @@ const CACHE_RETENTION_MS = 92 * 24 * 60 * 60 * 1000;
 const EXPIRED_FILE_CHECKS_TIMEOUT_MS = 5_000;
 const EXPIRED_FILE_CHECK_BACKOFF_MS = 60 * 60 * 1000;
 const CACHE_GAP_RETRY_MS = 60_000;
+// Past this a sync is taken as stuck on disk, and the scan goes on with what memory holds
+// in the rest of the caller's deadline.
+const SAVED_USAGE_LOAD_WAIT_MS = 20_000;
 const MAX_STORE_RELISTS = 3;
 
 const TRANSCRIPT_READ_CONCURRENCY = 4;
@@ -452,7 +456,7 @@ export const make = Effect.gen(function* () {
   let cacheLoaded = false;
   let retryCacheAt = 0;
 
-  type SavedUsageGapKind = "list" | "claim" | "read" | "incomplete";
+  type SavedUsageGapKind = "list" | "claim" | "read" | "incomplete" | "load";
   const SAVED_USAGE_GAPS: Record<
     SavedUsageGapKind,
     { readonly log: string; readonly message: string }
@@ -472,6 +476,10 @@ export const make = Effect.gen(function* () {
     incomplete: {
       log: "Saved transcript usage is damaged or from a newer version",
       message: "Some saved usage is damaged or from a newer version and is only partly counted.",
+    },
+    load: {
+      log: "Saved transcript usage did not load in time",
+      message: "Saved usage has not finished loading.",
     },
   };
   const savedUsageGaps = new Map<
@@ -503,9 +511,10 @@ export const make = Effect.gen(function* () {
       .map((kind) => SAVED_USAGE_GAPS[kind].message);
     return messages.length === 0 ? undefined : messages.join(" ");
   };
-  // A damaged file cannot change under its name, so only the other gaps are worth a retry.
+  // A damaged file cannot change under its name and a late load ends on its own, so only the
+  // other gaps are worth a retry.
   const hasRetryableGap = () =>
-    [...savedUsageGaps.values()].some(({ kind }) => kind !== "incomplete");
+    [...savedUsageGaps.values()].some(({ kind }) => kind !== "incomplete" && kind !== "load");
 
   const decodeDocument = Effect.fn("UsageService.decodeScanCache")(function* (raw: string) {
     const document = yield* decodeScanCacheFile(raw).pipe(Effect.orElseSucceed(() => null));
@@ -868,9 +877,20 @@ export const make = Effect.gen(function* () {
     return (yield* scanCacheLoadDue) ? yield* syncScanCache(false) : true;
   });
   // Only a first load or a due retry makes a scan wait, and never for a write: the scan's own
-  // persist saves what the load merged.
+  // persist saves what the load merged. A late load keeps running, and scans skip it until it ends.
   const ensureScanCacheLoaded = Effect.gen(function* () {
-    if (yield* scanCacheLoadDue) yield* Fiber.join(yield* forkSync(loadScanCache));
+    if (savedUsageGaps.has(gapKey("load", storeDir)) || !(yield* scanCacheLoadDue)) return;
+    let loading = true;
+    const ended = Effect.suspend(() => {
+      loading = false;
+      return recoverGap("load", storeDir);
+    });
+    const load = yield* forkSync(loadScanCache.pipe(Effect.ensuring(ended)));
+    const loaded = yield* Fiber.join(load).pipe(Effect.timeoutOption(SAVED_USAGE_LOAD_WAIT_MS));
+    if (Option.isSome(loaded) || !loading) return;
+    yield* reportGap("load", storeDir, "The saved usage sync did not finish in time.");
+    // The load can end while the gap is reported; its own recovery has then already run.
+    if (!loading) yield* recoverGap("load", storeDir);
   });
   const schedulePersist = forkSync(syncScanCache(true)).pipe(Effect.asVoid);
   const awaitPersisted = Effect.suspend(() => Fiber.awaitAll([...syncFibers])).pipe(Effect.asVoid);
@@ -910,7 +930,7 @@ export const make = Effect.gen(function* () {
   ): Effect.fn.Return<{
     readonly records: readonly UsageRecord[];
     readonly malformedRecords: number;
-    readonly failed?: true;
+    readonly failure?: TranscriptPathFailure;
     readonly update?: Omit<CachedFile, "observedAtMs">;
   }> {
     const cached = fileCache.get(filePath);
@@ -942,17 +962,19 @@ export const make = Effect.gen(function* () {
         ? cached.position
         : undefined;
 
-    const parsed = yield* Effect.promise((signal) =>
-      readTranscriptRecords(filePath, format, resumeFrom, { signal, onProgress }),
-    );
+    const read = yield* Effect.tryPromise({
+      try: (signal) => readTranscriptRecords(filePath, format, resumeFrom, { signal, onProgress }),
+      catch: (cause) => cause,
+    }).pipe(Effect.result);
     // A read failure is not an empty transcript: caching it under this
     // (size, mtime) would silently drop the file's usage until it changes.
-    if (parsed === null)
+    if (read._tag === "Failure")
       return {
         records: cached?.provider === provider ? [...cached.records, ...cached.tailRecords] : [],
         malformedRecords: cached?.provider === provider ? cached.malformedRecords : 0,
-        failed: true,
+        failure: { path: filePath, cause: read.failure },
       };
+    const parsed = read.success;
 
     if (parsed.resumed && cached !== undefined && cached.tailRecords.length > 0) {
       // Completing a tentative line reparses it. Reuse its saved correction only when the
@@ -1055,7 +1077,35 @@ export const make = Effect.gen(function* () {
       const current = byPath.get(file.path);
       return current === undefined ? [] : [current];
     });
-    return { files, failedPaths: cached.failedPaths + updated.failedPaths };
+    return { files, failures: [...cached.failures, ...updated.failures] };
+  });
+
+  /** Paths each listing key logged as unreadable; a path logs again only after it reads or goes. */
+  const loggedUnreadable = new Map<string, ReadonlySet<string>>();
+  const logUnreadablePaths = Effect.fn("UsageService.logUnreadablePaths")(function* (
+    key: string,
+    failures: readonly TranscriptPathFailure[],
+    listed: Listing["files"],
+    read: readonly { readonly path: string }[],
+  ) {
+    const logged = loggedUnreadable.get(key);
+    if (logged === undefined && failures.length === 0) return;
+    const unreadable = new Set<string>();
+    for (const { path: failedPath, cause } of failures) {
+      if (!unreadable.has(failedPath) && logged?.has(failedPath) !== true) {
+        yield* Effect.logError("Could not read transcript usage", { path: failedPath, cause });
+      }
+      unreadable.add(failedPath);
+    }
+    if (logged !== undefined) {
+      // A listed file this scan did not try to read has not read again yet.
+      const tried = new Set(read.map((file) => file.path));
+      for (const file of listed) {
+        if (logged.has(file.path) && !tried.has(file.path)) unreadable.add(file.path);
+      }
+    }
+    if (unreadable.size === 0) loggedUnreadable.delete(key);
+    else loggedUnreadable.set(key, unreadable);
   });
 
   /**
@@ -1115,7 +1165,7 @@ export const make = Effect.gen(function* () {
     const listedAtMs = yield* Clock.currentTimeMillis;
     recordPresent(provider, listing.files, listedAtMs);
     // A listing that could not read every path cannot tell which files are gone.
-    if (listing.failedPaths === 0) {
+    if (listing.failures.length === 0) {
       recordMissing(provider, dir, new Set(listing.files.map((file) => file.path)), listedAtMs);
     }
     const candidates = listing.files.filter((file) => file.mtimeMs >= windowStartMs);
@@ -1123,7 +1173,7 @@ export const make = Effect.gen(function* () {
       candidates,
       (file) =>
         readFileRecords(file.path, file.size, file.mtimeMs, provider, format, onProgress).pipe(
-          Effect.flatMap(({ records, malformedRecords, failed, update }) =>
+          Effect.flatMap(({ records, malformedRecords, failure, update }) =>
             Effect.gen(function* () {
               onProgress();
               if (update !== undefined) {
@@ -1135,13 +1185,18 @@ export const make = Effect.gen(function* () {
                 });
                 generation += 1;
               }
-              return { path: file.path, records, malformedRecords, failed };
+              return { path: file.path, records, malformedRecords, failure };
             }),
           ),
         ),
       { concurrency: TRANSCRIPT_READ_CONCURRENCY },
     );
-    const unread = listing.failedPaths + read.filter((file) => file.failed).length;
+    const failures = [
+      ...listing.failures,
+      ...read.flatMap(({ failure }) => (failure === undefined ? [] : [failure])),
+    ];
+    yield* logUnreadablePaths(key, failures, listing.files, read);
+    const unread = failures.length;
     return {
       provider,
       dir,

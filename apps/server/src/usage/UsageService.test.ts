@@ -62,7 +62,7 @@ import {
   SCAN_CACHE_DIRECTORY_NAME,
   USAGE_SCAN_CACHE_VERSION,
 } from "./usageScanCache.ts";
-import { STAT_CONCURRENCY } from "./usageTranscriptReader.ts";
+import { PATH_CALL_PENDING, STAT_CONCURRENCY } from "./usageTranscriptReader.ts";
 
 vi.mock("node:fs/promises", { spy: true });
 vi.mock("../../../../packages/provider-muse/src/server/sdk.ts", async (importOriginal) => ({
@@ -1778,10 +1778,10 @@ describe("UsageService", () => {
         const waitingCache = yield* service
           .readSummary(WINDOW)
           .pipe(Effect.result, Effect.forkChild);
-        yield* TestClock.adjust("6 seconds");
+        yield* TestClock.adjust("12 seconds");
         yield* Deferred.succeed(releaseSettings, undefined);
         yield* Deferred.await(cacheStarted);
-        yield* TestClock.adjust("24 seconds");
+        yield* TestClock.adjust("18 seconds");
         const cacheResult = yield* Fiber.join(waitingCache);
         assert.strictEqual(
           cacheResult._tag === "Failure" && cacheResult.failure.reason,
@@ -2490,26 +2490,50 @@ describe("UsageService", () => {
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
         const unreadable = NodePath.join(NodePath.dirname(transcript), "other.jsonl");
+        yield* TestClock.setTime(CURSOR_NOW);
         yield* Effect.promise(async () => {
           await NodeFSP.writeFile(transcript, claudeLine(1, 5));
           await NodeFSP.writeFile(unreadable, claudeLine(2, 7));
           await NodeFSP.chmod(unreadable, 0);
         });
+        const logs = captureLogs();
+        const failures = () =>
+          logs.of("Error", "Could not read transcript usage").map((fields) => {
+            const { path, cause } = fields as { path: string; cause: NodeJS.ErrnoException };
+            return { path, code: cause.code };
+          });
         yield* Effect.gen(function* () {
           const service = yield* UsageService.make;
-          const partial = yield* service.readSummary(WINDOW);
-          assert.strictEqual(totalOutputTokens(partial), 5);
-          assert.strictEqual(partial.sources[0]?.status, "partial");
+          for (let scan = 0; scan < 2; scan++) {
+            const partial = yield* service.readSummary(WINDOW);
+            assert.strictEqual(totalOutputTokens(partial), 5);
+            assert.strictEqual(partial.sources[0]?.status, "partial");
+            yield* TestClock.adjust("5 seconds");
+          }
+          assert.deepStrictEqual(failures(), [{ path: unreadable, code: "EACCES" }]);
 
           yield* Effect.promise(() => NodeFSP.chmod(unreadable, 0o600));
           const healthy = yield* service.readSummary(WINDOW);
           assert.strictEqual(totalOutputTokens(healthy), 12);
           assert.strictEqual(healthy.sources[0]?.status, "ok");
           assert.isNull(healthy.sources[0]?.message);
+
+          yield* Effect.promise(async () => {
+            await NodeFSP.appendFile(unreadable, claudeLine(3, 11));
+            await NodeFSP.chmod(unreadable, 0);
+          });
+          yield* TestClock.adjust("5 seconds");
+          assert.strictEqual((yield* service.readSummary(WINDOW)).sources[0]?.status, "partial");
+          assert.lengthOf(failures(), 2);
         }).pipe(
-          Effect.provide(layerService({ prefix: "usage-service-unreadable", home, settings })),
+          Effect.provide(
+            Layer.mergeAll(
+              layerService({ prefix: "usage-service-unreadable", home, settings }),
+              logs.layer,
+            ),
+          ),
         );
-      }).pipe(Effect.scoped),
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
   it.live("shares warm stats and only retries a partial directory walk after the TTL", () =>
@@ -4127,6 +4151,91 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
+  it.live("answers with a load gap while a due retry of saved usage hangs on disk", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      const logs = captureLogs();
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const storeDir = storeDirOf(stateDir);
+        const hung = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let store: "denied" | "hung" | "ok" = "denied";
+        let listsWhileHung = 0;
+        const service = yield* UsageService.make.pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            readDirectory: (directory, options) =>
+              Effect.suspend(() => {
+                if (directory !== storeDir || store === "ok") {
+                  return fs.readDirectory(directory, options);
+                }
+                if (store === "denied") return Effect.fail(PERMISSION_DENIED("readDirectory"));
+                return listsWhileHung++ === 0
+                  ? Deferred.succeed(hung, undefined).pipe(
+                      Effect.andThen(Deferred.await(release)),
+                      Effect.andThen(fs.readDirectory(directory, options)),
+                    )
+                  : fs.readDirectory(directory, options);
+              }),
+          }),
+        );
+        const denied = yield* service.readSummary(WINDOW);
+        assert.strictEqual(totalOutputTokens(denied), 5);
+        assert.strictEqual(claudeSource(denied)?.message, "Saved usage could not be listed.");
+        yield* service.awaitPersisted;
+
+        store = "hung";
+        yield* TestClock.adjust("1 minute");
+        const waiting = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
+        yield* Deferred.await(hung);
+        yield* TestClock.adjust("20 seconds");
+        const late = yield* Fiber.join(waiting);
+        yield* TestClock.adjust("5 seconds");
+        const skipped = yield* service.readSummary(WINDOW);
+        for (const summary of [late, skipped]) {
+          assert.deepStrictEqual(
+            {
+              tokens: totalOutputTokens(summary),
+              status: claudeSource(summary)?.status,
+              message: claudeSource(summary)?.message,
+            },
+            {
+              tokens: 5,
+              status: "partial",
+              message: "Saved usage could not be listed. Saved usage has not finished loading.",
+            },
+          );
+        }
+        assert.strictEqual(listsWhileHung, 1);
+        assert.deepStrictEqual(
+          logs
+            .of("Error", "Saved transcript usage did not load in time")
+            .map((fields) => (fields as { path: string }).path),
+          [storeDir],
+        );
+
+        store = "ok";
+        yield* Deferred.succeed(release, undefined);
+        yield* service.awaitPersisted;
+        yield* TestClock.adjust("5 seconds");
+        const loaded = yield* service.readSummary(WINDOW);
+        assert.strictEqual(claudeSource(loaded)?.status, "ok");
+        assert.isNull(claudeSource(loaded)?.message);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            layerService({ prefix: "usage-cache-hung-load", home, settings }),
+            logs.layer,
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.live("keeps a re-parsed row ahead of a peer's older one after the clock steps back", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
@@ -5191,32 +5300,46 @@ describe("UsageService", () => {
       }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
-  it.live("waits for a stuck transcript stat and close before opening its path again", () =>
+  it.live("answers around a transcript whose stat hangs without calling into its path again", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
       yield* TestClock.setTime(CURSOR_NOW);
-      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(transcript, claudeLine(1, 5));
+        await NodeFSP.writeFile(
+          NodePath.join(NodePath.dirname(transcript), "other.jsonl"),
+          claudeLine(2, 7),
+        );
+      });
       const actual = yield* Effect.promise(() =>
         vi.importActual<typeof NodeFSP>("node:fs/promises"),
       );
       const entered = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       const closed = Promise.withResolvers<void>();
+      let hangNextOpen = false;
       let opens = 0;
+      let stats = 0;
       let active = 0;
       let peak = 0;
+      using _stat = vi.spyOn(NodeFSP, "stat").mockImplementation(async (...args) => {
+        if (args[0] === transcript) stats++;
+        return actual.stat(...args);
+      });
       using _open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
         const handle = await actual.open(...args);
         if (args[0] !== transcript) return handle;
+        opens++;
         peak = Math.max(peak, ++active);
+        const hangs = hangNextOpen;
+        hangNextOpen = false;
         const close = handle.close.bind(handle);
-        const first = ++opens === 1;
         handle.close = async () => {
           await close();
           active--;
-          if (first) closed.resolve();
+          if (hangs) closed.resolve();
         };
-        if (first) {
+        if (hangs) {
           const stat = handle.stat.bind(handle);
           Object.defineProperty(handle, "stat", {
             value: async () => {
@@ -5229,46 +5352,69 @@ describe("UsageService", () => {
         return handle;
       });
       yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()));
+      const logs = captureLogs();
       yield* Effect.gen(function* () {
         const service = yield* UsageService.make;
-        const base = yield* Effect.tracer;
-        const started = Promise.withResolvers<void>();
-        const tracer = Tracer.make({
-          span(options) {
-            if (options.name === "UsageService.readFileRecords") started.resolve();
-            return base.span(options);
-          },
-        });
-        const assertCutoff = Effect.gen(function* () {
-          yield* TestClock.adjust("299 seconds");
-          const atCutoff = yield* service
-            .readSummary({ ...WINDOW, awaitRefresh: true })
-            .pipe(Effect.result, Effect.forkChild);
-          yield* TestClock.adjust("1 second");
-          const stopped = yield* Fiber.join(atCutoff);
-          assert.strictEqual(stopped._tag === "Failure" && stopped.failure.reason, "scanPending");
-        });
-        const first = yield* service.readSummary(WINDOW).pipe(Effect.result, Effect.forkChild);
+        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 12);
+        yield* Effect.promise(() => NodeFSP.appendFile(transcript, claudeLine(3, 11)));
+        hangNextOpen = true;
+        const stuck = yield* service.readSummary(WINDOW).pipe(Effect.result, Effect.forkChild);
         yield* Effect.promise(() => entered.promise);
-        yield* assertCutoff;
-        yield* Fiber.join(first);
+        const callsWhenHung = { opens, stats };
+        yield* TestClock.adjust("299 seconds");
+        const atCutoff = yield* service
+          .readSummary({ ...WINDOW, awaitRefresh: true })
+          .pipe(Effect.forkChild);
+        yield* TestClock.adjust("1 second");
+        assert.strictEqual((yield* Fiber.join(atCutoff)).partialReason, "scanTimedOut");
+        yield* Fiber.join(stuck);
 
-        const retry = yield* service
-          .readSummary(WINDOW)
-          .pipe(Effect.withTracer(tracer), Effect.result, Effect.forkChild);
-        yield* Effect.promise(() => started.promise);
-        yield* assertCutoff;
-        yield* Fiber.join(retry);
-        assert.strictEqual(opens, 1);
-        assert.strictEqual(active, 1);
+        for (let scan = 0; scan < 2; scan++) {
+          const answered = yield* service.readSummary(WINDOW);
+          assert.deepStrictEqual(
+            {
+              tokens: totalOutputTokens(answered),
+              partialReason: answered.partialReason,
+              status: claudeSource(answered)?.status,
+              message: claudeSource(answered)?.message,
+            },
+            {
+              tokens: 12,
+              partialReason: undefined,
+              status: "partial",
+              message: "1 transcript path(s) could not be read; usage may be incomplete.",
+            },
+          );
+        }
+        assert.deepStrictEqual({ opens, stats }, callsWhenHung);
+        assert.deepStrictEqual(
+          logs
+            .of("Error", "Could not read transcript usage")
+            .map((fields) => fields as { path: string; cause: Error })
+            .map(({ path, cause }) => ({ path, cause: cause.message })),
+          [{ path: transcript, cause: PATH_CALL_PENDING }],
+        );
 
         release.resolve();
         yield* Effect.promise(() => closed.promise);
-        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
-        assert.strictEqual(opens, 2);
-        assert.strictEqual(peak, 1);
+        yield* TestClock.adjust("5 seconds");
+        const healthy = yield* service.readSummary(WINDOW);
+        assert.deepStrictEqual(
+          {
+            tokens: totalOutputTokens(healthy),
+            status: claudeSource(healthy)?.status,
+            opens: opens - callsWhenHung.opens,
+            peak,
+          },
+          { tokens: 23, status: "ok", opens: 1, peak: 1 },
+        );
       }).pipe(
-        Effect.provide(layerService({ prefix: "usage-transcript-stuck-stat", home, settings })),
+        Effect.provide(
+          Layer.mergeAll(
+            layerService({ prefix: "usage-transcript-stuck-stat", home, settings }),
+            logs.layer,
+          ),
+        ),
       );
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );

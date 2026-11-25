@@ -52,7 +52,26 @@ interface TranscriptIoOptions {
   readonly onProgress?: () => void;
 }
 
-const activeReads = new Map<string, Set<() => void>>();
+export interface TranscriptPathFailure {
+  readonly path: string;
+  readonly cause: unknown;
+}
+
+export const PATH_CALL_PENDING = "An earlier file system call on this path has not returned.";
+
+// A call on a hung mount holds its descriptor and a libuv thread until the kernel returns,
+// so a path stays here until its own call settles, and no new call starts on it before then.
+const pendingPaths = new Set<string>();
+
+async function callUnlessPending<A>(path: string, call: () => Promise<A>): Promise<A> {
+  if (pendingPaths.has(path)) throw new Error(PATH_CALL_PENDING);
+  pendingPaths.add(path);
+  try {
+    return await call();
+  } finally {
+    pendingPaths.delete(path);
+  }
+}
 
 /** A cancelled scan must not look alive to its stall watchdog. */
 const progressUntilAborted = (options: TranscriptIoOptions | undefined) => () => {
@@ -97,18 +116,18 @@ export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
   options?: TranscriptIoOptions & { readonly fileName?: string | undefined },
-): Promise<{ readonly files: readonly TranscriptFile[]; readonly failedPaths: number }> {
+) {
   const fileName = options?.fileName;
   const progress = progressUntilAborted(options);
   const candidates: string[] = [];
-  let failedPaths = 0;
+  const failures: TranscriptPathFailure[] = [];
   const walk = async (dir: string): Promise<void> => {
     options?.signal?.throwIfAborted();
     let entries;
     try {
-      entries = await NodeFSP.readdir(dir, { withFileTypes: true });
-    } catch {
-      failedPaths += 1;
+      entries = await callUnlessPending(dir, () => NodeFSP.readdir(dir, { withFileTypes: true }));
+    } catch (cause) {
+      failures.push({ path: dir, cause });
       return;
     } finally {
       progress();
@@ -127,7 +146,7 @@ export async function listTranscriptFiles(
   };
   await walk(root);
   const result = await statTranscriptFiles(candidates, sinceMs, options);
-  return { files: result.files, failedPaths: failedPaths + result.failedPaths };
+  return { files: result.files, failures: [...failures, ...result.failures] };
 }
 
 export async function statTranscriptFiles(
@@ -138,18 +157,18 @@ export async function statTranscriptFiles(
   const found: Array<TranscriptFile | undefined> = Array.from({ length: candidates.length });
   const queue = candidates.entries();
   const progress = progressUntilAborted(options);
-  let failedPaths = 0;
+  const failures: TranscriptPathFailure[] = [];
   const statQueued = async (): Promise<void> => {
     for (const [index, path] of queue) {
       options?.signal?.throwIfAborted();
       try {
-        const stats = await NodeFSP.stat(path);
+        const stats = await callUnlessPending(path, () => NodeFSP.stat(path));
         if (stats.isFile() && stats.mtimeMs >= sinceMs) {
           found[index] = { path, size: stats.size, mtimeMs: stats.mtimeMs };
         }
-      } catch (error) {
-        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
-          failedPaths += 1;
+      } catch (cause) {
+        if (!(cause instanceof Error && "code" in cause && cause.code === "ENOENT")) {
+          failures.push({ path, cause });
         }
       } finally {
         progress();
@@ -159,7 +178,7 @@ export async function statTranscriptFiles(
   await Promise.all(
     Array.from({ length: Math.min(STAT_CONCURRENCY, candidates.length) }, statQueued),
   );
-  return { files: found.filter((file) => file !== undefined), failedPaths };
+  return { files: found.filter((file) => file !== undefined), failures };
 }
 
 export async function readDirectoryVolumeId(path: string): Promise<string> {
@@ -203,40 +222,31 @@ export function transcriptLineGate(markers: readonly [string, ...string[]]) {
 }
 
 /**
- * Returns null on read failure; caching it as empty would hide usage until size/mtime changes.
+ * Rejects with the failure's cause; caching it as empty would hide usage until size/mtime changes.
+ * Rejects at once, with no file system call, while an earlier call on the path is still pending.
  * Rejects with the signal's reason once aborted, and does no further work or progress after it.
  */
 export async function readTranscriptRecords<State>(
   filePath: string,
   format: TranscriptUsageFormat<State>,
   resumeFrom?: TranscriptParsePosition,
-  options?: TranscriptIoOptions & {
-    readonly streamingThresholdBytes?: number;
-  },
-): Promise<TranscriptParseResult | null> {
+  options?: TranscriptReadOptions,
+): Promise<TranscriptParseResult> {
+  options?.signal?.throwIfAborted();
+  return callUnlessPending(filePath, () => readRecords(filePath, format, resumeFrom, options));
+}
+
+type TranscriptReadOptions = TranscriptIoOptions & { readonly streamingThresholdBytes?: number };
+
+async function readRecords<State>(
+  filePath: string,
+  format: TranscriptUsageFormat<State>,
+  resumeFrom: TranscriptParsePosition | undefined,
+  options: TranscriptReadOptions | undefined,
+): Promise<TranscriptParseResult> {
   const signal = options?.signal;
   const progress = progressUntilAborted(options);
   const settle = abortAware(signal);
-  for (let read = activeReads.get(filePath); read !== undefined; read = activeReads.get(filePath)) {
-    signal?.throwIfAborted();
-    const outstanding = read;
-    await settle(
-      new Promise<void>((resolve) => {
-        const resume = () => {
-          outstanding.delete(resume);
-          signal?.removeEventListener("abort", resume);
-          resolve();
-        };
-        outstanding.add(resume);
-        signal?.addEventListener("abort", resume, { once: true });
-      }),
-    );
-  }
-  signal?.throwIfAborted();
-
-  // An interrupted stat or open can still hold the descriptor until its native call returns.
-  const waiters = new Set<() => void>();
-  activeReads.set(filePath, waiters);
   const streamingThresholdBytes = options?.streamingThresholdBytes ?? STREAMING_THRESHOLD_BYTES;
   const compressed = filePath.endsWith(".jsonl.zst");
   let handle: NodeFSP.FileHandle | undefined;
@@ -250,7 +260,7 @@ export async function readTranscriptRecords<State>(
     progress();
     const stat = await settle(opened.stat());
     progress();
-    if (!stat.isFile()) return null;
+    if (!stat.isFile()) throw new Error("The transcript path is not a regular file.");
     const codec = format.state;
     const decodeState = codec === undefined ? undefined : Schema.decodeUnknownOption(codec.schema);
     const encodeState = codec === undefined ? undefined : Schema.encodeSync(codec.schema);
@@ -406,12 +416,7 @@ export async function readTranscriptRecords<State>(
       },
       resumed,
     };
-  } catch {
-    signal?.throwIfAborted();
-    return null;
   } finally {
     await handle?.close().catch(() => undefined);
-    activeReads.delete(filePath);
-    for (const resume of waiters) resume();
   }
 }

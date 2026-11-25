@@ -1,3 +1,9 @@
+## 2026-11-25 — A stuck transcript or saved-usage disk no longer holds up Usage
+
+- When one transcript sits on a disk that stops answering, Usage refreshes on time with the other transcripts' figures. It marks that source as partial and keeps counting what it had already read from the stuck file. Before, every later refresh waited behind it.
+- When saved usage takes more than 20 seconds to load, for example from a stuck network disk, Usage answers with what it has and notes that saved usage has not finished loading. The note clears once the load finishes.
+- A transcript that cannot be read is now logged as an error with its path and the reason, once until it reads again.
+
 ## 2026-11-25 — Replay usage-limit recovery receipts
 
 - Groundwork for usage-limit recovery accounting: a retry counts as a recovery only when it completes for the same stopped run, request and selected account, and only a failed retry counts as a failed recovery. Lost tokens stay unknown. Nothing in the app reports this yet.
