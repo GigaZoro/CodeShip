@@ -44,6 +44,7 @@ import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
 import { STALL_LOG_NOTE } from "../observability/EventLoopMonitor.ts";
+import { familyHookOperation } from "../vcs/familyWorktreeCheckout.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   releasedWorktree,
@@ -136,7 +137,7 @@ class WorktreeRecreateBlockedError extends Schema.TaggedError<WorktreeRecreateBl
       return `Worktree removal was interrupted at ${this.worktreePath}. The existing checkout must be inspected before this thread can start.`;
     if (this.reason === "project")
       return `Could not verify the project for the released worktree at ${this.worktreePath}.`;
-    return `The released worktree path ${this.worktreePath} is already occupied. Move the existing files before resuming this thread.`;
+    return `The released worktree path ${this.worktreePath} is already occupied. Inspect its Git registration and preserve local files before resuming this thread.`;
   }
 }
 
@@ -617,6 +618,7 @@ export const layer: Layer.Layer<
         readonly contents: string;
       }) {
         const { threadId, worktreePath, receipt, contents } = input;
+        const retrySetup = `Checkout ${worktreePath}, branch ${input.branch}. Recovery receipt: ${receipt}. Fix the setup action or turn off its worktree trigger in Settings → Projects → Actions, then send a follow-up. Keep the receipt for recovery.`;
         const currentReceipt = readReleaseFile(receipt).pipe(
           Effect.mapError((cause) => new RecoveredWorktreeSetupError({ detail: cause.message })),
         );
@@ -665,7 +667,7 @@ export const layer: Layer.Layer<
                 const result = yield* script.completion ?? Effect.succeed(null);
                 if (result?.exitCode !== 0)
                   return yield* new RecoveredWorktreeSetupError({
-                    detail: `Setup script exited with ${result?.exitCode ?? "no exit code"}.`,
+                    detail: `${script.scriptName} exited with ${result?.exitCode ?? "no exit code"}. See the command and output in Worktree setup. ${retrySetup}`,
                     ...(result?.exitCode == null ? { disposition: "retryable" as const } : {}),
                   });
               }
@@ -687,7 +689,7 @@ export const layer: Layer.Layer<
                 const error = isRecoveredWorktreeSetupError(failure)
                   ? failure
                   : new RecoveredWorktreeSetupError({
-                      detail: failure instanceof Error ? failure.message : String(failure),
+                      detail: `${failure instanceof Error ? failure.message : String(failure)} ${retrySetup}`,
                       disposition: "retryable",
                     });
                 return setupTracker
@@ -736,6 +738,7 @@ export const layer: Layer.Layer<
         readonly thread: OrchestrationV2AppThread;
         readonly worktreePath: string;
         readonly branch: string;
+        readonly followUpAt: number | undefined;
       }) {
         const { branch } = input;
         const exists = yield* fileSystem.exists(input.worktreePath);
@@ -777,8 +780,6 @@ export const layer: Layer.Layer<
         const restoring = restoringWorktreeFile(directory, canonical);
         if (exists && !released) return;
         const setupPending = released !== null && released.receipt === released.setupReceipt;
-        if (exists && !released?.request.family && !setupPending && released?.receipt !== restoring)
-          return;
         if (
           exists &&
           ((yield* fileSystem.realPath(canonical)) !== canonical ||
@@ -801,6 +802,7 @@ export const layer: Layer.Layer<
           return;
         }
         const cwd = project.workspaceRoot;
+        const retryHook = input.followUpAt === undefined ? {} : { followUpAt: input.followUpAt };
         const prepareSetup = Effect.fnUntraced(function* (
           current: NonNullable<typeof released>,
           receipt: string,
@@ -822,20 +824,18 @@ export const layer: Layer.Layer<
           };
         });
         if (exists && setupPending) {
-          if ((yield* gitWorkflow.currentBranch(worktreePath)) !== branch)
+          const current = yield* gitWorkflow.currentBranch(canonical);
+          if (current !== branch)
             return yield* new RecoveredWorktreeSetupError({
-              detail: "Recovered worktree is no longer on the expected branch.",
+              detail: `Recovered checkout ${worktreePath} requires branch ${branch}, and currently has ${current ?? "detached HEAD"}. Preserve your changes and return to ${branch}, then send a follow-up. Keep the setup receipt at ${released.receipt}.`,
             });
-          if (released.request.family)
-            yield* gitWorkflow.recoverInterruptedWorktree(worktreePath, cwd, branch, {
-              setup: true,
-            });
+          yield* gitWorkflow.recoverInterruptedWorktree(canonical, cwd, branch, { setup: true });
           return yield* prepareSetup(released, released.receipt);
         }
         if (exists && released?.receipt.endsWith(".releasing")) {
           // Removal and turn start share this lease. An intact original may accept the new turn.
           yield* gitWorkflow
-            .recoverInterruptedWorktree(worktreePath, cwd, branch, {
+            .recoverInterruptedWorktree(canonical, cwd, branch, {
               original: { ...released.request, backupDirectory: directory },
             })
             .pipe(
@@ -861,7 +861,7 @@ export const layer: Layer.Layer<
         });
         if (exists && released?.receipt === restoring) {
           if (yield* fileSystem.exists(path.join(worktreePath, ".git"))) {
-            yield* gitWorkflow.recoverInterruptedWorktree(worktreePath, cwd, branch);
+            yield* gitWorkflow.recoverInterruptedWorktree(worktreePath, cwd, branch, retryHook);
             return yield* prepareSetup(released, restoring);
           }
           if ((yield* fileSystem.readDirectory(worktreePath)).length)
@@ -895,7 +895,7 @@ export const layer: Layer.Layer<
               baseRef: base.refName,
               durableRefs: [released.request.durableRef, ...(released.request.alsoDurable ?? [])],
             },
-            ...(released.request.family ? { releasedFamily: true } : {}),
+            ...(released.request.family ? { releasedFamily: true, ...retryHook } : {}),
           };
           if (localBranchNames.includes(branch)) {
             yield* gitWorkflow.createWorktree(
@@ -915,7 +915,7 @@ export const layer: Layer.Layer<
             );
           }
           if (released.request.family) {
-            yield* gitWorkflow.recoverInterruptedWorktree(worktreePath, cwd, branch);
+            yield* gitWorkflow.recoverInterruptedWorktree(worktreePath, cwd, branch, retryHook);
             return yield* prepareSetup(released, restoring);
           }
           return singletonSetup;
@@ -1308,15 +1308,31 @@ export const layer: Layer.Layer<
         (yield* isManagedWorktreePath(worktreePath))
       ) {
         const recreateResult = yield* Effect.result(
-          recreateMissingWorktree({ thread: projection.thread, worktreePath, branch }).pipe(
-            Effect.mapError((cause) =>
-              cause._tag === "WorktreeRecreateNoBaseError" ||
-              cause._tag === "RecoveredWorktreeSetupError" ||
-              cause._tag === "WorktreeReleaseReceiptError" ||
-              cause._tag === "WorktreeRecreateBlockedError"
+          recreateMissingWorktree({
+            thread: projection.thread,
+            worktreePath,
+            branch,
+            followUpAt:
+              message.createdBy === "user" &&
+              message.role === "user" &&
+              !message.scheduledTaskId &&
+              !message.delegatedCompletion &&
+              !message.senderThreadId &&
+              !run.automaticContinuationOfRunId &&
+              !run.restartContinuationOfRunId
+                ? DateTime.toEpochMillis(message.createdAt)
+                : undefined,
+          }).pipe(
+            Effect.mapError((cause) => {
+              if (cause._tag === "GitCommandError" && cause.operation === familyHookOperation)
+                return new RecoveredWorktreeSetupError({ detail: cause.detail });
+              return cause._tag === "WorktreeRecreateNoBaseError" ||
+                cause._tag === "RecoveredWorktreeSetupError" ||
+                cause._tag === "WorktreeReleaseReceiptError" ||
+                cause._tag === "WorktreeRecreateBlockedError"
                 ? cause
-                : new WorktreeRecreateError({ worktreePath, branch, cause }),
-            ),
+                : new WorktreeRecreateError({ worktreePath, branch, cause });
+            }),
           ),
         );
         const failRecovery = Effect.fn("ProviderTurnStartService.failRecovery")(function* (

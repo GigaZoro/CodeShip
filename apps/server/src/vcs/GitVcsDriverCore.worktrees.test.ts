@@ -4,6 +4,7 @@ import * as NodeURL from "node:url";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { linkDirectory } from "@t3tools/shared/testing/symlinks";
 import { assert, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -177,12 +178,15 @@ it.layer(layerTest)("Git worktree creation", (it) => {
     () =>
       Effect.gen(function* () {
         const repo = yield* makeTmpDir();
-        yield* initRepoWithCommit(repo);
+        const { initialBranch } = yield* initRepoWithCommit(repo);
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const driver = yield* GitVcsDriver.GitVcsDriver;
-        const cwd = yield* existingWorkspacePath(repo);
-        const admin = path.join(cwd, ".git");
+        const cwd = yield* existingWorkspacePath(yield* makeTmpDir());
+        yield* git(repo, ["worktree", "add", "-b", "recover-hook", cwd, initialBranch]);
+        const admin = yield* existingWorkspacePath(
+          yield* git(cwd, ["rev-parse", "--absolute-git-dir"]),
+        );
         const head = yield* git(cwd, ["rev-parse", "HEAD"]);
         const oldGit = (args: string[]) =>
           args[0] === "--list-cmds=builtins"
@@ -206,9 +210,9 @@ it.layer(layerTest)("Git worktree creation", (it) => {
           /built-in hook.*Git 2\.36/,
         );
 
-        const hook = path.join(admin, "hooks", "post-checkout");
+        const hook = path.join(repo, ".git", "hooks", "post-checkout");
         yield* writeTextFile(
-          cwd,
+          repo,
           ".git/hooks/post-checkout",
           "#!/bin/sh\nprintf called >> hook-calls\nexit 19\n",
         );
@@ -217,11 +221,61 @@ it.layer(layerTest)("Git worktree creation", (it) => {
           driver
             .execute({ operation: "test.familyCheckoutHook", cwd, args })
             .pipe(Effect.map((result) => result.stdout));
-        yield* Effect.flip(familyCheckoutHook(cwd, admin, head, "finish", currentGit));
-        assert.isFalse(yield* fs.exists(path.join(admin, pendingFamilyCheckoutHook)));
-        assert.isTrue(yield* fs.exists(path.join(admin, runningFamilyCheckoutHook)));
-        yield* Effect.flip(familyCheckoutHook(cwd, admin, head, "finish", currentGit));
+        const firstRun = yield* Clock.currentTimeMillis;
+        const finish = (sentAt?: number) =>
+          familyCheckoutHook(cwd, admin, head, "finish", currentGit, sentAt);
+        const failure = yield* Effect.flip(finish(firstRun));
+        assert.include(failure.message, "19");
+        assert.include(failure.message, path.join(admin, pendingFamilyCheckoutHook));
+        assert.isTrue(yield* fs.exists(path.join(admin, pendingFamilyCheckoutHook)));
+        assert.isFalse(yield* fs.exists(path.join(admin, runningFamilyCheckoutHook)));
+        yield* fs.writeFileString(hook, "#!/bin/sh\nprintf recovered >> hook-calls\n");
+        yield* Effect.flip(finish(firstRun));
         assert.equal(yield* fs.readFileString(path.join(cwd, "hook-calls")), "called");
+        yield* Effect.flip(finish());
+        const nextRun = (yield* Clock.currentTimeMillis) + 1;
+        const recover = recoverInterruptedWorktree(cwd, repo, "recover-hook", {
+          followUpAt: nextRun,
+        });
+        const trackedFile = path.join(cwd, (yield* git(cwd, ["ls-files"])).split("\n")[0]!);
+        const original = yield* fs.readFileString(trackedFile);
+        yield* fs.writeFileString(trackedFile, original + "local edit\n");
+        yield* Effect.flip(recover);
+        assert.equal(yield* fs.readFileString(path.join(cwd, "hook-calls")), "called");
+        assert.equal(yield* fs.readFileString(trackedFile), original + "local edit\n");
+        yield* fs.remove(trackedFile);
+        const missing = yield* Effect.flip(recover);
+        assert.include(missing.message, path.join(admin, pendingFamilyCheckoutHook));
+        assert.isFalse(yield* fs.exists(trackedFile));
+        assert.equal(yield* fs.readFileString(path.join(cwd, "hook-calls")), "called");
+        yield* fs.writeFileString(trackedFile, original);
+        yield* recover;
+        yield* recover;
+        assert.equal(yield* fs.readFileString(path.join(cwd, "hook-calls")), "calledrecovered");
+        assert.isFalse(yield* fs.exists(path.join(admin, pendingFamilyCheckoutHook)));
+        assert.isFalse(yield* fs.exists(path.join(admin, runningFamilyCheckoutHook)));
+
+        yield* familyCheckoutHook(cwd, admin, head, "prepare", currentGit, firstRun);
+        const interruptedGit = (args: string[]) =>
+          args[0] !== "hook"
+            ? currentGit(args)
+            : Effect.fail(
+                new GitCommandError({
+                  operation: "test.familyCheckoutHook",
+                  command: "git hook run",
+                  cwd,
+                  detail: "Git terminated while waiting for the hook",
+                  exitCode: 143,
+                }),
+              );
+        const interrupted = yield* Effect.flip(
+          familyCheckoutHook(cwd, admin, head, "finish", interruptedGit, firstRun),
+        );
+        assert.include(interrupted.message, path.join(admin, runningFamilyCheckoutHook));
+        yield* Effect.flip(recover);
+        assert.isTrue(yield* fs.exists(path.join(admin, runningFamilyCheckoutHook)));
+        assert.isFalse(yield* fs.exists(path.join(admin, pendingFamilyCheckoutHook)));
+        assert.equal(yield* fs.readFileString(path.join(cwd, "hook-calls")), "calledrecovered");
       }),
   );
   it.effect(
@@ -739,6 +793,43 @@ it.layer(layerTest)("Git worktree creation", (it) => {
         const restored = yield* driver.createWorktree({ cwd, refName: branch, path: original });
         assert.equal(restored.worktree.path, original);
         assert.equal(yield* git(original, ["symbolic-ref", "--short", "HEAD"]), branch);
+      }),
+  );
+
+  it.effect(
+    "allocates a separate managed directory when a singleton release reserves the default path",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const cwd = yield* existingWorkspacePath(yield* makeTmpDir());
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const worktreesDirectory = yield* existingWorkspacePath(
+          yield* makeTmpDir("managed-singleton-"),
+        );
+        const create = (newRefName: string) =>
+          driver.createWorktree(
+            { cwd, refName: initialBranch, newRefName, path: null },
+            { worktreesDirectory },
+          );
+        const original = (yield* create("feature/restore")).worktree.path;
+        const { file } = yield* queueWorktreeRelease({
+          stateDir,
+          threadId: "original-owner",
+          runId: "finished",
+          worktreePath: original,
+          durableRef: "refs/heads/" + initialBranch,
+        });
+        const contents = yield* fs.readFileString(file);
+        yield* git(cwd, ["worktree", "remove", original]);
+        yield* fs.rename(file, file + ".released");
+
+        const replacement = (yield* create("feature-restore")).worktree.path;
+
+        assert.notEqual(replacement, original);
+        assert.isFalse(yield* fs.exists(original));
+        assert.equal(yield* fs.readFileString(file + ".released"), contents);
       }),
   );
 

@@ -21,6 +21,10 @@ export class WorkspaceLeasePathError extends Data.TaggedError("WorkspaceLeasePat
 const pathKey = (path: string, windows: boolean) =>
   windows ? NodePath.win32.toNamespacedPath(NodePath.win32.normalize(path)).toLowerCase() : path;
 
+// Missing checkouts have no inode or native spelling. Collisions only serialize operations.
+export const foldedWorkspacePath = (value: string) =>
+  value.normalize("NFD").toUpperCase().toLowerCase();
+
 // Native realpath expands Windows 8.3 names and requires the entry to exist.
 export const existingWorkspacePath = (target: string) =>
   Effect.tryPromise(() => NodeFSP.realpath(target));
@@ -68,7 +72,9 @@ export const withWorkspaceLease = Effect.fn("WorkspaceLease.withWorkspaceLease")
   E,
   R,
 >(cwd: string, effect: Effect.Effect<A, E, R>) {
-  const key = pathKey(yield* resolveWorkspacePath(cwd), yield* HostProcess.isWindows);
+  const key = foldedWorkspacePath(
+    pathKey(yield* resolveWorkspacePath(cwd), yield* HostProcess.isWindows),
+  );
   const lease = leases.get(key) ?? { semaphore: Semaphore.makeUnsafe(1), users: 0 };
   leases.set(key, lease);
   lease.users++;

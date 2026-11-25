@@ -165,6 +165,8 @@ export interface CreateWorktreeOptions {
   readonly progress?: CreateWorktreeProgress;
   /** A released family has a durable receipt for interrupted checkout recovery. */
   readonly releasedFamily?: boolean;
+  /** Time of a user-authored follow-up that can retry a hook after a confirmed failure. */
+  readonly followUpAt?: number;
   /** Null or omitted defers to the checkout's t3.json. */
   readonly submodules?: WorktreeSubmodules | null;
   readonly worktreesDirectory?: string;
