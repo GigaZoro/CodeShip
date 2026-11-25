@@ -194,6 +194,7 @@ export const discovery = {
   executable: "gh",
   versionArgs: ["--version"],
   authArgs: ["auth", "status", "--json", "hosts"],
+  concurrency: GH_PROCESS_CONCURRENCY,
   parseAuth: parseGitHubAuth,
   installHint:
     "Install the GitHub command-line tool (`gh`) via https://cli.github.com/ or your package manager (for example `brew install gh`).",
@@ -232,9 +233,7 @@ export const makeDiscovery = Effect.gen(function* () {
       );
       const cli = yield* probeSourceControlProvider({
         cwd,
-        process: {
-          run: (input) => process.run({ ...input, concurrency: GH_PROCESS_CONCURRENCY }),
-        },
+        process,
         spec: { ...discovery, parseAuth: (input) => parseGitHubAuth(input, settings) },
       });
       const savedToken = (settings.tokens["github.com"] ?? "").trim() !== "";

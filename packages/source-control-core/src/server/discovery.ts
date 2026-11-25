@@ -45,6 +45,8 @@ export type SourceControlCliDiscoverySpec = SourceControlDiscoverySpecBase & {
     context: SourceControlProvider.SourceControlProviderContext,
   ) => ReadonlyArray<string>;
   readonly probeTimeoutMs?: number;
+  /** The CLI's own process bound, so discovery cannot add to the bursts it limits. */
+  readonly concurrency?: SourceControlHost.SourceControlProcessInput["concurrency"];
   readonly parseAuth: (input: SourceControlAuthProbeInput) => SourceControlProviderAuth;
   /** `null` when the CLI holds nothing for the remote; `undefined` when its output cannot say. */
   readonly refineUnknownRemote?: (
@@ -82,6 +84,10 @@ const API_PROBE_TIMEOUT = "3 seconds";
 
 function probeTimeoutMs(spec: SourceControlCliDiscoverySpec): number {
   return spec.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+}
+
+function processBound(spec: SourceControlCliDiscoverySpec) {
+  return spec.concurrency === undefined ? {} : { concurrency: spec.concurrency };
 }
 
 interface DiscoveryProbeResult {
@@ -200,6 +206,7 @@ function probeCli(input: {
       args: input.spec.versionArgs,
       cwd: input.cwd,
       timeoutMs: probeTimeoutMs(input.spec),
+      ...processBound(input.spec),
       maxOutputBytes: 8_000,
       appendTruncationMarker: true,
     })
@@ -286,6 +293,7 @@ export function probeSourceControlProvider(input: {
           cwd: input.cwd,
           allowNonZeroExit: true,
           timeoutMs: probeTimeoutMs(spec),
+          ...processBound(spec),
           maxOutputBytes: 8_000,
           appendTruncationMarker: true,
         })
@@ -377,6 +385,7 @@ function refineWithSpec(input: {
       cwd: input.cwd,
       allowNonZeroExit: true,
       timeoutMs: probeTimeoutMs(spec),
+      ...processBound(spec),
       maxOutputBytes: 8_000,
       appendTruncationMarker: true,
     })

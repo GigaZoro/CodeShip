@@ -22,6 +22,12 @@ import * as SourceControlProvider from "@t3tools/source-control-core/server/Sour
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+/**
+ * Each az run starts Python, about a second of CPU, and reads the token cache every az command on
+ * the machine shares, so the server's bursts starved the user's own az calls.
+ */
+export const AZ_PROCESS_CONCURRENCY = { key: "az", limit: 2 } as const;
+
 const azureDevOpsCommandErrorFields = {
   operation: Schema.Literal("execute"),
   command: Schema.Literal("az"),
@@ -376,6 +382,7 @@ export const make = Effect.gen(function* () {
         classifyFailure: classifyAzFailure,
         notFoundDetail: "Pull request not found.",
         timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        concurrency: AZ_PROCESS_CONCURRENCY,
         ...(input.maxOutputBytes === undefined ? {} : { maxOutputBytes: input.maxOutputBytes }),
       })
       .pipe(

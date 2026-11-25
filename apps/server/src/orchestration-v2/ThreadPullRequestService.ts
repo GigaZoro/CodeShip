@@ -11,6 +11,8 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -91,6 +93,11 @@ export function projectWorkspaceMatchesSnapshot(
 }
 
 const BACKFILL_ATTEMPTS = 5;
+/**
+ * Each restart asks the host about every thread in this window that settled with no pull request.
+ * Older threads keep the answer they got; viewing or linking one asks again.
+ */
+const BACKFILL_WINDOW = Duration.days(1);
 
 interface RefreshRequest {
   readonly threadId: ThreadId | null;
@@ -152,10 +159,12 @@ export const make = Effect.gen(function* () {
         : threadSnapshot.threads;
     const projects = new Map(projectShells.map((project) => [project.id, project]));
     if (request.backfill) {
+      const backfillSince = DateTime.subtractDuration(yield* DateTime.now, BACKFILL_WINDOW);
       for (const thread of snapshotThreads) {
         if (
           (thread.settledOverride === "settled" || thread.settledAt !== null) &&
-          thread.branchPullRequest == null
+          thread.branchPullRequest == null &&
+          DateTime.isGreaterThanOrEqualTo(thread.settledAt ?? thread.updatedAt, backfillSince)
         ) {
           pendingBackfill.set(thread.id, BACKFILL_ATTEMPTS);
         }
@@ -375,7 +384,6 @@ export const make = Effect.gen(function* () {
       case "thread.metadata-updated":
         return worker.enqueue({ threadId: event.threadId, refresh: false });
       case "thread.unsettled":
-      case "checkpoint.captured":
         return worker.enqueue({ threadId: event.threadId, refresh: true });
       case "run.updated":
         if (

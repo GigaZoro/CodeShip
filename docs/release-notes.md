@@ -1,3 +1,9 @@
+## 2026-11-25 — Pull request checks no longer crowd out your Azure CLI
+
+- T3.CodeShip now runs at most two Azure CLI (`az`) commands at a time, including the checks it makes when it starts. Before, its pull request lookups could keep eight running at once, so your own `az` commands on the same machine slowed to a crawl.
+- A branch with no pull request is asked about again after a push, or after a wait that grows from five minutes to a day. Viewing the thread still checks it at once.
+- After a restart, T3.CodeShip only checks finished threads from the last day for a pull request opened since, instead of every finished thread. Each turn's end makes one check fewer.
+
 ## 2026-11-25 — Usage saves only what changed
 
 - After a refresh, Usage saves only the transcripts that changed instead of rewriting everything it remembers, which could be tens of megabytes on each refresh. It merges those saves into one file from time to time, a part at a time, so the app stays responsive while it does.

@@ -101,6 +101,7 @@ describe("AzureDevOpsCli.layer", () => {
         cwd: "/repo",
         notFoundDetail: "Pull request not found.",
         timeoutMs: 30_000,
+        concurrency: { key: "az", limit: 2 },
       });
       assert.strictEqual(result.isCrossRepository, false);
     }).pipe(Effect.provide(layer)),

@@ -3,11 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as AzureDevOpsPullRequestCli from "./AzureDevOpsPullRequestCli.ts";
-import {
-  LOCATION_CACHE_CAPACITY,
-  make,
-  MAX_DIFF_SPAWNS,
-} from "./AzureDevOpsPullRequestProvider.ts";
+import { LOCATION_CACHE_CAPACITY, make } from "./AzureDevOpsPullRequestProvider.ts";
 import {
   byteLength,
   MAX_DIFF_SLICE_BYTES,
@@ -190,42 +186,6 @@ describe("getChangeRequest", () => {
 });
 
 describe("getDiff reads", () => {
-  it.effect("holds every reader together to one request's worth of processes", () =>
-    Effect.gen(function* () {
-      const paths = ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"];
-      let inFlight = 0;
-      let peakInFlight = 0;
-
-      const provider = yield* make.pipe(
-        Effect.provide(
-          Layer.mock(AzureDevOpsPullRequestCli.AzureDevOpsPullRequestCli)({
-            getPullRequest: () => Effect.succeed(PULL_REQUEST),
-            listIterations: () => Effect.succeed([ITERATION]),
-            listIterationChanges: () =>
-              Effect.succeed({ changes: paths.map((path) => change(path)), truncated: false }),
-            readItemContent: () =>
-              Effect.gen(function* () {
-                inFlight += 1;
-                peakInFlight = Math.max(peakInFlight, inFlight);
-                // Yield like a subprocess to exercise concurrency.
-                yield* Effect.yieldNow;
-                yield* Effect.yieldNow;
-                inFlight -= 1;
-                return { contents: side("new", 2, 4), isBinary: false };
-              }),
-          }),
-        ),
-      );
-
-      const readDiff = (number: number) =>
-        provider.getDiff({ cwd: "/w", repository: "acme/web", host: "dev.azure.com", number });
-
-      yield* Effect.all([readDiff(7), readDiff(8)], { concurrency: 2 });
-
-      expect(peakInFlight).toBeLessThanOrEqual(MAX_DIFF_SPAWNS);
-    }),
-  );
-
   it.effect("leaves a run of files it could not diff at all for the next slice", () =>
     Effect.gen(function* () {
       const paths = Array.from({ length: MAX_DIFF_SLICE_FILES + 20 }, (_, at) => `gen/a${at}.bin`);
