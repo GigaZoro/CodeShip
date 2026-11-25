@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { type ManagedPolicyDocument, ServerSelfUpdateError } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { linkDirectory } from "@t3tools/shared/testing/symlinks";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -20,6 +21,8 @@ import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as ServerActivation from "../serverActivation.ts";
+import { prunePinnedRuntimes } from "./pinnedRuntime.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 import * as ServerSelfUpdate from "./selfUpdate.ts";
@@ -35,6 +38,10 @@ interface HarnessOptions {
   readonly requestUpdate?: ServiceLauncherClient.ServiceLauncherClient["Service"]["requestUpdate"];
   readonly desktopAppUpdate?: DesktopAppUpdate.DesktopAppUpdate["Service"];
   readonly policy?: ManagedPolicyDocument;
+  /** What the server's parked work waits for: the launcher committing this version. */
+  readonly activation?: Effect.Effect<void>;
+  readonly environment?: NodeJS.ProcessEnv;
+  readonly homeDirectory?: string;
 }
 
 const archiveBytes = new TextEncoder().encode("not really a tarball");
@@ -149,6 +156,10 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
     Effect.provideService(HttpClient.HttpClient, releaseHttpClient(order, options.beforeDownload)),
     Effect.provideService(HostProcess.Platform, "linux"),
     Effect.provideService(HostProcess.Architecture, "x64"),
+    // Never the real PATH or home: their `t3` launchers belong to the developer's install.
+    Effect.provideService(HostProcess.Environment, options.environment ?? {}),
+    Effect.provideService(HostProcess.HomeDirectory, options.homeDirectory ?? baseDir),
+    Effect.provideService(ServerActivation.ServerActivation, options.activation),
     Effect.provide(
       Layer.merge(
         ServerConfig.layer({ ...config, mode: options.mode ?? "web" }),
@@ -156,7 +167,7 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
       ),
     ),
   );
-  return { selfUpdate, order };
+  return { selfUpdate, order, baseDir };
 });
 
 it.layer(NodeServices.layer)("server self update", (it) => {
@@ -359,21 +370,117 @@ it.layer(NodeServices.layer)("server self update", (it) => {
   );
 });
 
+/** An `lsof` listing in which no process runs a pinned runtime. */
+const otherProcesses = ProcessRunner.ProcessRunner.of({
+  run: () =>
+    Effect.succeed({
+      stdout: "p42\nftxt\nn/bin/sh\n",
+      stderr: "",
+      code: ChildProcessSpawner.ExitCode(0),
+      timedOut: false,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      stdoutInvalidUtf8: false,
+      stderrInvalidUtf8: false,
+    }),
+});
+
+/** Completed runtimes whose sentinels date from the epoch, so a prune a day later may remove them. */
+const writeSettledRuntimes = Effect.fn("test.write_settled_runtimes")(function* (
+  versionsDir: string,
+  versions: ReadonlyArray<string>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  for (const version of versions) {
+    const directory = path.join(versionsDir, version);
+    yield* fs.makeDirectory(directory, { recursive: true });
+    yield* fs.writeFileString(path.join(directory, "t3"), "");
+    const sentinel = path.join(directory, ".install-complete");
+    yield* fs.writeFileString(sentinel, `${version}\n`);
+    yield* fs.utimes(sentinel, 0, 0);
+  }
+});
+
+it.layer(NodeServices.layer)("moving launchers when a self-update activates", (it) => {
+  const replacedVersion = "0.0.1";
+  const newerVersion = "9999.0.0";
+
+  // regression: AB#7122 a self-updated service left `t3` on the replaced runtime
+  // POSIX symlink launchers on a colon-separated PATH; Windows uses `t3.cmd` shims.
+  it.effect.skipIf(isWindowsHost)(
+    "moves every launcher on the replaced runtime to the committed one, so prune can drop it",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-launchers-on-update-" });
+        const pathBin = path.join(tempDir, "bin");
+        const newerBin = path.join(tempDir, "newer-bin");
+        const environment = { PATH: [newerBin, pathBin].join(":") };
+        const activated = yield* Deferred.make<void>();
+        // Activation runs on the fiber of the work parked behind it, so awaiting that fiber
+        // waits for exactly that work.
+        const parked: Array<Fiber.Fiber<unknown, unknown>> = [];
+        const { baseDir } = yield* makeHarness({
+          activation: Effect.fiber.pipe(
+            Effect.tap((fiber) => Effect.sync(() => parked.push(fiber))),
+            Effect.andThen(Deferred.await(activated)),
+          ),
+          environment,
+          homeDirectory: tempDir,
+        });
+        const versionsDir = path.join(baseDir, "runtime", "versions");
+        const runtimeEntry = (version: string) => path.join(versionsDir, version, "t3");
+        yield* writeSettledRuntimes(versionsDir, [
+          replacedVersion,
+          packageJson.version,
+          newerVersion,
+        ]);
+        // Off PATH, so only the install script's record names it.
+        const recordedLauncher = path.join(tempDir, "opt", "t3");
+        const pathLauncher = path.join(pathBin, "t3");
+        const newerLauncher = path.join(newerBin, "t3");
+        for (const launcher of [recordedLauncher, pathLauncher, newerLauncher]) {
+          yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
+        }
+        yield* fs.symlink(runtimeEntry(replacedVersion), recordedLauncher);
+        yield* fs.symlink(runtimeEntry(replacedVersion), pathLauncher);
+        // Someone moved this one past the service; the service never moves it back.
+        yield* fs.symlink(runtimeEntry(newerVersion), newerLauncher);
+        yield* fs.writeFileString(
+          path.join(baseDir, "runtime", "launchers"),
+          `${recordedLauncher}\n`,
+        );
+
+        yield* Deferred.succeed(activated, undefined);
+        yield* Fiber.awaitAll(parked);
+        expect(
+          yield* Effect.forEach([recordedLauncher, pathLauncher, newerLauncher], (launcher) =>
+            fs.readLink(launcher),
+          ),
+        ).toEqual([
+          runtimeEntry(packageJson.version),
+          runtimeEntry(packageJson.version),
+          runtimeEntry(newerVersion),
+        ]);
+
+        yield* TestClock.setTime(24 * 60 * 60 * 1000);
+        yield* prunePinnedRuntimes({ baseDir, keep: [] }).pipe(
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.provideService(HostProcess.Environment, environment),
+          Effect.provideService(HostProcess.HomeDirectory, tempDir),
+          Effect.provideService(ProcessRunner.ProcessRunner, otherProcesses),
+        );
+        expect((yield* fs.readDirectory(versionsDir)).toSorted()).toEqual(
+          [packageJson.version, newerVersion].toSorted(),
+        );
+      }),
+  );
+});
+
 it.layer(NodeServices.layer)("pruning runtimes on start", (it) => {
   const staleVersion = "0.0.1";
-  const otherProcesses = ProcessRunner.ProcessRunner.of({
-    run: () =>
-      Effect.succeed({
-        stdout: "p42\nftxt\nn/bin/sh\n",
-        stderr: "",
-        code: ChildProcessSpawner.ExitCode(0),
-        timedOut: false,
-        stdoutTruncated: false,
-        stderrTruncated: false,
-        stdoutInvalidUtf8: false,
-        stderrInvalidUtf8: false,
-      }),
-  });
 
   const pruneOnStart = Effect.fn("test.prune_on_start")(function* (input: {
     readonly executable: "own runtime" | "elsewhere";
@@ -387,14 +494,10 @@ it.layer(NodeServices.layer)("pruning runtimes on start", (it) => {
     const baseDir = input.symlinkedHome ? path.join(tempDir, "linked-home") : realHome;
     const versionsDir = path.join(baseDir, "runtime", "versions");
     yield* TestClock.setTime(24 * 60 * 60 * 1000);
-    for (const version of [staleVersion, packageJson.version]) {
-      const directory = path.join(realHome, "runtime", "versions", version);
-      yield* fs.makeDirectory(directory, { recursive: true });
-      yield* fs.writeFileString(path.join(directory, "t3"), "");
-      const sentinel = path.join(directory, ".install-complete");
-      yield* fs.writeFileString(sentinel, `${version}\n`);
-      yield* fs.utimes(sentinel, 0, 0);
-    }
+    yield* writeSettledRuntimes(path.join(realHome, "runtime", "versions"), [
+      staleVersion,
+      packageJson.version,
+    ]);
     if (input.symlinkedHome) yield* linkDirectory(realHome, baseDir);
     // Like `process.execPath`, the running runtime is reported by its real path.
     const executablePath =

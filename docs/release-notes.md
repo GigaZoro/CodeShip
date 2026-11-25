@@ -1,3 +1,7 @@
+## 2026-11-25 — `t3` follows a background service that updated itself
+
+- A background service that installed an update itself left the `t3` command on the release it replaced, so commands such as `t3 thread release-worktree` were missing and the old release stayed on disk. Once the service runs the new release, it moves each `t3` launcher of that install to it. A `t3` already on a newer release is left alone. The old release is then removed like any other unused one.
+
 ## 2026-11-25 — Linked-machine task result test coverage
 
 - Remote delegation tests now check that a failed task's reply which starts with a blank line is still its result, not the reply before it.
