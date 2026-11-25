@@ -1,3 +1,4 @@
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   ChatAttachmentId,
@@ -20,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ProviderMcp from "../provider/ProviderMcp.ts";
@@ -229,6 +231,37 @@ const autoMovedOffFable = {
 };
 
 describe("limitFailoverCommand", () => {
+  it("captures the eligible accounts and exclusions at the stop without account labels", () => {
+    const { evidence, command } = UsageLimitRecoveryWorker.limitFailoverDecision({
+      settings,
+      thread,
+      providers: [
+        ...Array.from({ length: 65 }, (_, i) => provider("off-" + i, { enabled: false })),
+        ...providers,
+      ],
+      recordedLimits: new Map([
+        [
+          ProviderInstanceId.make("claude_limited"),
+          [{ resetAt, refusedAt: "2026-10-29T11:00:00Z" }],
+        ],
+      ]),
+      mcpSignInsNeeded: new Map(),
+      nowMs: now,
+    });
+    assert.equal(command?.modelSelection?.instanceId, "claude_first");
+    assert.isTrue(evidence.candidates.some((candidate) => candidate.reason === "eligible"));
+    assert.isTrue(
+      evidence.candidates.some((candidate) => candidate.reason === "account_unavailable"),
+    );
+    assert.isAbove(evidence.omitted, 0);
+    assert.isTrue(
+      evidence.candidates.some(
+        (candidate) => candidate.id === evidence.selected && candidate.reason === "eligible",
+      ),
+    );
+    assert.notInclude(JSON.stringify(evidence), "claude");
+  });
+
   it("continues on the first account of the same driver that can still run", () => {
     assert.deepEqual(failover(), {
       type: "message.dispatch",
@@ -499,6 +532,7 @@ describe("limitRecoveryTarget", () => {
   });
 
   const sweepLayer = (input: {
+    readonly credit?: boolean;
     readonly candidate: ProjectionStore.ProjectionLimitRecoveryCandidate;
     readonly limits: () => ReadonlyMap<
       ProviderInstanceId,
@@ -514,6 +548,7 @@ describe("limitRecoveryTarget", () => {
     UsageLimitRecoveryWorker.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          SqlitePersistence.layerMemory,
           Scheduler.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getSignedOutCandidates: () => Effect.succeed(input.signedOut ?? []),
@@ -537,6 +572,7 @@ describe("limitRecoveryTarget", () => {
               ...DEFAULT_SERVER_SETTINGS,
               autoModeProvider: claude,
               autoModeModels: { [claude]: { model: "claude-opus-5-5" } },
+              redeemUsageResets: input.credit ?? false,
               autoResumeLimitedThreads: true,
               failoverLimitedThreads: false,
               ...input.settings,
@@ -564,6 +600,37 @@ describe("limitRecoveryTarget", () => {
         ),
       ),
     );
+
+  it.effect.each(["reset_credit_room", "reset_elapsed", "early_resume_room"] as const)(
+    "records the account and qualification at the %s decision",
+    (reason) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(reason === "reset_elapsed" ? Date.parse(resetAt) : now);
+        const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+        const layer = sweepLayer({
+          candidate: stopped,
+          dispatched,
+          limits: () => new Map(),
+          credit: reason === "reset_credit_room",
+        });
+        yield* Effect.gen(function* () {
+          yield* Queue.take(dispatched);
+          const sql = yield* SqlClient.SqlClient;
+          assert.deepEqual(
+            yield* sql`SELECT snapshot ->> 'reason' AS reason, selected_key = snapshot ->> 'selected' AS coherent,
+            EXISTS (SELECT 1 FROM json_each(snapshot,'$.candidates') WHERE value ->> 'id' = selected_key AND value ->> 'reason' = 'eligible') AS eligible
+            FROM usage_stop_decisions WHERE request_key IS NOT NULL`,
+            [
+              {
+                reason,
+                coherent: reason === "reset_elapsed" ? null : 1,
+                eligible: reason === "reset_elapsed" ? 0 : 1,
+              },
+            ],
+          );
+        }).pipe(Effect.provide(Layer.merge(layer, SqlitePersistence.layerMemory)));
+      }),
+  );
 
   it.effect("a sweep resumes it early with account switching off", () =>
     Effect.gen(function* () {
@@ -742,6 +809,7 @@ it.effect("idle sweeps skip SQL until the next wake time or a relevant event", (
     const layer = UsageLimitRecoveryWorker.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          SqlitePersistence.layerMemory,
           Scheduler.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getSignedOutCandidates: () => Effect.succeed([]),
@@ -854,6 +922,7 @@ it.effect.each([
     const layer = UsageLimitRecoveryWorker.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          SqlitePersistence.layerMemory,
           Scheduler.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getSignedOutCandidates: () => Effect.succeed(signedOut ? [signedOutThread] : []),

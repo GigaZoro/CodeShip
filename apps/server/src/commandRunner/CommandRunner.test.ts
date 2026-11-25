@@ -108,7 +108,7 @@ const layerOrchestration = Layer.mergeAll(
 const layerThreads = Layer.unwrap(
   Effect.map(Orchestrator.OrchestratorV2, (orchestrator) =>
     Layer.mock(ThreadManagement.ThreadManagementService)({
-      dispatch: orchestrator.dispatch,
+      dispatch: (command) => orchestrator.dispatch(command),
       getThreadRecords: orchestrator.getThreadRecords,
       streamDomainEvents: orchestrator.streamDomainEvents,
     }),

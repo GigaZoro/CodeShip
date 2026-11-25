@@ -115,6 +115,10 @@
 - Storage cleanup kept a finished worktree with "Worktree has private reflogs" once Git had deleted a worktree-only ref and left its reflog's empty folders. Those worktrees are released; a reflog that still holds history keeps its worktree.
 - A delegated task on a linked machine whose last reply or plan was blank gave the chat that started it a blank result. Its result is now its last reply with text, as for a task on this machine.
 
+## 2026-11-24 — Record usage-limit routing decisions
+
+- Usage-limit stops now retain opaque account choices, exclusion reasons and the account selected when a continuation starts.
+
 ## 2026-11-24 — Daily wake usage report
 
 - Run `node scripts/wake-usage.mjs <statev2.sqlite> <YYYY-MM-DD>` to compare confirmed repeat wakes across all chats and the five with the most recorded tokens for a UTC day. The read-only report shows where missing observations affect the result.

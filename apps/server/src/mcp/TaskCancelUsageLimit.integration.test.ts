@@ -164,6 +164,7 @@ it.effect.each([
         const layerRecovery = UsageLimitRecoveryWorker.layer.pipe(
           Layer.provide(
             Layer.mergeAll(
+              SqlitePersistence.layerMemory,
               Layer.succeed(Scheduler.Scheduler, {
                 register: <E, R>(name: string, work: Effect.Effect<void, E, R>) =>
                   Effect.gen(function* () {

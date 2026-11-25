@@ -380,21 +380,48 @@ interface AccountSearch extends AccountRoutingContext {
   readonly preferEarliestReset?: boolean;
 }
 
+export type ObserveAccount = (id: ProviderInstanceId, reason: AccountEligibility) => void;
+
+export type AccountEligibility =
+  | "eligible"
+  | "driver_pinned"
+  | "unsupported_driver"
+  | "account_unavailable"
+  | "usage_limited";
+
 /**
  * Accounts of `driver` that can run `model` now, in saved order or, with `preferEarliestReset`,
  * soonest weekly reset first (unused room is lost at it). Plan usage comes before prepaid credits,
  * which cost money; within each, accounts that must sign in to an MCP server again come last.
  */
-export function accountsWithRoom(input: AccountSearch & McpSignIns): ReadonlyArray<{
+export function accountsWithRoom(
+  input: AccountSearch & McpSignIns,
+  observe?: ObserveAccount,
+): ReadonlyArray<{
   readonly instanceId: ProviderInstanceId;
   readonly model: string;
   /** New work on it spends the prepaid credits the user allowed, not plan usage. */
   readonly onCredits: boolean;
 }> {
-  if (!supportsAccountFailover(input.driver)) return [];
+  if (!supportsAccountFailover(input.driver)) {
+    if (observe)
+      for (const provider of input.providers) observe(provider.instanceId, "unsupported_driver");
+    return [];
+  }
   const eligible = input.providers.flatMap((provider) => {
-    if (provider.driver !== input.driver) return [];
+    if (provider.driver !== input.driver) {
+      observe?.(provider.instanceId, "driver_pinned");
+      return [];
+    }
     const model = modelWithRoom(provider, input);
+    observe?.(
+      provider.instanceId,
+      model !== null
+        ? "eligible"
+        : usableModel(provider, input) === null
+          ? "account_unavailable"
+          : "usage_limited",
+    );
     return model === null
       ? []
       : [
@@ -504,6 +531,7 @@ export function routeAutoAccount(
       readonly started: boolean;
       /** A scheduled task's run, which spends the room that would be lost first. */
       readonly scheduled?: boolean;
+      readonly observe?: ObserveAccount;
     },
 ): ModelSelection {
   if (input.selection.autoAccount !== true) return input.selection;
@@ -518,6 +546,10 @@ export function routeAutoAccount(
     model: searchModel,
     preferEarliestReset: input.scheduled === true,
   };
+  const observed =
+    input.observe && input.settings.failoverLimitedThreads
+      ? accountsWithRoom(search, input.observe)
+      : undefined;
   const pickTarget = () => {
     if (current !== undefined) {
       const model = modelWithRoom(current, search);
@@ -527,7 +559,7 @@ export function routeAutoAccount(
         const signedIn = pendingSignIns(input, current.instanceId).length === 0;
         if (!onCredits && signedIn) return keep;
         // Plan usage comes first, then no sign-in, so the top one is the move or there is none.
-        const top = accountsWithRoom(search)[0];
+        const top = (observed ?? accountsWithRoom(search))[0];
         if (top === undefined || top.instanceId === current.instanceId) return keep;
         if (onCredits && !top.onCredits) return top;
         return !signedIn &&
@@ -537,7 +569,7 @@ export function routeAutoAccount(
           : keep;
       }
     }
-    const withRoom = accountsWithRoom(search)[0];
+    const withRoom = (observed ?? accountsWithRoom(search))[0];
     if (withRoom !== undefined) return withRoom;
     // No subscription account has room. A thread keeps an account that can still run, and a new
     // one starts on its named account when that has no usage limits (an API key).
@@ -915,6 +947,7 @@ export class AccountRouting extends Context.Service<
         readonly currentInstanceId: ProviderInstanceId | null;
         readonly started: boolean;
         readonly scheduled?: boolean;
+        readonly observe?: ObserveAccount;
       } & CreditRequest,
     ) => Effect.Effect<ModelSelection>;
     /**

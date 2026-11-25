@@ -26,6 +26,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { type RecoveryRequest, recordCommittedContinuation } from "./StopDecisionEvidence.ts";
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
 import type { UnsequencedProjectEvent } from "../persistence/OrchestrationEventStore.ts";
 import { projectDomainEventForWire } from "./WireProjection.ts";
@@ -153,6 +154,7 @@ export interface EventSinkV2Shape {
   >;
   readonly commitCommand: (input: {
     readonly commandId: CommandId;
+    readonly recoveryRequest?: RecoveryRequest;
     readonly threadId: ThreadId;
     readonly commandType: string;
     readonly acceptedAt: DateTime.Utc;
@@ -756,6 +758,13 @@ const layerBase: Layer.Layer<
             error: null,
           };
           yield* commandReceipts.upsert(receipt);
+          if (input.recoveryRequest !== undefined)
+            yield* recordCommittedContinuation(
+              sql,
+              input.commandId,
+              input.recoveryRequest,
+              storedEvents,
+            );
           const cancelledEffectIds =
             input.cancelUnsettledEffects === undefined
               ? []

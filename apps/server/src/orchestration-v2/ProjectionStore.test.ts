@@ -5880,6 +5880,12 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           (row) => row.id === threadId,
         ),
       );
+      const observe = () =>
+        store.getLimitRecoveryCandidates({ ...recoveryOptions, observeStops: true });
+      yield* sql`UPDATE effect_sql_migrations SET created_at = '2100-01-01' WHERE migration_id = 102`;
+      assert.isUndefined((yield* observe()).find((row) => row.id === threadId));
+      yield* sql`UPDATE effect_sql_migrations SET created_at = ${DateTime.formatIso(DateTime.subtract(now, { seconds: 1 }))} WHERE migration_id = 102`;
+      assert.isTrue((yield* observe()).find((row) => row.id === threadId)?.observationOnly);
       const reset = DateTime.makeUnsafe(limitItem.failure.resetAt);
       assert.isDefined(
         (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, waiting: true })).find(

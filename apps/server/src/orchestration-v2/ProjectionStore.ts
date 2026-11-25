@@ -224,6 +224,7 @@ export type ProjectionLimitRecoveryCandidate = Pick<
   | "limitRecovery"
   | "snoozedUntil"
 > & {
+  readonly observationOnly?: true;
   /** The account the limited run used; the thread may point elsewhere since. */
   readonly latestRunProviderInstanceId?: ProviderInstanceId | null;
   /** The model the limited run used; an Auto thread may run another one next. */
@@ -632,6 +633,7 @@ export interface ProjectionStoreV2Shape {
     readonly autoResume: boolean;
     readonly snooze: boolean;
     readonly waiting?: boolean;
+    readonly observeStops?: boolean;
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
   /** Threads whose latest run failed on a rejected login within `maxAgeMs`. */
   readonly getSignedOutCandidates: (options: {
@@ -4235,6 +4237,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         ) AS stop_requested`;
         const rows = yield* sql<{
           readonly payload_json: string;
+          readonly recovery_candidate: number | null;
           readonly run_id: string;
           readonly completed_at: string | null;
           readonly failure_payload_json: string;
@@ -4243,7 +4246,44 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           readonly run_model: string | null;
           readonly stop_requested: number;
         }>`
-          SELECT t.payload_json, r.run_id, r.completed_at, r.provider_instance_id,
+          SELECT (json_extract(item.payload_json, '$.failure.resetAt') IS NOT NULL
+            AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(COALESCE(r.completed_at, json_extract(t.payload_json, '$.updatedAt')))
+            AND (
+              (
+                json_extract(t.payload_json, '$.limitRecovery.runId') IS r.run_id
+                AND json_extract(t.payload_json, '$.limitRecovery.resetAt') IS json_extract(item.payload_json, '$.failure.resetAt')
+                AND json_extract(t.payload_json, '$.limitRecovery.autoResume') = 1
+                -- Before its reset, a stop still continues where its next turn has room.
+                AND (
+                  json_extract(t.payload_json, '$.snoozedUntil') IS NULL
+                  OR julianday(json_extract(t.payload_json, '$.snoozedUntil')) <= julianday(${DateTime.formatIso(options.now)})
+                  -- A hidden stop can still continue on an account that regains usage.
+                  OR ${booleanInt(options.waiting === true)}
+                )
+              )
+              -- Auto-resume left off by default or turned off: the caller tells which from
+              -- autoResumeUnset and the stop flag.
+              OR (
+                json_extract(t.payload_json, '$.limitRecovery.runId') IS r.run_id
+                AND json_extract(t.payload_json, '$.limitRecovery.resetAt') IS json_extract(item.payload_json, '$.failure.resetAt')
+                AND json_extract(t.payload_json, '$.limitRecovery.autoResume') = 0
+                AND ${booleanInt(options.waiting === true)}
+                AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)})
+              )
+              OR (
+                (
+                  json_extract(t.payload_json, '$.limitRecovery.runId') IS NOT r.run_id
+                  OR json_extract(t.payload_json, '$.limitRecovery.resetAt') IS NOT json_extract(item.payload_json, '$.failure.resetAt')
+                )
+                AND (
+                  ${booleanInt(options.autoResume)}
+                  OR (
+                    (${booleanInt(options.snooze)} OR ${booleanInt(options.waiting === true)})
+                    AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)})
+                  )
+                )
+              )
+            )) AS recovery_candidate, t.payload_json, r.run_id, r.completed_at, r.provider_instance_id,
             json_extract(r.payload_json, '$.modelSelection.model') AS run_model,
             ${sql.literal(turnItemPayloadSql("item"))} AS failure_payload_json,
             ${stopRequestedColumn},
@@ -4292,44 +4332,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             AND json_extract(t.payload_json, '$.archivedAt') IS NULL
             AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
             AND json_extract(item.payload_json, '$.failure.class') = 'usage_limit'
-            AND json_extract(item.payload_json, '$.failure.resetAt') IS NOT NULL
-            AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(COALESCE(r.completed_at, json_extract(t.payload_json, '$.updatedAt')))
-            AND (
-              (
-                json_extract(t.payload_json, '$.limitRecovery.runId') IS r.run_id
-                AND json_extract(t.payload_json, '$.limitRecovery.resetAt') IS json_extract(item.payload_json, '$.failure.resetAt')
-                AND json_extract(t.payload_json, '$.limitRecovery.autoResume') = 1
-                -- Before its reset, a stop still continues where its next turn has room.
-                AND (
-                  json_extract(t.payload_json, '$.snoozedUntil') IS NULL
-                  OR julianday(json_extract(t.payload_json, '$.snoozedUntil')) <= julianday(${DateTime.formatIso(options.now)})
-                  -- A hidden stop can still continue on an account that regains usage.
-                  OR ${booleanInt(options.waiting === true)}
-                )
-              )
-              -- Auto-resume left off by default or turned off: the caller tells which from
-              -- autoResumeUnset and the stop flag.
-              OR (
-                json_extract(t.payload_json, '$.limitRecovery.runId') IS r.run_id
-                AND json_extract(t.payload_json, '$.limitRecovery.resetAt') IS json_extract(item.payload_json, '$.failure.resetAt')
-                AND json_extract(t.payload_json, '$.limitRecovery.autoResume') = 0
-                AND ${booleanInt(options.waiting === true)}
-                AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)})
-              )
-              OR (
-                (
-                  json_extract(t.payload_json, '$.limitRecovery.runId') IS NOT r.run_id
-                  OR json_extract(t.payload_json, '$.limitRecovery.resetAt') IS NOT json_extract(item.payload_json, '$.failure.resetAt')
-                )
-                AND (
-                  ${booleanInt(options.autoResume)}
-                  OR (
-                    (${booleanInt(options.snooze)} OR ${booleanInt(options.waiting === true)})
-                    AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)})
-                  )
-                )
-              )
-            )
+            AND (recovery_candidate OR (
+              ${booleanInt(options.observeStops === true)}
+              AND julianday(item.updated_at) >= julianday(${DateTime.formatIso(DateTime.subtract(options.now, { days: 1 }))})
+              AND julianday(item.updated_at) >= (SELECT julianday(created_at) FROM effect_sql_migrations WHERE migration_id = 102)
+            ))
             AND NOT EXISTS (
               SELECT 1 FROM orchestration_v2_projection_runtime_requests request
               WHERE request.thread_id = t.thread_id AND request.status = 'pending'
@@ -4372,6 +4379,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           if (summary.lastErrorClass !== "usage_limit") continue;
           candidates.push({
             ...threadFields(thread, row),
+            ...(row.recovery_candidate ? {} : { observationOnly: true as const }),
             latestRunModel: row.run_model,
             status: "failed",
             lastErrorClass: summary.lastErrorClass,

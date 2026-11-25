@@ -117,6 +117,7 @@ import Migration0107 from "./Migrations/107_DatabaseSizeSamples.ts";
 import Migration0108 from "./Migrations/108_ScheduledTaskRunReportedResult.ts";
 import Migration0109 from "./Migrations/109_ThreadPreferences.ts";
 import Migration0110 from "./Migrations/110_ScheduledTaskLastRunId.ts";
+import Migration0111 from "./Migrations/111_UsageStopDecisions.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -230,6 +231,7 @@ const migrationEntries = [
   [108, "ScheduledTaskRunReportedResult", Migration0108],
   [109, "ThreadPreferences", Migration0109],
   [110, "ScheduledTaskLastRunId", Migration0110],
+  [111, "UsageStopDecisions", Migration0111],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

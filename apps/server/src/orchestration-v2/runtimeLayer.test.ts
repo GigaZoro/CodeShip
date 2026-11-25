@@ -6,7 +6,15 @@ import {
   SourceControlProviderKind,
   orchestrationV2RunAwaitsMemory,
 } from "@t3tools/contracts";
-import { runLiftsScope } from "./AccountRouting.ts";
+import {
+  evidenceKey,
+  recordStopDecision,
+  recordDispatchFailure,
+  recoveryRequestKey,
+  type RecordRoute,
+} from "./StopDecisionEvidence.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import { AccountRouting, routeAutoAccount, runLiftsScope } from "./AccountRouting.ts";
 import { limitFailoverCommand, limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -10646,7 +10654,8 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         threadId,
         projectId,
         title: "Limited thread",
-        modelSelection,
+        modelSelection:
+          scenario === "resume" ? { ...modelSelection, autoAccount: true } : modelSelection,
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
@@ -11287,6 +11296,119 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 2);
       }
       const before = yield* orchestrator.getThreadProjection(threadId);
+      if (scenario === "resume" && resume?.type === "message.dispatch") {
+        assert.isUndefined(resume.modelSelection);
+        const sql = yield* SqlClient.SqlClient;
+        const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        const requestKey = recoveryRequestKey(resume);
+        for (const enabled of [false, true]) {
+          const instances = [
+            modelSelection.instanceId,
+            alternateInstanceId,
+            ...(enabled ? [ProviderInstanceId.make("third")] : []),
+          ];
+          const providers = instances.map((instanceId): ServerProvider => ({
+            instanceId,
+            driver,
+            enabled: true,
+            installed: true,
+            version: null,
+            status: "ready",
+            auth: { status: "authenticated" },
+            checkedAt: DateTime.formatIso(now),
+            models: [
+              { slug: modelSelection.model, name: "GPT", isCustom: false, capabilities: null },
+            ],
+            slashCommands: [],
+            skills: [],
+          }));
+          const settings = {
+            ...DEFAULT_SERVER_SETTINGS,
+            failoverLimitedThreads: true,
+            autoModeProvider: driver,
+            autoModeModels: { codex: { model: modelSelection.model } },
+            providerInstances: Object.fromEntries(instances.map((id) => [id, { driver }])),
+            providerInstanceFailoverOrder: [alternateInstanceId],
+          };
+          const dispatchLayer = ThreadManagementService.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                CommandReceiptStore.layer,
+                Layer.mock(AccountRouting)({
+                  route: (input) =>
+                    Effect.succeed(
+                      routeAutoAccount({
+                        ...input,
+                        settings,
+                        providers,
+                        nowMs,
+                        mcpSignInsNeeded: new Map(),
+                        recordedLimits: new Map([
+                          [
+                            modelSelection.instanceId,
+                            [
+                              {
+                                refusedAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
+                                resetAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs + 60000)),
+                              },
+                            ],
+                          ],
+                        ]),
+                      }),
+                    ),
+                }),
+                ServerSettings.layerTest({
+                  providerInstances: { [alternateInstanceId]: { driver, enabled } },
+                }),
+              ),
+            ),
+          );
+          const observe: RecordRoute = (selected, observations) =>
+            recordStopDecision(
+              {
+                source: run.id,
+                heldAttempt: undefined,
+                command: resume,
+                nowMs,
+                evidence: { reason: "reset_elapsed", candidates: [], omitted: 0, selected: null },
+              },
+              { selected, observations },
+            ).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.orDie,
+              Effect.map((decisionKey) => ({ key: requestKey, decisionKey })),
+            );
+          yield* Effect.gen(function* () {
+            const threads = yield* ThreadManagementService.ThreadManagementService;
+            if (enabled) yield* threads.dispatch(resume, observe);
+            else {
+              const error = yield* Effect.flip(threads.dispatch(resume, observe));
+              assert.equal(error._tag, "ThreadManagementProviderInstanceDisabledError");
+              const [receipt] = yield* sql<{
+                decision_key: string;
+              }>`SELECT decision_key FROM usage_stop_decisions WHERE request_key = ${requestKey}`;
+              yield* recordDispatchFailure(receipt!.decision_key, "refused");
+            }
+          }).pipe(Effect.provide(dispatchLayer));
+        }
+        assert.deepEqual(
+          yield* sql`SELECT selected_key, outcome, attempt_sequence IS NOT NULL AS started, json_array_length(snapshot,'$.dispatch.candidates') AS candidates FROM usage_stop_decisions WHERE source_key = ${evidenceKey(run.id)} ORDER BY rowid`,
+          [
+            {
+              selected_key: evidenceKey(alternateInstanceId),
+              outcome: "refused",
+              started: 0,
+              candidates: 2,
+            },
+            {
+              selected_key: evidenceKey(alternateInstanceId),
+              outcome: "accepted",
+              started: 1,
+              candidates: 3,
+            },
+          ],
+        );
+      }
       if (resume !== null) {
         yield* orchestrator.dispatch(resume);
         yield* orchestrator.dispatch(resume);

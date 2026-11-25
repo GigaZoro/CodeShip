@@ -63,6 +63,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import { boundedCandidates, type RecordRoute, evidenceKey } from "./StopDecisionEvidence.ts";
 import * as AccountRouting from "./AccountRouting.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -367,6 +368,7 @@ export interface ThreadManagementServiceShape {
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
+    recordRoute?: RecordRoute,
   ) => Effect.Effect<
     Orchestrator.OrchestratorV2DispatchResult,
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
@@ -851,6 +853,7 @@ const make = Effect.gen(function* () {
   /** Routes the first turn or an Auto turn before anything checks its target. */
   const routeDispatchAccount = (
     command: OrchestrationV2ServerCommand,
+    observe?: AccountRouting.ObserveAccount,
   ): Effect.Effect<OrchestrationV2ServerCommand, Orchestrator.OrchestratorV2Error> => {
     if (
       Option.isNone(accountRouting) ||
@@ -913,6 +916,7 @@ const make = Effect.gen(function* () {
       }
       if (selection.autoAccount !== true) return command;
       const routed = yield* routing.route({
+        ...(observe && { observe }),
         selection,
         projectId,
         // A thread that never ran starts on the highest account in the order.
@@ -924,7 +928,9 @@ const make = Effect.gen(function* () {
         scheduled: input.scheduled,
         requesterThreadId: input.threadId,
       });
-      return routed === selection ? command : { ...command, modelSelection: routed };
+      return routed === selection && !(observe && input.selection === undefined)
+        ? command
+        : { ...command, modelSelection: routed };
     });
     switch (command.type) {
       case "message.dispatch":
@@ -950,15 +956,26 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const dispatch: ThreadManagementServiceShape["dispatch"] = (sent) =>
-    routeDispatchAccount(sent).pipe(
-      Effect.flatMap((command) =>
-        ensureCommandTranscripts(command).pipe(
-          Effect.andThen(assertDispatchTargetEnabled(command)),
-          Effect.andThen(orchestrator.dispatch(command)),
-        ),
-      ),
-    );
+  const dispatch: ThreadManagementServiceShape["dispatch"] = Effect.fn(
+    "ThreadManagementService.dispatch",
+  )(function* (sent, recordRoute) {
+    const observations: Parameters<typeof boundedCandidates>[0] = [];
+    const observe: AccountRouting.ObserveAccount = (instance, reason) => {
+      observations.push({ id: evidenceKey(instance), reason });
+    };
+    const command = yield* routeDispatchAccount(sent, recordRoute ? observe : undefined);
+    const instance =
+      command.type === "message.dispatch" ? command.modelSelection?.instanceId : undefined;
+    const selected = instance ? evidenceKey(instance) : null;
+    const request = recordRoute
+      ? yield* recordRoute(selected, boundedCandidates(observations, selected))
+      : undefined;
+    yield* ensureCommandTranscripts(command);
+    yield* assertDispatchTargetEnabled(command);
+    return yield* request
+      ? orchestrator.dispatch(command, request)
+      : orchestrator.dispatch(command);
+  });
 
   const getProjectThreadRecords: ThreadManagementServiceShape["getProjectThreadRecords"] = (
     input,
