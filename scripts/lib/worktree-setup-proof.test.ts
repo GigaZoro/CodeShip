@@ -45,6 +45,23 @@ it("reports a whole added cache subtree and rejects simultaneous edits to instal
     await NodeFSP.mkdir(cache);
     await NodeFSP.writeFile(NodePath.join(cache, "personal.txt"), "keep this");
     expect(await inspect()).toEqual(["node_modules/.vite-temp"]);
+    const astro = NodePath.join(cwd, "node_modules", ".astro");
+    await NodeFSP.mkdir(astro);
+    expect(await inspect()).toEqual(["node_modules/.astro", "node_modules/.vite-temp"]);
+    // Older proofs could only attest to the first four cache names being absent.
+    const oldProof = {
+      ...proof,
+      cacheSlots: { node_modules: proof.cacheSlots.node_modules! & 15 },
+    };
+    expect(await setup.inspectSetupProof(oldProof, cwd, status, signal)).toBeNull();
+    const installedCache = {
+      ...proof,
+      ...(await setup.sealSetupTrees(cwd, ["node_modules"], signal)),
+    };
+    expect(await setup.inspectSetupProof(installedCache, cwd, status, signal)).toEqual([]);
+    await NodeFSP.writeFile(NodePath.join(astro, "data-store.json"), "{}");
+    expect(await setup.inspectSetupProof(installedCache, cwd, status, signal)).toBeNull();
+    expect(await inspect()).toEqual(["node_modules/.astro", "node_modules/.vite-temp"]);
     expect(await setup.matchesSetupProof(proof, cwd, status, signal)).toBe(false);
     const original = await NodeFSP.stat(installed);
     await NodeFSP.writeFile(installed, "edits");

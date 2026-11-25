@@ -229,6 +229,9 @@ it.live("retains unknown ignored build files without relinking installed depende
     const cache = path.join(modules, ".vite-temp");
     yield* fs.makeDirectory(cache);
     yield* fs.writeFileString(path.join(cache, "private.txt"), "user data in dependency cache");
+    const astro = path.join(modules, ".astro");
+    yield* fs.makeDirectory(astro);
+    yield* fs.writeFileString(path.join(astro, "data-store.json"), "generated Astro data");
     const release = yield* queueRelease(fixture);
     const request = yield* decodeReleaseRequest(yield* fs.readFileString(release.file));
     expect(release.savedFiles).toBeTruthy();
@@ -240,6 +243,9 @@ it.live("retains unknown ignored build files without relinking installed depende
     );
     expect(yield* fs.readFileString(path.join(saved, "node_modules/.vite-temp/private.txt"))).toBe(
       "user data in dependency cache",
+    );
+    expect(yield* fs.readFileString(path.join(saved, "node_modules/.astro/data-store.json"))).toBe(
+      "generated Astro data",
     );
     expect(yield* fs.exists(path.join(saved, "node_modules/installed.js"))).toBe(false);
     expect(yield* fs.exists(path.join(saved, ".env"))).toBe(false);

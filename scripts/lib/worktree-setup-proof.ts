@@ -12,7 +12,7 @@ export const setupEnvFiles = [".env", "infra/relay/.env"] as const;
 const digestPattern = /^[a-f0-9]{64}$/;
 const maxProofBytes = 128 * 1024;
 // Bit positions are stored in the proof. Keep this order stable.
-const cacheNames = [".cache", ".vite", ".vite-temp", ".vitest-cache"] as const;
+const cacheNames = [".cache", ".vite", ".vite-temp", ".vitest-cache", ".astro"] as const;
 
 type CacheSlots = Record<string, number>;
 interface TreeScan {
