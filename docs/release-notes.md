@@ -1,3 +1,8 @@
+## 2026-11-25 — A landing that gives up on a stalled remote stops what Git started
+
+- When a fetch or push to the remote runs past its time limit, the landing script now stops Git's transport too, such as an SSH connection or a credential helper, instead of leaving it running.
+- Two landing tests that failed in the fork's Windows check pass there again.
+
 ## 2026-11-25 — Windows tests no longer report a pass they skipped
 
 - Maintainers: four server tests that cannot run on Windows now report a skip there instead of a pass, and the `no-platform-early-return-in-tests` lint rule also catches an early return on `HostProcess.isWindows`. It no longer reports a return that ends only a hook, finalizer, helper or iteration callback, or a check that does not depend on the host platform.

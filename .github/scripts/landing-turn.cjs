@@ -4,6 +4,7 @@ const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { TIMED_OUT_STATUS } = require("./bounded-git.cjs");
 const { GIT_OUTPUT_MAX_BYTES, REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
 const { createQueueWaiter } = require("./lease-queue.cjs");
 const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs");
@@ -26,18 +27,28 @@ const FAILING_MS = 10 * 60 * 1000;
 const LEASE_CALL_MS = 60 * 1000;
 // One fetch or push of main; a remote that stops answering must not hold a lander, or its turn, until the lease expires.
 const MAIN_CALL_MS = 10 * 60 * 1000;
+const BOUNDED_GIT = path.join(__dirname, "bounded-git.cjs");
+// How long past a call's limit its stop may take before the landing gives up on bounded-git.cjs too.
+const STOP_GRACE_MS = 30 * 1000;
 
 function git(cwd, args, { env, config = [], allowFailure = false, timeoutMs } = {}) {
   const flags = config.flatMap(([key, value]) => ["-c", `${key}=${value}`]);
-  const result = spawnSync("git", ["-C", cwd, ...flags, ...args], {
-    encoding: "utf8",
-    env: { ...process.env, ...REAL_HISTORY_ENV, ...env },
-    maxBuffer: GIT_OUTPUT_MAX_BYTES,
-    timeout: timeoutMs,
-    windowsHide: true,
-  });
+  const gitArgs = ["-C", cwd, ...flags, ...args];
+  const bounded = timeoutMs !== undefined;
+  const result = spawnSync(
+    bounded ? process.execPath : "git",
+    bounded ? [BOUNDED_GIT, String(timeoutMs), ...gitArgs] : gitArgs,
+    {
+      encoding: "utf8",
+      env: { ...process.env, ...REAL_HISTORY_ENV, ...env },
+      maxBuffer: GIT_OUTPUT_MAX_BYTES,
+      timeout: bounded ? timeoutMs + STOP_GRACE_MS : undefined,
+      windowsHide: true,
+    },
+  );
   // A call that ran out of time is a failed one; like any failed push, it may still have changed origin.
-  const timedOut = result.error?.code === "ETIMEDOUT";
+  const timedOut =
+    result.error?.code === "ETIMEDOUT" || (bounded && result.status === TIMED_OUT_STATUS);
   if (result.error && !timedOut) throw result.error;
   const ok = !timedOut && result.status === 0;
   const stderr = timedOut

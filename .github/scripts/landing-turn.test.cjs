@@ -44,7 +44,8 @@ Object.assign(process.env, {
 });
 
 function setup() {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "landing-turn-")));
+  // `.native` also writes out a Windows short name (RUNNER~1), as git does in the paths it prints.
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "landing-turn-")));
   const git = (cwd, ...args) =>
     execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
   const origin = path.join(root, "origin.git");
@@ -556,6 +557,7 @@ test("the CLI continues with main's copy of the script after it rebases before t
     fs.mkdirSync(scripts, { recursive: true });
     for (const file of [
       "landing-turn.cjs",
+      "bounded-git.cjs",
       "lease-queue.cjs",
       "git-history.cjs",
       "release-notes.cjs",
@@ -2013,24 +2015,47 @@ test("a push of a commit checked elsewhere lands that commit while its record sh
   }
 });
 
-test("a lander gives up on a fetch of main that stops answering", () => {
+/** Whether `pid` still runs; a POSIX process that ended but is not yet reaped does not. */
+function running(pid) {
+  try {
+    // oxlint-disable-next-line t3code/no-raw-process-probe -- a CommonJS test that loads no package
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- a plain node test, with no Effect runtime
+  if (process.platform === "win32") return true;
+  const state = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout;
+  return !/^\s*(Z|$)/.test(state);
+}
+
+test("a lander gives up on a fetch of main that stops answering, and stops its transport", () => {
   const { root, git, clone, commit } = setup();
   try {
     const lander = clone("lander");
     commit(lander, "mine.txt");
-    // A remote that never answers: git waits for the transport's first line.
+    // A remote that never answers: git waits for the transport's first line. The transport ends by itself only
+    // long after the call's limit, which leaves its start a wide margin.
+    const pidFile = path.join(root, "transport.pid");
+    fs.writeFileSync(
+      path.join(root, "transport.cjs"),
+      `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+setTimeout(() => {}, 60_000);
+`,
+    );
     git(lander, "config", "protocol.ext.allow", "always");
-    git(lander, "remote", "add", "stalled", "ext::sleep 5");
+    git(lander, "remote", "add", "stalled", "ext::node ../transport.cjs");
     assert.throws(
       () =>
         land({
           cwd: lander,
           remote: "stalled",
-          mainCallMs: 100,
+          mainCallMs: 5000,
           check: () => assert.fail("checked"),
         }),
-      /git fetch failed: did not finish within 0\.1 seconds/,
+      /git fetch failed: did not finish within 5 seconds/,
     );
+    assert.equal(running(Number(fs.readFileSync(pidFile, "utf8"))), false, "transport still runs");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

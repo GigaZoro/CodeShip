@@ -53,6 +53,7 @@ const fixture = (root) => {
     ".github/scripts/check-changed-receipt.cjs",
     ".github/scripts/landing-turn.cjs",
     ".github/scripts/lease-queue.cjs",
+    ".github/scripts/bounded-git.cjs",
   ]) {
     write(file, fs.readFileSync(path.join(repoRoot, file), "utf8"));
   }
