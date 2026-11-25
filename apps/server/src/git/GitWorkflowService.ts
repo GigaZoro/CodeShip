@@ -716,8 +716,12 @@ export const make = Effect.gen(function* () {
           });
         start = released.previousHead;
       }
-      if (input.newRefName)
-        return yield* gitManager.createWorktree({ ...input, refName: start }, options);
+      if (input.newRefName) {
+        const create = { ...input, refName: start };
+        // A task restored from an archive did not branch from the project's current base.
+        if (start !== base) delete create.baseRefName;
+        return yield* gitManager.createWorktree(create, options);
+      }
       if (start !== released.previousHead) {
         // Local fetch fast-forwards only and refuses to update a branch checked out elsewhere.
         yield* git.executeRemote({
