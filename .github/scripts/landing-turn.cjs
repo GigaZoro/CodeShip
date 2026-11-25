@@ -1,5 +1,5 @@
 // Landers check before joining the queue and recheck under the lease if main moved.
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -10,6 +10,13 @@ const { createQueueWaiter } = require("./lease-queue.cjs");
 const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs");
 
 const LEASE_REF = "refs/heads/landing-lease/main";
+// .gitattributes names this driver. Only a landing's own rebase configures it; a manual one merges the file as text.
+const BUDGET_MERGE_CONFIG = [
+  [
+    "merge.agent-context-budget.driver",
+    "node .github/scripts/landing-turn.cjs merge-budget %O %A %B",
+  ],
+];
 const TURN_ENV = "T3_LANDING_TURN";
 const TEST_STEP_MAX_ENV = "CHECK_CHANGED_TEST_STEP_MAX";
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -576,14 +583,49 @@ function holds(cwd, base) {
 }
 
 /**
+ * Merges agentContextBudget.json: each value keeps what both sides added to the base. AgentContextBudget.test.ts wants
+ * the measured values, so a sum that is wrong fails the checks and nothing lands. Exits 1, a conflict, when it cannot.
+ */
+function mergeBudgetFiles(baseFile, oursFile, theirsFile) {
+  const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+  const [base, ours, theirs] = [baseFile, oursFile, theirsFile].map(read);
+  const shape = (value) => Object.keys(value).sort().join("\n");
+  const mergeable =
+    [ours, theirs].every((side) => shape(side) === shape(base)) &&
+    [base, ours, theirs].every((side) => Object.values(side).every(Number.isInteger));
+  if (!mergeable) return 1;
+  const keys = Object.keys(base);
+  const merged = Object.fromEntries(keys.map((key) => [key, ours[key] + theirs[key] - base[key]]));
+  fs.writeFileSync(oursFile, `${JSON.stringify(merged, null, 2)}\n`);
+  return 0;
+}
+
+/**
+ * A Mac on battery idle-sleeps after a minute, and check:changed's time limits count the time asleep, so a landing
+ * left alone failed on timeouts. macOS holds idle sleep off until `pid` exits; closing the lid still sleeps it.
+ */
+function keepAwake({
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime.
+  platform = process.platform,
+  pid = process.pid,
+  run = spawn,
+} = {}) {
+  if (platform !== "darwin") return;
+  const holder = run("/usr/bin/caffeinate", ["-i", "-w", String(pid)], { stdio: "ignore" });
+  // A landing without the hold still works while someone keeps the machine awake.
+  holder.on("error", () => {});
+  holder.unref();
+}
+
+/**
  * Rebases HEAD onto `base` unless HEAD holds it already. A conflict must not leave the worktree in the middle of the
  * rebase: the next landing would refuse it.
  */
 function rebaseOnto(cwd, base) {
   if (holds(cwd, base)) return;
   try {
-    // Main gains release notes while a lander waits; the driver merges them on machines whose git config predates it.
-    git(cwd, ["rebase", base], { config: MERGE_DRIVER_CONFIG });
+    // Main gains release notes and tool text while a lander waits; the drivers merge them, whatever git config says.
+    git(cwd, ["rebase", base], { config: [...MERGE_DRIVER_CONFIG, ...BUDGET_MERGE_CONFIG] });
   } catch (error) {
     if (stoppedRebase(cwd)) git(cwd, ["rebase", "--abort"], { allowFailure: true });
     throw error;
@@ -740,8 +782,8 @@ function land({
 // How many arguments each command takes: an argument `land` does not take, such as a mistyped flag, must not start
 // a real landing.
 const USAGE =
-  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote>";
-const ARGUMENTS = { land: 0, "land-rebased": 4, push: 1, holder: 0, verify: 1 };
+  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote> | merge-budget <base> <ours> <theirs>";
+const ARGUMENTS = { land: 0, "land-rebased": 4, push: 1, holder: 0, verify: 1, "merge-budget": 3 };
 
 function main(argv, { cwd = process.cwd() } = {}) {
   const [command, ...rest] = argv;
@@ -749,6 +791,7 @@ function main(argv, { cwd = process.cwd() } = {}) {
     console.error(USAGE);
     return 2;
   }
+  if (command === "merge-budget") return mergeBudgetFiles(...rest);
   if (command === "verify") {
     // The pre-push hook passes the remote's URL, then git writes one `<local ref> <sha> <remote ref> <sha>` line per ref.
     // Git gives the local ref as it was typed, which may hold spaces; a ref name and an object name cannot.
@@ -780,6 +823,7 @@ function main(argv, { cwd = process.cwd() } = {}) {
       console.error(USAGE);
       return 2;
     }
+    keepAwake();
     const result = land({
       cwd,
       remote: "origin",
@@ -858,6 +902,7 @@ module.exports = {
   tryAcquire,
   release,
   acquire,
+  keepAwake,
   macAwakeMs,
   withTurn,
   pushChecked,

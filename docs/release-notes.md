@@ -1,3 +1,8 @@
+## 2026-11-25 — Landings finish on a Mac left alone
+
+- A landing keeps a Mac from idle-sleeping until it ends, so checks no longer time out while a Mac on battery sleeps.
+- A landing no longer stops on a conflict in the agent tool-text size budget when main added tool text too.
+
 ## 2026-11-25 — A Mac's sleep no longer times out checks or landings
 
 - For people who work on T3.CodeShip: `vp run check:changed` now counts its step and Git time limits in time the machine is awake. Before, a Mac that slept during a run came back to find healthy steps killed as `TIMEOUT`.

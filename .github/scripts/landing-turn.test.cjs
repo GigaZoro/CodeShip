@@ -13,6 +13,7 @@ const {
   TURN_ENV,
   checkBudgetSeconds,
   acquire,
+  keepAwake,
   land,
   macAwakeMs,
   overlappingWorktrees,
@@ -467,6 +468,53 @@ test("a lander's release notes go among the ones main gained meanwhile by date, 
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a lander adds its tool text bytes to the ones main gained meanwhile, with no merge config set up", () => {
+  const { root, git, clone } = setup();
+  try {
+    const file = "apps/server/src/provider/agentContextBudget.json";
+    const ship = (dir, claude, mcp) => {
+      fs.mkdirSync(path.join(dir, path.dirname(file)), { recursive: true });
+      fs.writeFileSync(path.join(dir, file), `${JSON.stringify({ claude, mcp }, null, 2)}\n`);
+      git(dir, "add", ".");
+      git(dir, "commit", "-qm", "budget");
+    };
+    const seed = path.join(root, "seed");
+    // The whole folder, so the copied lander finds every script it comes to require.
+    fs.cpSync(__dirname, path.join(seed, ".github/scripts"), { recursive: true });
+    fs.copyFileSync(
+      path.join(__dirname, "../../.gitattributes"),
+      path.join(seed, ".gitattributes"),
+    );
+    ship(seed, 100, 1000);
+    git(seed, "push", "-q", "origin", "HEAD:main");
+    const lander = clone("lander");
+    ship(lander, 100, 1430);
+    const mover = clone("mover");
+    ship(mover, 105, 1050);
+    git(mover, "push", "-q", "origin", "HEAD:main");
+
+    const remote = git(lander, "remote", "get-url", "origin");
+    assert.equal(land({ cwd: lander, remote, check: () => true }).status, "rebased");
+
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(lander, file), "utf8")), {
+      claude: 105,
+      mcp: 1480,
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a landing keeps a Mac awake until it exits, and starts nothing elsewhere", () => {
+  const started = [];
+  const run = (command, args) => {
+    started.push([command, ...args]);
+    return { on: () => {}, unref: () => {} };
+  };
+  for (const platform of ["linux", "win32", "darwin"]) keepAwake({ platform, pid: 42, run });
+  assert.deepEqual(started, [["/usr/bin/caffeinate", "-i", "-w", "42"]]);
 });
 
 test("a lander with uncommitted files, failing checks or a conflict with main does not push and holds no turn afterwards", () => {
@@ -2146,7 +2194,7 @@ test("a command given an argument it does not take is refused before it takes th
     assert.deepEqual(
       errors,
       Array(8).fill(
-        "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote>",
+        "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote> | merge-budget <base> <ours> <theirs>",
       ),
     );
     assert.equal(git(origin, "rev-parse", "main"), main_);
