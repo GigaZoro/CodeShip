@@ -22,9 +22,14 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
-import type * as ServerConfig from "../config.ts";
+import * as ServerConfig from "../config.ts";
 import type * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
+import { releasedWorktree } from "../workspace/worktreeRelease.ts";
+import {
+  releaseReceiptPath,
+  WorktreeReleaseReceiptError,
+} from "../workspace/worktreeReleaseReceipt.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   isCheckpointRestoreIsolated,
@@ -68,6 +73,7 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
       "provider-turn-unavailable",
       "unexpected-failure",
       "shared-workspace",
+      "worktree-recovery-required",
       "later-run-active",
     ]),
     threadId: ThreadId,
@@ -84,6 +90,10 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
         return `Active provider changed before rollback target ${this.checkpointId} could execute on thread ${this.threadId}.`;
       case "provider-turn-unavailable":
         return `Provider turn for rollback target ${this.checkpointId} is unavailable on provider thread ${this.providerThreadId}.`;
+      case "worktree-recovery-required":
+        return this.cause instanceof WorktreeReleaseReceiptError
+          ? this.cause.message
+          : "This checkout has a worktree release record. Send a follow-up in the owning chat to recover the checkout, then retry rollback.";
       case "shared-workspace":
         return SHARED_WORKSPACE_RESTORE_MESSAGE;
       case "later-run-active":
@@ -99,13 +109,12 @@ const isVcsProcessExitError = Schema.is(VcsProcessExitError);
 const isCheckpointRestoreError = Schema.is(CheckpointRestoreError);
 
 /**
- * The message clients see when a rollback fails. A running later turn, a
- * runtime policy the thread cannot run under and a held Git index lock get their
- * own explanation; other reasons carry internal ids or raw Git output, so they
- * fall back to the generic message.
+ * Only known recovery, runtime policy and Git lock messages are safe to show clients.
+ * Other failures can include internal ids or raw Git output.
  */
 export function rollbackFailureClientMessage(error: CheckpointRollbackExecutionError): string {
-  if (error.reason === "later-run-active") return error.message;
+  if (error.reason === "later-run-active" || error.reason === "worktree-recovery-required")
+    return error.message;
   if (
     isRuntimePolicyAboveCeilingError(error.cause) ||
     isRuntimePolicyReadOnlyUnsupportedError(error.cause)
@@ -163,6 +172,7 @@ export const layer: Layer.Layer<
     const projects = yield* ProjectStore.ProjectStoreV2;
     const path = yield* Path.Path;
     const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+    const config = yield* ServerConfig.ServerConfig;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
 
     /** The events that record `work` on `run` as lost with the process a rollback closed. */
@@ -368,22 +378,42 @@ export const layer: Layer.Layer<
             });
 
       const { worktreePath, branch } = context.thread;
-      // Recreated only where the server would have made it, as turn start does.
-      if (
-        worktreePath != null &&
-        branch != null &&
-        !(yield* fileSystem.exists(worktreePath)) &&
-        (yield* isManagedWorktreePath(worktreePath))
-      ) {
-        const project = yield* projects.get(context.thread.projectId);
-        if (Option.isSome(project)) {
-          yield* gitWorkflow.pruneWorktrees({ cwd: project.value.workspaceRoot });
-          yield* gitWorkflow.createWorktree({
-            cwd: project.value.workspaceRoot,
-            refName: branch,
-            path: worktreePath,
+      const managed =
+        worktreePath != null && branch != null && (yield* isManagedWorktreePath(worktreePath));
+      const missing = managed && !(yield* fileSystem.exists(worktreePath));
+      if (managed) {
+        // Turn start owns release recovery, including setup and the association with saved files.
+        // Rollback may use a separately registered replacement only after the same identity check.
+        const recoveryRequired = (cause?: unknown) =>
+          new CheckpointRollbackExecutionError({
+            reason: "worktree-recovery-required",
+            threadId: input.threadId,
+            providerThreadId: input.providerThreadId,
+            checkpointId: input.checkpointId,
+            cause,
           });
-        }
+        const canonical = yield* releaseReceiptPath(worktreePath);
+        const receipt = yield* releasedWorktree(
+          fileSystem,
+          path.join(config.stateDir, ServerConfig.WORKTREE_RELEASE_DIRECTORY),
+          canonical,
+          context.thread,
+          projections.getThreadShell,
+          !missing,
+          Effect.fnUntraced(function* (identity: string) {
+            const project = yield* projects.get(context.thread.projectId);
+            if (Option.isNone(project)) return yield* recoveryRequired();
+            yield* gitWorkflow.recoverInterruptedWorktree(
+              canonical,
+              project.value.workspaceRoot,
+              branch,
+              {
+                replacementOf: identity,
+              },
+            );
+          }),
+        ).pipe(Effect.mapError(recoveryRequired));
+        if (receipt) return yield* recoveryRequired();
       }
 
       if (
@@ -401,6 +431,18 @@ export const layer: Layer.Layer<
           providerThreadId: input.providerThreadId,
           checkpointId: input.checkpointId,
         });
+      }
+
+      if (missing) {
+        const project = yield* projects.get(context.thread.projectId);
+        if (Option.isSome(project)) {
+          yield* gitWorkflow.pruneWorktrees({ cwd: project.value.workspaceRoot });
+          yield* gitWorkflow.createWorktree({
+            cwd: project.value.workspaceRoot,
+            refName: branch,
+            path: worktreePath,
+          });
+        }
       }
 
       const modelSelection = context.thread.modelSelection;

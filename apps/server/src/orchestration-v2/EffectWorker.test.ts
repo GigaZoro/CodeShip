@@ -277,8 +277,19 @@ it.effect.each([
     failure: rollbackFailure(readOnlyUnsupported),
     message: readOnlyUnsupported.message,
   },
-])("reports a rollback blocked by $name only after the last attempt", ({ failure, message }) =>
+  {
+    name: "a checkout awaiting recovery",
+    failure: new CheckpointRollbackService.CheckpointRollbackExecutionError({
+      reason: "worktree-recovery-required",
+      threadId,
+      providerThreadId,
+      checkpointId: rollbackCheckpointId,
+    }),
+    immediate: true,
+  },
+])("reports a rollback blocked by $name", (scenario) =>
   Effect.gen(function* () {
+    const { failure, message = failure.message, immediate = false } = scenario;
     const now = yield* DateTime.now;
     const failures = yield* Ref.make<ReadonlyArray<string>>([]);
     const layer = layerExecutorFor({
@@ -303,6 +314,10 @@ it.effect.each([
           restoreFiles: true,
         },
       };
+      if (immediate) {
+        yield* executor.execute(rollback, { willRetry: true });
+        return;
+      }
       yield* Effect.flip(executor.execute(rollback, { willRetry: true }));
       assert.deepEqual(yield* Ref.get(failures), []);
       yield* Effect.flip(executor.execute(rollback, { willRetry: false }));

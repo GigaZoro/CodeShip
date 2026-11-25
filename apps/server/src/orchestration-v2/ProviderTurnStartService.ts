@@ -46,12 +46,15 @@ import * as ServerConfig from "../config.ts";
 import { STALL_LOG_NOTE } from "../observability/EventLoopMonitor.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
-  decodeReleaseRequest,
   releasedWorktree,
   releaseReceiptPath,
   rememberWorktreeBackup,
   restoringWorktreeFile,
 } from "../workspace/worktreeRelease.ts";
+import {
+  readReleaseFile,
+  WorktreeReleaseReceiptError,
+} from "../workspace/worktreeReleaseReceipt.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -247,6 +250,7 @@ const SETUP_REFUSAL_TAGS = [
   "RuntimePolicyReadOnlyUnsupportedError",
   "WorktreeRecreateNoBaseError",
   "WorktreeRecreateBlockedError",
+  "WorktreeReleaseReceiptError",
   "AcpModelSelectionError",
   "CursorModelUnavailableError",
   "ContextHandoffBudgetError",
@@ -612,17 +616,16 @@ export const layer: Layer.Layer<
         readonly contents: string;
       }) {
         const { threadId, worktreePath, receipt, contents } = input;
+        const currentReceipt = readReleaseFile(receipt).pipe(
+          Effect.mapError((cause) => new RecoveredWorktreeSetupError({ detail: cause.message })),
+        );
         const ready = yield* withWorkspaceLease(
           worktreePath,
           Effect.gen(function* () {
             const active = activeSetups.get(contents);
             if (active) return active;
             // Another family member may have finished setup while this turn released its startup lease.
-            if (
-              !(yield* fileSystem.exists(receipt)) ||
-              (yield* fileSystem.readFileString(receipt)) !== contents
-            )
-              return;
+            if ((yield* currentReceipt)?.contents !== contents) return;
             const ready = yield* Deferred.make<void, RecoveredWorktreeSetupError>();
             activeSetups.set(contents, ready);
             let cancelSetup = Effect.void;
@@ -669,10 +672,7 @@ export const layer: Layer.Layer<
                 worktreePath,
                 Effect.gen(function* () {
                   yield* setupTracker.markUncancellable(threadId);
-                  if (
-                    (yield* fileSystem.exists(receipt)) &&
-                    (yield* fileSystem.readFileString(receipt)) === contents
-                  )
+                  if ((yield* currentReceipt)?.contents === contents)
                     yield* fileSystem.remove(receipt);
                   if (!script?.async) yield* setupTracker.stageStatus(threadId, "agent", "done");
                   yield* setupTracker.finish(threadId, "done");
@@ -717,12 +717,13 @@ export const layer: Layer.Layer<
             return ready;
           }).pipe(Effect.uninterruptible),
         ).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RecoveredWorktreeSetupError({
-                detail: cause.message,
-                disposition: "retryable",
-              }),
+          Effect.mapError((cause) =>
+            isRecoveredWorktreeSetupError(cause)
+              ? cause
+              : new RecoveredWorktreeSetupError({
+                  detail: cause.message,
+                  disposition: "retryable",
+                }),
           ),
         );
         if (ready) yield* Deferred.await(ready);
@@ -804,12 +805,8 @@ export const layer: Layer.Layer<
           receipt: string,
         ) {
           if (receipt !== current.setupReceipt) {
-            if (yield* fileSystem.exists(current.setupReceipt)) {
-              const previous = yield* decodeReleaseRequest(
-                yield* fileSystem.readFileString(current.setupReceipt),
-              );
-              yield* rememberWorktreeBackup(fileSystem, directory, previous);
-            }
+            const previous = yield* readReleaseFile(current.setupReceipt, canonical);
+            if (previous) yield* rememberWorktreeBackup(fileSystem, directory, previous.request);
             yield* fileSystem.rename(receipt, current.setupReceipt);
           }
           yield* rememberWorktreeBackup(fileSystem, directory, current.request);
@@ -1306,6 +1303,7 @@ export const layer: Layer.Layer<
             Effect.mapError((cause) =>
               cause._tag === "WorktreeRecreateNoBaseError" ||
               cause._tag === "RecoveredWorktreeSetupError" ||
+              cause._tag === "WorktreeReleaseReceiptError" ||
               cause._tag === "WorktreeRecreateBlockedError"
                 ? cause
                 : new WorktreeRecreateError({ worktreePath, branch, cause }),
@@ -1317,6 +1315,7 @@ export const layer: Layer.Layer<
             | WorktreeRecreateNoBaseError
             | WorktreeRecreateError
             | WorktreeRecreateBlockedError
+            | WorktreeReleaseReceiptError
             | RecoveredWorktreeSetupError,
         ) {
           const setupFailed = error._tag === "RecoveredWorktreeSetupError";
