@@ -1,3 +1,7 @@
+## 2026-11-25 — Linked-machine task result test coverage
+
+- Remote delegation tests now check that a failed task's reply which starts with a blank line is still its result, not the reply before it.
+
 ## 2026-11-25 — A failed task on a linked machine keeps its last real reply
 
 - A delegated task on a linked machine whose run failed without an error, and whose last reply was only blank lines in a long thread, reported that it ended without a reply. Its result is now the run's last reply with text, as for a task on this machine.

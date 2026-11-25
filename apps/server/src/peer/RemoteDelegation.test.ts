@@ -2586,6 +2586,7 @@ it.effect.each([
   "middle-error",
   "reply-fallback",
   "blank-fallback",
+  "padded-reply",
   "cancel-refill",
 ] as const)("reads a failed task through full activity pages (%s)", (scenario) =>
   Effect.gen(function* () {
@@ -2622,8 +2623,11 @@ it.effect.each([
         const delegated = yield* delegateToBox(a);
         const result = `Provider details: ${"detail ".repeat(8_000)}end.`;
         const blank = scenario === "blank-fallback";
+        const padded = scenario === "padded-reply";
         const middle = scenario !== "tail-error";
-        const ownType = scenario === "reply-fallback" || blank ? "assistant_message" : "error";
+        const ownType =
+          scenario === "reply-fallback" || blank || padded ? "assistant_message" : "error";
+        const selectedText = blank ? " ".repeat(result.length) : padded ? `\n${result}` : result;
         const historyText = "discarded history ".repeat(120);
         const history = (count: number, runId: RunId, prefix: string): Array<TimelineEntry> =>
           Array.from({ length: count }, (_, index) => ({
@@ -2637,7 +2641,7 @@ it.effect.each([
           {
             id: TurnItemId.make("selected"),
             runId: boxRunId,
-            text: blank ? " ".repeat(result.length) : result,
+            text: selectedText,
             type: ownType,
           },
           ...(middle ? history(200, boxLaterRunId, "later") : []),
@@ -2665,8 +2669,9 @@ it.effect.each([
         } else {
           expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
             status: "failed",
-            // A middle page cuts the blank reply to one space; read whole, it gives way to the reply before it.
-            result: blank ? historyText : result,
+            // A middle page cuts both the blank and the padded reply to one blank character; read
+            // whole, only the blank one gives way to the reply before it.
+            result: blank ? historyText : selectedText,
           });
         }
         const pages = reads.filter((read) => read.itemId === undefined);
