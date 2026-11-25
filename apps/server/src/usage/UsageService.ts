@@ -87,6 +87,8 @@ const MTIME_SLACK_MS = 36 * 60 * 60 * 1000;
 const MAX_HOURLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 const CACHE_RETENTION_MS = 92 * 24 * 60 * 60 * 1000;
+// A check of a hung network mount gives up so the scan can answer; a later scan checks again.
+const EXPIRED_FILE_CHECK_TIMEOUT_MS = 10_000;
 const CACHE_GAP_RETRY_MS = 60_000;
 const MAX_STORE_RELISTS = 3;
 
@@ -613,33 +615,32 @@ export const make = Effect.gen(function* () {
   });
 
   /**
-   * Drops rows past retention. A row whose file went away after the last scan of its directory
-   * has no missing time yet, so it gets one now instead of expiring by its last write.
+   * Settles each row past retention by its last write before an answer picks rows. A file still
+   * there has aged out, so its row goes. A file gone since the last listing of its directory
+   * starts its missing time now, so its usage does not end early. A failed check counts as gone;
+   * one that does not finish leaves the row for a later scan.
    */
-  const pruneExpired = Effect.fn("UsageService.pruneExpired")(function* (
+  const checkExpiredFiles = Effect.fn("UsageService.checkExpiredFiles")(function* (
     retentionCutoffMs: number,
   ) {
-    const nowMs = yield* Clock.currentTimeMillis;
     const unchecked: Array<readonly [string, CachedFile]> = [];
     for (const [filePath, entry] of fileCache) {
-      if (isRetained(entry, retentionCutoffMs)) continue;
-      if (entry.missingSinceMs === undefined) {
+      if (entry.missingSinceMs === undefined && !isRetained(entry, retentionCutoffMs)) {
         unchecked.push([filePath, entry]);
-        continue;
       }
-      fileCache.delete(filePath);
-      generation += 1;
     }
+    if (unchecked.length === 0) return;
+    const nowMs = yield* Clock.currentTimeMillis;
     yield* Effect.forEach(
       unchecked,
       ([filePath, entry]) =>
         fileSystem.exists(filePath).pipe(
-          // A file that cannot be checked keeps its usage.
           Effect.orElseSucceed(() => false),
+          Effect.timeoutOption(EXPIRED_FILE_CHECK_TIMEOUT_MS),
           Effect.map((exists) => {
             // A scan may have stored a newer row while the check ran.
-            if (fileCache.get(filePath) !== entry) return;
-            if (exists) fileCache.delete(filePath);
+            if (Option.isNone(exists) || fileCache.get(filePath) !== entry) return;
+            if (exists.value) fileCache.delete(filePath);
             else fileCache.set(filePath, { ...entry, missingSinceMs: nowMs });
             generation += 1;
           }),
@@ -648,8 +649,32 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  /**
+   * Drops rows whose files went missing longer than retention ago, without touching the disk.
+   * A time ahead of the clock, as a process with its clock set ahead writes, counts from now.
+   * A row with a missing time drops a presence time ahead of the clock instead: kept, it would
+   * make merges discard the missing time as older than the file's return.
+   */
+  const dropExpired = Effect.fn("UsageService.dropExpired")(function* () {
+    const nowMs = yield* Clock.currentTimeMillis;
+    for (const [filePath, entry] of fileCache) {
+      const { missingSinceMs, presentSinceMs, ...contents } = entry;
+      if (missingSinceMs !== undefined && missingSinceMs < nowMs - CACHE_RETENTION_MS) {
+        fileCache.delete(filePath);
+      } else if ((missingSinceMs ?? 0) > nowMs || (presentSinceMs ?? 0) > nowMs) {
+        fileCache.set(
+          filePath,
+          missingSinceMs === undefined
+            ? { ...contents, presentSinceMs: nowMs }
+            : { ...contents, missingSinceMs: Math.min(missingSinceMs, nowMs) },
+        );
+      } else continue;
+      generation += 1;
+    }
+  });
+
   const writeSnapshot = Effect.fn("UsageService.writeScanCacheSnapshot")(function* () {
-    yield* pruneExpired((yield* Clock.currentTimeMillis) - CACHE_RETENTION_MS);
+    yield* dropExpired();
     const capturedGeneration = generation;
     const covered = [...retirable];
     const files = new Map(fileCache);
@@ -1014,21 +1039,39 @@ export const make = Effect.gen(function* () {
   });
 
   /**
-   * A listing that lacks a cached file starts its missing time; one that has it again clears it.
+   * A listed file that had gone missing clears its missing time and records when it came back.
    * observedAtMs stays: only a read of the file may make a row win over another process's row.
    */
-  const recordPresence = (
+  const recordPresent = (provider: UsageProviderKind, present: Listing["files"], nowMs: number) => {
+    for (const { path: filePath } of present) {
+      const entry = fileCache.get(filePath);
+      if (entry?.provider !== provider || entry.missingSinceMs === undefined) continue;
+      const { missingSinceMs: _, ...seen } = entry;
+      fileCache.set(filePath, { ...seen, presentSinceMs: nowMs });
+      generation += 1;
+    }
+  };
+
+  /**
+   * A complete listing that lacks a cached file starts its missing time,
+   * or moves one ahead of the clock back to now.
+   */
+  const recordMissing = (
     provider: UsageProviderKind,
     dir: string,
     present: ReadonlySet<string>,
     nowMs: number,
   ) => {
     for (const [filePath, entry] of fileCache) {
-      if (entry.provider !== provider || !isWithinDirectory(filePath, dir)) continue;
-      const missing = !present.has(filePath);
-      if (missing === (entry.missingSinceMs !== undefined)) continue;
-      const { missingSinceMs: _, ...seen } = entry;
-      fileCache.set(filePath, missing ? { ...seen, missingSinceMs: nowMs } : seen);
+      if (
+        entry.provider !== provider ||
+        (entry.missingSinceMs ?? Infinity) <= nowMs ||
+        present.has(filePath) ||
+        !isWithinDirectory(filePath, dir)
+      ) {
+        continue;
+      }
+      fileCache.set(filePath, { ...entry, missingSinceMs: nowMs });
       generation += 1;
     }
   };
@@ -1046,21 +1089,18 @@ export const make = Effect.gen(function* () {
       listings.delete(key);
       // A failed check says nothing about the files, so only a directory known gone marks them.
       if (exists === false) {
-        recordPresence(provider, dir, new Set(), yield* Clock.currentTimeMillis);
+        recordMissing(provider, dir, new Set(), yield* Clock.currentTimeMillis);
       }
       return { provider, dir, volumeId, files: null } satisfies ScannedDir;
     }
     const listing =
       scanListings.get(key) ?? (yield* transcriptListing(key, dir, fileName, onProgress));
     scanListings.set(key, listing);
+    const listedAtMs = yield* Clock.currentTimeMillis;
+    recordPresent(provider, listing.files, listedAtMs);
     // A listing that could not read every path cannot tell which files are gone.
     if (listing.failedPaths === 0) {
-      recordPresence(
-        provider,
-        dir,
-        new Set(listing.files.map((file) => file.path)),
-        yield* Clock.currentTimeMillis,
-      );
+      recordMissing(provider, dir, new Set(listing.files.map((file) => file.path)), listedAtMs);
     }
     const candidates = listing.files.filter((file) => file.mtimeMs >= windowStartMs);
     const read = yield* Effect.forEach(
@@ -1227,6 +1267,7 @@ export const make = Effect.gen(function* () {
     const transcripts = yield* Effect.forEach(dirs, (dir) =>
       scanTranscriptDir(dir, windowStartMs, scanListings, onProgress),
     );
+    yield* checkExpiredFiles(retentionCutoffMs);
 
     yield* Fiber.join(rateLoad);
     const window = {
@@ -1524,7 +1565,7 @@ export const make = Effect.gen(function* () {
         generation += 1;
       }
     }
-    yield* pruneExpired(retentionCutoffMs);
+    yield* dropExpired();
 
     return yield* finish();
   });

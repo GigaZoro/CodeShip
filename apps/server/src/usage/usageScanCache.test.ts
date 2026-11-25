@@ -93,6 +93,7 @@ describe("scan cache round trip", () => {
       mtimeMs: 300,
       observedAtMs: 350,
       missingSinceMs: 500,
+      presentSinceMs: 450,
       provider: "grok",
       records: [
         record({ provider: "grok", model: "grok-4.5-build", dedupeKey: "s:p:grok-4.5-build" }),
@@ -318,6 +319,26 @@ describe("scan cache round trip", () => {
     expect([...restored.keys()]).toEqual(["/good.jsonl"]);
   });
 
+  it.each([
+    ["a string", "500"],
+    ["NaN", Number.NaN],
+    ["a negative time", -1],
+    ["a fraction", 1.5],
+  ])("keeps a row but not its presence times when they are %s", (_name, time) => {
+    const encoded = JSON.parse(
+      makeScanCacheWriter()(cacheWith([["/a.jsonl", 100, [record()]]]), {}),
+    );
+    const document = {
+      ...encoded,
+      files: { "/a.jsonl": { ...encoded.files["/a.jsonl"], ms: time, ps: time } },
+    };
+
+    const restored = decodeScanCache(document, TEST_FORMAT_MAP).get("/a.jsonl");
+    expect(restored?.records).toHaveLength(1);
+    expect(restored?.missingSinceMs).toBeUndefined();
+    expect(restored?.presentSinceMs).toBeUndefined();
+  });
+
   it("drops the whole entry when any row is corrupt, forcing a cold re-parse", () => {
     const encoded = JSON.parse(
       makeScanCacheWriter()(
@@ -402,10 +423,24 @@ describe("scan cache merge", () => {
       row({ missingSinceMs: 5_000 }),
       5_000,
     ],
+    [
+      "no missing time from before a listing found the file back",
+      row({ presentSinceMs: 3_000 }),
+      row({ missingSinceMs: 2_500 }),
+      undefined,
+    ],
+    [
+      "a missing time from after a listing found the file back",
+      row({ presentSinceMs: 3_000 }),
+      row({ missingSinceMs: 4_000 }),
+      4_000,
+    ],
   ])("gives the winning row %s in either order", (_name, left, right, missingSinceMs) => {
     const observedAtMs = Math.max(left.observedAtMs, right.observedAtMs);
+    const presentSinceMs = left.presentSinceMs ?? right.presentSinceMs;
     for (const merged of [mergeScanEntry(left, right), mergeScanEntry(right, left)]) {
       expect(merged.missingSinceMs).toBe(missingSinceMs);
+      expect(merged.presentSinceMs).toBe(presentSinceMs);
       expect(merged.observedAtMs).toBe(observedAtMs);
     }
   });
