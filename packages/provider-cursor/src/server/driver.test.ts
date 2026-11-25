@@ -136,7 +136,13 @@ it.layer(layerTest)("CursorDriver", (it) => {
               if (answer === "offline")
                 return Effect.fail(
                   new HttpClientError.HttpClientError({
-                    reason: new HttpClientError.TransportError({ request, description: "offline" }),
+                    // As FetchHttpClient builds it: fetch keeps why on its own error's cause.
+                    reason: new HttpClientError.TransportError({
+                      request,
+                      cause: new TypeError("fetch failed", {
+                        cause: Object.assign(new Error("connect failed"), { code: "ECONNREFUSED" }),
+                      }),
+                    }),
                   }),
                 );
               return Effect.succeed(
@@ -204,7 +210,7 @@ it.layer(layerTest)("CursorDriver", (it) => {
             yield* keepsReading("HTTP 503");
             answer = "offline";
             yield* instance.snapshot.refresh;
-            yield* keepsReading("offline");
+            yield* keepsReading("ECONNREFUSED");
             answer = 200;
             keychainToken = "unreadable";
             yield* fs.writeFileString(authFile, "{");
@@ -213,21 +219,34 @@ it.layer(layerTest)("CursorDriver", (it) => {
             keychainToken = token;
             yield* fs.writeFileString(authFile, JSON.stringify({ accessToken: token }));
 
+            // cursor.com sends a rejected login to its sign-in page.
             for (const [next, state] of [
               [401, "unavailable"],
               [200, "reading"],
               [403, "unavailable"],
               [200, "reading"],
+              [307, "unavailable"],
+              [200, "reading"],
             ] as const) {
               yield* recheck(next);
               yield* published(state);
             }
-            const requestsWithLogin = requests;
-            keychainToken = null;
-            yield* fs.writeFileString(authFile, JSON.stringify({}));
-            yield* recheck(200);
-            yield* published("unavailable");
-            expect(requests).toBe(requestsWithLogin);
+            // No usable login: a token Cursor could never accept, or none at all.
+            for (const login of ["not-a-jwt", null]) {
+              const requestsWithLogin = requests;
+              keychainToken = login;
+              yield* fs.writeFileString(
+                authFile,
+                JSON.stringify(login === null ? {} : { accessToken: login }),
+              );
+              yield* recheck(200);
+              yield* published("unavailable");
+              expect(requests).toBe(requestsWithLogin);
+              keychainToken = token;
+              yield* fs.writeFileString(authFile, JSON.stringify({ accessToken: token }));
+              yield* recheck(200);
+              yield* published("reading");
+            }
             if (!keychainEnabled) expect(keychainReads).toBe(0);
           }).pipe(Effect.scoped, Effect.provide(captureWarnings(warnings)));
         }

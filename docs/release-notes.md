@@ -1,7 +1,8 @@
 ## 2026-11-25 — Cursor account usage stays readable through a dashboard blip
 
-- A network error, a server error or a slow answer from the Cursor dashboard no longer marks Cursor account usage as unavailable. T3.CodeShip keeps the last result, logs why the check failed, and tries again later. Only a rejected or missing Cursor login turns it off.
-- Cursor's status no longer waits up to 10 seconds on the dashboard. The access check runs after the status is published and updates it when the answer changes.
+- A network error, a server error or a slow answer from the Cursor dashboard no longer marks Cursor account usage as unavailable. T3.CodeShip keeps the last result, logs why the check failed (such as a refused connection), and tries again later. Only a rejected or missing Cursor login turns it off.
+- When cursor.com turns down a Cursor login by sending it to the sign-in page, account usage now asks you to sign in to Cursor again instead of reporting a failed request.
+- Cursor's status no longer waits up to 10 seconds on the account-history check. That check runs after the status is published and updates it when the answer changes.
 
 ## 2026-11-25 — Usage never shows partial or older totals as current
 

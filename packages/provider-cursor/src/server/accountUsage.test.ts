@@ -73,7 +73,7 @@ describe("Cursor account history", () => {
         const signals: AbortSignal[] = [];
         const request = ({ url, init, headers, page }: DashboardRequest) => {
           assert.strictEqual(url, "https://cursor.com/api/dashboard/get-filtered-usage-events");
-          assert.strictEqual(init.redirect, "error");
+          assert.strictEqual(init.redirect, "manual");
           assert.strictEqual(headers.get("origin"), "https://cursor.com");
           assert.strictEqual(headers.get("content-type"), "application/json");
           assert.include(headers.get("cookie") ?? "", "WorkosCursorSessionToken=demo%3A%3A");
@@ -349,6 +349,15 @@ describe("readCursorAccountUsage", () => {
         [() => Response.json(fullPage), "Cursor account usage could not be read."],
         [
           () => new Response(null, { status: 401 }),
+          "Sign in to Cursor again to read account usage.",
+        ],
+        // How cursor.com answers a login it rejects.
+        [
+          () =>
+            new Response(null, {
+              status: 307,
+              headers: { location: "https://api.workos.com/user_management/authorize" },
+            }),
           "Sign in to Cursor again to read account usage.",
         ],
       ] as const) {

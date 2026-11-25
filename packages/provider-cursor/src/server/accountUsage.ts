@@ -9,6 +9,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
+import type * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
@@ -116,8 +117,23 @@ function boundaryOverlap(previous: readonly string[], current: readonly string[]
 
 const DASHBOARD_USAGE_URL = "https://cursor.com/api/dashboard/get-filtered-usage-events";
 
-/** The session cookie must never follow a redirect off cursor.com. */
-const NO_REDIRECT: RequestInit = { redirect: "error" };
+/**
+ * The session cookie must never follow a redirect off cursor.com, and cursor.com answers a
+ * rejected login with a redirect to its sign-in page, so the redirect itself is the answer.
+ */
+const NO_REDIRECT: RequestInit = { redirect: "manual" };
+
+// fetch rejects every network failure as "fetch failed" and keeps the Node error code
+// (ECONNREFUSED, ENOTFOUND) on that error's cause.
+const requestFailure = (error: HttpClientError.HttpClientError) => {
+  const fetchFailure = error.reason._tag === "TransportError" ? error.reason.cause : undefined;
+  const reason = fetchFailure instanceof Error ? fetchFailure.cause : undefined;
+  const code =
+    reason instanceof Error && "code" in reason && typeof reason.code === "string"
+      ? reason.code
+      : undefined;
+  return code === undefined ? error.message : `${error.message}: ${code}`;
+};
 
 const historyPage = Effect.fn("CursorAccountUsage.historyPage")(function* (
   userId: string,
@@ -146,12 +162,13 @@ const historyPage = Effect.fn("CursorAccountUsage.historyPage")(function* (
       Effect.mapError(
         (cause) =>
           new CursorAccountUsageInvalidError({
-            reason: `Account usage request failed: ${cause.message}`,
+            reason: `Account usage request failed: ${requestFailure(cause)}`,
           }),
       ),
     );
 
-  if (response.status === 401 || response.status === 403) return null;
+  const redirected = response.status >= 300 && response.status < 400;
+  if (response.status === 401 || response.status === 403 || redirected) return null;
   if (response.status < 200 || response.status >= 300)
     return yield* invalid(`Account usage request failed with HTTP ${response.status}`);
   const parsed: unknown = yield* response.json.pipe(
@@ -184,8 +201,8 @@ const historyPage = Effect.fn("CursorAccountUsage.historyPage")(function* (
 });
 
 /**
- * `false` means Cursor rejected the login (401/403) or there is no usable one. Anything a retry
- * could fix fails with {@link CursorHistoryCheckError} instead.
+ * `false` means Cursor rejected the login (401, 403 or a redirect to sign in) or there is no
+ * usable one. Anything a retry could fix fails with {@link CursorHistoryCheckError} instead.
  */
 export const checkCursorHistoryAccess = Effect.fn("CursorAccountUsage.checkAccess")(
   function* (credential: string | CursorKeychain.CursorKeychain["Service"]) {
