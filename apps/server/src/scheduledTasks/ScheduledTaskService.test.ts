@@ -236,6 +236,13 @@ it.effect(
           ('run:cut-moved', 'stuck-moved', 'scheduled', ${cutAt}, 'running', 'thread:moved', 'Reports'),
           ('run:cut-unread', 'stuck-unread', 'scheduled', ${cutAt}, 'running', 'thread:unread', NULL)
       `;
+      // Marking each task running named its run.
+      yield* sql`
+        UPDATE scheduled_tasks SET last_run_id = (
+          SELECT run_id FROM scheduled_task_runs WHERE task_id = scheduled_tasks.task_id
+        )
+        WHERE last_run_at = ${cutAt}
+      `;
       const chats = new Map<string, { folder: string | null; messageIds: ReadonlyArray<string> }>([
         [
           "thread:prompted",
@@ -2898,6 +2905,12 @@ it.effect(
             ('run:misread', 'task:misread', 'scheduled', ${cutAt}, 'running', 'thread:misread',
               'Autopilot')
         `;
+        // Marking each task running named its run.
+        yield* sql`
+          UPDATE scheduled_tasks SET last_run_id = (
+            SELECT run_id FROM scheduled_task_runs WHERE task_id = scheduled_tasks.task_id
+          )
+        `;
         // An older build recorded two skips under the reason's old name and pruned one.
         yield* sql`
           INSERT INTO scheduled_task_runs (run_id, task_id, trigger, started_at, outcome, skip_reason)
@@ -3135,7 +3148,7 @@ it.effect(
           ScheduledTaskService.CHANGED_IN_APP,
         );
         // A restart cut the run after its chat was made, before the prompt reached it.
-        yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running', last_run_at = ${cutAt}`;
+        yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running', last_run_at = ${cutAt}, last_run_id = 'run:empty'`;
         yield* sql`
           INSERT INTO scheduled_task_runs
             (run_id, task_id, trigger, started_at, outcome, thread_id, chat_folder)

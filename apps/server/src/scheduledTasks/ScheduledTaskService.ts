@@ -445,6 +445,8 @@ function fixedTimeOrigin(task: DueTask): FixedTimeOrigin | null {
 
 interface ScheduledTaskRow {
   readonly incarnation_id?: string | null;
+  /** The run the task is on; null before its first run since run ids were stored. */
+  readonly last_run_id?: string | null;
   readonly usage_hold_json?: string | null;
   readonly task_id: string;
   readonly title: string;
@@ -1509,6 +1511,7 @@ export const layer = Layer.effect(
       sql<ScheduledTaskRow>`
       SELECT
         task_id,
+        last_run_id,
         title,
         description_json,
         prompt,
@@ -2129,11 +2132,14 @@ export const layer = Layer.effect(
       readonly trigger: ScheduledTaskRunTrigger;
       readonly scheduledFor: string | null;
       readonly webhookDeliveryId: string | null;
+      /** The run the task is then on: a report from its chat and restart recovery find it by id. */
+      readonly runId: string;
     }) =>
       sql<{ incarnation: string }>`
         UPDATE scheduled_tasks
         SET updated_at = ${input.startedAtIso},
             last_run_at = ${input.startedAtIso},
+            last_run_id = ${input.runId},
             last_run_trigger = ${input.trigger},
             last_run_scheduled_for = ${input.scheduledFor},
             last_run_webhook_delivery_id = ${input.webhookDeliveryId},
@@ -2149,6 +2155,22 @@ export const layer = Layer.effect(
           rows[0] !== undefined
             ? Effect.succeed(rows[0].incarnation)
             : taskError("Schedule task not found.", { taskId: input.id }),
+        ),
+      );
+
+    // A fixed-time occurrence finds its run only once marked: a replay takes the run it delivered.
+    // Guarded like markCompleted, so it names nothing for a later attempt or a recreated task.
+    const nameRun = (
+      input: { readonly id: ScheduledTaskId; readonly startedAtIso: string },
+      runId: string,
+    ) =>
+      sql`
+        UPDATE scheduled_tasks SET last_run_id = ${runId}
+        WHERE task_id = ${input.id} AND last_run_status = 'running'
+          AND last_run_at = ${input.startedAtIso}
+      `.pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not mark schedule task as running.", { taskId: input.id, cause }),
         ),
       );
 
@@ -2313,11 +2335,13 @@ export const layer = Layer.effect(
         taskId,
       );
 
+    // The result of a run whose prompt reached its chat, a reported `incomplete` included. A run
+    // without a chat is one the next attempt reopens, so its result is not kept.
     // Run history is bookkeeping: when it cannot be read, the attempt's own result stands.
     const settledRunResult = (taskId: ScheduledTaskId, id: string) =>
       sql<{ readonly outcome: "succeeded" | "failed"; readonly error: string | null }>`
         SELECT outcome, error FROM scheduled_task_runs
-        WHERE run_id = ${id} AND outcome IN ('succeeded', 'failed')
+        WHERE run_id = ${id} AND outcome IN ('succeeded', 'failed') AND thread_id IS NOT NULL
       `.pipe(
         Effect.map(([run]) => run ?? null),
         Effect.catch((cause) =>
@@ -2583,6 +2607,7 @@ export const layer = Layer.effect(
           trigger: recordTrigger,
           scheduledFor,
           webhookDeliveryId: webhook?.deliveryId ?? null,
+          runId: runRecordId,
         };
         const incarnation =
           webhook === undefined
@@ -2640,6 +2665,9 @@ export const layer = Layer.effect(
           runRecordId =
             prior?.run_id ??
             `${active.id}:fixed:${incarnation}:${demand.demandId ?? fixedTime.dispatchAt}:scheduled`;
+          // Until this write the task names the attempt's first id, which no run record has, so a
+          // restart before it recovers the attempt as cut: its prompt has not been sent.
+          yield* nameRun(started, runRecordId);
         }
         yield* insertRunRecord({
           id: runRecordId,
@@ -4622,7 +4650,7 @@ export const layer = Layer.effect(
                     UPDATE scheduled_tasks
                     SET last_run_status = 'succeeded', last_run_error = NULL,
                         updated_at = ${completedAt}
-                    WHERE task_id = ${run.task_id} AND last_run_at = ${run.started_at}
+                    WHERE task_id = ${run.task_id} AND last_run_id = ${run.run_id}
                       AND last_run_status = 'failed' AND last_run_error = ${INTERRUPTED_BY_RESTART}
                     RETURNING task_id
                   `;
@@ -4654,16 +4682,14 @@ export const layer = Layer.effect(
         stuck,
         (row) =>
           Effect.gen(function* () {
-            // From the stored run, so a run kept by a startup that a restart then cut still counts.
-            const kept = yield* sql`
-              SELECT 1 FROM scheduled_task_runs
-              WHERE task_id = ${row.task_id} AND started_at = ${row.last_run_at}
-                AND outcome = 'succeeded'
-              LIMIT 1
-            `;
-            const started = kept.length > 0;
-            const status = started ? "succeeded" : "failed";
-            const error = started ? null : INTERRUPTED_BY_RESTART;
+            // From the stored run, so a run kept by a startup that a restart then cut still counts,
+            // as does the delivered run of an occurrence whose replay the restart cut.
+            const kept =
+              row.last_run_id == null
+                ? null
+                : yield* settledRunResult(ScheduledTaskId.make(row.task_id), row.last_run_id);
+            const status = kept?.outcome ?? "failed";
+            const error = kept === null ? INTERRUPTED_BY_RESTART : kept.error;
             const decoded = yield* Effect.result(decodeRow(row));
             if (Result.isSuccess(decoded)) {
               yield* sql`
@@ -5998,7 +6024,7 @@ export const layer = Layer.effect(
               yield* sql`
                 UPDATE scheduled_tasks
                 SET last_run_status = 'failed', last_run_error = ${input.summary}
-                WHERE task_id = ${run.task_id} AND last_run_at = ${run.started_at}
+                WHERE task_id = ${run.task_id} AND last_run_id = ${run.run_id}
                   AND last_run_status = 'succeeded'
               `;
             }

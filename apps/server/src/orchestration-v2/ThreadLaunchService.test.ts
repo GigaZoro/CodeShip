@@ -22,6 +22,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   OrchestrationV2ThreadProjectionJson,
+  type ScheduledTask,
   ScheduledTaskId,
   type ServerProvider,
   ThreadId,
@@ -32,6 +33,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -327,6 +329,32 @@ function launchInput(input: {
   };
 }
 
+// Polls the scheduler at `time` until the task shows `done`. The clock passing the tick does not mean
+// its forked run has finished writing, and closing the scheduler then would cut that run.
+const pollScheduler = <E, R>(
+  scheduler: Layer.Layer<ScheduledTasks.ScheduledTaskService, E, R>,
+  time: number,
+  done: (task: ScheduledTask) => boolean,
+) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(time);
+    return yield* Effect.gen(function* () {
+      const tasks = yield* ScheduledTasks.ScheduledTaskService;
+      const shown = yield* tasks.subscribeList().pipe(
+        Stream.map((list) => list.tasks[0]!),
+        Stream.filter(done),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("6 seconds");
+      return Option.getOrThrow(yield* Fiber.join(shown));
+    }).pipe(Effect.provide(scheduler));
+  });
+
+/** No run in flight and the occurrence `due` names is used up, so a run it started has finished. */
+const settledPast = (due: string) => (task: ScheduledTask) =>
+  task.lastRunStatus !== "running" && task.nextRunAt !== due;
+
 const replayScenarios = [
   "restart replay",
   "unknown",
@@ -334,6 +362,7 @@ const replayScenarios = [
   "accepted unknown cursor",
   "accepted late retry",
   "failure before receipt",
+  "failure before receipt, history write lost",
 ] as const;
 it.effect.each(
   replayScenarios.flatMap((mode) =>
@@ -349,6 +378,8 @@ it.effect.each(
     const held = mode === "accepted late retry";
     const old = mode.startsWith("accepted ");
     const unknown = mode.includes("unknown");
+    const failsFirst = mode.startsWith("failure before receipt");
+    const historyLost = mode.endsWith("history write lost");
     const scheduler = ScheduledTasks.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
@@ -363,7 +394,7 @@ it.effect.each(
             sendToThread: (input) =>
               Effect.suspend(() => {
                 attempts.push(input.commandId);
-                if (mode === "failure before receipt" && attempts.length === 1)
+                if (failsFirst && attempts.length === 1)
                   return Effect.die("transient failure before receipt");
                 return threads.sendToThread(input);
               }),
@@ -373,7 +404,7 @@ it.effect.each(
             launch: (input) =>
               Effect.suspend(() => {
                 attempts.push(input.commandId);
-                if (mode === "failure before receipt" && attempts.length === 1)
+                if (failsFirst && attempts.length === 1)
                   return Effect.die("transient failure before receipt");
                 return launches.launch(input);
               }),
@@ -437,15 +468,7 @@ it.effect.each(
       : null;
     const cursor = () =>
       sql`UPDATE scheduled_tasks SET next_run_at = ${scheduledFor}, usage_hold_json = ${held || unknown ? JSON.stringify({ until: scheduledFor, heldOccurrence: evidence }) : null} WHERE task_id = ${id}`;
-    const poll = (time: number) =>
-      Effect.gen(function* () {
-        yield* TestClock.setTime(time);
-        return yield* Effect.gen(function* () {
-          const tasks = yield* ScheduledTasks.ScheduledTaskService;
-          yield* TestClock.adjust("6 seconds");
-          return (yield* tasks.list()).tasks[0]!;
-        }).pipe(Effect.provide(scheduler));
-      });
+    const poll = (time: number) => pollScheduler(scheduler, time, settledPast(scheduledFor));
     yield* cursor();
     if (old) {
       const earlier = held ? slot + 25 * 60_000 : when;
@@ -479,8 +502,13 @@ it.effect.each(
           VALUES (${key},${id},'scheduled',${earlierFor},${earlierFor},${threadId},'succeeded')`;
     } else {
       const first = yield* poll(when);
-      assert.equal(first.lastRunStatus, mode === "failure before receipt" ? "failed" : "succeeded");
+      assert.equal(first.lastRunStatus, failsFirst ? "failed" : "succeeded");
     }
+    // Run history is best-effort: the retry's reopen of the failed run can be lost, and that run's
+    // old result must not then stand in for the retry's own.
+    if (historyLost)
+      yield* sql`CREATE TRIGGER lose_run_reopen BEFORE UPDATE OF outcome ON scheduled_task_runs
+        WHEN NEW.outcome = 'running' BEGIN SELECT RAISE(ABORT, 'history write lost'); END`;
     yield* cursor();
     const last = yield* poll(when + (mode === "unknown catch-up rewrite" ? 15 * 60_000 : 8000));
     const history =
@@ -497,8 +525,8 @@ it.effect.each(
     assert.lengthOf(messages, 1);
     assert.lengthOf(shells, 1);
     assert.lengthOf(history, 1);
-    assert.equal(history[0]?.outcome, "succeeded");
-    assert.equal(history[0]?.thread_id, shells[0]!.id);
+    assert.equal(history[0]?.outcome, historyLost ? "failed" : "succeeded");
+    assert.equal(history[0]?.thread_id, historyLost ? null : shells[0]!.id);
     if (unknown)
       assert.deepEqual(
         projections.flatMap((p) => p.runs.map((r) => r.demandId)),
@@ -507,107 +535,128 @@ it.effect.each(
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("keeps a delivered run's reported result when its occurrence is dispatched again", () => {
-  const harness = makeHarness();
-  return Effect.gen(function* () {
-    const threads = yield* ThreadManagement.ThreadManagementService;
-    const sql = yield* SqlClient.SqlClient;
-    const scheduler = ScheduledTasks.layer.pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          NodeCrypto.layer,
-          Scheduler.layer,
-          layerSharedTaskIdentities(),
-          ManagedPolicy.layerTest(),
-          Layer.mock(SecretRequests.SecretRequests)({}),
-          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+it.effect.each([
+  "before the replay",
+  "after the replay",
+  "after a restart cut the replay",
+] as const)(
+  "the task keeps a delivered run's reported result when its chat reports %s",
+  (order) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const sql = yield* SqlClient.SqlClient;
+      // While set, a launch never finishes, so closing the scheduler cuts the run as a restart does.
+      let cutLaunch = false;
+      const scheduler = ScheduledTasks.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            NodeCrypto.layer,
+            Scheduler.layer,
+            layerSharedTaskIdentities(),
+            ManagedPolicy.layerTest(),
+            Layer.mock(SecretRequests.SecretRequests)({}),
+            Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+            Layer.succeed(ThreadLaunch.ThreadLaunchService, {
+              ...launches,
+              launch: (input) => (cutLaunch ? Effect.never : launches.launch(input)),
+            }),
+          ),
         ),
-      ),
-    );
-    const report = (threadId: ThreadId, outcome: "completed" | "incomplete", summary: string) =>
-      Effect.gen(function* () {
-        const tasks = yield* ScheduledTasks.ScheduledTaskService;
-        return yield* tasks.reportRunResult({ threadId, outcome, summary });
-      }).pipe(Effect.provide(scheduler));
-    const slot = DateTime.toEpochMillis(
-      DateTime.makeZonedUnsafe(
-        { year: 1970, month: 1, day: 2, hour: 7 },
-        { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
-      ),
-    );
-    const id = ScheduledTaskId.make("daily-reported");
-    yield* TestClock.setTime(slot - 60_000);
-    yield* Effect.gen(function* () {
-      const tasks = yield* ScheduledTasks.ScheduledTaskService;
-      yield* tasks.upsert(
-        {
-          id,
-          title: "Daily",
-          prompt: "Daily check",
-          enabled: true,
-          maxLiveRuns: 4,
-          schedule: { type: "fixed_time", timeOfDay: "07:00" },
-          projectId,
-          threadId: null,
-          workspaceStrategy: { type: "root" },
-          modelSelection,
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          createdBy: "user",
-          creationSource: "web",
-        },
-        ScheduledTasks.CHANGED_IN_APP,
       );
-    }).pipe(Effect.provide(scheduler));
-    const cursor = () =>
-      sql`UPDATE scheduled_tasks SET next_run_at = ${DateTime.formatIso(DateTime.makeUnsafe(slot))} WHERE task_id = ${id}`;
-    const poll = (time: number) =>
-      Effect.gen(function* () {
-        yield* TestClock.setTime(time);
-        return yield* Effect.gen(function* () {
+      const report = (threadId: ThreadId, outcome: "completed" | "incomplete", summary: string) =>
+        Effect.gen(function* () {
           const tasks = yield* ScheduledTasks.ScheduledTaskService;
-          yield* TestClock.adjust("6 seconds");
-          return (yield* tasks.list()).tasks[0]!;
+          return yield* tasks.reportRunResult({ threadId, outcome, summary });
         }).pipe(Effect.provide(scheduler));
-      });
-    const history = () =>
-      sql<{
-        outcome: string;
-        thread_id: string | null;
-        reported_outcome: string | null;
-        reported_summary: string | null;
-      }>`SELECT outcome, thread_id, reported_outcome, reported_summary FROM scheduled_task_runs WHERE task_id = ${id}`;
-    yield* cursor();
-    assert.equal((yield* poll(slot)).lastRunStatus, "succeeded");
-    const [delivered] = yield* history();
-    const chat = ThreadId.make(delivered!.thread_id!);
-    const blocked = "Blocked: the market API was down.";
-    yield* report(chat, "incomplete", blocked);
-    // As a replay does: the cursor names the delivered occurrence again, so it dispatches under the same run id.
-    yield* cursor();
-    const replayed = yield* poll(slot + 8000);
-    assert.equal(replayed.lastRunStatus, "failed");
-    assert.equal(replayed.lastRunError, blocked);
-    assert.deepEqual(yield* history(), [
-      {
-        outcome: "failed",
-        thread_id: chat,
-        reported_outcome: "incomplete",
-        reported_summary: blocked,
-      },
-    ]);
-    const shells = yield* threads.listProjectThreads({ projectId, includeSubagents: false });
-    const projections = yield* Effect.forEach(shells, (shell) =>
-      threads.getThreadProjection(shell.id),
-    );
-    assert.lengthOf(
-      projections.flatMap((p) => p.messages),
-      1,
-    );
-    const refused = yield* Effect.flip(report(chat, "completed", "Checked."));
-    assert.equal(refused.message, "This run already reported its result.");
-  }).pipe(Effect.provide(harness.layer));
-});
+      const slot = DateTime.toEpochMillis(
+        DateTime.makeZonedUnsafe(
+          { year: 1970, month: 1, day: 2, hour: 7 },
+          { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+        ),
+      );
+      const id = ScheduledTaskId.make("daily-reported");
+      yield* TestClock.setTime(slot - 60_000);
+      yield* Effect.gen(function* () {
+        const tasks = yield* ScheduledTasks.ScheduledTaskService;
+        yield* tasks.upsert(
+          {
+            id,
+            title: "Daily",
+            prompt: "Daily check",
+            enabled: true,
+            maxLiveRuns: 4,
+            schedule: { type: "fixed_time", timeOfDay: "07:00" },
+            projectId,
+            threadId: null,
+            workspaceStrategy: { type: "root" },
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdBy: "user",
+            creationSource: "web",
+          },
+          ScheduledTasks.CHANGED_IN_APP,
+        );
+      }).pipe(Effect.provide(scheduler));
+      const due = DateTime.formatIso(DateTime.makeUnsafe(slot));
+      const cursor = () =>
+        sql`UPDATE scheduled_tasks SET next_run_at = ${due} WHERE task_id = ${id}`;
+      const poll = (time: number) => pollScheduler(scheduler, time, settledPast(due));
+      const history = () =>
+        sql<{
+          outcome: string;
+          thread_id: string | null;
+          reported_outcome: string | null;
+          reported_summary: string | null;
+        }>`SELECT outcome, thread_id, reported_outcome, reported_summary FROM scheduled_task_runs WHERE task_id = ${id}`;
+      yield* cursor();
+      assert.equal((yield* poll(slot)).lastRunStatus, "succeeded");
+      const [delivered] = yield* history();
+      const chat = ThreadId.make(delivered!.thread_id!);
+      const blocked = "Blocked: the market API was down.";
+      if (order === "before the replay") yield* report(chat, "incomplete", blocked);
+      // As a replay does: the cursor names the delivered occurrence again, so it dispatches under the same run id.
+      yield* cursor();
+      cutLaunch = order === "after a restart cut the replay";
+      // A cut replay stays running: the poll waits for it to start, then closing the scheduler cuts it.
+      let settled = yield* cutLaunch
+        ? pollScheduler(scheduler, slot + 8000, (task) => task.lastRunStatus === "running")
+        : poll(slot + 8000);
+      cutLaunch = false;
+      if (order !== "before the replay") {
+        // The replay started after the delivered run; the task still names that run, and once a
+        // restart recovers it, takes that run's result rather than the cut.
+        const recovered = yield* poll(slot + 16000);
+        assert.equal(recovered.lastRunStatus, "succeeded");
+        assert.equal(recovered.lastRunError, null);
+        yield* report(chat, "incomplete", blocked);
+        settled = yield* poll(slot + 24000);
+      }
+      assert.equal(settled.lastRunStatus, "failed");
+      assert.equal(settled.lastRunError, blocked);
+      assert.deepEqual(yield* history(), [
+        {
+          outcome: "failed",
+          thread_id: chat,
+          reported_outcome: "incomplete",
+          reported_summary: blocked,
+        },
+      ]);
+      const shells = yield* threads.listProjectThreads({ projectId, includeSubagents: false });
+      const projections = yield* Effect.forEach(shells, (shell) =>
+        threads.getThreadProjection(shell.id),
+      );
+      assert.lengthOf(
+        projections.flatMap((p) => p.messages),
+        1,
+      );
+      const refused = yield* Effect.flip(report(chat, "completed", "Checked."));
+      assert.equal(refused.message, "This run already reported its result.");
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
 
 it.effect.each(["existing", "new"] as const)(
   "replays fixed-time receipts only within the same task incarnation in %s threads",
