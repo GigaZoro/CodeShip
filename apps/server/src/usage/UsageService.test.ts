@@ -58,9 +58,11 @@ import { MuseUsageHome } from "@t3tools/provider-muse/server";
 import {
   isLegacyScanCacheFileName,
   isScanCacheInput,
-  makeScanCacheWriter,
   SCAN_CACHE_DIRECTORY_NAME,
+  SCAN_CACHE_PIECE_CHARS,
+  scanCacheDocumentPieces,
   USAGE_SCAN_CACHE_VERSION,
+  type ScanCache,
 } from "./usageScanCache.ts";
 import { PathCallPendingError, STAT_CONCURRENCY } from "./usageTranscriptReader.ts";
 
@@ -314,6 +316,8 @@ interface StoredDocument {
   version: number;
   files: Record<string, StoredRow>;
   sources: Record<string, unknown>;
+  sessions: string[];
+  models: string[];
 }
 
 /** The saved snapshots, by name; a test that ran one service has one. */
@@ -342,6 +346,15 @@ const onlySnapshot = (stateDir: string) =>
     return { path, raw, document: decodeUnknownJsonString(raw) as StoredDocument };
   });
 
+/** The snapshot with the highest sequence number: the last save of a test's only writer. */
+const newestSnapshot = (stateDir: string) =>
+  Effect.map(readStore(stateDir), (stored) => {
+    assert.isNotEmpty(stored);
+    const seq = (name: string) => Number(/-(\d+)\.json$/.exec(name)?.[1]);
+    const newest = stored.reduce((best, next) => (seq(next.name) > seq(best.name) ? next : best));
+    return { ...newest, document: decodeUnknownJsonString(newest.raw) as StoredDocument };
+  });
+
 const storedFileKeys = (stateDir: string) =>
   Effect.map(readStore(stateDir), (stored) => [
     ...new Set(
@@ -360,6 +373,9 @@ const outputTokensAfterRestart = Effect.scoped(
     return tokens;
   }),
 );
+
+const encodeSnapshot = (rows: ScanCache, extra: Readonly<Record<string, unknown>> = {}) =>
+  [...scanCacheDocumentPieces(rows, extra)].join("");
 
 let seededSnapshots = 0;
 /** Writes a snapshot as another process would, under a writer id no service uses. */
@@ -3268,6 +3284,10 @@ describe("UsageService", () => {
           const peer = yield* UsageService.make;
           yield* peer.readSummary(WINDOW);
           yield* peer.awaitPersisted;
+          // Two more copies make the writer's save a full one, which saves the row it loaded again.
+          const { raw: loaded } = yield* onlySnapshot(stateDir);
+          yield* seedSnapshot(stateDir, loaded);
+          yield* seedSnapshot(stateDir, loaded);
           if (sibling) yield* fs.writeFileString(only, claudeLine(3, 7));
 
           const publishing = yield* Deferred.make<void>();
@@ -3970,8 +3990,11 @@ describe("UsageService", () => {
           assert.strictEqual(yield* outputTokensAfterRestart, 5);
           yield* fs.remove(transcript);
           assert.strictEqual(yield* outputTokensAfterRestart, 5);
-          // A peer's copy of the row makes the next load merge the row with itself.
-          yield* seedSnapshot(stateDir, (yield* onlySnapshot(stateDir)).raw);
+          // Peers' copies of the row make the next load merge the row with itself and save it
+          // in full.
+          const { raw } = yield* onlySnapshot(stateDir);
+          yield* seedSnapshot(stateDir, raw);
+          yield* seedSnapshot(stateDir, raw);
           yield* Effect.scoped(
             Effect.flatMap(UsageService.make, (service) => service.awaitPersisted),
           );
@@ -4363,13 +4386,16 @@ describe("UsageService", () => {
         yield* service.readSummary(WINDOW);
         yield* service.awaitPersisted;
         assert.strictEqual(reads.size, 0);
+        const own = new Set((yield* readStore(stateDir)).map(({ path }) => path));
 
         const peer = yield* UsageService.make;
         const peerTranscript = NodePath.join(NodePath.dirname(transcript), "peer.jsonl");
         yield* fs.writeFileString(peerTranscript, claudeLine(2, 7));
         yield* peer.readSummary(WINDOW);
         yield* peer.awaitPersisted;
-        const { path: peerSnapshot } = yield* onlySnapshot(stateDir);
+        const peerSnapshots = (yield* readStore(stateDir)).filter(({ path }) => !own.has(path));
+        assert.lengthOf(peerSnapshots, 1);
+        const peerSnapshot = peerSnapshots[0]!.path;
         yield* fs.remove(peerTranscript);
         yield* fs.writeFileString(transcript, claudeLine(1, 30));
         for (const _ of [1, 2, 3]) {
@@ -4379,6 +4405,271 @@ describe("UsageService", () => {
         assert.deepStrictEqual([...reads], [[peerSnapshot, 1]]);
         assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 37);
       }).pipe(Effect.provide(layerService({ prefix: "usage-cache-read-once", home, settings })));
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live("saves only the row of the transcript that grew", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      const transcripts = Array.from({ length: 20 }, (_, index) =>
+        NodePath.join(NodePath.dirname(transcript), `session-${index}.jsonl`),
+      );
+      yield* Effect.forEach(
+        transcripts,
+        (file, index) => Effect.promise(() => NodeFSP.writeFile(file, claudeLine(index + 1, 5))),
+        { discard: true },
+      );
+      yield* Effect.gen(function* () {
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const service = yield* UsageService.make;
+        yield* service.readSummary(WINDOW);
+        yield* service.awaitPersisted;
+        const full = yield* onlySnapshot(stateDir);
+        assert.sameMembers(Object.keys(full.document.files), transcripts);
+
+        yield* Effect.promise(() => NodeFSP.appendFile(transcripts[1]!, claudeLine(100, 7)));
+        yield* TestClock.adjust("5 seconds");
+        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 107);
+        yield* service.awaitPersisted;
+        const saved = yield* newestSnapshot(stateDir);
+        assert.notStrictEqual(saved.path, full.path);
+        assert.deepStrictEqual(Object.keys(saved.document.files), [transcripts[1]]);
+        assert.isBelow(Buffer.byteLength(saved.raw) * 4, Buffer.byteLength(full.raw));
+        assert.strictEqual(yield* outputTokensAfterRestart, 107);
+      }).pipe(Effect.provide(layerService({ prefix: "usage-cache-delta", home, settings })));
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live("keeps two services that share a state directory to the rows each one saw change", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      const dir = NodePath.dirname(transcript);
+      const transcripts = Array.from({ length: 40 }, (_, index) =>
+        NodePath.join(dir, `session-${index}.jsonl`),
+      );
+      yield* Effect.forEach(
+        transcripts,
+        (file, index) => Effect.promise(() => NodeFSP.writeFile(file, claudeLine(index + 1, 5))),
+        { discard: true },
+      );
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const saves: { readonly rows: number; readonly bytes: number }[] = [];
+        const countingSaves: FileSystem.FileSystem = {
+          ...fs,
+          rename: (from, to) =>
+            Effect.gen(function* () {
+              if (isSnapshotPublish(stateDir, from, to)) {
+                const raw = yield* fs.readFileString(from);
+                const { files } = decodeUnknownJsonString(raw) as StoredDocument;
+                saves.push({ rows: Object.keys(files).length, bytes: Buffer.byteLength(raw) });
+              }
+              return yield* fs.rename(from, to);
+            }),
+        };
+        const services = [
+          yield* UsageService.make.pipe(
+            Effect.provideService(FileSystem.FileSystem, countingSaves),
+          ),
+          yield* UsageService.make.pipe(
+            Effect.provideService(FileSystem.FileSystem, countingSaves),
+          ),
+        ];
+        const scanBoth = Effect.forEach(
+          services,
+          (service) =>
+            Effect.gen(function* () {
+              yield* TestClock.adjust("5 seconds");
+              yield* service.readSummary(WINDOW);
+              yield* service.awaitPersisted;
+            }),
+          { discard: true },
+        );
+        yield* scanBoth;
+        assert.deepStrictEqual(
+          saves.map(({ rows }) => rows),
+          [transcripts.length],
+        );
+        const rounds = 4;
+        for (let round = 0; round < rounds; round += 1) {
+          yield* Effect.promise(() =>
+            NodeFSP.appendFile(transcripts[round]!, claudeLine(100 + round, 7)),
+          );
+          yield* scanBoth;
+        }
+        const later = saves.slice(1);
+        assert.deepStrictEqual(
+          later.map(({ rows }) => rows),
+          Array.from({ length: 2 * rounds }, () => 1),
+        );
+        assert.isBelow(
+          later.reduce((sum, { bytes }) => sum + bytes, 0),
+          saves[0]!.bytes,
+        );
+      }).pipe(Effect.provide(layerService({ prefix: "usage-cache-shared-delta", home, settings })));
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live("saves only changed rows after a peer's full save retires this writer's snapshots", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      const transcripts = Array.from({ length: 20 }, (_, index) =>
+        NodePath.join(NodePath.dirname(transcript), `session-${index}.jsonl`),
+      );
+      yield* Effect.forEach(
+        transcripts,
+        (file, index) => Effect.promise(() => NodeFSP.writeFile(file, claudeLine(index + 1, 5))),
+        { discard: true },
+      );
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const grow = (index: number) =>
+          Effect.promise(() => NodeFSP.appendFile(transcripts[index]!, claudeLine(100 + index, 7)));
+        const writer = yield* UsageService.make;
+        yield* writer.readSummary(WINDOW);
+        yield* writer.awaitPersisted;
+        yield* grow(0);
+        yield* TestClock.adjust("5 seconds");
+        yield* writer.readSummary(WINDOW);
+        yield* writer.awaitPersisted;
+        const stored = yield* readStore(stateDir);
+        assert.lengthOf(stored, 2);
+        const delta = yield* newestSnapshot(stateDir);
+        const full = stored.find(({ path }) => path !== delta.path)!;
+        // Two copies of the writer's full save make the peer's first save a full one.
+        yield* seedSnapshot(stateDir, full.raw);
+        yield* seedSnapshot(stateDir, full.raw);
+        const peer = yield* UsageService.make;
+        yield* TestClock.adjust("5 seconds");
+        yield* peer.readSummary(WINDOW);
+        yield* peer.awaitPersisted;
+        const compacted = yield* onlySnapshot(stateDir);
+
+        yield* grow(1);
+        yield* TestClock.adjust("5 seconds");
+        yield* writer.readSummary(WINDOW);
+        yield* writer.awaitPersisted;
+        const saved = yield* newestSnapshot(stateDir);
+        assert.deepStrictEqual(Object.keys(saved.document.files), [transcripts[1]]);
+        assert.isTrue(yield* fs.exists(compacted.path));
+      }).pipe(
+        Effect.provide(layerService({ prefix: "usage-cache-peer-compaction", home, settings })),
+      );
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live("compacts a large store in pieces with the event loop running between them", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          transcript,
+          Array.from({ length: 40 }, (_, line) => claudeLine(line + 1, 5)).join(""),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        yield* outputTokensAfterRestart;
+        const { document } = yield* onlySnapshot(stateDir);
+        const row = document.files[transcript]!;
+        const copies = Math.ceil((3 * SCAN_CACHE_PIECE_CHARS) / JSON.stringify(row).length);
+        const elsewhere = NodePath.join(home, "elsewhere");
+        const large = encodeUnknownJsonString({
+          ...document,
+          files: Object.fromEntries(
+            Array.from({ length: copies }, (_, copy) => [
+              NodePath.join(elsewhere, `${copy}.jsonl`),
+              row,
+            ]),
+          ),
+        });
+        // Beside two equal large snapshots, the small one holds more than the largest alone.
+        yield* seedSnapshot(stateDir, large);
+        yield* seedSnapshot(stateDir, large);
+
+        const writes: { turnedSince: boolean }[] = [];
+        let turned = true;
+        const watchingWrites: FileSystem.FileSystem = {
+          ...fs,
+          open: (file, options) =>
+            Effect.map(fs.open(file, options), (handle) =>
+              NodePath.dirname(file) !== storeDirOf(stateDir)
+                ? handle
+                : Object.assign(Object.create(handle) as FileSystem.File, {
+                    writeAll: (buffer: Uint8Array) =>
+                      Effect.suspend(() => {
+                        writes.push({ turnedSince: turned });
+                        turned = false;
+                        setImmediate(() => {
+                          turned = true;
+                        });
+                        return handle.writeAll(buffer);
+                      }),
+                  }),
+            ),
+        };
+        const service = yield* UsageService.make.pipe(
+          Effect.provideService(FileSystem.FileSystem, watchingWrites),
+        );
+        yield* service.readSummary(WINDOW);
+        yield* service.awaitPersisted;
+
+        assert.isAtLeast(writes.length, 3);
+        assert.isTrue(writes.every(({ turnedSince }) => turnedSince));
+        const { document: compacted } = yield* onlySnapshot(stateDir);
+        assert.lengthOf(Object.keys(compacted.files), copies + 1);
+      }).pipe(Effect.provide(layerService({ prefix: "usage-cache-compaction", home, settings })));
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live("drops a pruned transcript's session from later snapshots", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      const pruned = NodePath.join(NodePath.dirname(transcript), "pruned.jsonl");
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(pruned, claudeLine(1, 5, "claude-fable-5", "session-pruned")),
+      );
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(transcript, claudeLine(2, 7, "claude-fable-5", "session-kept")),
+      );
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const service = yield* UsageService.make;
+        yield* service.readSummary(WINDOW);
+        yield* service.awaitPersisted;
+        assert.sameMembers((yield* onlySnapshot(stateDir)).document.sessions, [
+          "session-pruned",
+          "session-kept",
+        ]);
+
+        yield* fs.remove(pruned);
+        yield* TestClock.adjust("5 seconds");
+        yield* service.readSummary(WINDOW);
+        yield* service.awaitPersisted;
+        yield* TestClock.adjust("93 days");
+        const nowSeconds = (yield* Clock.currentTimeMillis) / 1000;
+        yield* Effect.promise(async () => {
+          await NodeFSP.appendFile(transcript, claudeLine(3, 4, "claude-fable-5", "session-kept"));
+          await NodeFSP.utimes(transcript, nowSeconds, nowSeconds);
+        });
+        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 11);
+        yield* service.awaitPersisted;
+
+        const { document } = yield* newestSnapshot(stateDir);
+        assert.deepStrictEqual(document.sessions, ["session-kept"]);
+        assert.deepStrictEqual(yield* storedFileKeys(stateDir), [transcript]);
+      }).pipe(
+        Effect.provide(layerService({ prefix: "usage-cache-pruned-session", home, settings })),
+      );
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
@@ -5639,7 +5930,7 @@ describe("UsageService", () => {
       yield* Effect.gen(function* () {
         const { stateDir } = yield* ServerConfig.ServerConfig;
         const mtimeMs = yield* Clock.currentTimeMillis;
-        const cache = makeScanCacheWriter()(
+        const cache = encodeSnapshot(
           new Map([
             [
               transcript,

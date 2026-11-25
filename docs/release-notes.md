@@ -1,3 +1,9 @@
+## 2026-11-25 — Usage saves only what changed
+
+- After a refresh, Usage saves only the transcripts that changed instead of rewriting everything it remembers, which could be tens of megabytes on each refresh. It merges those saves into one file from time to time, a part at a time, so the app stays responsive while it does.
+- Two T3.CodeShip servers that share a state folder, such as the desktop app and `npx t3`, no longer rewrite each other's saved usage on every refresh.
+- A transcript whose usage has expired no longer leaves its session names in later saves.
+
 ## 2026-11-25 — A stuck transcript or saved-usage disk no longer holds up Usage
 
 - When one transcript sits on a disk that stops answering, the refresh that first meets it still waits up to 5 minutes, and every later refresh answers on time with the other transcripts' figures. Usage marks that source as partial and keeps counting what it had already read from the stuck file. Before, every later refresh waited behind it.

@@ -2,11 +2,13 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   decodeScanCache,
-  makeScanCacheWriter,
+  isFullSaveDue,
   markMissing,
   markPresent,
   mergeCachedSource,
   mergeScanEntry,
+  SCAN_CACHE_PIECE_CHARS,
+  scanCacheDocumentPieces,
   type CachedFile,
   type CachedSource,
   type ScanCache,
@@ -62,6 +64,9 @@ function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][])
   }
   return cache;
 }
+
+const encode = (cache: ScanCache, extra: Readonly<Record<string, unknown>> = {}) =>
+  [...scanCacheDocumentPieces(cache, extra)].join("");
 
 describe("scan cache round trip", () => {
   it("restores cached history unchanged except for Claude local placeholders", () => {
@@ -162,10 +167,7 @@ describe("scan cache round trip", () => {
         record({ model: "<synthetic>", dedupeKey: "msg_tail:" }),
       ],
     });
-    const restored = decodeScanCache(
-      JSON.parse(makeScanCacheWriter()(cached, {})),
-      TEST_FORMAT_MAP,
-    );
+    const restored = decodeScanCache(JSON.parse(encode(cached, {})), TEST_FORMAT_MAP);
 
     expect(restored.size).toBe(4);
     expect(restored).toEqual(original);
@@ -206,7 +208,7 @@ describe("scan cache round trip", () => {
         malformedRecords: 0,
       };
       original.set("/clean-codex.jsonl", cleanCodex);
-      const encoded = JSON.parse(makeScanCacheWriter()(original, {}));
+      const encoded = JSON.parse(encode(original, {}));
       const entry = encoded.files["/gone.jsonl"]!;
       const legacy = {
         ...encoded,
@@ -265,7 +267,7 @@ describe("scan cache round trip", () => {
 
   it("re-parses a Claude transcript cached before advisor usage was counted", () => {
     const original = cacheWith([["/claude.jsonl", 100, [record()]]]);
-    const v9 = { ...JSON.parse(makeScanCacheWriter()(original, {})), version: 9 };
+    const v9 = { ...JSON.parse(encode(original, {})), version: 9 };
 
     const restored = decodeScanCache(JSON.parse(JSON.stringify(v9)), TEST_FORMAT_MAP);
     expect(restored.get("/claude.jsonl")).toEqual({
@@ -274,30 +276,76 @@ describe("scan cache round trip", () => {
       legacy: true,
       position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
     });
-    expect(
-      decodeScanCache(JSON.parse(makeScanCacheWriter()(restored, {})), TEST_FORMAT_MAP),
-    ).toEqual(restored);
+    expect(decodeScanCache(JSON.parse(encode(restored, {})), TEST_FORMAT_MAP)).toEqual(restored);
   });
 
-  it("rewrites only changed entries and still restores the whole cache", () => {
-    const write = makeScanCacheWriter();
-    const cache = cacheWith([
-      ["/a.jsonl", 100, [record()]],
-      ["/b.jsonl", 200, [record({ sessionId: "session-b" })]],
-    ]);
-    cache.set("/b.jsonl", { ...cache.get("/b.jsonl")!, malformedRecords: 2 });
+  it("encodes a large cache in pieces of bounded size that restore the whole cache", () => {
+    const cache = cacheWith(
+      Array.from({ length: 1000 }, (_, file) => [
+        `/projects/${file}.jsonl`,
+        100 + file,
+        Array.from({ length: 60 }, (_, line) => record({ dedupeKey: `msg_${file}_${line}:` })),
+      ]),
+    );
     const sources = { "claude\u0000/projects": { dir: "/projects", volumeId: "1:2" } };
-    expect(decodeScanCache(JSON.parse(write(cache, { sources })), TEST_FORMAT_MAP)).toEqual(cache);
+    const rowChars = Math.max(...[...cache].map((row) => encode(new Map([row])).length));
+    const pieces = [...scanCacheDocumentPieces(cache, { sources })];
 
-    cache.set("/b.jsonl", {
-      ...cache.get("/b.jsonl")!,
-      size: 30,
-      malformedRecords: 4,
-      records: [record({ sessionId: "session-c", model: "claude-opus-5-5", dedupeKey: "msg_3:" })],
-    });
-    const document = JSON.parse(write(cache, { sources }));
+    expect(pieces.length).toBeGreaterThanOrEqual(3);
+    for (const piece of pieces) {
+      expect(piece.length).toBeLessThan(SCAN_CACHE_PIECE_CHARS + rowChars);
+    }
+    const document = JSON.parse(pieces.join(""));
     expect(decodeScanCache(document, TEST_FORMAT_MAP)).toEqual(cache);
     expect(document.sources).toEqual(sources);
+  });
+
+  it("names only the sessions and models of the rows each document holds", () => {
+    const cache = cacheWith([
+      ["/a.jsonl", 100, [record()]],
+      ["/b.jsonl", 200, [record({ sessionId: "session-b", model: "claude-opus-5-5" })]],
+    ]);
+    expect(JSON.parse(encode(cache)).sessions).toEqual(["session-a", "session-b"]);
+
+    cache.delete("/a.jsonl");
+    const document = JSON.parse(encode(cache));
+    expect(document).toMatchObject({ models: ["claude-opus-5-5"], sessions: ["session-b"] });
+    expect(decodeScanCache(document, TEST_FORMAT_MAP)).toEqual(cache);
+  });
+
+  it.each([
+    { case: "most rows changed", liveRows: 4, staleRows: 3, retirableChars: [], due: true },
+    { case: "half the rows changed", liveRows: 4, staleRows: 2, retirableChars: [], due: false },
+    {
+      case: "too many snapshots",
+      liveRows: 4,
+      staleRows: 0,
+      retirableChars: [1000, ...Array.from({ length: 64 }, () => 1)],
+      due: true,
+    },
+    {
+      case: "the most snapshots allowed",
+      liveRows: 4,
+      staleRows: 0,
+      retirableChars: [1000, ...Array.from({ length: 63 }, () => 1)],
+      due: false,
+    },
+    {
+      case: "more saved beside the largest",
+      liveRows: 4,
+      staleRows: 0,
+      retirableChars: [100, 60, 41],
+      due: true,
+    },
+    {
+      case: "as much saved beside the largest",
+      liveRows: 4,
+      staleRows: 0,
+      retirableChars: [100, 60, 40],
+      due: false,
+    },
+  ])("is due for a full save with $case: $due", ({ due, ...input }) => {
+    expect(isFullSaveDue(input)).toBe(due);
   });
 
   it("treats a corrupt or foreign document as an empty cache", () => {
@@ -309,9 +357,7 @@ describe("scan cache round trip", () => {
   });
 
   it("skips malformed file entries but keeps good ones", () => {
-    const encoded = JSON.parse(
-      makeScanCacheWriter()(cacheWith([["/good.jsonl", 100, [record()]]]), {}),
-    );
+    const encoded = JSON.parse(encode(cacheWith([["/good.jsonl", 100, [record()]]]), {}));
     const withJunk = {
       ...encoded,
       files: { ...encoded.files, "/bad.jsonl": { s: "nope", m: 1, p: "claude", r: [] } },
@@ -329,9 +375,7 @@ describe("scan cache round trip", () => {
     // The service counts a time ahead of its clock from now, so the decoder keeps it.
     ["far ahead of the clock", 1e15, 1e15],
   ])("keeps a row whose presence times are %s", (_name, time, decoded) => {
-    const encoded = JSON.parse(
-      makeScanCacheWriter()(cacheWith([["/a.jsonl", 100, [record()]]]), {}),
-    );
+    const encoded = JSON.parse(encode(cacheWith([["/a.jsonl", 100, [record()]]]), {}));
     const document = {
       ...encoded,
       files: { "/a.jsonl": { ...encoded.files["/a.jsonl"], ms: time, ps: time } },
@@ -345,10 +389,7 @@ describe("scan cache round trip", () => {
 
   it("drops the whole entry when any row is corrupt, forcing a cold re-parse", () => {
     const encoded = JSON.parse(
-      makeScanCacheWriter()(
-        cacheWith([["/a.jsonl", 100, [record(), record({ dedupeKey: "msg_2:" })]]]),
-        {},
-      ),
+      encode(cacheWith([["/a.jsonl", 100, [record(), record({ dedupeKey: "msg_2:" })]]]), {}),
     );
     const rows = encoded.files["/a.jsonl"]!.r;
     const poisoned = {

@@ -13,9 +13,9 @@ export const USAGE_SCAN_CACHE_VERSION = 11 as const;
 const SPEED_COMPATIBLE_SINCE_VERSION = 4;
 
 /**
- * Saved usage is a directory of snapshots that are written once and never changed, so processes
- * sharing a state directory need no lock: each reads every name once and merges rows. A future
- * format uses a new directory and claims this one's snapshots as legacy inputs.
+ * Snapshots here are written once and never changed, so processes sharing a state directory need
+ * no lock. A save holds the rows changed since its writer's last save; only a full save, which
+ * holds every live row, deletes what it covers. A newer format claims these as legacy inputs.
  */
 export const SCAN_CACHE_DIRECTORY_NAME = `usage-scan-cache-v${USAGE_SCAN_CACHE_VERSION}`;
 /** Single-file caches of older builds, which a sync moves into the store as legacy inputs. */
@@ -234,32 +234,63 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
   };
 }
 
-/** Memoizes immutable entries by identity; growing intern tables preserve indexes, retaining unused strings until restart. */
-export function makeScanCacheWriter(): (
-  cache: ScanCache,
+/** Characters a save encodes before it lets the event loop run again; a larger row is one piece. */
+export const SCAN_CACHE_PIECE_CHARS = 1 << 20;
+
+/**
+ * Encodes one snapshot a piece at a time, for a caller that writes each piece before asking for
+ * the next. Each snapshot interns only the models and sessions its own rows use, so a pruned
+ * row's session leaves later snapshots; the tables come after the files because only then are
+ * they complete. `extra` must not hold `files`.
+ */
+export function* scanCacheDocumentPieces(
+  rows: Iterable<readonly [string, CachedFile]>,
   extra: Readonly<Record<string, unknown>>,
-) => string {
+): Generator<string, void, undefined> {
   const tables = makeInternTables();
-  const fragments = new WeakMap<CachedFile, string>();
-  return (cache, extra) => {
-    const files: string[] = [];
-    for (const [path, entry] of cache) {
-      let fragment = fragments.get(entry);
-      if (fragment === undefined) {
-        fragment = JSON.stringify(serializeFile(entry, tables));
-        fragments.set(entry, fragment);
-      }
-      files.push(`${JSON.stringify(path)}:${fragment}`);
+  let piece = '{"files":{';
+  let separator = "";
+  for (const [path, entry] of rows) {
+    piece += `${separator}${JSON.stringify(path)}:${JSON.stringify(serializeFile(entry, tables))}`;
+    separator = ",";
+    if (piece.length >= SCAN_CACHE_PIECE_CHARS) {
+      yield piece;
+      piece = "";
     }
-    // Encoded after the files, which may have added to the intern tables.
-    const head = JSON.stringify({
-      ...extra,
-      version: USAGE_SCAN_CACHE_VERSION,
-      models: tables.models,
-      sessions: tables.sessions,
-    });
-    return `${head.slice(0, -1)},"files":{${files.join(",")}}}`;
-  };
+  }
+  const head = JSON.stringify({
+    ...extra,
+    version: USAGE_SCAN_CACHE_VERSION,
+    models: tables.models,
+    sessions: tables.sessions,
+  });
+  yield `${piece}},${head.slice(1)}`;
+}
+
+/** More snapshots than this cost a startup more to read than one full save costs to write. */
+const MAX_RETIRABLE_SNAPSHOTS = 64;
+
+/**
+ * A save writes every live row, so it may retire every snapshot it read or wrote, when its
+ * changed and dropped rows are over half the live rows, or when those snapshots number more than
+ * MAX_RETIRABLE_SNAPSHOTS or hold more characters outside the largest one than in it. The bounds
+ * keep a startup's reads under about twice the live rows while most saves write a few rows.
+ */
+export function isFullSaveDue(input: {
+  readonly liveRows: number;
+  readonly staleRows: number;
+  /** Characters in each snapshot a full save would retire. */
+  readonly retirableChars: readonly number[];
+}): boolean {
+  if (input.staleRows * 2 > input.liveRows) return true;
+  if (input.retirableChars.length > MAX_RETIRABLE_SNAPSHOTS) return true;
+  let total = 0;
+  let largest = 0;
+  for (const chars of input.retirableChars) {
+    total += chars;
+    largest = Math.max(largest, chars);
+  }
+  return total - largest > largest;
 }
 
 function isRecordArray(value: unknown): value is readonly unknown[] {

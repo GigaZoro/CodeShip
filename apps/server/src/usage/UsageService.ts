@@ -64,13 +64,14 @@ import {
   dedupeWithinFile,
   isLegacyScanCacheFileName,
   isRetained,
+  isFullSaveDue,
   isScanCacheInput,
-  makeScanCacheWriter,
   markMissing,
   markPresent,
   mergeCachedSource,
   mergeScanEntry,
   SCAN_CACHE_DIRECTORY_NAME,
+  scanCacheDocumentPieces,
   scanCacheSnapshotName,
   USAGE_SCAN_CACHE_VERSION,
   type CachedFile,
@@ -440,21 +441,32 @@ export const make = Effect.gen(function* () {
     return dirs;
   });
 
-  const writeScanCache = makeScanCacheWriter();
   const storeDir = path.join(config.stateDir, SCAN_CACHE_DIRECTORY_NAME);
   const writerId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
   let snapshotSeq = 0;
-  /** Every name this process wrote or tried to write; a durable write deletes all but itself. */
+  /** Every name this process wrote or tried to write; a full save deletes all but itself. */
   const ownSnapshots = new Set<string>();
   /** A name fixes its content, so each one is merged at most once. */
   const mergedInputs = new Map<string, "complete" | "incomplete">();
   const unreadInputs = new Set<string>();
   const claimedFrom = new Map<string, string>();
-  /** Merged complete and not yet deleted: only a later durable snapshot of ours may retire them. */
+  /** Merged complete and not yet deleted: only a later full save of ours may retire them. */
   const retirable = new Set<string>();
+  /** Retirable names in an older format: their rows are saved again, so a full save retires them. */
+  const olderFormatInputs = new Set<string>();
   const failedDeletes = new Set<string>();
+  /** Characters in each name this process wrote or merged complete, to bound the store. */
+  const storedChars = new Map<string, number>();
+  /**
+   * The row or source a current-format snapshot holds for each key. A snapshot is deleted only
+   * after a full save of its deleter holds every live row it held, so a save writes only the
+   * keys whose rows differ from these.
+   */
+  let durableFiles = new Map<string, CachedFile>();
+  let durableSources = new Map<string, CachedSource>();
+  /** Rows memory dropped that a snapshot still holds; they count toward the next full save. */
+  const droppedRows = new Set<string>();
   let savedGeneration = 0;
-  let savedFiles: ReadonlyMap<string, CachedFile> = new Map();
   let cacheLoaded = false;
   let retryCacheAt = 0;
 
@@ -542,11 +554,18 @@ export const make = Effect.gen(function* () {
   });
 
   // Merging only adds or supersedes rows, so a row a scan just stored cannot be lost to disk.
-  const mergeIntoMemory = (entries: ScanCache, sources: ReadonlyMap<string, CachedSource>) => {
+  // A row that wins unchanged is already saved, unless an older format holds it: a later
+  // build may not read that format, so a snapshot of ours saves the row again.
+  const mergeIntoMemory = (
+    entries: ScanCache,
+    sources: ReadonlyMap<string, CachedSource>,
+    durable: boolean,
+  ) => {
     let changed = false;
     for (const [file, incoming] of entries) {
       const held = fileCache.get(file);
       const merged = held === undefined ? incoming : mergeScanEntry(held, incoming);
+      if (durable && merged === incoming) durableFiles.set(file, incoming);
       if (merged === held) continue;
       fileCache.set(file, merged);
       changed = true;
@@ -554,6 +573,7 @@ export const make = Effect.gen(function* () {
     for (const [key, incoming] of sources) {
       const held = sourceCache.get(key);
       const merged = held === undefined ? incoming : mergeCachedSource(held, incoming);
+      if (durable && merged === incoming) durableSources.set(key, incoming);
       if (merged === held) continue;
       sourceCache.set(key, merged);
       changed = true;
@@ -580,10 +600,12 @@ export const make = Effect.gen(function* () {
     }
     unreadInputs.delete(name);
     const decoded = yield* decodeDocument(raw.success);
-    mergeIntoMemory(decoded.entries, decoded.sources);
+    mergeIntoMemory(decoded.entries, decoded.sources, decoded.version === USAGE_SCAN_CACHE_VERSION);
     if (decoded.complete) {
       mergedInputs.set(name, "complete");
       retirable.add(name);
+      if (decoded.version !== USAGE_SCAN_CACHE_VERSION) olderFormatInputs.add(name);
+      storedChars.set(name, raw.success.length);
       yield* recoverGap("read", file);
       if (claimedPath !== undefined) yield* recoverGap("claim", claimedPath);
       return "complete" as const;
@@ -601,8 +623,6 @@ export const make = Effect.gen(function* () {
     return "incomplete" as const;
   });
 
-  const syncFile = (file: string) =>
-    Effect.scoped(Effect.flatMap(fileSystem.open(file, { flag: "r+" }), (handle) => handle.sync));
   const syncStoreDirectory =
     HostProcess.Platform.defaultValue() === "win32"
       ? Effect.void
@@ -704,21 +724,81 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  /**
+   * Publishes a snapshot under a name no reader takes until it is complete. Each piece is written
+   * before the next is encoded, so the event loop runs while each write waits. Returns its
+   * characters.
+   */
+  const writeSnapshotFile = Effect.fn("UsageService.writeSnapshotFile")(function* (
+    file: string,
+    pieces: Iterable<string>,
+  ) {
+    const temporary = `${file}.tmp`;
+    const encoder = new TextEncoder();
+    let chars = 0;
+    yield* fileSystem.makeDirectory(storeDir, { recursive: true });
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* fileSystem.open(temporary, { flag: "w" });
+        for (const piece of pieces) {
+          chars += piece.length;
+          yield* handle.writeAll(encoder.encode(piece));
+        }
+        yield* handle.sync;
+      }),
+    ).pipe(
+      Effect.andThen(fileSystem.rename(temporary, file)),
+      Effect.onError(() => fileSystem.remove(temporary).pipe(Effect.ignore({ log: true }))),
+    );
+    yield* syncStoreDirectory;
+    return chars;
+  });
+
+  /** A full save is due by isFullSaveDue; a name whose delete failed does not keep it due. */
+  const fullSaveDue = (changedRows: number) =>
+    [...olderFormatInputs].some((name) => !failedDeletes.has(name)) ||
+    isFullSaveDue({
+      liveRows: fileCache.size,
+      staleRows: changedRows + droppedRows.size,
+      retirableChars: [...ownSnapshots, ...retirable]
+        .filter((name) => !failedDeletes.has(name))
+        .map((name) => storedChars.get(name) ?? 0),
+    });
+
+  /**
+   * Saves the rows and sources that differ from saved ones, or every live one when a full save
+   * is due. Only a full save deletes: it holds every row the names it retires held.
+   */
   const writeSnapshot = Effect.fn("UsageService.writeScanCacheSnapshot")(function* () {
     yield* dropExpired();
     const capturedGeneration = generation;
-    const covered = [...retirable];
     const files = new Map(fileCache);
-    const contents = writeScanCache(files, { sources: Object.fromEntries(sourceCache) });
+    const sources = new Map(sourceCache);
+    for (const file of durableFiles.keys()) {
+      if (files.has(file)) continue;
+      durableFiles.delete(file);
+      droppedRows.add(file);
+    }
+    const changedFiles = [...files].filter(([file, entry]) => durableFiles.get(file) !== entry);
+    const changedSources = [...sources].filter(
+      ([key, source]) => durableSources.get(key) !== source,
+    );
+    const full = fullSaveDue(changedFiles.length);
+    if (!full && changedFiles.length === 0 && changedSources.length === 0) {
+      savedGeneration = capturedGeneration;
+      return true;
+    }
+    const covered = [...retirable];
     snapshotSeq += 1;
     const name = scanCacheSnapshotName(writerId, snapshotSeq);
     const file = path.join(storeDir, name);
     ownSnapshots.add(name);
-    const written = yield* writeCacheFile(file, contents).pipe(
-      Effect.andThen(syncFile(file)),
-      Effect.andThen(syncStoreDirectory),
-      Effect.result,
-    );
+    const written = yield* writeSnapshotFile(
+      file,
+      scanCacheDocumentPieces(full ? files : changedFiles, {
+        sources: Object.fromEntries(full ? sources : changedSources),
+      }),
+    ).pipe(Effect.result);
     if (written._tag === "Failure") {
       yield* Effect.logError("Could not save transcript usage", {
         path: file,
@@ -726,22 +806,37 @@ export const make = Effect.gen(function* () {
       });
       return false;
     }
+    storedChars.set(name, written.success);
     savedGeneration = capturedGeneration;
-    savedFiles = files;
+    if (!full) {
+      for (const [changed, entry] of changedFiles) durableFiles.set(changed, entry);
+      for (const [key, source] of changedSources) durableSources.set(key, source);
+      return true;
+    }
+    durableFiles = files;
+    durableSources = sources;
+    droppedRows.clear();
     // Only now is everything these names held durable in a snapshot of ours.
     for (const own of ownSnapshots) {
-      if (own !== name && (yield* deleteSavedUsage(own))) ownSnapshots.delete(own);
+      if (own !== name && (yield* deleteSavedUsage(own))) {
+        ownSnapshots.delete(own);
+        storedChars.delete(own);
+      }
     }
     for (const input of covered) {
-      if (yield* deleteSavedUsage(input)) retirable.delete(input);
+      if (yield* deleteSavedUsage(input)) {
+        retirable.delete(input);
+        olderFormatInputs.delete(input);
+        storedChars.delete(input);
+      }
     }
     return true;
   });
 
   /**
    * Lists the store, claims older single-file caches into it and merges every name not merged
-   * before. With `write`, it then saves a snapshot when memory holds rows no durable snapshot of
-   * ours has. Returns false when that write failed.
+   * before. With `write`, it then saves what memory holds that no snapshot does, or compacts the
+   * store when a full save is due. Returns false when that write failed.
    */
   const syncScanCache = Effect.fn("UsageService.syncScanCache")(function* (write: boolean) {
     const retryDue = (yield* monotonicMillis) >= retryCacheAt;
@@ -827,6 +922,16 @@ export const make = Effect.gen(function* () {
     }
 
     if (storeListed) {
+      // Names are never reused, so a name the store no longer lists needs no tracking.
+      for (const name of [...mergedInputs.keys(), ...ownSnapshots]) {
+        if (present.has(name)) continue;
+        mergedInputs.delete(name);
+        ownSnapshots.delete(name);
+        retirable.delete(name);
+        olderFormatInputs.delete(name);
+        failedDeletes.delete(name);
+        storedChars.delete(name);
+      }
       for (const gap of savedUsageGaps.values()) {
         if (path.dirname(gap.path) !== storeDir || present.has(path.basename(gap.path))) continue;
         if (gap.kind === "incomplete") {
@@ -842,9 +947,7 @@ export const make = Effect.gen(function* () {
       }
     }
 
-    const needsWrite =
-      write &&
-      (generation !== savedGeneration || [...retirable].some((name) => !failedDeletes.has(name)));
+    const needsWrite = write && (generation !== savedGeneration || fullSaveDue(0));
     const saved = needsWrite ? yield* writeSnapshot() : true;
 
     for (const dir of recoveredLists) {
@@ -933,7 +1036,7 @@ export const make = Effect.gen(function* () {
       if (yield* syncLock.withPermit(syncScanCache(true))) return;
       yield* Effect.logError("Could not finish saving transcript usage at shutdown", {
         path: storeDir,
-        unsavedRows: [...fileCache].filter(([file, entry]) => savedFiles.get(file) !== entry)
+        unsavedRows: [...fileCache].filter(([file, entry]) => durableFiles.get(file) !== entry)
           .length,
       });
     }),
