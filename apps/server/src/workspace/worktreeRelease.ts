@@ -478,12 +478,13 @@ async function verifySavedDirectories(
 ) {
   if (pairs.length === 0 || platform === "win32") return;
   const options = { signal, timeout: 30_000 };
-  const plain = await (async () => {
+  // Each mismatch names itself and a failed probe keeps its own error, so a kept checkout can be diagnosed.
+  const verify = async () => {
     if (platform === "darwin") {
       // -f keeps source/backup pairs in argument order. -b escapes embedded newlines in names.
       const paths = pairs.flatMap(({ source, target }) => [source, target]);
       const { stdout, stderr } = await runFile("/bin/ls", ["-ldfnObe@", ...paths], options);
-      if (stderr) return false;
+      if (stderr) throw new Error(`Directory listing reported: ${stderr.trimEnd()}`);
       const lines = stdout.trimEnd().split("\n");
       let line = 0;
       const readProvenanceSize = () => {
@@ -498,11 +499,12 @@ async function verifySavedDirectories(
       const stamped: string[] = [];
       for (const { source } of pairs) {
         const size = readProvenanceSize();
-        if (readProvenanceSize() !== size) return false;
+        if (readProvenanceSize() !== size)
+          throw new Error("Saved directory provenance size differs");
         if (size !== null) stamped.push("./" + NodePath.relative(cwd, source));
       }
-      if (line !== lines.length) return false;
-      if (!stamped.length) return true;
+      if (line !== lines.length) throw new Error("Unexpected directory listing");
+      if (!stamped.length) return;
       // macOS can give both new directories a provenance attribute. Compare all bytes at
       // identical relative names. A different stamp, an extra attribute or an ACL keeps the tree.
       const readValues = (directory: string) =>
@@ -512,11 +514,13 @@ async function verifySavedDirectories(
           encoding: "buffer",
         });
       const [original, backup] = await Promise.all([readValues(cwd), readValues(saved)]);
-      return (
-        !original.stderr.length && !backup.stderr.length && original.stdout.equals(backup.stdout)
-      );
+      const readErrors = Buffer.concat([original.stderr, backup.stderr]).toString().trimEnd();
+      if (readErrors) throw new Error(`Directory attribute read reported: ${readErrors}`);
+      if (!original.stdout.equals(backup.stdout))
+        throw new Error("Saved directory provenance differs");
+      return;
     }
-    if (platform !== "linux") return false;
+    if (platform !== "linux") throw new Error(`Unsupported platform ${platform}`);
     const directories = pairs.map(({ source }) => source);
     // After dropping timestamps and long path records, any PAX header carries unsupported metadata.
     const { stdout, stderr } = await runFile(
@@ -536,15 +540,19 @@ async function verifySavedDirectories(
       ],
       { ...options, encoding: "buffer", env: { ...process.env, TAR_OPTIONS: "" } },
     );
+    if (stderr.length)
+      throw new Error(`Directory archive reported: ${stderr.toString().trimEnd()}`);
     const end = directories.length * 512;
-    return (
-      stderr.length === 0 &&
-      stdout.length >= end + 512 &&
-      directories.every((_, index) => stdout[index * 512 + 156] === 53) &&
-      stdout.subarray(end, end + 512).every((byte) => byte === 0)
-    );
-  })().catch(() => false);
-  if (!plain) throw new Error("Ignored directory metadata cannot be preserved");
+    if (
+      stdout.length < end + 512 ||
+      !directories.every((_, index) => stdout[index * 512 + 156] === 53) ||
+      !stdout.subarray(end, end + 512).every((byte) => byte === 0)
+    )
+      throw new Error("Directory carries extended attributes, ACLs or SELinux labels");
+  };
+  await verify().catch((cause: unknown) => {
+    throw new Error("Ignored directory metadata cannot be preserved", { cause });
+  });
 }
 
 // Only unlink a staged name while the source still owns the same inode. Never recursively remove a backup.
