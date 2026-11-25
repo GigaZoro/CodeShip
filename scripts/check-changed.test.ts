@@ -1205,11 +1205,20 @@ function launcherFixture() {
       );
       worktrees.push(checkout);
       git("worktree", "add", "--detach", checkout, "HEAD");
+      // cpSync copies a Windows junction as the folder it leads to, so each link is made again as a link.
+      const copy = (from: string, to: string) => {
+        const entry = NodeFS.lstatSync(from);
+        if (entry.isSymbolicLink()) NodeFS.symlinkSync(NodeFS.readlinkSync(from), to, "junction");
+        else if (!entry.isDirectory()) NodeFS.copyFileSync(from, to);
+        else {
+          NodeFS.mkdirSync(to, { recursive: true });
+          for (const name of NodeFS.readdirSync(from)) {
+            copy(NodePath.join(from, name), NodePath.join(to, name));
+          }
+        }
+      };
       for (const file of ["node_modules", ...files]) {
-        NodeFS.cpSync(NodePath.join(root, file), NodePath.join(checkout, file), {
-          recursive: true,
-          verbatimSymlinks: true,
-        });
+        copy(NodePath.join(root, file), NodePath.join(checkout, file));
       }
       const modules = NodePath.join(checkout, "node_modules");
       const store = (name: string) => NodePath.join(modules, ".pnpm", name, "node_modules");
