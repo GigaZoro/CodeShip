@@ -108,7 +108,7 @@ export const readReleaseFile = Effect.fn("WorktreeRelease.readFile")(
     return { contents, request };
   },
   Effect.timeout("5 seconds"),
-  (effect, file) =>
+  (effect, file, _expectedCheckout?: string) =>
     effect.pipe(Effect.mapError(() => new WorktreeReleaseReceiptError({ receipt: file }))),
 );
 

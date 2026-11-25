@@ -91,7 +91,7 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
       case "provider-turn-unavailable":
         return `Provider turn for rollback target ${this.checkpointId} is unavailable on provider thread ${this.providerThreadId}.`;
       case "worktree-recovery-required":
-        return this.cause instanceof WorktreeReleaseReceiptError
+        return isWorktreeReleaseReceiptError(this.cause)
           ? this.cause.message
           : "This checkout has a worktree release record. Send a follow-up in the owning chat to recover the checkout, then retry rollback.";
       case "shared-workspace":
@@ -107,6 +107,7 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
 const isCheckpointRollbackExecutionError = Schema.is(CheckpointRollbackExecutionError);
 const isVcsProcessExitError = Schema.is(VcsProcessExitError);
 const isCheckpointRestoreError = Schema.is(CheckpointRestoreError);
+const isWorktreeReleaseReceiptError = Schema.is(WorktreeReleaseReceiptError);
 
 /**
  * Only known recovery, runtime policy and Git lock messages are safe to show clients.
