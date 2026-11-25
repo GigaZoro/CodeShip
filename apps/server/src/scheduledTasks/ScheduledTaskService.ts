@@ -2158,22 +2158,6 @@ export const layer = Layer.effect(
         ),
       );
 
-    // A fixed-time occurrence finds its run only once marked: a replay takes the run it delivered.
-    // Guarded like markCompleted, so it names nothing for a later attempt or a recreated task.
-    const nameRun = (
-      input: { readonly id: ScheduledTaskId; readonly startedAtIso: string },
-      runId: string,
-    ) =>
-      sql`
-        UPDATE scheduled_tasks SET last_run_id = ${runId}
-        WHERE task_id = ${input.id} AND last_run_status = 'running'
-          AND last_run_at = ${input.startedAtIso}
-      `.pipe(
-        Effect.mapError((cause) =>
-          taskError("Could not mark schedule task as running.", { taskId: input.id, cause }),
-        ),
-      );
-
     const markCompleted = (input: {
       readonly id: ScheduledTaskId;
       readonly completedAtIso: string;
@@ -2609,10 +2593,10 @@ export const layer = Layer.effect(
           webhookDeliveryId: webhook?.deliveryId ?? null,
           runId: runRecordId,
         };
-        const incarnation =
-          webhook === undefined
-            ? yield* markRunning(started)
-            : yield* sql
+        const fixedTime = fire?.localFixedTime;
+        const begun =
+          webhook !== undefined
+            ? yield* sql
                 .withTransaction(
                   Effect.gen(function* () {
                     yield* markRunning(started);
@@ -2621,54 +2605,73 @@ export const layer = Layer.effect(
                   }),
                 )
                 .pipe(
+                  Effect.as({ demand: {}, runId: runRecordId }),
                   Effect.mapError((cause) =>
                     taskError("Could not start webhook run.", { taskId: task.id, cause }),
                   ),
-                );
-
-        const fixedTime = fire?.localFixedTime;
-        const demand =
-          fixedTime === undefined
-            ? {}
-            : {
-                demandId:
-                  fixedTime.origin !== null &&
-                  fixedTime.incarnation === incarnation &&
-                  active.nextRunAt === task.nextRunAt &&
-                  active.shared?.runOn !== "one" &&
-                  isSameSchedule(fixedTime.origin.schedule, active.schedule)
-                    ? originalDemandId(
-                        "scheduled-task",
-                        hereEnvironmentId,
-                        active.id,
-                        incarnation,
-                        "scheduled",
-                        fixedTime.origin.at,
-                      )
-                    : null,
-              };
-        if (fixedTime !== undefined && incarnation !== undefined && scheduledFor !== null) {
-          // Deletion clears this incarnation's history. Older commands used dispatch time, so
-          // match their projected demand or, for unknown attribution, the persisted cursor.
-          const prior = (yield* sql<{ run_id: string }>`
-            SELECT h.run_id FROM scheduled_task_runs h
-            JOIN orchestration_v2_projection_runs r ON r.thread_id = h.thread_id
-            WHERE h.task_id = ${active.id} AND h.trigger IN ('scheduled', 'catch_up')
-              AND substr(h.run_id, length(h.task_id) + 1, 7) <> ':fixed:'
-              AND json_extract(r.payload_json, '$.demandId') IS ${demand.demandId ?? null}
-              AND (${demand.demandId ?? null} IS NOT NULL OR h.scheduled_for = ${fixedTime.dispatchAt})
-              AND json_extract(r.payload_json, '$.userMessageId') = 'scheduled-task-message:' ||
-                CASE WHEN h.trigger = 'catch_up' AND substr(h.run_id, -9) = ':catch_up'
-                  THEN substr(h.run_id, 1, length(h.run_id) - 9) || ':scheduled' ELSE h.run_id END
-            LIMIT 1
-          `.pipe(NodeSqliteClient.readOnly))[0];
-          runRecordId =
-            prior?.run_id ??
-            `${active.id}:fixed:${incarnation}:${demand.demandId ?? fixedTime.dispatchAt}:scheduled`;
-          // Until this write the task names the attempt's first id, which no run record has, so a
-          // restart before it recovers the attempt as cut: its prompt has not been sent.
-          yield* nameRun(started, runRecordId);
-        }
+                )
+            : fixedTime === undefined
+              ? yield* markRunning(started).pipe(Effect.as({ demand: {}, runId: runRecordId }))
+              : yield* sql
+                  .withTransaction(
+                    Effect.gen(function* () {
+                      const incarnation = yield* markRunning(started);
+                      const demand = {
+                        demandId:
+                          fixedTime.origin !== null &&
+                          fixedTime.incarnation === incarnation &&
+                          active.nextRunAt === task.nextRunAt &&
+                          active.shared?.runOn !== "one" &&
+                          isSameSchedule(fixedTime.origin.schedule, active.schedule)
+                            ? originalDemandId(
+                                "scheduled-task",
+                                hereEnvironmentId,
+                                active.id,
+                                incarnation,
+                                "scheduled",
+                                fixedTime.origin.at,
+                              )
+                            : null,
+                      };
+                      if (scheduledFor === null) return { demand, runId: runRecordId };
+                      // Deletion clears this incarnation's history. Older commands used dispatch time, so
+                      // match their projected demand or, for unknown attribution, the persisted cursor.
+                      const prior = (yield* sql<{ run_id: string }>`
+                        SELECT h.run_id FROM scheduled_task_runs h
+                        JOIN orchestration_v2_projection_runs r ON r.thread_id = h.thread_id
+                        WHERE h.task_id = ${active.id} AND h.trigger IN ('scheduled', 'catch_up')
+                          AND substr(h.run_id, length(h.task_id) + 1, 7) <> ':fixed:'
+                          AND json_extract(r.payload_json, '$.demandId') IS ${demand.demandId ?? null}
+                          AND (${demand.demandId ?? null} IS NOT NULL OR h.scheduled_for = ${fixedTime.dispatchAt})
+                          AND json_extract(r.payload_json, '$.userMessageId') = 'scheduled-task-message:' ||
+                            CASE WHEN h.trigger = 'catch_up' AND substr(h.run_id, -9) = ':catch_up'
+                              THEN substr(h.run_id, 1, length(h.run_id) - 9) || ':scheduled' ELSE h.run_id END
+                        LIMIT 1
+                      `.pipe(NodeSqliteClient.readOnly))[0];
+                      const runId =
+                        prior?.run_id ??
+                        `${active.id}:fixed:${incarnation}:${demand.demandId ?? fixedTime.dispatchAt}:scheduled`;
+                      // A replay takes the run it delivered, which only this lookup finds. Naming it in
+                      // the marking transaction means a restart never leaves the task naming an id no
+                      // run record has, which recovery would settle as cut and drop the delivered result.
+                      yield* sql`UPDATE scheduled_tasks SET last_run_id = ${runId} WHERE task_id = ${active.id}`;
+                      return { demand, runId };
+                    }),
+                  )
+                  .pipe(
+                    Effect.mapError((cause) =>
+                      isScheduledTaskError(cause)
+                        ? cause
+                        : taskError("Could not mark schedule task as running.", {
+                            taskId: task.id,
+                            cause,
+                          }),
+                    ),
+                  );
+        const demand: { readonly demandId?: string | null } = begun.demand;
+        // Set only once the mark committed, so a rolled-back attempt's error path cannot finish a
+        // delivered run it never took over.
+        runRecordId = begun.runId;
         yield* insertRunRecord({
           id: runRecordId,
           taskId: active.id,
@@ -5988,11 +5991,10 @@ export const layer = Layer.effect(
             const [run] = yield* sql<{
               readonly run_id: string;
               readonly task_id: ScheduledTaskId;
-              readonly started_at: string;
               readonly outcome: string;
               readonly reported_outcome: string | null;
             }>`
-              SELECT run_id, task_id, started_at, outcome, reported_outcome
+              SELECT run_id, task_id, outcome, reported_outcome
               FROM scheduled_task_runs
               WHERE thread_id = ${input.threadId} AND outcome <> 'skipped'
               ORDER BY started_at DESC

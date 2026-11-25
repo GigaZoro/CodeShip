@@ -329,8 +329,27 @@ function launchInput(input: {
   };
 }
 
-// Polls the scheduler at `time` until the task shows `done`. The clock passing the tick does not mean
-// its forked run has finished writing, and closing the scheduler then would cut that run.
+// Advances the clock past the scheduler's tick and waits until the task shows `done`: the clock
+// passing the tick does not mean its forked run has finished writing.
+const tickUntil = (done: (task: ScheduledTask) => boolean) =>
+  Effect.gen(function* () {
+    const tasks = yield* ScheduledTasks.ScheduledTaskService;
+    const shown = yield* tasks.subscribeList().pipe(
+      Stream.map((list) => list.tasks[0]!),
+      Stream.filter(done),
+      Stream.runHead,
+      Effect.forkChild,
+    );
+    yield* TestClock.adjust("6 seconds");
+    const found = yield* TestClock.withLive(Effect.timeoutOption(Fiber.join(shown), "10 seconds"));
+    if (Option.isSome(found) && Option.isSome(found.value)) return found.value.value;
+    return assert.fail(
+      `The task never reached the awaited state: ${JSON.stringify((yield* tasks.list()).tasks[0])}`,
+    );
+  });
+
+// Polls the scheduler at `time` until the task shows `done`. Closing the scheduler before its run
+// finished writing would cut that run.
 const pollScheduler = <E, R>(
   scheduler: Layer.Layer<ScheduledTasks.ScheduledTaskService, E, R>,
   time: number,
@@ -338,17 +357,7 @@ const pollScheduler = <E, R>(
 ) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(time);
-    return yield* Effect.gen(function* () {
-      const tasks = yield* ScheduledTasks.ScheduledTaskService;
-      const shown = yield* tasks.subscribeList().pipe(
-        Stream.map((list) => list.tasks[0]!),
-        Stream.filter(done),
-        Stream.runHead,
-        Effect.forkChild,
-      );
-      yield* TestClock.adjust("6 seconds");
-      return Option.getOrThrow(yield* Fiber.join(shown));
-    }).pipe(Effect.provide(scheduler));
+    return yield* tickUntil(done).pipe(Effect.provide(scheduler));
   });
 
 /** No run in flight and the occurrence `due` names is used up, so a run it started has finished. */
@@ -658,6 +667,113 @@ it.effect.each([
   },
 );
 
+it.effect(
+  "a replay that cannot name its delivered run leaves the task on that run, still due",
+  () => {
+    const harness = makeHarness();
+    const scheduler = ScheduledTasks.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          NodeCrypto.layer,
+          Scheduler.layer,
+          layerSharedTaskIdentities(),
+          ManagedPolicy.layerTest(),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const sql = yield* SqlClient.SqlClient;
+      const slot = DateTime.toEpochMillis(
+        DateTime.makeZonedUnsafe(
+          { year: 1970, month: 1, day: 2, hour: 7 },
+          { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+        ),
+      );
+      const id = ScheduledTaskId.make("daily-named");
+      yield* TestClock.setTime(slot - 60_000);
+      yield* Effect.gen(function* () {
+        const tasks = yield* ScheduledTasks.ScheduledTaskService;
+        yield* tasks.upsert(
+          {
+            id,
+            title: "Daily",
+            prompt: "Daily check",
+            enabled: true,
+            maxLiveRuns: 4,
+            schedule: { type: "fixed_time", timeOfDay: "07:00" },
+            projectId,
+            threadId: null,
+            workspaceStrategy: { type: "root" },
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdBy: "user",
+            creationSource: "web",
+          },
+          ScheduledTasks.CHANGED_IN_APP,
+        );
+      }).pipe(Effect.provide(scheduler));
+      const due = DateTime.formatIso(DateTime.makeUnsafe(slot));
+      const cursor = () =>
+        sql`UPDATE scheduled_tasks SET next_run_at = ${due} WHERE task_id = ${id}`;
+      const history = () =>
+        sql<{
+          run_id: string;
+          outcome: string;
+          thread_id: string | null;
+        }>`SELECT run_id, outcome, thread_id FROM scheduled_task_runs WHERE task_id = ${id}`;
+      yield* cursor();
+      assert.equal(
+        (yield* pollScheduler(scheduler, slot, settledPast(due))).lastRunStatus,
+        "succeeded",
+      );
+      const delivered = yield* history();
+      // Stands in for a restart between marking the replay running and naming the run it delivered:
+      // either way the naming is lost, and the mark must not outlive it.
+      yield* sql`CREATE TRIGGER lose_run_naming BEFORE UPDATE OF last_run_id ON scheduled_tasks
+      WHEN NEW.last_run_id IN (SELECT run_id FROM scheduled_task_runs WHERE thread_id IS NOT NULL)
+      BEGIN SELECT RAISE(ABORT, 'run naming lost'); END`;
+      yield* cursor();
+      yield* TestClock.setTime(slot + 8000);
+      const afterLoss = yield* Effect.gen(function* () {
+        const tasks = yield* ScheduledTasks.ScheduledTaskService;
+        // The failed attempt's release announces a change, whether or not it found the task running.
+        const announced = yield* tasks.subscribeList().pipe(
+          Stream.drop(1),
+          Stream.map((list) => list.tasks[0]!),
+          Stream.filter((task) => task.lastRunStatus !== "running"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("6 seconds");
+        return Option.getOrThrow(
+          Option.flatten(
+            yield* TestClock.withLive(Effect.timeoutOption(Fiber.join(announced), "10 seconds")),
+          ),
+        );
+      }).pipe(Effect.provide(scheduler));
+      assert.equal(afterLoss.lastRunStatus, "succeeded");
+      assert.equal(afterLoss.lastRunError, null);
+      assert.equal(afterLoss.nextRunAt, due);
+      yield* sql`DROP TRIGGER lose_run_naming`;
+      const replayed = yield* pollScheduler(scheduler, slot + 16000, settledPast(due));
+      assert.equal(replayed.lastRunStatus, "succeeded");
+      assert.deepEqual(yield* history(), delivered);
+      const shells = yield* threads.listProjectThreads({ projectId, includeSubagents: false });
+      const projections = yield* Effect.forEach(shells, (shell) =>
+        threads.getThreadProjection(shell.id),
+      );
+      assert.lengthOf(
+        projections.flatMap((p) => p.messages),
+        1,
+      );
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
 it.effect.each(["existing", "new"] as const)(
   "replays fixed-time receipts only within the same task incarnation in %s threads",
   (target) => {
@@ -758,12 +874,10 @@ it.effect.each(["existing", "new"] as const)(
             yield* sql`INSERT INTO scheduled_task_runs (run_id,task_id,trigger,scheduled_for,started_at,thread_id,outcome)
               VALUES (${oldRun}, ${id}, 'scheduled', ${scheduledFor}, ${scheduledFor}, ${threadId}, 'succeeded')`;
           }
-          yield* TestClock.adjust("6 seconds");
-          assert.equal((yield* tasks.list()).tasks[0]?.runCount, 1);
+          assert.equal((yield* tickUntil(settledPast(scheduledFor))).runCount, 1);
           // Replay the same occurrence at a different dispatch time, including after recreation.
           yield* sql`UPDATE scheduled_tasks SET next_run_at = ${scheduledFor} WHERE task_id = ${id}`;
-          yield* TestClock.adjust("6 seconds");
-          assert.equal((yield* tasks.list()).tasks[0]?.lastRunStatus, "succeeded");
+          assert.equal((yield* tickUntil(settledPast(scheduledFor))).lastRunStatus, "succeeded");
           const [run] = (yield* tasks.listRuns({ id })).runs;
           assert.equal(run?.outcome, "succeeded");
           const shells = yield* threads.listProjectThreads({ projectId, includeSubagents: false });
