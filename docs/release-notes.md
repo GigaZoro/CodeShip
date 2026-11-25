@@ -1,3 +1,11 @@
+## 2026-11-25 — Usage never shows partial or older totals as current
+
+- While one environment is still loading a new period, the Usage page keeps the last complete view and marks it as previous usage, even after you switch period twice. Before, it could show one environment's partial totals as if they were the whole period. Once every environment has answered, previous usage no longer says it is updating.
+- When one environment fails while Past 24 hours refreshes, the totals no longer jump back to an older minute.
+- A disconnected environment no longer holds the page on the previous period. The page shows the new period and names the environment that is not connected, and stays on it when the environment reconnects.
+- A period shortcut pressed while previous usage is shown leaves keyboard focus on the control you were on. Model rows, the breakdown switch and Set price stay focusable and do nothing while previous usage is shown. Refresh also keeps keyboard focus while it runs.
+- Enable Cursor usage and ChatGPT's Manage usage stay available while previous usage is shown, because they act on the environment rather than on the figures.
+
 ## 2026-11-25 — Codex metadata runtime builds pass on Linux and Windows
 
 - The Linux metadata runtime is built on Ubuntu 24.04. Ubuntu 22.04's musl 1.2.2 linked a CLI that crashed on start. The build now stops early on an older musl and names the failing check when the built CLI does not start.

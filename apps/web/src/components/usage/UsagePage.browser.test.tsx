@@ -537,7 +537,7 @@ it.each([
   const close = dialog.getByRole("button", { name: "Close" });
   const setPrice = dialog.getByRole("button", { name: "Set price" });
   await expect.element(dialog.getByRole("heading", { name: "usage-test-model" })).toBeVisible();
-  await expect.element(setPrice).toBeEnabled();
+  await expect.element(setPrice).not.toHaveAttribute("aria-disabled", "true");
   (close.element() as HTMLElement).focus();
 
   state.now += 60_000;
@@ -546,11 +546,11 @@ it.each([
 
   await expect.element(dialog.getByRole("heading", { name: "usage-test-model" })).toBeVisible();
   await expect.element(close).toHaveFocus();
-  await expect.element(setPrice).toBeEnabled();
+  await expect.element(setPrice).not.toHaveAttribute("aria-disabled", "true");
   await expect.element(screen.getByText(/Showing previous usage/)).not.toBeInTheDocument();
   state.response = "provisional";
   await update();
-  await expect.element(setPrice).toBeEnabled();
+  await expect.element(setPrice).not.toHaveAttribute("aria-disabled", "true");
   await expect.element(close).toHaveFocus();
   await expect.element(screen.getByText("other-model", { exact: true })).not.toBeInTheDocument();
   await userEvent.keyboard("{Escape}");
@@ -602,16 +602,21 @@ function colorLuminance(color: string): number {
     .reduce((total, value, index) => total + value * [0.2126, 0.7152, 0.0722][index]!, 0);
 }
 
-async function selectWeekFromShortcut() {
+async function pressPeriodShortcut(
+  period: "week" | "month",
+  target: EventTarget = globalThis.window,
+) {
   await act(() => {
     const mac = navigator.platform.startsWith("Mac");
-    globalThis.window.dispatchEvent(
+    const [key, code] = period === "week" ? ["@", "Digit2"] : ["#", "Digit3"];
+    target.dispatchEvent(
       new KeyboardEvent("keydown", {
-        key: "@",
-        code: "Digit2",
+        key,
+        code,
         shiftKey: true,
         ctrlKey: !mac,
         metaKey: mac,
+        bubbles: true,
         cancelable: true,
       }),
     );
@@ -628,8 +633,15 @@ it("keeps retained figures readable and disables price edits when the period cha
   await screen.getByRole("button", { name: "usage-test-model" }).click();
   const dialog = page.getByRole("dialog");
   state.response = "waiting";
-  await selectWeekFromShortcut();
-  await expect.element(dialog.getByRole("button", { name: "Set price" })).toBeDisabled();
+  await pressPeriodShortcut("week");
+  const setPrice = dialog.getByRole("button", { name: "Set price" });
+  await expect.element(setPrice).toHaveAttribute("aria-disabled", "true");
+  (setPrice.element() as HTMLElement).focus();
+  await userEvent.keyboard("{Enter}");
+  await expect.element(setPrice).toHaveFocus();
+  await expect
+    .element(page.getByRole("heading", { name: "Custom model prices" }))
+    .not.toBeInTheDocument();
   await userEvent.keyboard("{Escape}");
   await expect.element(dialog).not.toBeInTheDocument();
   await expect.element(screen.getByText(/Showing previous usage for Desk/)).toBeVisible();
@@ -649,6 +661,29 @@ it("keeps retained figures readable and disables price edits when the period cha
   }
 });
 
+it("leaves keyboard focus on the focused control when a period shortcut is pressed while previous usage is shown", async () => {
+  setup();
+  await using screen = await render(<Screen />);
+  const model = screen.getByRole("button", { name: "usage-test-model" });
+  const byTime = screen.getByRole("button", { name: "Hour", exact: true });
+  await expect.element(model).toBeVisible();
+  state.response = "waiting";
+
+  for (const [control, period] of [
+    [model, "week"],
+    [byTime, "month"],
+  ] as const) {
+    (control.element() as HTMLElement).focus();
+    await pressPeriodShortcut(period, control.element());
+    await expect.element(screen.getByText(/Showing previous usage for Desk/)).toBeVisible();
+    await expect.element(control).toHaveFocus();
+    await expect.element(control).toHaveAttribute("aria-disabled", "true");
+    await userEvent.keyboard("{Enter}");
+  }
+  await expect.element(byTime).toHaveAttribute("aria-pressed", "false");
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+});
+
 it("closes the model dialog and focuses the page when the new period settles without the model", async () => {
   setup();
   state.secondEnvironment = "revoked";
@@ -657,7 +692,7 @@ it("closes the model dialog and focuses the page when the new period settles wit
   const dialog = page.getByRole("dialog");
   (dialog.getByRole("button", { name: "Close" }).element() as HTMLElement).focus();
   state.response = "empty";
-  await selectWeekFromShortcut();
+  await pressPeriodShortcut("week");
   await expect.element(dialog).not.toBeInTheDocument();
   await expect.element(screen.getByRole("main")).toHaveFocus();
   await expect.element(screen.getByText(/Showing previous usage/)).not.toBeInTheDocument();
@@ -752,7 +787,7 @@ it("never brings back Laptop's figures in the web model dialog after a revoke, r
 
   state.response = "waiting";
   state.secondEnvironment = "waiting";
-  await selectWeekFromShortcut();
+  await pressPeriodShortcut("week");
   const status = dialog.getByText(/Showing previous usage for/);
   await expect.element(status).toBeVisible();
   expect(status.element().textContent).toContain("Showing previous usage for Desk ·");
@@ -779,6 +814,10 @@ it("labels kept web figures with their exact window at compact width after the n
   await update();
   await expect.element(screen.getByText(label)).toBeVisible();
   await expect.element(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+  expect(screen.getByText("Updating…").query()).toBeNull();
+  expect(
+    screen.getByRole("heading", { name: "Totals" }).element().closest("[aria-busy]"),
+  ).toHaveAttribute("aria-busy", "false");
 });
 
 it("closes the open model and removes its figures when diagnostics access is revoked", async () => {
@@ -787,7 +826,9 @@ it("closes the open model and removes its figures when diagnostics access is rev
   await using screen = await render(<Screen />);
   await screen.getByRole("button", { name: "usage-test-model" }).click();
   const dialog = page.getByRole("dialog");
-  await expect.element(dialog.getByRole("button", { name: "Set price" })).toBeEnabled();
+  await expect
+    .element(dialog.getByRole("button", { name: "Set price" }))
+    .not.toHaveAttribute("aria-disabled", "true");
   (dialog.getByRole("button", { name: "Close", exact: true }).element() as HTMLElement).focus();
   state.response = "revoked";
   await update();
@@ -992,15 +1033,17 @@ it("removes Laptop's reserved row from the web overview when its grant is revoke
   expect(cursor.query()).toBeNull();
 });
 
-it("refreshes scheduled task runs when the selection can read only those", async () => {
+it("refreshes scheduled task runs from the keyboard when the selection can read only those, and Refresh keeps focus", async () => {
   setup();
   state.scheduledGrant = "granted";
   state.response = "revoked";
   await using screen = await render(<Screen />);
   const refresh = screen.getByRole("button", { name: "Refresh usage" }).first();
   await expect.element(refresh).toBeEnabled();
-  await refresh.click();
+  refresh.element().focus();
+  await userEvent.keyboard("{Enter}");
   await vi.waitFor(() => expect(state.statsRequests).toEqual(["desk"]));
+  await expect.element(refresh).toHaveFocus();
 
   state.scheduledGrant = "failed";
   await update();

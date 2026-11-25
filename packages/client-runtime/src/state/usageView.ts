@@ -112,6 +112,9 @@ function requestKeyOf(window: UsageSummaryInput, hidden: readonly UsageProviderK
   return JSON.stringify([usagePeriodKey(window), hidden]);
 }
 
+// Past 24h requests roll each minute while the page is visible (makeWindow floors them to the
+// minute), so each minute is its own slot. Scans are incremental, which keeps a rescan per minute
+// cheap; an hourly key would leave up to 59 minutes of usage off the page.
 function slotOf(
   window: UsageSummaryInput,
   windowKey: string,
@@ -122,6 +125,24 @@ function slotOf(
 
 function windowEnd(window: UsageSummaryInput): string {
   return window.untilTime ?? window.untilDay;
+}
+
+// The reading on screen stays until another view replaces it, so a later switch can still fall
+// back to it while environments load.
+function trimReadings(
+  readings: readonly UsageReading[],
+  onScreen: string | null,
+): readonly UsageReading[] {
+  if (readings.length <= MAX_READING_KEYS) return readings;
+  const kept = new Set(
+    [...readings]
+      .sort(
+        (left, right) =>
+          Number(right.slot === onScreen) - Number(left.slot === onScreen) || right.seq - left.seq,
+      )
+      .slice(0, MAX_READING_KEYS),
+  );
+  return readings.filter((reading) => kept.has(reading));
 }
 
 function newest(readings: readonly UsageReading[]): UsageReading | undefined {
@@ -294,10 +315,7 @@ export function settleUsageView(state: UsageViewState, input: UsageViewInput): U
           hidden,
         },
       ];
-      own =
-        next.length > MAX_READING_KEYS
-          ? [...next].sort((left, right) => right.seq - left.seq).slice(0, MAX_READING_KEYS)
-          : next;
+      own = trimReadings(next, state.view.kind === "figures" ? state.view.slot : null);
       readings.set(id, own);
       changed = true;
     };
@@ -418,9 +436,11 @@ function chooseView(
   }
 
   const requestKey = requestKeyOf(window, hidden);
+  // A disconnected environment cannot answer until it reconnects, and its gap names it.
   const resolved = (environment: EnvironmentUsageStatus) => {
     const failure = state.failures.get(environment.environmentId);
     return (
+      !environment.isConnected ||
       (failure !== undefined &&
         failure.requestKey === requestKey &&
         failure.windowKey === windowKey) ||
@@ -440,19 +460,33 @@ function chooseView(
       return reading === undefined ? [] : [{ environment, reading }];
     });
 
-  const newestBySlot = new Map<string, number>();
+  const newestBySlot = new Map<string, UsageReading>();
   for (const environment of members) {
-    for (const { slot, seq } of own(environment)) {
-      newestBySlot.set(slot, Math.max(newestBySlot.get(slot) ?? 0, seq));
+    for (const reading of own(environment)) {
+      const known = newestBySlot.get(reading.slot);
+      if (known === undefined || reading.seq > known.seq) newestBySlot.set(reading.slot, reading);
     }
   }
-  const slots = [...newestBySlot].sort(([, left], [, right]) => right - left).map(([slot]) => slot);
+  const slots = [...newestBySlot.values()]
+    .sort((left, right) => right.seq - left.seq)
+    .map(({ slot }) => slot);
   const requestedSlot = slotOf(window, windowKey, hidden);
+  const onScreen = previous.kind === "figures" ? newestBySlot.get(previous.slot) : undefined;
+  const olderThanOnScreen = (slot: string) => {
+    if (onScreen === undefined || slot === requestedSlot) return false;
+    const reading = newestBySlot.get(slot)!;
+    // Once the requested period is on screen, another period's reading is older usage.
+    if (reading.requestKey !== onScreen.requestKey) return onScreen.requestKey === requestKey;
+    return windowEnd(reading.window) < windowEnd(onScreen.window);
+  };
   // Returning to a period or showing a hidden provider again finds its reading older than the
   // one on screen, so newest-first alone would keep showing the other request.
-  const candidates = newestBySlot.has(requestedSlot)
-    ? [requestedSlot, ...slots.filter((slot) => slot !== requestedSlot)]
-    : slots;
+  const candidates = (
+    newestBySlot.has(requestedSlot)
+      ? [requestedSlot, ...slots.filter((slot) => slot !== requestedSlot)]
+      : slots
+  ).filter((slot) => !olderThanOnScreen(slot));
+  // With no complete view, the one on screen stays rather than one environment's partial figures.
   const chosen =
     candidates.find((slot) => {
       const holders = holdersAt(slot);
@@ -464,7 +498,9 @@ function chooseView(
               holders.some((holder) => holder.environment === environment) || resolved(environment),
           ))
       );
-    }) ?? slots[0]!;
+    }) ??
+    onScreen?.slot ??
+    slots[0]!;
   const holders = holdersAt(chosen);
   const shown = holders[0]!.reading;
   const kept =
