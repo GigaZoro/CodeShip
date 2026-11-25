@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off -- compare a result fingerprint synchronously under the command lock.
+import * as NodeCrypto from "node:crypto";
 import { withWorkspaceProcessStart } from "../workspace/workspaceLease.ts";
 import type {
   GuestShareId,
@@ -31,6 +33,7 @@ import {
   type GuestMessageId,
   isAppOwnedTaskWork,
   isCompactionCommandMessage,
+  isOrchestrationV2TerminalRunStatus,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
   MessageId,
@@ -699,6 +702,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "provider-session.detach-idle":
     case "run.memory-admit":
     case "run.memory-wait":
+    case "delegated_task.completion-delivery.observe-disposed":
     case "message.dispatch":
     case "notification.delivery.accept":
     case "prepared-run.release":
@@ -913,6 +917,45 @@ function isTerminalDelegatedTaskStatus(status: OrchestrationV2Subagent["status"]
     status === "cancelled" ||
     status === "interrupted"
   );
+}
+
+export function canRefreshDelegatedTaskObservation(
+  task: Pick<OrchestrationV2Subagent, "threadId" | "completionDelivery">,
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  observingRun: OrchestrationV2Run | undefined,
+): boolean {
+  const delivery = task.completionDelivery;
+  if (
+    (delivery?.state !== "acknowledged" && delivery?.state !== "disposed") ||
+    observingRun === undefined ||
+    observingRun.threadId !== task.threadId ||
+    !isActiveRun(observingRun) ||
+    observingRun.id === delivery.observedByRunId
+  ) {
+    return false;
+  }
+  if (delivery.observedByRunId === null) return true;
+  const previous = runs.find(
+    (run) => run.id === delivery.observedByRunId && run.threadId === task.threadId,
+  );
+  return (
+    previous !== undefined &&
+    previous.status !== "completed" &&
+    isOrchestrationV2TerminalRunStatus(previous.status)
+  );
+}
+
+export function disposedTaskResultFingerprint(
+  task: Pick<OrchestrationV2Subagent, "completionDelivery" | "status" | "result">,
+): string | null {
+  if (
+    task.completionDelivery?.state !== "disposed" ||
+    !isTerminalDelegatedTaskStatus(task.status) ||
+    typeof task.result !== "string"
+  ) {
+    return null;
+  }
+  return NodeCrypto.createHash("sha256").update(task.result, "utf16le").digest("hex");
 }
 
 function delegatedTaskTerminalStatus(
@@ -2948,6 +2991,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.type === "delegated_task.completion-delivery.acknowledge"
         ? "acknowledged"
         : "disposed";
+    const observingRunId =
+      command.type === "delegated_task.completion-delivery.acknowledge"
+        ? command.observedByRunId
+        : null;
+    const refreshObservation =
+      command.type === "delegated_task.completion-delivery.acknowledge" &&
+      task.completionDelivery?.state === "acknowledged" &&
+      canRefreshDelegatedTaskObservation(
+        task,
+        projection.runs,
+        projection.runs.find((run) => run.id === observingRunId),
+      );
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
     // task_status and t3_thread_read use distinct command IDs, so two
@@ -2955,7 +3010,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // existing task row so the second dispatch is a successful idempotent
     // no-op rather than "already acknowledged/disposed" or empty-events.
     if (
-      task.completionDelivery?.state === state ||
+      (task.completionDelivery?.state === state && !refreshObservation) ||
       (command.type === "delegated_task.completion-delivery.acknowledge" &&
         task.completionDelivery?.state === "disposed")
     ) {
@@ -2975,10 +3030,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...task,
       completionDelivery: {
         state,
-        observedByRunId:
-          command.type === "delegated_task.completion-delivery.acknowledge"
-            ? command.observedByRunId
-            : null,
+        observedByRunId: observingRunId,
       },
       updatedAt: now,
     };
@@ -2992,6 +3044,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       occurredAt: now,
       payload: updatedTask,
     });
+
+    // The initial acknowledgement already resolved this task's pending notification.
+    if (refreshObservation) return;
 
     const parentRun =
       task.runId === null
@@ -3071,6 +3126,61 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
     }
+  });
+
+  const dispatchDisposedTaskResultObservation = Effect.fn(
+    "Orchestrator.dispatchDisposedTaskResultObservation",
+  )(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "delegated_task.completion-delivery.observe-disposed" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const { subagents } = yield* loadProjectionForCommand(command, ["subagents"], {
+      subagentIds: [command.taskId],
+    });
+    const task = subagents.find(
+      (candidate) =>
+        candidate.id === command.taskId &&
+        candidate.threadId === command.threadId &&
+        candidate.origin === "app_owned",
+    );
+    if (
+      task?.completionDelivery?.state !== "disposed" ||
+      disposedTaskResultFingerprint(task) !== command.resultFingerprint
+    ) {
+      return;
+    }
+    const previous = task.completionDelivery.observedByRunId;
+    const { runs } = yield* loadProjectionForCommand(command, ["runs"], {
+      runIds: previous === null ? [command.observedByRunId] : [command.observedByRunId, previous],
+    });
+    const observer = runs.find((run) => run.id === command.observedByRunId);
+    if (
+      observer?.providerInstanceId !== command.providerInstanceId ||
+      !canRefreshDelegatedTaskObservation(task, runs, observer)
+    ) {
+      return;
+    }
+    const now = yield* DateTime.now;
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "subagent.updated",
+      threadId: task.threadId,
+      ...(task.runId === null ? {} : { runId: task.runId }),
+      nodeId: task.id,
+      driver: task.driver,
+      providerInstanceId: task.providerInstanceId,
+      occurredAt: now,
+      payload: {
+        ...task,
+        completionDelivery: { state: "disposed", observedByRunId: command.observedByRunId },
+        updatedAt: now,
+      },
+    });
   });
 
   const disposeDelegatedCompletionCohort = Effect.fn(
@@ -14276,6 +14386,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerThreadId: childRun.providerThreadId,
         status: terminalStatus,
         result: result.text,
+        ...(task.completionDelivery?.state === "disposed" &&
+        task.completionDelivery.observedByRunId !== null &&
+        task.result !== result.text
+          ? { completionDelivery: { state: "disposed" as const, observedByRunId: null } }
+          : {}),
         completedAt: now,
         updatedAt: now,
       };
@@ -15237,6 +15352,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "delegated_task.completion-delivery.dispose":
         yield* dispatchDelegatedTaskCompletionDeliveryResolution(command, events);
         break;
+      case "delegated_task.completion-delivery.observe-disposed":
+        yield* dispatchDisposedTaskResultObservation(command, events);
+        break;
       case "thread.created.record":
         yield* dispatchCreatedThreadRecord(command, events);
         break;
@@ -15355,6 +15473,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           // A report the task already holds, or a stop a newer one superseded, is done; its
           // sender then fails only on a write that did not happen.
           command.type === "delegated_task.remote.complete" ||
+          // Another reader or a run settlement can overtake a result observation.
+          command.type === "delegated_task.completion-delivery.observe-disposed" ||
           // Closing a share again, or after it ended, is not an error.
           command.type === "thread.guest-share.close" ||
           command.type === "provider-session.detach-idle" ||

@@ -687,10 +687,22 @@ alternate spelling such as a Windows short path before repairing the registratio
 A follow-up starts from the project's current base when that base contains the delivered
 commit. If the histories diverged, CodeShip can restore the delivered commit from a
 recorded durable ref. When Git has deleted the task branch, CodeShip restores the pull request
-base and remote ref recorded in the release receipt. Existing branches keep their current
+base and local or remote ref recorded in the release receipt. Existing branches keep their current
 settings. If the owner moved the task branch in the meantime, the follow-up
-uses the new branch tip. Follow-up setup reports progress in the thread. A later follow-up can retry an
-unfinished setup in the same checkout.
+uses the new branch tip.
+
+When a recovered checkout's setup action fails, open **Worktree setup** in the thread to see the
+command and its output. Fix the action in **Settings → Projects → Actions** or turn off its
+worktree trigger if setup is no longer needed. If the checkout changed branches, save your local
+changes and switch it back to the expected branch shown in the error. Send a follow-up in an
+owning chat to retry setup in this checkout. Keep the setup receipt and saved-file directory
+through recovery. Rollback becomes available after setup finishes.
+
+If Git's post-checkout hook exited with an error, check the hook's changes before retrying it.
+After correcting the cause, send a new message in an owning chat. If the hook's exit could not
+be confirmed, CodeShip shows the path of its running record. Inspect the process and checkout on
+the server host before making any change to that record. A running or interrupted hook may have
+already performed some of its actions.
 
 Choose **Delete now** to run the enabled rules immediately. The latest results show which
 worktrees were removed or kept and why, plus any failures.
