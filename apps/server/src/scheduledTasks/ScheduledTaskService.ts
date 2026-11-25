@@ -2248,9 +2248,11 @@ export const layer = Layer.effect(
           ${record.usageLimit === undefined ? null : encodeRunUsageLimitJson(record.usageLimit)},
           ${record.memory === undefined ? null : encodeRunMemoryJson(record.memory)}
         WHERE EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${record.taskId})
+        -- A retry is a new attempt: nothing the failed one recorded, its chat's report included, describes it.
         ON CONFLICT (run_id) DO UPDATE SET
           outcome = 'running', started_at = excluded.started_at, completed_at = NULL,
-          error = NULL, thread_id = NULL, chat_folder = NULL, check_json = excluded.check_json
+          error = NULL, thread_id = NULL, chat_folder = NULL, check_json = excluded.check_json,
+          reported_outcome = NULL, reported_summary = NULL
         WHERE scheduled_task_runs.outcome = 'failed' AND excluded.outcome = 'running'
       `.pipe(
         Effect.andThen(sql`

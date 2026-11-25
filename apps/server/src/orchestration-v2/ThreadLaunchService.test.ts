@@ -507,6 +507,118 @@ it.effect.each(
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("clears a failed attempt's reported result when its retry reopens the run", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const sql = yield* SqlClient.SqlClient;
+    let attempts = 0;
+    const scheduler = ScheduledTasks.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          NodeCrypto.layer,
+          Scheduler.layer,
+          layerSharedTaskIdentities(),
+          ManagedPolicy.layerTest(),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.succeed(ThreadManagement.ThreadManagementService, threads),
+          Layer.succeed(ThreadLaunch.ThreadLaunchService, {
+            ...launches,
+            launch: (input) =>
+              Effect.suspend(() =>
+                ++attempts === 1
+                  ? Effect.die("transient failure before receipt")
+                  : launches.launch(input),
+              ),
+          }),
+        ),
+      ),
+    );
+    const report = (threadId: ThreadId, outcome: "completed" | "incomplete", summary: string) =>
+      Effect.gen(function* () {
+        const tasks = yield* ScheduledTasks.ScheduledTaskService;
+        return yield* tasks.reportRunResult({ threadId, outcome, summary });
+      }).pipe(Effect.provide(scheduler));
+    const slot = DateTime.toEpochMillis(
+      DateTime.makeZonedUnsafe(
+        { year: 1970, month: 1, day: 2, hour: 7 },
+        { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+      ),
+    );
+    const id = ScheduledTaskId.make("daily-reported");
+    yield* TestClock.setTime(slot - 60_000);
+    yield* Effect.gen(function* () {
+      const tasks = yield* ScheduledTasks.ScheduledTaskService;
+      yield* tasks.upsert(
+        {
+          id,
+          title: "Daily",
+          prompt: "Daily check",
+          enabled: true,
+          maxLiveRuns: 4,
+          schedule: { type: "fixed_time", timeOfDay: "07:00" },
+          projectId,
+          threadId: null,
+          workspaceStrategy: { type: "root" },
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy: "user",
+          creationSource: "web",
+        },
+        ScheduledTasks.CHANGED_IN_APP,
+      );
+    }).pipe(Effect.provide(scheduler));
+    const cursor = () =>
+      sql`UPDATE scheduled_tasks SET next_run_at = ${DateTime.formatIso(DateTime.makeUnsafe(slot))} WHERE task_id = ${id}`;
+    const poll = (time: number) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(time);
+        return yield* Effect.gen(function* () {
+          const tasks = yield* ScheduledTasks.ScheduledTaskService;
+          yield* TestClock.adjust("6 seconds");
+          return (yield* tasks.list()).tasks[0]!;
+        }).pipe(Effect.provide(scheduler));
+      });
+    yield* cursor();
+    assert.equal((yield* poll(slot)).lastRunStatus, "failed");
+    // As when the failed attempt's chat opened but its prompt did not arrive: the failed run keeps that chat, where
+    // its agent can still report before the retry.
+    const failedChat = (yield* launches.launch(
+      launchInput({ command: "failed-attempt", thread: "thread:failed-attempt" }),
+    )).threadId;
+    yield* sql`UPDATE scheduled_task_runs SET thread_id = ${failedChat} WHERE task_id = ${id}`;
+    yield* report(failedChat, "incomplete", "The prompt never arrived.");
+    yield* cursor();
+    assert.equal((yield* poll(slot + 8000)).lastRunStatus, "succeeded");
+    const history = () =>
+      sql<{
+        outcome: string;
+        thread_id: string | null;
+        reported_outcome: string | null;
+        reported_summary: string | null;
+      }>`SELECT outcome, thread_id, reported_outcome, reported_summary FROM scheduled_task_runs WHERE task_id = ${id}`;
+    const [retried] = yield* history();
+    assert.notEqual(retried?.thread_id, failedChat);
+    assert.deepInclude(retried, {
+      outcome: "succeeded",
+      reported_outcome: null,
+      reported_summary: null,
+    });
+    yield* report(ThreadId.make(retried!.thread_id!), "completed", "Checked.");
+    assert.deepEqual(yield* history(), [
+      {
+        outcome: "succeeded",
+        thread_id: retried!.thread_id,
+        reported_outcome: "completed",
+        reported_summary: "Checked.",
+      },
+    ]);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect.each(["existing", "new"] as const)(
   "replays fixed-time receipts only within the same task incarnation in %s threads",
   (target) => {
