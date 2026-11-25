@@ -21,8 +21,7 @@ import * as BootService from "../cloud/bootService.ts";
 import * as ReleaseIndex from "../cloud/releaseIndex.ts";
 import {
   ensurePinnedRuntimeInstalled,
-  launcherOwnsVersionsDir,
-  launcherTarget,
+  ownedLauncherVersion,
   pinnedRuntimeCommand,
   PinnedRuntimeInstallError,
   pinnedRuntimePaths,
@@ -72,9 +71,8 @@ export const repointLauncher = Effect.fn("cli.update.repoint_launcher")(function
   const launcher =
     platform === "win32" ? yield* findWindowsShim(input.launchedAs) : input.launchedAs;
   if (launcher === undefined) return Option.none<string>();
-  const target = yield* launcherTarget(launcher);
   const versionsDir = pinnedRuntimeVersionsDir(path, input.baseDir);
-  if (target === undefined || !launcherOwnsVersionsDir(path, versionsDir, target)) {
+  if ((yield* ownedLauncherVersion({ launcher, versionsDir })) === undefined) {
     return Option.none<string>();
   }
   yield* repointPinnedRuntimeLauncher({

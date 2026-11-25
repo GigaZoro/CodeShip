@@ -429,7 +429,7 @@ const recordLauncher = Effect.fn("cloud.pinned_runtime.record_launcher")(functio
 export const windowsShimTarget = (contents: string) => /^"([^"]+)"/m.exec(contents)?.[1];
 
 /** What a launcher written by the install scripts or `t3 update` names, without following links. */
-export const launcherTarget = Effect.fn("cloud.pinned_runtime.launcher_target")(function* (
+const launcherTarget = Effect.fn("cloud.pinned_runtime.launcher_target")(function* (
   launcher: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -446,6 +446,43 @@ export const launcherTarget = Effect.fn("cloud.pinned_runtime.launcher_target")(
     Effect.orElseSucceed(() => undefined),
   );
 });
+
+/** The executable prune counts a launcher as running. */
+const resolvedLauncherTarget = Effect.fn("cloud.pinned_runtime.resolved_launcher_target")(
+  function* (launcher: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const platform = yield* HostProcess.Platform;
+    return platform === "win32"
+      ? yield* launcherTarget(launcher)
+      : // Fully resolved, through chained links and a symlinked T3 home alike.
+        yield* fs.realPath(launcher).pipe(Effect.orElseSucceed(() => undefined));
+  },
+);
+
+/**
+ * The runtime under `versionsDir` a `t3` link or `t3.cmd` shim runs, as prune resolves it, else
+ * as it names it, so one whose runtime is gone still counts. A plain file is no launcher.
+ */
+export const ownedLauncherVersion = Effect.fn("cloud.pinned_runtime.owned_launcher_version")(
+  function* (input: { readonly launcher: string; readonly versionsDir: string }) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const named = yield* launcherTarget(input.launcher);
+    if (named === undefined) return undefined;
+    const resolved = yield* resolvedLauncherTarget(input.launcher);
+    const realVersionsDir = yield* fs
+      .realPath(input.versionsDir)
+      .pipe(Effect.orElseSucceed(() => input.versionsDir));
+    for (const target of [resolved, named]) {
+      for (const directory of [input.versionsDir, realVersionsDir]) {
+        if (target !== undefined && launcherOwnsVersionsDir(path, directory, target)) {
+          return path.relative(directory, path.resolve(target)).split(/[\\/]/)[0];
+        }
+      }
+    }
+    return undefined;
+  },
+);
 
 /**
  * Recorded before it moves, so prune never meets a repointed launcher it does not know about:
@@ -520,16 +557,9 @@ export const repointPinnedRuntimeLaunchers = Effect.fn("cloud.pinned_runtime.rep
     // A server run from elsewhere, such as a checkout, has no runtime here to point them at.
     if (!(yield* fs.exists(entryPath).pipe(Effect.orElseSucceed(() => false)))) return moved;
     const versionsDir = pinnedRuntimeVersionsDir(path, input.baseDir);
-    const realVersionsDir = yield* fs
-      .realPath(versionsDir)
-      .pipe(Effect.orElseSucceed(() => versionsDir));
     const { recorded, found } = yield* launcherCandidates(input.baseDir);
     for (const launcher of new Set([...recorded, ...found])) {
-      const target = yield* launcherTarget(launcher);
-      if (target === undefined) continue;
-      const version = [versionsDir, realVersionsDir]
-        .filter((directory) => launcherOwnsVersionsDir(path, directory, target))
-        .map((directory) => path.relative(directory, path.resolve(target)).split(/[\\/]/)[0])[0];
+      const version = yield* ownedLauncherVersion({ launcher, versionsDir });
       if (
         version === undefined ||
         !isExactServiceVersion(version) ||
@@ -558,7 +588,6 @@ const shellLauncherTargets = Effect.fn("cloud.pinned_runtime.shell_launcher_targ
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const platform = yield* HostProcess.Platform;
   const { launchersFile, recorded, found } = yield* launcherCandidates(baseDir);
   const versionsDir = pinnedRuntimeVersionsDir(path, baseDir);
   const realVersionsDir = yield* fs
@@ -567,11 +596,7 @@ const shellLauncherTargets = Effect.fn("cloud.pinned_runtime.shell_launcher_targ
   const unrecorded: Array<string> = [];
   const targets: Array<string> = [];
   for (const launcher of [...recorded, ...found]) {
-    const target =
-      platform === "win32"
-        ? yield* launcherTarget(launcher)
-        : // Fully resolved, through chained links and a symlinked T3 home alike.
-          yield* fs.realPath(launcher).pipe(Effect.orElseSucceed(() => undefined));
+    const target = yield* resolvedLauncherTarget(launcher);
     if (target === undefined) continue;
     targets.push(target);
     if (

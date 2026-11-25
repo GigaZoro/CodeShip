@@ -22,7 +22,6 @@ import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerActivation from "../serverActivation.ts";
-import { prunePinnedRuntimes } from "./pinnedRuntime.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 import * as ServerSelfUpdate from "./selfUpdate.ts";
@@ -42,7 +41,23 @@ interface HarnessOptions {
   readonly activation?: Effect.Effect<void>;
   readonly environment?: NodeJS.ProcessEnv;
   readonly homeDirectory?: string;
+  readonly platform?: NodeJS.Platform;
 }
+
+// The process list `lsof` prints when no t3 runtime is running.
+const otherProcesses = ProcessRunner.ProcessRunner.of({
+  run: () =>
+    Effect.succeed({
+      stdout: "p42\nftxt\nn/bin/sh\n",
+      stderr: "",
+      code: ChildProcessSpawner.ExitCode(0),
+      timedOut: false,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      stdoutInvalidUtf8: false,
+      stderrInvalidUtf8: false,
+    }),
+});
 
 const archiveBytes = new TextEncoder().encode("not really a tarball");
 const releaseHttpClient = (order: string[], beforeDownload?: Effect.Effect<void>) =>
@@ -74,6 +89,7 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
   const runner = ProcessRunner.ProcessRunner.of({
     run: (input) =>
       Effect.gen(function* () {
+        if (input.command === "lsof") return yield* otherProcesses.run(input);
         if (input.command === "tar") {
           order.push("extract");
           const stagingDir = input.args[input.args.indexOf("-C") + 1];
@@ -154,7 +170,7 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
       },
     ),
     Effect.provideService(HttpClient.HttpClient, releaseHttpClient(order, options.beforeDownload)),
-    Effect.provideService(HostProcess.Platform, "linux"),
+    Effect.provideService(HostProcess.Platform, options.platform ?? "linux"),
     Effect.provideService(HostProcess.Architecture, "x64"),
     // Never the real PATH or home: their `t3` launchers belong to the developer's install.
     Effect.provideService(HostProcess.Environment, options.environment ?? {}),
@@ -371,19 +387,6 @@ it.layer(NodeServices.layer)("server self update", (it) => {
 });
 
 /** An `lsof` listing in which no process runs a pinned runtime. */
-const otherProcesses = ProcessRunner.ProcessRunner.of({
-  run: () =>
-    Effect.succeed({
-      stdout: "p42\nftxt\nn/bin/sh\n",
-      stderr: "",
-      code: ChildProcessSpawner.ExitCode(0),
-      timedOut: false,
-      stdoutTruncated: false,
-      stderrTruncated: false,
-      stdoutInvalidUtf8: false,
-      stderrInvalidUtf8: false,
-    }),
-});
 
 /** Completed runtimes whose sentinels date from the epoch, so a prune a day later may remove them. */
 const writeSettledRuntimes = Effect.fn("test.write_settled_runtimes")(function* (
@@ -409,7 +412,7 @@ it.layer(NodeServices.layer)("moving launchers when a self-update activates", (i
   // regression: AB#7122 a self-updated service left `t3` on the replaced runtime
   // POSIX symlink launchers on a colon-separated PATH; Windows uses `t3.cmd` shims.
   it.effect.skipIf(isWindowsHost)(
-    "moves every launcher on the replaced runtime to the committed one, so prune can drop it",
+    "moves every launcher on the replaced runtime once committed, then prunes that runtime",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -429,6 +432,8 @@ it.layer(NodeServices.layer)("moving launchers when a self-update activates", (i
           ),
           environment,
           homeDirectory: tempDir,
+          // Prune reads the process list from `lsof` here, not from the host's /proc.
+          platform: "darwin",
         });
         const versionsDir = path.join(baseDir, "runtime", "versions");
         const runtimeEntry = (version: string) => path.join(versionsDir, version, "t3");
@@ -437,41 +442,46 @@ it.layer(NodeServices.layer)("moving launchers when a self-update activates", (i
           packageJson.version,
           newerVersion,
         ]);
-        // Off PATH, so only the install script's record names it.
+        const homeAlias = path.join(tempDir, "home-alias");
+        yield* linkDirectory(baseDir, homeAlias);
+        // Off PATH, so only the install script's records name these.
         const recordedLauncher = path.join(tempDir, "opt", "t3");
+        const aliasLauncher = path.join(tempDir, "alias-bin", "t3");
         const pathLauncher = path.join(pathBin, "t3");
         const newerLauncher = path.join(newerBin, "t3");
-        for (const launcher of [recordedLauncher, pathLauncher, newerLauncher]) {
+        const launchers = [recordedLauncher, aliasLauncher, pathLauncher, newerLauncher];
+        for (const launcher of launchers) {
           yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
         }
         yield* fs.symlink(runtimeEntry(replacedVersion), recordedLauncher);
+        // Prune resolves this one into the home; so must the move.
+        yield* fs.symlink(
+          path.join(homeAlias, "runtime", "versions", replacedVersion, "t3"),
+          aliasLauncher,
+        );
         yield* fs.symlink(runtimeEntry(replacedVersion), pathLauncher);
         // Someone moved this one past the service; the service never moves it back.
         yield* fs.symlink(runtimeEntry(newerVersion), newerLauncher);
         yield* fs.writeFileString(
           path.join(baseDir, "runtime", "launchers"),
-          `${recordedLauncher}\n`,
+          `${recordedLauncher}\n${aliasLauncher}\n`,
         );
+        yield* TestClock.setTime(24 * 60 * 60 * 1000);
+        const readLaunchers = Effect.forEach(launchers, (launcher) =>
+          fs.readLink(launcher).pipe(
+            Effect.map((target) => fs.realPath(target)),
+            Effect.flatten,
+          ),
+        );
+        const replaced = yield* fs.realPath(runtimeEntry(replacedVersion));
+        const committed = yield* fs.realPath(runtimeEntry(packageJson.version));
+        const newer = yield* fs.realPath(runtimeEntry(newerVersion));
 
+        expect(yield* readLaunchers).toEqual([replaced, replaced, replaced, newer]);
         yield* Deferred.succeed(activated, undefined);
         yield* Fiber.awaitAll(parked);
-        expect(
-          yield* Effect.forEach([recordedLauncher, pathLauncher, newerLauncher], (launcher) =>
-            fs.readLink(launcher),
-          ),
-        ).toEqual([
-          runtimeEntry(packageJson.version),
-          runtimeEntry(packageJson.version),
-          runtimeEntry(newerVersion),
-        ]);
 
-        yield* TestClock.setTime(24 * 60 * 60 * 1000);
-        yield* prunePinnedRuntimes({ baseDir, keep: [] }).pipe(
-          Effect.provideService(HostProcess.Platform, "darwin"),
-          Effect.provideService(HostProcess.Environment, environment),
-          Effect.provideService(HostProcess.HomeDirectory, tempDir),
-          Effect.provideService(ProcessRunner.ProcessRunner, otherProcesses),
-        );
+        expect(yield* readLaunchers).toEqual([committed, committed, committed, newer]);
         expect((yield* fs.readDirectory(versionsDir)).toSorted()).toEqual(
           [packageJson.version, newerVersion].toSorted(),
         );

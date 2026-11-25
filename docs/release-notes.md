@@ -1,6 +1,6 @@
 ## 2026-11-25 — `t3` follows a background service that updated itself
 
-- A background service that installed an update itself left the `t3` command on the release it replaced, so commands such as `t3 thread release-worktree` were missing and the old release stayed on disk. Once the service runs the new release, it moves each `t3` launcher of that install to it. A `t3` already on a newer release is left alone. The old release is then removed like any other unused one.
+- A background service that installed an update itself left the `t3` command on the release it replaced, so commands such as `t3 thread release-worktree` were missing and the old release stayed on disk. Once the service runs the new release, it moves each `t3` launcher of that install to it. A `t3` already on a newer release is left alone. The old release is then removed on the same start. `t3 update` and `t3 uninstall` also recognize a `t3` linked to the install through another path to its folder.
 
 ## 2026-11-25 — Linked-machine task result test coverage
 

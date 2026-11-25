@@ -144,14 +144,15 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   );
   const inFlight = yield* Ref.make(false);
 
-  yield* pruneRuntimesOnStart({ baseDir: serverConfig.baseDir, managed: launcher.managed }).pipe(
-    Effect.forkScoped,
-  );
-
+  const pruneOnStart = pruneRuntimesOnStart({
+    baseDir: serverConfig.baseDir,
+    managed: launcher.managed,
+  });
   const capability: ServerSelfUpdateCapability | null =
     serverConfig.mode === "desktop" ? "desktop-managed" : launcher.managed ? "boot-service" : null;
-  // Parked until the launcher commits this version, so a trial that rolls back moves nothing.
   if (capability === "boot-service") {
+    // Parked until the launcher commits this version, so a trial that rolls back moves nothing.
+    // Prune follows, so the runtimes the moved launchers named can go on this start.
     yield* ServerActivation.forkParked(
       repointPinnedRuntimeLaunchers({
         baseDir: serverConfig.baseDir,
@@ -165,8 +166,11 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
                 version: packageJson.version,
               }),
         ),
+        Effect.andThen(pruneOnStart),
       ),
     );
+  } else {
+    yield* pruneOnStart.pipe(Effect.forkScoped);
   }
   const failWith = (reason: string, cause?: unknown) =>
     cause === undefined
