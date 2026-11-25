@@ -813,6 +813,39 @@ it.layer(layerTest)("Git remote worktree bases", (it) => {
     }),
   );
 
+  // In one transaction with the others, a leftover Git cannot delete would keep every later
+  // fetch's own refs too.
+  it.effect("deletes its own scratch refs when an earlier fetch's cannot be deleted", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      const remote = yield* makeTmpDir("git-remote-");
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const { initialBranch } = yield* initRepoWithCommit(cwd);
+      yield* git(remote, ["init", "--bare"]);
+      yield* git(cwd, ["remote", "add", "origin", remote]);
+      yield* git(cwd, ["push", "origin", `HEAD:refs/heads/${initialBranch}`]);
+      const head = yield* git(cwd, ["rev-parse", "HEAD"]);
+      yield* TestClock.adjust("1 day");
+      const cutAt = (yield* Clock.currentTimeMillis) - 2 * 60 * 60_000;
+      const stuck = `refs/t3code/fetch/${cutAt}-0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e/ref`;
+      const deletable = `refs/t3code/fetch/${cutAt}-1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e5f/ref`;
+      for (const ref of [stuck, deletable]) {
+        yield* git(cwd, ["update-ref", ref, head]);
+      }
+      // A delete killed between locking a ref and removing it leaves the lock behind.
+      const lockPath = yield* git(cwd, ["rev-parse", "--git-path", `${stuck}.lock`]);
+      yield* writeTextFile(cwd, lockPath, `${head}\n`);
+
+      assert.deepEqual(yield* driver.fetchRefCommit({ cwd, ref: `refs/heads/${initialBranch}` }), {
+        commitSha: head,
+      });
+      assert.equal(
+        yield* git(cwd, ["for-each-ref", "--format=%(refname)", "refs/t3code/"]),
+        stuck,
+      );
+    }),
+  );
+
   it.effect("creates a worktree from the latest fetched remote commit", () =>
     Effect.gen(function* () {
       const cwd = yield* makeTmpDir();

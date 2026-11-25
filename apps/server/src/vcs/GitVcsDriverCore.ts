@@ -1,3 +1,4 @@
+import * as Arr from "effect/Array";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -136,9 +137,14 @@ const SCRATCH_FETCH_REF_ROOT = "refs/t3code/fetch";
  * delete failed, and nothing else would ever delete it.
  */
 const SCRATCH_FETCH_REF_MAX_AGE_MS = Duration.toMillis(Duration.hours(1));
+/** The `refs/t3code/fetch/<name>` a scratch ref sits under. */
+const scratchRefPrefix = (ref: string): string => {
+  const end = ref.indexOf("/", SCRATCH_FETCH_REF_ROOT.length + 1);
+  return end === -1 ? ref : ref.slice(0, end);
+};
 /** A prefix without a start time was named before prefixes carried one, so it is left over too. */
-const isLeftoverScratchRef = (ref: string, now: number): boolean => {
-  const startedAt = /^(\d+)-/.exec(ref.slice(SCRATCH_FETCH_REF_ROOT.length + 1))?.[1];
+const isLeftoverScratchPrefix = (prefix: string, now: number): boolean => {
+  const startedAt = /^(\d+)-/.exec(prefix.slice(SCRATCH_FETCH_REF_ROOT.length + 1))?.[1];
   return startedAt === undefined || now - Number(startedAt) > SCRATCH_FETCH_REF_MAX_AGE_MS;
 };
 const pickPrimaryRemoteName = (remoteNames: ReadonlyArray<string>): string | null =>
@@ -4872,10 +4878,75 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     });
 
   /**
-   * Runs `use` with a ref prefix of its own and deletes every ref under it afterwards, along with
-   * any an earlier fetch left behind. A fetch reads what it fetched from there: FETCH_HEAD is the
-   * whole checkout's, and another fetch, such as the status poll, can rewrite it between the fetch
-   * and the read.
+   * The scratch refs under `under`. A listing past the output cap keeps its whole lines; the refs
+   * it leaves out wait for a later fetch.
+   */
+  const listScratchRefs = (operation: string, cwd: string, under: string) =>
+    executeGit(operation, cwd, ["for-each-ref", "--format=%(refname)", under], {
+      appendTruncationMarker: true,
+    }).pipe(
+      Effect.map((result) => {
+        const lines = result.stdout.split("\n");
+        if (result.stdoutTruncated) lines.pop();
+        return lines.filter((ref) => ref.length > 0);
+      }),
+    );
+
+  const deleteScratchRefs = (
+    operation: string,
+    cwd: string,
+    refs: ReadonlyArray<string>,
+  ): Effect.Effect<void, GitCommandError> =>
+    refs.length === 0
+      ? Effect.void
+      : runGit(`${operation}.deleteScratchRefs`, cwd, ["update-ref", "--stdin"], {
+          stdin: refs.map((ref) => `delete ${ref}\n`).join(""),
+          fallbackErrorDetail: "git failed to delete the fetch's scratch refs",
+        });
+
+  /**
+   * Deletes the prefixes earlier fetches left behind, which a restart cut or whose delete failed:
+   * nothing else ever would. Each prefix is a transaction of its own, so one that Git cannot
+   * delete, such as one a stale lock holds, keeps only itself.
+   */
+  const deleteLeftoverScratchRefs = (operation: string, cwd: string) =>
+    Effect.gen(function* () {
+      const refs = yield* listScratchRefs(
+        `${operation}.listLeftoverScratchRefs`,
+        cwd,
+        `${SCRATCH_FETCH_REF_ROOT}/`,
+      );
+      const now = yield* Clock.currentTimeMillis;
+      const leftovers = Arr.groupBy(
+        refs.filter((ref) => isLeftoverScratchPrefix(scratchRefPrefix(ref), now)),
+        scratchRefPrefix,
+      );
+      let deleted = 0;
+      for (const [prefix, prefixRefs] of Object.entries(leftovers)) {
+        const ok = yield* deleteScratchRefs(`${operation}.leftover`, cwd, prefixRefs).pipe(
+          Effect.as(true),
+          Effect.catch((cause) =>
+            Effect.logWarning("could not delete the scratch refs an earlier fetch left", {
+              prefix,
+              cause,
+            }).pipe(Effect.as(false)),
+          ),
+        );
+        if (ok) deleted += prefixRefs.length;
+      }
+      if (deleted > 0)
+        yield* Effect.logInfo("deleted the scratch refs earlier fetches left", { refs: deleted });
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("could not list the scratch refs earlier fetches left", { cause }),
+      ),
+    );
+
+  /**
+   * Runs `use` with a ref prefix of its own and deletes every ref under it afterwards, then any an
+   * earlier fetch left behind. A fetch reads what it fetched from there: FETCH_HEAD is the whole
+   * checkout's, and another fetch, such as the status poll, can rewrite it between the fetch and
+   * the read.
    */
   const withScratchRefs = <A, E, R>(
     cwd: string,
@@ -4901,30 +4972,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ),
       use,
       (prefix) =>
-        Effect.gen(function* () {
-          const stdout = yield* runGitStdout(`${operation}.listScratchRefs`, cwd, [
-            "for-each-ref",
-            "--format=%(refname)",
-            `${SCRATCH_FETCH_REF_ROOT}/`,
-          ]);
-          const now = yield* Clock.currentTimeMillis;
-          const refs = stdout
-            .split("\n")
-            .filter(
-              (ref) =>
-                ref.length > 0 && (ref.startsWith(`${prefix}/`) || isLeftoverScratchRef(ref, now)),
-            );
-          if (refs.length === 0) return;
-          yield* executeGit(`${operation}.deleteScratchRefs`, cwd, ["update-ref", "--stdin"], {
-            stdin: refs.map((ref) => `delete ${ref}\n`).join(""),
-            fallbackErrorDetail: "git failed to delete the fetch's scratch refs",
-          });
-        }).pipe(
+        listScratchRefs(`${operation}.listScratchRefs`, cwd, `${prefix}/`).pipe(
+          Effect.flatMap((refs) => deleteScratchRefs(operation, cwd, refs)),
           // The fetch's answer stands; a ref left under the scratch root only keeps objects alive
           // until a later fetch deletes it.
           Effect.catch((cause) =>
             Effect.logWarning("could not delete a fetch's scratch refs", { prefix, cause }),
           ),
+          Effect.andThen(deleteLeftoverScratchRefs(operation, cwd)),
         ),
     );
 

@@ -1,7 +1,7 @@
 ## 2026-11-25 — Worktree removal names Git's failed status check
 
-- When removing a worktree fails because Git could not run `git status` in it, the error now says so, as "failed to run 'git status' on '…'", with the path and Git's reason hidden. Before, Git's line ended with a reason the error did not expect, so it showed "(message withheld)".
-- Refs that a fetch keeps for itself while it reads the fetched commit are now removed by the next fetch when a restart or a failed delete left them behind. Before, they stayed in the repository and kept the fetched objects from being cleaned up.
+- When removing a worktree fails because Git could not start `git status` in it, the error now shows Git's line as "fatal: failed to run 'git status' on '…': …", with the path and Git's reason hidden. Before, it showed "(message withheld)".
+- Refreshing a pull request's checkout, and starting a thread on a commit only a remote has, can fetch into refs of their own, which they delete afterwards. Each such fetch now also deletes the refs an earlier one left more than an hour before, when a restart cut it or its delete failed. Before, those refs stayed and kept the fetched objects on disk.
 
 ## 2026-11-25 — Usage follows secret setting changes and keeps newer reads
 
