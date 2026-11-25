@@ -1,3 +1,7 @@
+## 2026-11-26 — Usage-limit stops replay from their recorded decisions
+
+- Each usage-limit stop with recorded decisions now replays as recovered, failed attempt, pinned, exhausted or unknown, from the evidence saved when it was decided. The server database keeps this for usage reports to read; nothing in the app shows it yet. A retry counts as a recovery only when it ran the stop's own request and completed, and as a failed attempt only when that attempt ran and failed. A stop with no recorded evidence, or with evidence that cannot decide it, stays unknown. Lost tokens are never estimated from measured usage.
+
 ## 2026-11-26 — Delegated worktrees fetch from the matched repository first
 
 - A linked machine now tries the Git remote that matched the parent repository first when fetching a worktree commit. It can still fetch the exact commit through a tag or another configured remote.

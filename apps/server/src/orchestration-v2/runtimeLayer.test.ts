@@ -11670,6 +11670,79 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         assert.equal(resumed.runs[2]?.status, "starting");
         assert.isFalse(resumed.runs[2]?.queueHeld);
       }
+      if (scenario === "resume") {
+        // The stop replays from its persisted decisions: a refused route and the accepted retry.
+        const sql = yield* SqlClient.SqlClient;
+        const replay = (classification: string) =>
+          Effect.gen(function* () {
+            assert.deepEqual(
+              yield* sql`SELECT classification, decisions, attributable_lost_tokens
+                FROM usage_stop_replay WHERE source_key = ${evidenceKey(run.id)}`,
+              [{ classification, decisions: 2, attributable_lost_tokens: null }],
+            );
+          });
+        const settle = (
+          target: (typeof after.runs)[number],
+          status: "completed" | "failed" | "cancelled" | "superseded" | "interrupted",
+        ) =>
+          Effect.gen(function* () {
+            const current = yield* orchestrator.getThreadProjection(threadId);
+            const attempt = current.attempts.find((row) => row.id === target.activeAttemptId)!;
+            const settledAt = yield* DateTime.now;
+            yield* events.write({
+              events: [
+                {
+                  id: EventId.make(`recovery:replay:${target.id}:${status}`),
+                  type: "run-attempt.updated",
+                  threadId,
+                  runId: target.id,
+                  occurredAt: settledAt,
+                  payload: { ...attempt, status, completedAt: settledAt },
+                },
+                {
+                  id: EventId.make(`recovery:replay-run:${target.id}:${status}`),
+                  type: "run.updated",
+                  threadId,
+                  runId: target.id,
+                  occurredAt: settledAt,
+                  payload: {
+                    ...target,
+                    status: status === "completed" ? "completed" : "failed",
+                    completedAt: settledAt,
+                  },
+                },
+              ],
+            });
+          });
+        const continuation = after.runs.find((row) => row.automaticContinuationOfRunId === run.id)!;
+        yield* replay("unknown");
+        // Ended attempts prove nothing about the account they ran on.
+        for (const status of ["cancelled", "superseded", "interrupted"] as const) {
+          yield* settle(continuation, status);
+          yield* replay("unknown");
+        }
+        yield* settle(continuation, "failed");
+        yield* replay("failed_attempt");
+        // Later work on the thread is a changed request, so its completion recovers nothing.
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("recovery:changed-request"),
+          threadId,
+          messageId: MessageId.make("recovery:changed-request"),
+          text: "Do something else.",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const changed = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+          (row) => String(row.userMessageId) === "recovery:changed-request",
+        )!;
+        yield* settle(changed, "completed");
+        yield* replay("failed_attempt");
+        yield* settle(continuation, "completed");
+        yield* replay("recovered");
+      }
     }),
   );
 });
