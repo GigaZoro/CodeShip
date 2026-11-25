@@ -1780,13 +1780,13 @@ it.live.each([
         expect(yield* fs.exists(worktree)).toBe(false);
         return;
       }
-      expect(result.outcome).toBe("kept");
+      expect(result?.outcome).toBe("kept");
       if (kind === "active merge") {
-        expect(result.reason).toMatch(
+        expect(result?.reason).toMatch(
           /^Worktree metadata MERGE_(HEAD|MODE|MSG) requires its owner$/,
         );
       } else {
-        expect(result.reason).toBe(
+        expect(result?.reason).toBe(
           kind === "symlink" && isWindowsHost
             ? "Worktree metadata requires its owner (reparse-point)"
             : kind === "symlink" || kind === "oversized"
@@ -2407,6 +2407,18 @@ it.live("retains worktree-only history and rejects a release overtaken by a foll
       yield* fixture.command(fixture.worktree, ["update-ref", "-d", privateRef]);
       yield* fixture.fs.makeDirectory(`${admin}/refs/worktree`, { recursive: true });
       yield* fixture.fs.makeDirectory(`${admin}/logs/refs/worktree`, { recursive: true });
+      if (!isWindowsHost) {
+        const logs = NodePath.join(admin, "logs");
+        const savedLogs = NodePath.join(fixture.repo, "saved-worktree-logs");
+        const emptyDirectory = yield* fixture.fs.makeTempDirectoryScoped();
+        yield* fixture.fs.rename(logs, savedLogs);
+        yield* fixture.fs.symlink(emptyDirectory, logs);
+        expect((yield* fixture.service.runNow).entries[0]?.reason).toBe(
+          "Worktree has private reflogs",
+        );
+        yield* fixture.fs.remove(logs);
+        yield* fixture.fs.rename(savedLogs, logs);
+      }
       expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("removed");
     }),
   ),
