@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
+import { resolveWorkspacePath } from "../workspace/workspaceLease.ts";
 import type { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import type * as ProjectStore from "./ProjectStore.ts";
 
@@ -32,12 +33,13 @@ export const isCheckpointRestoreIsolated = Effect.fn("orchestrationV2.isCheckpoi
     const worktreePath = thread.worktreePath;
     let shared = worktreePath == null;
     if (!shared && worktreePath !== null) {
-      // Storage cleanup may have removed the worktree; rollback recreates it.
+      // A checkout removed by cleanup can still have multiple owners under different path spellings.
+      const missing = !(yield* fileSystem.exists(worktreePath));
       const resolve = (target: string) =>
         fileSystem.realPath(target).pipe(
           Effect.catchIf(
             (error) => error.reason._tag === "NotFound",
-            (_error) => Effect.succeed(path.resolve(target)),
+            () => resolveWorkspacePath(target),
           ),
         );
       const cwd = yield* resolve(scope.cwd);
@@ -89,7 +91,7 @@ export const isCheckpointRestoreIsolated = Effect.fn("orchestrationV2.isCheckpoi
             const otherCwd = yield* fileSystem.realPath(candidate).pipe(
               Effect.catchIf(
                 (error) => error.reason._tag === "NotFound",
-                (_error) => Effect.succeed(null),
+                () => (missing ? resolveWorkspacePath(candidate) : Effect.succeed(null)),
               ),
             );
             if (otherCwd !== null && (contains(cwd, otherCwd) || contains(otherCwd, cwd))) {

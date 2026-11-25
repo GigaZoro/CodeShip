@@ -8,6 +8,7 @@
 
 ## 2026-11-25 — Release a completed family's shared checkout
 
+- If rollback finds a checkout awaiting release recovery, it directs you to send a follow-up in the owning chat. The follow-up restores the checkout before you retry rollback.
 - A root chat can release its shared checkout once its subagents and side chats finish and their results arrive. A follow-up from the family or a new fork can recreate the checkout from the project's current base.
 - After a restart, a family can resume an intact checkout whose removal was interrupted. CodeShip checks saved ignored files and installed dependencies before reopening it. If any are missing, it keeps the claim and the backup for recovery. A follow-up can also recover a delivered task branch whose history diverged from the base.
 - A new managed checkout gets a different directory when a released family still has a claim on its usual path. Follow-ups in an existing replacement checkout verify its new Git registration, project and branch before starting.

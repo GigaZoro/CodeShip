@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Receipt keys use the host path and on-disk spelling.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { OrchestrationV2AppThreadLineage, ProjectId, RunId, ThreadId } from "@t3tools/contracts";
@@ -7,6 +8,7 @@ import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import { existingWorkspacePath, resolveWorkspacePath } from "./workspaceLease.ts";
+import { missingSetupPath, setupFileStamp } from "../../../../scripts/lib/worktree-setup-proof.ts";
 
 export const gitObjectIdPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const durableRef = Schema.String.check(Schema.isPattern(/^refs\/(?:heads|remotes|archive)\//));
@@ -50,15 +52,55 @@ export const worktreeReleaseName = (cwd: string) =>
 export const releaseFile = (directory: string, cwd: string) =>
   NodePath.join(directory, worktreeReleaseName(cwd));
 
+export class WorktreeReleaseReceiptError extends Schema.TaggedError<WorktreeReleaseReceiptError>()(
+  "WorktreeReleaseReceiptError",
+  { receipt: Schema.String },
+) {
+  override get message() {
+    return `Cannot verify the worktree release receipt at ${this.receipt}. Inspect this marker and restore a valid receipt for this checkout before retrying.`;
+  }
+}
+
 export const readReleaseFile = Effect.fn("WorktreeRelease.readFile")(
-  function* (fs: FileSystem.FileSystem, file: string) {
-    if ((yield* existingWorkspacePath(file)) !== file) return null;
-    const stat = yield* fs.stat(file);
-    if (stat.type !== "File" || stat.size > 128n * 1024n) return null;
-    return yield* decodeReleaseRequest(yield* fs.readFileString(file));
+  function* (file: string, expectedCheckout?: string) {
+    const contents = yield* Effect.tryPromise(async () => {
+      const before = await NodeFSP.lstat(file, { bigint: true }).catch(missingSetupPath);
+      if (!before) return null;
+      if (!before.isFile() || before.ino === 0n || before.size > 1024n * 1024n)
+        throw new Error("Invalid release receipt file");
+      const handle = await NodeFSP.open(
+        file,
+        NodeFS.constants.O_RDONLY |
+          (NodeFS.constants.O_NOFOLLOW ?? 0) |
+          (NodeFS.constants.O_NONBLOCK ?? 0),
+      );
+      try {
+        const stamp = setupFileStamp(before);
+        if (setupFileStamp(await handle.stat({ bigint: true })) !== stamp)
+          throw new Error("Release receipt changed before reading");
+        const buffer = Buffer.alloc(Number(before.size) + 1);
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        if (
+          BigInt(bytesRead) !== before.size ||
+          setupFileStamp(await NodeFSP.lstat(file, { bigint: true })) !== stamp
+        )
+          throw new Error("Release receipt changed while reading");
+        return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+          buffer.subarray(0, bytesRead),
+        );
+      } finally {
+        await handle.close();
+      }
+    });
+    if (contents === null) return null;
+    const request = yield* decodeReleaseRequest(contents);
+    if (expectedCheckout !== undefined && request.worktreePath !== expectedCheckout)
+      return yield* new WorktreeReleaseReceiptError({ receipt: file });
+    return { contents, request };
   },
   Effect.timeout("5 seconds"),
-  Effect.orElseSucceed(() => null),
+  (effect, file) =>
+    effect.pipe(Effect.mapError(() => new WorktreeReleaseReceiptError({ receipt: file }))),
 );
 
 export const releaseReceiptPath = (cwd: string) =>
@@ -88,9 +130,12 @@ export const familyReservesWorktree = Effect.fn("WorktreeRelease.familyReservesW
     const base = releaseFile(yield* existingWorkspacePath(directory), canonical);
     for (const stage of ["", ...releaseStages]) {
       const file = base + stage;
-      if (!(yield* directoryEntryExists(file))) continue;
-      const request = yield* readReleaseFile(fs, file);
-      if (!request || request.worktreePath !== canonical || request.family !== undefined)
+      if (
+        yield* readReleaseFile(file, canonical).pipe(
+          Effect.map((loaded) => loaded?.request.family !== undefined),
+          Effect.orElseSucceed(() => true),
+        )
+      )
         return true;
     }
     return false;

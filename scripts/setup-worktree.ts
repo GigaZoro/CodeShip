@@ -68,7 +68,8 @@ const clearClaim = (directory: string) => {
     (stat.mode & 0o077) !== 0
   )
     throw new Error(`Unrecognized setup owner: ${directory}`);
-  for (const name of NodeFS.readdirSync(directory)) {
+  const entries = NodeFS.readdirSync(directory);
+  for (const name of entries) {
     const file = NodePath.join(directory, name);
     const entry = NodeFS.lstatSync(file);
     if (
@@ -78,28 +79,31 @@ const clearClaim = (directory: string) => {
       entry.size > 128 * 1024
     )
       throw new Error(`Unrecognized setup owner file: ${file}`);
-    NodeFS.unlinkSync(file);
   }
+  for (const name of entries) NodeFS.unlinkSync(NodePath.join(directory, name));
   NodeFS.rmdirSync(directory);
 };
 
 const clearEmptyWindowsClaim = async (directory: string) => {
   const before = NodeFS.lstatSync(directory, { bigint: true, throwIfNoEntry: false });
-  if (!before?.isDirectory() || before.ino === 0n || NodeFS.readdirSync(directory).length) return;
+  if (!before) return;
+  const preserved = `Preserving abandoned setup claim at ${directory}.`;
+  if (!before.isDirectory() || before.ino === 0n || NodeFS.readdirSync(directory).length)
+    return preserved;
   try {
     await checkWindowsWorktreeFiles(directory, { targets: [] });
   } catch (error) {
     if (!(error instanceof WindowsWorktreeInspectionError)) throw error;
-    process.stderr.write(`${error.message} for the abandoned setup claim. Preserving it.\n`);
-    return;
+    return `${error.message}. ${preserved}`;
   }
   const current = NodeFS.lstatSync(directory, { bigint: true, throwIfNoEntry: false });
-  if (current && setupFileStamp(current) === setupFileStamp(before)) {
-    try {
-      NodeFS.rmdirSync(directory);
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOTEMPTY")) throw error;
-    }
+  if (!current) return;
+  if (setupFileStamp(current) !== setupFileStamp(before)) return preserved;
+  try {
+    NodeFS.rmdirSync(directory);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOTEMPTY")) throw error;
+    return preserved;
   }
 };
 
@@ -253,20 +257,26 @@ const setup = async () => {
   const ownClaim = isWindows ? NodeFS.lstatSync(claim, { bigint: true }) : undefined;
   let running = false;
   try {
+    let preservedClaim: string | undefined;
     for (const name of NodeFS.readdirSync(markerDir)) {
       if (name === claimName) continue;
       const owner = /^setup-owner-([1-9]\d*)$/.exec(name);
       if (!owner) continue;
-      if (alive(Number(owner[1]))) throw new Error("Another worktree setup is running");
-      if (isWindows) await clearEmptyWindowsClaim(NodePath.join(markerDir, name));
-      else clearClaim(NodePath.join(markerDir, name));
+      const directory = NodePath.join(markerDir, name);
+      if (alive(Number(owner[1])))
+        throw new Error(`Another worktree setup is running. Check ${directory}.`);
+      if (isWindows) {
+        const reason = await clearEmptyWindowsClaim(directory);
+        preservedClaim ??= reason;
+      } else clearClaim(directory);
     }
+    if (preservedClaim) process.stderr.write(preservedClaim + "\n");
     const previous = readMarker(runningMarker, 32);
     if (previous !== undefined && (!/^[1-9]\d*\n$/.test(previous) || alive(Number(previous))))
-      throw new Error("Another worktree setup may still be running");
+      throw new Error(`Another worktree setup may still be running. Check ${runningMarker}.`);
     if (await hasSetupEntry(inPlaceMarker))
       throw new Error(
-        "An interrupted in-place install may still be writing. Verify it has stopped before clearing its marker.",
+        `An interrupted in-place install may still be writing. Verify its installer has stopped before clearing ${inPlaceMarker}.`,
       );
 
     let context = await setupCheckout(worktree, projectRoot);
@@ -354,7 +364,13 @@ const setup = async () => {
       canRecordProof &&
       verifiedModules.size === 0 &&
       (await installWorktreeDependencies(worktree, context.head, staging, claimName, install));
-    if (!sealed) await installInPlace(verifiedModules);
+    if (!sealed) {
+      if (await hasSetupEntry(staging))
+        process.stderr.write(
+          `Preserving dependency stage at ${staging}. Attempting an in-place install.\n`,
+        );
+      await installInPlace(verifiedModules);
+    }
     // Once the dependencies are published, only the proof makes them releasable, so nothing that can
     // fail or be cancelled runs between them and the proof.
     const links = await linkEnvFiles(projectRoot);

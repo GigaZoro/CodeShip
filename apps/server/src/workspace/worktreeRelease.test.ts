@@ -3,6 +3,8 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
 import { expect, it } from "@effect/vitest";
+import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { linkDirectory } from "@t3tools/shared/testing/symlinks";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
@@ -23,9 +25,82 @@ import {
   queueWorktreeRelease,
   recoverInterruptedWorktree,
   releaseHold,
+  releasedWorktree,
+  worktreeReleaseName,
 } from "./worktreeRelease.ts";
 
 const runFile = NodeUtil.promisify(NodeChildProcess.execFile);
+
+it.live(
+  "holds the highest-priority damaged release marker and accepts a valid one-MiB receipt",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-terminal-receipt-" }),
+      );
+      const checkout = path.join(root, "checkout");
+      const owner = ThreadId.make("owner");
+      const thread = {
+        id: owner,
+        branch: "feature",
+        projectId: ProjectId.make("project"),
+        worktreePath: checkout,
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: owner },
+      };
+      const lookup = releasedWorktree(
+        fs,
+        root,
+        checkout,
+        thread,
+        () => Effect.die("unexpected lineage lookup"),
+        false,
+        () => Effect.die("unexpected replacement"),
+      );
+      const request = {
+        threadId: owner,
+        branch: thread.branch,
+        worktreePath: checkout,
+        runId: "finished",
+        identity: "original",
+        head: "1".repeat(40),
+        durableRef: "refs/heads/main",
+      };
+      const json = JSON.stringify(request);
+      const contents = json + " ".repeat(1024 * 1024 - Buffer.byteLength(json));
+      const file = path.join(root, worktreeReleaseName(checkout));
+      const setup = file + ".setup";
+      const marker = file + ".restoring";
+      yield* fs.writeFileString(setup, contents);
+      const hold = { _tag: "WorktreeReleaseReceiptError", receipt: marker };
+      for (const invalid of [
+        contents + " ",
+        JSON.stringify({ ...request, worktreePath: path.join(root, "other") }),
+        JSON.stringify({ ...request, unknownReleaseFormat: true }),
+      ]) {
+        yield* fs.writeFileString(marker, invalid);
+        expect(yield* Effect.flip(lookup)).toMatchObject(hold);
+        expect(yield* fs.readFileString(marker)).toBe(invalid);
+      }
+      yield* fs.remove(marker);
+      const target = path.join(root, "target");
+      yield* fs.makeDirectory(target);
+      yield* linkDirectory(target, marker);
+      yield* fs.remove(target, { recursive: true });
+      expect(yield* Effect.flip(lookup)).toMatchObject(hold);
+      expect((yield* Effect.promise(() => NodeFSP.lstat(marker))).isSymbolicLink()).toBe(true);
+      yield* fs.remove(marker);
+      yield* fs.writeFileString(
+        path.join(root, worktreeReleaseName(path.join(root, "other"))) + ".restoring",
+        "bad receipt for another checkout",
+      );
+      const accepted = yield* lookup;
+      expect(accepted?.receipt).toBe(setup);
+      expect(accepted?.request).toEqual(request);
+      expect(accepted?.contents).toBe(contents);
+    }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
 
 const sealedCheckout = (options: { inPlace?: true } = {}) =>
   Effect.gen(function* () {

@@ -2058,6 +2058,52 @@ effectIt.effect(
     }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
 );
 
+effectIt.effect(
+  "holds a damaged release receipt before setup and settles the start without retrying",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-invalid-receipt-" }),
+      );
+      const worktreesDir = path.join(root, "worktrees");
+      const worktreePath = path.join(worktreesDir, "project", "checkout");
+      const directory = path.join(root, "state", ServerConfig.WORKTREE_RELEASE_DIRECTORY);
+      yield* fs.makeDirectory(directory, { recursive: true });
+      yield* fs.makeDirectory(worktreePath, { recursive: true });
+      const file = path.join(directory, worktreeReleaseName(worktreePath));
+      const setup = JSON.stringify({
+        threadId: "thread-native-account-command",
+        runId: "finished",
+        worktreePath,
+        branch: "feature/restore",
+        durableRef: "refs/heads/main",
+        head: "1".repeat(40),
+        identity: "original",
+      });
+      yield* fs.writeFileString(file + ".setup", setup);
+      const marker = file + ".restoring";
+      const invalid = "unrecognized receipt content";
+      yield* fs.writeFileString(marker, invalid);
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        fileSystem: fs,
+        worktreesDir,
+        worktreePath,
+      });
+      yield* harness.startWithRetry;
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      const failure = harness.projection().turnItems.at(-1);
+      expect(failure).toMatchObject({ failure: { message: expect.stringContaining(marker) } });
+      expect(JSON.stringify(failure)).not.toContain(invalid);
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.createWorktree).not.toHaveBeenCalled();
+      expect(yield* fs.readFileString(marker)).toBe(invalid);
+      expect(yield* fs.readFileString(file + ".setup")).toBe(setup);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 effectIt.effect("cancels recovered synchronous setup and unblocks the awaiting run", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

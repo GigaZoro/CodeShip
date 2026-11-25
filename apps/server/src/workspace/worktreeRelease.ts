@@ -15,7 +15,6 @@ import { WORKTREE_RELEASE_DIRECTORY } from "../config.ts";
 import { existingWorkspacePath, resolveWorkspacePath } from "./workspaceLease.ts";
 import {
   decodeReleaseMemberRow,
-  decodeReleaseRequest,
   encodeRequest,
   gitObjectIdPattern as oid,
   readReleaseFile,
@@ -99,6 +98,12 @@ const backupName = /^saved-[a-zA-Z0-9_-]+$/;
 const releaseName =
   /^[a-f0-9]{64}\.json(?:\.(?:setup|restoring|releasing|released)|\.releasing\.[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.withdrawn)?$/;
 
+const readBackupRequest = (file: string) =>
+  readReleaseFile(file).pipe(
+    Effect.map((entry) => entry?.request),
+    Effect.orElseSucceed(() => undefined),
+  );
+
 const isWorktreeBackup = Effect.fn("WorktreeRelease.isBackup")(function* (
   fs: FileSystem.FileSystem,
   directory: string,
@@ -123,7 +128,7 @@ export const rememberWorktreeBackup = Effect.fn("WorktreeRelease.rememberBackup"
   if (!(yield* isWorktreeBackup(fs, directory, saved))) return false;
   const root = NodePath.dirname(saved);
   const index = saved + ".json";
-  const known = yield* readReleaseFile(fs, index);
+  const known = yield* readBackupRequest(index);
   if (
     known?.savedFiles === saved &&
     known.threadId === request.threadId &&
@@ -149,7 +154,7 @@ export const listWorktreeBackups = Effect.fn("WorktreeRelease.listBackups")(func
   const legacy = new Map<string, ReleaseRequest>();
   for (const name of names) {
     if (!releaseName.test(name)) continue;
-    const entry = yield* readReleaseFile(fs, NodePath.join(root, name));
+    const entry = yield* readBackupRequest(NodePath.join(root, name));
     if (entry?.savedFiles !== undefined) legacy.set(entry.savedFiles, entry);
   }
   const entries = [];
@@ -164,7 +169,7 @@ export const listWorktreeBackups = Effect.fn("WorktreeRelease.listBackups")(func
       Effect.orElseSucceed(() => false),
     );
     if (!directoryExists) continue;
-    const index = yield* readReleaseFile(fs, savedFiles + ".json");
+    const index = yield* readBackupRequest(savedFiles + ".json");
     const request = index?.savedFiles === savedFiles ? index : legacy.get(savedFiles);
     entries.push({
       savedFiles,
@@ -210,14 +215,14 @@ export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(functio
   const setupReceipt = file + ".setup";
   for (const suffix of releaseStages) {
     const receipt = file + suffix;
-    if (!(yield* fs.exists(receipt))) continue;
-    const contents = yield* fs.readFileString(receipt);
-    const request = yield* decodeReleaseRequest(contents);
+    const loaded = yield* readReleaseFile(receipt, canonical);
+    if (loaded === null) continue;
+    const { contents, request } = loaded;
     // Ordinary singleton starts only resume setup when their checkout already exists.
     if (checkoutExists && !request.family && (suffix === ".releasing" || suffix === ".released"))
       continue;
     const result = { request, contents, receipt, setupReceipt };
-    if (request.branch === thread.branch && request.worktreePath === canonical) {
+    if (request.branch === thread.branch) {
       if (!request.family) {
         if (request.threadId === thread.id) return result;
       } else {
@@ -255,7 +260,6 @@ export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(functio
       if (
         suffix === ".released" &&
         checkoutExists &&
-        request.worktreePath === canonical &&
         thread.lineage.rootThreadId !== request.threadId &&
         !request.family.some(
           (member) =>
