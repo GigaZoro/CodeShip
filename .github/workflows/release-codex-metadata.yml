@@ -4,6 +4,7 @@ on:
   workflow_call:
     inputs:
       ref:
+        description: Full commit SHA of the CodeShip release
         required: true
         type: string
       target:
@@ -27,17 +28,28 @@ jobs:
       key: ${{ steps.recipe.outputs.key }}
       hit: ${{ steps.cache.outputs.cache-hit }}
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.ref }}
-          persist-credentials: false
-          sparse-checkout: |
-            docs/operations/codex-metadata
-            .github/workflows
-      - run: node --test docs/operations/codex-metadata/package.test.mjs
+      # Checkout's credential cleanup enumerates unrelated gitlinks in .repos.
+      # Both jobs need only the recipe files from the same release commit.
+      - &fetch-recipe
+        name: Fetch the metadata recipe at the release commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECIPE_COMMIT: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$RECIPE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          recipe=docs/operations/codex-metadata
+          workflow=.github/workflows/release-codex-metadata.yml
+          mkdir -p "codeship/$recipe" codeship/.github/workflows
+          for file in "$recipe"/{codeship-metadata.patch,cargo-lock.diff,package.mjs,package.test.mjs,smoke.py} "$workflow"; do
+            gh api --header 'Accept: application/vnd.github.raw+json' \
+              "repos/$GITHUB_REPOSITORY/contents/$file?ref=$RECIPE_COMMIT" > "codeship/$file"
+          done
+      - run: node --test codeship/docs/operations/codex-metadata/package.test.mjs
       - id: recipe
         env:
-          RECIPE: ${{ hashFiles('docs/operations/codex-metadata/*.patch', 'docs/operations/codex-metadata/*.diff', 'docs/operations/codex-metadata/package.mjs', 'docs/operations/codex-metadata/smoke.py', '.github/workflows/release-codex-metadata.yml') }}
+          RECIPE: ${{ hashFiles('codeship/docs/operations/codex-metadata/*.patch', 'codeship/docs/operations/codex-metadata/*.diff', 'codeship/docs/operations/codex-metadata/package.mjs', 'codeship/docs/operations/codex-metadata/smoke.py', 'codeship/.github/workflows/release-codex-metadata.yml') }}
           TARGET: ${{ inputs.target }}
           IMAGE: ${{ inputs.runner }}
         run: echo "key=codex-metadata-$IMAGE-$TARGET-$RECIPE" >> "$GITHUB_OUTPUT"
@@ -69,12 +81,7 @@ jobs:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.ref }}
-          persist-credentials: false
-          path: codeship
-          sparse-checkout: docs/operations/codex-metadata
+      - *fetch-recipe
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:

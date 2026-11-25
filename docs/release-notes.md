@@ -1,3 +1,7 @@
+## 2026-11-25 — Restore Codex metadata packaging for releases
+
+- Linux, Windows and macOS release builds now fetch the Codex metadata build files from the exact release commit. An unrelated vendored Git submodule had stopped packaging before the runtime could be built.
+
 ## 2026-11-25 — A landing that gives up on a stalled remote stops what Git started
 
 - When a fetch or push to the remote runs past its time limit, the landing script now stops Git's transport too, such as an SSH connection or a credential helper, instead of leaving it running.
