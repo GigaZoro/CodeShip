@@ -41,7 +41,10 @@ describe("V2 preview upgrade", () => {
       const imports = yield* sql`SELECT * FROM orchestration_v2_legacy_imports`;
       assert.deepStrictEqual(yield* runMigrations(), previewUpgradeMigrations);
       assert.deepStrictEqual(yield* runMigrations(), []);
-      assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM orchestration_v2_legacy_imports`,
+        imports.map((row) => ({ ...row, legacy_rows_compacted_at: null })),
+      );
       const history = yield* sql<{ readonly migration_id: number; readonly name: string }>`
         SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id
       `;

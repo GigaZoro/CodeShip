@@ -385,7 +385,7 @@ it.effect("paces scheduled compaction while preserving retention state and fixed
         },
       }),
     );
-    assert.deepEqual(pauses, Array(5).fill(270));
+    assert.deepEqual(pauses, Array(6).fill(270));
     assert.deepEqual(
       compactionSpans.map((span) => span.status._tag),
       ["Ended"],
@@ -1045,6 +1045,15 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         remainingReceipts.map((row) => row.command_id),
         ["command:foundation-compact:pending"],
       );
+
+      // The mark has passed the pending chat's rows, yet the pass after its import deletes them.
+      yield* sql`
+        UPDATE orchestration_v2_legacy_imports
+        SET transcript_imported_at = ${nowIso}
+        WHERE thread_id = ${pendingV1ThreadId}
+      `;
+      const afterImport = yield* maintenance.compactEventStore();
+      assert.deepEqual([afterImport.deletedEventCount, afterImport.deletedReceiptCount], [1, 1]);
 
       assert.isTrue((yield* maintenance.verify).valid);
       assert.isTrue((yield* maintenance.rebuild).valid);
@@ -3940,7 +3949,7 @@ it.effect.each(["events", "receipts"] as const)(
         const observeDiscovery: Statement.Transformer = (statement, _sql, _fiber, span) => {
           const [query] = statement.compile();
           const pageQuery =
-            kind === "events" ? /^\s*SELECT\s+event\.sequence/ : /^\s*SELECT\s+receipt\.rowid/;
+            kind === "events" ? /^\s*SELECT\s+event\.sequence/ : /^\s*SELECT\s+receipt\.command_id/;
           return pageQuery.test(query)
             ? Deferred.succeed(discoveryStarted, span).pipe(
                 Effect.andThen(Deferred.await(readerHeld)),
@@ -3968,6 +3977,7 @@ it.effect.each(["events", "receipts"] as const)(
         yield* sql`INSERT INTO concurrent_writes VALUES ('committed')`;
         assert.isFalse(yield* Deferred.isDone(compacted));
         assert.deepEqual(yield* sql`SELECT value FROM concurrent_writes`, [{ value: "committed" }]);
+        // Nothing writes these rows anymore; this one only shows the delete stays within its bound.
         if (kind === "events") {
           yield* sql`
             INSERT INTO orchestration_events (

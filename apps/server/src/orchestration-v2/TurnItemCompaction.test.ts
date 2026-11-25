@@ -21,6 +21,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -485,12 +486,232 @@ it.effect("keeps post-bound appends visible during compaction", () =>
       const secondPassRows = yield* eventStore
         .read({ threadId, eventType: "turn-item.updated" })
         .pipe(Stream.runCollect);
+      // The second pass reads only the appends, so the item keeps the latest event below the mark
+      // and the oldest above it until the chat goes cold and its history is compacted.
       assert.deepEqual(
         secondPassRows.map((stored) => stored.sequence),
-        [initial[1]!.sequence, appended.at(-1)!.sequence],
+        [initial[1]!.sequence, beforeSequence, appended[0]!.sequence, appended.at(-1)!.sequence],
       );
     }),
   ).pipe(Effect.provide(layerTest)),
+);
+
+// Records the compaction statements that read event or receipt rows, so a test can tell which ones
+// a pass ran.
+const recordRowReads = (queries: Array<string>): Statement.Transformer => {
+  return (statement) => {
+    const [query] = statement.compile();
+    if (/FROM orchestration_(events AS event|command_receipts AS receipt)\b/.test(query)) {
+      queries.push(query);
+    }
+    return Effect.succeed(statement);
+  };
+};
+
+it.effect("reads no event or legacy receipt that a complete pass already compacted", () =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const sql = yield* SqlClient.SqlClient;
+    const now = yield* DateTime.now;
+    const nowIso = DateTime.formatIso(now);
+    const threadId = ThreadId.make("thread:turn-item-compaction-mark");
+    yield* sink.write({
+      events: [
+        threadCreated(makeThread(threadId, now), now),
+        ...[0, 1, 2].map((revision) => itemEvent(threadId, now, itemSpecs[0], revision)),
+      ],
+    });
+    // One legacy chat's import finished and the other's never did.
+    for (const [legacyThreadId, importedAt] of [
+      ["thread:turn-item-compaction-legacy-imported", nowIso],
+      ["thread:turn-item-compaction-legacy-pending", null],
+    ] as const) {
+      yield* sql`
+        INSERT INTO orchestration_v2_legacy_imports (
+          thread_id, source_updated_at, shell_imported_at, transcript_imported_at,
+          imported_message_count, last_error
+        ) VALUES (${legacyThreadId}, ${nowIso}, ${nowIso}, ${importedAt}, 1, NULL)
+      `;
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type,
+          occurred_at, actor_kind, payload_json, metadata_json, application_event_version
+        ) VALUES (
+          ${legacyThreadId}, 'thread', ${legacyThreadId}, 1, 'thread.message-appended',
+          ${nowIso}, 'user', '{}', '{}', 1
+        )
+      `;
+      yield* sql`
+        INSERT INTO orchestration_command_receipts (
+          command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status,
+          command_type
+        ) VALUES (${legacyThreadId}, 'thread', ${legacyThreadId}, ${nowIso}, 1, 'accepted', 'legacy')
+      `;
+    }
+    const first = yield* maintenance.compactEventStore();
+    assert.deepEqual([first.deletedEventCount, first.deletedReceiptCount], [2, 1]);
+    // A pass that read any of these again would fail on the payload.
+    yield* sql`UPDATE orchestration_events SET payload_json = '{'`;
+    const rowReads: Array<string> = [];
+
+    const unchanged = yield* maintenance
+      .compactEventStore()
+      .pipe(Effect.provideService(Statement.CurrentTransformer, recordRowReads(rowReads)));
+
+    assert.deepEqual([unchanged.deletedEventCount, unchanged.deletedReceiptCount], [0, 0]);
+    assert.deepEqual(rowReads, []);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("keeps the mark where it was when a pass stops part way", () =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const sql = yield* SqlClient.SqlClient;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("thread:turn-item-compaction-cut-short");
+    yield* sink.write({
+      events: [
+        threadCreated(makeThread(threadId, now), now),
+        ...Array.from({ length: 70 }, (_, revision) =>
+          itemEvent(threadId, now, itemSpecs[0], revision),
+        ),
+      ],
+    });
+    // The first page compacts the newest revisions, then the pass stops before the older ones.
+    const cutShort = yield* Effect.exit(maintenance.compactEventStore(Effect.die("cut short")));
+    assert.isTrue(Exit.isFailure(cutShort));
+    assert.deepEqual(
+      yield* sql`SELECT compacted_through_sequence FROM orchestration_v2_event_store_compaction`,
+      [],
+    );
+
+    const next = yield* maintenance.compactEventStore();
+
+    assert.equal(next.deletedEventCount, 20);
+    assert.deepEqual(yield* historyEventIds(threadId), [
+      "event:turn-item-compaction:thread",
+      "event:turn-item-compaction:command:0",
+      "event:turn-item-compaction:command:69",
+    ]);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("supersedes thread state below the mark by state the chat gained since", () =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const sql = yield* SqlClient.SqlClient;
+    const now = yield* DateTime.now;
+    const thread = makeThread(ThreadId.make("thread:turn-item-compaction-state"), now);
+    const untouched = makeThread(ThreadId.make("thread:turn-item-compaction-untouched"), now);
+    const eventId = (key: string) => EventId.make(`event:turn-item-compaction-state:${key}`);
+    const state = (
+      key: string,
+      type:
+        | "thread.pinned"
+        | "thread.metadata-updated"
+        | "thread.visited"
+        | "thread.tags-updated"
+        | "thread.color-updated",
+    ): OrchestrationV2DomainEvent => ({
+      id: eventId(key),
+      type,
+      threadId: thread.id,
+      occurredAt: now,
+      payload: thread,
+    });
+    const link = (key: string): OrchestrationV2DomainEvent => ({
+      id: eventId(key),
+      type: "thread.pull-request-link-updated",
+      threadId: thread.id,
+      occurredAt: now,
+      payload: {
+        host: "github.com",
+        repository: "owner/repository",
+        number: 42,
+        url: "https://github.com/owner/repository/pull/42",
+        source: "manual",
+        linkedAt: DateTime.formatIso(now),
+        snapshot: null,
+        stack: null,
+      },
+    });
+    const item = (spec: (typeof itemSpecs)[number], revision: number) =>
+      itemEvent(thread.id, now, spec, revision, `${eventId(spec.key)}:${revision}`);
+    yield* sink.write({
+      events: [
+        { ...threadCreated(thread, now), id: eventId("created") },
+        state("pinned", "thread.pinned"),
+        state("visited:1", "thread.visited"),
+        state("tags:1", "thread.tags-updated"),
+        link("link:1"),
+        state("metadata", "thread.metadata-updated"),
+        state("visited:2", "thread.visited"),
+        state("tags:2", "thread.tags-updated"),
+        state("color:1", "thread.color-updated"),
+        link("link:2"),
+        link("link:3"),
+        ...[0, 1, 2].map((revision) => item(itemSpecs[0], revision)),
+      ],
+    });
+    yield* sink.write({
+      events: [
+        { ...threadCreated(untouched, now), id: eventId("untouched") },
+        ...[0, 1, 2].map((revision) =>
+          itemEvent(
+            untouched.id,
+            now,
+            itemSpecs[2],
+            revision,
+            `${eventId("untouched")}:${revision}`,
+          ),
+        ),
+      ],
+    });
+    assert.equal((yield* maintenance.compactEventStore()).deletedEventCount, 6);
+    // Only the chat's thread state below the mark is read again: its items and the other chat
+    // would fail the pass on the payload.
+    yield* sql`
+      UPDATE orchestration_events SET payload_json = '{'
+      WHERE stream_id = ${untouched.id} OR event_type = 'turn-item.updated'
+    `;
+    yield* sink.write({
+      events: [
+        link("link:4"),
+        state("visited:3", "thread.visited"),
+        state("color:2", "thread.color-updated"),
+        ...[3, 4].map((revision) => item(itemSpecs[0], revision)),
+        ...[0, 1, 2].map((revision) => item(itemSpecs[1], revision)),
+      ],
+    });
+
+    const second = yield* maintenance.compactEventStore();
+
+    // The newer link, visit and colour supersede the latest ones below the mark, as a full pass
+    // would, and the colour leaves the tags alone. The command keeps one more event on each side
+    // of the mark.
+    assert.equal(second.deletedEventCount, 4);
+    assert.deepEqual(
+      yield* historyEventIds(thread.id),
+      [
+        "created",
+        "metadata",
+        "tags:2",
+        "link:2",
+        "command:0",
+        "command:2",
+        "link:4",
+        "visited:3",
+        "color:2",
+        "command:3",
+        "command:4",
+        "reasoning:0",
+        "reasoning:2",
+      ].map(eventId),
+    );
+  }).pipe(Effect.provide(layerTest)),
 );
 
 const longAgo = DateTime.makeUnsafe("2026-10-01T00:00:00.000Z");

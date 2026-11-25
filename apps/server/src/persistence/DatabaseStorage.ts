@@ -170,8 +170,8 @@ const make = Effect.gen(function* () {
     Effect.catch((cause) => Effect.logWarning("Idle chat history compaction failed", { cause })),
   );
 
-  // Even a pass that deletes nothing scans the event store. Persist completion
-  // so restarting does not trigger another scan before the six-hour interval.
+  // Even a pass that deletes nothing reads the events appended since the last one and the idle
+  // chats. Persist completion so restarting does not repeat it before the six-hour interval.
   const compactedAtPath = path.join(path.dirname(config.dbPath), "compacted-at");
   const compact = Effect.gen(function* () {
     let sliceStarted = yield* Clock.monotonicTimeNanos;

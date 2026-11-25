@@ -1,3 +1,7 @@
+## 2026-11-26 — Database cleanup reads only what changed
+
+- The server’s six-hour event-log cleanup now skips events it has already processed. It revisits older chat state only when a new event can supersede it. A second pass over an unchanged database reads no event payloads. The first startup after upgrading builds a small index once.
+
 ## 2026-11-26 — Provider usage shows what was measured
 
 - Usage includes Antigravity conversations from the default managed profile and attributes token counts to the model named in the matching generation record.
