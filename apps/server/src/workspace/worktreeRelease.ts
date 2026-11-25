@@ -1124,6 +1124,8 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
       continue;
     }
     if (name === "logs") {
+      if (!(yield* Effect.tryPromise(() => NodeFSP.lstat(file))).isDirectory())
+        return "worktree has private reflogs";
       const logs = yield* fs.readDirectory(file);
       for (const log of logs)
         if (log !== "HEAD" && (log !== "refs" || !(yield* holdsOnlyFolders(path.join(file, log)))))
