@@ -44,7 +44,7 @@ export interface TranscriptParseResult {
 export const GUARD_LENGTH = 64;
 const STREAMING_THRESHOLD_BYTES = 8 * 1024 * 1024;
 const NEWLINE = 0x0a;
-const STAT_CONCURRENCY = 32;
+export const STAT_CONCURRENCY = 32;
 const CARRIAGE_RETURN = 0x0d;
 
 interface TranscriptIoOptions {

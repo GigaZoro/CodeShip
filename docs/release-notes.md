@@ -1,3 +1,7 @@
+## 2026-11-25 — Deleting a transcript no longer shrinks past usage early
+
+- Usage keeps the saved figures of a deleted transcript for 92 days after T3.CodeShip first finds it gone. Before, they expired 92 days after the file's last write, so deleting an old transcript could drop its usage from a past window within days. If the file comes back, it counts as a live transcript again.
+
 ## 2026-11-25 — Cursor account usage stays readable through a dashboard blip
 
 - A network error, a server error or a slow answer from the Cursor dashboard no longer marks Cursor account usage as unavailable. T3.CodeShip keeps the last result, logs why the check failed (such as a refused connection), and tries again later. Only a rejected or missing Cursor login turns it off.

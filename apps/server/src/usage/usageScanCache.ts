@@ -55,6 +55,8 @@ export interface CachedFile {
   readonly mtimeMs: number;
   /** Wall-clock time a scan stored this row, compared across processes when rows meet. */
   readonly observedAtMs: number;
+  /** Wall-clock time the service first found the file gone; its retention counts from here. */
+  readonly missingSinceMs?: number;
   readonly provider: UsageProviderKind;
   readonly records: readonly UsageRecord[];
   /** Unterminated tail records stay separate because incremental parsing rereads them. */
@@ -80,13 +82,32 @@ const isCurrentRow = (entry: CachedFile) => entry.legacy === undefined && !entry
  * snapshots gives the same rows: the later observation, then a current-format row, then the
  * larger file, then the row already held.
  */
-export function mergeScanEntry(held: CachedFile, incoming: CachedFile): CachedFile {
+function pickScanEntry(held: CachedFile, incoming: CachedFile): CachedFile {
   if (incoming.observedAtMs !== held.observedAtMs) {
     return incoming.observedAtMs > held.observedAtMs ? incoming : held;
   }
   const heldCurrent = isCurrentRow(held);
   if (heldCurrent !== isCurrentRow(incoming)) return heldCurrent ? held : incoming;
   return incoming.size > held.size ? incoming : held;
+}
+
+/**
+ * A missing time says nothing about a file's contents, so it never picks the winning row. The
+ * winner takes the latest one from a row read at the same time or found gone after its own read;
+ * an earlier one predates a read that found the file back.
+ */
+export function mergeScanEntry(held: CachedFile, incoming: CachedFile): CachedFile {
+  const winner = pickScanEntry(held, incoming);
+  const missingTimes = [held, incoming].flatMap(({ observedAtMs, missingSinceMs }) =>
+    missingSinceMs !== undefined &&
+    (observedAtMs === winner.observedAtMs || missingSinceMs > winner.observedAtMs)
+      ? [missingSinceMs]
+      : [],
+  );
+  const missingSinceMs = missingTimes.length === 0 ? undefined : Math.max(...missingTimes);
+  if (missingSinceMs === winner.missingSinceMs) return winner;
+  const { missingSinceMs: _, ...contents } = winner;
+  return missingSinceMs === undefined ? contents : { ...contents, missingSinceMs };
 }
 
 export function mergeCachedSource(held: CachedSource, incoming: CachedSource): CachedSource {
@@ -118,6 +139,7 @@ interface SerializedFile {
   readonly lg?: true;
   readonly m: number;
   readonly oa?: number;
+  readonly ms?: number;
   readonly p: UsageProviderKind;
   readonly r: readonly SerializedRecord[];
   readonly t: readonly SerializedRecord[];
@@ -181,6 +203,7 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
     ...(entry.legacy ? { lg: true } : {}),
     m: entry.mtimeMs,
     oa: entry.observedAtMs,
+    ...(entry.missingSinceMs === undefined ? {} : { ms: entry.missingSinceMs }),
     p: entry.provider,
     r: entry.records.map(serializeRecord),
     t: entry.tailRecords.map(serializeRecord),
@@ -376,6 +399,9 @@ export function decodeScanCache(
       ...(version < USAGE_SCAN_CACHE_VERSION || entry.lg === true ? { legacy: true } : {}),
       mtimeMs: entry.m,
       observedAtMs,
+      ...(typeof entry.ms === "number" && Number.isFinite(entry.ms)
+        ? { missingSinceMs: entry.ms }
+        : {}),
       provider,
       records,
       tailRecords,
@@ -408,16 +434,9 @@ function makeStateValidators(
   );
 }
 
-export function pruneScanCache(cache: ScanCache, retentionCutoffMs: number): number {
-  let removed = 0;
-  for (const [path, entry] of cache) {
-    if (entry.mtimeMs < retentionCutoffMs) {
-      cache.delete(path);
-      removed += 1;
-    }
-  }
-  return removed;
-}
+/** A deleted transcript's usage counts from when it went missing, so deleting it never ends it early. */
+export const isRetained = (entry: CachedFile, retentionCutoffMs: number): boolean =>
+  (entry.missingSinceMs ?? entry.mtimeMs) >= retentionCutoffMs;
 
 /** Mutates seen; share it across incremental line/tail batches to deduplicate the whole file. */
 export function dedupeWithinFile(

@@ -52,6 +52,7 @@ import {
   listTranscriptFiles,
   readDirectoryVolumeId,
   readTranscriptRecords,
+  STAT_CONCURRENCY,
   statTranscriptFiles,
 } from "./usageTranscriptReader.ts";
 import {
@@ -59,11 +60,11 @@ import {
   decodeScanCache,
   dedupeWithinFile,
   isLegacyScanCacheFileName,
+  isRetained,
   isScanCacheInput,
   makeScanCacheWriter,
   mergeCachedSource,
   mergeScanEntry,
-  pruneScanCache,
   SCAN_CACHE_DIRECTORY_NAME,
   scanCacheSnapshotName,
   USAGE_SCAN_CACHE_VERSION,
@@ -398,7 +399,7 @@ export const make = Effect.gen(function* () {
           .some(
             ([filePath, entry]) =>
               entry.provider === provider &&
-              entry.mtimeMs >= retentionCutoffMs &&
+              isRetained(entry, retentionCutoffMs) &&
               (entry.records.length + entry.tailRecords.length > 0 || entry.malformedRecords > 0) &&
               isWithinDirectory(filePath, dir),
           );
@@ -611,9 +612,44 @@ export const make = Effect.gen(function* () {
     return false;
   });
 
+  /**
+   * Drops rows past retention. A row whose file went away after the last scan of its directory
+   * has no missing time yet, so it gets one now instead of expiring by its last write.
+   */
+  const pruneExpired = Effect.fn("UsageService.pruneExpired")(function* (
+    retentionCutoffMs: number,
+  ) {
+    const nowMs = yield* Clock.currentTimeMillis;
+    const unchecked: Array<readonly [string, CachedFile]> = [];
+    for (const [filePath, entry] of fileCache) {
+      if (isRetained(entry, retentionCutoffMs)) continue;
+      if (entry.missingSinceMs === undefined) {
+        unchecked.push([filePath, entry]);
+        continue;
+      }
+      fileCache.delete(filePath);
+      generation += 1;
+    }
+    yield* Effect.forEach(
+      unchecked,
+      ([filePath, entry]) =>
+        fileSystem.exists(filePath).pipe(
+          // A file that cannot be checked keeps its usage.
+          Effect.orElseSucceed(() => false),
+          Effect.map((exists) => {
+            // A scan may have stored a newer row while the check ran.
+            if (fileCache.get(filePath) !== entry) return;
+            if (exists) fileCache.delete(filePath);
+            else fileCache.set(filePath, { ...entry, missingSinceMs: nowMs });
+            generation += 1;
+          }),
+        ),
+      { concurrency: STAT_CONCURRENCY, discard: true },
+    );
+  });
+
   const writeSnapshot = Effect.fn("UsageService.writeScanCacheSnapshot")(function* () {
-    const cutoff = (yield* Clock.currentTimeMillis) - CACHE_RETENTION_MS;
-    if (pruneScanCache(fileCache, cutoff) > 0) generation += 1;
+    yield* pruneExpired((yield* Clock.currentTimeMillis) - CACHE_RETENTION_MS);
     const capturedGeneration = generation;
     const covered = [...retirable];
     const files = new Map(fileCache);
@@ -977,6 +1013,26 @@ export const make = Effect.gen(function* () {
     return { files, failedPaths: cached.failedPaths + updated.failedPaths };
   });
 
+  /**
+   * A listing that lacks a cached file starts its missing time; one that has it again clears it.
+   * observedAtMs stays: only a read of the file may make a row win over another process's row.
+   */
+  const recordPresence = (
+    provider: UsageProviderKind,
+    dir: string,
+    present: ReadonlySet<string>,
+    nowMs: number,
+  ) => {
+    for (const [filePath, entry] of fileCache) {
+      if (entry.provider !== provider || !isWithinDirectory(filePath, dir)) continue;
+      const missing = !present.has(filePath);
+      if (missing === (entry.missingSinceMs !== undefined)) continue;
+      const { missingSinceMs: _, ...seen } = entry;
+      fileCache.set(filePath, missing ? { ...seen, missingSinceMs: nowMs } : seen);
+      generation += 1;
+    }
+  };
+
   const scanTranscriptDir = Effect.fn("UsageService.scanTranscriptDir")(function* (
     source: TranscriptSource,
     windowStartMs: number,
@@ -985,16 +1041,27 @@ export const make = Effect.gen(function* () {
   ) {
     const { provider, format, dir, volumeId, fileName } = source;
     const key = `${dir}\0${fileName ?? ""}`;
-    const exists = yield* fileSystem
-      .exists(dir)
-      .pipe(Effect.catchCause(() => Effect.succeed(false)));
-    if (!exists) {
+    const exists = yield* fileSystem.exists(dir).pipe(Effect.catchCause(() => Effect.void));
+    if (exists !== true) {
       listings.delete(key);
+      // A failed check says nothing about the files, so only a directory known gone marks them.
+      if (exists === false) {
+        recordPresence(provider, dir, new Set(), yield* Clock.currentTimeMillis);
+      }
       return { provider, dir, volumeId, files: null } satisfies ScannedDir;
     }
     const listing =
       scanListings.get(key) ?? (yield* transcriptListing(key, dir, fileName, onProgress));
     scanListings.set(key, listing);
+    // A listing that could not read every path cannot tell which files are gone.
+    if (listing.failedPaths === 0) {
+      recordPresence(
+        provider,
+        dir,
+        new Set(listing.files.map((file) => file.path)),
+        yield* Clock.currentTimeMillis,
+      );
+    }
     const candidates = listing.files.filter((file) => file.mtimeMs >= windowStartMs);
     const read = yield* Effect.forEach(
       candidates,
@@ -1250,14 +1317,14 @@ export const make = Effect.gen(function* () {
   ) {
     const { hourlyWindow, windowStartMs, retentionCutoffMs, startedAtMs } = window;
     // Deleted transcripts' saved usage still aggregates and deduplicates normally.
-    const retainedSinceMs = Math.max(windowStartMs, retentionCutoffMs);
     const filesByDir = scannedDirs.map(({ provider, dir, files }) => {
       const retainedFiles = [...(files ?? [])];
       const livePaths = new Set(retainedFiles.map((file) => file.path));
       for (const [filePath, entry] of fileCache) {
         if (
           entry.provider !== provider ||
-          entry.mtimeMs < retainedSinceMs ||
+          entry.mtimeMs < windowStartMs ||
+          !isRetained(entry, retentionCutoffMs) ||
           livePaths.has(filePath) ||
           !isWithinDirectory(filePath, dir)
         )
@@ -1457,7 +1524,7 @@ export const make = Effect.gen(function* () {
         generation += 1;
       }
     }
-    if (pruneScanCache(fileCache, retentionCutoffMs) > 0) generation += 1;
+    yield* pruneExpired(retentionCutoffMs);
 
     return yield* finish();
   });
