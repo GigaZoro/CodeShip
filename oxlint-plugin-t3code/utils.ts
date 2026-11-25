@@ -16,7 +16,7 @@ const asAstNode = (node: unknown): Option.Option<AstNode> =>
     ? Option.some(node as AstNode)
     : Option.none();
 
-const isExpressionWrapper = (node: AstNode): node is ExpressionWrapper =>
+export const isExpressionWrapper = (node: AstNode): node is ExpressionWrapper =>
   node.type === "ChainExpression" ||
   node.type === "ParenthesizedExpression" ||
   node.type === "TSNonNullExpression" ||

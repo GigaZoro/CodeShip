@@ -1,3 +1,7 @@
+## 2026-11-25 — Windows tests no longer report a pass they skipped
+
+- Maintainers: four server tests that cannot run on Windows now report a skip there instead of a pass, and the `no-platform-early-return-in-tests` lint rule also catches an early return on `HostProcess.isWindows`. It no longer reports a return that ends only a hook, finalizer, helper or iteration callback, or a check that does not depend on the host platform.
+
 ## 2026-11-25 — Bound the database of finished chats
 
 - After a day idle, settled and archived chats keep only the latest state of each message, step and turn, so their history stops growing the database. Their content and timeline stay the same. The freed space returns to disk while the server runs, and `t3 doctor` applies the same cleanup.
