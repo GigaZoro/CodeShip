@@ -79,7 +79,7 @@ function cursorHistoryAuthPath(
   );
 }
 
-type CursorHistorySource =
+export type CursorHistorySource =
   | { readonly state: "keychainOff" | "envCredential" | "noLocalLogin"; readonly authPath: string }
   | {
       readonly state: "source";

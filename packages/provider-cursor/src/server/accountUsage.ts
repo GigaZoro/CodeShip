@@ -48,6 +48,12 @@ class CursorAccountUsageInvalidError extends Schema.TaggedError<CursorAccountUsa
 
 const invalid = (reason: string) => Effect.fail(new CursorAccountUsageInvalidError({ reason }));
 
+/** The history check could not reach a verdict; a later check may. */
+export class CursorHistoryCheckError extends Schema.TaggedError<CursorHistoryCheckError>()(
+  "CursorHistoryCheckError",
+  { reason: Schema.String },
+) {}
+
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const readFileAccessToken = Effect.fn("CursorAccountUsage.readFileAccessToken")(function* (
@@ -138,13 +144,16 @@ const historyPage = Effect.fn("CursorAccountUsage.historyPage")(function* (
     .pipe(
       Effect.provideService(FetchHttpClient.RequestInit, NO_REDIRECT),
       Effect.mapError(
-        () => new CursorAccountUsageInvalidError({ reason: "Account usage request failed" }),
+        (cause) =>
+          new CursorAccountUsageInvalidError({
+            reason: `Account usage request failed: ${cause.message}`,
+          }),
       ),
     );
 
   if (response.status === 401 || response.status === 403) return null;
   if (response.status < 200 || response.status >= 300)
-    return yield* invalid("Account usage request failed");
+    return yield* invalid(`Account usage request failed with HTTP ${response.status}`);
   const parsed: unknown = yield* response.json.pipe(
     Effect.mapError(
       () => new CursorAccountUsageInvalidError({ reason: "Invalid account usage page" }),
@@ -174,19 +183,46 @@ const historyPage = Effect.fn("CursorAccountUsage.historyPage")(function* (
   return { count, events: events as unknown[] };
 });
 
+/**
+ * `false` means Cursor rejected the login (401/403) or there is no usable one. Anything a retry
+ * could fix fails with {@link CursorHistoryCheckError} instead.
+ */
 export const checkCursorHistoryAccess = Effect.fn("CursorAccountUsage.checkAccess")(
   function* (credential: string | CursorKeychain.CursorKeychain["Service"]) {
     const token = yield* typeof credential === "string"
-      ? readFileAccessToken(credential)
-      : credential.accessToken;
+      ? readFileAccessToken(credential).pipe(
+          Effect.catch((cause) => {
+            // The tag alone: the message can carry the home path or the file's text.
+            const tag = PlatformError.isPlatformError(cause) ? cause.reason._tag : cause._tag;
+            return tag === "NotFound"
+              ? Effect.succeed(null)
+              : Effect.fail(
+                  new CursorHistoryCheckError({
+                    reason: `Cursor credentials could not be read (${tag}).`,
+                  }),
+                );
+          }),
+        )
+      : credential.accessToken.pipe(
+          Effect.mapError((cause) => new CursorHistoryCheckError({ reason: cause.message })),
+        );
     if (typeof token !== "string" || !token) return false;
-    const subject = yield* cursorAccountSubject(token);
+    const subject = yield* Effect.result(cursorAccountSubject(token));
+    if (Result.isFailure(subject)) return false;
     const now = yield* Clock.currentTimeMillis;
-    return (yield* historyPage(subject.split("|").at(-1)!, token, 1, 1, now, now)) !== null;
+    const page = yield* historyPage(subject.success.split("|").at(-1)!, token, 1, 1, now, now).pipe(
+      Effect.mapError((cause) => new CursorHistoryCheckError({ reason: cause.reason })),
+    );
+    return page !== null;
   },
   Effect.scoped,
-  Effect.timeout("10 seconds"),
-  Effect.orElseSucceed(() => false),
+  Effect.timeoutOrElse({
+    duration: Duration.seconds(10),
+    orElse: () =>
+      Effect.fail(
+        new CursorHistoryCheckError({ reason: "The check did not finish within 10 seconds." }),
+      ),
+  }),
 );
 
 export const readCursorAccountUsage = Effect.fn("readCursorAccountUsage")(function* (

@@ -1,3 +1,8 @@
+## 2026-11-25 — Cursor account usage stays readable through a dashboard blip
+
+- A network error, a server error or a slow answer from the Cursor dashboard no longer marks Cursor account usage as unavailable. T3.CodeShip keeps the last result, logs why the check failed, and tries again later. Only a rejected or missing Cursor login turns it off.
+- Cursor's status no longer waits up to 10 seconds on the dashboard. The access check runs after the status is published and updates it when the answer changes.
+
 ## 2026-11-25 — Usage never shows partial or older totals as current
 
 - While one environment is still loading a new period, the Usage page keeps the last complete view and marks it as previous usage, even after you switch period twice. Before, it could show one environment's partial totals as if they were the whole period. Once every environment has answered, previous usage no longer says it is updating.

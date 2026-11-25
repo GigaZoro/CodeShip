@@ -6,6 +6,7 @@ import {
   type ServerSettings,
 } from "@t3tools/contracts";
 import { CursorSettings } from "../settings.ts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
 import * as FileSystem from "effect/FileSystem";
@@ -39,12 +40,14 @@ import * as CursorAgentSdk from "./CursorAgentSdk.ts";
 import * as CursorSdk from "./CursorSdk.ts";
 import * as CursorKeychain from "./CursorKeychain.ts";
 import * as CursorUsageAccounts from "./CursorUsageAccounts.ts";
+import { CURSOR_ACCOUNT_TTL_MS, type CursorCredentialSource } from "./accountCache.ts";
 import { checkCursorHistoryAccess } from "./accountUsage.ts";
 
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 const isSdkRunnerError = Schema.is(CursorAgentSdk.CursorAgentSdkRunnerError);
 
 const DRIVER_KIND = ProviderDriverKind.make("cursor");
+const HISTORY_ACCESS_TTL_NANOS = BigInt(CURSOR_ACCOUNT_TTL_MS) * 1_000_000n;
 const MAINTENANCE_CAPABILITIES = makeManualOnlyProviderMaintenanceCapabilities({
   provider: DRIVER_KIND,
   packageName: null,
@@ -107,26 +110,41 @@ export const CursorDriver: ProviderDriver<
     const platform = yield* HostProcess.Platform;
     const hostEnvironment = yield* HostProcess.Environment;
     const home = yield* HostProcess.HomeDirectory;
-    const readHistoryState = Effect.fn("CursorDriver.readHistoryState")(
-      function* (keychainEnabled: boolean) {
-        if (!enabled) return "unavailable" as const;
-        const source = yield* CursorUsageAccounts.resolveCursorHistorySource({
-          platform,
-          environment: hostEnvironment,
-          home,
-          keychainUsageEnabled: keychainEnabled,
-        });
-        if (source.state === "keychainOff") return "keychainOff" as const;
-        if (source.state !== "source") return "unavailable" as const;
-        const accepted = yield* checkCursorHistoryAccess(
-          typeof source.credential === "string" ? source.credential : keychain,
-        );
-        return accepted ? ("reading" as const) : ("unavailable" as const);
-      },
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-      Effect.provideService(HttpClient.HttpClient, httpClient),
-    );
+    const resolveHistorySource = (keychainUsageEnabled: boolean) =>
+      CursorUsageAccounts.resolveCursorHistorySource({
+        platform,
+        environment: hostEnvironment,
+        home,
+        keychainUsageEnabled,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+    const historyCredentialKey = (credential: CursorCredentialSource) =>
+      typeof credential === "string" ? credential : "keychain";
+    // The last verdict cursor.com gave, kept apart from the status check so a status publish
+    // never waits on cursor.com and a transient failure does not withdraw verified access.
+    let historyAccess:
+      | {
+          readonly credentialKey: string;
+          readonly reading: boolean;
+          readonly checkedAtNanos: bigint;
+        }
+      | undefined;
+    const historyState = (source: CursorUsageAccounts.CursorHistorySource) => {
+      if (source.state === "keychainOff") return "keychainOff" as const;
+      if (source.state !== "source") return "unavailable" as const;
+      return historyAccess?.credentialKey === historyCredentialKey(source.credential) &&
+        historyAccess.reading
+        ? ("reading" as const)
+        : ("unavailable" as const);
+    };
+    const readHistoryState = Effect.fn("CursorDriver.readHistoryState")(function* (
+      keychainUsageEnabled: boolean,
+    ) {
+      if (!enabled) return "unavailable" as const;
+      return historyState(yield* resolveHistorySource(keychainUsageEnabled));
+    });
     const continuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,
       instanceId,
@@ -316,6 +334,45 @@ export const CursorDriver: ProviderDriver<
           Effect.map((draft) => stampSnapshot(draft, "unavailable")),
         ),
       checkProvider,
+      enrichSnapshot: Effect.fn("CursorDriver.checkHistoryAccess")(function* ({
+        settings,
+        snapshot,
+        publishSnapshot,
+      }) {
+        const source = yield* resolveHistorySource(settings.cursorKeychainUsageEnabled);
+        if (source.state === "source") {
+          const credentialKey = historyCredentialKey(source.credential);
+          const nowNanos = yield* Clock.monotonicTimeNanos;
+          if (
+            historyAccess?.credentialKey !== credentialKey ||
+            nowNanos - historyAccess.checkedAtNanos >= HISTORY_ACCESS_TTL_NANOS
+          ) {
+            yield* checkCursorHistoryAccess(
+              typeof source.credential === "string" ? source.credential : keychain,
+            ).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(HttpClient.HttpClient, httpClient),
+              Effect.matchEffect({
+                onSuccess: (reading) =>
+                  Effect.sync(() => {
+                    historyAccess = { credentialKey, reading, checkedAtNanos: nowNanos };
+                  }),
+                onFailure: (error) =>
+                  Effect.logWarning(
+                    "Cursor account history check failed; keeping the last result.",
+                    {
+                      reason: error.reason,
+                    },
+                  ),
+              }),
+            );
+          }
+        }
+        const cursorAccountHistory = historyState(source);
+        if (cursorAccountHistory !== snapshot.cursorAccountHistory) {
+          yield* publishSnapshot({ ...snapshot, cursorAccountHistory });
+        }
+      }),
     }).pipe(
       Effect.mapError(
         (cause) =>

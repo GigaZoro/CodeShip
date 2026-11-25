@@ -11,6 +11,7 @@ import {
   ProviderSessionId,
   RunAttemptId,
   RunId,
+  type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -18,13 +19,19 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Deferred from "effect/Deferred";
+
+import { CURSOR_ACCOUNT_TTL_MS } from "./accountCache.ts";
 
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
@@ -73,9 +80,16 @@ const layerTest = TestProviderHost.layer({ runBackgroundWork: false }).pipe(
   ),
 );
 
+const captureWarnings = (warnings: Queue.Queue<ReadonlyArray<unknown>>) =>
+  Logger.layer([
+    Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Warn" && Array.isArray(message)) Queue.offerUnsafe(warnings, message);
+    }),
+  ]);
+
 it.layer(layerTest)("CursorDriver", (it) => {
   it.effect(
-    "publishes only verified history access and withdraws it when the endpoint rejects the credential",
+    "publishes history access without waiting on cursor.com and withdraws it only for a rejected or missing login",
     () =>
       Effect.gen(function* () {
         const settings = yield* TestProviderHost.TestProviderHostSettings;
@@ -83,12 +97,10 @@ it.layer(layerTest)("CursorDriver", (it) => {
         const path = yield* Path.Path;
         const directory = yield* fs.makeTempDirectoryScoped();
         const token = "header.eyJzdWIiOiJjdXJzb3J8Zml4dHVyZSJ9.signature";
+        const authFile = path.join(directory, "cursor", "auth.json");
+        const warnings = yield* Queue.unbounded<ReadonlyArray<unknown>>();
         yield* fs.makeDirectory(path.join(directory, "cursor"));
         yield* fs.makeDirectory(path.join(directory, ".cursor"));
-        yield* fs.writeFileString(
-          path.join(directory, "cursor", "auth.json"),
-          JSON.stringify({ accessToken: token }),
-        );
         for (const [platform, environment, keychainEnabled, expected] of [
           ["darwin", { HOME: directory }, false, "keychainOff"],
           ["darwin", { HOME: directory }, true, "reading"],
@@ -103,62 +115,121 @@ it.layer(layerTest)("CursorDriver", (it) => {
             "unavailable",
           ],
         ] as const) {
-          yield* settings.set({
-            ...DEFAULT_SERVER_SETTINGS,
-            cursorKeychainUsageEnabled: keychainEnabled,
-          });
-          let keychainToken: string | null = null;
-          let status = 200;
-          let requests = 0;
-          let keychainReads = 0;
-          const history = HttpClient.make((req) => {
-            expect(req.url).toBe("https://cursor.com/api/dashboard/get-filtered-usage-events");
-            requests++;
-            return Effect.succeed(
-              HttpClientResponse.fromWeb(
-                req,
-                Response.json({ totalUsageEventsCount: 0 }, { status }),
-              ),
-            );
-          });
-          const instance = yield* CursorDriver.create({
-            instanceId: ProviderInstanceId.make("cursor-history"),
-            displayName: "Cursor",
-            enabled: true,
-            environment: [],
-            config: CursorDriver.defaultConfig(),
-          }).pipe(
-            Effect.provideService(HostProcess.Platform, platform),
-            Effect.provideService(HostProcess.Environment, environment),
-            Effect.provideService(HttpClient.HttpClient, history),
-            Effect.provideService(CursorKeychain.CursorKeychain, {
-              accessToken: Effect.sync(() => {
-                keychainReads++;
-                return keychainToken;
-              }),
-            }),
-          );
-          expect((yield* instance.snapshot.getSnapshot).cursorAccountHistory).toBe("unavailable");
-          expect(requests).toBe(0);
-          if (keychainEnabled) {
-            expect((yield* instance.snapshot.refresh).cursorAccountHistory).toBe("unavailable");
-            expect(requests).toBe(0);
-            keychainToken = token;
-          }
-          expect((yield* instance.snapshot.refresh).cursorAccountHistory).toBe(expected);
-          if (expected === "reading") {
-            for (const code of [401, 403, 200]) {
-              status = code;
-              yield* instance.snapshot.refresh;
-              expect((yield* instance.snapshot.getSnapshot).cursorAccountHistory).toBe(
-                code === 200 ? "reading" : "unavailable",
+          yield* Effect.gen(function* () {
+            yield* fs.writeFileString(authFile, JSON.stringify({ accessToken: token }));
+            yield* settings.set({
+              ...DEFAULT_SERVER_SETTINGS,
+              cursorKeychainUsageEnabled: keychainEnabled,
+            });
+            let keychainToken: string | null | "unreadable" = token;
+            let answer: number | "offline" | "silent" = 200;
+            const asked = Deferred.makeUnsafe<void>();
+            let requests = 0;
+            let keychainReads = 0;
+            const history = HttpClient.make((request) => {
+              expect(request.url).toBe(
+                "https://cursor.com/api/dashboard/get-filtered-usage-events",
               );
+              requests++;
+              if (answer === "silent")
+                return Deferred.succeed(asked, undefined).pipe(Effect.andThen(Effect.never));
+              if (answer === "offline")
+                return Effect.fail(
+                  new HttpClientError.HttpClientError({
+                    reason: new HttpClientError.TransportError({ request, description: "offline" }),
+                  }),
+                );
+              return Effect.succeed(
+                HttpClientResponse.fromWeb(
+                  request,
+                  Response.json({ totalUsageEventsCount: 0 }, { status: answer }),
+                ),
+              );
+            });
+            const instance = yield* CursorDriver.create({
+              instanceId: ProviderInstanceId.make("cursor-history"),
+              displayName: "Cursor",
+              enabled: true,
+              environment: [],
+              config: CursorDriver.defaultConfig(),
+            }).pipe(
+              Effect.provideService(HostProcess.Platform, platform),
+              Effect.provideService(HostProcess.Environment, environment),
+              Effect.provideService(HttpClient.HttpClient, history),
+              Effect.provideService(CursorKeychain.CursorKeychain, {
+                accessToken: Effect.suspend(() => {
+                  keychainReads++;
+                  return keychainToken === "unreadable"
+                    ? Effect.fail(new CursorKeychain.CursorKeychainReadError({ cause: "locked" }))
+                    : Effect.succeed(keychainToken);
+                }),
+              }),
+            );
+            const changes = yield* Stream.toPull(instance.snapshot.streamChanges);
+            const published = Effect.fn("published")(function* (
+              state: NonNullable<ServerProvider["cursorAccountHistory"]>,
+            ) {
+              while ((yield* instance.snapshot.getSnapshot).cursorAccountHistory !== state) {
+                yield* changes;
+              }
+            });
+            const recheck = Effect.fn("recheck")(function* (next: typeof answer) {
+              answer = next;
+              yield* TestClock.adjust(CURSOR_ACCOUNT_TTL_MS);
+              return (yield* instance.snapshot.refresh).cursorAccountHistory;
+            });
+            const keepsReading = Effect.fn("keepsReading")(function* (cause: string) {
+              expect(yield* Queue.take(warnings)).toEqual([
+                "Cursor account history check failed; keeping the last result.",
+                { reason: expect.stringContaining(cause) },
+              ]);
+              expect((yield* instance.snapshot.getSnapshot).cursorAccountHistory).toBe("reading");
+            });
+            expect((yield* instance.snapshot.getSnapshot).cursorAccountHistory).toBe("unavailable");
+            if (expected !== "reading") {
+              expect((yield* instance.snapshot.refresh).cursorAccountHistory).toBe(expected);
+              expect(requests).toBe(0);
+              if (!keychainEnabled) expect(keychainReads).toBe(0);
+              return;
             }
-            expect(requests).toBe(4);
-          } else {
-            expect(requests).toBe(0);
-          }
-          if (!keychainEnabled) expect(keychainReads).toBe(0);
+            yield* published("reading");
+
+            // The status publish returns while cursor.com has not answered.
+            expect(yield* recheck("silent")).toBe("reading");
+            yield* Deferred.await(asked);
+            yield* TestClock.adjust("10 seconds");
+            yield* keepsReading("10 seconds");
+            answer = 503;
+            yield* instance.snapshot.refresh;
+            yield* keepsReading("HTTP 503");
+            answer = "offline";
+            yield* instance.snapshot.refresh;
+            yield* keepsReading("offline");
+            answer = 200;
+            keychainToken = "unreadable";
+            yield* fs.writeFileString(authFile, "{");
+            yield* instance.snapshot.refresh;
+            yield* keepsReading("could not be read");
+            keychainToken = token;
+            yield* fs.writeFileString(authFile, JSON.stringify({ accessToken: token }));
+
+            for (const [next, state] of [
+              [401, "unavailable"],
+              [200, "reading"],
+              [403, "unavailable"],
+              [200, "reading"],
+            ] as const) {
+              yield* recheck(next);
+              yield* published(state);
+            }
+            const requestsWithLogin = requests;
+            keychainToken = null;
+            yield* fs.writeFileString(authFile, JSON.stringify({}));
+            yield* recheck(200);
+            yield* published("unavailable");
+            expect(requests).toBe(requestsWithLogin);
+            if (!keychainEnabled) expect(keychainReads).toBe(0);
+          }).pipe(Effect.scoped, Effect.provide(captureWarnings(warnings)));
         }
       }),
   );
